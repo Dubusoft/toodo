@@ -112,10 +112,13 @@ npm i -g @dubusoft/toodo
   (`~/.local/bin/toodo-server`, the web app in `~/.local/share/toodo-server-web`, see
   [systemd](#systemd)). It enables and restarts the service and notes when lingering is
   off.
-- `toodo update [--channel dev|latest]`: update a global install and restart the server on
-  it, see below.
+- `toodo update [--channel dev|latest] [--allow-downgrade]`: update a global install and
+  restart the server on it, see below.
 - `toodo --version`, `toodo --help`. `--version` prints the version of the installed npm
-  package (`toodo 1.3.2-dev.9 (commit 1c78b7a1a2b3)`).
+  package (`toodo 1.3.2-dev.9 (commit 1c78b7a1a2b3)`). `toodo-server --version` and the
+  server's start log line report the same version: the npm workflow builds both binaries
+  with `TOODO_VERSION` set to the version it publishes (`src-tauri/build.rs`); other builds
+  report the crate version.
 
 `@dubusoft/toodo` follows releases; `@dubusoft/toodo@dev` follows the `dev` branch
 (`X.Y.Z-dev.N` prereleases), for example `npx @dubusoft/toodo@dev init`.
@@ -125,7 +128,10 @@ To update a global install, run `toodo update`. It:
 1. Picks the channel: `--channel dev` or `--channel latest`, else `dev` when the installed
    version is a prerelease and `latest` when it is a release.
 2. Resolves the channel to a version with `npm view` and stops when that version is
-   installed already. It checks that npm's global root (`npm root -g`) holds this `toodo`,
+   installed already. When it is older than the installed version by semver precedence
+   (`1.3.2-dev.1` is older than `1.3.2-dev.8`, and `1.3.2-dev.11` older than `1.3.2`), it
+   installs nothing and prints the command to install it anyway:
+   `toodo update --channel <channel> --allow-downgrade`. It checks that npm's global root (`npm root -g`) holds this `toodo`,
    so it never updates another copy, and that the platform package of the version
    (`@dubusoft/toodo-linux-x64`, ...) is on npm, which is published shortly after
    `@dubusoft/toodo`. Then it runs `npm i -g @dubusoft/toodo@<version> --include=optional`.
@@ -135,7 +141,8 @@ To update a global install, run `toodo update`. It:
    `~/.local/share/toodo-server-web` and runs `systemctl --user restart`; a server started
    by `toodo start` is stopped and started again; on macOS a launchd job `toodo-server`
    (`~/Library/LaunchAgents/toodo-server.plist`) is restarted with `launchctl kickstart -k`.
-   A server that is not running is left stopped.
+   A server that is not running is left stopped; for the systemd service the new server and
+   web app are still copied, so the next `toodo start` runs the new version.
 4. Checks that the server answers (`POST /api/rpc/list_tasks` without a token is `401`).
 5. Prints the old and new version and the result.
 

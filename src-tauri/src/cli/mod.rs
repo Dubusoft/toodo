@@ -30,7 +30,7 @@ const USAGE: &str = "Usage: toodo init [--port N | --listen HOST:PORT] [--data-d
        toodo stop [--data-dir DIR]
        toodo status [--data-dir DIR]
        toodo service install [--data-dir DIR]
-       toodo update [--channel dev|latest] [--data-dir DIR]
+       toodo update [--channel dev|latest] [--allow-downgrade] [--data-dir DIR]
        toodo --version | --help
 
 Runs the Toodo server (toodo-server) for the current user and connects coding agents
@@ -47,7 +47,8 @@ Commands:
   service install  run the server as the systemd user service toodo-server.service
   update           install the newest @dubusoft/toodo of the channel with npm, restart
                    the server on it, and check that it answers; a failed install
-                   leaves the running server alone
+                   leaves the running server alone, and a channel version older than
+                   the installed one is not installed
 
 Options:
   --port N            port to listen on, keeping the saved host (default 47616)
@@ -61,7 +62,8 @@ Options:
   --no-mcp            do not register the MCP endpoint with coding agents
   --channel CHANNEL   npm dist-tag update installs: dev (prereleases of the dev branch)
                       or latest (releases); default dev when the installed version is a
-                      prerelease, else latest";
+                      prerelease, else latest
+  --allow-downgrade   let update install a channel version older than the installed one";
 
 /// The exit status of `toodo status` while the server is stopped.
 const STOPPED: i32 = 3;
@@ -75,7 +77,8 @@ enum Command {
     Stop(Option<PathBuf>),
     Status(Option<PathBuf>),
     ServiceInstall(Option<PathBuf>),
-    Update(Option<Channel>, Option<PathBuf>),
+    /// The channel, whether a downgrade is allowed, and the data directory.
+    Update(Option<Channel>, bool, Option<PathBuf>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +124,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         mcp: true,
     };
     let mut channel = None;
+    let mut allow_downgrade = false;
     let mut options = options.iter();
     while let Some(option) = options.next() {
         let (name, inline) = match option.split_once('=') {
@@ -144,14 +148,15 @@ fn parse(args: &[String]) -> Result<Command, String> {
                 "{name} is an option of toodo init, not of {command}"
             ));
         }
-        if name == "--channel" && command != "update" {
+        if matches!(name, "--channel" | "--allow-downgrade") && command != "update" {
             return Err(format!(
-                "--channel is an option of toodo update, not of {command}"
+                "{name} is an option of toodo update, not of {command}"
             ));
         }
         match name {
             "--data-dir" => init.data_dir = Some(PathBuf::from(value)),
             "--no-mcp" => init.mcp = false,
+            "--allow-downgrade" => allow_downgrade = true,
             "--channel" => match Channel::parse(&value) {
                 Some(parsed) => channel = Some(parsed),
                 None => {
@@ -187,7 +192,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "start" => Command::Start(data_dir),
         "stop" => Command::Stop(data_dir),
         "status" => Command::Status(data_dir),
-        "update" => Command::Update(channel, data_dir),
+        "update" => Command::Update(channel, allow_downgrade, data_dir),
         _ => Command::ServiceInstall(data_dir),
     })
 }
@@ -226,10 +231,12 @@ pub fn main() {
             let listen = settings::listen(&data)?;
             service::install(&data, listen, &var).map(|()| 0)
         }),
-        Command::Update(channel, dir) => data_dir(dir.as_deref(), &var).and_then(|data| {
-            let flag = settings::data_dir_flag(&data, &var);
-            update::update(channel, &data, &flag, &var).map(|()| 0)
-        }),
+        Command::Update(channel, allow_downgrade, dir) => {
+            data_dir(dir.as_deref(), &var).and_then(|data| {
+                let flag = settings::data_dir_flag(&data, &var);
+                update::update(channel, allow_downgrade, &data, &flag, &var).map(|()| 0)
+            })
+        }
     };
     match result {
         Ok(code) => std::process::exit(code),
@@ -545,10 +552,20 @@ mod tests {
             parsed(&["service", "install", "--data-dir", "/d"]).unwrap(),
             Command::ServiceInstall(dir.clone())
         );
-        assert_eq!(parsed(&["update"]).unwrap(), Command::Update(None, None));
         assert_eq!(
-            parsed(&["update", "--channel=latest", "--data-dir", "/d"]).unwrap(),
-            Command::Update(Some(Channel::Latest), dir)
+            parsed(&["update"]).unwrap(),
+            Command::Update(None, false, None)
+        );
+        assert_eq!(
+            parsed(&[
+                "update",
+                "--channel=latest",
+                "--allow-downgrade",
+                "--data-dir",
+                "/d"
+            ])
+            .unwrap(),
+            Command::Update(Some(Channel::Latest), true, dir)
         );
     }
 
@@ -591,6 +608,10 @@ mod tests {
         assert_eq!(
             error(&["start", "--channel", "dev"]),
             "--channel is an option of toodo update, not of start"
+        );
+        assert_eq!(
+            error(&["start", "--allow-downgrade"]),
+            "--allow-downgrade is an option of toodo update, not of start"
         );
         assert_eq!(error(&["status", "extra"]), "unknown option \"extra\"");
     }

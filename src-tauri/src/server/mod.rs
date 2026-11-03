@@ -266,7 +266,7 @@ fn version() -> String {
 
 /// `<program> <version> (commit <sha>)` for a binary of this build.
 pub(crate) fn program_version(program: &str) -> String {
-    with_commit(program, env!("CARGO_PKG_VERSION"), env!("TOODO_COMMIT"))
+    with_commit(program, env!("TOODO_VERSION"), env!("TOODO_COMMIT"))
 }
 
 pub(crate) fn with_commit(program: &str, version: &str, commit: &str) -> String {
@@ -737,7 +737,7 @@ mod tests {
             with_commit("toodo-server", "1.2.3", ""),
             "toodo-server 1.2.3"
         );
-        assert!(version().starts_with(&format!("toodo-server {}", env!("CARGO_PKG_VERSION"))));
+        assert!(version().starts_with(&format!("toodo-server {}", env!("TOODO_VERSION"))));
     }
 
     const TEST_RESTORE_LIMIT: u64 = 1024 * 1024;

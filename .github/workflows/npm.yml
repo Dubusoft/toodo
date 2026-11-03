@@ -133,6 +133,9 @@ jobs:
 
       - name: Build toodo and toodo-server
         working-directory: src-tauri
+        # The binaries report the version they are published as (build.rs).
+        env:
+          TOODO_VERSION: ${{ needs.plan.outputs.version }}
         run: cargo build --release --locked --bin toodo --bin toodo-server
 
       - uses: actions/upload-artifact@v4

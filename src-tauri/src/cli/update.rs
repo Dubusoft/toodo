@@ -4,6 +4,7 @@
 //! The CLI runs from the platform package `@dubusoft/toodo-<os>-<arch>` (`bin/toodo` with
 //! `package.json` one directory up), which npm installs inside `@dubusoft/toodo`.
 
+use std::cmp::Ordering;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -88,7 +89,7 @@ pub(super) fn version() -> String {
         .ok()
         .and_then(|exe| Package::of(&exe))
         .map_or_else(
-            || env!("CARGO_PKG_VERSION").to_owned(),
+            || env!("TOODO_VERSION").to_owned(),
             |package| package.version,
         )
 }
@@ -104,9 +105,11 @@ enum Runner {
 }
 
 /// `toodo update`. `data` is the data directory whose server is restarted, `flag` its
-/// `--data-dir` option for the commands it suggests.
+/// `--data-dir` option for the commands it suggests. A channel version older than the
+/// installed one is installed only with `allow_downgrade`.
 pub(super) fn update(
     channel: Option<Channel>,
+    allow_downgrade: bool,
     data: &DataDir,
     flag: &str,
     var: Var,
@@ -143,8 +146,24 @@ pub(super) fn update(
 
     let old = &installed.version;
     let target = published_version(&npm, &format!("{PACKAGE}@{tag}"))?;
-    if &target == old {
+    let order = compare_versions(&target, old);
+    if &target == old || order == Some(Ordering::Equal) {
         println!("toodo {old} is the newest on {tag}; nothing to update.");
+        return Ok(());
+    }
+    let downgrade = order != Some(Ordering::Greater);
+    if downgrade && !allow_downgrade {
+        let anyway = format!("toodo update --channel {tag} --allow-downgrade{flag}");
+        if order.is_none() {
+            return Err(format!(
+                "cannot tell whether {target} on {tag} is newer than the installed {old}; \
+                 nothing changed; to install {target} anyway, run: {anyway}"
+            ));
+        }
+        println!(
+            "toodo {old} is newer than {target}, the version on {tag}; nothing changed. \
+             To install {target} anyway, run: {anyway}"
+        );
         return Ok(());
     }
     // npm publishes the platform packages after the main one; without its platform
@@ -158,7 +177,8 @@ pub(super) fn update(
     }
     let spec = format!("{PACKAGE}@{target}");
 
-    println!("Updating toodo {old} to {target} ({PACKAGE}@{tag})...");
+    let verb = if downgrade { "Downgrading" } else { "Updating" };
+    println!("{verb} toodo {old} to {target} ({PACKAGE}@{tag})...");
     let status = Command::new(&npm)
         .args(["i", "-g", &spec, "--include=optional"])
         .stdin(Stdio::null())
@@ -191,6 +211,16 @@ pub(super) fn update(
     let changed = format!("toodo {} -> {}", installed.version, new.version);
 
     if !running {
+        // The unit runs copies of the server and the web app, so `toodo start` would
+        // start the old version unless they are refreshed now.
+        if runner == Runner::Systemd {
+            service::install_bundle(&bundle, var).map_err(|cause| {
+                format!(
+                    "updated {changed}, but the service still has the old server: {cause}; \
+                     install the new one with: toodo service install{flag}"
+                )
+            })?;
+        }
         println!(
             "Updated {changed}. toodo-server is not running; start it with: toodo start{flag}"
         );
@@ -213,6 +243,14 @@ pub(super) fn update(
             recovery(runner, &installed.version, flag)
         )),
     }
+}
+
+/// How `version` compares with `installed` by semver precedence (build metadata is
+/// ignored), or `None` when either is not a semver version.
+fn compare_versions(version: &str, installed: &str) -> Option<Ordering> {
+    let version = semver::Version::parse(version).ok()?;
+    let installed = semver::Version::parse(installed).ok()?;
+    Some(version.cmp_precedence(&installed))
 }
 
 /// The version npm resolves `spec` (`name@tag` or `name@version`) to.
@@ -410,6 +448,29 @@ mod tests {
         assert_eq!(Channel::parse("dev"), Some(Channel::Dev));
         assert_eq!(Channel::parse("latest"), Some(Channel::Latest));
         assert_eq!(Channel::parse("beta"), None);
+    }
+
+    #[test]
+    fn versions_compare_by_semver_precedence() {
+        assert_eq!(
+            compare_versions("1.3.2-dev.1", "1.3.2-dev.8"),
+            Some(Ordering::Less)
+        );
+        assert_eq!(
+            compare_versions("1.3.2-dev.11", "1.3.2-dev.9"),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_versions("1.3.2", "1.3.2-dev.11"),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_versions("1.3.1", "1.3.2-dev.1"),
+            Some(Ordering::Less)
+        );
+        assert_eq!(compare_versions("1.10.0", "1.9.9"), Some(Ordering::Greater));
+        assert_eq!(compare_versions("1.3.1+b", "1.3.1"), Some(Ordering::Equal));
+        assert_eq!(compare_versions("next", "1.3.1"), None);
     }
 
     #[test]
