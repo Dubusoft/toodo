@@ -479,7 +479,8 @@ pub struct NewWorkspace {
     /// Omitted: the default of the source (none: manual, local_git: local_merge,
     /// github: pr_merge).
     pub completion: Option<CompletionMode>,
-    /// Omitted: the default of the source (none: none, git sources: herdr).
+    /// Omitted: the default of the source (none: none, git sources: herdr), except that a
+    /// local git workspace defaults to plain when herdr is not running on the server.
     pub runner: Option<Runner>,
     /// Detected from the repository when empty or absent; ignored for source none.
     pub default_base_branch: Option<String>,

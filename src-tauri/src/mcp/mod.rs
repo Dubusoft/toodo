@@ -683,7 +683,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Register a repository on the machine Toodo runs on as a new workspace, as Clone or Open in the Toodo app does: clone clone_url into path, or, without clone_url, open the repository already cloned at path; then open it in herdr (runner herdr). source (github, local_git, or none for a plain directory without git or herdr), completion (pr_merge, local_merge, or manual), and runner (herdr or none) default from the repository: github + pr_merge + herdr with an origin remote, else local_git + local_merge + herdr; combinations that cannot work are rejected naming one that does. Returns the workspace with its id. Call list_workspaces first and reuse a workspace that already has the repository; a path another workspace uses is rejected. Only for repositories the user asked to add to Toodo."
+        description = "Register a repository on the machine Toodo runs on as a new workspace, as Clone or Open in the Toodo app does: clone clone_url into path, or, without clone_url, open the repository already cloned at path; then open it in herdr (runner herdr). source (github, local_git, or none for a plain directory without git or herdr), completion (pr_merge, local_merge, or manual), and runner (herdr or none) default from the repository: github + pr_merge + herdr with an origin remote, else local_git + local_merge + herdr (plain instead of herdr when herdr is not running on the server); combinations that cannot work are rejected naming one that does. Returns the workspace with its id. Call list_workspaces first and reuse a workspace that already has the repository; a path another workspace uses is rejected. Only for repositories the user asked to add to Toodo."
     )]
     async fn create_workspace(
         &self,
@@ -1456,9 +1456,11 @@ mod tests {
         Ok(format!("{posix}\n"))
     }
 
-    /// `herdr workspace list` without the repository, then `herdr workspace create`.
+    /// `herdr status --json` of a running server, then `herdr workspace list` without the
+    /// repository, then `herdr workspace create`.
     fn herdr_opens_a_new_workspace() -> Scripted {
         vec![
+            Ok(r#"{"server":{"running":true}}"#.to_owned()),
             Ok(r#"{"id":"cli:workspace:list","result":{"workspaces":[]}}"#.to_owned()),
             Ok(
                 r#"{"id":"cli:workspace:create","result":{"workspace":{"workspace_id":"w9"}}}"#

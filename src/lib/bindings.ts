@@ -723,7 +723,10 @@ export type NewWorkspace = {
 	 *  github: pr_merge).
 	 */
 	completion: CompletionMode | null,
-	/**  Omitted: the default of the source (none: none, git sources: herdr). */
+	/**
+	 *  Omitted: the default of the source (none: none, git sources: herdr), except that a
+	 *  local git workspace defaults to plain when herdr is not running on the server.
+	 */
 	runner: Runner | null,
 	/**  Detected from the repository when empty or absent; ignored for source none. */
 	defaultBaseBranch: string | null,

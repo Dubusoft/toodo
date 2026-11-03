@@ -583,7 +583,8 @@ path deletes journal history.
     it is running, and its version, and whether `claude` and `codex` are each on the server's
     `PATH`. The web app shows it in a Runners section of Settings; the new-workspace runner
     step prefers `plain` when herdr is missing, and the runs panel disables an agent whose
-    CLI is missing and refreshes the open run while it is active.
+    CLI is missing and refreshes the open run while it is active. The server itself defaults
+    an omitted runner of a local git workspace to `plain` when herdr is not running.
   - Startup health check: `herdr` on `PATH` and `herdr status --json` reports
     `server.running`. herdr 0.9.3 has no `ping` command.
   - Commands for SSH workspaces run against the remote herdr server with
