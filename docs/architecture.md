@@ -423,16 +423,34 @@ per call: a `TaskWorkspaceRuntime` for runtime workspaces and a `RunLauncher` fo
 - Starting, resuming, and restoring a task open its runtime workspace through
   `open_workspace`. herdr creates or reopens the worktree, then the task records the handle
   and the triggers open the record. The service returns the task together with that record.
+  Starting a task ends the runs still active from before it was paused as `exited`.
+- Opening a started task whose herdr workspace herdr no longer has (focus, panes) goes
+  through `reopen_workspace`: herdr opens the kept checkout in a new herdr workspace, and
+  the new handle opens the next generation of the record. The pane commands read the herdr
+  workspace from the open record.
+- Closing a paused task's herdr workspace, completing, concluding, and completing a task
+  merged with another go through `close_workspace`. It closes the herdr workspace of the
+  open record, then runs the storage change that forgets the handle under the same lock,
+  and ends the active runs of the closed record as `exited`.
 - Deleting a task that still has a worktree goes through `remove_workspace`. It removes the
   checkout through the herdr workspace of the open record, or reopens the checkout first
   when there is no open record or herdr no longer has it.
-- The herdr `RunLauncher` opens each run in a new tab of the run's herdr workspace, labelled
-  `toodo-run-<request key>`, and types the run's command into the tab's pane. The pane ID is
-  the receipt. A retry finds the tab by its label and adopts it instead of opening another.
-  No command launches runs yet.
+- Creating or moving a Toodo workspace opens its repository in herdr through
+  `open_repository`. A move saves the workspace through `move_workspace`: moving to another
+  host makes its tasks forget their herdr handles, which closes their records, and their
+  active runs become `unknown`, since Toodo no longer sees the old host's herdr.
+- The herdr `RunLauncher` runs a `RunCommand`. `NewTab` opens a new tab of the run's herdr
+  workspace, labelled `toodo-run-<request key>`, and types the argument vector into the
+  tab's pane; a retry finds the tab by its label and adopts it instead of opening another.
+  `InPane` types a shell line as is into an existing pane, which nothing marks, so a launch
+  whose response was lost cannot be adopted. The pane ID is the receipt.
+- The MCP `start_task` tool runs `agent_command` through `start_run` as an `InPane` writer
+  run in the first pane of the task's open runtime workspace, with request key
+  `mcp-agent-<task>-<n>`.
 
-Workspace creation and moves, closing workspaces, completion, and pane commands still write
-the herdr handles directly in `commands/`, and the triggers keep the records in step.
+The herdr event reconciliation (a worktree removed or opened again in herdr) still writes
+the herdr handles directly in `commands/events.rs`, and the triggers keep the records in
+step.
 
 ## Components
 
