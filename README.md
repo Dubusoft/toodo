@@ -108,6 +108,19 @@ Early bootstrap. Setup instructions will be added with the project scaffold.
 
 All repository content (docs, code, comments, commits, PRs) is written in English.
 
+## Contributing
+
+Outside contributions are accepted under the [Contributor License Agreement](CLA.md).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to sign it in a pull request.
+
 ## License
 
-Toodo is released under the [MIT License](LICENSE).
+Copyright (C) 2026 dev-bokdong
+
+Toodo is licensed under the [GNU Affero General Public License v3.0 only](LICENSE)
+(`AGPL-3.0-only`). If you run a modified Toodo for users over a network, the AGPL requires
+you to offer those users the source of your modified version.
+
+Versions released before this license change, up to and including v1.3.1, were released
+under the MIT License and remain available under it. Releases after v1.3.1 are
+`AGPL-3.0-only`.
