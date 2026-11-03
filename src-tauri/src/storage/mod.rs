@@ -15,6 +15,7 @@ mod devices;
 mod import;
 mod migrations;
 mod push;
+mod runtime;
 mod search;
 mod tasks;
 mod workspaces;
@@ -32,12 +33,14 @@ use crate::domain::criteria::{CheckKind, CriterionId};
 use crate::domain::dag::{BlockingDependency, DependencyError};
 use crate::domain::device::DeviceId;
 use crate::domain::model::{TaskId, TaskResolution, WorkspaceId};
+use crate::domain::runtime::{RunId, RunState};
 use crate::domain::status::TransitionError;
 
 pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
 pub use criteria::{CriterionCheck, CriterionEdit};
 pub use import::ImportSummary;
 pub use push::NewPushSubscription;
+pub use runtime::{NewRun, Reservation, RunEvent, RunOperation, RuntimeWorkspace, TaskRun};
 pub use search::TaskSearch;
 pub use tasks::{AddedDependencies, DependencyChange, NewTask, PauseRule};
 pub use workspaces::NewWorkspace;
@@ -166,6 +169,19 @@ pub enum StorageError {
         expected: TaskId,
         found: TaskId,
     },
+    RunNotFound(RunId),
+    /// Only one writer run is active per checkout; `run` of `task` is it.
+    CheckoutHasActiveWriter {
+        checkout: String,
+        run: RunId,
+        task: TaskId,
+    },
+    /// A run cannot move from its state to the requested one.
+    RunTransition {
+        run: RunId,
+        from: RunState,
+        to: RunState,
+    },
     /// A stored value cannot be converted back into the domain model.
     InvalidData(String),
     /// A file to restore from is not a readable Toodo database.
@@ -263,6 +279,22 @@ impl fmt::Display for StorageError {
             Self::ActivityTaskMismatch { expected, found } => write!(
                 f,
                 "activity of task {found} cannot be stored for task {expected}; record it for task {found}"
+            ),
+            Self::RunNotFound(id) => write!(
+                f,
+                "run {id} does not exist; list the runs of its task to find the run to use"
+            ),
+            Self::CheckoutHasActiveWriter {
+                checkout,
+                run,
+                task,
+            } => write!(
+                f,
+                "checkout {checkout} already has an active writer, run {run} of task {task}; stop or finish run {run} of task {task} first, or start this run as an observer or in its own checkout"
+            ),
+            Self::RunTransition { run, from, to } => write!(
+                f,
+                "run {run} is {from} and cannot become {to}; read it with its current state before changing it"
             ),
             Self::InvalidData(message) => write!(f, "stored data is invalid: {message}"),
             Self::InvalidBackup(message) => write!(f, "invalid backup {message}"),

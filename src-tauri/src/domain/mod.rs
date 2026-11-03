@@ -13,6 +13,7 @@ pub mod plan;
 pub mod push;
 pub mod remote;
 pub mod review;
+pub mod runtime;
 pub mod slug;
 pub mod ssh_config;
 pub mod status;
