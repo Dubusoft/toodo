@@ -38,11 +38,14 @@ const missingHerdr: HerdrHealth = {
   version: null,
   message: "herdr was not found on the server's PATH; install herdr and start it for herdr workspaces.",
 };
+/** Why listing the machines saved in herdr fails; `null` while it succeeds. */
+let machinesError: Error | null = null;
 
 vi.mock("@/lib/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/queries")>()),
   useWorkspaces: () => query(workspaces),
-  useHerdrMachines: () => query([]),
+  useHerdrMachines: () =>
+    machinesError === null ? query([]) : { data: undefined, isPending: false, isError: true, error: machinesError },
   useHomeDirectory: () => query("/home/me"),
   useDirectories: () => query({ path: "/home/me", directories: [] }),
   useRunnerHealth: () => (health === undefined ? { data: undefined, isPending: true, isError: false } : query(health)),
@@ -53,6 +56,7 @@ vi.mock("@/lib/queries", async (importOriginal) => ({
 beforeEach(() => {
   workspaces = [];
   health = ready;
+  machinesError = null;
   mutation.mutate.mockClear();
 });
 
@@ -379,6 +383,37 @@ describe("Without herdr running on this server", () => {
     expect(option(dialog, "herdr")).toBeChecked();
     expect(option(dialog, "herdr")).not.toHaveAccessibleDescription(/not running/);
     expect(option(dialog, runnerLabels.plain)).toBeDisabled();
+  });
+});
+
+describe("Herdr machines that cannot be listed", () => {
+  it("notes instead of alerting that there are no SSH machines while herdr is not installed", () => {
+    health = { ...ready, herdr: missingHerdr };
+    machinesError = new Error(
+      "failed to run herdr (is it installed and on PATH?): No such file or directory (os error 2)",
+    );
+    render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Failed to list herdr machines/)).not.toBeInTheDocument();
+    expect(screen.getByText(/^herdr is not installed on this server/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
+    expect(screen.getByRole("region", { name: "Add machine" })).toHaveTextContent(/^Install herdr on the server first/);
+  });
+
+  it("alerts while herdr is installed, or before the server has said whether it is", () => {
+    machinesError = new Error("herdr machine list: connection refused");
+    for (const answer of [{ ...ready, herdr: stoppedHerdr }, undefined]) {
+      health = answer;
+      const { unmount } = render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Failed to list herdr machines: herdr machine list: connection refused",
+      );
+      expect(screen.queryByText(/herdr is not installed on this server/)).not.toBeInTheDocument();
+      unmount();
+    }
   });
 });
 

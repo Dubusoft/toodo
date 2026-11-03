@@ -167,6 +167,8 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
   const reach = useSyncExternalStore(subscribeReachability, reachability);
   const serverDown = reach === "unreachable" || reach === "retrying";
   const herdrMachines = useHerdrMachines();
+  // Without herdr on the server there are no SSH machines, so failing to list them is no error.
+  const herdrMissing = useRunnerHealth().data?.herdr.installed === false;
   const [adding, setAdding] = useState<{ machine: MachineKey } | null>(null);
   // The new workspace dialog gives the focus back to the button that opened it.
   const opener = useRef<HTMLElement | null>(null);
@@ -197,12 +199,18 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
         </Button>
       </div>
 
-      {addingMachine && <AddMachineHelp onClose={() => setAddingMachine(false)} />}
-      {herdrMachines.isError && (
-        <p role="alert" className="text-xs text-destructive">
-          Failed to list herdr machines: {herdrMachines.error.message}
-        </p>
-      )}
+      {addingMachine && <AddMachineHelp herdrMissing={herdrMissing} onClose={() => setAddingMachine(false)} />}
+      {herdrMachines.isError &&
+        (herdrMissing ? (
+          <p className="text-xs text-muted-foreground">
+            herdr is not installed on this server, so there are no SSH machines; workspaces on Local can use runner{" "}
+            {runnerLabels.plain}.
+          </p>
+        ) : (
+          <p role="alert" className="text-xs text-destructive">
+            Failed to list herdr machines: {herdrMachines.error.message}
+          </p>
+        ))}
       {workspaces.isPending && !serverDown && (
         <p className="text-sm text-muted-foreground">Loading workspaces...</p>
       )}
@@ -471,7 +479,7 @@ export function MoveWorkspaceForm({ workspace, onClose }: { workspace: Workspace
 const ADD_MACHINE_COMMAND = "herdr machine add <host>";
 
 /** The server cannot open a terminal for `herdr machine add`, so the user runs it on the server. */
-function AddMachineHelp({ onClose }: { onClose: () => void }) {
+function AddMachineHelp({ herdrMissing, onClose }: { herdrMissing: boolean; onClose: () => void }) {
   const [notice, setNotice] = useState<string | null>(null);
 
   async function copy() {
@@ -490,6 +498,7 @@ function AddMachineHelp({ onClose }: { onClose: () => void }) {
       onKeyDown={escapeCloses(onClose)}
     >
       <p className="text-xs text-muted-foreground">
+        {herdrMissing && "Install herdr on the server first; SSH machines need it. "}
         herdr asks questions in a terminal, which the Toodo server cannot open. Run this command in a terminal on the
         server, replacing <code>&lt;host&gt;</code> with an SSH host from its ~/.ssh/config, then reload the machine
         list here.
