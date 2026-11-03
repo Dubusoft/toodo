@@ -4,8 +4,8 @@
 //! Imported rows get IDs after every ID this database has used, so nothing here changes;
 //! references between imported rows move along. Devices, push subscriptions, connected
 //! OAuth apps, and the lead chat of the other database are not imported: they belong to
-//! the server that kept them. Tasks forget their herdr workspace, whose ID only meant
-//! something to the other machine's herdr.
+//! the server that kept them. Tasks forget their herdr workspace: runtime records are not
+//! imported, since their IDs only meant something to the other machine's herdr.
 
 use std::time::Duration;
 
@@ -54,7 +54,6 @@ const TABLES: &[(&str, &[Column])] = &[
             ("id", Some("id + {t}")),
             ("workspace_id", Some("workspace_id + {w}")),
             ("merged_with_task_id", Some("merged_with_task_id + {t}")),
-            ("herdr_workspace_id", Some("NULL")),
         ],
     ),
     (
@@ -227,7 +226,9 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::domain::model::{NoteKind, TaskId, TaskType, Workspace, WorkspaceLocation};
+    use crate::domain::model::{
+        NoteKind, TaskId, TaskType, Workspace, WorkspaceId, WorkspaceLocation,
+    };
     use crate::domain::path::{PosixPath, WindowsPath};
     use crate::storage::{NewTask, NewWorkspace, TaskSearch, stage_backup};
 
@@ -283,7 +284,6 @@ mod tests {
         desktop
             .add_task_note(first, NoteKind::Progress, "Schema drafted")
             .unwrap();
-        desktop.set_task_herdr_workspace(first, "w1").unwrap();
         desktop
             .conn
             .execute_batch(
@@ -309,8 +309,8 @@ mod tests {
                  ALTER TABLE workspaces DROP COLUMN runner;
                  ALTER TABLE workspaces DROP COLUMN axes_detected;
                  DROP TABLE task_activity;
-                 DROP TRIGGER runtime_workspaces_task_inserted;
-                 DROP TRIGGER runtime_workspaces_task_updated;
+                 ALTER TABLE tasks ADD COLUMN herdr_workspace_id TEXT;
+                 UPDATE tasks SET herdr_workspace_id = 'w1' WHERE title = 'Add storage';
                  DROP TABLE run_operations;
                  DROP TABLE run_events;
                  DROP TABLE task_runs;
@@ -498,7 +498,8 @@ mod tests {
 
         assert_eq!(count(&server, "SELECT count(*) FROM tasks"), 1);
         assert_eq!(count(&server, "SELECT count(*) FROM runtime_workspaces"), 0);
-        assert_eq!(server.runtime_shadow_mismatches().unwrap(), []);
+        let imported = server.list_tasks(WorkspaceId(1)).unwrap();
+        assert_eq!(imported[0].herdr_workspace_id, None);
     }
 
     #[test]

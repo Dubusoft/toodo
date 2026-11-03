@@ -958,6 +958,39 @@ pub(super) const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX oauth_tokens_by_grant ON oauth_tokens(grant_id);
     ",
+    // Version 31: runtime workspaces are the source of truth for the herdr workspace of a
+    // task. The open rows are brought in line with the herdr handles on `tasks` once more
+    // (the shadow triggers kept them so), then the triggers and the handle column go. The
+    // checkout path and branch stay on `tasks`: they outlive the herdr workspace.
+    r"
+    UPDATE runtime_workspaces
+    SET state = 'closed', closed_at = CAST(strftime('%s', 'now') AS INTEGER)
+    WHERE state = 'open' AND runner_kind = 'herdr'
+      AND NOT EXISTS (SELECT 1 FROM tasks t
+                      WHERE t.id = runtime_workspaces.task_id
+                        AND t.herdr_workspace_id = runtime_workspaces.provider_workspace_ref);
+    UPDATE runtime_workspaces
+    SET checkout_path = (SELECT t.worktree_path FROM tasks t
+                         WHERE t.id = runtime_workspaces.task_id),
+        branch = (SELECT t.branch FROM tasks t WHERE t.id = runtime_workspaces.task_id)
+    WHERE state = 'open';
+    INSERT INTO runtime_workspaces (task_id, host_ref, runner_kind, provider_workspace_ref,
+        checkout_path, branch, generation, state, opened_at)
+    SELECT t.id,
+        CASE w.kind WHEN 'ssh' THEN 'ssh:' || w.herdr_machine ELSE 'local' END,
+        'herdr', t.herdr_workspace_id, t.worktree_path, t.branch,
+        (SELECT coalesce(max(r.generation), 0) + 1
+         FROM runtime_workspaces r WHERE r.task_id = t.id),
+        'open', CAST(strftime('%s', 'now') AS INTEGER)
+    FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
+    WHERE t.herdr_workspace_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM runtime_workspaces r
+                      WHERE r.task_id = t.id AND r.state = 'open');
+
+    DROP TRIGGER runtime_workspaces_task_inserted;
+    DROP TRIGGER runtime_workspaces_task_updated;
+    ALTER TABLE tasks DROP COLUMN herdr_workspace_id;
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -1131,15 +1164,19 @@ mod tests {
             "task_criteria",
             "pull_request_snapshots",
         ];
+        // The herdr handle moves from `tasks` to the runtime workspaces (version 31).
         let rows = |conn: &Connection, table: &str| {
             let mut statement = conn
                 .prepare(&format!("SELECT * FROM {table} ORDER BY 1"))
                 .unwrap();
-            let columns = statement.column_count();
+            let columns: Vec<usize> = (0..statement.column_count())
+                .filter(|&column| statement.column_name(column).unwrap() != "herdr_workspace_id")
+                .collect();
             statement
                 .query_map([], |row| {
-                    (0..columns)
-                        .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                    columns
+                        .iter()
+                        .map(|&column| row.get::<_, rusqlite::types::Value>(column))
                         .collect::<rusqlite::Result<Vec<_>>>()
                 })
                 .unwrap()
@@ -1156,6 +1193,15 @@ mod tests {
         // Then every field and reference survives, and new resolutions and search work.
         assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
         assert_eq!(tables.map(|table| rows(&conn, table)), before);
+        let handle: String = conn
+            .query_row(
+                "SELECT provider_workspace_ref FROM runtime_workspaces
+                 WHERE task_id = 3 AND state = 'open'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(handle, "w3");
         conn.execute(
             "INSERT INTO tasks (workspace_id, type, title, status, resolution, completion_note)
              VALUES (1, 'chore', 'Completed configuration', 'done', 'completed', 'Deployed')",
@@ -2573,5 +2619,124 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn version_31_keeps_herdr_handles_in_runtime_workspaces_and_drops_the_task_column() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..30] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 30).unwrap();
+        // Tasks 1 to 3 got their open rows from the shadow triggers; the rows of tasks 3
+        // to 5 were then changed behind them, so they disagree with the handles on `tasks`.
+        conn.execute_batch(
+            "INSERT INTO workspaces (name, kind, path, herdr_machine, default_base_branch)
+                VALUES ('remote', 'ssh', '/srv/repo', 'devbox', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status, branch, worktree_path,
+                 herdr_workspace_id)
+                VALUES (1, 'feat', 'Open', 'in_progress', 'feat/open-1', '/wt/open-1', 'w1'),
+                       (1, 'feat', 'Lost row', 'in_progress', 'feat/lost-2', '/wt/lost-2', 'w2'),
+                       (1, 'feat', 'Other ref', 'in_progress', 'feat/other-3', '/wt/other-3', 'w3'),
+                       (1, 'feat', 'Paused', 'planned', 'feat/paused-4', '/wt/paused-4', NULL),
+                       (1, 'feat', 'Moved', 'in_progress', 'feat/moved-5', '/wt/moved-5', 'w5');
+             DELETE FROM runtime_workspaces WHERE task_id = 2;
+             UPDATE runtime_workspaces SET provider_workspace_ref = 'w-old' WHERE task_id = 3;
+             INSERT INTO runtime_workspaces (task_id, host_ref, runner_kind,
+                 provider_workspace_ref, checkout_path, branch, generation, state, opened_at)
+                VALUES (4, 'ssh:devbox', 'herdr', 'w4', '/wt/paused-4', 'feat/paused-4', 1,
+                    'open', 1);
+             UPDATE runtime_workspaces SET checkout_path = '/elsewhere' WHERE task_id = 5;",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let handle_column: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('tasks')
+                 WHERE name = 'herdr_workspace_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(handle_column, 0);
+        let triggers: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'trigger' AND name LIKE 'runtime_workspaces%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(triggers, 0);
+        type Row = (
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            String,
+        );
+        let rows: Vec<Row> = conn
+            .prepare(
+                "SELECT task_id, provider_workspace_ref, host_ref, checkout_path, branch,
+                     generation, state
+                 FROM runtime_workspaces ORDER BY task_id, generation",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let row = |task, reference: &str, path: &str, branch: &str, generation, state: &str| {
+            (
+                task,
+                reference.to_owned(),
+                "ssh:devbox".to_owned(),
+                Some(path.to_owned()),
+                Some(branch.to_owned()),
+                generation,
+                state.to_owned(),
+            )
+        };
+        assert_eq!(
+            rows,
+            [
+                row(1, "w1", "/wt/open-1", "feat/open-1", 1, "open"),
+                row(2, "w2", "/wt/lost-2", "feat/lost-2", 1, "open"),
+                row(3, "w-old", "/wt/other-3", "feat/other-3", 1, "closed"),
+                row(3, "w3", "/wt/other-3", "feat/other-3", 2, "open"),
+                row(4, "w4", "/wt/paused-4", "feat/paused-4", 1, "closed"),
+                row(5, "w5", "/wt/moved-5", "feat/moved-5", 1, "open"),
+            ]
+        );
+        let kept: Vec<(Option<String>, Option<String>)> = conn
+            .prepare("SELECT branch, worktree_path FROM tasks ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            kept[3],
+            (
+                Some("feat/paused-4".to_owned()),
+                Some("/wt/paused-4".to_owned())
+            )
+        );
+        assert_eq!(kept.len(), 5);
     }
 }

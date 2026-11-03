@@ -3,10 +3,9 @@
 //! Toodo workspace, which opens its repository and closes the runtime workspaces a move
 //! leaves behind.
 //!
-//! The herdr handle is still written to the task (`herdr_workspace_id`, `worktree_path`),
-//! and the migration-29 triggers shadow-write it into `runtime_workspaces`. Going through
-//! these methods keeps every such write in one place, so the record can become the source
-//! of truth without touching the commands again.
+//! The herdr workspace is recorded in `runtime_workspaces`, which tasks read their herdr
+//! workspace from; the checkout path stays on the task. Going through these methods keeps
+//! every such write in one place.
 
 use std::sync::Mutex;
 
