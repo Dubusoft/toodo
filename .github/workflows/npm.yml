@@ -7,9 +7,14 @@ name: npm
 # Two channels:
 # - dev: every push to dev publishes a prerelease "<next patch>-dev.<run number>" under the
 #   dist-tag "dev" (npm install -g @dubusoft/toodo@dev).
-# - latest: the Release workflow calls this workflow after a push to main and publishes the
-#   package.json version under the dist-tag "latest". A version that is already on the
-#   registry is skipped, so re-running finishes a half-done publish.
+# - latest: a run of this workflow on main with dist-tag latest publishes the package.json
+#   version under the dist-tag "latest". The Release workflow starts that run after a push
+#   to main (it can also be started by hand). A version that is already on the registry is
+#   skipped, so re-running finishes a half-done publish.
+#
+# Trusted publishing checks the workflow file that starts the run. Release therefore
+# dispatches this workflow instead of calling it with "uses:": a called workflow runs under
+# the caller's identity (release.yml), which the npm trusted publisher does not match.
 #
 # Publishing authenticates with the NPM_TOKEN secret when it is set, otherwise with npm
 # trusted publishing (OIDC) when it is configured on npmjs.com for all three packages
@@ -23,6 +28,14 @@ on:
       - "docs/**"
       - "**.md"
   workflow_dispatch:
+    inputs:
+      dist-tag:
+        description: Channel to publish to, dev or latest
+        type: choice
+        options:
+          - dev
+          - latest
+        default: dev
   workflow_call:
     inputs:
       dist-tag:
@@ -51,8 +64,8 @@ jobs:
       - name: Compute the version, dist-tag, and publish mode
         id: plan
         env:
-          # A push to dev and a manual run on dev publish the dev channel; the Release
-          # workflow passes "latest".
+          # A push to dev and a manual run on dev publish the dev channel; a run on main
+          # started by the Release workflow (or by hand) passes "latest".
           INPUT_TAG: ${{ inputs.dist-tag }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -62,6 +75,10 @@ jobs:
             dev|latest) ;;
             *) echo "::error::dist-tag must be dev or latest, got '$tag'; rerun with dist-tag dev or latest"; exit 1 ;;
           esac
+          if [ "$tag" = latest ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::the latest channel publishes from main; rerun this workflow on main with dist-tag latest"
+            exit 1
+          fi
           base=$(jq -r .version package.json)
           if [ "$tag" = latest ]; then
             version="$base"
