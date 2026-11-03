@@ -206,6 +206,7 @@ impl From<StorageError> for CommandError {
             | StorageError::PushSubscriptionNotFound(_)
             | StorageError::DependencyNotFound { .. }
             | StorageError::RelationNotFound { .. }
+            | StorageError::RunNotFound(_)
             | StorageError::Dependency(DependencyError::UnknownTask(_)) => {
                 CommandErrorKind::NotFound
             }
@@ -216,7 +217,9 @@ impl From<StorageError> for CommandError {
             | StorageError::DependenciesNotDone { .. }
             | StorageError::PrerequisiteOfDoneTask { .. }
             | StorageError::CriteriaOfDoneTask(_)
-            | StorageError::AutomaticCriterion { .. } => CommandErrorKind::Rejected,
+            | StorageError::AutomaticCriterion { .. }
+            | StorageError::CheckoutHasActiveWriter { .. }
+            | StorageError::RunTransition { .. } => CommandErrorKind::Rejected,
             StorageError::WorktreePathMismatch(_)
             | StorageError::SelfRelation(_)
             | StorageError::CommitTaskMismatch { .. }

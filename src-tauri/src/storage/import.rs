@@ -111,6 +111,12 @@ pub(super) const SKIPPED: &[&str] = &[
     "chat_messages",
     "task_results",
     "task_search",
+    // Runtime handles and runs belong to the other server's hosts.
+    "runtime_workspaces",
+    "agent_conversations",
+    "task_runs",
+    "run_events",
+    "run_operations",
 ];
 
 impl Storage {
@@ -299,6 +305,13 @@ mod tests {
                  ALTER TABLE workspaces DROP COLUMN runner;
                  ALTER TABLE workspaces DROP COLUMN axes_detected;
                  DROP TABLE task_activity;
+                 DROP TRIGGER runtime_workspaces_task_inserted;
+                 DROP TRIGGER runtime_workspaces_task_updated;
+                 DROP TABLE run_operations;
+                 DROP TABLE run_events;
+                 DROP TABLE task_runs;
+                 DROP TABLE agent_conversations;
+                 DROP TABLE runtime_workspaces;
                  PRAGMA user_version = 25;",
             )
             .unwrap();
@@ -447,6 +460,38 @@ mod tests {
                 (TaskId(2), "Add sync".to_owned())
             ]
         );
+    }
+
+    /// Imported tasks forget their herdr workspace, so they get no runtime workspace;
+    /// the runtime records of the other server stay behind.
+    #[test]
+    fn imported_tasks_have_no_runtime_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("other.sqlite3");
+        {
+            let mut other = Storage::open(&source).unwrap();
+            let workspace = add_workspace(
+                &mut other,
+                "site",
+                WorkspaceLocation::Local {
+                    path: PosixPath::parse("/srv/site").unwrap().into(),
+                },
+            );
+            let task = add_task(&mut other, &workspace, "Started");
+            let checkout = crate::domain::naming::TaskCheckout {
+                path: PosixPath::parse("/wt/started").unwrap().into(),
+                branch: "feat/started".to_owned(),
+            };
+            other.start_task(task, &checkout, "w1").unwrap();
+            assert_eq!(count(&other, "SELECT count(*) FROM runtime_workspaces"), 1);
+        }
+        let mut server = Storage::open_in_memory().unwrap();
+
+        server.import(&stage_backup(&source).unwrap()).unwrap();
+
+        assert_eq!(count(&server, "SELECT count(*) FROM tasks"), 1);
+        assert_eq!(count(&server, "SELECT count(*) FROM runtime_workspaces"), 0);
+        assert_eq!(server.runtime_shadow_mismatches().unwrap(), []);
     }
 
     /// A table a later migration adds has to be imported or skipped on purpose.
