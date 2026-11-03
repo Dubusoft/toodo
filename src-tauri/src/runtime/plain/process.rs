@@ -264,9 +264,6 @@ pub(super) fn manage(mut managed: ManagedRun) {
                     "observation_lost",
                     "SSH observation was lost; reconcile the run once the host is reachable".into(),
                 )];
-            } else if managed.remote.is_some() && outcome.state == RunState::Settled {
-                // A completed remote command has exited; it cannot accept further input.
-                outcome.state = RunState::Exited;
             }
             let mut storage = lock(&managed.storage);
             let run = storage
@@ -287,6 +284,12 @@ pub(super) fn manage(mut managed: ManagedRun) {
             }
             Ok(storage.finish_run(run.id, outcome.state)?)
         })();
+        // An agent that may still run keeps its credentials until the run ends.
+        if let (Some(remote), Ok(run)) = (&managed.remote, &result)
+            && !run.state.is_active()
+        {
+            remote.remove_credentials(&managed.storage, run.id);
+        }
         *managed.end.result.lock().unwrap() = Some(result);
         managed.end.changed.notify_all();
     });

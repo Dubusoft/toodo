@@ -10,6 +10,9 @@ use crate::domain::runtime::RunId;
 /// Prefix for an argv entry naming a staged file, resolved on the execution host.
 pub const RUN_FILE_PREFIX: &str = "{run}/";
 
+/// The remote command that succeeds only where util-linux `setsid --wait` works.
+pub const SETSID_CHECK: &str = "command -v setsid >/dev/null 2>&1 && setsid --wait true";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostOs {
     Posix,
@@ -229,6 +232,33 @@ if ($process -and $process.StartTime.ToFileTimeUtc().ToString() -eq $record[1]) 
 ", windows_directory(run)
             ),
         })
+    }
+
+    /// Removes the staged token and MCP config, keeping the brief, logs, pid, and exit.
+    pub fn remove_credentials(&self, run: RunId) -> Invocation {
+        self.script(match self.os() {
+            HostOs::Posix => format!(
+                "{}rm -f -- \"$run\"/token \"$run\"/mcp.json\n",
+                posix_directory(run)
+            ),
+            HostOs::Windows => format!(
+                "{}foreach ($name in 'token', 'mcp.json') {{ $file = Join-Path $run $name; if (Test-Path -LiteralPath $file) {{ Remove-Item -LiteralPath $file -Force }} }}\n",
+                windows_directory(run)
+            ),
+        })
+    }
+
+    /// Checks that a POSIX SSH host has util-linux `setsid --wait`, which the plain
+    /// launch needs to give the wrapper its own session. `None` when no check applies.
+    pub fn check_launcher(&self) -> Option<Invocation> {
+        matches!(
+            self,
+            Self::Ssh {
+                os: HostOs::Posix,
+                ..
+            }
+        )
+        .then(|| self.remote(SETSID_CHECK.into()))
     }
 
     fn tmux(&self, args: Vec<String>) -> Result<Invocation, &'static str> {

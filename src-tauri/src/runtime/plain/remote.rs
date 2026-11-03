@@ -4,14 +4,15 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 
 use super::adapter::{MCP_CONFIG_FILE, MCP_TOKEN_ENV, MCP_URL_ENV};
-use super::{RunnerError, adapter, process};
+use super::{RunnerError, adapter, lock, process};
 use crate::adapters::git::Invocation;
 use crate::domain::model::{HostPath, MachineLabel};
 use crate::domain::runtime::{HostRef, RunId};
 use crate::runtime::host::{Host, HostOs, Probe, RUN_FILE_PREFIX, parse_probe};
+use crate::storage::Storage;
 
 #[derive(Clone)]
 pub(super) struct Remote {
@@ -157,6 +158,62 @@ impl Remote {
             _ => Err(RunnerError(
                 "remote process identity did not match; reconcile the run before trying to stop it again".into()
             )),
+        }
+    }
+
+    fn target(&self) -> &str {
+        match &self.host {
+            Host::Ssh { target, .. } => target.as_str(),
+            Host::Local => unreachable!(),
+        }
+    }
+
+    /// Fails with the next step when a POSIX host lacks util-linux `setsid --wait`.
+    pub fn check_launcher(&self) -> Result<(), RunnerError> {
+        let Some(check) = self.host.check_launcher() else {
+            return Ok(());
+        };
+        let status = self
+            .command(check)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|_| self.error("check for setsid"))?;
+        match status.code() {
+            Some(0) => Ok(()),
+            Some(255) | None => Err(self.error("check for setsid")),
+            Some(_) => Err(RunnerError(format!(
+                "{} has no util-linux `setsid --wait`, which plain runs over SSH need; install \
+                 util-linux setsid on the host, or use runner herdr for this workspace",
+                self.target()
+            ))),
+        }
+    }
+
+    /// Removes the staged token and MCP config of an ended run. A failure is recorded as
+    /// a run event and never changes the outcome.
+    pub fn remove_credentials(&self, storage: &Mutex<Storage>, run: RunId) {
+        if self
+            .output(
+                self.host.remove_credentials(run),
+                "remove staged credentials",
+            )
+            .is_ok()
+        {
+            return;
+        }
+        if let Err(error) = lock(storage).append_run_event(
+            run,
+            "credential_cleanup_failed",
+            Some(
+                "could not remove staged credentials; restore connectivity and remove token \
+                 and mcp.json from the run directory",
+            ),
+        ) {
+            eprintln!(
+                "toodo: could not record the credential cleanup failure of run {run}: {error}"
+            );
         }
     }
 

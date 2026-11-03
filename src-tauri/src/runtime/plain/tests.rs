@@ -538,6 +538,9 @@ shift
 test "$1" = test-host || exit 254
 shift
 case "$1" in
+    "command -v setsid "*)
+        test ! -f "$HOME/no-setsid" || exit 1
+        ;;
     "exec setsid "*)
         if [ -f "$HOME/disconnect" ]; then
             sh -c "$1" </dev/null > "$HOME/remote.out" 2> "$HOME/remote.err" &
@@ -625,26 +628,29 @@ printf '%s\n' "$TOODO_MCP_TOKEN" >&2
         run.provider_run_ref,
         Some(format!("ssh:test-host:{}", run.id))
     );
-    fixture.end(run.id, RunState::Exited, &["result"]);
+    fixture.end(run.id, RunState::Settled, &["result"]);
     let remote_dir = fixture
         .dir
         .path()
         .join(".toodo/runs")
         .join(run.id.to_string());
-    assert_eq!(fs::read_to_string(remote_dir.join("token")).unwrap(), TOKEN);
     assert_eq!(
         fs::metadata(&remote_dir).unwrap().permissions().mode() & 0o777,
         0o700
     );
-    assert_eq!(
-        fs::metadata(remote_dir.join("token"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
-    let config = fs::read_to_string(remote_dir.join("mcp.json")).unwrap();
+    // The ended run's staged credentials are gone; its brief, logs, and exit are kept.
+    assert!(!remote_dir.join("token").exists());
+    assert!(!remote_dir.join("mcp.json").exists());
+    assert!(remote_dir.join("brief.md").exists());
+    let config = fs::read_to_string(
+        fixture
+            .dir
+            .path()
+            .join("runs")
+            .join(run.id.to_string())
+            .join("mcp.json"),
+    )
+    .unwrap();
     assert!(config.contains("${TOODO_MCP_TOKEN}"));
     assert!(config.contains("${TOODO_MCP_URL}"));
     assert!(!config.contains(TOKEN));
@@ -656,6 +662,24 @@ printf '%s\n' "$TOODO_MCP_TOKEN" >&2
     assert!(!format!("{log:?}").contains(TOKEN));
     assert!(!format!("{:?}", lock(&fixture.storage).run_events(run.id).unwrap()).contains(TOKEN));
     assert_eq!(fs::read_to_string(remote_dir.join("exit")).unwrap(), "0\n");
+}
+
+#[test]
+fn remote_launch_without_setsid_names_the_next_step_before_staging() {
+    let mut fixture = Fixture::new(RESULT);
+    fixture.enable_remote();
+    fs::write(fixture.dir.path().join("no-setsid"), "").unwrap();
+    let mut request = fixture.request("remote", AgentAdapter::Claude, false, 60);
+    request.host = HostRef::Ssh("test-host".into());
+    let error = RuntimeService
+        .start_run(&fixture.storage, &fixture.runner, request)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("install util-linux setsid"), "{error}");
+    assert!(error.contains("runner herdr"), "{error}");
+    let argv = fs::read_to_string(fixture.dir.path().join("ssh-argv")).unwrap();
+    assert!(!argv.contains("exec setsid"), "{argv}");
+    assert!(!fixture.dir.path().join(".toodo").exists());
 }
 
 #[test]

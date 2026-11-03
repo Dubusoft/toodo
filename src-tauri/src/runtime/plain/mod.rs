@@ -102,6 +102,12 @@ impl PlainRunner {
         self
     }
 
+    #[cfg(test)]
+    pub fn with_ssh_program(mut self, ssh: impl Into<PathBuf>) -> Self {
+        self.ssh = ssh.into();
+        self
+    }
+
     pub fn with_mcp_provider(mut self, provider: McpProvider) -> Self {
         self.mcp = Some(provider);
         self
@@ -153,21 +159,27 @@ impl PlainRunner {
             return Ok(result.as_ref().unwrap().as_ref().unwrap().clone());
         }
         drop(live);
-        if let Some(remote) = remote {
+        if let Some(remote) = &remote {
             lock(&self.storage).append_run_event(run, "stop_requested", None)?;
             remote.stop(run)?;
         }
-        let mut storage = lock(&self.storage);
-        let current = storage
-            .get_run(run)?
-            .ok_or(StorageError::RunNotFound(run))?;
-        if !current.state.is_active() {
-            return Ok(current);
+        let finished = {
+            let mut storage = lock(&self.storage);
+            let current = storage
+                .get_run(run)?
+                .ok_or(StorageError::RunNotFound(run))?;
+            if !current.state.is_active() {
+                return Ok(current);
+            }
+            if current.host == HostRef::Local {
+                storage.append_run_event(run, "stop_requested", None)?;
+            }
+            storage.finish_run(run, RunState::Cancelled)?
+        };
+        if let Some(remote) = &remote {
+            remote.remove_credentials(&self.storage, run);
         }
-        if current.host == HostRef::Local {
-            storage.append_run_event(run, "stop_requested", None)?;
-        }
-        Ok(storage.finish_run(run, RunState::Cancelled)?)
+        Ok(finished)
     }
 
     /// Settles durable remote evidence without restarting or reattaching the agent.
@@ -207,15 +219,21 @@ impl PlainRunner {
             Probe::Gone => (RunState::Failed, "interrupted", None),
             Probe::Missing => (RunState::Unknown, "remote_missing", None),
         };
-        let mut storage = lock(&self.storage);
-        let current = storage
-            .get_run(run)?
-            .ok_or(StorageError::RunNotFound(run))?;
-        if !current.state.is_active() {
-            return Ok(current);
+        let finished = {
+            let mut storage = lock(&self.storage);
+            let current = storage
+                .get_run(run)?
+                .ok_or(StorageError::RunNotFound(run))?;
+            if !current.state.is_active() {
+                return Ok(current);
+            }
+            storage.append_run_event(run, event, payload.as_deref())?;
+            storage.finish_run(run, state)?
+        };
+        if !finished.state.is_active() {
+            remote.remove_credentials(&self.storage, run);
         }
-        storage.append_run_event(run, event, payload.as_deref())?;
-        Ok(storage.finish_run(run, state)?)
+        Ok(finished)
     }
 
     /// Waits for a managed run to finish, without polling its record.
@@ -362,6 +380,9 @@ impl RunLauncher for PlainRunner {
                 )
             })?;
             endpoint.url = format!("http://127.0.0.1:{port}/mcp");
+        }
+        if let Some(remote) = &remote {
+            remote.check_launcher()?;
         }
         fs::create_dir_all(&self.runs_dir).map_err(io_error)?;
         let dir = self.runs_dir.join(spec.run.to_string());
