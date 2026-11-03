@@ -62,9 +62,9 @@ use crate::mcp::tunnels::{self, Tunnels, TunnelsState};
 use crate::mcp::{self, Backend, ServerStatus};
 use crate::storage::Storage;
 
-const DATABASE_FILE: &str = "toodo.sqlite3";
+pub(crate) const DATABASE_FILE: &str = "toodo.sqlite3";
 
-const WEB_TOKEN_FILE: &str = "web-token";
+pub(crate) const WEB_TOKEN_FILE: &str = "web-token";
 
 /// The default port. The server forwards it to its SSH machines too, so agents there reach
 /// the MCP endpoint on the same port.
@@ -247,14 +247,19 @@ impl Runtime for Services {
 /// `toodo-server <version> (commit <sha>)`: the release version and the commit of the
 /// build, which tells a build of a later commit apart from the release it reports.
 fn version() -> String {
-    with_commit(env!("CARGO_PKG_VERSION"), env!("TOODO_COMMIT"))
+    program_version("toodo-server")
 }
 
-fn with_commit(version: &str, commit: &str) -> String {
+/// `<program> <version> (commit <sha>)` for a binary of this build.
+pub(crate) fn program_version(program: &str) -> String {
+    with_commit(program, env!("CARGO_PKG_VERSION"), env!("TOODO_COMMIT"))
+}
+
+fn with_commit(program: &str, version: &str, commit: &str) -> String {
     if commit.is_empty() {
-        format!("toodo-server {version}")
+        format!("{program} {version}")
     } else {
-        format!("toodo-server {version} (commit {commit})")
+        format!("{program} {version} (commit {commit})")
     }
 }
 
@@ -417,7 +422,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Creates the data directory, which holds the access tokens, so that on Unix only the
 /// owner can enter it; an existing one is tightened.
-fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -560,10 +565,13 @@ mod tests {
     #[test]
     fn the_version_names_the_commit_of_the_build() {
         assert_eq!(
-            with_commit("1.2.3", "0123456789ab"),
+            with_commit("toodo-server", "1.2.3", "0123456789ab"),
             "toodo-server 1.2.3 (commit 0123456789ab)"
         );
-        assert_eq!(with_commit("1.2.3", ""), "toodo-server 1.2.3");
+        assert_eq!(
+            with_commit("toodo-server", "1.2.3", ""),
+            "toodo-server 1.2.3"
+        );
         assert!(version().starts_with(&format!("toodo-server {}", env!("CARGO_PKG_VERSION"))));
     }
 

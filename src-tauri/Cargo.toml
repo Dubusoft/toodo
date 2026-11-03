@@ -9,12 +9,16 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-# The library holds the server; `toodo-server` is its binary.
+# The library holds the server and the CLI; `toodo-server` and `toodo` are their binaries.
 name = "toodo_lib"
 
 [[bin]]
 name = "toodo-server"
 path = "src/bin/toodo-server.rs"
+
+[[bin]]
+name = "toodo"
+path = "src/bin/toodo.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
