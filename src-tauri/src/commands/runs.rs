@@ -169,8 +169,9 @@ fn start(
             Runner::Plain => {}
             Runner::Tmux => {
                 return Err(CommandError::rejected(
-                    "runner tmux launch is not wired yet; choose runner plain in a local \
-                     workspace to start an agent run",
+                    "runner tmux launch is not wired yet, and a workspace keeps the runner \
+                     it was created with; delete this workspace, add the repository again \
+                     at a local path with runner plain, then start a plain run",
                 ));
             }
             Runner::Herdr => {

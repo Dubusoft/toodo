@@ -785,8 +785,9 @@ fn close_workspace(
 fn reject_tmux(runner: Runner) -> CommandResult<()> {
     if runner == Runner::Tmux {
         return Err(CommandError::rejected(
-            "runner tmux task operations are not wired yet; choose runner plain or herdr \
-             in the workspace settings before starting or restoring a task",
+            "runner tmux task operations are not wired yet, and a workspace keeps the runner \
+             it was created with; delete this workspace, add the repository again and choose \
+             runner plain or herdr, then start the task",
         ));
     }
     Ok(())
