@@ -120,6 +120,8 @@ pub(super) const SKIPPED: &[&str] = &[
     "task_runs",
     "run_events",
     "run_operations",
+    "runtime_host_events",
+    "runtime_hosts",
 ];
 
 impl Storage {
@@ -316,6 +318,8 @@ mod tests {
                  DROP TABLE task_runs;
                  DROP TABLE agent_conversations;
                  DROP TABLE runtime_workspaces;
+                 DROP TABLE runtime_host_events;
+                 DROP TABLE runtime_hosts;
                  DROP TABLE oauth_tokens;
                  DROP TABLE oauth_grants;
                  DROP TABLE oauth_clients;
@@ -490,7 +494,16 @@ mod tests {
                 branch: "feat/started".to_owned(),
             };
             other.start_task(task, &checkout, "w1").unwrap();
+            other
+                .set_host_state(
+                    &crate::domain::runtime::OwnerKey::implicit(),
+                    &crate::domain::runtime::HostRef::Local,
+                    crate::runtime::events::HostState::Online,
+                )
+                .unwrap();
             assert_eq!(count(&other, "SELECT count(*) FROM runtime_workspaces"), 1);
+            assert_eq!(count(&other, "SELECT count(*) FROM runtime_host_events"), 1);
+            assert_eq!(count(&other, "SELECT count(*) FROM runtime_hosts"), 1);
         }
         let mut server = Storage::open_in_memory().unwrap();
 
@@ -498,6 +511,11 @@ mod tests {
 
         assert_eq!(count(&server, "SELECT count(*) FROM tasks"), 1);
         assert_eq!(count(&server, "SELECT count(*) FROM runtime_workspaces"), 0);
+        assert_eq!(
+            count(&server, "SELECT count(*) FROM runtime_host_events"),
+            0
+        );
+        assert_eq!(count(&server, "SELECT count(*) FROM runtime_hosts"), 0);
         let imported = server.list_tasks(WorkspaceId(1)).unwrap();
         assert_eq!(imported[0].herdr_workspace_id, None);
     }

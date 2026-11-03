@@ -41,7 +41,9 @@ pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_ba
 pub use criteria::{CriterionCheck, CriterionEdit};
 pub use import::ImportSummary;
 pub use push::NewPushSubscription;
-pub use runtime::{NewRun, Reservation, RunEvent, RunOperation, RuntimeWorkspace, TaskRun};
+pub use runtime::{
+    HostCursor, NewRun, Reservation, RunEvent, RunOperation, RuntimeWorkspace, TaskRun,
+};
 pub use search::TaskSearch;
 pub use tasks::{AddedDependencies, DependencyChange, NewTask, PauseRule};
 pub use workspaces::NewWorkspace;

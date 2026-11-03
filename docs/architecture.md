@@ -376,7 +376,7 @@ connections; Toodo owns planning, task state, commit records, and pull requests.
 
 ## Runtime Records
 
-SQLite keeps a record of what runs where, in five tables (migration 29):
+SQLite keeps a record of what runs where in seven tables (migrations 29 and 32):
 
 - `runtime_workspaces`: one row per herdr workspace a task has had. Each row carries a
   `generation` that counts up per task, a `state` of `open` or `closed`, the
@@ -391,6 +391,14 @@ SQLite keeps a record of what runs where, in five tables (migration 29):
 - `run_events`: the ordered history of a run, keyed by `run_id` and `sequence`.
 - `run_operations`: the ledger of `launch`, `input`, and `stop` requests against a run,
   each `pending`, `applied`, or `failed`, with a `receipt`.
+- `runtime_host_events`: an append-only journal of neutral workspace opened/closed
+  observations, host state changes, and snapshot reconciles. Its `sequence` increases
+  by one per owner and host; it is a local cursor, not a herdr subscription offset.
+  Activity changes stay in memory and repeated host states do not consume a sequence.
+- `runtime_hosts`: each host's `last_sequence`, `reconciled_sequence`, and state
+  (`online`, `offline`, or `unknown`). Accepted subscriptions and successful Windows
+  polls mark hosts online; unreachable servers are offline, and errors after an
+  accepted event stream leave the host unknown.
 
 Every table except `run_events` has `owner_key`, which defaults to `implicit`. It's a
 placeholder for a later tenant context; nothing filters or authenticates by it yet. The
@@ -403,8 +411,9 @@ path and branch, which stay on `tasks` since they outlive the herdr workspace: a
 or changed handle closes the open row, a new handle opens the next generation, and a moved
 checkout updates the open row. Migration 29 backfilled one open row per task that had a
 handle and created no runs; migration 31 brought the open rows in line with the handles
-once more and dropped the old `tasks.herdr_workspace_id` column. Import skips all five
-tables, since their handles belong to the other server's hosts.
+once more and dropped the old `tasks.herdr_workspace_id` column. Import skips all
+runtime tables, including the host journal and cursors, since their handles and
+observations belong to the other server's hosts.
 
 A checkout has one active writer at a time. The partial unique index
 `task_runs_one_active_writer` covers writer runs on the same owner, host, and checkout in
@@ -449,9 +458,25 @@ per call: a `TaskWorkspaceRuntime` for runtime workspaces and a `RunLauncher` fo
   run in the first pane of the task's open runtime workspace, with request key
   `mcp-agent-<task>-<n>`.
 
-The herdr event reconciliation (a worktree removed or opened again in herdr) in
-`commands/events.rs` forgets or records the herdr workspace of a task through the same
-storage methods, which close or open its runtime workspace.
+`commands/events.rs` translates herdr observations into neutral `RuntimeEvent` values
+and applies them through `RuntimeService`. Events carry the existing `OwnerKey`
+(`implicit` today); this introduces no tenant filtering. All matching uses the host:
+identical provider references or pane IDs on two machines are unrelated. A close only
+affects the task's open runtime workspace on that host. An open adopts a matching
+checkout, except a reference used by a closed generation of that task on that host
+cannot replace its current handle. Handle observations never rewrite earlier runs.
+
+Immediately after a subscription is accepted, a read-only workspace snapshot reconciles
+the host's tasks. An open reference still present stays unchanged; a matching checkout
+under another reference is adopted with the same stale-reference guard. Missing
+checkouts are left for lazy `reopen_workspace`, not cleared. Reconciliation journals a
+`SnapshotReconciled` observation and saves its sequence as `reconciled_sequence`, so a
+fresh subscription repairs missed open events after `events_lost`. Windows keeps its
+pane polling path and does not reconcile workspace snapshots.
+
+Migration 32 adds the host journal and cursor tables. Rollback means reverting this
+event integration while leaving both tables and their journal rows in place; no runtime
+path deletes journal history.
 
 ## Components
 

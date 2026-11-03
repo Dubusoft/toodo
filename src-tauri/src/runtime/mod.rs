@@ -8,6 +8,7 @@
 //! finds the same run and, if the runner already launched it but the response was lost,
 //! adopts that launch instead of launching again.
 
+pub mod events;
 mod herdr;
 mod workspace;
 
