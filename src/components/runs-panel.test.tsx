@@ -1,8 +1,16 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunsPanel } from "@/components/runs-panel";
-import { commands, type RunEvent, type RunLog, type Task, type TaskRun } from "@/lib/bindings";
+import {
+  commands,
+  type AgentAdapter,
+  type RunEvent,
+  type RunLog,
+  type RunnerHealth,
+  type Task,
+  type TaskRun,
+} from "@/lib/bindings";
 
 vi.mock("@/lib/bindings", () => ({
   commands: {
@@ -10,6 +18,7 @@ vi.mock("@/lib/bindings", () => ({
     getRunLog: vi.fn(),
     startPlainRun: vi.fn(),
     stopRun: vi.fn(),
+    runnerHealth: vi.fn(),
   },
 }));
 
@@ -84,6 +93,23 @@ function log(of: TaskRun, events: RunEvent[], stdout = "", stderr = ""): RunLog 
 
 const launched = (of: TaskRun) => [event(1, "reserved"), event(2, "launched", of.providerRunRef)];
 
+/** The server's message for an agent CLI it did not find, as `runner_health` words it. */
+const notFound = (adapter: AgentAdapter) =>
+  `${adapter} was not found on the server's PATH; install ${adapter} on the server's PATH, or start the run with ` +
+  `the ${adapter === "claude" ? "codex" : "claude"} adapter.`;
+
+/** What the server runs agents with, with the CLIs of `missing` not on its PATH; herdr plays no part. */
+function health(missing: AgentAdapter[] = []): RunnerHealth {
+  return {
+    herdr: { installed: false, running: false, version: null, message: "herdr was not found on the server's PATH." },
+    agents: (["claude", "codex"] as const).map((adapter) =>
+      missing.includes(adapter)
+        ? { adapter, installed: false, path: null, message: notFound(adapter) }
+        : { adapter, installed: true, path: `/usr/local/bin/${adapter}`, message: null },
+    ),
+  };
+}
+
 function renderPanel(task: Task = inProgress) {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -95,6 +121,13 @@ function renderPanel(task: Task = inProgress) {
 describe("RunsPanel", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    // A live run reloads on an interval; it only ticks when a test moves the clock.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    mocked.runnerHealth.mockResolvedValue(ok(health()));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("starts a run with the picked agent and MCP setting and opens it", async () => {
@@ -207,6 +240,90 @@ describe("RunsPanel", () => {
 
     expect(await screen.findByRole("button", { name: "Run 1, Claude, Succeeded" })).toBeInTheDocument();
     expect(screen.queryByRole("form", { name: "New run of #7" })).not.toBeInTheDocument();
+  });
+
+  it("follows a live run's log every few seconds and stops reloading once no run is live", async () => {
+    const running = run(1, "running");
+    const settled = run(1, "settled");
+    let listed = [running];
+    let logged = log(running, launched(running), "first line\n");
+    mocked.listTaskRuns.mockImplementation(async () => ok(listed));
+    mocked.getRunLog.mockImplementation(async () => ok(logged));
+    renderPanel();
+
+    expect(await screen.findByLabelText("stdout of run 1")).toHaveTextContent("first line");
+    expect(mocked.listTaskRuns).toHaveBeenCalledTimes(1);
+    expect(mocked.getRunLog).toHaveBeenCalledTimes(1);
+
+    logged = log(running, launched(running), "first line\nsecond line\n");
+    await act(() => vi.advanceTimersByTimeAsync(3000));
+    await waitFor(() => expect(screen.getByLabelText("stdout of run 1")).toHaveTextContent("second line"));
+    expect(mocked.listTaskRuns).toHaveBeenCalledTimes(2);
+    expect(mocked.getRunLog).toHaveBeenCalledTimes(2);
+
+    listed = [settled];
+    logged = log(settled, [...launched(running), event(3, "result", "Ported the export CLI"), event(4, "settled")]);
+    await act(() => vi.advanceTimersByTimeAsync(3000));
+    expect(await screen.findByRole("button", { name: "Run 1, Claude, Succeeded" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("note", { name: "Last event of run 1" })).toHaveTextContent("Ported the export CLI"),
+    );
+    const reloads = [mocked.listTaskRuns.mock.calls.length, mocked.getRunLog.mock.calls.length];
+
+    await act(() => vi.advanceTimersByTimeAsync(30_000));
+    expect([mocked.listTaskRuns.mock.calls.length, mocked.getRunLog.mock.calls.length]).toEqual(reloads);
+  });
+
+  it("rules out an agent whose CLI the server did not find, with its message, and starts the other", async () => {
+    const started = run(1, "running", "codex");
+    mocked.runnerHealth.mockResolvedValue(ok(health(["claude"])));
+    mocked.listTaskRuns.mockResolvedValueOnce(ok([])).mockResolvedValue(ok([started]));
+    mocked.startPlainRun.mockResolvedValue(ok(started));
+    mocked.getRunLog.mockResolvedValue(ok(log(started, launched(started))));
+    renderPanel();
+
+    expect(await screen.findByRole("note", { name: "Why Claude is unavailable" })).toHaveTextContent(notFound("claude"));
+    const form = screen.getByRole("form", { name: "New run of #7" });
+    const claude = within(form).getByRole("button", { name: "Claude" });
+    expect(claude).toBeDisabled();
+    expect(claude).toHaveAttribute("title", notFound("claude"));
+    // The default agent gives way to the one the server has.
+    expect(within(form).getByRole("button", { name: "Codex" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(form).getByRole("button", { name: "Codex" })).toBeEnabled();
+    fireEvent.click(within(form).getByRole("button", { name: "Start run of #7" }));
+
+    await waitFor(() => expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "codex", null, true));
+    expect(await screen.findByRole("button", { name: "Run 1, Codex, Running" })).toBeInTheDocument();
+  });
+
+  it("keeps Start run disabled while neither agent CLI is on the server, until Refresh finds one", async () => {
+    mocked.runnerHealth.mockResolvedValueOnce(ok(health(["claude", "codex"]))).mockResolvedValue(ok(health(["claude"])));
+    mocked.listTaskRuns.mockResolvedValue(ok([]));
+    renderPanel();
+
+    expect(await screen.findByRole("note", { name: "Why no run of #7 starts" })).toHaveTextContent(
+      "Neither claude nor codex was found on the server's PATH; install one of them there, then press Refresh",
+    );
+    const form = screen.getByRole("form", { name: "New run of #7" });
+    for (const [name, adapter] of [
+      ["Claude", "claude"],
+      ["Codex", "codex"],
+    ] as const) {
+      const button = within(form).getByRole("button", { name });
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute("aria-pressed", "false");
+      expect(button).toHaveAttribute("title", notFound(adapter));
+    }
+    expect(within(form).getByRole("button", { name: "Start run of #7" })).toBeDisabled();
+    expect(screen.queryByRole("note", { name: /^Why (Claude|Codex) is unavailable$/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh runs of #7" }));
+
+    await waitFor(() => expect(within(form).getByRole("button", { name: "Start run of #7" })).toBeEnabled());
+    expect(within(form).getByRole("button", { name: "Codex" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("note", { name: "Why no run of #7 starts" })).not.toBeInTheDocument();
+    expect(screen.getByRole("note", { name: "Why Claude is unavailable" })).toHaveTextContent(notFound("claude"));
+    expect(mocked.runnerHealth).toHaveBeenCalledTimes(2);
   });
 
   it("shows nothing for a task out of progress that never ran", async () => {

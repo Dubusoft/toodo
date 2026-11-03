@@ -1,13 +1,13 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { ChevronRight, Play, RefreshCw, Square } from "lucide-react";
+import { ChevronRight, Play, RefreshCw, Square, TriangleAlert } from "lucide-react";
 import { PathLabel } from "@/components/path-label";
 import { Button } from "@/components/ui/button";
 import { When } from "@/components/when";
 import { escapeCloses } from "@/components/workspace-list";
-import type { AgentAdapter, RunEvent, RunId, RunState, Task, TaskRun } from "@/lib/bindings";
+import type { AgentAdapter, RunEvent, RunId, RunnerHealth, RunState, Task, TaskRun } from "@/lib/bindings";
 import { normalizePath, shortPath } from "@/lib/paths";
-import { useRunLog, useStartPlainRun, useStopRun, useTaskRuns } from "@/lib/queries";
-import { toneChip, tonePanel, type Tone } from "@/lib/status-styles";
+import { useRunLog, useRunnerHealth, useStartPlainRun, useStopRun, useTaskRuns } from "@/lib/queries";
+import { toneChip, tonePanel, toneText, type Tone } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
 /** How each run state is named and coloured, in the tones of the status glossary. */
@@ -27,6 +27,20 @@ const activeStates: readonly RunState[] = ["reserved", "running", "unknown"];
 const adapters: readonly AgentAdapter[] = ["claude", "codex"];
 
 const adapterLabels: Record<AgentAdapter, string> = { claude: "Claude", codex: "Codex" };
+
+/** What the server says about each agent CLI it did not find on its `PATH`; empty while that is not known. */
+function missingAgents(health: RunnerHealth | undefined): Map<AgentAdapter, string> {
+  const missing = new Map<AgentAdapter, string>();
+  for (const agent of health?.agents ?? []) {
+    if (!agent.installed) {
+      missing.set(
+        agent.adapter,
+        agent.message ?? `${agent.adapter} was not found on the server's PATH; install it there, then press Refresh.`,
+      );
+    }
+  }
+  return missing;
+}
 
 /** The agent CLI a run drove, by name. */
 function adapterName(adapter: string | null): string {
@@ -99,10 +113,12 @@ function RunStateBadge({ state }: { state: RunState }) {
  * by Toodo on the task's worktree, with the events and the ends of the output of the open
  * run. A task in progress starts a run while no run holds its worktree; a run that holds it
  * can be stopped. Runs send no events: Refresh reloads them, as do coming back to the window
- * and changes to the tasks.
+ * and changes to the tasks, and they reload every few seconds while one is starting or running.
+ * An agent whose CLI the server did not find cannot be picked.
  */
 export function RunsPanel({ task }: { task: Task }) {
   const runs = useTaskRuns(task.id);
+  const health = useRunnerHealth();
   const startRun = useStartPlainRun();
   const stopRun = useStopRun();
   const id = useId();
@@ -111,13 +127,18 @@ export function RunsPanel({ task }: { task: Task }) {
   // The run whose log is open: the newest until one is picked, none once it is closed.
   const [picked, setPicked] = useState<RunId | null | undefined>(undefined);
   const [stopping, setStopping] = useState<RunId | null>(null);
+  // Only a refresh asked for shows as one: while a run is live, the runs also reload on their own.
+  const [refreshing, setRefreshing] = useState(false);
   const newestFirst = [...(runs.data ?? [])].reverse();
   const openId = picked === undefined ? (newestFirst[0]?.id ?? null) : picked;
   const log = useRunLog(openId);
   const inProgress = task.status === "in_progress";
   const holding = newestFirst.find((run) => activeStates.includes(run.state));
-  const fetching = runs.isFetching || log.isFetching;
   const failure = startRun.error ?? stopRun.error;
+  const missing = missingAgents(health.data);
+  // A picked agent whose CLI the server lacks gives way to one it has; without both, none is picked.
+  const installed = adapters.filter((value) => !missing.has(value));
+  const chosen = installed.includes(adapter) ? adapter : (installed[0] ?? null);
 
   // Runs start only while the task is in progress; later the panel keeps showing the ones it had.
   if (!inProgress && runs.isSuccess && newestFirst.length === 0) {
@@ -126,13 +147,16 @@ export function RunsPanel({ task }: { task: Task }) {
 
   function start(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (chosen === null) return;
     // The new run, or the launch that failed, is the newest one now: open it.
-    startRun.mutate({ taskId: task.id, adapter, mcp }, { onSettled: () => setPicked(undefined) });
+    startRun.mutate({ taskId: task.id, adapter: chosen, mcp }, { onSettled: () => setPicked(undefined) });
   }
 
   function refresh() {
-    void runs.refetch();
-    if (openId !== null) void log.refetch();
+    setRefreshing(true);
+    void Promise.all([runs.refetch(), openId !== null && log.refetch(), health.refetch()]).finally(() =>
+      setRefreshing(false),
+    );
   }
 
   return (
@@ -146,11 +170,11 @@ export function RunsPanel({ task }: { task: Task }) {
           variant="ghost"
           className="ml-auto"
           aria-label={`Refresh runs of #${task.id}`}
-          title="Reload the runs and the log of the open run"
-          disabled={fetching}
+          title="Reload the runs, the log of the open run, and the agent CLIs found on the server"
+          disabled={refreshing}
           onClick={refresh}
         >
-          <RefreshCw className={cn(fetching && "animate-spin")} />
+          <RefreshCw className={cn(refreshing && "animate-spin")} />
           Refresh
         </Button>
       </div>
@@ -171,8 +195,10 @@ export function RunsPanel({ task }: { task: Task }) {
                   key={value}
                   type="button"
                   size="xs"
-                  variant={adapter === value ? "default" : "ghost"}
-                  aria-pressed={adapter === value}
+                  variant={chosen === value ? "default" : "ghost"}
+                  aria-pressed={chosen === value}
+                  disabled={missing.has(value)}
+                  title={missing.get(value)}
                   onClick={() => setAdapter(value)}
                 >
                   {adapterLabels[value]}
@@ -191,7 +217,7 @@ export function RunsPanel({ task }: { task: Task }) {
               size="xs"
               className="ml-auto"
               aria-label={`Start run of #${task.id}`}
-              disabled={startRun.isPending || holding !== undefined}
+              disabled={startRun.isPending || holding !== undefined || chosen === null}
             >
               <Play />
               {startRun.isPending ? "Starting..." : "Start run"}
@@ -204,6 +230,31 @@ export function RunsPanel({ task }: { task: Task }) {
                 : `Run ${holding.generation} is still running; stop it, or wait until it ends, to start another run.`}
             </p>
           )}
+          {!holding && chosen === null && (
+            <p
+              role="note"
+              aria-label={`Why no run of #${task.id} starts`}
+              className={cn("flex items-start gap-1.5", toneText.attention)}
+            >
+              <TriangleAlert aria-hidden className="mt-0.5 size-3 shrink-0" />
+              <span>
+                Neither claude nor codex was found on the server's PATH; install one of them there, then press Refresh
+                to start a run.
+              </span>
+            </p>
+          )}
+          {chosen !== null &&
+            [...missing].map(([value, message]) => (
+              <p
+                key={value}
+                role="note"
+                aria-label={`Why ${adapterLabels[value]} is unavailable`}
+                className={cn("flex items-start gap-1.5", toneText.attention)}
+              >
+                <TriangleAlert aria-hidden className="mt-0.5 size-3 shrink-0" />
+                <span>{message}</span>
+              </p>
+            ))}
         </form>
       )}
       {failure && (
@@ -378,11 +429,15 @@ function RunDetails({ id, run, log }: { id: string; run: TaskRun; log: ReturnTyp
   );
 }
 
-/** The end of the stdout or stderr of a run, scrolled to its last line. */
+/**
+ * The end of the stdout or stderr of a run, scrolled to its last line. As a live run's output
+ * grows, the view follows it, unless it was scrolled up to read, until it is back at the end.
+ */
 function LogTail({ run, name, text }: { run: TaskRun; name: "stdout" | "stderr"; text: string }) {
   const pre = useRef<HTMLPreElement>(null);
+  const atEnd = useRef(true);
   useEffect(() => {
-    if (pre.current !== null) pre.current.scrollTop = pre.current.scrollHeight;
+    if (pre.current !== null && atEnd.current) pre.current.scrollTop = pre.current.scrollHeight;
   }, [text]);
 
   return (
@@ -393,6 +448,10 @@ function LogTail({ run, name, text }: { run: TaskRun; name: "stdout" | "stderr";
       ) : (
         <pre
           ref={pre}
+          onScroll={(event) => {
+            const { scrollHeight, clientHeight, scrollTop } = event.currentTarget;
+            atEnd.current = Math.abs(scrollHeight - clientHeight - scrollTop) <= 1;
+          }}
           // Scrollable, so it takes the focus to scroll with the keyboard.
           tabIndex={0}
           aria-label={`${name} of run ${run.generation}`}

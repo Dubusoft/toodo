@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceList } from "@/components/workspace-list";
-import type { Workspace } from "@/lib/bindings";
+import type { HerdrHealth, RunnerHealth, Workspace } from "@/lib/bindings";
 import {
   completionLabels,
   completionProblem,
@@ -16,18 +16,43 @@ const mutation = { mutate: vi.fn(), isPending: false, isError: false };
 const query = <T,>(data: T) => ({ data, isPending: false, isError: false });
 let workspaces: Workspace[] = [];
 
+const ready: RunnerHealth = {
+  herdr: { installed: true, running: true, version: "0.9.5", message: null },
+  agents: [
+    { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
+    { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
+  ],
+};
+/** What the server said about its runners; `undefined` while it has not answered yet. */
+let health: RunnerHealth | undefined = ready;
+
+const stoppedHerdr: HerdrHealth = {
+  installed: true,
+  running: false,
+  version: "0.9.5",
+  message: "The herdr server is not running; start herdr on the server for herdr workspaces.",
+};
+const missingHerdr: HerdrHealth = {
+  installed: false,
+  running: false,
+  version: null,
+  message: "herdr was not found on the server's PATH; install herdr and start it for herdr workspaces.",
+};
+
 vi.mock("@/lib/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/queries")>()),
   useWorkspaces: () => query(workspaces),
   useHerdrMachines: () => query([]),
   useHomeDirectory: () => query("/home/me"),
   useDirectories: () => query({ path: "/home/me", directories: [] }),
+  useRunnerHealth: () => (health === undefined ? { data: undefined, isPending: true, isError: false } : query(health)),
   useCreateWorkspace: () => mutation,
   useDeleteWorkspace: () => mutation,
 }));
 
 beforeEach(() => {
   workspaces = [];
+  health = ready;
   mutation.mutate.mockClear();
 });
 
@@ -265,6 +290,95 @@ describe("Runner plain", () => {
       back(dialog);
       back(dialog);
     }
+  });
+});
+
+describe("Without herdr running on this server", () => {
+  const devbox: Workspace = {
+    id: 2,
+    name: "site",
+    location: { kind: "ssh", machine: "devbox", path: "/srv/site" },
+    defaultBaseBranch: "main",
+    agentMerge: "never",
+    pathProblem: null,
+    source: "github",
+    completion: "pr_merge",
+    runner: "herdr",
+  };
+
+  it("defaults a git source to runner plain and notes it on herdr, which can still be picked", () => {
+    health = { ...ready, herdr: stoppedHerdr };
+    const dialog = openNewWorkspace();
+    next(dialog);
+    next(dialog);
+
+    expect(option(dialog, runnerLabels.plain)).toBeChecked();
+    const herdr = option(dialog, "herdr");
+    expect(herdr).toBeEnabled();
+    expect(herdr).toHaveAccessibleDescription(
+      /herdr is not running on this server; start it there before starting tasks, or choose Plain\.$/,
+    );
+    fireEvent.click(herdr);
+    expect(herdr).toBeChecked();
+    next(dialog);
+    fireEvent.change(within(dialog).getByLabelText("Folder"), { target: { value: "/home/me/site" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open workspace" }));
+
+    expect(mutation.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "github", completion: "pr_merge", runner: "herdr" }),
+      expect.anything(),
+    );
+  });
+
+  it("adds a workspace with runner plain by default while herdr is not installed, and a plain folder with none", () => {
+    health = { ...ready, herdr: missingHerdr };
+    const dialog = openNewWorkspace();
+    fireEvent.click(option(dialog, "Plain folder"));
+    next(dialog);
+    next(dialog);
+    expect(option(dialog, "No runner")).toBeChecked();
+
+    back(dialog);
+    back(dialog);
+    fireEvent.click(option(dialog, "Local git"));
+    next(dialog);
+    next(dialog);
+    expect(option(dialog, runnerLabels.plain)).toBeChecked();
+    expect(option(dialog, "herdr")).toHaveAccessibleDescription(
+      /herdr is not running on this server since it is not installed there; install and start herdr/,
+    );
+    next(dialog);
+    fireEvent.change(within(dialog).getByLabelText("Folder"), { target: { value: "/home/me/tools" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open workspace" }));
+
+    expect(mutation.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "local_git", completion: "local_merge", runner: "plain" }),
+      expect.anything(),
+    );
+  });
+
+  it("keeps herdr as the default while the server has not said whether herdr runs", () => {
+    health = undefined;
+    const dialog = openNewWorkspace();
+    next(dialog);
+    next(dialog);
+
+    expect(option(dialog, "herdr")).toBeChecked();
+    expect(option(dialog, "herdr")).not.toHaveAccessibleDescription(/not running/);
+  });
+
+  it("keeps herdr as the default on an SSH machine, where plain cannot run", () => {
+    health = { ...ready, herdr: stoppedHerdr };
+    workspaces = [devbox];
+    render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add workspace on devbox" }));
+    const dialog = screen.getByRole("dialog", { name: "New workspace on devbox" });
+    next(dialog);
+    next(dialog);
+
+    expect(option(dialog, "herdr")).toBeChecked();
+    expect(option(dialog, "herdr")).not.toHaveAccessibleDescription(/not running/);
+    expect(option(dialog, runnerLabels.plain)).toBeDisabled();
   });
 });
 

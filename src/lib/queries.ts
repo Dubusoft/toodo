@@ -12,6 +12,7 @@ import {
   type NewTask,
   type NewWorkspace,
   type RunId,
+  type RunState,
   type Task,
   type TaskEdit,
   type TaskId,
@@ -54,6 +55,7 @@ export const queryKeys = {
   /** Related links between tasks; under "tasks", so a tasks-changed event refetches them. */
   taskRelations: ["tasks", "relations"] as const,
   herdrStatus: ["herdr-status"] as const,
+  runnerHealth: ["runner-health"] as const,
   agentStatuses: ["agent-statuses"] as const,
   pullRequestStatuses: ["pull-request-statuses"] as const,
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
@@ -300,6 +302,19 @@ export function useHerdrStatus() {
   });
 }
 
+/**
+ * Whether herdr runs on the server and which agent CLIs of plain runs are on its `PATH`.
+ * Installing or starting a tool sends no event, so it is checked again every minute, when the
+ * window regains focus, and on request.
+ */
+export function useRunnerHealth() {
+  return useQuery({
+    queryKey: queryKeys.runnerHealth,
+    queryFn: () => unwrap(commands.runnerHealth()),
+    refetchInterval: 60_000,
+  });
+}
+
 /** Agent status of each task whose herdr workspace runs an agent; kept current by `useHerdrEvents`. */
 export function useAgentStatuses() {
   return useQuery({
@@ -432,23 +447,38 @@ export function useTaskActivity(taskId: TaskId, enabled: boolean) {
   });
 }
 
+/** How often the runs of a task and the log of a run reload while a run is starting or running. */
+const liveRunInterval = 3_000;
+
+/** Whether a run in `state` still changes on its own: its agent is starting or working. */
+function isLive(state: RunState): boolean {
+  return state === "reserved" || state === "running";
+}
+
 /**
  * The runs of a task, oldest first. Runs send no events, so they are refetched on request,
- * when the window regains focus, and when the tasks change.
+ * when the window regains focus, when the tasks change, and every few seconds while one of
+ * them is starting or running.
  */
 export function useTaskRuns(taskId: TaskId) {
   return useQuery({
     queryKey: queryKeys.taskRuns(taskId),
     queryFn: () => unwrap(commands.listTaskRuns(taskId)),
+    refetchInterval: (query) => (query.state.data?.some((run) => isLive(run.state)) ? liveRunInterval : false),
   });
 }
 
-/** A run with its events and the ends of its stdout and stderr; nothing is loaded while `runId` is `null`. */
+/**
+ * A run with its events and the ends of its stdout and stderr; nothing is loaded while `runId`
+ * is `null`. While the run is starting or running, it reloads every few seconds, so the output
+ * shows as the agent writes it; the log of a run that ended no longer changes.
+ */
 export function useRunLog(runId: RunId | null) {
   return useQuery({
     queryKey: queryKeys.runLog(runId),
     queryFn: () => unwrap(commands.getRunLog(runId!, null)),
     enabled: runId !== null,
+    refetchInterval: (query) => (query.state.data && isLive(query.state.data.run.state) ? liveRunInterval : false),
   });
 }
 

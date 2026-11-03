@@ -22,6 +22,7 @@ vi.mock("@/lib/bindings", () => ({
     createTask: vi.fn(),
     startTask: vi.fn(),
     listTaskRuns: vi.fn(),
+    runnerHealth: vi.fn(),
   },
 }));
 
@@ -207,6 +208,15 @@ describe("TaskList by workspace source, completion, and runner", () => {
     mocked.listTaskRelations.mockResolvedValue(ok([]));
     mocked.branchFreshness.mockResolvedValue(
       ok({ base: "origin/main", behind: 0, fetchError: null, mergeable: null, mergeableError: null }),
+    );
+    mocked.runnerHealth.mockResolvedValue(
+      ok({
+        herdr: { installed: false, running: false, version: null, message: "herdr was not found on the server's PATH." },
+        agents: [
+          { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
+          { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
+        ],
+      }),
     );
   });
 

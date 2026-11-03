@@ -6,6 +6,7 @@ import {
   completionLabels,
   completionProblem,
   completions,
+  defaultRunner,
   repositoryKinds,
   repositoryProblem,
   runnerLabels,
@@ -115,6 +116,26 @@ describe("workspace axes", () => {
       completion: "pr_merge",
       runner: "herdr",
     });
+  });
+
+  it("defaults a git source to plain without herdr on this server, keeping a runner picked by hand", () => {
+    expect(defaultRunner("none", true)).toBe("none");
+    expect(defaultRunner("local_git", true)).toBe("plain");
+    expect(defaultRunner("github", true)).toBe("plain");
+    expect(choiceOf(only("github"), true)).toEqual({
+      source: "github",
+      repository: "open",
+      completion: "pr_merge",
+      runner: "plain",
+    });
+    expect(choiceOf(withPick(only("github"), { runner: "herdr" }, true), true).runner).toBe("herdr");
+    // A plain folder has no runner; the git source picked after it follows the default again.
+    const folder = withPick(only("github"), { source: "none" }, true);
+    expect(choiceOf(folder, true).runner).toBe("none");
+    expect(choiceOf(withPick(folder, { source: "local_git" }, true), true).runner).toBe("plain");
+    for (const axes of everyAxes) {
+      expect(checkAxes(choiceOf({ ...axes, repository: null }, true)), key(axes)).toBeNull();
+    }
   });
 
   it("keeps the picks the earlier ones allow", () => {
