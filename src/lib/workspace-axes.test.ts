@@ -8,6 +8,8 @@ import {
   completions,
   repositoryKinds,
   repositoryProblem,
+  runnerLabels,
+  runnerLocationProblem,
   runnerProblem,
   runners,
   sourceLabels,
@@ -23,9 +25,13 @@ const accepted = new Set([
   "local_git/manual/none",
   "local_git/manual/herdr",
   "local_git/local_merge/herdr",
+  "local_git/manual/plain",
+  "local_git/local_merge/plain",
   "github/manual/none",
   "github/manual/herdr",
   "github/pr_merge/herdr",
+  "github/manual/plain",
+  "github/pr_merge/plain",
 ]);
 
 const everyAxes: Axes[] = sources.flatMap((source) =>
@@ -39,7 +45,7 @@ const only = (source: Source): Picks => ({ source, repository: null, completion:
 
 describe("workspace axes", () => {
   it("accepts exactly the combinations the server accepts", () => {
-    expect(everyAxes).toHaveLength(18);
+    expect(everyAxes).toHaveLength(27);
     for (const axes of everyAxes) {
       expect(checkAxes(axes) === null, key(axes)).toBe(accepted.has(key(axes)));
     }
@@ -59,21 +65,32 @@ describe("workspace axes", () => {
     expect(completionProblem("local_git", "pr_merge")).toContain(sourceLabels.github);
   });
 
-  it("allows no runner only with manual completion and herdr only with a git source", () => {
+  it("allows no runner only with manual completion and herdr and plain only with a git source", () => {
     const allowed = (source: Source, completion: CompletionMode) =>
       runners.filter((runner) => runnerProblem(source, completion, runner) === null);
     expect(allowed("none", "manual")).toEqual(["none"]);
-    expect(allowed("local_git", "manual")).toEqual(["herdr", "none"]);
-    expect(allowed("local_git", "local_merge")).toEqual(["herdr"]);
-    expect(allowed("github", "manual")).toEqual(["herdr", "none"]);
-    expect(allowed("github", "pr_merge")).toEqual(["herdr"]);
+    expect(allowed("local_git", "manual")).toEqual(["herdr", "plain", "none"]);
+    expect(allowed("local_git", "local_merge")).toEqual(["herdr", "plain"]);
+    expect(allowed("github", "manual")).toEqual(["herdr", "plain", "none"]);
+    expect(allowed("github", "pr_merge")).toEqual(["herdr", "plain"]);
   });
 
   it("names the choice a ruled out runner needs", () => {
-    expect(runnerProblem("none", "manual", "herdr")).toContain(sourceLabels.local_git);
-    expect(runnerProblem("none", "manual", "herdr")).toContain(sourceLabels.github);
+    for (const runner of ["herdr", "plain"] as const) {
+      expect(runnerProblem("none", "manual", runner)).toContain(sourceLabels.local_git);
+      expect(runnerProblem("none", "manual", runner)).toContain(sourceLabels.github);
+    }
     expect(runnerProblem("local_git", "local_merge", "none")).toContain(completionLabels.manual);
     expect(runnerProblem("github", "pr_merge", "none")).toContain(completionLabels.manual);
+  });
+
+  it("allows runner plain only on this server and names the choices that work elsewhere", () => {
+    for (const runner of runners) {
+      expect(runnerLocationProblem(runner, "local")).toBeNull();
+      expect(runnerLocationProblem(runner, "ssh") === null).toBe(runner !== "plain");
+    }
+    expect(runnerLocationProblem("plain", "ssh")).toContain(runnerLabels.herdr);
+    expect(runnerLocationProblem("plain", "ssh")).toContain("Local");
   });
 
   it("offers every repository setup for local git, no new repository for GitHub, and none for a plain folder", () => {

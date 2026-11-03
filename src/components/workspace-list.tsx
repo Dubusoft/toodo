@@ -34,6 +34,7 @@ import {
   repositoryLabels,
   repositoryProblem,
   runnerLabels,
+  runnerLocationProblem,
   runnerProblem,
   runners,
   sourceLabels,
@@ -531,6 +532,7 @@ const completionDescriptions: Record<CompletionMode, string> = {
 
 const runnerDescriptions: Record<Runner, string> = {
   herdr: "Opens agents in herdr on a worktree and branch of the task.",
+  plain: "Runs Claude or Codex on this server in a worktree and branch of the task, without herdr.",
   none: "Only marks the task in progress.",
 };
 
@@ -591,7 +593,8 @@ function ChoiceGroup<T extends string>({
               autoFocus={autoFocus && checked}
               aria-labelledby={labelId}
               aria-describedby={`${labelId}-about`}
-              onChange={() => onChange(choice.value)}
+              // A click event that still reaches a disabled option, e.g. a synthetic one, picks nothing.
+              onChange={() => !disabled && onChange(choice.value)}
               className="mt-0.5 size-4 shrink-0 accent-primary"
             />
             <span className="flex min-w-0 flex-col gap-0.5">
@@ -818,7 +821,10 @@ function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogP
                   value: runner,
                   label: runnerLabels[runner],
                   description: runnerDescriptions[runner],
-                  problem: runnerProblem(choice.source, choice.completion, runner),
+                  // The machine is picked before the dialog opens, so its rule comes first.
+                  problem:
+                    runnerLocationProblem(runner, machine === null ? "local" : "ssh") ??
+                    runnerProblem(choice.source, choice.completion, runner),
                 }))}
                 onChange={(runner) => choose({ runner })}
               />

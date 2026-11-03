@@ -7,6 +7,7 @@ import {
   completionProblem,
   repositoryProblem,
   runnerLabels,
+  runnerLocationProblem,
   runnerProblem,
   sourceLabels,
 } from "@/lib/workspace-axes";
@@ -183,6 +184,87 @@ describe("New workspace", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add workspace on Local" })).toHaveFocus();
     expect(mutation.mutate).not.toHaveBeenCalled();
+  });
+});
+
+describe("Runner plain", () => {
+  it("is offered for a git source on this server and adds the workspace with it", () => {
+    const dialog = openNewWorkspace();
+    next(dialog);
+    next(dialog);
+    expect(option(dialog, runnerLabels.plain)).toBeEnabled();
+
+    back(dialog);
+    back(dialog);
+    fireEvent.click(option(dialog, "Local git"));
+    next(dialog);
+    next(dialog);
+    const plain = option(dialog, runnerLabels.plain);
+    expect(plain).toBeEnabled();
+    fireEvent.click(plain);
+    expect(plain).toBeChecked();
+    next(dialog);
+    fireEvent.change(within(dialog).getByLabelText("Folder"), { target: { value: "/home/me/tools" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open workspace" }));
+
+    expect(mutation.mutate).toHaveBeenCalledWith(
+      {
+        name: "tools",
+        location: { kind: "local", path: "/home/me/tools" },
+        repository: { kind: "open" },
+        source: "local_git",
+        completion: "local_merge",
+        runner: "plain",
+        defaultBaseBranch: null,
+      },
+      expect.anything(),
+    );
+  });
+
+  it("is ruled out for a plain folder, with the reason", () => {
+    const dialog = openNewWorkspace();
+    fireEvent.click(option(dialog, "Plain folder"));
+    next(dialog);
+    next(dialog);
+
+    const plain = option(dialog, runnerLabels.plain);
+    expect(plain).toBeDisabled();
+    expect(plain).toHaveAccessibleDescription(runnerProblem("none", "manual", "plain")!);
+    fireEvent.click(plain);
+    expect(plain).not.toBeChecked();
+  });
+
+  it("is ruled out on an SSH machine for every source, with the reason", () => {
+    workspaces = [
+      {
+        id: 2,
+        name: "site",
+        location: { kind: "ssh", machine: "devbox", path: "/srv/site" },
+        defaultBaseBranch: "main",
+        agentMerge: "never",
+        pathProblem: null,
+        source: "github",
+        completion: "pr_merge",
+        runner: "herdr",
+      },
+    ];
+    render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add workspace on devbox" }));
+    const dialog = screen.getByRole("dialog", { name: "New workspace on devbox" });
+
+    for (const source of ["GitHub", "Local git"]) {
+      fireEvent.click(option(dialog, source));
+      next(dialog);
+      next(dialog);
+      const plain = option(dialog, runnerLabels.plain);
+      expect(plain).toBeDisabled();
+      expect(plain).toHaveAccessibleDescription(runnerLocationProblem("plain", "ssh")!);
+      fireEvent.click(plain);
+      expect(plain).not.toBeChecked();
+      expect(option(dialog, "herdr")).toBeChecked();
+      back(dialog);
+      back(dialog);
+    }
   });
 });
 

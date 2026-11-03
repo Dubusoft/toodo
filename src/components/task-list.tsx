@@ -47,6 +47,7 @@ import { DetailsSheet } from "@/components/details-sheet";
 import { AgentBadge } from "@/components/agent-badge";
 import type { SheetNavigation } from "@/components/task-graph";
 import { PullRequestBadges } from "@/components/pull-request-badge";
+import { RunsPanel } from "@/components/runs-panel";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { CollapsibleForm } from "@/components/collapsible-form";
 import { MarkdownEditor } from "@/components/markdown-editor";
@@ -1316,6 +1317,8 @@ function TaskRow({
           )}
         </DetailField>
       )}
+      {/* A started task of a plain workspace has its runs here; one in progress starts them. */}
+      {detailed && capabilities.plainRuns && (task.status !== "planned" || isPaused(task)) && <RunsPanel task={task} />}
       {detailed && task.mergedWith && (
         <ShippedWith
           task={task}

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   commands,
   events,
+  type AgentAdapter,
   type BackupSettings,
   type CommandError,
   type CriterionId,
@@ -10,12 +11,14 @@ import {
   type MachineSettings,
   type NewTask,
   type NewWorkspace,
+  type RunId,
   type Task,
   type TaskEdit,
   type TaskId,
   type TaskResolution,
   type TaskAgentStatus,
   type TaskPullRequestStatus,
+  type TaskRun,
   type Timestamp,
   type Workspace,
   type WorkspaceId,
@@ -58,6 +61,9 @@ export const queryKeys = {
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
   taskActivity: (taskId: TaskId) => ["tasks", taskId, "activity"] as const,
   branchFreshness: (taskId: TaskId) => ["tasks", taskId, "branch-freshness"] as const,
+  taskRuns: (taskId: TaskId) => ["tasks", taskId, "runs"] as const,
+  /** Not under "tasks": a log can be large, so it is refetched only for its run. */
+  runLog: (runId: RunId | null) => ["run-log", runId] as const,
   herdrMachines: ["herdr-machines"] as const,
   backups: ["backups"] as const,
   backupSettings: ["backup-settings"] as const,
@@ -423,6 +429,53 @@ export function useTaskActivity(taskId: TaskId, enabled: boolean) {
     queryKey: queryKeys.taskActivity(taskId),
     queryFn: () => unwrap(commands.listTaskActivity(taskId)),
     enabled,
+  });
+}
+
+/**
+ * The runs of a task, oldest first. Runs send no events, so they are refetched on request,
+ * when the window regains focus, and when the tasks change.
+ */
+export function useTaskRuns(taskId: TaskId) {
+  return useQuery({
+    queryKey: queryKeys.taskRuns(taskId),
+    queryFn: () => unwrap(commands.listTaskRuns(taskId)),
+  });
+}
+
+/** A run with its events and the ends of its stdout and stderr; nothing is loaded while `runId` is `null`. */
+export function useRunLog(runId: RunId | null) {
+  return useQuery({
+    queryKey: queryKeys.runLog(runId),
+    queryFn: () => unwrap(commands.getRunLog(runId!, null)),
+    enabled: runId !== null,
+  });
+}
+
+/**
+ * Starts Claude or Codex on the worktree of an `in_progress` task of a plain workspace, with
+ * the task as its prompt. A launch that fails is still recorded as a failed run, so the runs
+ * are refetched either way.
+ */
+export function useStartPlainRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ taskId, adapter, mcp }: { taskId: TaskId; adapter: AgentAdapter; mcp: boolean }) =>
+      unwrap(commands.startPlainRun(taskId, adapter, null, mcp)),
+    onSettled: (_run, _error, { taskId }) => queryClient.invalidateQueries({ queryKey: queryKeys.taskRuns(taskId) }),
+  });
+}
+
+/** Stops a plain run: it ends as cancelled; a run that already ended stays as it is. */
+export function useStopRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (run: TaskRun) => unwrap(commands.stopRun(run.id)),
+    onSettled: (_stopped, _error, run) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.taskRuns(run.taskId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.runLog(run.id) }),
+      ]),
   });
 }
 

@@ -1,9 +1,9 @@
-import type { CompletionMode, RepositorySetup, Runner, Source } from "@/lib/bindings";
+import type { CompletionMode, RepositorySetup, Runner, Source, WorkspaceLocation } from "@/lib/bindings";
 
 /**
  * What a workspace location holds (source), when its tasks count as done (completion), and
  * what starting a task does (runner), all fixed when the workspace is created. The rules
- * mirror `check_axes`, `default_completion`, and `default_runner` in
+ * mirror `check_axes`, `check_runner_location`, `default_completion`, and `default_runner` in
  * `src-tauri/src/domain/model.rs`; the server checks them again on creation.
  */
 export type Axes = { source: Source; completion: CompletionMode; runner: Runner };
@@ -27,7 +27,7 @@ export type Picks = {
 
 export const sources: readonly Source[] = ["none", "local_git", "github"];
 export const completions: readonly CompletionMode[] = ["manual", "local_merge", "pr_merge"];
-export const runners: readonly Runner[] = ["herdr", "none"];
+export const runners: readonly Runner[] = ["herdr", "plain", "none"];
 export const repositoryKinds: readonly RepositoryKind[] = ["open", "init", "clone"];
 
 export const sourceLabels: Record<Source, string> = {
@@ -45,6 +45,7 @@ export const completionLabels: Record<CompletionMode, string> = {
 export const runnerLabels: Record<Runner, string> = {
   none: "No runner",
   herdr: "herdr",
+  plain: "Plain",
 };
 
 export const repositoryLabels: Record<RepositoryKind, string> = {
@@ -91,11 +92,23 @@ export function completionProblem(source: Source, completion: CompletionMode): s
  * `null` when it works. A merge needs the task branch that only a runner creates.
  */
 export function runnerProblem(source: Source, completion: CompletionMode, runner: Runner): string | null {
-  if (runner === "herdr" && source === "none") {
+  if (runner !== "none" && source === "none") {
     return "Needs a git repository for task worktrees; choose source Local git or GitHub";
   }
   if (runner === "none" && completion !== "manual") {
-    return `${completionLabels[completion]} needs the task branch that herdr creates; choose completion Manual`;
+    return `${completionLabels[completion]} needs the task branch that herdr or ${runnerLabels.plain} creates; choose completion Manual`;
+  }
+  return null;
+}
+
+/**
+ * Mirrors `check_runner_location`: why `runner` cannot run the tasks of a workspace at a
+ * location of `kind`, naming the choice that can; `null` when it can. Runner plain runs the
+ * agents on the server itself.
+ */
+export function runnerLocationProblem(runner: Runner, kind: WorkspaceLocation["kind"]): string | null {
+  if (runner === "plain" && kind === "ssh") {
+    return "Runs agents on this server only; choose herdr for an SSH machine, or add the workspace on Local";
   }
   return null;
 }
