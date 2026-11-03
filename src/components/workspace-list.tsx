@@ -533,6 +533,7 @@ const completionDescriptions: Record<CompletionMode, string> = {
 const runnerDescriptions: Record<Runner, string> = {
   herdr: "Opens agents in herdr on a worktree and branch of the task.",
   plain: "Runs Claude or Codex on this server in a worktree and branch of the task, without herdr.",
+  tmux: "Runs Claude or Codex in a tmux session in a worktree and branch of the task, without herdr.",
   none: "Only marks the task in progress.",
 };
 

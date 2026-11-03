@@ -46,6 +46,7 @@ export const runnerLabels: Record<Runner, string> = {
   none: "No runner",
   herdr: "herdr",
   plain: "Plain",
+  tmux: "tmux",
 };
 
 export const repositoryLabels: Record<RepositoryKind, string> = {
