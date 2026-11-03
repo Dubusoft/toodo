@@ -28,12 +28,18 @@ use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    JsonObject, ServerCapabilities, ServerConfig,
+};
+use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
+use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router};
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::adapters::git::Git;
 use crate::adapters::github::GitHub;
@@ -870,6 +876,133 @@ impl ServerHandler for ToodoMcp {
             )
             .with_instructions(INSTRUCTIONS)
     }
+
+    async fn call_tool(
+        &self,
+        mut request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        if let (Some(tool), Some(arguments)) = (
+            self.tool_router.get(&request.name),
+            request.arguments.as_mut(),
+        ) && let Err(message) = numbers_from_strings(&tool.input_schema, arguments)
+        {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "InvalidInput: {message}"
+            ))])
+            .into());
+        }
+        self.tool_router
+            .call(ToolCallContext::new(self, request, context))
+            .await
+    }
+}
+
+/// Agents often send IDs as strings, e.g. `"12"` or `"#12"`. Wherever the tool's input
+/// schema takes only integers, such a string becomes the number before the arguments are
+/// read, so the first call works; any other string there is rejected with what to send.
+fn numbers_from_strings(schema: &JsonObject, arguments: &mut JsonObject) -> Result<(), String> {
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return Ok(());
+    };
+    for (name, value) in arguments.iter_mut() {
+        let Some(property) = properties.get(name) else {
+            continue;
+        };
+        let accepts = Accepts::of(property, schema);
+        match value {
+            Value::String(text) if accepts.integer && !accepts.string => {
+                *value = number(name, text)?;
+            }
+            Value::Array(items) if accepts.integer_items => {
+                for item in items {
+                    if let Value::String(text) = item {
+                        *item = number(name, text)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The JSON values a property schema takes, as far as [`numbers_from_strings`] cares.
+#[derive(Default)]
+struct Accepts {
+    integer: bool,
+    string: bool,
+    /// An array whose items take integers but not strings.
+    integer_items: bool,
+}
+
+impl Accepts {
+    /// Follows `anyOf`, `oneOf`, and `$ref`s into the `$defs` of `root`.
+    fn of(schema: &Value, root: &JsonObject) -> Self {
+        let mut accepts = Self::default();
+        accepts.add(schema, root);
+        accepts
+    }
+
+    fn add(&mut self, schema: &Value, root: &JsonObject) {
+        if let Some(name) = schema
+            .get("$ref")
+            .and_then(Value::as_str)
+            .and_then(|reference| reference.strip_prefix("#/$defs/"))
+            && let Some(definition) = root.get("$defs").and_then(|defs| defs.get(name))
+        {
+            self.add(definition, root);
+        }
+        let types = match schema.get("type") {
+            Some(Value::Array(types)) => types.iter().filter_map(Value::as_str).collect(),
+            Some(Value::String(single)) => vec![single.as_str()],
+            _ => Vec::new(),
+        };
+        for kind in types {
+            match kind {
+                "integer" => self.integer = true,
+                "string" => self.string = true,
+                "array" => {
+                    if let Some(items) = schema.get("items") {
+                        let items = Self::of(items, root);
+                        self.integer_items |= items.integer && !items.string;
+                    }
+                }
+                _ => {}
+            }
+        }
+        for branches in ["anyOf", "oneOf"] {
+            for branch in schema
+                .get(branches)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                self.add(branch, root);
+            }
+        }
+    }
+}
+
+/// Reads `text`, a whole number with an optional leading `#`, for the field `name`.
+fn number(name: &str, text: &str) -> Result<Value, String> {
+    let trimmed = text.trim();
+    if let Ok(number) = trimmed.strip_prefix('#').unwrap_or(trimmed).parse::<i64>() {
+        return Ok(Value::from(number));
+    }
+    let lookup = if name.contains("workspace") {
+        "; list_workspaces lists the workspace IDs"
+    } else if name.contains("criterion") {
+        "; get_task lists a task's criteria with their IDs"
+    } else if name.ends_with("id") || name == "depends_on" || name == "related" {
+        "; search_tasks or list_tasks finds the task IDs"
+    } else {
+        ""
+    };
+    Err(format!(
+        "{name} must be a whole number such as 12, not {text:?}: call the tool again with \
+         {name} as a JSON number{lookup}"
+    ))
 }
 
 /// Tool failures are tool-level errors, so the agent sees the reason, e.g. a cycle.
@@ -1741,6 +1874,97 @@ mod tests {
             ["---", "name: toodo"]
         );
         assert_ne!(result["isError"], true);
+    }
+
+    #[test]
+    fn every_integer_argument_takes_a_numeric_string() {
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        let server = ToodoMcp::new(Arc::new(TestBackend::new(storage)));
+        let mut checked = Vec::new();
+        for tool in server.tool_router.list_all() {
+            let schema = &tool.input_schema;
+            let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+                continue;
+            };
+            for (name, property) in properties {
+                let accepts = Accepts::of(property, schema);
+                let converted = |value: Value| {
+                    let mut arguments = JsonObject::from_iter([(name.clone(), value)]);
+                    numbers_from_strings(schema, &mut arguments).map(|()| arguments[name].clone())
+                };
+                if accepts.integer && !accepts.string {
+                    for given in ["12", "#12", " 12 "] {
+                        assert_eq!(converted(given.into()), Ok(12.into()), "{name}: {given}");
+                    }
+                    assert_eq!(converted(12.into()), Ok(12.into()), "{name}");
+                    let error = converted("abc".into()).unwrap_err();
+                    assert!(
+                        error.starts_with(&format!("{name} must be a whole number")),
+                        "{error}"
+                    );
+                } else if accepts.integer_items {
+                    assert_eq!(
+                        converted(serde_json::json!(["3", 4])),
+                        Ok(serde_json::json!([3, 4])),
+                        "{name}"
+                    );
+                } else {
+                    continue;
+                }
+                checked.push(format!("{}.{name}", tool.name));
+            }
+        }
+        for argument in [
+            "get_task.id",
+            "list_tasks.workspace_id",
+            "create_task.workspace_id",
+            "create_task.depends_on",
+            "check_criterion.task_id",
+            "check_criterion.criterion_id",
+            "add_related.related_id",
+            "add_dependency.depends_on",
+            "remove_dependency.depends_on",
+        ] {
+            assert!(
+                checked.contains(&argument.to_owned()),
+                "{argument}: {checked:?}"
+            );
+        }
+
+        // merged_with also takes a pull request URL, so a string stays one.
+        let complete = server.tool_router.get("complete_task").unwrap();
+        let mut arguments = JsonObject::from_iter([("merged_with".to_owned(), "#178".into())]);
+        numbers_from_strings(&complete.input_schema, &mut arguments).unwrap();
+        assert_eq!(arguments["merged_with"], "#178");
+    }
+
+    #[test]
+    fn a_task_id_sent_as_a_string_reaches_the_tool() {
+        let listener = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (storage, task) = storage_with_task(None);
+        let app = router(
+            Arc::new(TestBackend::new(storage)),
+            "secret".to_owned(),
+            None,
+        );
+        std::thread::spawn(move || runtime().block_on(serve(listener, app)));
+        let get_task = |id: &str| {
+            let body = format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"get_task","arguments":{{"id":{id}}}}}}}"#
+            );
+            post(address, "Authorization: Bearer secret\r\n", &body)
+        };
+
+        let found = get_task(&format!("\"{}\"", task.id.0));
+        assert!(found.contains(r#"\"title\": \"Add login\""#), "{found}");
+        let rejected = get_task(r#""login""#);
+        assert!(
+            rejected
+                .contains(r#"InvalidInput: id must be a whole number such as 12, not \"login\""#),
+            "{rejected}"
+        );
+        assert!(rejected.contains(r#""isError":true"#), "{rejected}");
     }
 
     #[test]
