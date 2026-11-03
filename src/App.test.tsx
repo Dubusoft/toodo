@@ -1589,6 +1589,18 @@ describe("App", () => {
     expect(screen.queryByRole("note", { name: "herdr unavailable for #1" })).not.toBeInTheDocument();
   });
 
+  it("does not warn about herdr when no workspace uses it", async () => {
+    mocked.herdrStatus.mockResolvedValue({ status: "ok", data: { running: false, version: null } });
+    const notes: Workspace = { ...toodo, name: "notes", source: "none", completion: "manual", runner: "none" };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [notes] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Write notes")] });
+    await renderWorkspace(/^notes/);
+
+    expect(await screen.findByRole("button", { name: "Start #1" })).toBeEnabled();
+    await waitFor(() => expect(mocked.herdrStatus).toHaveBeenCalled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("saves the worktree root for the machine of the workspace", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [herdr] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
