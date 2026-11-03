@@ -916,18 +916,22 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "herdr" })).toBeInTheDocument();
   });
 
-  it("opens a repository browsed on the server", async () => {
+  it("opens a repository picked from folder suggestions on the server", async () => {
     const opened: Workspace = { ...toodo, location: { kind: "local", path: "/home/me/toodo" } };
     mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     mocked.createWorkspace.mockResolvedValue({ status: "ok", data: opened });
-    mocked.listDirectories.mockImplementation(async (_machine, path) => ({
-      status: "ok",
-      data:
-        path === "/home/me/toodo"
-          ? { path: "/home/me/toodo", directories: [] }
-          : { path: "/home/me", directories: ["toodo"] },
-    }));
+    mocked.listDirectories.mockImplementation(async (_machine, path) =>
+      path === "/nowhere/"
+        ? { status: "error", error: { kind: "notFound", message: "cannot list /nowhere/: No such file or directory" } }
+        : {
+            status: "ok",
+            data:
+              path === "/home/me/toodo/"
+                ? { path: "/home/me/toodo", directories: ["src"] }
+                : { path: "/home/me", directories: ["notes", "toodo", "tools"] },
+          },
+    );
     renderApp();
 
     await screen.findByText("No workspaces yet.");
@@ -936,15 +940,31 @@ describe("App", () => {
     expect(within(dialog).getByRole("radio", { name: "GitHub" })).toBeChecked();
     expect(within(dialog).getByRole("radio", { name: "Open existing" })).toBeChecked();
     nextToDetails(dialog);
-    await waitFor(() => expect(screen.getByLabelText("Folder")).toHaveValue("/home/me/"));
-    fireEvent.click(screen.getByRole("button", { name: "Browse..." }));
-    const browser = screen.getByRole("group", { name: "Browse folders on the server" });
-    fireEvent.click(await within(browser).findByRole("button", { name: "toodo/" }));
-    await within(browser).findByText("No subfolders");
-    fireEvent.click(within(browser).getByRole("button", { name: "Select folder" }));
-    expect(screen.getByLabelText("Folder")).toHaveValue("/home/me/toodo");
+    const folder = screen.getByRole("combobox", { name: "Folder" });
+    await waitFor(() => expect(folder).toHaveValue("/home/me/"));
+    expect(within(dialog).queryByRole("button", { name: "Browse..." })).toBeNull();
+    fireEvent.focus(folder);
+    expect(await screen.findByRole("option", { name: "tools/" })).toBeInTheDocument();
+
+    fireEvent.change(folder, { target: { value: "/nowhere/x" } });
+    expect(await screen.findByText(/^No suggestions: cannot list \/nowhere\//)).toBeInTheDocument();
+    fireEvent.change(folder, { target: { value: "/home/me/to" } });
+    const suggestions = await screen.findByRole("listbox", { name: "Folders in /home/me/" });
+    expect(within(suggestions).getAllByRole("option").map((option) => option.textContent)).toEqual(["toodo/", "tools/"]);
+    fireEvent.keyDown(folder, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.getByRole("dialog", { name: "New workspace on Local" })).toBeInTheDocument();
+    fireEvent.keyDown(folder, { key: "ArrowDown" });
+    await screen.findByRole("listbox");
+    fireEvent.keyDown(folder, { key: "ArrowUp" });
+    expect(screen.getByRole("option", { name: "tools/" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(folder, { key: "ArrowUp" });
+    fireEvent.keyDown(folder, { key: "Enter" });
+    expect(folder).toHaveValue("/home/me/toodo/");
+    expect(await screen.findByRole("option", { name: "src/" })).toBeInTheDocument();
+    expect(mocked.createWorkspace).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Name")).toHaveValue("toodo");
-    expect(mocked.listDirectories).toHaveBeenCalledWith({ kind: "local" }, null);
+    expect(mocked.listDirectories).toHaveBeenCalledWith({ kind: "local" }, "/home/me/toodo/");
     fireEvent.click(screen.getByRole("button", { name: "Open workspace" }));
 
     expect(await screen.findByRole("heading", { name: "toodo" })).toBeInTheDocument();
@@ -998,7 +1018,7 @@ describe("App", () => {
     });
   });
 
-  it("clones into a folder browsed on an SSH host and selects the workspace", async () => {
+  it("clones into a folder picked from suggestions on an SSH host and selects the workspace", async () => {
     mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
     mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [savedMachine("devbox")] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
@@ -1006,11 +1026,9 @@ describe("App", () => {
     mocked.listDirectories.mockImplementation(async (_machine, path) => ({
       status: "ok",
       data:
-        path === null
-          ? { path: "/home/me", directories: ["src"] }
-          : path === "/home/me/src"
-            ? { path: "/home/me/src", directories: [] }
-            : { path: "/home", directories: ["me"] },
+        path === null || path === "/home/me/"
+          ? { path: "/home/me", directories: ["src", "stuff"] }
+          : { path: "/home", directories: ["me", "you"] },
     }));
     renderApp();
 
@@ -1022,21 +1040,17 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Repository URL"), {
       target: { value: "git@github.com:o/herdr.git" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Browse..." }));
-    const browser = screen.getByRole("group", { name: "Browse folders on devbox" });
-    await within(browser).findByRole("button", { name: "src/" });
-    const folder = within(browser).getByLabelText("Remote folder");
-    fireEvent.change(folder, { target: { value: "/home" } });
-    fireEvent.keyDown(folder, { key: "Enter" });
-    await within(browser).findByRole("button", { name: "me/" });
-    expect(mocked.createWorkspace).not.toHaveBeenCalled();
-    fireEvent.change(folder, { target: { value: "" } });
-    fireEvent.keyDown(folder, { key: "Enter" });
-    fireEvent.click(await within(browser).findByRole("button", { name: "src/" }));
-    await within(browser).findByText("No subfolders");
-    fireEvent.click(within(browser).getByRole("button", { name: "Select folder" }));
+    const folder = screen.getByRole("combobox", { name: "Parent folder" });
+    await waitFor(() => expect(folder).toHaveValue("/home/me"));
+    fireEvent.focus(folder);
+    fireEvent.click(await screen.findByRole("option", { name: "me/" }));
+    expect(folder).toHaveValue("/home/me/");
+    await screen.findByRole("option", { name: "stuff/" });
+    fireEvent.change(folder, { target: { value: "/home/me/s" } });
+    fireEvent.keyDown(folder, { key: "Tab" });
+    expect(folder).toHaveValue("/home/me/src/");
 
-    expect(screen.getByLabelText("Parent folder")).toHaveValue("/home/me/src");
+    expect(mocked.listDirectories).toHaveBeenCalledWith({ kind: "ssh", label: "devbox" }, "/home/");
     expect(screen.getByText("Clones into /home/me/src/herdr")).toBeInTheDocument();
     expect(mocked.listDirectories).toHaveBeenCalledWith({ kind: "ssh", label: "devbox" }, null);
     fireEvent.click(screen.getByRole("button", { name: "Clone workspace" }));
