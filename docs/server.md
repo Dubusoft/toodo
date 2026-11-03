@@ -186,6 +186,7 @@ toodo-server
 | `TOODO_LISTEN` | `127.0.0.1:47616` | Address to listen on |
 | `TOODO_DATA_DIR` | `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server` | Database, backups, and access tokens |
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
+| `TOODO_PUBLIC_URL` | none | Public HTTPS origin, e.g. `https://toodo.example.com`; turns on OAuth for chat apps (see [Chat Apps over OAuth](#chat-apps-over-oauth)) |
 | `TOODO_PUSH_SUBJECT` | `https://github.com/dev-bokdong/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
 
 On first start the data directory gets two access tokens:
@@ -332,6 +333,75 @@ Besides the regular task tools, two arguments help an agent wire and start a pla
 no merge tool: agents follow the workspace's agent merge policy, which never allows merging
 past the base branch.
 
+### Chat Apps over OAuth
+
+The ChatGPT and Claude apps can plan in Toodo as a remote MCP server. They can't hold the
+static `mcp-token`, so they sign in with OAuth instead, and the server owner approves each
+one. This is public mode, and it's off by default.
+
+**Turning it on.** Set `TOODO_PUBLIC_URL` to the origin the apps reach the server at,
+for example `Environment=TOODO_PUBLIC_URL=https://toodo.example.com` in the
+[systemd](#systemd) unit. It must be `https://` with no path, query, or fragment (a
+trailing `/` is fine); `http://` is accepted only for `localhost`, `127.0.0.1`, and
+`[::1]`. Anything else stops the server at start with a message naming the expected form.
+
+Without it, nothing changes: the OAuth and discovery paths answer `404`, and `/mcp` accepts
+only the MCP token, only from loopback peers with a loopback `Host`. A request from another
+address gets `403` saying to connect through loopback or an SSH tunnel, or to set
+`TOODO_PUBLIC_URL`. With it, `/mcp` also accepts the public host, and requests may come from
+any peer (the tunnel or proxy in front is the peer). Local agents keep using `mcp-token`
+on loopback as before and still see every tool.
+
+**What a chat app can do.** An app gets one or both scopes:
+
+- `toodo.read`: `read_toodo_skill`, `list_workspaces`, `list_tasks`, `search_tasks`,
+  `get_task`.
+- `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `update_task`,
+  `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
+  `add_criterion`, `remove_criterion`, `check_criterion`, `add_progress_note`,
+  `report_blocker`, and `pause_task`.
+
+None of these runs git, herdr, gh, or ssh. `create_workspace` accepts only
+`source: "none"` from an app; git workspaces are added in the Toodo app or by a local
+agent. The tools that run things stay local: `current_task`, `start_task`, `resume_task`,
+`restore_worktree`, `set_worktree_root`, `list_machine_settings`, `complete_task`, and
+`conclude_task` never appear in an app's tool list, and calling one is refused even with
+`toodo.write`. `check_criterion` checks a stored manual criterion and never runs a
+criterion's command; `pause_task` keeps the worktree and herdr workspace. An app's
+`initialize` reply and `read_toodo_skill` carry planning instructions for a chat, not the
+worktree and pull request workflow.
+
+**Connecting.** In ChatGPT or Claude, add a custom (remote) MCP connector with the URL
+`https://toodo.example.com/mcp` and OAuth authentication; leave client ID and secret empty,
+since the app registers itself. The app finds the authorization server from the `401`
+at `/mcp`, which points at `/.well-known/oauth-protected-resource/mcp`. It then opens the
+consent page at `/oauth/authorize` in the browser: it names the app and where it returns
+to, lists the scopes (read is always granted; untick write for a read-only app), and asks
+for `web-token`. Approve, and the browser returns to the app. After 5 wrong tokens the
+request is dropped; start the connection again from the app.
+
+**Tokens and revoking.** An access token lasts an hour and a refresh token 30 days. Each
+refresh replaces both, and a refresh token presented twice revokes the whole grant, so a
+copied token stops working once either side uses it. Only SHA-256 hashes of tokens and
+client secrets are stored. To disconnect an app, revoke it under **Connected apps** in
+Settings, which also shows the public MCP URL, or disconnect it in the app itself; either
+ends its access and refresh tokens at once, and the app connects again through the consent
+page.
+
+The endpoints, all under `TOODO_PUBLIC_URL`:
+
+- `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp`:
+  protected resource metadata (RFC 9728).
+- `/.well-known/oauth-authorization-server` and `/.well-known/openid-configuration`:
+  authorization server metadata (RFC 8414).
+- `POST /oauth/register`: dynamic client registration (RFC 7591). Client ID metadata
+  documents (an `https://` URL as `client_id`) work too.
+- `GET` and `POST /oauth/authorize`: the consent page; PKCE with `S256` is required.
+- `POST /oauth/token` and `POST /oauth/revoke`.
+
+To publish the server through Cloudflare, see
+[Chat apps through the tunnel](#chat-apps-through-the-tunnel).
+
 ### systemd
 
 Run it as the user who runs herdr, so it finds herdr's socket, `~/.ssh/config`, and the
@@ -350,6 +420,7 @@ Wants=herdr-server.service
 ExecStart=/home/me/.local/bin/toodo-server
 Environment=TOODO_LISTEN=127.0.0.1:47616
 Environment=TOODO_DATA_DIR=/home/me/.local/share/toodo-server
+# Environment=TOODO_PUBLIC_URL=https://toodo.example.com   (public mode, off by default)
 Environment=PATH=/home/me/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=5
@@ -421,8 +492,9 @@ You need a domain on Cloudflare and a Zero Trust organization (the free plan doe
    `toodo.example.com` (the whole hostname, no path) with an *Allow* policy that includes
    only your own identity, for example your e-mail address with the one-time PIN login. Do
    it before the hostname resolves, so nothing is ever reachable without it. Add no
-   *Bypass* policy: the API, the event stream, and `/mcp` all sit behind the same
-   application.
+   *Bypass* policy here: the API, the event stream, and `/mcp` all sit behind this
+   application. Chat apps need a narrow bypass of their own; see
+   [Chat apps through the tunnel](#chat-apps-through-the-tunnel).
 2. **A tunnel of its own.** Create a new, remotely managed tunnel (*Networks > Tunnels*)
    for the server instead of adding a hostname to a tunnel the machine already runs for
    something else: it gets its own token, can be stopped or deleted alone, and a mistake in
@@ -484,12 +556,43 @@ Things to know:
 - `/api/events` works through the tunnel: Cloudflare passes `text/event-stream` responses
   through unbuffered, and the server's 15-second keep-alive stays below Cloudflare's idle
   timeout.
-- Agents keep using `/mcp` on loopback (or through the server's reverse SSH tunnels);
-  do not point remote agents at the public hostname, where Access stops them.
+- Agents keep using `/mcp` on loopback (or through the server's reverse SSH tunnels)
+  with `mcp-token`; don't point them at the public hostname. Only chat apps signed in with
+  OAuth use it, and only after the bypass in
+  [Chat apps through the tunnel](#chat-apps-through-the-tunnel).
 - If a phone is lost, revoke it under **Devices** in Settings from another device; the shared
   `web-token` and the other devices keep working.
 - To take it offline again, stop and disable `toodo-tunnel`; to remove it, delete the
   tunnel, its DNS record, and the Access application.
+
+#### Chat Apps through the Tunnel
+
+ChatGPT and Claude can't sign in to Access, so the paths they use must skip it while the
+rest of the hostname stays behind it. Set `TOODO_PUBLIC_URL=https://toodo.example.com` (see
+[Chat Apps over OAuth](#chat-apps-over-oauth)) and restart the server. Then, in Zero Trust,
+add one more self-hosted Access application for the same hostname with these paths only:
+
+- `toodo.example.com/mcp`
+- `toodo.example.com/oauth/*`
+- `toodo.example.com/.well-known/*`
+
+Give it a single *Bypass* policy that includes everyone. Access applies the most specific
+path, so these three skip Access and everything else, the web app, `/api`, and the event
+stream, still goes through the first application's *Allow* policy. Bypass nothing else.
+On the bypassed paths the server checks the caller itself: `/mcp` needs an OAuth access
+token, and the consent page needs `web-token`.
+
+Check from outside: `/mcp` now answers the server's own `401`, and `/api` still redirects
+to the Access login:
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/mcp
+# 401
+curl -s https://toodo.example.com/.well-known/oauth-protected-resource/mcp
+# {"resource":"https://toodo.example.com/mcp",...}
+curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_tasks
+# 302
+```
 
 ## Development
 

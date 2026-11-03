@@ -80,6 +80,8 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         events::list_agent_statuses,
         mcp::mcp_server_info,
         mcp::list_mcp_tunnels,
+        mcp::list_connected_apps,
+        mcp::revoke_connected_app,
         review::review_period,
         backup::get_backup_settings,
         backup::save_backup_settings,

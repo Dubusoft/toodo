@@ -14,7 +14,8 @@ use serde::de::DeserializeOwned;
 use super::Services;
 use crate::commands::types::{
     BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost, NewTask, NewWorkspace,
-    TaskEdit, TaskId, TaskResolution, Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
+    OAuthGrantId, TaskEdit, TaskId, TaskResolution, Timestamp, Workspace, WorkspaceId,
+    WorkspaceLocation,
 };
 use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
@@ -165,6 +166,12 @@ macro_rules! commands {
 
 commands!(s => {
     "app_info"() => sync Reply::value(crate::commands::app_info());
+    "list_connected_apps"() => sync Reply::result(
+        mcp::list_connected_apps(State(&s.storage), State(&s.public_url))
+    );
+    "revoke_connected_app"(grant_id: OAuthGrantId) => sync Reply::result(
+        mcp::revoke_connected_app(State(&s.storage), grant_id)
+    );
 
     "list_workspaces"() => sync Reply::result(workspaces::list_workspaces(State(&s.storage)));
     "get_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::get_workspace(State(&s.storage), id));

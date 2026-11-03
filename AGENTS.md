@@ -95,6 +95,9 @@ Layout:
     remote directories), each behind a trait with a fake for tests.
   - `src-tauri/src/mcp/`: MCP server for coding agents (rmcp over loopback HTTP with a
     bearer token); `tools.rs` holds the tool logic over `Storage`.
+  - `src-tauri/src/oauth/`: OAuth authorization server for chat apps on `/mcp`, mounted
+    only when `TOODO_PUBLIC_URL` is set (`routes.rs` endpoints, `clients.rs` client
+    metadata documents).
   - `src-tauri/src/storage/`: SQLite persistence (`rusqlite`, bundled SQLite). Schema
     changes go in a new entry appended to `migrations.rs`; never edit a released one.
     `import.rs` backs `toodo-server import`.

@@ -617,6 +617,15 @@ step.
     (`list_mcp_tunnels`); its tab and the sidebar's Settings entry count retrying tunnels.
   - The forwarded port listens on the remote loopback only, so other users of that
     machine can reach it; the bearer token keeps them out.
+- **OAuth server** (`src-tauri/src/oauth/`): the single-owner authorization server that lets
+  chat apps reach `/mcp` when `TOODO_PUBLIC_URL` is set. It serves discovery metadata,
+  dynamic client registration and client ID metadata documents, the consent page (the
+  owner approves with `web-token`), and the token and revocation endpoints. Grants carry
+  an owner key and the scopes `toodo.read` and `toodo.write`; tokens and secrets are
+  stored as SHA-256 hashes in `storage/oauth.rs`, while codes and pending consents stay in
+  memory. The MCP server checks OAuth access tokens after the static token and limits
+  those sessions to the tools that run no git, herdr, gh, or ssh command. Off by default,
+  when its routes are not mounted.
 - **Storage**: SQLite database `toodo.sqlite3` in the server's data directory (`TOODO_DATA_DIR`)
   for workspaces, machine settings, tasks, dependencies, and commit records
   (`src-tauri/src/storage/`).

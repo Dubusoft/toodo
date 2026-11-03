@@ -252,6 +252,10 @@ export const commands = {
 	listAgentStatuses: () => invoke<TaskAgentStatus[]>("list_agent_statuses"),
 	mcpServerInfo: () => invoke<McpServerInfo>("mcp_server_info"),
 	listMcpTunnels: () => invoke<McpTunnel[]>("list_mcp_tunnels"),
+	/**  Lists live OAuth connections and the MCP URL to paste into a chat app. */
+	listConnectedApps: () => typedError<ConnectedApps, CommandError>(invoke("list_connected_apps")),
+	/**  Disconnects an app by revoking its whole token family. */
+	revokeConnectedApp: (grantId: OAuthGrantId) => typedError<null, CommandError>(invoke("revoke_connected_app", { grantId })),
 	/**
 	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
 	 *  ordered by outcome, then by time. The caller picks the period, such as a week, a
@@ -421,6 +425,21 @@ export type CompletionMode =
 "local_merge" | 
 /**  Their pull request is merged into the base branch. */
 "pr_merge";
+
+/**  A live app connection shown in Settings. */
+export type ConnectedApp = {
+	grantId: OAuthGrantId,
+	clientName: string | null,
+	clientId: string,
+	scopes: string,
+	createdAt: Timestamp,
+	lastUsedAt: Timestamp | null,
+};
+
+export type ConnectedApps = {
+	publicMcpUrl: string | null,
+	apps: ConnectedApp[],
+};
 
 /**  A completion criterion of a task. */
 export type Criterion = {
@@ -662,6 +681,9 @@ export type NoteKind =
 "progress" | 
 /**  Something that stops the work until someone acts on it. */
 "blocker";
+
+/**  An OAuth app with an unrevoked grant and a live token. */
+export type OAuthGrantId = number;
 
 /**
  *  Why the server cannot run git in the repository of a local workspace. Paths on SSH

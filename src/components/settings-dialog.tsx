@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bell, Bot, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, SlidersHorizontal, X } from "lucide-react";
+import { Bell, Bot, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, Plug, SlidersHorizontal, X } from "lucide-react";
 import { AgentAccessPanel, AgentAccessStatus } from "@/components/agent-access-panel";
 import { BackupPanel } from "@/components/backup-panel";
+import { ConnectedAppsPanel } from "@/components/connected-apps-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -12,7 +13,7 @@ import { keepFocusIn } from "@/lib/focus-trap";
 import { useNarrow } from "@/lib/narrow";
 import { cn } from "@/lib/utils";
 
-export type SettingsSection = "general" | "agents" | "devices" | "notifications" | "backups";
+export type SettingsSection = "general" | "agents" | "apps" | "devices" | "notifications" | "backups";
 
 type Section = {
   id: SettingsSection;
@@ -24,6 +25,7 @@ type Section = {
 const sections: Section[] = [
   { id: "general", label: "General", icon: <SlidersHorizontal /> },
   { id: "agents", label: "Agent access", icon: <Bot />, status: <AgentAccessStatus /> },
+  { id: "apps", label: "Connected apps", icon: <Plug /> },
   { id: "devices", label: "Devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
   { id: "notifications", label: "Notifications", icon: <Bell />, status: <NotificationsStatus /> },
   { id: "backups", label: "Backups", icon: <DatabaseBackup /> },
@@ -233,6 +235,8 @@ export function SettingsDialog({
                   <GeneralSettings />
                 ) : item.id === "agents" ? (
                   <AgentAccessPanel />
+                ) : item.id === "apps" ? (
+                  <ConnectedAppsPanel />
                 ) : item.id === "devices" ? (
                   <DevicesPanel />
                 ) : item.id === "notifications" ? (

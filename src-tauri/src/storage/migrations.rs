@@ -929,6 +929,35 @@ pub(super) const MIGRATIONS: &[&str] = &[
                             AND r.provider_workspace_ref = NEW.herdr_workspace_id);
     END;
     ",
+    // Version 30: OAuth clients, owner grants, and hashed rotating credentials.
+    r"
+    CREATE TABLE oauth_clients (
+        client_id TEXT PRIMARY KEY,
+        secret_hash TEXT,
+        client_name TEXT,
+        redirect_uris TEXT NOT NULL,
+        auth_method TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE oauth_grants (
+        id INTEGER PRIMARY KEY,
+        owner_key TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        client_name TEXT,
+        scopes TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        revoked_at INTEGER
+    );
+    CREATE TABLE oauth_tokens (
+        token_hash TEXT PRIMARY KEY,
+        grant_id INTEGER NOT NULL REFERENCES oauth_grants(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('access', 'refresh')),
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER
+    );
+    CREATE INDEX oauth_tokens_by_grant ON oauth_tokens(grant_id);
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for

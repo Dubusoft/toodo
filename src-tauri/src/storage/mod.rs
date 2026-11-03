@@ -14,6 +14,7 @@ mod criteria;
 mod devices;
 mod import;
 mod migrations;
+pub mod oauth;
 mod push;
 mod runtime;
 mod search;

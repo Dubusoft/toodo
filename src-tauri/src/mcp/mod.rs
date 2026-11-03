@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -32,7 +32,8 @@ use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    JsonObject, ServerCapabilities, ServerConfig,
+    InitializeRequestParams, InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams,
+    ServerCapabilities, ServerConfig,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
@@ -49,6 +50,7 @@ use crate::commands::tasks as task_commands;
 use crate::commands::types::Task;
 use crate::commands::{CommandResult, StorageState, lock};
 use crate::domain::model;
+use crate::oauth::{self, PublicUrl};
 
 pub(crate) const TOKEN_FILE: &str = "mcp-token";
 
@@ -174,6 +176,9 @@ merge baseBranch onward (e.g. into main).";
 /// What the app needs to serve the tools: the database, the adapters the app's commands
 /// run, and a way to announce changes.
 pub trait Backend: Notifier + Send + Sync + 'static {
+    fn public_url(&self) -> Option<&PublicUrl> {
+        None
+    }
     fn storage(&self) -> &StorageState;
     fn git(&self) -> &Git;
     fn github(&self) -> &GitHub;
@@ -264,7 +269,11 @@ pub(crate) fn bind(address: SocketAddr) -> io::Result<TcpListener> {
 }
 
 pub(crate) async fn serve(listener: TcpListener, app: axum::Router) -> io::Result<()> {
-    axum::serve(tokio::net::TcpListener::from_std(listener)?, app).await
+    axum::serve(
+        tokio::net::TcpListener::from_std(listener)?,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
 }
 
 /// The token in `path`, created with 32 random bytes on first use. On Unix only the owner
@@ -327,6 +336,18 @@ pub(crate) fn router(
     token: String,
     web_token: Option<String>,
 ) -> axum::Router {
+    let mut config = StreamableHttpServerConfig::default()
+        .with_legacy_session_mode(false)
+        .with_json_response(true);
+    if let Some(issuer) = backend.public_url() {
+        let url = reqwest::Url::parse(issuer.as_str()).expect("validated public URL");
+        config
+            .allowed_hosts
+            .push(url.host_str().unwrap().to_owned());
+        config
+            .allowed_hosts
+            .push(issuer.as_str().split_once("://").unwrap().1.to_owned());
+    }
     let guard = Arc::new(Guard {
         token,
         web_token,
@@ -335,9 +356,7 @@ pub(crate) fn router(
     let service = StreamableHttpService::new(
         move || Ok(ToodoMcp::new(backend.clone())),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default()
-            .with_legacy_session_mode(false)
-            .with_json_response(true),
+        config,
     );
     axum::Router::new()
         .nest_service("/mcp", service)
@@ -352,9 +371,59 @@ struct Guard {
 
 /// Lets requests through that bear the MCP token; the others get `401` with the reason,
 /// which is also kept for the app to show.
-async fn require_token(State(guard): State<Arc<Guard>>, request: Request, next: Next) -> Response {
+async fn require_token(
+    State(guard): State<Arc<Guard>>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let public_url = guard.backend.public_url();
+    if public_url.is_none()
+        && !request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .is_some_and(|ConnectInfo(peer)| match peer.ip() {
+                std::net::IpAddr::V4(ip) => ip.is_loopback(),
+                std::net::IpAddr::V6(ip) => ip
+                    .to_ipv4_mapped()
+                    .map_or(ip.is_loopback(), |ip| ip.is_loopback()),
+            })
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            "Connect through loopback or an SSH tunnel, or set TOODO_PUBLIC_URL to enable remote MCP access.",
+        )
+            .into_response();
+    }
     let rejection = match bearer(request.headers()) {
-        Ok(presented) if same_secret(presented, &guard.token) => return next.run(request).await,
+        Ok(presented) if same_secret(presented, &guard.token) => {
+            request.extensions_mut().insert(Access::Static);
+            return next.run(request).await;
+        }
+        Ok(presented) if public_url.is_some() => {
+            match oauth::resolve_access_token(guard.backend.storage(), presented) {
+                Ok(Some(grant)) => {
+                    request.extensions_mut().insert(Access::OAuth(grant));
+                    return next.run(request).await;
+                }
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Reconnect from the app after the server database is available.",
+                    )
+                        .into_response();
+                }
+                Ok(None) => {}
+            }
+            if guard
+                .web_token
+                .as_deref()
+                .is_some_and(|web| same_secret(presented, web))
+            {
+                Rejection::OtherSurfaceToken
+            } else {
+                Rejection::WrongToken
+            }
+        }
         Ok(presented)
             if guard
                 .web_token
@@ -368,8 +437,76 @@ async fn require_token(State(guard): State<Arc<Guard>>, request: Request, next: 
     };
     let server = guard.backend.server();
     server.rejections.record(rejection);
-    unauthorized(Surface::Mcp, rejection, Some(&server.instance))
+    let mut response = unauthorized(Surface::Mcp, rejection, Some(&server.instance));
+    if let Some(issuer) = public_url {
+        let invalid = if bearer(request.headers()).is_ok() {
+            ", error=\"invalid_token\""
+        } else {
+            ""
+        };
+        response.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            format!("Bearer resource_metadata=\"{issuer}/.well-known/oauth-protected-resource/mcp\"{invalid}")
+                .parse().expect("validated public URL header"),
+        );
+    }
+    response
 }
+
+/// Authentication carried through rmcp's HTTP request parts on every request.
+#[derive(Clone, Debug)]
+pub enum Access {
+    Static,
+    OAuth(oauth::LiveGrant),
+}
+
+impl Access {
+    fn of(context: &RequestContext<RoleServer>) -> Option<&Self> {
+        context
+            .extensions
+            .get::<axum::http::request::Parts>()?
+            .extensions
+            .get()
+    }
+
+    fn check_tool(&self, name: &str) -> Result<(), String> {
+        let Self::OAuth(grant) = self else {
+            return Ok(());
+        };
+        let scopes = grant.scopes;
+        let allowed = match name {
+            "read_toodo_skill" | "list_workspaces" | "list_tasks" | "search_tasks" | "get_task" => {
+                scopes.can_read()
+            }
+            "create_workspace" | "create_task" | "update_task" | "add_dependency"
+            | "remove_dependency" | "add_related" | "remove_related" | "add_criterion"
+            | "remove_criterion" | "check_criterion" | "add_progress_note" | "report_blocker"
+            | "pause_task" => scopes.can_write(),
+            _ => {
+                return Err(format!(
+                    "{name} is local-only; use the Toodo app or a local agent with the MCP token."
+                ));
+            }
+        };
+        if allowed {
+            Ok(())
+        } else {
+            Err(format!(
+                "{name} requires toodo.write; reconnect from the app and approve that scope."
+            ))
+        }
+    }
+}
+
+const CHAT_INSTRUCTIONS: &str = "Plan workspaces and tasks in Toodo. Call list_workspaces and \
+search_tasks before creating anything; reuse matching workspaces and open tasks, and read \
+get_task and its links for earlier decisions. Create only source none workspaces; add git \
+workspaces in the Toodo app or through a local agent. Write task descriptions in English \
+GitHub-flavored Markdown with ## Purpose and ## Background sections; put verifiable completion \
+conditions in criteria. Set estimates for split work and due dates only when the user gives \
+a deadline. A dependency points from the dependent task to its prerequisites: task_id depends \
+on depends_on. Use related links for context that does not block work. Record decisions and \
+blockers in progress notes. Use the Toodo app or a local agent to implement tasks.";
 
 /// The bearer token of a request's `Authorization` header; the scheme is matched without
 /// regard to case, as HTTP defines it.
@@ -868,6 +1005,37 @@ impl ToodoMcp {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for ToodoMcp {
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        context.peer.set_peer_info(request.clone());
+        let mut result = self.negotiate_initialize(&request)?;
+        if matches!(Access::of(&context), Some(Access::OAuth(_))) {
+            result.instructions = Some(CHAT_INSTRUCTIONS.to_owned());
+        }
+        Ok(result)
+    }
+
+    async fn list_tools(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        let access = Access::of(&context);
+        let tools = self
+            .tool_router
+            .list_all()
+            .into_iter()
+            .filter(|tool| access.is_none_or(|access| access.check_tool(&tool.name).is_ok()))
+            .collect();
+        Ok(ListToolsResult {
+            tools,
+            ..Default::default()
+        })
+    }
+
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(
@@ -883,6 +1051,24 @@ impl ServerHandler for ToodoMcp {
         mut request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        if let Some(access @ Access::OAuth(_)) = Access::of(&context) {
+            let rejected = access.check_tool(&request.name).err().or_else(|| {
+                let args = request.arguments.as_ref();
+                (request.name == "create_workspace"
+                    && (args.and_then(|a| a.get("source")).and_then(Value::as_str) != Some("none")
+                        || args.and_then(|a| a.get("clone_url")).is_some_and(|value| !value.is_null())
+                        || args.and_then(|a| a.get("init")).is_some_and(|value| value != &Value::Bool(false))))
+                    .then(|| "Add git workspaces in the Toodo app or through a local agent with the MCP token; retry with source: \"none\" and omit clone_url and init.".to_owned())
+            });
+            if let Some(message) = rejected {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(message)]).into());
+            }
+            if request.name == "read_toodo_skill" {
+                return Ok(
+                    CallToolResult::success(vec![ContentBlock::text(CHAT_INSTRUCTIONS)]).into(),
+                );
+            }
+        }
         if let (Some(tool), Some(arguments)) = (
             self.tool_router.get(&request.name),
             request.arguments.as_mut(),
@@ -1062,6 +1248,7 @@ mod tests {
 
     struct TestBackend {
         storage: StorageState,
+        public_url: Option<PublicUrl>,
         git: Git,
         github: GitHub,
         herdr: Herdr,
@@ -1083,6 +1270,7 @@ mod tests {
             let runner = |results: Scripted| Box::new(Arc::new(FakeRunner::new(results)));
             Self {
                 storage: std::sync::Mutex::new(storage),
+                public_url: None,
                 git: Git::new(runner(git)),
                 github: GitHub::new(runner(Vec::new())),
                 herdr: Herdr::new(runner(herdr)),
@@ -1116,6 +1304,10 @@ mod tests {
     }
 
     impl Backend for TestBackend {
+        fn public_url(&self) -> Option<&PublicUrl> {
+            self.public_url.as_ref()
+        }
+
         fn storage(&self) -> &StorageState {
             &self.storage
         }
@@ -1762,11 +1954,15 @@ mod tests {
     }
 
     fn post(address: SocketAddr, authorization: &str, body: &str) -> String {
+        post_host(address, authorization, body, "127.0.0.1")
+    }
+
+    fn post_host(address: SocketAddr, authorization: &str, body: &str, host: &str) -> String {
         use std::io::{Read, Write};
         let mut stream = std::net::TcpStream::connect(address).unwrap();
         write!(
             stream,
-            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+            "POST /mcp HTTP/1.1\r\nHost: {host}\r\nContent-Type: application/json\r\n\
              Accept: application/json, text/event-stream\r\n{authorization}\
              Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
@@ -1973,5 +2169,258 @@ mod tests {
         assert!(same_secret("abc", "abc"));
         assert!(!same_secret("abd", "abc"));
         assert!(!same_secret("ab", "abc"));
+    }
+
+    fn oauth_grant(backend: &TestBackend, token: &str, scopes: oauth::Scopes) -> i64 {
+        let client = crate::storage::oauth::Client {
+            client_id: token.to_owned(),
+            secret_hash: None,
+            client_name: Some("Test app".to_owned()),
+            redirect_uris: vec!["https://client.example/callback".to_owned()],
+            auth_method: "none".to_owned(),
+            created_at: 1,
+        };
+        let mut storage = lock(&backend.storage);
+        storage.oauth_register_client(&client).unwrap();
+        storage
+            .oauth_create_grant(
+                &oauth::OwnerKey("test-owner".to_owned()),
+                &client,
+                scopes,
+                &oauth::hash(token),
+                &oauth::hash(&format!("{token}-refresh")),
+            )
+            .unwrap()
+    }
+
+    /// Runs the HTTP MCP surface with fake process adapters on an ephemeral loopback port.
+    fn test_endpoint(backend: Arc<TestBackend>, peer: Option<SocketAddr>) -> SocketAddr {
+        let listener = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut app = router(backend, "secret".to_owned(), Some("web".to_owned()));
+        if let Some(peer) = peer {
+            app = app.layer(axum::Extension(ConnectInfo(peer)));
+        }
+        std::thread::spawn(move || runtime().block_on(serve(listener, app)));
+        address
+    }
+
+    fn rpc_result(address: SocketAddr, token: &str, method: &str, params: Value) -> Value {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": method, "params": params,
+        });
+        let response = post(
+            address,
+            &format!("Authorization: Bearer {token}\r\n"),
+            &body.to_string(),
+        );
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let body = response.split_once("\r\n\r\n").unwrap().1;
+        let parsed: Value = serde_json::from_str(body).unwrap();
+        assert!(parsed.get("error").is_none(), "{parsed}");
+        parsed["result"].clone()
+    }
+
+    #[test]
+    fn default_mcp_rejects_non_loopback_peers_and_accepts_mapped_loopback() {
+        let backend = Arc::new(TestBackend::new(
+            crate::storage::Storage::open_in_memory().unwrap(),
+        ));
+        let remote = test_endpoint(backend.clone(), Some("192.0.2.1:1234".parse().unwrap()));
+        let response = post_initialize(remote, "Authorization: Bearer secret\r\n");
+        assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+        assert!(response.contains("TOODO_PUBLIC_URL"), "{response}");
+        let mapped = test_endpoint(backend, Some("[::ffff:127.0.0.1]:1234".parse().unwrap()));
+        let response = post_initialize(mapped, "Authorization: Bearer secret\r\n");
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    }
+
+    #[test]
+    fn oauth_mcp_filters_tools_checks_scopes_and_revocation_without_running_adapters() {
+        let mut backend = TestBackend::new(crate::storage::Storage::open_in_memory().unwrap());
+        backend.public_url = Some(PublicUrl::parse("https://toodo.example:8443").unwrap());
+        let backend = Arc::new(backend);
+        let read_grant = oauth_grant(&backend, "read-access", oauth::Scopes::READ);
+        oauth_grant(
+            &backend,
+            "write-access",
+            oauth::Scopes::parse(Some("toodo.write")).unwrap(),
+        );
+        let address = test_endpoint(backend.clone(), Some("192.0.2.1:1234".parse().unwrap()));
+        for host in [
+            "toodo.example",
+            "toodo.example:8443",
+            "localhost",
+            "127.0.0.1",
+        ] {
+            let response = post_host(
+                address,
+                "Authorization: Bearer secret\r\n",
+                r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
+                host,
+            );
+            assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        }
+        let response = post_host(
+            address,
+            "Authorization: Bearer secret\r\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#,
+            "other.example",
+        );
+        assert!(response.starts_with("HTTP/1.1 403"), "{response}");
+        let response = post_initialize(address, "");
+        assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+        assert!(response.contains("resource_metadata=\"https://toodo.example:8443/.well-known/oauth-protected-resource/mcp\""), "{response}");
+        let response = post_initialize(address, "Authorization: Bearer unknown\r\n");
+        assert!(response.contains("error=\"invalid_token\""), "{response}");
+        let response = post_initialize(address, "Authorization: Bearer read-access\r\n");
+        assert!(response.contains(CHAT_INSTRUCTIONS), "{response}");
+        assert!(!response.contains("Call current_task"), "{response}");
+
+        let list = |token| rpc_result(address, token, "tools/list", serde_json::json!({}));
+        let names = |list: Value| {
+            list["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap().to_owned())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let read = names(list("read-access"));
+        assert_eq!(
+            read,
+            [
+                "read_toodo_skill",
+                "list_workspaces",
+                "list_tasks",
+                "search_tasks",
+                "get_task"
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+        );
+        let all = names(list("secret"));
+        let server = ToodoMcp::new(backend.clone());
+        assert_eq!(
+            all,
+            server
+                .tool_router
+                .list_all()
+                .iter()
+                .map(|t| t.name.to_string())
+                .collect()
+        );
+        let write = names(list("write-access"));
+        assert!(read.is_subset(&write));
+        assert_eq!(
+            write,
+            read.iter()
+                .map(String::as_str)
+                .chain([
+                    "create_workspace",
+                    "create_task",
+                    "update_task",
+                    "add_dependency",
+                    "remove_dependency",
+                    "add_related",
+                    "remove_related",
+                    "add_criterion",
+                    "remove_criterion",
+                    "check_criterion",
+                    "add_progress_note",
+                    "report_blocker",
+                    "pause_task",
+                ])
+                .map(str::to_owned)
+                .collect()
+        );
+        for name in [
+            "current_task",
+            "start_task",
+            "resume_task",
+            "restore_worktree",
+            "set_worktree_root",
+            "list_machine_settings",
+            "complete_task",
+            "conclude_task",
+        ] {
+            assert!(!write.contains(name), "{name}");
+            assert!(all.contains(name), "{name}");
+            let refused = rpc_result(
+                address,
+                "write-access",
+                "tools/call",
+                serde_json::json!({"name":name, "arguments":{}}),
+            );
+            assert_eq!(refused["isError"], true, "{refused}");
+            assert!(
+                refused["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("local-only"),
+                "{refused}"
+            );
+        }
+        let call = |token, name, arguments| {
+            rpc_result(
+                address,
+                token,
+                "tools/call",
+                serde_json::json!({"name": name, "arguments": arguments}),
+            )
+        };
+        let refused = call("read-access", "create_task", serde_json::json!({}));
+        assert_eq!(refused["isError"], true);
+        assert!(
+            refused["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("toodo.write")
+        );
+        for extra in [
+            serde_json::json!({"clone_url":"https://example.com/repo"}),
+            serde_json::json!({"init":true}),
+            serde_json::json!({"source":"github"}),
+        ] {
+            let mut args =
+                serde_json::json!({"name":"Planning", "path":"/planning", "source":"none"});
+            args.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let refused = call("write-access", "create_workspace", args);
+            assert_eq!(refused["isError"], true, "{refused}");
+            assert!(
+                refused["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("retry with source"),
+                "{refused}"
+            );
+        }
+        let created = call(
+            "write-access",
+            "create_workspace",
+            serde_json::json!({
+                "name":"Planning", "path":"/planning", "source":"none",
+            }),
+        );
+        assert_ne!(created["isError"], true, "{created}");
+        let workspace: Value =
+            serde_json::from_str(created["content"][0]["text"].as_str().unwrap()).unwrap();
+        let task = call(
+            "write-access",
+            "create_task",
+            serde_json::json!({
+                "workspace_id":workspace["id"], "task_type":"feat", "title":"Plan the feature",
+            }),
+        );
+        assert_ne!(task["isError"], true, "{task}");
+        lock(&backend.storage)
+            .oauth_revoke_grant(read_grant)
+            .unwrap();
+        let response = post_initialize(address, "Authorization: Bearer read-access\r\n");
+        assert!(response.starts_with("HTTP/1.1 401"), "{response}");
+        assert!(response.contains("error=\"invalid_token\""), "{response}");
     }
 }

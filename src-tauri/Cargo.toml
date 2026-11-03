@@ -37,7 +37,7 @@ base64 = "0.22"
 rmcp = { version = "3.5.1", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 tokio = { version = "1.53.3", features = ["net", "rt", "rt-multi-thread", "macros", "signal", "sync", "fs", "time"] }
 getrandom = { version = "0.3", features = ["std"] }
-axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "ws", "query"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "ws", "query", "form"] }
 schemars = "1"
 
 [profile.release]

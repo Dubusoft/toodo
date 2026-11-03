@@ -60,6 +60,7 @@ use crate::commands::{
 use crate::domain::model;
 use crate::mcp::tunnels::{self, Tunnels, TunnelsState};
 use crate::mcp::{self, Backend, ServerStatus};
+use crate::oauth::{self, PublicUrl};
 use crate::storage::Storage;
 
 pub(crate) const DATABASE_FILE: &str = "toodo.sqlite3";
@@ -90,6 +91,9 @@ Environment:
                   (default $XDG_DATA_HOME/toodo-server or ~/.local/share/toodo-server)
   TOODO_WEB_DIR   web build of the frontend (`npm run build` writes dist-web);
                   without it only the API and MCP are served
+  TOODO_PUBLIC_URL
+                  public HTTPS origin, e.g. https://toodo.example.com;
+                  enables OAuth for remote MCP apps (unset by default)
   TOODO_PUSH_SUBJECT
                   contact for push services in notifications, a mailto: or https: URL
                   (default https://github.com/dev-bokdong/toodo)";
@@ -99,6 +103,7 @@ pub struct Config {
     pub listen: SocketAddr,
     pub data_dir: PathBuf,
     pub web_dir: Option<PathBuf>,
+    pub public_url: Option<PublicUrl>,
     /// The contact push services see in the VAPID token of every notification.
     pub push_subject: String,
 }
@@ -121,6 +126,9 @@ impl Config {
             },
         };
         let web_dir = var("TOODO_WEB_DIR").map(PathBuf::from);
+        let public_url = var("TOODO_PUBLIC_URL")
+            .map(|value| PublicUrl::parse(&value))
+            .transpose()?;
         let push_subject = match var("TOODO_PUSH_SUBJECT") {
             Some(subject) if subject.starts_with("mailto:") || subject.starts_with("https://") => {
                 subject
@@ -136,6 +144,7 @@ impl Config {
             listen,
             data_dir,
             web_dir,
+            public_url,
             push_subject,
         })
     }
@@ -150,7 +159,8 @@ struct ServerEvent {
 
 /// Everything the commands, the MCP server, and the background threads use.
 pub struct Services {
-    storage: StorageState,
+    storage: Arc<StorageState>,
+    public_url: Option<PublicUrl>,
     git: GitState,
     github: GitHubState,
     ssh: SshState,
@@ -209,6 +219,10 @@ impl Notifier for Services {
 }
 
 impl Backend for Services {
+    fn public_url(&self) -> Option<&PublicUrl> {
+        self.public_url.as_ref()
+    }
+
     fn storage(&self) -> &StorageState {
         &self.storage
     }
@@ -343,7 +357,8 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let port = listener.local_addr()?.port();
     let herdr = Arc::new(Herdr::new(Box::new(ProcessRunner)));
     let services = Arc::new(Services {
-        storage: Mutex::new(storage),
+        storage: Arc::new(Mutex::new(storage)),
+        public_url: config.public_url.clone(),
         git: Arc::new(Git::new(Box::new(ProcessRunner))),
         github: Arc::new(GitHub::new(Box::new(ProcessRunner))),
         ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
@@ -383,11 +398,18 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         })?;
     tunnels::spawn(services.clone(), services.tunnels.clone())?;
 
+    let fetcher = oauth::HttpClientMetadataFetcher::new().map_err(|error| {
+        format!(
+            "cannot create the HTTP client for OAuth client metadata ({error}); check the \
+             system TLS setup, or unset TOODO_PUBLIC_URL to start without public mode"
+        )
+    })?;
     let app = router(
         services.clone(),
         web_token,
         mcp_token,
         config.web_dir.as_deref(),
+        Arc::new(fetcher),
     );
     println!(
         "{}: listening on http://{} (data in {}, web access token in {}, MCP token for \
@@ -445,6 +467,7 @@ fn router(
     web_token: String,
     mcp_token: String,
     web_dir: Option<&Path>,
+    fetcher: Arc<dyn oauth::ClientMetadataFetcher>,
 ) -> Router {
     // `route_layer` guards the routes only: other paths stay 404 (or the web app) rather
     // than 401, and unknown API paths are 404 behind the token instead of the web app.
@@ -482,9 +505,26 @@ fn router(
     let streams = Router::new()
         .route("/api/panes/stream", get(panes::stream))
         .with_state(services.clone());
-    let app = api
-        .merge(streams)
-        .merge(mcp::router(services, mcp_token, Some(web_token)));
+    let mut app = api.merge(streams).merge(mcp::router(
+        services.clone(),
+        mcp_token,
+        Some(web_token.clone()),
+    ));
+    if let Some(issuer) = &services.public_url {
+        app = app.merge(oauth::router(
+            issuer.clone(),
+            web_token,
+            services.storage.clone(),
+            fetcher,
+        ));
+    } else {
+        app = app
+            .route("/oauth/{*path}", any(|| async { StatusCode::NOT_FOUND }))
+            .route(
+                "/.well-known/{*path}",
+                any(|| async { StatusCode::NOT_FOUND }),
+            );
+    }
     match web_dir {
         Some(dir) => app
             .fallback_service(ServeDir::new(dir).fallback(ServeFile::new(dir.join("index.html")))),
@@ -560,6 +600,131 @@ mod tests {
             config.data_dir,
             PathBuf::from("/home/me/.local/share/toodo-server")
         );
+        assert_eq!(config.public_url, None);
+    }
+
+    #[test]
+    fn public_mode_requires_a_valid_origin() {
+        let config = |public: &str| {
+            Config::from_env(|name| match name {
+                "HOME" => Some("/home/me".to_owned()),
+                "TOODO_PUBLIC_URL" => Some(public.to_owned()),
+                _ => None,
+            })
+        };
+        assert_eq!(
+            config("https://toodo.example:8443/")
+                .unwrap()
+                .public_url
+                .unwrap()
+                .resource(),
+            "https://toodo.example:8443/mcp"
+        );
+        assert!(
+            config("http://toodo.example")
+                .unwrap_err()
+                .contains("TOODO_PUBLIC_URL")
+        );
+        assert!(config("https://toodo.example/path").is_err());
+    }
+
+    #[test]
+    fn oauth_routes_are_absent_without_public_mode() {
+        let web = tempfile::tempdir().unwrap();
+        std::fs::write(web.path().join("index.html"), "Toodo").unwrap();
+        for web_dir in [None, Some(web.path())] {
+            let (address, _temp) = serve_router(web_dir);
+            for (method, path) in [
+                ("GET", "/.well-known/oauth-protected-resource/mcp"),
+                ("GET", "/.well-known/oauth-protected-resource"),
+                ("GET", "/.well-known/oauth-authorization-server"),
+                ("GET", "/.well-known/openid-configuration"),
+                ("POST", "/oauth/register"),
+                ("GET", "/oauth/authorize"),
+                ("POST", "/oauth/token"),
+                ("POST", "/oauth/revoke"),
+            ] {
+                assert!(
+                    status(address, method, path, None).contains(" 404 "),
+                    "{path}"
+                );
+            }
+            let (status, apps) = post_json(
+                address,
+                "/api/rpc/list_connected_apps",
+                "web",
+                &serde_json::json!({}),
+            );
+            assert!(status.contains(" 200 "), "{status}");
+            assert_eq!(apps, serde_json::json!({"publicMcpUrl":null, "apps":[]}));
+        }
+    }
+
+    #[test]
+    fn public_mode_serves_discovery_and_connected_app_commands() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut services = Arc::into_inner(services(temp.path())).unwrap();
+        services.public_url = Some(PublicUrl::parse("https://toodo.example").unwrap());
+        let services = Arc::new(services);
+        let client = crate::storage::oauth::Client {
+            client_id: "test-client".to_owned(),
+            secret_hash: None,
+            client_name: Some("Test app".to_owned()),
+            redirect_uris: vec!["https://client.example/callback".to_owned()],
+            auth_method: "none".to_owned(),
+            created_at: 1,
+        };
+        let grant_id = {
+            let mut storage = crate::commands::lock(&services.storage);
+            storage.oauth_register_client(&client).unwrap();
+            storage
+                .oauth_create_grant(
+                    &oauth::OwnerKey("test-owner".to_owned()),
+                    &client,
+                    oauth::Scopes::READ,
+                    &oauth::hash("test-access"),
+                    &oauth::hash("test-refresh"),
+                )
+                .unwrap()
+        };
+        let address = serve(services.clone(), None);
+        let (status, _, body) = get(address, "/.well-known/oauth-protected-resource/mcp", None);
+        assert!(status.contains(" 200 "), "{status}");
+        let metadata: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(metadata["resource"], "https://toodo.example/mcp");
+        let (status, apps) = post_json(
+            address,
+            "/api/rpc/list_connected_apps",
+            "web",
+            &serde_json::json!({}),
+        );
+        assert!(status.contains(" 200 "), "{status}");
+        assert_eq!(apps["publicMcpUrl"], "https://toodo.example/mcp");
+        assert_eq!(apps["apps"][0]["grantId"], grant_id);
+        assert_eq!(apps["apps"][0]["clientName"], "Test app");
+        assert_eq!(apps["apps"][0]["clientId"], "test-client");
+        assert_eq!(apps["apps"][0]["scopes"], "toodo.read");
+        assert!(apps["apps"][0]["createdAt"].is_number());
+        assert_eq!(apps["apps"][0]["lastUsedAt"], serde_json::Value::Null);
+        let (status, _) = post_json(
+            address,
+            "/api/rpc/revoke_connected_app",
+            "web",
+            &serde_json::json!({"grantId":grant_id}),
+        );
+        assert!(status.contains(" 200 "), "{status}");
+        assert!(
+            oauth::resolve_access_token(&services.storage, "test-access")
+                .unwrap()
+                .is_none()
+        );
+        let (_, apps) = post_json(
+            address,
+            "/api/rpc/list_connected_apps",
+            "web",
+            &serde_json::json!({}),
+        );
+        assert_eq!(apps["apps"], serde_json::json!([]));
     }
 
     #[test]
@@ -589,7 +754,8 @@ mod tests {
         access: Arc<dyn panes::PaneAccess>,
     ) -> Arc<Services> {
         Arc::new(Services {
-            storage: Mutex::new(Storage::open_in_memory().unwrap()),
+            storage: Arc::new(Mutex::new(Storage::open_in_memory().unwrap())),
+            public_url: None,
             git: Arc::new(Git::new(Box::new(ProcessRunner))),
             github: Arc::new(GitHub::new(Box::new(ProcessRunner))),
             ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
@@ -655,7 +821,14 @@ mod tests {
 
     /// Serves `services` with the web token `web` and the MCP token `agent`.
     pub(super) fn serve(services: Arc<Services>, web_dir: Option<&Path>) -> SocketAddr {
-        let app = router(services, "web".to_owned(), "agent".to_owned(), web_dir);
+        let fetcher = Arc::new(oauth::HttpClientMetadataFetcher::new().unwrap());
+        let app = router(
+            services,
+            "web".to_owned(),
+            "agent".to_owned(),
+            web_dir,
+            fetcher,
+        );
         let listener = mcp::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
         let address = listener.local_addr().unwrap();
         std::thread::spawn(move || {

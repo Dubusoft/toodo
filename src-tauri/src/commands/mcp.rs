@@ -1,12 +1,13 @@
 //! How agents connect to Toodo's MCP server.
 
-use super::State;
+use super::{CommandResult, State, StorageState, lock};
 use serde::Serialize;
 use specta::Type;
 
-use crate::commands::types::Timestamp;
+use crate::commands::types::{ConnectedApp, ConnectedApps, OAuthGrantId, Timestamp};
 use crate::mcp::tunnels::{TunnelState, TunnelStatus, TunnelsState};
 use crate::mcp::{Rejection, ServerStatus};
+use crate::oauth::PublicUrl;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -110,4 +111,36 @@ pub fn list_mcp_tunnels(tunnels: State<'_, TunnelsState>) -> Vec<McpTunnel> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     tunnels.statuses().into_iter().map(Into::into).collect()
+}
+
+/// Lists live OAuth connections and the MCP URL to paste into a chat app.
+#[specta::specta]
+pub fn list_connected_apps(
+    storage: State<'_, StorageState>,
+    public_url: State<'_, Option<PublicUrl>>,
+) -> CommandResult<ConnectedApps> {
+    Ok(ConnectedApps {
+        public_mcp_url: public_url.as_ref().map(PublicUrl::resource),
+        apps: lock(&storage)
+            .oauth_list_grants()?
+            .into_iter()
+            .map(|grant| ConnectedApp {
+                grant_id: OAuthGrantId(grant.id),
+                client_name: grant.client_name,
+                client_id: grant.client_id,
+                scopes: grant.scopes.to_string(),
+                created_at: Timestamp(grant.created_at),
+                last_used_at: grant.last_used_at.map(Timestamp),
+            })
+            .collect(),
+    })
+}
+
+/// Disconnects an app by revoking its whole token family.
+#[specta::specta]
+pub fn revoke_connected_app(
+    storage: State<'_, StorageState>,
+    grant_id: OAuthGrantId,
+) -> CommandResult<()> {
+    Ok(lock(&storage).oauth_revoke_grant(grant_id.0)?)
 }
