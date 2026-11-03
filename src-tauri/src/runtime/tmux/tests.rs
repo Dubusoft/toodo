@@ -88,17 +88,21 @@ impl Fixture {
             })
             .unwrap()
             .id;
-        let mut runner = TmuxRunner::new(Arc::new(Mutex::new(storage)), dir.path().join("runs"))
-            .with_socket(format!(
-                "toodo-test-{}",
-                dir.path().file_name().unwrap().to_string_lossy()
-            ))
-            .with_mcp_provider(Arc::new(|| {
-                Some(adapter::McpEndpoint {
-                    url: "http://192.0.2.1:12345/mcp".into(),
-                    token: TOKEN.into(),
-                })
-            }));
+        let mut runner = TmuxRunner::new(
+            Arc::new(Mutex::new(storage)),
+            dir.path().join("runs"),
+            "0123456789ab",
+        )
+        .with_socket(format!(
+            "toodo-test-{}",
+            dir.path().file_name().unwrap().to_string_lossy()
+        ))
+        .with_mcp_provider(Arc::new(|| {
+            Some(adapter::McpEndpoint {
+                url: "http://192.0.2.1:12345/mcp".into(),
+                token: TOKEN.into(),
+            })
+        }));
         runner.claude = dir.path().join("agent");
         runner.codex = runner.claude.clone();
         runner = runner.with_tmux_program(PathBuf::from(
@@ -234,9 +238,13 @@ exec sh -c "$1"
     }
 
     fn restarted(&self) -> TmuxRunner {
-        let mut runner = TmuxRunner::new(self.runner.storage.clone(), self.runner.runs_dir.clone())
-            .with_tmux_program(self.runner.tmux.clone())
-            .with_socket(self.runner.socket.clone().unwrap());
+        let mut runner = TmuxRunner::new(
+            self.runner.storage.clone(),
+            self.runner.runs_dir.clone(),
+            "0123456789ab",
+        )
+        .with_tmux_program(self.runner.tmux.clone())
+        .with_socket(self.runner.socket.clone().unwrap());
         runner.ssh = self.runner.ssh.clone();
         // The old observer still exists in this test process, unlike a real restart.
         // Serialize its final write with the new instance's stop/completion.
@@ -293,7 +301,7 @@ fn command_construction_is_quoted_and_windows_names_plain() {
         os: HostOs::Posix,
     };
     let invocation = host
-        .tmux_new_session(run.id, "/work/a'b", "echo 'safe'")
+        .tmux_new_session(fixture.runner.key(run.id), "/work/a'b", "echo 'safe'")
         .unwrap();
     let command = fixture.runner.command(&host, run.id, invocation);
     let args = format!("{:?}", command.get_args().collect::<Vec<_>>());
@@ -320,7 +328,7 @@ fn real_launch_classifies_success_failure_and_exit_after_result() {
     assert_eq!(fixture.end(run.id).state, RunState::Settled);
     assert_eq!(
         run.provider_run_ref,
-        Some(format!("tmux:local:toodo-run-{}", run.id))
+        Some(format!("tmux:local:toodo-0123456789ab-run-{}", run.id))
     );
     assert!(
         fixture
@@ -407,6 +415,7 @@ fn real_restart_settles_ended_session_and_missing_session() {
     // Launch independently of the first runner's monitor, as after a server crash.
     let run = fixture.reserve(HostRef::Local);
     let host = Host::Local;
+    fixture.runner.create_directory(&host, run.id).unwrap();
     fixture
         .runner
         .stage(&host, run.id, "brief.md", b"brief")
@@ -429,7 +438,10 @@ fn real_restart_settles_ended_session_and_missing_session() {
             .unwrap();
     }
     lock(&fixture.runner.storage)
-        .record_launch(run.id, &receipt(run.id, &run.host).provider_run_ref)
+        .record_launch(
+            run.id,
+            &receipt(&fixture.runner.instance, run.id, &run.host).provider_run_ref,
+        )
         .unwrap();
     let restarted = fixture.restarted();
     restarted.recover_after_restart(&restarted.storage).unwrap();
@@ -451,7 +463,7 @@ fn real_restart_settles_ended_session_and_missing_session() {
     lock(&restarted.storage)
         .record_launch(
             missing.id,
-            &receipt(missing.id, &missing.host).provider_run_ref,
+            &receipt(&fixture.runner.instance, missing.id, &missing.host).provider_run_ref,
         )
         .unwrap();
     assert_eq!(
@@ -519,7 +531,10 @@ printf '%s\n' "$TOODO_MCP_TOKEN"
     assert_eq!(fixture.end(run.id).state, RunState::Settled);
     assert_eq!(
         run.provider_run_ref,
-        Some(format!("tmux:ssh:test-host:toodo-run-{}", run.id))
+        Some(format!(
+            "tmux:ssh:test-host:toodo-0123456789ab-run-{}",
+            run.id
+        ))
     );
     assert!(
         fixture
@@ -536,7 +551,7 @@ printf '%s\n' "$TOODO_MCP_TOKEN"
     let remote_dir = fixture
         .dir
         .path()
-        .join(".toodo/runs")
+        .join(".toodo/runs/0123456789ab")
         .join(run.id.to_string());
     assert!(!remote_dir.join("token").exists());
     assert!(!remote_dir.join("mcp.json").exists());
@@ -631,7 +646,7 @@ fn fake_ssh_tunnel_admission_rejects_before_staging_token() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("mcp false"));
-    assert!(!fixture.dir.path().join(".toodo/runs").exists());
+    assert!(!fixture.dir.path().join(".toodo/runs/0123456789ab").exists());
 }
 
 #[test]
@@ -655,4 +670,105 @@ fn fake_ssh_lost_launch_response_keeps_unknown_until_session_can_be_adopted() {
         RunState::Cancelled
     );
     fixture.end(run.id);
+}
+
+#[test]
+fn real_find_launch_requires_its_own_request_and_generation_marker() {
+    let Some(mut fixture) = Fixture::real("printf R > ready\nread value < gate") else {
+        return;
+    };
+    let run = fixture.start(false, false);
+    signal(&mut fixture.ready);
+    let spec = fixture.spec(&run);
+    assert!(fixture.runner.find_launch(&spec).unwrap().is_some());
+    let mut other = spec.clone();
+    other.request_key = "another request".into();
+    assert!(fixture.runner.find_launch(&other).unwrap().is_none());
+    other = spec.clone();
+    other.generation += 1;
+    assert!(fixture.runner.find_launch(&other).unwrap().is_none());
+    let marker = fixture
+        .runner
+        .runs_dir
+        .join(run.id.to_string())
+        .join("request");
+    fs::remove_file(marker).unwrap();
+    assert!(fixture.runner.find_launch(&spec).unwrap().is_none());
+    assert!(
+        fixture
+            .runner
+            .launch(&spec)
+            .unwrap_err()
+            .0
+            .contains("remove the leftover directory")
+    );
+    fixture.runner.stop(run.id).unwrap();
+    assert_eq!(fixture.end(run.id).state, RunState::Cancelled);
+}
+
+#[test]
+fn fake_ssh_two_server_instances_keep_same_run_id_separate() {
+    let Some(mut first) = Fixture::real("printf R > ready\nread value < gate") else {
+        return;
+    };
+    let Some(mut second) = Fixture::real("printf R > ready\nread value < gate") else {
+        return;
+    };
+    first.remote();
+    second.remote();
+    second.runner.instance = "fedcba987654".into();
+    second.runner.ssh = first.runner.ssh.clone();
+    second.runner.socket = first.runner.socket.clone();
+    let a = first.start(true, false);
+    let b = second.start(true, false);
+    signal(&mut first.ready);
+    signal(&mut second.ready);
+    assert_eq!(a.id, b.id);
+    assert_ne!(a.provider_run_ref, b.provider_run_ref);
+    assert_ne!(
+        first.runner.attach_command(a.id),
+        second.runner.attach_command(b.id)
+    );
+    let host = first
+        .runner
+        .host(&a.host, a.checkout_path.as_deref())
+        .unwrap();
+    assert!(first.runner.has_session(&host, a.id).unwrap());
+    assert!(second.runner.has_session(&host, b.id).unwrap());
+    for instance in ["0123456789ab", "fedcba987654"] {
+        assert!(
+            first
+                .dir
+                .path()
+                .join(".toodo/runs")
+                .join(instance)
+                .join(a.id.to_string())
+                .join("request")
+                .exists()
+        );
+    }
+    first.runner.stop(a.id).unwrap();
+    assert!(second.runner.has_session(&host, b.id).unwrap());
+    second.runner.stop(b.id).unwrap();
+    assert_eq!(first.end(a.id).state, RunState::Cancelled);
+    assert_eq!(second.end(b.id).state, RunState::Cancelled);
+}
+
+#[test]
+fn real_launch_rejects_an_unmarked_session_even_without_a_run_directory() {
+    let Some(mut fixture) = Fixture::real("printf R > ready\nread value < gate") else {
+        return;
+    };
+    let run = fixture.start(false, false);
+    signal(&mut fixture.ready);
+    let spec = fixture.spec(&run);
+    let dir = fixture.runner.runs_dir.join(run.id.to_string());
+    fs::remove_dir_all(&dir).unwrap();
+    assert!(fixture.runner.find_launch(&spec).unwrap().is_none());
+    let error = fixture.runner.launch(&spec).unwrap_err().0;
+    assert!(error.contains("kill-session -t"), "{error}");
+    assert!(!dir.exists());
+    assert!(fixture.runner.has_session(&Host::Local, run.id).unwrap());
+    fixture.runner.stop(run.id).unwrap();
+    assert_eq!(fixture.end(run.id).state, RunState::Cancelled);
 }

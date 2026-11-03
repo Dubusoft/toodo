@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 
-use super::host::{self, Host, HostOs, Probe};
+use super::host::{self, Host, HostOs, Probe, RunKey};
 use super::plain::adapter::{
     self, AgentAdapter, EventTracker, ExitKind, MCP_TOKEN_ENV, MCP_URL_ENV,
 };
@@ -40,6 +40,7 @@ struct Observation {
 pub struct TmuxRunner {
     storage: Arc<Mutex<Storage>>,
     runs_dir: PathBuf,
+    instance: String,
     tmux: PathBuf,
     socket: Option<String>,
     ssh: PathBuf,
@@ -56,21 +57,22 @@ fn error() -> RunnerError {
     RunnerError("tmux operation failed; restore SSH connectivity or check the local run directory, then reconcile the run".into())
 }
 
-fn session(run: RunId) -> String {
-    format!("toodo-run-{run}")
-}
-
-fn receipt(run: RunId, host: &HostRef) -> LaunchReceipt {
+fn receipt(instance: &str, run: RunId, host: &HostRef) -> LaunchReceipt {
     LaunchReceipt {
-        provider_run_ref: format!("tmux:{}:{}", host.as_wire(), session(run)),
+        provider_run_ref: format!(
+            "tmux:{}:{}",
+            host.as_wire(),
+            host::session(RunKey { instance, id: run })
+        ),
     }
 }
 
 impl TmuxRunner {
-    pub fn new(storage: Arc<Mutex<Storage>>, runs_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(storage: Arc<Mutex<Storage>>, runs_dir: impl Into<PathBuf>, instance: &str) -> Self {
         Self {
             storage,
             runs_dir: runs_dir.into(),
+            instance: instance.to_owned(),
             tmux: "tmux".into(),
             socket: None,
             ssh: "ssh".into(),
@@ -80,6 +82,13 @@ impl TmuxRunner {
             tunnel_open: None,
             observations: Arc::default(),
             operations: Arc::default(),
+        }
+    }
+
+    fn key(&self, id: RunId) -> RunKey<'_> {
+        RunKey {
+            instance: &self.instance,
+            id,
         }
     }
 
@@ -163,14 +172,14 @@ impl TmuxRunner {
     fn directory(&self, host: &Host, run: RunId) -> String {
         match host {
             Host::Local => shell_quote(&self.runs_dir.join(run.to_string()).to_string_lossy()),
-            Host::Ssh { .. } => host::run_directory(HostOs::Posix, run),
+            Host::Ssh { .. } => host::run_directory(HostOs::Posix, self.key(run)),
         }
     }
 
     fn localize(&self, host: &Host, run: RunId, script: String) -> String {
         if *host == Host::Local {
             script.replacen(
-                &host::run_directory(HostOs::Posix, run),
+                &host::run_directory(HostOs::Posix, self.key(run)),
                 &self.directory(host, run),
                 1,
             )
@@ -250,7 +259,11 @@ impl TmuxRunner {
 
     fn has_session(&self, host: &Host, run: RunId) -> Result<bool, RunnerError> {
         let output = self
-            .output(host, run, host.tmux_has_session(run).map_err(build_error)?)
+            .output(
+                host,
+                run,
+                host.tmux_has_session(self.key(run)).map_err(build_error)?,
+            )
             .map_err(|_| {
                 if *host == Host::Local {
                     install_error()
@@ -268,7 +281,7 @@ impl TmuxRunner {
 
     fn stage(&self, host: &Host, run: RunId, name: &str, bytes: &[u8]) -> Result<(), RunnerError> {
         let mut child = self
-            .command(host, run, host.stage(run, name))
+            .command(host, run, host.stage(self.key(run), name))
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -277,6 +290,33 @@ impl TmuxRunner {
         let written = child.stdin.take().unwrap().write_all(bytes);
         let status = child.wait().map_err(|_| error())?;
         if written.is_err() || !status.success() {
+            return Err(error());
+        }
+        Ok(())
+    }
+
+    fn owns_request(&self, host: &Host, spec: &LaunchSpec) -> Result<bool, RunnerError> {
+        let dir = self.directory(host, spec.run);
+        let script = format!(
+            "test -f {dir}/request && test \"$(cat -- {dir}/request)\" = {}",
+            shell_quote(&request_marker(spec))
+        );
+        let output = self.output(host, spec.run, script_invocation(host, script))?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(error()),
+        }
+    }
+
+    fn create_directory(&self, host: &Host, run: RunId) -> Result<(), RunnerError> {
+        let output = self.output(host, run, host.create_directory(self.key(run)))?;
+        if output.status.code() == Some(73) {
+            return Err(RunnerError(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        if !output.status.success() {
             return Err(error());
         }
         Ok(())
@@ -298,7 +338,7 @@ impl TmuxRunner {
         self.checked(
             host,
             run,
-            host.tail(run, name, bytes.min(MAX_LOG_BYTES))
+            host.tail(self.key(run), name, bytes.min(MAX_LOG_BYTES))
                 .map_err(build_error)?,
         )
     }
@@ -343,7 +383,8 @@ impl TmuxRunner {
         let adapter = self.checked(
             host,
             run,
-            host.tail(run, "adapter", 32).map_err(build_error)?,
+            host.tail(self.key(run), "adapter", 32)
+                .map_err(build_error)?,
         )?;
         let adapter = AgentAdapter::parse(adapter.trim()).map_err(|_| {
             RunnerError(
@@ -370,7 +411,10 @@ impl TmuxRunner {
                 return Ok(current);
             }
             if current.state == RunState::Reserved {
-                storage.record_launch(run, &receipt(run, &current.host).provider_run_ref)?;
+                storage.record_launch(
+                    run,
+                    &receipt(&self.instance, run, &current.host).provider_run_ref,
+                )?;
             }
             if let Some(id) = tracker.session_id() {
                 storage.append_run_event(
@@ -397,7 +441,10 @@ impl TmuxRunner {
             return Ok(current);
         }
         if current.state == RunState::Reserved {
-            storage.record_launch(run, &receipt(run, &current.host).provider_run_ref)?;
+            storage.record_launch(
+                run,
+                &receipt(&self.instance, run, &current.host).provider_run_ref,
+            )?;
         }
         storage.append_run_event(
             run,
@@ -417,7 +464,11 @@ impl TmuxRunner {
         }
         // Spawn before returning so launch errors cannot silently leave an unobserved run.
         let mut waiter = self
-            .command(&host, run, host.tmux_wait_for(run).map_err(build_error)?)
+            .command(
+                &host,
+                run,
+                host.tmux_wait_for(self.key(run)).map_err(build_error)?,
+            )
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -435,7 +486,7 @@ impl TmuxRunner {
                     return Ok(current);
                 }
                 let probe = runner
-                    .checked(&host, run, host.probe(run))
+                    .checked(&host, run, host.probe(runner.key(run)))
                     .and_then(|text| host::parse_probe(&text).map_err(build_error));
                 match probe {
                     Ok(Probe::Exited(code)) => runner.finish(&host, run, code),
@@ -482,7 +533,7 @@ impl TmuxRunner {
         let killed = self.checked(
             &host,
             run,
-            host.tmux_kill_session(run).map_err(build_error)?,
+            host.tmux_kill_session(self.key(run)).map_err(build_error)?,
         );
         if killed.is_err() && self.has_session(&host, run)? {
             return Err(error().into());
@@ -494,7 +545,7 @@ impl TmuxRunner {
             format!(
                 "{} wait-for -S {}",
                 self.tmux_words(),
-                shell_quote(&session(run))
+                shell_quote(&host::session(self.key(run)))
             ),
         );
         let _ = self.output(&host, run, signal);
@@ -519,7 +570,7 @@ impl TmuxRunner {
         let tmux = format!(
             "{} attach -t {}",
             self.tmux_words(),
-            shell_quote(&session(run))
+            shell_quote(&host::session(self.key(run)))
         );
         Some(match current.host {
             HostRef::Local => tmux,
@@ -537,7 +588,7 @@ impl TmuxRunner {
         }
         let host = self.host(&current.host, current.checkout_path.as_deref())?;
         let probe = self
-            .checked(&host, run, host.probe(run))
+            .checked(&host, run, host.probe(self.key(run)))
             .and_then(|text| host::parse_probe(&text).map_err(build_error));
         if let Ok(Probe::Exited(code)) = probe {
             return self.finish(&host, run, code).or_else(|_| self.lost(run));
@@ -545,8 +596,10 @@ impl TmuxRunner {
         match self.has_session(&host, run) {
             Ok(true) => {
                 let current = if current.state == RunState::Unknown {
-                    lock(&self.storage)
-                        .resume_observed_run(run, &receipt(run, &current.host).provider_run_ref)?
+                    lock(&self.storage).resume_observed_run(
+                        run,
+                        &receipt(&self.instance, run, &current.host).provider_run_ref,
+                    )?
                 } else {
                     current
                 };
@@ -585,6 +638,11 @@ impl TmuxRunner {
     }
 }
 
+fn request_marker(spec: &LaunchSpec) -> String {
+    serde_json::to_string(&(&spec.request_key, spec.generation))
+        .expect("a request key and generation serialize")
+}
+
 fn build_error(message: &str) -> RunnerError {
     RunnerError(message.into())
 }
@@ -621,11 +679,11 @@ impl RunLauncher for TmuxRunner {
 
     fn find_launch(&self, spec: &LaunchSpec) -> Result<Option<LaunchReceipt>, RunnerError> {
         let host = self.host(&spec.host, spec.cwd.as_deref())?;
-        if self.has_session(&host, spec.run)? {
+        if self.has_session(&host, spec.run)? && self.owns_request(&host, spec)? {
             if self.observe(host, spec.run).is_err() {
                 self.lost(spec.run).map_err(|_| error())?;
             }
-            Ok(Some(receipt(spec.run, &spec.host)))
+            Ok(Some(receipt(&self.instance, spec.run, &spec.host)))
         } else {
             Ok(None)
         }
@@ -653,10 +711,21 @@ impl RunLauncher for TmuxRunner {
             RunnerError("open the task worktree before starting a tmux run".into())
         })?;
         if self.has_session(&host, spec.run)? {
+            if !self.owns_request(&host, spec)? {
+                return Err(RunnerError(format!(
+                    "tmux session {} on {} has no matching launch marker; stop it with {} kill-session -t {}; remove the leftover directory {} on {}, then start a new run",
+                    host::session(self.key(spec.run)),
+                    spec.host.as_wire(),
+                    self.tmux_words(),
+                    shell_quote(&format!("={}", host::session(self.key(spec.run)))),
+                    self.directory(&host, spec.run),
+                    spec.host.as_wire()
+                )));
+            }
             if self.observe(host, spec.run).is_err() {
                 self.lost(spec.run).map_err(|_| error())?;
             }
-            return Ok(receipt(spec.run, &spec.host));
+            return Ok(receipt(&self.instance, spec.run, &spec.host));
         }
         // Check installation on the execution host before staging any credentials.
         let version = script_invocation(
@@ -715,7 +784,9 @@ impl RunLauncher for TmuxRunner {
             invocation.args[at + 1] =
                 format!("{}{}", host::RUN_FILE_PREFIX, adapter::MCP_CONFIG_FILE);
         }
+        self.create_directory(&host, spec.run)?;
         let staged = (|| {
+            self.stage(&host, spec.run, "request", request_marker(spec).as_bytes())?;
             self.stage(&host, spec.run, "brief.md", agent.brief.as_bytes())?;
             self.stage(
                 &host,
@@ -755,9 +826,16 @@ impl RunLauncher for TmuxRunner {
             .filter(|(name, _)| name != MCP_TOKEN_ENV)
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect();
-        let wrapper =
-            host::wrapper_script(HostOs::Posix, spec.run, &argv, cwd, &secret_env, &env, true)
-                .map_err(build_error)?;
+        let wrapper = host::wrapper_script(
+            HostOs::Posix,
+            self.key(spec.run),
+            &argv,
+            cwd,
+            &secret_env,
+            &env,
+            true,
+        )
+        .map_err(build_error)?;
         let wrapper = self.localize(&host, spec.run, wrapper).replace(
             "tmux wait-for -S",
             &format!("{} wait-for -S", self.tmux_words()),
@@ -765,7 +843,7 @@ impl RunLauncher for TmuxRunner {
         let started = self.checked(
             &host,
             spec.run,
-            host.tmux_new_session(spec.run, cwd, &wrapper)
+            host.tmux_new_session(self.key(spec.run), cwd, &wrapper)
                 .map_err(build_error)?,
         );
         if started.is_err() {
@@ -779,13 +857,13 @@ impl RunLauncher for TmuxRunner {
                 Err(_) => {
                     // The launch side effect is uncertain, not a confirmed failure.
                     self.lost(spec.run).map_err(|_| error())?;
-                    return Ok(receipt(spec.run, &spec.host));
+                    return Ok(receipt(&self.instance, spec.run, &spec.host));
                 }
             }
         }
         if self.observe(host, spec.run).is_err() {
             self.lost(spec.run).map_err(|_| error())?;
         }
-        Ok(receipt(spec.run, &spec.host))
+        Ok(receipt(&self.instance, spec.run, &spec.host))
     }
 }

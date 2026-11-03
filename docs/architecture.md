@@ -558,7 +558,13 @@ workspace path style (`HostPath::is_windows`), and a Windows host is never treat
 POSIX. POSIX hosts get `sh` scripts. Windows hosts get PowerShell sent as
 `powershell -EncodedCommand`, with native Windows quoting.
 
-Each run stages a private run directory on the host, `~/.toodo/runs/<run id>` (under
+The server creates a persistent 12-character lowercase hex identity in
+`<data dir>/instance-id` (mode 0600 on POSIX), independently of database backups.
+Keep this file when restarting or restoring a database; do not share it between servers.
+The first stage exclusively creates each run directory. If it already exists, remove the
+leftover directory on the named host, then start a new run; no existing files are overwritten.
+
+Each run stages a private run directory on the host, `~/.toodo/runs/<instance>/<run id>` (under
 `%USERPROFILE%` on Windows; mode 0700 with 0600 files on POSIX). `brief.md`, the MCP
 token file, and Claude's `mcp.json` reach it on the stdin of `ssh`, never in arguments.
 A wrapper script in that directory starts the agent, records its PID and start time, and
@@ -605,10 +611,12 @@ or over `ssh`, without herdr), and `start_plain_run` starts its agent runs throu
 hosts, and tmux must be installed on the host that runs the agent; a missing tmux fails
 the launch with a message to install it there.
 
-Each run is a detached session `toodo-run-<run id>` with the worktree as its working
-directory and receipt `tmux:<local|ssh:host>:toodo-run-<run id>`. Files are staged the same
-way as plain runs, in `<data dir>/runs/<run id>` locally or `~/.toodo/runs/<run id>` on
-the host, and MCP uses the same token file and tunnel rules. The wrapper copies stdout and
+Only a session whose request marker matches the launch request key and generation can be
+adopted after a lost launch response. Each run is a detached session
+`toodo-<instance>-run-<run id>` with the worktree as its working directory and receipt
+`tmux:<local|ssh:host>:toodo-<instance>-run-<run id>`. Files are staged the same way as plain
+runs, in `<data dir>/runs/<run id>` locally or `~/.toodo/runs/<instance>/<run id>` on the host,
+and MCP uses the same token file and tunnel rules. The wrapper copies stdout and
 stderr into `stdout.log` and `stderr.log`, kept apart from what the terminal shows, with
 the token redacted. It writes the exit code, then signals `tmux wait-for`, which a monitor
 in the server waits on to settle the run with the plain outcome table.

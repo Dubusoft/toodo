@@ -229,12 +229,12 @@ describe("RunsPanel", () => {
   it("shows the command that attaches a terminal to an active tmux run and copies it", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    const attach = "ssh -t 'devbox' ''\\''tmux'\\'' attach -t '\\''toodo-run-41'\\'''";
+    const attach = "ssh -t 'devbox' ''\\''tmux'\\'' attach -t '\\''toodo-0123456789ab-run-41'\\'''";
     const running: TaskRun = {
       ...run(1, "running"),
       runnerKind: "tmux",
       requestKey: "tmux-7-1",
-      providerRunRef: "tmux:ssh:devbox:toodo-run-41",
+      providerRunRef: "tmux:ssh:devbox:toodo-0123456789ab-run-41",
     };
     mocked.listTaskRuns.mockResolvedValue(ok([running]));
     mocked.getRunLog.mockResolvedValue(ok(log(running, launched(running), "", "", attach)));

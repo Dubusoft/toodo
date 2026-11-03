@@ -52,7 +52,7 @@ Runner `plain` and runner `tmux` run agents on an SSH workspace's host without h
 that host needs `claude` or `codex` on its `PATH`. A POSIX host also needs util-linux
 `setsid` with `--wait` for plain runs (macOS lacks it; use runner `herdr` there), and
 tmux for runner `tmux`. Windows hosts take plain runs only. Run files live in
-`~/.toodo/runs/<run id>` on the host. See Remote Plain Runs and tmux Runs in
+`~/.toodo/runs/<instance>/<run id>` on the host. See Remote Plain Runs and tmux Runs in
 [architecture.md](architecture.md).
 
 ## Versions and Releases

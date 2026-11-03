@@ -418,10 +418,10 @@ exec sh -c "$1"
         let ssh = dir.path().join("ssh");
         fs::write(&ssh, FAKE_SSH).unwrap();
         fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
-        let runs = PlainRunner::new(storage.clone(), dir.path().join("runs"))
+        let runs = PlainRunner::new(storage.clone(), dir.path().join("runs"), "0123456789ab")
             .with_programs(&program, &program)
             .with_ssh_program(&ssh);
-        let tmux = TmuxRunner::new(storage.clone(), dir.path().join("runs"))
+        let tmux = TmuxRunner::new(storage.clone(), dir.path().join("runs"), "0123456789ab")
             .with_programs(&program, &program)
             .with_ssh_program(&ssh)
             .with_tmux_program(std::env::var_os("TOODO_TEST_TMUX").unwrap_or_else(|| "tmux".into()))
@@ -690,7 +690,7 @@ exec sh -c "$1"
         assert_eq!(first.request_key, format!("tmux-{}-1", fixture.task));
         assert_eq!(
             first.provider_run_ref,
-            Some(format!("tmux:local:toodo-run-{}", first.id.0))
+            Some(format!("tmux:local:toodo-0123456789ab-run-{}", first.id.0))
         );
         assert_eq!(fixture.end(&first), types::RunState::Settled);
         let log = fixture.log(&first);
@@ -701,7 +701,8 @@ exec sh -c "$1"
         assert_eq!(live.request_key, format!("tmux-{}-2", fixture.task));
         let attach = fixture.log(&live).attach.expect("an active tmux run");
         assert!(
-            attach.contains("attach -t") && attach.contains(&format!("toodo-run-{}", live.id.0)),
+            attach.contains("attach -t")
+                && attach.contains(&format!("toodo-0123456789ab-run-{}", live.id.0)),
             "{attach}"
         );
         let reconciled = reconcile_run(

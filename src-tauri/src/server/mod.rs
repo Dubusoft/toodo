@@ -381,10 +381,11 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         }
     });
     let tunnels: TunnelsState = Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), port)));
-    let plain = PlainRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR))
+    let instance = load_instance_id(&config.data_dir.join("instance-id"))?;
+    let plain = PlainRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR), &instance)
         .with_mcp_provider(endpoint.clone())
         .with_tunnel_open_provider(tunnels::open_provider(&tunnels));
-    let tmux = TmuxRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR))
+    let tmux = TmuxRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR), &instance)
         .with_mcp_provider(endpoint)
         .with_tunnel_open_provider(tunnels::open_provider(&tunnels));
     // Local tmux sessions outlive the server: observe the live ones again and settle the
@@ -481,6 +482,39 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(PoisonError::into_inner)
         .shut_down();
     Ok(served?)
+}
+
+/// The runner namespace belongs to this data directory, not to a database backup.
+/// Never replace even an invalid existing id: that could orphan live runs.
+fn load_instance_id(path: &Path) -> std::io::Result<String> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    match options.open(path) {
+        Ok(mut file) => {
+            let id = mcp::new_instance()?;
+            file.write_all(id.as_bytes())?;
+            file.sync_all()?;
+            Ok(id)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let id = std::fs::read_to_string(path)?;
+            if id.len() != 12
+                || !id
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            {
+                return Err(std::io::Error::other(format!(
+                    "invalid server instance id in {}; restore the original instance-id file before starting the server",
+                    path.display()
+                )));
+            }
+            Ok(id)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Creates the data directory, which holds the access tokens, so that on Unix only the
@@ -628,6 +662,35 @@ async fn interrupted() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runner_instance_is_persisted_and_never_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("instance-id");
+        let id = load_instance_id(&path).unwrap();
+        assert_eq!(id.len(), 12);
+        assert!(
+            id.bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        );
+        assert_eq!(load_instance_id(&path).unwrap(), id);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::write(&path, "invalid").unwrap();
+        assert!(
+            load_instance_id(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("restore the original instance-id")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "invalid");
+    }
 
     #[test]
     fn the_default_config_listens_on_loopback_and_keeps_data_in_home() {
@@ -796,8 +859,8 @@ mod tests {
     ) -> Arc<Services> {
         let storage = Arc::new(Mutex::new(Storage::open_in_memory().unwrap()));
         Arc::new(Services {
-            plain: PlainRunner::new(storage.clone(), data_dir.join(RUNS_DIR)),
-            tmux: TmuxRunner::new(storage.clone(), data_dir.join(RUNS_DIR)),
+            plain: PlainRunner::new(storage.clone(), data_dir.join(RUNS_DIR), "0123456789ab"),
+            tmux: TmuxRunner::new(storage.clone(), data_dir.join(RUNS_DIR), "0123456789ab"),
             storage,
             public_url: None,
             git: Arc::new(Git::new(Box::new(ProcessRunner))),

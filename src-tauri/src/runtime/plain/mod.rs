@@ -46,6 +46,7 @@ struct Completion {
 pub struct PlainRunner {
     storage: Arc<Mutex<Storage>>,
     runs_dir: PathBuf,
+    instance: String,
     claude: PathBuf,
     codex: PathBuf,
     registry: Arc<Mutex<HashMap<String, LiveRun>>>,
@@ -82,10 +83,11 @@ fn private_file(path: &Path, contents: &[u8]) -> Result<File, RunnerError> {
 }
 
 impl PlainRunner {
-    pub fn new(storage: Arc<Mutex<Storage>>, runs_dir: impl Into<PathBuf>) -> Self {
+    pub fn new(storage: Arc<Mutex<Storage>>, runs_dir: impl Into<PathBuf>, instance: &str) -> Self {
         Self {
             storage,
             runs_dir: runs_dir.into(),
+            instance: instance.to_owned(),
             claude: "claude".into(),
             codex: "codex".into(),
             registry: Arc::new(Mutex::new(HashMap::new())),
@@ -127,8 +129,12 @@ impl PlainRunner {
         if !current.state.is_active() {
             return Ok(current);
         }
-        let remote =
-            remote::Remote::from_run(&current.host, current.checkout_path.as_deref(), &self.ssh)?;
+        let remote = remote::Remote::from_run(
+            &current.host,
+            current.checkout_path.as_deref(),
+            &self.ssh,
+            &self.instance,
+        )?;
         let live = self.registry.lock().unwrap();
         if let Some(entry) = live.values().find(|entry| {
             entry.run == run && (remote.is_none() || entry.end.result.lock().unwrap().is_none())
@@ -190,8 +196,12 @@ impl PlainRunner {
         if !matches!(current.state, RunState::Running | RunState::Unknown) {
             return Ok(current);
         }
-        let Some(remote) =
-            remote::Remote::from_run(&current.host, current.checkout_path.as_deref(), &self.ssh)?
+        let Some(remote) = remote::Remote::from_run(
+            &current.host,
+            current.checkout_path.as_deref(),
+            &self.ssh,
+            &self.instance,
+        )?
         else {
             return Ok(current);
         };
@@ -336,7 +346,8 @@ impl RunLauncher for PlainRunner {
         let cwd = spec.cwd.as_deref().ok_or_else(|| {
             RunnerError("start the task in a worktree before starting a plain run".to_owned())
         })?;
-        let remote = remote::Remote::from_run(&spec.host, spec.cwd.as_deref(), &self.ssh)?;
+        let remote =
+            remote::Remote::from_run(&spec.host, spec.cwd.as_deref(), &self.ssh, &self.instance)?;
         let mut registry = self.registry.lock().unwrap();
         if let Some(entry) = registry.get(&spec.request_key) {
             return Ok(entry.receipt.clone());
@@ -392,7 +403,19 @@ impl RunLauncher for PlainRunner {
             use std::os::unix::fs::DirBuilderExt;
             builder.mode(0o700);
         }
-        builder.create(&dir).map_err(io_error)?;
+        builder.create(&dir).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                RunnerError(format!(
+                    "remove the leftover directory {} on local host, then start a new run",
+                    dir.display()
+                ))
+            } else {
+                io_error(error)
+            }
+        })?;
+        if let Some(remote) = &remote {
+            remote.create_directory(spec.run)?;
+        }
         let brief = private_file(&dir.join("brief.md"), agent.brief.as_bytes())?;
         let stdout = private_file(&dir.join("stdout.log"), b"")?;
         let stderr = private_file(&dir.join("stderr.log"), b"")?;

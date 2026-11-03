@@ -356,7 +356,7 @@ rejects them and points to opening the task in herdr.
 
 A workspace with runner `tmux` (local, or SSH on a POSIX host with tmux installed)
 prepares tasks the same way as runner `plain`. `start_plain_run` starts each run in a
-detached tmux session `toodo-run-<run id>`. While it runs, `get_run_log` includes an
+detached tmux session `toodo-<instance>-run-<run id>`. While it runs, `get_run_log` includes an
 `attach` command that opens the session in a terminal. Logs stay in their own files, and
 the session survives a server restart; the server picks it up again on start.
 

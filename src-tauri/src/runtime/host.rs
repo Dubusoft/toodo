@@ -62,22 +62,33 @@ pub fn parse_probe(output: &str) -> Result<Probe, &'static str> {
     }
 }
 
+/// A run's durable namespace on a shared execution host.
+#[derive(Clone, Copy)]
+pub struct RunKey<'a> {
+    pub instance: &'a str,
+    pub id: RunId,
+}
+
 /// The run directory as a shell expression, expanded only on the execution host.
-pub fn run_directory(os: HostOs, run: RunId) -> String {
+pub fn run_directory(os: HostOs, run: RunKey<'_>) -> String {
+    let RunKey { instance, id: run } = run;
     match os {
-        HostOs::Posix => format!("\"$HOME\"/{}", shell_quote(&format!(".toodo/runs/{run}"))),
+        HostOs::Posix => format!(
+            "\"$HOME\"/{}",
+            shell_quote(&format!(".toodo/runs/{instance}/{run}"))
+        ),
         HostOs::Windows => format!(
             "(Join-Path $env:USERPROFILE {})",
-            powershell_quote(&format!(r".toodo\runs\{run}"))
+            powershell_quote(&format!(r".toodo\runs\{instance}\{run}"))
         ),
     }
 }
 
-fn posix_directory(run: RunId) -> String {
+fn posix_directory(run: RunKey<'_>) -> String {
     format!("run={}\n", run_directory(HostOs::Posix, run))
 }
 
-fn windows_directory(run: RunId) -> String {
+fn windows_directory(run: RunKey<'_>) -> String {
     format!(
         "$ErrorActionPreference = 'Stop'\n$run = {}\n",
         run_directory(HostOs::Windows, run)
@@ -125,16 +136,34 @@ impl Host {
         }
     }
 
-    /// Writes stdin bytes to a staged file. The contents are intentionally not an input
-    /// to this builder, so a bearer token cannot become part of the command.
-    pub fn stage(&self, run: RunId, file: &str) -> Invocation {
+    /// Claims a fresh directory before staging any file. Existing state is never reused.
+    pub fn create_directory(&self, run: RunKey<'_>) -> Invocation {
+        let target = match self {
+            Self::Local => "local host",
+            Self::Ssh { target, .. } => target.as_str(),
+        };
         self.script(match self.os() {
             HostOs::Posix => format!(
-                "{}umask 077\nmkdir -p -- \"$run\" || exit\nchmod 700 -- \"$run\" || exit\nfile=\"$run\"/{}\n: > \"$file\" || exit\nchmod 600 -- \"$file\" || exit\ncat > \"$file\"\n",
+                "{}umask 077\nmkdir -p -- \"$(dirname -- \"$run\")\" || exit\nif ! mkdir -- \"$run\"; then\nif [ -e \"$run\" ] || [ -L \"$run\" ]; then printf 'remove the leftover directory %s on %s, then start a new run\\n' \"$run\" {} >&2; exit 73; fi\nexit 1\nfi\n",
+                posix_directory(run), shell_quote(target)
+            ),
+            HostOs::Windows => format!(
+                "{}[System.IO.Directory]::CreateDirectory((Split-Path -Parent $run)) | Out-Null\ntry {{ New-Item -ItemType Directory -Path $run -ErrorAction Stop | Out-Null }} catch {{ if (Test-Path -LiteralPath $run) {{ [Console]::Error.WriteLine('remove the leftover directory ' + $run + {}); exit 73 }}; throw }}\n",
+                windows_directory(run), powershell_quote(&format!(" on {target}, then start a new run"))
+            ),
+        })
+    }
+
+    /// Writes stdin bytes to a staged file. The contents are intentionally not an input
+    /// to this builder, so a bearer token cannot become part of the command.
+    pub fn stage(&self, run: RunKey<'_>, file: &str) -> Invocation {
+        self.script(match self.os() {
+            HostOs::Posix => format!(
+                "{}umask 077\nfile=\"$run\"/{}\n: > \"$file\" || exit\nchmod 600 -- \"$file\" || exit\ncat > \"$file\"\n",
                 posix_directory(run), shell_quote(file)
             ),
             HostOs::Windows => format!(
-                "{}[System.IO.Directory]::CreateDirectory($run) | Out-Null\n$file = [System.IO.File]::Open((Join-Path $run {}), [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)\ntry {{ [Console]::OpenStandardInput().CopyTo($file) }} finally {{ $file.Dispose() }}\n",
+                "{}$file = [System.IO.File]::Open((Join-Path $run {}), [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)\ntry {{ [Console]::OpenStandardInput().CopyTo($file) }} finally {{ $file.Dispose() }}\n",
                 windows_directory(run), powershell_quote(file)
             ),
         })
@@ -144,7 +173,7 @@ impl Host {
     /// entries are (environment name, staged filename), never credential values.
     pub fn launch(
         &self,
-        run: RunId,
+        run: RunKey<'_>,
         argv: &[String],
         cwd: &str,
         secret_env: &[(&str, &str)],
@@ -167,7 +196,7 @@ impl Host {
 
     /// Checks the recorded process identity before terminating its process tree/group.
     /// POSIX gives the group two seconds to stop before escalating to SIGKILL.
-    pub fn stop(&self, run: RunId) -> Invocation {
+    pub fn stop(&self, run: RunKey<'_>) -> Invocation {
         self.script(match self.os() {
             HostOs::Posix => format!(
                 "{}\
@@ -210,7 +239,7 @@ if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}
     }
 
     /// Reads durable exit evidence first, then checks the recorded start identity.
-    pub fn probe(&self, run: RunId) -> Invocation {
+    pub fn probe(&self, run: RunKey<'_>) -> Invocation {
         self.script(match self.os() {
             HostOs::Posix => format!(
                 "{}\
@@ -235,7 +264,7 @@ if ($process -and $process.StartTime.ToFileTimeUtc().ToString() -eq $record[1]) 
     }
 
     /// Removes the staged token and MCP config, keeping the brief, logs, pid, and exit.
-    pub fn remove_credentials(&self, run: RunId) -> Invocation {
+    pub fn remove_credentials(&self, run: RunKey<'_>) -> Invocation {
         self.script(match self.os() {
             HostOs::Posix => format!(
                 "{}rm -f -- \"$run\"/token \"$run\"/mcp.json\n",
@@ -283,7 +312,7 @@ if ($process -and $process.StartTime.ToFileTimeUtc().ToString() -eq $record[1]) 
     /// Starts a detached tmux session running a wrapper script from wrapper_script.
     pub fn tmux_new_session(
         &self,
-        run: RunId,
+        run: RunKey<'_>,
         cwd: &str,
         wrapper: &str,
     ) -> Result<Invocation, &'static str> {
@@ -298,7 +327,7 @@ if ($process -and $process.StartTime.ToFileTimeUtc().ToString() -eq $record[1]) 
         ])
     }
 
-    pub fn tmux_has_session(&self, run: RunId) -> Result<Invocation, &'static str> {
+    pub fn tmux_has_session(&self, run: RunKey<'_>) -> Result<Invocation, &'static str> {
         self.tmux(vec![
             "has-session".into(),
             "-t".into(),
@@ -306,7 +335,7 @@ if ($process -and $process.StartTime.ToFileTimeUtc().ToString() -eq $record[1]) 
         ])
     }
 
-    pub fn tmux_kill_session(&self, run: RunId) -> Result<Invocation, &'static str> {
+    pub fn tmux_kill_session(&self, run: RunKey<'_>) -> Result<Invocation, &'static str> {
         self.tmux(vec![
             "kill-session".into(),
             "-t".into(),
@@ -314,12 +343,17 @@ if ($process -and $process.StartTime.ToFileTimeUtc().ToString() -eq $record[1]) 
         ])
     }
 
-    pub fn tmux_wait_for(&self, run: RunId) -> Result<Invocation, &'static str> {
+    pub fn tmux_wait_for(&self, run: RunKey<'_>) -> Result<Invocation, &'static str> {
         self.tmux(vec!["wait-for".into(), session(run)])
     }
 
     /// Reads the last bytes of a POSIX run log without interpreting its filename.
-    pub fn tail(&self, run: RunId, file: &str, bytes: usize) -> Result<Invocation, &'static str> {
+    pub fn tail(
+        &self,
+        run: RunKey<'_>,
+        file: &str,
+        bytes: usize,
+    ) -> Result<Invocation, &'static str> {
         if self.os() != HostOs::Posix {
             return Err("tmux log tail requires POSIX; choose runner plain or herdr on Windows");
         }
@@ -332,15 +366,15 @@ if ($process -and $process.StartTime.ToFileTimeUtc().ToString() -eq $record[1]) 
     }
 }
 
-fn session(run: RunId) -> String {
-    format!("toodo-run-{run}")
+pub fn session(run: RunKey<'_>) -> String {
+    format!("toodo-{}-run-{}", run.instance, run.id)
 }
 
 /// Builds the native wrapper script. tmux mode is POSIX only, tees both streams to
 /// separate run logs, and signals wait-for after logs and exit status are durable.
 pub fn wrapper_script(
     os: HostOs,
-    run: RunId,
+    run: RunKey<'_>,
     argv: &[String],
     cwd: &str,
     secret_env: &[(&str, &str)],
@@ -510,6 +544,62 @@ mod tests {
     }
 
     #[test]
+    fn run_names_include_the_server_instance_on_both_operating_systems() {
+        let first = RunKey {
+            instance: "0123456789ab",
+            id: RunId(7),
+        };
+        let second = RunKey {
+            instance: "fedcba987654",
+            id: RunId(7),
+        };
+        assert_eq!(
+            run_directory(HostOs::Posix, first),
+            "\"$HOME\"/'.toodo/runs/0123456789ab/7'"
+        );
+        assert_eq!(session(first), "toodo-0123456789ab-run-7");
+        assert_ne!(session(first), session(second));
+        assert_ne!(
+            run_directory(HostOs::Posix, first),
+            run_directory(HostOs::Posix, second)
+        );
+        let script = decode_powershell(&ssh(HostOs::Windows).create_directory(first).args[4]);
+        assert!(script.contains(r".toodo\runs\0123456789ab\7"));
+        assert!(script.contains("New-Item -ItemType Directory -Path $run -ErrorAction Stop"));
+        assert!(!script.contains("-Force"));
+        assert!(script.contains("exit 73"));
+    }
+
+    #[test]
+    fn fresh_directory_is_private_and_cannot_be_reused() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let key = RunKey {
+            instance: "0123456789ab",
+            id: RunId(7),
+        };
+        let create = Host::Local.create_directory(key);
+        assert!(execute(&create, home.path(), b"").status.success());
+        let dir = home.path().join(".toodo/runs/0123456789ab/7");
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        std::fs::write(dir.join("stop"), "old").unwrap();
+        let rejected = execute(&create, home.path(), b"");
+        assert_eq!(rejected.status.code(), Some(73));
+        assert!(
+            String::from_utf8(rejected.stderr)
+                .unwrap()
+                .contains(&format!(
+                    "remove the leftover directory {} on local host, then start a new run",
+                    dir.display()
+                ))
+        );
+        assert_eq!(std::fs::read_to_string(dir.join("stop")).unwrap(), "old");
+    }
+
+    #[test]
     fn probe_parser_accepts_only_one_complete_response() {
         for (line, expected) in [
             ("missing", Probe::Missing),
@@ -548,7 +638,15 @@ mod tests {
             .path()
             .join("cwd ' \" $(touch injected) `touch injected`\nnext");
         std::fs::create_dir(&cwd).unwrap();
-        let run = RunId(41);
+        let run = RunKey {
+            instance: "0123456789ab",
+            id: RunId(41),
+        };
+        assert!(
+            execute(&Host::Local.create_directory(run), home.path(), b"")
+                .status
+                .success()
+        );
         let token = "secret-token-not-in-command";
         for (name, data) in [
             ("token", token.as_bytes()),
@@ -559,7 +657,7 @@ mod tests {
             let output = execute(&stage, home.path(), data);
             assert!(output.status.success(), "{output:?}");
         }
-        let dir = home.path().join(".toodo/runs/41");
+        let dir = home.path().join(".toodo/runs/0123456789ab/41");
         assert_eq!(
             std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
             0o700
@@ -624,19 +722,27 @@ mod tests {
     #[test]
     fn tmux_wrapper_tees_streams_and_signals_after_recording_exit() {
         let home = tempfile::tempdir().unwrap();
-        let run = RunId(45);
+        let run = RunKey {
+            instance: "0123456789ab",
+            id: RunId(45),
+        };
+        assert!(
+            execute(&Host::Local.create_directory(run), home.path(), b"")
+                .status
+                .success()
+        );
         let output = execute(&Host::Local.stage(run, "brief.md"), home.path(), b"brief");
         assert!(output.status.success());
         let file = "file ' \" $() `x`\nnext";
         let output = execute(&Host::Local.stage(run, file), home.path(), b"exact bytes");
         assert!(output.status.success());
         assert_eq!(
-            std::fs::read(home.path().join(".toodo/runs/45").join(file)).unwrap(),
+            std::fs::read(home.path().join(".toodo/runs/0123456789ab/45").join(file)).unwrap(),
             b"exact bytes"
         );
         // Replace only the external tmux notification, not the stream or status logic.
         let script = format!(
-            "tmux() {{ test -f \"$HOME/.toodo/runs/45/exit\" || return 1; printf '%s\\n' \"$*\" > \"$HOME/signal\"; }}\n{}",
+            "tmux() {{ test -f \"$HOME/.toodo/runs/0123456789ab/45/exit\" || return 1; printf '%s\\n' \"$*\" > \"$HOME/signal\"; }}\n{}",
             wrapper_script(
                 HostOs::Posix,
                 run,
@@ -656,13 +762,13 @@ mod tests {
         assert_eq!(output.status.code(), Some(9));
         assert_eq!(output.stdout, b"brief");
         assert_eq!(output.stderr, b"error");
-        let dir = home.path().join(".toodo/runs/45");
+        let dir = home.path().join(".toodo/runs/0123456789ab/45");
         assert_eq!(std::fs::read(dir.join("stdout.log")).unwrap(), b"brief");
         assert_eq!(std::fs::read(dir.join("stderr.log")).unwrap(), b"error");
         assert_eq!(std::fs::read(dir.join("exit")).unwrap(), b"9\n");
         assert_eq!(
             std::fs::read(home.path().join("signal")).unwrap(),
-            b"wait-for -S toodo-run-45\n"
+            b"wait-for -S toodo-0123456789ab-run-45\n"
         );
         assert!(!dir.join("out.pipe").exists());
         assert!(!dir.join("err.pipe").exists());
@@ -671,7 +777,15 @@ mod tests {
     #[test]
     fn posix_probe_checks_start_identity_and_stop_refuses_a_mismatch() {
         let home = tempfile::tempdir().unwrap();
-        let run = RunId(42);
+        let run = RunKey {
+            instance: "0123456789ab",
+            id: RunId(42),
+        };
+        assert!(
+            execute(&Host::Local.create_directory(run), home.path(), b"")
+                .status
+                .success()
+        );
         let output = execute(&Host::Local.probe(run), home.path(), b"");
         assert_eq!(
             parse_probe(std::str::from_utf8(&output.stdout).unwrap()),
@@ -723,7 +837,10 @@ mod tests {
     #[test]
     fn windows_encodes_native_paths_argv_streams_and_identity_without_a_secret_value() {
         let host = ssh(HostOs::Windows);
-        let run = RunId(43);
+        let run = RunKey {
+            instance: "0123456789ab",
+            id: RunId(43),
+        };
         let cwd = "C:\\repo ' \" $() `backtick`\nnext";
         let argv = [
             "agent.exe",
@@ -761,7 +878,7 @@ mod tests {
             )));
         for part in [
             "$env:USERPROFILE",
-            r".toodo\runs\43",
+            r".toodo\runs\0123456789ab\43",
             "ProcessStartInfo",
             "StartTime.ToFileTimeUtc()",
             "$process.Id",
@@ -795,7 +912,10 @@ mod tests {
     #[test]
     fn tmux_builders_encode_local_argv_and_posix_ssh_commands() {
         let host = ssh(HostOs::Posix);
-        let run = RunId(44);
+        let run = RunKey {
+            instance: "0123456789ab",
+            id: RunId(44),
+        };
         let cwd = "/repo ' \" $() `x`\nnext";
         let wrapper = wrapper_script(
             HostOs::Posix,
@@ -814,7 +934,7 @@ mod tests {
             "tee \"$run/stderr.log\"",
             "wait \"$out\"",
             "wait \"$err\"",
-            "tmux wait-for -S 'toodo-run-44'",
+            "tmux wait-for -S 'toodo-0123456789ab-run-44'",
         ] {
             assert!(wrapper.contains(part), "{part}");
         }
@@ -822,7 +942,14 @@ mod tests {
         assert_eq!(local.program, "tmux");
         assert_eq!(
             &local.args[..6],
-            ["new-session", "-d", "-s", "toodo-run-44", "-c", cwd]
+            [
+                "new-session",
+                "-d",
+                "-s",
+                "toodo-0123456789ab-run-44",
+                "-c",
+                cwd
+            ]
         );
         let remote = host.tmux_new_session(run, cwd, &wrapper).unwrap();
         assert_eq!(

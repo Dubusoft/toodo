@@ -11,13 +11,14 @@ use super::{RunnerError, adapter, lock, process};
 use crate::adapters::git::Invocation;
 use crate::domain::model::{HostPath, MachineLabel};
 use crate::domain::runtime::{HostRef, RunId};
-use crate::runtime::host::{Host, HostOs, Probe, RUN_FILE_PREFIX, parse_probe};
+use crate::runtime::host::{Host, HostOs, Probe, RUN_FILE_PREFIX, RunKey, parse_probe};
 use crate::storage::Storage;
 
 #[derive(Clone)]
 pub(super) struct Remote {
     pub host: Host,
     pub ssh: PathBuf,
+    instance: String,
 }
 
 impl Remote {
@@ -25,6 +26,7 @@ impl Remote {
         host: &HostRef,
         cwd: Option<&str>,
         ssh: &Path,
+        instance: &str,
     ) -> Result<Option<Self>, RunnerError> {
         let HostRef::Ssh(target) = host else {
             return Ok(None);
@@ -46,7 +48,32 @@ impl Remote {
                 },
             },
             ssh: ssh.to_owned(),
+            instance: instance.to_owned(),
         }))
+    }
+
+    fn key(&self, id: RunId) -> RunKey<'_> {
+        RunKey {
+            instance: &self.instance,
+            id,
+        }
+    }
+
+    pub fn create_directory(&self, run: RunId) -> Result<(), RunnerError> {
+        let output = self
+            .command(self.host.create_directory(self.key(run)))
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|_| self.error("create run directory"))?;
+        if output.status.code() == Some(73) {
+            return Err(RunnerError(
+                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            ));
+        }
+        if !output.status.success() {
+            return Err(self.error("create run directory"));
+        }
+        Ok(())
     }
 
     fn command(&self, invocation: Invocation) -> Command {
@@ -70,7 +97,7 @@ impl Remote {
 
     pub fn stage(&self, run: RunId, name: &str, bytes: &[u8]) -> Result<(), RunnerError> {
         let mut child = self
-            .command(self.host.stage(run, name))
+            .command(self.host.stage(self.key(run), name))
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -136,7 +163,7 @@ impl Remote {
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect();
         self.host
-            .launch(run, &argv, cwd, &secret_env, &env)
+            .launch(self.key(run), &argv, cwd, &secret_env, &env)
             .map_err(|error| RunnerError(error.into()))
     }
 
@@ -153,7 +180,7 @@ impl Remote {
     }
 
     pub fn stop(&self, run: RunId) -> Result<(), RunnerError> {
-        match self.output(self.host.stop(run), "stop the agent")?.trim() {
+        match self.output(self.host.stop(self.key(run)), "stop the agent")?.trim() {
             "stopped" | "gone" => Ok(()),
             _ => Err(RunnerError(
                 "remote process identity did not match; reconcile the run before trying to stop it again".into()
@@ -196,7 +223,7 @@ impl Remote {
     pub fn remove_credentials(&self, storage: &Mutex<Storage>, run: RunId) {
         if self
             .output(
-                self.host.remove_credentials(run),
+                self.host.remove_credentials(self.key(run)),
                 "remove staged credentials",
             )
             .is_ok()
@@ -218,7 +245,7 @@ impl Remote {
     }
 
     pub fn probe(&self, run: RunId) -> Result<Probe, RunnerError> {
-        parse_probe(&self.output(self.host.probe(run), "probe the agent")?)
+        parse_probe(&self.output(self.host.probe(self.key(run)), "probe the agent")?)
             .map_err(|error| RunnerError(error.into()))
     }
 }

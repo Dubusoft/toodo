@@ -73,7 +73,7 @@ impl Fixture {
             .unwrap()
             .id;
         let storage = Arc::new(Mutex::new(storage));
-        let runner = PlainRunner::new(storage.clone(), dir.path().join("runs"))
+        let runner = PlainRunner::new(storage.clone(), dir.path().join("runs"), "0123456789ab")
             .with_programs(&program, &program)
             .with_mcp_provider(Arc::new(|| {
                 Some(McpEndpoint {
@@ -601,6 +601,7 @@ exec sh -c "$1"
             &HostRef::Ssh("test-host".into()),
             self.dir.path().to_str(),
             &self.runner.ssh,
+            &self.runner.instance,
         )
         .unwrap()
         .unwrap()
@@ -659,7 +660,7 @@ printf '%s\n' "$TOODO_MCP_TOKEN" >&2
     let remote_dir = fixture
         .dir
         .path()
-        .join(".toodo/runs")
+        .join(".toodo/runs/0123456789ab")
         .join(run.id.to_string());
     assert_eq!(
         fs::metadata(&remote_dir).unwrap().permissions().mode() & 0o777,
@@ -847,6 +848,7 @@ fn remote_stop_before_pid_prevents_a_late_wrapper_from_starting_the_agent() {
     fixture.enable_remote();
     let run = fixture.reserve_remote("late");
     let remote = fixture.remote();
+    remote.create_directory(run.id).unwrap();
     remote.stage(run.id, "brief.md", b"brief").unwrap();
     assert_eq!(
         fixture.runner.stop(run.id).unwrap().state,
@@ -904,6 +906,7 @@ fn remote_reconcile_maps_durable_evidence_and_restart_never_contacts_ssh() {
         ),
     ] {
         let run = fixture.reserve_remote(key);
+        remote.create_directory(run.id).unwrap();
         remote.stage(run.id, file, data.as_bytes()).unwrap();
         let count = fs::read_to_string(fixture.dir.path().join("ssh-argv"))
             .unwrap()
@@ -984,11 +987,12 @@ fn remote_mcp_requires_an_open_tunnel_before_staging_or_spawning() {
 #[test]
 fn remote_windows_uses_native_staging_launch_stop_and_probe_scripts() {
     use crate::adapters::git::fake::decode_powershell;
-    use crate::runtime::host::HostOs;
+    use crate::runtime::host::{HostOs, RunKey};
     let remote = remote::Remote::from_run(
         &HostRef::Ssh("windows".into()),
         Some(r"C:\repo"),
         Path::new("ssh"),
+        "0123456789ab",
     )
     .unwrap()
     .unwrap();
@@ -1010,9 +1014,21 @@ fn remote_windows_uses_native_staging_launch_stop_and_probe_scripts() {
         )
     );
     assert!(script.contains("'http://127.0.0.1:12345/mcp'"));
-    let stage = remote.host.stage(RunId(42), "token");
-    let stop = remote.host.stop(RunId(42));
-    let probe = remote.host.probe(RunId(42));
+    let stage = remote.host.stage(
+        RunKey {
+            instance: "0123456789ab",
+            id: RunId(42),
+        },
+        "token",
+    );
+    let stop = remote.host.stop(RunKey {
+        instance: "0123456789ab",
+        id: RunId(42),
+    });
+    let probe = remote.host.probe(RunKey {
+        instance: "0123456789ab",
+        id: RunId(42),
+    });
     assert!(decode_powershell(&stage.args[4]).contains("[Console]::OpenStandardInput().CopyTo"));
     assert!(decode_powershell(&stop.args[4]).contains("taskkill /PID $process.Id /T /F"));
     assert!(decode_powershell(&probe.args[4]).contains("StartTime.ToFileTimeUtc()"));
@@ -1020,5 +1036,38 @@ fn remote_windows_uses_native_staging_launch_stop_and_probe_scripts() {
         let decoded = decode_powershell(&invocation.args[4]);
         assert!(!decoded.contains(TOKEN));
         assert!(!decoded.contains("sh -c"));
+    }
+}
+
+#[test]
+fn remote_leftover_markers_reject_launch_before_writing_or_starting() {
+    for marker in ["stop", "exit"] {
+        let mut fixture = Fixture::new("printf unexpected > agent_started");
+        fixture.enable_remote();
+        let dir = fixture.dir.path().join(".toodo/runs/0123456789ab/1");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(marker), "143").unwrap();
+        let mut request = fixture.request("remote", AgentAdapter::Claude, false, 60);
+        request.host = HostRef::Ssh("test-host".into());
+        let error = RuntimeService
+            .start_run(&fixture.storage, &fixture.runner, request)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains(&format!(
+                "remove the leftover directory {} on test-host, then start a new run",
+                dir.display()
+            )),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(dir.join(marker)).unwrap(), "143");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        assert!(!fixture.dir.path().join("agent_started").exists());
+        let events = lock(&fixture.storage).run_events(RunId(1)).unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.kind == "launched" || event.kind == "exit")
+        );
     }
 }
