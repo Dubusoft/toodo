@@ -220,6 +220,7 @@ describe("TaskList by workspace source, completion, and runner", () => {
     mocked.runnerHealth.mockResolvedValue(
       ok({
         herdr: { installed: false, running: false, version: null, message: "herdr was not found on the server's PATH." },
+        tmux: { installed: true, version: "tmux 3.6", message: null },
         agents: [
           { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
           { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },

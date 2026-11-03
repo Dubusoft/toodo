@@ -18,6 +18,7 @@ function ok<T>(data: T) {
 
 const ready: RunnerHealth = {
   herdr: { installed: true, running: true, version: "0.9.5", message: null },
+  tmux: { installed: true, version: "tmux 3.6", message: null },
   agents: [
     { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
     { adapter: "codex", installed: true, path: "/home/me/.local/bin/codex", message: null },
@@ -48,18 +49,21 @@ describe("RunnersPanel", () => {
     vi.resetAllMocks();
   });
 
-  it("shows herdr with its version and each agent CLI with its path once they are ready", async () => {
+  it("shows herdr and tmux with their versions and each agent CLI with its path once they are ready", async () => {
     mocked.runnerHealth.mockResolvedValue(ok(ready));
     renderPanel();
 
     const runners = await screen.findByRole("list", { name: "Runners on this server" });
     expect(within(runners).getAllByRole("listitem").map((item) => item.getAttribute("aria-label"))).toEqual([
       "herdr",
+      "tmux",
       "Claude",
       "Codex",
     ]);
     expect(within(row("herdr")).getByText("Running")).toBeInTheDocument();
     expect(row("herdr")).toHaveTextContent("v0.9.5");
+    expect(within(row("tmux")).getByText("Installed")).toBeInTheDocument();
+    expect(row("tmux")).toHaveTextContent("tmux 3.6");
     expect(within(row("Claude")).getByText("Installed")).toBeInTheDocument();
     expect(row("Claude")).toHaveTextContent("/usr/local/bin/claude");
     expect(within(row("Codex")).getByText("Installed")).toBeInTheDocument();
@@ -71,6 +75,7 @@ describe("RunnersPanel", () => {
     mocked.runnerHealth.mockResolvedValue(
       ok({
         herdr: { installed: false, running: false, version: null, message: herdrMissing },
+        tmux: { installed: true, version: "tmux 3.6", message: null },
         agents: [ready.agents[0], { adapter: "codex", installed: false, path: null, message: codexMissing }],
       }),
     );

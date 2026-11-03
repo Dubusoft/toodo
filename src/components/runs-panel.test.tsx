@@ -103,6 +103,7 @@ const notFound = (adapter: AgentAdapter) =>
 function health(missing: AgentAdapter[] = []): RunnerHealth {
   return {
     herdr: { installed: false, running: false, version: null, message: "herdr was not found on the server's PATH." },
+    tmux: { installed: true, version: "tmux 3.6", message: null },
     agents: (["claude", "codex"] as const).map((adapter) =>
       missing.includes(adapter)
         ? { adapter, installed: false, path: null, message: notFound(adapter) }
@@ -118,10 +119,10 @@ function todo(sequence: number, steps: TodoStep[]): RunEvent {
   return event(sequence, "todo", JSON.stringify({ items: steps.map(([text, status]) => ({ text, status })) }));
 }
 
-function renderPanel(task: Task = inProgress) {
+function renderPanel(task: Task = inProgress, remote = false) {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <RunsPanel task={task} />
+      <RunsPanel task={task} remote={remote} />
     </QueryClientProvider>,
   );
 }
@@ -482,6 +483,24 @@ describe("RunsPanel", () => {
 
     await waitFor(() => expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "codex", null, true));
     expect(await screen.findByRole("button", { name: "Run 1, Codex, Running" })).toBeInTheDocument();
+  });
+
+  it("offers both agents on an SSH machine even when the server lacks their CLIs", async () => {
+    const started = run(1, "running", "claude");
+    mocked.runnerHealth.mockResolvedValue(ok(health(["claude", "codex"])));
+    mocked.listTaskRuns.mockResolvedValueOnce(ok([])).mockResolvedValue(ok([started]));
+    mocked.startPlainRun.mockResolvedValue(ok(started));
+    mocked.getRunLog.mockResolvedValue(ok(log(started, launched(started))));
+    renderPanel(inProgress, true);
+
+    const form = await screen.findByRole("form", { name: "New run of #7" });
+    await waitFor(() => expect(mocked.runnerHealth).toHaveBeenCalled());
+    expect(within(form).getByRole("button", { name: "Claude" })).toBeEnabled();
+    expect(within(form).getByRole("button", { name: "Codex" })).toBeEnabled();
+    expect(screen.queryByRole("note", { name: "Why Claude is unavailable" })).not.toBeInTheDocument();
+    fireEvent.click(within(form).getByRole("button", { name: "Start run of #7" }));
+
+    await waitFor(() => expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "claude", null, true));
   });
 
   it("keeps Start run disabled while neither agent CLI is on the server, until Refresh finds one", async () => {

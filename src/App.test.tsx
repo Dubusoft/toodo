@@ -94,6 +94,7 @@ const mockedEvents = vi.mocked(events, { deep: true });
 /** herdr runs on the server and both agent CLIs are on its PATH. */
 const readyRunners: RunnerHealth = {
   herdr: { installed: true, running: true, version: "0.9.3", message: null },
+  tmux: { installed: true, version: "tmux 3.6", message: null },
   agents: [
     { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
     { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },

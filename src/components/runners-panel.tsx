@@ -1,6 +1,6 @@
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { AgentAdapter, AgentHealth, HerdrHealth } from "@/lib/bindings";
+import type { AgentAdapter, AgentHealth, HerdrHealth, TmuxHealth } from "@/lib/bindings";
 import { useRunnerHealth } from "@/lib/queries";
 import { toneChip, type Tone } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
@@ -13,6 +13,10 @@ const agentNames: Record<AgentAdapter, string> = { claude: "Claude", codex: "Cod
 function herdrReadiness(herdr: HerdrHealth): Readiness {
   if (herdr.running) return { label: "Running", tone: "success" };
   return { label: herdr.installed ? "Not running" : "Not installed", tone: "attention" };
+}
+
+function tmuxReadiness(tmux: TmuxHealth): Readiness {
+  return tmux.installed ? { label: "Installed", tone: "success" } : { label: "Not installed", tone: "attention" };
 }
 
 function agentReadiness(agent: AgentHealth): Readiness {
@@ -72,8 +76,9 @@ function RunnerRow({
 }
 
 /**
- * What the server starts agents with: herdr for workspaces with runner herdr, and the Claude
- * and Codex CLIs of runner plain. A tool that is not ready shows the server's next step.
+ * What the server starts agents with: herdr for workspaces with runner herdr, tmux for local
+ * workspaces with runner tmux, and the Claude and Codex CLIs of runner plain and tmux. A tool
+ * that is not ready shows the server's next step.
  */
 export function RunnersPanel() {
   const health = useRunnerHealth();
@@ -82,8 +87,9 @@ export function RunnersPanel() {
   return (
     <section aria-label="Runners" className="flex flex-col gap-3 text-sm">
       <p className="text-muted-foreground">
-        The tools this server starts agents with: herdr for workspaces with runner herdr, and the Claude or Codex CLI
-        for runner plain. Runner plain works without herdr.
+        The tools this server starts agents with: herdr for workspaces with runner herdr, tmux for local workspaces
+        with runner tmux, and the Claude or Codex CLI for runner plain and tmux. Runner plain works without herdr. SSH
+        workspaces use the tmux and agent CLIs of their host.
       </p>
       {health.isPending && <p className="text-muted-foreground">Checking the runners...</p>}
       {health.isError && (
@@ -98,6 +104,12 @@ export function RunnersPanel() {
             readiness={herdrReadiness(data.herdr)}
             detail={data.herdr.version === null ? null : `v${data.herdr.version}`}
             message={data.herdr.message}
+          />
+          <RunnerRow
+            name="tmux"
+            readiness={tmuxReadiness(data.tmux)}
+            detail={data.tmux.version}
+            message={data.tmux.message}
           />
           {data.agents.map((agent) => (
             <RunnerRow
@@ -115,7 +127,7 @@ export function RunnersPanel() {
         variant="outline"
         className="self-start"
         aria-label="Refresh runners"
-        title="Check herdr and the agent CLIs on the server again"
+        title="Check herdr, tmux, and the agent CLIs on the server again"
         disabled={health.isFetching}
         onClick={() => void health.refetch()}
       >

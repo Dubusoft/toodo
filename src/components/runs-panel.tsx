@@ -201,9 +201,10 @@ function RunStateBadge({ state }: { state: RunState }) {
  * worktree; a run that holds it can be stopped, and one whose end was not seen can be
  * reconciled. Runs send no events: Refresh reloads them, as do coming back to the window and
  * changes to the tasks, and they reload every few seconds while one is starting or running.
- * An agent whose CLI the server did not find cannot be picked.
+ * An agent whose CLI the server did not find cannot be picked, unless the workspace is on an
+ * SSH machine (`remote`), whose agent CLIs the server does not check.
  */
-export function RunsPanel({ task }: { task: Task }) {
+export function RunsPanel({ task, remote = false }: { task: Task; remote?: boolean }) {
   const runs = useTaskRuns(task.id);
   const health = useRunnerHealth();
   const startRun = useStartPlainRun();
@@ -223,7 +224,7 @@ export function RunsPanel({ task }: { task: Task }) {
   const inProgress = task.status === "in_progress";
   const holding = newestFirst.find((run) => activeStates.includes(run.state));
   const failure = startRun.error ?? stopRun.error ?? reconcileRun.error;
-  const missing = missingAgents(health.data);
+  const missing = missingAgents(remote ? undefined : health.data);
   // A picked agent whose CLI the server lacks gives way to one it has; without both, none is picked.
   const installed = adapters.filter((value) => !missing.has(value));
   const chosen = installed.includes(adapter) ? adapter : (installed[0] ?? null);

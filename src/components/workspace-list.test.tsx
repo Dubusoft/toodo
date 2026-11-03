@@ -19,6 +19,7 @@ let home = "/home/me";
 
 const ready: RunnerHealth = {
   herdr: { installed: true, running: true, version: "0.9.5", message: null },
+  tmux: { installed: true, version: "tmux 3.6", message: null },
   agents: [
     { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
     { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
@@ -429,7 +430,7 @@ describe("Without herdr running on this server", () => {
     expect(option(dialog, "herdr")).not.toHaveAccessibleDescription(/not running/);
   });
 
-  it("keeps herdr as the default on an SSH machine, where plain cannot run", () => {
+  it("keeps herdr as the default on an SSH machine, whose herdr this server does not check, and offers plain there", () => {
     health = { ...ready, herdr: stoppedHerdr };
     workspaces = [devbox];
     render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
@@ -440,7 +441,7 @@ describe("Without herdr running on this server", () => {
 
     expect(option(dialog, "herdr")).toBeChecked();
     expect(option(dialog, "herdr")).not.toHaveAccessibleDescription(/not running/);
-    expect(option(dialog, runnerLabels.plain)).toBeDisabled();
+    expect(option(dialog, runnerLabels.plain)).toBeEnabled();
   });
 });
 

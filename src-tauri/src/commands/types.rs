@@ -1733,8 +1733,21 @@ pub enum AgentAdapter {
 #[serde(rename_all = "camelCase")]
 pub struct RunnerHealth {
     pub herdr: HerdrHealth,
+    /// tmux for local workspaces with runner tmux.
+    pub tmux: TmuxHealth,
     /// Claude, then Codex.
     pub agents: Vec<AgentHealth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TmuxHealth {
+    /// Whether `tmux -V` ran from the server's `PATH`.
+    pub installed: bool,
+    /// The version `tmux -V` printed, such as `tmux 3.4`.
+    pub version: Option<String>,
+    /// What to do next when tmux cannot run; `None` when it can.
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]

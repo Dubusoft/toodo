@@ -669,12 +669,13 @@ path deletes journal history.
   for remote ones. Uses the server user's `~/.ssh/config` and ssh-agent, the same
   configuration herdr uses.
 - **herdr adapter**: wraps herdr, an optional preinstalled dependency needed only for
-  workspaces with runner `herdr` (remote SSH workspaces need it too).
+  workspaces with runner `herdr` (runs of SSH workspaces with runner `plain` or `tmux` do not use it).
   - Runner health: the `runner_health` command reports whether `herdr` is on `PATH`, whether
-    it is running, and its version, and whether `claude` and `codex` are each on the server's
-    `PATH`. The web app shows it in a Runners section of Settings; the new-workspace runner
-    step prefers `plain` when herdr is missing, and the runs panel disables an agent whose
-    CLI is missing and refreshes the open run while it is active. The server itself defaults
+    it is running, and its version, whether `tmux -V` runs and its version, and whether
+    `claude` and `codex` are each on the server's `PATH`. The web app shows it in a Runners
+    section of Settings; the new-workspace runner step prefers `plain` when herdr is missing,
+    and the runs panel disables an agent whose CLI is missing (for local workspaces only: an
+    SSH workspace runs the agent CLIs of its host) and refreshes the open run while it is active. The server itself defaults
     an omitted runner of a local git workspace to `plain` when herdr is not running.
   - Startup health check: `herdr` on `PATH` and `herdr status --json` reports
     `server.running`. herdr 0.9.3 has no `ping` command.

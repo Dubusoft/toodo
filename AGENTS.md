@@ -49,9 +49,10 @@ See [`docs/architecture.md`](docs/architecture.md) for the domain model and
 
 - **Target**: `toodo-server` on Linux, used through the web app (PWA) it serves to
   browsers on any device; see `docs/server.md`. There is no native app.
-- **Prerequisite**: herdr is optional; workspaces with runner `herdr` (and remote SSH
-  workspaces) need it installed and running on the server, while runner `plain` runs
-  `claude` or `codex` from the server's `PATH` and runner `none` needs neither. Toodo
+- **Prerequisite**: herdr is optional; workspaces with runner `herdr` need it installed
+  and running on the server, while runner `plain` runs `claude` or `codex` from the
+  `PATH` of the server or the workspace's SSH host, runner `tmux` also needs `tmux`
+  there, and runner `none` needs neither. Toodo
   controls herdr; it never installs, updates, or bundles herdr. Git, OpenSSH
   (`ssh`), and `gh` are also expected on the server's `PATH`.
 - **Backend**: Rust with tokio and axum: commands over HTTP, events over server-sent
