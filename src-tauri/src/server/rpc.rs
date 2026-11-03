@@ -241,6 +241,9 @@ commands!(s => {
     "list_commit_records"(task_id: TaskId) => sync Reply::result(
         tasks::list_commit_records(State(&s.storage), task_id)
     );
+    "list_task_activity"(task_id: TaskId) => sync Reply::result(
+        tasks::list_task_activity(State(&s.storage), task_id)
+    );
 
     "herdr_status"() => sync Reply::result(herdr::herdr_status(State(&s.herdr)));
     "start_task"(id: TaskId) => sync Reply::result(herdr::start_task(State(&s.storage), State(&s.git), State(&s.herdr), id));

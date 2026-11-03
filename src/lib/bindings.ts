@@ -136,6 +136,11 @@ export const commands = {
 	addDependency: (taskId: TaskId, dependsOn: TaskId, confirmPause: boolean) => typedError<DependencyOutcome, CommandError>(invoke("add_dependency", { taskId, dependsOn, confirmPause })),
 	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(invoke("remove_dependency", { taskId, dependsOn })),
 	listCommitRecords: (taskId: TaskId) => typedError<CommitRecord[], CommandError>(invoke("list_commit_records", { taskId })),
+	/**
+	 *  The git activity of a task (commits, pull request, CI results, merge), oldest first.
+	 *  Empty for a task of a workspace without a git repository or completed by hand.
+	 */
+	listTaskActivity: (taskId: TaskId) => typedError<TaskActivity[], CommandError>(invoke("list_task_activity", { taskId })),
 	herdrStatus: () => typedError<HerdrStatus, CommandError>(invoke("herdr_status")),
 	/**
 	 *  Creates the worktree of a `planned` task whose dependencies are done through herdr
@@ -278,6 +283,12 @@ export const events = {
 };
 
 /* Types */
+/**  What happened in the git history of a task. */
+export type ActivityKind = "commit" | "pr_opened" | "checks_passed" | "checks_failed" | "pr_merged";
+
+/**  Where an activity event was first learned from. */
+export type ActivitySource = "git_poll" | "github_poll";
+
 /**  Whether agents merge the pull request of their own task. Toodo itself never merges. */
 export type AgentMerge = 
 /**  Agents stop once the pull request is open; the user merges it. */
@@ -790,6 +801,22 @@ export type Task = {
 	notes: TaskNote[],
 	/**  What has to hold for the task to be done, in order. */
 	criteria: Criterion[],
+};
+
+/**  One event of the git activity of a task. */
+export type TaskActivity = {
+	kind: ActivityKind,
+	source: ActivitySource,
+	/**  The commit SHA of a commit or CI result, or the pull request URL. */
+	externalRef: string,
+	title: string,
+	author: string | null,
+	/**  When it happened, in seconds since the Unix epoch. */
+	occurredAt: number,
+	/**  When Toodo first stored it. */
+	receivedAt: number,
+	/**  The latest time any source reported it. */
+	confirmedAt: number,
 };
 
 /**

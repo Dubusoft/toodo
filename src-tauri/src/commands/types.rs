@@ -8,7 +8,9 @@ use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
 use crate::adapters::{git, github, herdr, ssh};
-use crate::domain::{backup, criteria, model, path, plan, review, ssh_config, status, timeline};
+use crate::domain::{
+    activity, backup, criteria, model, path, plan, review, ssh_config, status, timeline,
+};
 use crate::storage;
 
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
@@ -1382,6 +1384,88 @@ impl From<&model::CommitRecord> for CommitRecord {
             message: record.message.clone(),
             author: record.author.clone(),
             committed_at: record.committed_at,
+        }
+    }
+}
+
+/// What happened in the git history of a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum ActivityKind {
+    #[serde(rename = "commit")]
+    Commit,
+    #[serde(rename = "pr_opened")]
+    PullRequestOpened,
+    #[serde(rename = "checks_passed")]
+    ChecksPassed,
+    #[serde(rename = "checks_failed")]
+    ChecksFailed,
+    #[serde(rename = "pr_merged")]
+    PullRequestMerged,
+}
+
+impl From<activity::ActivityKind> for ActivityKind {
+    fn from(kind: activity::ActivityKind) -> Self {
+        match kind {
+            activity::ActivityKind::Commit => Self::Commit,
+            activity::ActivityKind::PullRequestOpened => Self::PullRequestOpened,
+            activity::ActivityKind::ChecksPassed => Self::ChecksPassed,
+            activity::ActivityKind::ChecksFailed => Self::ChecksFailed,
+            activity::ActivityKind::PullRequestMerged => Self::PullRequestMerged,
+        }
+    }
+}
+
+/// Where an activity event was first learned from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum ActivitySource {
+    #[serde(rename = "git_poll")]
+    GitPoll,
+    #[serde(rename = "github_poll")]
+    GitHubPoll,
+}
+
+impl From<activity::ActivitySource> for ActivitySource {
+    fn from(source: activity::ActivitySource) -> Self {
+        match source {
+            activity::ActivitySource::GitPoll => Self::GitPoll,
+            activity::ActivitySource::GitHubPoll => Self::GitHubPoll,
+        }
+    }
+}
+
+/// One event of the git activity of a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskActivity {
+    pub kind: ActivityKind,
+    pub source: ActivitySource,
+    /// The commit SHA of a commit or CI result, or the pull request URL.
+    pub external_ref: String,
+    pub title: String,
+    pub author: Option<String>,
+    /// When it happened, in seconds since the Unix epoch.
+    #[specta(type = Number)]
+    pub occurred_at: i64,
+    /// When Toodo first stored it.
+    #[specta(type = Number)]
+    pub received_at: i64,
+    /// The latest time any source reported it.
+    #[specta(type = Number)]
+    pub confirmed_at: i64,
+}
+
+impl From<&activity::RecordedActivity> for TaskActivity {
+    fn from(recorded: &activity::RecordedActivity) -> Self {
+        let event = &recorded.event;
+        Self {
+            kind: event.kind.into(),
+            source: event.source.into(),
+            external_ref: event.external_ref.clone(),
+            title: event.title.clone(),
+            author: event.author.clone(),
+            occurred_at: event.occurred_at,
+            received_at: recorded.received_at,
+            confirmed_at: recorded.confirmed_at,
         }
     }
 }

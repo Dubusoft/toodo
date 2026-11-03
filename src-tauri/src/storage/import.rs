@@ -95,6 +95,10 @@ const TABLES: &[(&str, &[Column])] = &[
         "task_criteria",
         &[("id", None), ("task_id", Some("task_id + {t}"))],
     ),
+    (
+        "task_activity",
+        &[("id", None), ("task_id", Some("task_id + {t}"))],
+    ),
 ];
 
 /// Tables that are deliberately left out, see the module documentation. `task_search` is
@@ -294,6 +298,7 @@ mod tests {
                  ALTER TABLE workspaces DROP COLUMN completion;
                  ALTER TABLE workspaces DROP COLUMN runner;
                  ALTER TABLE workspaces DROP COLUMN axes_detected;
+                 DROP TABLE task_activity;
                  PRAGMA user_version = 25;",
             )
             .unwrap();

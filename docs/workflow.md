@@ -417,6 +417,13 @@ check. A branch without a pull request, or with a closed one only, leaves the ta
 `in_progress`; a pull request into another base branch or a failed lookup is logged once
 until it changes.
 
+Before completing tasks, the same check records the git activity of every `in_progress`
+or `in_review` task with a branch (see Git Activity in `docs/architecture.md`): the
+commits of its branch and, in a GitHub workspace, what its pull request shows (`gh pr
+view <url> --json number,title,url,createdAt,state,mergedAt,headRefOid,statusCheckRollup`).
+Workspaces without git or completed by hand (`manual`) are skipped. A failed read is
+logged once until it changes and does not affect completion.
+
 Completion never waits for the user: dependents start as soon as the work is on the base
 branch, and `completedAt` stays the time of the merge check. A completion note is
 optional, since the task description already says what the work is: the user may add one

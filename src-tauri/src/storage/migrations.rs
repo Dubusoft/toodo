@@ -761,6 +761,25 @@ pub(super) const MIGRATIONS: &[&str] = &[
                           WHERE t.workspace_id = workspaces.id
                             AND t.pull_request_url IS NOT NULL);
     ",
+    // Version 28: the git activity of each task (commits, pull request, CI results,
+    // merge), one row per event and task however often it is reported.
+    r"
+    CREATE TABLE task_activity (
+        id INTEGER PRIMARY KEY,
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        dedup_key TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        source TEXT NOT NULL,
+        external_ref TEXT NOT NULL,
+        title TEXT NOT NULL,
+        author TEXT,
+        occurred_at INTEGER NOT NULL,
+        received_at INTEGER NOT NULL,
+        confirmed_at INTEGER NOT NULL,
+        UNIQUE (task_id, dedup_key)
+    );
+    CREATE INDEX task_activity_by_task ON task_activity (task_id, occurred_at);
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for

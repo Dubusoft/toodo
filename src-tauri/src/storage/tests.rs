@@ -1591,3 +1591,130 @@ fn workspaces_with_undetected_axes_are_listed_until_their_axes_are_saved() {
         Err(StorageError::WorkspaceNotFound(_))
     ));
 }
+
+fn activity(
+    task: TaskId,
+    kind: crate::domain::activity::ActivityKind,
+    source: crate::domain::activity::ActivitySource,
+    external_ref: &str,
+    title: &str,
+    occurred_at: i64,
+) -> crate::domain::activity::ActivityEvent {
+    crate::domain::activity::ActivityEvent {
+        task_id: task,
+        kind,
+        source,
+        external_ref: external_ref.to_owned(),
+        title: title.to_owned(),
+        author: Some(format!("{title} author")),
+        occurred_at,
+    }
+}
+
+#[test]
+fn activity_is_stored_once_per_event_whatever_the_order_of_reports() {
+    use crate::domain::activity::{ActivityKind::*, ActivitySource::*};
+    // The same events, each reported by two sources with different times and titles.
+    let first = |task| {
+        vec![
+            activity(task, Commit, GitPoll, "aaa", "Commit aaa", 30),
+            activity(task, PullRequestOpened, GitHubPoll, "pr", "Add login", 50),
+            activity(task, Commit, GitPoll, "bbb", "Commit bbb", 40),
+        ]
+    };
+    let second = |task| {
+        vec![
+            activity(task, PullRequestOpened, GitPoll, "pr", "Renamed", 45),
+            activity(task, Commit, GitHubPoll, "aaa", "Other title", 35),
+            activity(task, Commit, GitHubPoll, "bbb", "Other title", 20),
+        ]
+    };
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "toodo", local_location(r"C:\dev\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+
+    // When A gets the first reports, then the second, and B the other way around, each
+    // batch twice.
+    assert_eq!(storage.record_activity(a.id, &first(a.id), 100).unwrap(), 3);
+    assert_eq!(storage.record_activity(a.id, &first(a.id), 110).unwrap(), 0);
+    assert_eq!(
+        storage.record_activity(a.id, &second(a.id), 120).unwrap(),
+        0
+    );
+    assert_eq!(
+        storage.record_activity(a.id, &second(a.id), 130).unwrap(),
+        0
+    );
+    assert_eq!(
+        storage.record_activity(b.id, &second(b.id), 100).unwrap(),
+        3
+    );
+    assert_eq!(
+        storage.record_activity(b.id, &second(b.id), 110).unwrap(),
+        0
+    );
+    assert_eq!(storage.record_activity(b.id, &first(b.id), 120).unwrap(), 0);
+    assert_eq!(storage.record_activity(b.id, &first(b.id), 130).unwrap(), 0);
+
+    // Then each event is one row at its earliest time, first received at 100, confirmed
+    // by the last report, and listed in the same order for both.
+    assert_eq!(row_count(&storage, "task_activity"), 6);
+    let summary = |task: &Task| {
+        storage
+            .list_activity(task.id)
+            .unwrap()
+            .into_iter()
+            .map(|recorded| {
+                assert_eq!(recorded.received_at, 100);
+                assert_eq!(recorded.confirmed_at, 130);
+                (
+                    recorded.event.kind,
+                    recorded.event.external_ref,
+                    recorded.event.occurred_at,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let expected = vec![
+        (Commit, "bbb".to_owned(), 20),
+        (Commit, "aaa".to_owned(), 30),
+        (PullRequestOpened, "pr".to_owned(), 45),
+    ];
+    assert_eq!(summary(&a), expected);
+    assert_eq!(summary(&b), expected);
+    // The first report keeps its source, title, and author.
+    let a_events = storage.list_activity(a.id).unwrap();
+    assert_eq!(a_events[2].event.source, GitHubPoll);
+    assert_eq!(a_events[2].event.title, "Add login");
+    assert_eq!(
+        a_events[2].event.author.as_deref(),
+        Some("Add login author")
+    );
+    let b_events = storage.list_activity(b.id).unwrap();
+    assert_eq!(b_events[2].event.source, GitPoll);
+    assert_eq!(b_events[2].event.title, "Renamed");
+
+    // Deleting a task drops its activity.
+    storage.delete_task(b.id).unwrap();
+    assert_eq!(row_count(&storage, "task_activity"), 3);
+}
+
+#[test]
+fn activity_of_another_or_a_missing_task_is_rejected() {
+    use crate::domain::activity::{ActivityKind::Commit, ActivitySource::GitPoll};
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "toodo", local_location(r"C:\dev\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+
+    assert!(matches!(
+        storage.record_activity(a.id, &[activity(b.id, Commit, GitPoll, "aaa", "x", 1)], 5),
+        Err(StorageError::ActivityTaskMismatch { expected, found }) if expected == a.id && found == b.id
+    ));
+    assert!(matches!(
+        storage.record_activity(TaskId(99), &[], 5),
+        Err(StorageError::TaskNotFound(TaskId(99)))
+    ));
+    assert_eq!(row_count(&storage, "task_activity"), 0);
+}

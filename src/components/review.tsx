@@ -24,6 +24,7 @@ import {
   periodNouns,
   periodTitles,
   planVsActual,
+  pullRequestNumber,
   pullRequestStats,
   reviewCsv,
   reviewFileName,
@@ -66,11 +67,6 @@ function download(name: string, contents: string, type: string) {
   link.download = name;
   link.click();
   URL.revokeObjectURL(url);
-}
-
-/** The pull request number of a GitHub pull request URL. */
-function pullRequestNumber(url: string): string | null {
-  return /\/pull\/(\d+)/.exec(url)?.[1] ?? null;
 }
 
 /** Report actions in one menu, so the controls fit a phone in two rows. */

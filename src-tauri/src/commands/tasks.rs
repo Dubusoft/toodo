@@ -3,8 +3,8 @@
 use super::State;
 
 use super::types::{
-    self, CommitRecord, CriterionId, DependencyOutcome, NewTask, Task, TaskEdit, TaskId,
-    TaskRelation,
+    self, CommitRecord, CriterionId, DependencyOutcome, NewTask, Task, TaskActivity, TaskEdit,
+    TaskId, TaskRelation,
 };
 use super::{CommandError, CommandResult, HerdrState, StorageState, lock};
 use crate::domain::criteria::{self, CheckKind, CheckedBy, NewCriterion};
@@ -626,6 +626,18 @@ pub fn list_commit_records(
 ) -> CommandResult<Vec<CommitRecord>> {
     Ok(types::map_all(
         &lock(&storage).list_commit_records(task_id.into())?,
+    ))
+}
+
+/// The git activity of a task (commits, pull request, CI results, merge), oldest first.
+/// Empty for a task of a workspace without a git repository or completed by hand.
+#[specta::specta]
+pub fn list_task_activity(
+    storage: State<'_, StorageState>,
+    task_id: TaskId,
+) -> CommandResult<Vec<TaskActivity>> {
+    Ok(types::map_all(
+        &lock(&storage).list_activity(task_id.into())?,
     ))
 }
 

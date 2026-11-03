@@ -7,6 +7,7 @@
 //! are checked with [`crate::domain::dag`], and `planned`/`ready` statuses are brought in
 //! line with the dependencies after every change.
 
+mod activity;
 mod backup;
 mod commits;
 mod criteria;
@@ -161,6 +162,10 @@ pub enum StorageError {
         expected: TaskId,
         found: TaskId,
     },
+    ActivityTaskMismatch {
+        expected: TaskId,
+        found: TaskId,
+    },
     /// A stored value cannot be converted back into the domain model.
     InvalidData(String),
     /// A file to restore from is not a readable Toodo database.
@@ -254,6 +259,10 @@ impl fmt::Display for StorageError {
             Self::CommitTaskMismatch { expected, found } => write!(
                 f,
                 "commit record of task {found} cannot be stored for task {expected}"
+            ),
+            Self::ActivityTaskMismatch { expected, found } => write!(
+                f,
+                "activity of task {found} cannot be stored for task {expected}; record it for task {found}"
             ),
             Self::InvalidData(message) => write!(f, "stored data is invalid: {message}"),
             Self::InvalidBackup(message) => write!(f, "invalid backup {message}"),
