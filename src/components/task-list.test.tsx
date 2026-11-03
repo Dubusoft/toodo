@@ -67,6 +67,14 @@ const plainRunner: Workspace = {
   runner: "plain",
 };
 
+const tmuxOnDevbox: Workspace = {
+  ...plainRunner,
+  id: 6,
+  name: "infra",
+  location: { kind: "ssh", machine: "devbox", path: "/srv/infra" },
+  runner: "tmux",
+};
+
 const manualGitHub: Workspace = {
   ...github,
   id: 4,
@@ -339,24 +347,32 @@ describe("TaskList by workspace source, completion, and runner", () => {
     expect(within(menu).getByRole("menuitem", { name: "Link issue to #2" })).toBeInTheDocument();
   });
 
-  it("shows the runs of a plain runner workspace's started task, which needs no herdr", async () => {
-    mocked.listTaskRuns.mockResolvedValue(ok([]));
-    renderTasks(plainRunner, [
-      task(8, plainRunner, "Port CLI", {
-        status: "in_progress",
-        branch: "feat/port-cli-8",
-        worktreePath: "/srv/worktrees/port-cli-8",
-      }),
-    ]);
+  it.each([plainRunner, tmuxOnDevbox])(
+    "shows the runs of a $runner runner workspace's started task, which needs no herdr",
+    async (workspace) => {
+      mocked.listTaskRuns.mockResolvedValue(ok([]));
+      renderTasks(workspace, [
+        task(8, workspace, "Port CLI", {
+          status: "in_progress",
+          branch: "feat/port-cli-8",
+          worktreePath: "/srv/worktrees/port-cli-8",
+        }),
+      ]);
 
-    const details = await openDetails("Port CLI");
-    const runs = within(details).getByRole("region", { name: "Runs" });
-    expect(await within(runs).findByText("No runs yet.")).toBeInTheDocument();
-    expect(within(runs).getByRole("button", { name: "Start run of #8" })).toBeEnabled();
-    expect(within(details).queryByRole("button", { name: "Open #8 in herdr" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("note", { name: "herdr unavailable for #8" })).not.toBeInTheDocument();
-    expect(mocked.listTaskRuns).toHaveBeenCalledWith(8);
-  });
+      const details = await openDetails("Port CLI");
+      const runs = within(details).getByRole("region", { name: "Runs" });
+      expect(await within(runs).findByText("No runs yet.")).toBeInTheDocument();
+      expect(within(runs).getByRole("button", { name: "Start run of #8" })).toBeEnabled();
+      expect(within(details).queryByRole("button", { name: "Open #8 in herdr" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("note", { name: "herdr unavailable for #8" })).not.toBeInTheDocument();
+      expect(mocked.listTaskRuns).toHaveBeenCalledWith(8);
+      // Its tasks start in worktrees under the machine's worktree root, like herdr's.
+      expect(screen.getByRole("form", { name: "Worktree root" })).toBeInTheDocument();
+      expect(mocked.getMachineSettings).toHaveBeenCalledWith(
+        workspace.location.kind === "ssh" ? { kind: "ssh", label: workspace.location.machine } : { kind: "local" },
+      );
+    },
+  );
 
   it("lists the git activity of a GitHub workspace's task in the order it happened", async () => {
     const pr = "https://github.com/acme/app/pull/7";

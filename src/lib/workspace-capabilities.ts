@@ -13,8 +13,9 @@ export type WorkspaceCapabilities = {
   /** herdr runs started tasks on a branch in a worktree, so starting a task needs herdr. */
   herdr: boolean;
   /**
-   * Toodo itself runs Claude or Codex on the worktree of a started task (runner plain): the
-   * runs of the task, started and stopped in its details.
+   * Toodo itself runs Claude or Codex on the worktree of a started task (runner plain, or tmux
+   * in a tmux session), on the server or the workspace's SSH machine: the runs of the task,
+   * started and stopped in its details.
    */
   plainRuns: boolean;
   /** Task branches ship as GitHub pull requests: Open PR, Push to PR, and their state. */
@@ -44,7 +45,7 @@ export function workspaceCapabilities(
     git: source !== "none",
     github: source === "github",
     herdr: runner === "herdr",
-    plainRuns: runner === "plain",
+    plainRuns: runner === "plain" || runner === "tmux",
     pullRequests: source === "github" && runner !== "none",
     merge: completion !== "manual",
     criterionKinds: criterionKinds[completion],

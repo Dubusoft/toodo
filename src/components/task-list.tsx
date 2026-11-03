@@ -338,7 +338,8 @@ export function TaskList({
         )}
       </header>
 
-      {workspace && workspaceCapabilities(workspace).herdr && <WorktreeRootForm workspace={workspace} />}
+      {/* Every runner but none starts tasks in worktrees under the worktree root of the machine. */}
+      {workspace && workspace.runner !== "none" && <WorktreeRootForm workspace={workspace} />}
 
       {workspace && onDraftChange && <NewTaskForm workspace={workspace} draft={draft} onChange={onDraftChange} />}
 
@@ -1317,7 +1318,7 @@ function TaskRow({
           )}
         </DetailField>
       )}
-      {/* A started task of a plain workspace has its runs here; one in progress starts them. */}
+      {/* A started task of a plain or tmux workspace has its runs here; one in progress starts them. */}
       {detailed && capabilities.plainRuns && (task.status !== "planned" || isPaused(task)) && <RunsPanel task={task} />}
       {detailed && task.mergedWith && (
         <ShippedWith
