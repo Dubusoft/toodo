@@ -504,7 +504,19 @@ environment and no MCP flags are passed.
 
 Stdout is read as NDJSON lines, including a last line without a newline. Lines that
 aren't JSON or aren't known events are logged and ignored, and a line over 1 MiB is
-logged truncated and not parsed. When the process ends, its outcome settles the run:
+logged truncated and not parsed.
+
+While the run is active, each change of the agent's todo list is appended as a `todo`
+run event: a Claude `assistant` message with a `TodoWrite` tool use (`input.todos`), or a
+Codex `item.started`, `item.updated`, or `item.completed` event of a `todo_list` item.
+The payload is compact JSON `{"items":[{"text":"...","status":"pending"}]}` in the
+agent's order, with status `pending`, `in_progress`, or `completed` (an unknown Claude
+status becomes `pending`; a Codex item is `completed` or `pending`), at most 50 items of
+at most 500 bytes of text each, and redacted like every payload. A list identical to the
+last recorded one records nothing, and a failure to record it is logged without stopping
+the run.
+
+When the process ends, its outcome settles the run:
 
 | Outcome | Run state | Events |
 | --- | --- | --- |

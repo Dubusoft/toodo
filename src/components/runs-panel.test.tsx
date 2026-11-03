@@ -110,6 +110,13 @@ function health(missing: AgentAdapter[] = []): RunnerHealth {
   };
 }
 
+type TodoStep = [text: string, status: "pending" | "in_progress" | "completed"];
+
+/** A todo event with the agent's todo list, in the payload the runner records. */
+function todo(sequence: number, steps: TodoStep[]): RunEvent {
+  return event(sequence, "todo", JSON.stringify({ items: steps.map(([text, status]) => ({ text, status })) }));
+}
+
 function renderPanel(task: Task = inProgress) {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -214,6 +221,117 @@ describe("RunsPanel", () => {
     expect(screen.getByLabelText("stderr of run 2")).toHaveTextContent("warning: retrying (1/3)");
     expect(mocked.getRunLog).toHaveBeenCalledWith(42, null);
     expect(screen.queryByRole("button", { name: /^Stop run/ })).not.toBeInTheDocument();
+  });
+
+  it("shows the latest todo list of a run with the state of each step", async () => {
+    const running = run(1, "running");
+    mocked.listTaskRuns.mockResolvedValue(ok([running]));
+    mocked.getRunLog.mockResolvedValue(
+      ok(
+        log(running, [
+          ...launched(running),
+          todo(3, [
+            ["Read the export code", "in_progress"],
+            ["Port the CLI", "pending"],
+          ]),
+          todo(4, [
+            ["Read the export code", "completed"],
+            ["Port the CLI", "in_progress"],
+            ["Add tests for the CLI", "pending"],
+          ]),
+        ]),
+      ),
+    );
+    renderPanel();
+
+    const list = await screen.findByRole("region", { name: "Todo list of run 1" });
+    expect(within(list).getByRole("heading")).toHaveTextContent("Todo list (1 of 3 done)");
+    const steps = within(list).getAllByRole("listitem");
+    expect(steps.map((step) => step.textContent)).toEqual(["Read the export code", "Port the CLI", "Add tests for the CLI"]);
+    expect(steps.map((step) => within(step).getByRole("img").getAttribute("aria-label"))).toEqual([
+      "Done",
+      "In progress",
+      "Pending",
+    ]);
+  });
+
+  it("sums up each todo list among the events of a run", async () => {
+    const running = run(1, "running");
+    mocked.listTaskRuns.mockResolvedValue(ok([running]));
+    mocked.getRunLog.mockResolvedValue(
+      ok(
+        log(running, [
+          ...launched(running),
+          todo(3, [
+            ["Read the export code", "in_progress"],
+            ["Port the CLI", "pending"],
+          ]),
+          todo(4, [
+            ["Read the export code", "completed"],
+            ["Port the CLI", "pending"],
+          ]),
+          todo(5, [
+            ["Read the export code", "completed"],
+            ["Port the CLI", "completed"],
+          ]),
+          todo(6, []),
+        ]),
+      ),
+    );
+    renderPanel();
+
+    const events = await screen.findByRole("list", { name: "Events of run 1" });
+    const rows = within(events).getAllByRole("listitem").slice(2);
+    expect(rows).toHaveLength(4);
+    for (const row of rows) expect(within(row).getByText("Todo list")).toBeInTheDocument();
+    expect(within(rows[0]).getByText("0/2 done; Now: Read the export code")).toBeInTheDocument();
+    expect(within(rows[1]).getByText("1/2 done; Next: Port the CLI")).toBeInTheDocument();
+    expect(within(rows[2]).getByText("2/2 done; All done")).toBeInTheDocument();
+    expect(within(rows[3]).getByText("Empty")).toBeInTheDocument();
+    expect(within(events).queryAllByText(/"items"/)).toHaveLength(0);
+    // The agent emptied its list last, so no step is left to show.
+    const list = screen.getByRole("region", { name: "Todo list of run 1" });
+    expect(within(list).queryByRole("listitem")).not.toBeInTheDocument();
+  });
+
+  it("shows a todo payload of another shape as it is", async () => {
+    const running = run(1, "running");
+    const unknownState = '{"items":[{"text":"Port the CLI","status":"blocked"}]}';
+    mocked.listTaskRuns.mockResolvedValue(ok([running]));
+    mocked.getRunLog.mockResolvedValue(
+      ok(log(running, [...launched(running), event(3, "todo", "{not json"), event(4, "todo", unknownState)])),
+    );
+    renderPanel();
+
+    const events = await screen.findByRole("list", { name: "Events of run 1" });
+    expect(within(events).getByText("{not json")).toBeInTheDocument();
+    expect(within(events).getByText(unknownState)).toBeInTheDocument();
+    const list = screen.getByRole("region", { name: "Todo list of run 1" });
+    expect(list).toHaveTextContent(unknownState);
+    expect(within(list).queryByRole("listitem")).not.toBeInTheDocument();
+  });
+
+  it("tells how a run ended by its last event other than a todo list", async () => {
+    const stopped = run(1, "cancelled");
+    mocked.listTaskRuns.mockResolvedValue(ok([stopped]));
+    mocked.getRunLog.mockResolvedValue(
+      ok(
+        log(stopped, [
+          ...launched(stopped),
+          todo(3, [["Port the CLI", "in_progress"]]),
+          event(4, "stop_requested", "the run was stopped"),
+          // The agent can still change its list until it exits.
+          todo(5, [["Port the CLI", "completed"]]),
+          event(6, "cancelled"),
+        ]),
+      ),
+    );
+    renderPanel();
+
+    const last = await screen.findByRole("note", { name: "Last event of run 1" });
+    expect(last).toHaveTextContent("Stop requested");
+    expect(last).toHaveTextContent("the run was stopped");
+    expect(last).not.toHaveTextContent("Todo list");
   });
 
   it("reloads the runs and the open log on Refresh", async () => {

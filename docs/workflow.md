@@ -337,6 +337,10 @@ Only one run at a time can write to a worktree, and a run stops after 4 hours.
 - `list_task_runs` lists the task's runs, oldest first, with their states.
 - `get_run_log` returns a run's state, its events, and the tails of its stdout and
   stderr (64 KiB each unless `tailBytes` says otherwise), with the MCP token redacted.
+  While the run is running, every change of the agent's todo list (Claude `TodoWrite`,
+  Codex `todo_list`) adds a `todo` event whose payload is
+  `{"items":[{"text":"...","status":"pending|in_progress|completed"}]}`, so the latest
+  `todo` event is the agent's current plan.
 - `stop_run` stops a live run (SIGTERM to its process group, SIGKILL after 5 seconds)
   and marks it `cancelled`. After a server restart, unfinished runs show as `unknown`;
   stop them before starting a new run on the same worktree.
