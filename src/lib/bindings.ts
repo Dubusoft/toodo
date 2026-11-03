@@ -123,7 +123,8 @@ export const commands = {
 	 *  Deletes a task with its dependency edges and commit records. A task that still has a worktree
 	 *  first removes it through herdr, which also closes its herdr workspace; the branch is
 	 *  kept. Without `force`, a worktree with modified or untracked files is rejected and the
-	 *  task is kept.
+	 *  task is kept. A task of a workspace with runner plain has its worktree removed by git,
+	 *  and its plain runs that are still running are stopped first.
 	 */
 	deleteTask: (id: TaskId, force: boolean) => typedError<null, CommandError>(invoke("delete_task", { id, force })),
 	/**
@@ -176,6 +177,27 @@ export const commands = {
 	 *  The worktree is kept. Tasks that are worked on are rejected.
 	 */
 	closeTaskWorkspace: (id: TaskId) => typedError<Task, CommandError>(invoke("close_task_workspace", { id })),
+	/**
+	 *  Starts `adapter` (Claude or Codex) as a writer run in the worktree of an `in_progress`
+	 *  task of a local workspace with runner plain. The prompt goes to the agent on stdin;
+	 *  without one (or a blank one) it is the task's title, description, and criteria, and
+	 *  with `mcp` it also tells the agent to call the Toodo MCP `current_task` tool. With
+	 *  `mcp` the agent gets the server's MCP endpoint and token in its environment only.
+	 *  Returns the run as recorded right after the launch.
+	 */
+	startPlainRun: (taskId: TaskId, adapter: AgentAdapter, prompt: string | null, mcp: boolean) => typedError<TaskRun, CommandError>(invoke("start_plain_run", { taskId, adapter, prompt, mcp })),
+	/**  The runs of a task, oldest first. */
+	listTaskRuns: (taskId: TaskId) => typedError<TaskRun[], CommandError>(invoke("list_task_runs", { taskId })),
+	/**
+	 *  A run with its events and the last `tail_bytes` (default 64 KiB, at most 4 MiB) of its
+	 *  stdout and stderr logs, with the MCP token redacted.
+	 */
+	getRunLog: (runId: RunId, tailBytes: number | null) => typedError<RunLog, CommandError>(invoke("get_run_log", { runId, tailBytes })),
+	/**
+	 *  Stops a plain run: its process group is terminated (killed after a grace period) and
+	 *  the run ends as `cancelled`. A run that already ended is returned as it is.
+	 */
+	stopRun: (runId: RunId) => typedError<TaskRun, CommandError>(invoke("stop_run", { runId })),
 	/**
 	 *  Reads the commits of an `in_progress` or `in_review` task's branch that are not on
 	 *  the base branch and stores them as its commit records.
@@ -292,6 +314,13 @@ export type ActivityKind = "commit" | "pr_opened" | "checks_passed" | "checks_fa
 
 /**  Where an activity event was first learned from. */
 export type ActivitySource = "git_poll" | "github_poll";
+
+/**  The agent CLI a plain run drives. */
+export type AgentAdapter = 
+/**  Claude Code in print mode (`claude -p`). */
+"claude" | 
+/**  Codex in exec mode (`codex exec`). */
+"codex";
 
 /**  Whether agents merge the pull request of their own task. Toodo itself never merges. */
 export type AgentMerge = 
@@ -757,12 +786,53 @@ export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "wor
 /**  Where the reviews of a pull request stand. */
 export type ReviewStatus = "approved" | "changes_requested" | "pending";
 
+/**  Something observed about a run, e.g. its result or how it exited. */
+export type RunEvent = {
+	/**  Increases from 1 per run. */
+	sequence: number,
+	kind: string,
+	payload: string | null,
+	observedAt: Timestamp,
+};
+
+export type RunId = number;
+
+/**  A run with its events and the ends of its output, with the MCP token redacted. */
+export type RunLog = {
+	run: TaskRun,
+	events: RunEvent[],
+	stdout: string,
+	stderr: string,
+};
+
+/**  Where a run is in its life. */
+export type RunState = 
+/**  Recorded, not launched yet. */
+"reserved" | 
+/**  Launched and not ended. */
+"running" | 
+/**  Ended with a successful result. */
+"settled" | 
+/**  Ended on its own, or ended after its result without success. */
+"exited" | 
+/**  Ended with an error result, without a result, or past its time limit. */
+"failed" | 
+/**  Stopped on request. */
+"cancelled" | 
+/**  Its end was not observed, e.g. the server restarted while it ran. */
+"unknown";
+
 /**  What runs the work of a started task. */
 export type Runner = 
 /**  Nothing: starting a task only marks it in progress. */
 "none" | 
 /**  Agents in a herdr workspace on a task worktree and branch. */
-"herdr";
+"herdr" | 
+/**
+ *  Agent CLIs that Toodo runs itself on a task worktree and branch, without herdr.
+ *  Only local workspaces use it.
+ */
+"plain";
 
 /**  What a workspace location holds. */
 export type Source = 
@@ -958,6 +1028,28 @@ export type TaskResolution =
  *  waiting.
  */
 "not_adopted";
+
+/**  A run of a task: an agent launch and its outcome. */
+export type TaskRun = {
+	id: RunId,
+	taskId: TaskId,
+	requestKey: string,
+	/**  Increases from 1 per task. */
+	generation: number,
+	/**  `plain`, `herdr`, or `none`. */
+	runnerKind: string,
+	/**  `writer` or `observer`. */
+	role: string,
+	/**  The agent CLI of a plain run: `claude` or `codex`. */
+	adapter: string | null,
+	checkoutPath: string | null,
+	state: RunState,
+	/**  The runner's reference of the launch, e.g. `pid:<pid>` for a plain run. */
+	providerRunRef: string | null,
+	createdAt: Timestamp,
+	startedAt: Timestamp | null,
+	endedAt: Timestamp | null,
+};
 
 export type TaskStatus = "planned" | "in_progress" | "in_review" | "done";
 

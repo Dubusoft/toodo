@@ -9,7 +9,7 @@ use super::State;
 
 use super::types::{HerdrStatus, Task, TaskId, TaskPane};
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
-use crate::adapters::git::Git;
+use crate::adapters::git::{Git, GitError};
 pub(super) use crate::adapters::herdr::WORKSPACE_NOT_FOUND;
 use crate::adapters::herdr::{
     AGENT_NOT_FOUND, AgentStatus, DIRTY_WORKTREE, Herdr, HerdrError, PaneAgent, WORKTREE_NOT_FOUND,
@@ -124,7 +124,10 @@ pub fn restore_task_worktree(
 
 /// Starts a task as [`start_task`] does. A task of a workspace with runner none moves to
 /// `in_progress` with a run recorded through [`NoRunner`], which ends its earlier runs: it
-/// gets no branch, worktree, or herdr workspace, and neither git nor herdr runs.
+/// gets no branch, worktree, or herdr workspace, and neither git nor herdr runs. A task of
+/// a workspace with runner plain gets its branch and a git worktree like with herdr, but
+/// herdr never runs: git adds the worktree (reusing one already registered at its path),
+/// and the task's earlier runs end. Its agents are started as runs of their own.
 pub(crate) fn start(
     storage: &StorageState,
     git: &Git,
@@ -132,7 +135,7 @@ pub(crate) fn start(
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
     let storage_state = storage;
-    let (workspace, checkout, resumed, kept_worktree, start_unknown) = {
+    let (workspace, mut checkout, resumed, kept_worktree, start_unknown) = {
         let mut storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -169,6 +172,14 @@ pub(crate) fn start(
             RuntimeService.start_run(storage_state, &NoRunner, request)?;
             return Ok(started);
         }
+        if workspace.runner == Runner::Plain {
+            model::check_runner_location(Runner::Plain, &workspace.location).map_err(|error| {
+                CommandError::rejected(format!(
+                    "task {id} cannot start in workspace {}: {}",
+                    workspace.name, error.0
+                ))
+            })?;
+        }
         let settings = storage.get_machine_settings(&workspace.location.machine())?;
         let mut checkout = naming::task_checkout(&workspace, &settings, &task)?;
         // A paused task keeps the branch it got when it first started.
@@ -203,6 +214,15 @@ pub(crate) fn start(
         task: id,
         machine: &machine,
         repository,
+    };
+    let plain = workspace.runner == Runner::Plain;
+    let kept_worktree = match kept_worktree {
+        // git reuses the kept worktree, or checks the branch out there again if it is gone.
+        Some(path) if plain => {
+            checkout.path = path;
+            None
+        }
+        kept => kept,
     };
     if let Some(path) = kept_worktree {
         let kept = TaskCheckout {
@@ -272,28 +292,49 @@ pub(crate) fn start(
         }
     };
     let path = checkout.path.to_string();
-    let opened = RuntimeService
-        .open_workspace(
-            storage,
-            runtime,
-            &target,
-            &checkout,
-            OpenWorktree::New { base: &base },
-            OpenFor::Start,
-        )
-        .map_err(|error| match error {
-            RuntimeError::Workspace(error) => {
-                if created_branch {
-                    // The herdr error is what the user needs; a branch left behind is
-                    // reused by the next attempt.
-                    let _ = git.delete_branch(&workspace.location, &checkout.branch);
-                }
-                worktree_error(error, id, &path)
+    let mut started = if plain {
+        // Only the remote-tracking branch is left: git needs a local one to check out.
+        if resumed && base != checkout.branch {
+            created_branch =
+                git.create_task_branch(&workspace.location, &checkout.branch, &base)?;
+        }
+        if let Err(error) = git.add_worktree(&workspace.location, &checkout.path, &checkout.branch)
+        {
+            if created_branch {
+                // The git error is what the user needs; a branch left behind is reused by
+                // the next attempt.
+                let _ = git.delete_branch(&workspace.location, &checkout.branch);
             }
-            error => error.into(),
-        })?;
+            return Err(plain_worktree_error(error, id, &path));
+        }
+        let mut storage = lock(storage);
+        let started = storage.start_task_plain(id, &checkout)?;
+        end_runs(&mut storage, id, None, RunState::Exited)?;
+        started
+    } else {
+        RuntimeService
+            .open_workspace(
+                storage,
+                runtime,
+                &target,
+                &checkout,
+                OpenWorktree::New { base: &base },
+                OpenFor::Start,
+            )
+            .map_err(|error| match error {
+                RuntimeError::Workspace(error) => {
+                    if created_branch {
+                        // The herdr error is what the user needs; a branch left behind is
+                        // reused by the next attempt.
+                        let _ = git.delete_branch(&workspace.location, &checkout.branch);
+                    }
+                    worktree_error(error, id, &path)
+                }
+                error => error.into(),
+            })?
+            .task
+    };
     let mut storage = lock(storage);
-    let mut started = opened.task;
     if !start_checks.is_empty() {
         started = storage.record_criterion_checks(id, &start_checks)?.0;
     }
@@ -314,6 +355,20 @@ fn worktree_error(error: HerdrError, id: model::TaskId, path: &str) -> CommandEr
         HerdrError::Failed { message, .. }
             if message.contains("' already exists") && !message.contains("branch named") =>
         {
+            CommandError::rejected(format!(
+                "a directory already exists at {path}, where the worktree of task {id} goes; move or remove that directory (or rename the task, which moves the path) and try again"
+            ))
+        }
+        _ => error.into(),
+    }
+}
+
+/// Names the next step when git refused to add the worktree of a task of a workspace with
+/// runner plain because a directory is already at its path; other git failures pass
+/// through.
+fn plain_worktree_error(error: GitError, id: model::TaskId, path: &str) -> CommandError {
+    match &error {
+        GitError::Failed { stderr, .. } if stderr.contains("' already exists") => {
             CommandError::rejected(format!(
                 "a directory already exists at {path}, where the worktree of task {id} goes; move or remove that directory (or rename the task, which moves the path) and try again"
             ))
@@ -575,6 +630,7 @@ fn focus_agent(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> Comm
 /// [`remove_worktree`], so a dirty worktree keeps the task unless `force` is set.
 pub(super) fn delete(
     storage: &StorageState,
+    git: &Git,
     herdr: &Herdr,
     id: model::TaskId,
     force: bool,
@@ -583,7 +639,7 @@ pub(super) fn delete(
         .get_task(id)?
         .ok_or(StorageError::TaskNotFound(id))?;
     if task.worktree_path.is_some() {
-        remove_worktree(storage, herdr, id, force)?;
+        remove_worktree(storage, git, herdr, id, force)?;
     }
     Ok(lock(storage).delete_task(id)?)
 }
@@ -591,14 +647,16 @@ pub(super) fn delete(
 /// Removes the worktree of a task that is not in progress or in review (a finished task,
 /// or a paused one) through herdr, which also closes
 /// its herdr workspace, and forgets both on the task. The branch is kept. Without `force`,
-/// a worktree with modified or untracked files is rejected.
+/// a worktree with modified or untracked files is rejected. A task of a workspace with
+/// runner plain has no herdr workspace: git removes its worktree.
 fn remove_worktree(
     storage: &StorageState,
+    git: &Git,
     herdr: &Herdr,
     id: model::TaskId,
     force: bool,
 ) -> CommandResult<model::Task> {
-    let (location, path) = {
+    let (location, path, runner) = {
         let storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -615,8 +673,12 @@ fn remove_worktree(
         let workspace = storage
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
-        (workspace.location, path.to_string())
+        (workspace.location, path, workspace.runner)
     };
+    if runner == Runner::Plain {
+        return remove_plain_worktree(storage, git, id, &location, &path, force);
+    }
+    let path = path.to_string();
     let machine = location.machine();
     let repository = match &location {
         WorkspaceLocation::Local { path } => path.as_str(),
@@ -638,6 +700,33 @@ fn remove_worktree(
             }
             error => error.into(),
         })
+}
+
+/// Removes the git worktree at `path` of a task of a workspace with runner plain and
+/// forgets it on the task; a worktree git no longer has is only forgotten.
+fn remove_plain_worktree(
+    storage: &StorageState,
+    git: &Git,
+    id: model::TaskId,
+    location: &WorkspaceLocation,
+    path: &model::HostPath,
+    force: bool,
+) -> CommandResult<model::Task> {
+    if git.worktree_exists(location, path)? {
+        git.remove_worktree(location, path, force)
+            .map_err(|error| match &error {
+                GitError::Failed { stderr, .. }
+                    if stderr.contains("modified or untracked files") =>
+                {
+                    CommandError::rejected(format!(
+                        "the worktree of task {id} at {path} has modified or untracked files; \
+                         force the removal to discard them"
+                    ))
+                }
+                _ => error.into(),
+            })?;
+    }
+    Ok(lock(storage).clear_task_worktree(id)?)
 }
 
 /// Makes `id` depend on every task of `depends_on` for the app, where the user already
@@ -723,6 +812,14 @@ mod tests {
     }
 
     fn fixture(location: WorkspaceLocation, settings: Option<MachineSettings>) -> Fixture {
+        fixture_with_runner(location, settings, Runner::Herdr)
+    }
+
+    fn fixture_with_runner(
+        location: WorkspaceLocation,
+        settings: Option<MachineSettings>,
+        runner: Runner,
+    ) -> Fixture {
         let mut storage = Storage::open_in_memory().unwrap();
         let workspace = storage
             .create_workspace(&NewWorkspace {
@@ -731,7 +828,7 @@ mod tests {
                 default_base_branch: "main".to_owned(),
                 source: crate::domain::model::Source::GitHub,
                 completion: crate::domain::model::CompletionMode::PullRequestMerge,
-                runner: crate::domain::model::Runner::Herdr,
+                runner,
                 axes_detected: true,
             })
             .unwrap();
@@ -1598,7 +1695,8 @@ mod tests {
     fn a_paused_task_removes_its_worktree_and_keeps_its_branch() {
         let (fixture, herdr, runner) = paused_task(vec![Ok(REMOVED.to_owned())]);
 
-        let task = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap();
+        let task =
+            remove_worktree(&fixture.storage, &no_git(), &herdr, fixture.task.id, false).unwrap();
 
         assert_eq!(
             (&task.worktree_path, &task.herdr_workspace_id),
@@ -1621,12 +1719,13 @@ mod tests {
         ]);
         let before = stored(&fixture);
 
-        let error = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap_err();
+        let error = remove_worktree(&fixture.storage, &no_git(), &herdr, fixture.task.id, false)
+            .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(error.message.contains(r"D:\wt\toodo\feat-add-login-1"));
         assert_eq!(stored(&fixture), before);
 
-        remove_worktree(&fixture.storage, &herdr, fixture.task.id, true).unwrap();
+        remove_worktree(&fixture.storage, &no_git(), &herdr, fixture.task.id, true).unwrap();
         assert_eq!(
             invocations(&runner)[2].args,
             ["worktree", "remove", "--workspace", "w27", "--force"].map(str::to_owned)
@@ -1643,7 +1742,7 @@ mod tests {
             Ok(REMOVED.to_owned()),
         ]);
 
-        remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap();
+        remove_worktree(&fixture.storage, &no_git(), &herdr, fixture.task.id, false).unwrap();
 
         let invocations = invocations(&runner);
         assert_eq!(
@@ -1673,7 +1772,8 @@ mod tests {
             herdr_failed("worktree_not_found"),
         ]);
 
-        let task = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap();
+        let task =
+            remove_worktree(&fixture.storage, &no_git(), &herdr, fixture.task.id, false).unwrap();
 
         assert_eq!(
             (&task.worktree_path, &task.herdr_workspace_id),
@@ -1687,7 +1787,8 @@ mod tests {
         let (fixture, herdr, _) = paused_task(vec![herdr_failed("worktree_remove_failed")]);
         let before = stored(&fixture);
 
-        let error = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap_err();
+        let error = remove_worktree(&fixture.storage, &no_git(), &herdr, fixture.task.id, false)
+            .unwrap_err();
 
         assert_eq!(error.kind, CommandErrorKind::External);
         assert_eq!(stored(&fixture), before);
@@ -1699,12 +1800,13 @@ mod tests {
         let (herdr, runner) = herdr(vec![Ok(CREATED.to_owned())]);
         let id = fixture.task.id;
 
-        let error = remove_worktree(&fixture.storage, &herdr, id, false).unwrap_err();
+        let error = remove_worktree(&fixture.storage, &no_git(), &herdr, id, false).unwrap_err();
         assert_eq!(error.message, format!("task {id} has no worktree"));
 
         let fixture = local_fixture(Some(r"D:\wt"));
         start(&fixture.storage, &existing_base(), &herdr, fixture.task.id).unwrap();
-        let error = remove_worktree(&fixture.storage, &herdr, fixture.task.id, false).unwrap_err();
+        let error = remove_worktree(&fixture.storage, &no_git(), &herdr, fixture.task.id, false)
+            .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(
             error
@@ -1899,7 +2001,7 @@ mod tests {
     fn deleting_a_task_removes_its_worktree_first() {
         let (fixture, herdr, runner) = paused_task(vec![Ok(REMOVED.to_owned())]);
 
-        delete(&fixture.storage, &herdr, fixture.task.id, false).unwrap();
+        delete(&fixture.storage, &no_git(), &herdr, fixture.task.id, false).unwrap();
 
         assert_eq!(
             invocations(&runner)[1].args,
@@ -1919,11 +2021,12 @@ mod tests {
         ]);
         let before = stored(&fixture);
 
-        let error = delete(&fixture.storage, &herdr, fixture.task.id, false).unwrap_err();
+        let error =
+            delete(&fixture.storage, &no_git(), &herdr, fixture.task.id, false).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert_eq!(stored(&fixture), before);
 
-        delete(&fixture.storage, &herdr, fixture.task.id, true).unwrap();
+        delete(&fixture.storage, &no_git(), &herdr, fixture.task.id, true).unwrap();
         assert_eq!(
             invocations(&runner)[2].args,
             ["worktree", "remove", "--workspace", "w27", "--force"].map(str::to_owned)
@@ -1939,7 +2042,7 @@ mod tests {
         let fixture = local_fixture(Some(r"D:\wt"));
         let (herdr, runner) = herdr(Vec::new());
 
-        delete(&fixture.storage, &herdr, fixture.task.id, false).unwrap();
+        delete(&fixture.storage, &no_git(), &herdr, fixture.task.id, false).unwrap();
 
         assert!(invocations(&runner).is_empty());
         assert_eq!(
@@ -2364,6 +2467,171 @@ mod tests {
         Git::new(Box::new(Arc::new(FakeRunner::new(Vec::new()))))
     }
 
+    /// A task of a local workspace with runner plain and a worktree root.
+    fn plain_fixture() -> Fixture {
+        fixture_with_runner(
+            WorkspaceLocation::Local {
+                path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
+            },
+            Some(MachineSettings::Local {
+                worktree_root: Some(WindowsPath::parse(r"D:\wt").unwrap().into()),
+            }),
+            Runner::Plain,
+        )
+    }
+
+    /// Git for a repository without `origin` whose base branch exists: the task branch is
+    /// created from it, then the worktree is added at a path git does not have yet.
+    fn plain_start_git() -> Arc<FakeRunner> {
+        Arc::new(FakeRunner::new(vec![
+            Ok("abc\n".to_owned()),
+            Ok(String::new()),
+            Err(failed()),
+            Ok(String::new()),
+            Ok("worktree C:/dev/toodo\0HEAD abc\0\0".to_owned()),
+            Ok(String::new()),
+            Ok(String::new()),
+        ]))
+    }
+
+    #[test]
+    fn a_task_of_a_plain_workspace_starts_in_a_git_worktree_without_herdr() {
+        let fixture = plain_fixture();
+        let earlier = {
+            let mut storage = lock(&fixture.storage);
+            let run = storage
+                .reserve_run(&crate::storage::NewRun {
+                    owner: OwnerKey::implicit(),
+                    task: fixture.task.id,
+                    request_key: "earlier".to_owned(),
+                    runner_kind: crate::domain::runtime::RunnerKind::Plain,
+                    role: RunRole::Writer,
+                    host: HostRef::Local,
+                    checkout_path: None,
+                    runtime_workspace: None,
+                    adapter_profile: None,
+                })
+                .unwrap()
+                .into_run();
+            storage.record_launch(run.id, "pid:1").unwrap()
+        };
+        let git_runner = plain_start_git();
+        let runtime = FakeRuntime::new(Vec::new());
+
+        let started = start(
+            &fixture.storage,
+            &Git::new(Box::new(git_runner.clone())),
+            &runtime,
+            fixture.task.id,
+        )
+        .unwrap();
+
+        assert!(runtime.calls().is_empty());
+        assert_eq!(started.status, TaskStatus::InProgress);
+        assert_eq!(started.branch.as_deref(), Some("feat/add-login-1"));
+        assert_eq!(
+            started.worktree_path,
+            Some(HostPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap())
+        );
+        assert_eq!(started.herdr_workspace_id, None);
+        assert_eq!(stored(&fixture), started);
+        let git_calls = invocations(&git_runner);
+        assert_eq!(git_calls.len(), 7);
+        assert_eq!(
+            git_calls[6].args,
+            [
+                "-C",
+                r"C:\dev\toodo",
+                "worktree",
+                "add",
+                r"D:\wt\toodo\feat-add-login-1",
+                "feat/add-login-1"
+            ]
+            .map(str::to_owned)
+        );
+        let storage = lock(&fixture.storage);
+        assert_eq!(
+            storage.open_runtime_workspace(fixture.task.id).unwrap(),
+            None
+        );
+        assert_eq!(
+            storage.get_run(earlier.id).unwrap().unwrap().state,
+            RunState::Exited
+        );
+    }
+
+    #[test]
+    fn deleting_a_paused_plain_task_removes_its_worktree_with_git() {
+        let fixture = plain_fixture();
+        let runtime = FakeRuntime::new(Vec::new());
+        start(
+            &fixture.storage,
+            &Git::new(Box::new(plain_start_git())),
+            &runtime,
+            fixture.task.id,
+        )
+        .unwrap();
+        lock(&fixture.storage)
+            .set_task_status(fixture.task.id, TaskStatus::Planned)
+            .unwrap();
+        let git_runner = Arc::new(FakeRunner::new(vec![
+            Ok("worktree D:/wt/toodo/feat-add-login-1\0HEAD abc\0\0".to_owned()),
+            Ok(String::new()),
+        ]));
+        let (herdr, herdr_runner) = herdr(Vec::new());
+
+        delete(
+            &fixture.storage,
+            &Git::new(Box::new(git_runner.clone())),
+            &herdr,
+            fixture.task.id,
+            false,
+        )
+        .unwrap();
+
+        assert!(invocations(&herdr_runner).is_empty());
+        assert_eq!(
+            invocations(&git_runner)[1].args,
+            [
+                "-C",
+                r"C:\dev\toodo",
+                "worktree",
+                "remove",
+                r"D:\wt\toodo\feat-add-login-1"
+            ]
+            .map(str::to_owned)
+        );
+        assert_eq!(
+            lock(&fixture.storage).get_task(fixture.task.id).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_task_of_an_ssh_workspace_with_runner_plain_is_rejected_before_git_runs() {
+        let fixture = fixture_with_runner(
+            WorkspaceLocation::Ssh {
+                machine: MachineLabel::parse("devbox").unwrap(),
+                path: PosixPath::parse("/srv/toodo").unwrap().into(),
+            },
+            None,
+            Runner::Plain,
+        );
+        let before = stored(&fixture);
+        let runtime = FakeRuntime::new(Vec::new());
+
+        let error = start(&fixture.storage, &no_git(), &runtime, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.contains("choose runner herdr"),
+            "{}",
+            error.message
+        );
+        assert!(runtime.calls().is_empty());
+        assert_eq!(stored(&fixture), before);
+    }
+
     #[test]
     fn a_task_of_a_workspace_without_a_runner_starts_without_git_or_herdr() {
         let dir = tempfile::tempdir().unwrap();
@@ -2419,7 +2687,7 @@ mod tests {
             assert!(error.message.contains("runner none"), "{}", error.message);
         }
         // Deleting the task has no worktree to remove.
-        delete(&storage, &herdr, task.id, false).unwrap();
+        delete(&storage, &no_git(), &herdr, task.id, false).unwrap();
     }
 
     #[test]

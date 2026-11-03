@@ -72,11 +72,12 @@ export const toneOutline: Record<Tone, string> = {
 /** Task type chips: outlined and neutral, so a type never reads as a status. */
 export const typeChip = "border-input text-foreground/70";
 
-/** Banners and confirm steps. */
-export const tonePanel: Record<"info" | "attention", string> = {
+/** Banners and confirm steps, and what went wrong, such as how a failed run ended. */
+export const tonePanel: Record<"info" | "attention" | "danger", string> = {
   info: "border border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-100",
   attention:
     "border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100",
+  danger: "border border-rose-300 bg-rose-50 text-rose-900 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-100",
 };
 
 /** Small solid marks: status dots, legend swatches, timeline phase strips. */

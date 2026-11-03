@@ -179,15 +179,19 @@ pub enum Runner {
     None,
     /// Agents in a herdr workspace on a task worktree and branch.
     Herdr,
+    /// Agent CLIs that Toodo runs itself on a task worktree and branch, without herdr.
+    /// Only local workspaces use it.
+    Plain,
 }
 
 impl Runner {
-    pub const ALL: [Self; 2] = [Self::None, Self::Herdr];
+    pub const ALL: [Self; 3] = [Self::None, Self::Herdr, Self::Plain];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Herdr => "herdr",
+            Self::Plain => "plain",
         }
     }
 }
@@ -246,18 +250,33 @@ pub fn check_axes(
         }
         _ => {}
     }
-    if source == Source::None && runner == Runner::Herdr {
-        return invalid(
-            "runner herdr needs a git repository for task worktrees; choose runner none for \
-             source none, or source local_git or github for runner herdr"
-                .to_owned(),
-        );
+    if source == Source::None && runner != Runner::None {
+        return invalid(format!(
+            "runner {runner} needs a git repository for task worktrees; choose runner none \
+             for source none, or source local_git or github for runner {runner}"
+        ));
     }
     if runner == Runner::None && completion != CompletionMode::Manual {
         return invalid(format!(
             "completion {completion} merges the task branch that only a runner creates; \
              choose runner herdr for completion {completion}, or completion manual for \
              runner none"
+        ));
+    }
+    Ok(())
+}
+
+/// Checks that a workspace with `runner` can be at `location`. Runner plain runs agent
+/// CLIs on the server itself, so its workspaces have a local path.
+pub fn check_runner_location(
+    runner: Runner,
+    location: &WorkspaceLocation,
+) -> Result<(), InvalidAxes> {
+    if runner == Runner::Plain && matches!(location, WorkspaceLocation::Ssh { .. }) {
+        return Err(InvalidAxes(
+            "runner plain runs agents on the server itself and needs a local path; choose \
+             runner herdr for an SSH workspace, or a local path for runner plain"
+                .to_owned(),
         ));
     }
     Ok(())
@@ -579,6 +598,10 @@ mod tests {
             (Source::GitHub, Manual, Runner::None),
             (Source::GitHub, Manual, Runner::Herdr),
             (Source::GitHub, PullRequestMerge, Runner::Herdr),
+            (Source::LocalGit, Manual, Runner::Plain),
+            (Source::LocalGit, LocalMerge, Runner::Plain),
+            (Source::GitHub, Manual, Runner::Plain),
+            (Source::GitHub, PullRequestMerge, Runner::Plain),
         ];
         let mut checked = 0;
         for source in Source::ALL {
@@ -598,7 +621,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 18);
+        assert_eq!(checked, 27);
     }
 
     #[test]
@@ -614,6 +637,11 @@ mod tests {
             message(Source::None, CompletionMode::Manual, Runner::Herdr),
             "runner herdr needs a git repository for task worktrees; choose runner none for \
              source none, or source local_git or github for runner herdr"
+        );
+        assert_eq!(
+            message(Source::None, CompletionMode::Manual, Runner::Plain),
+            "runner plain needs a git repository for task worktrees; choose runner none for \
+             source none, or source local_git or github for runner plain"
         );
         assert_eq!(
             message(
@@ -638,6 +666,30 @@ mod tests {
             "completion pr_merge merges the task branch that only a runner creates; choose \
              runner herdr for completion pr_merge, or completion manual for runner none"
         );
+    }
+
+    #[test]
+    fn only_runner_plain_needs_a_local_path() {
+        let local = WorkspaceLocation::Local {
+            path: crate::domain::path::PosixPath::parse("/srv/repo")
+                .unwrap()
+                .into(),
+        };
+        let ssh = WorkspaceLocation::Ssh {
+            machine: MachineLabel::parse("devbox").unwrap(),
+            path: crate::domain::path::PosixPath::parse("/srv/repo")
+                .unwrap()
+                .into(),
+        };
+        for runner in Runner::ALL {
+            check_runner_location(runner, &local).unwrap();
+            assert_eq!(
+                check_runner_location(runner, &ssh).is_err(),
+                runner == Runner::Plain
+            );
+        }
+        let message = check_runner_location(Runner::Plain, &ssh).unwrap_err().0;
+        assert!(message.contains("choose runner herdr"), "{message}");
     }
 
     #[test]
@@ -671,6 +723,6 @@ mod tests {
             CompletionMode::ALL.map(CompletionMode::as_str),
             ["manual", "local_merge", "pr_merge"]
         );
-        assert_eq!(Runner::ALL.map(Runner::as_str), ["none", "herdr"]);
+        assert_eq!(Runner::ALL.map(Runner::as_str), ["none", "herdr", "plain"]);
     }
 }

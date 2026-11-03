@@ -21,6 +21,7 @@ vi.mock("@/lib/bindings", () => ({
     branchFreshness: vi.fn(),
     createTask: vi.fn(),
     startTask: vi.fn(),
+    listTaskRuns: vi.fn(),
   },
 }));
 
@@ -56,6 +57,14 @@ const folder: Workspace = {
   source: "none",
   completion: "manual",
   runner: "none",
+};
+
+const plainRunner: Workspace = {
+  ...localGit,
+  id: 5,
+  name: "tools",
+  location: { kind: "local", path: "/srv/tools" },
+  runner: "plain",
 };
 
 const manualGitHub: Workspace = {
@@ -324,9 +333,29 @@ describe("TaskList by workspace source, completion, and runner", () => {
     expect(await within(details).findByLabelText("Review of #2")).toBeInTheDocument();
     expect(within(details).getByRole("button", { name: "Push #2 to its pull request" })).toBeInTheDocument();
     expect(within(details).getByRole("button", { name: "Open #2 in herdr" })).toBeInTheDocument();
+    expect(within(details).queryByRole("region", { name: "Runs" })).not.toBeInTheDocument();
     await waitFor(() => expect(mocked.branchFreshness).toHaveBeenCalledWith(2));
     const menu = await openMenu(2, details);
     expect(within(menu).getByRole("menuitem", { name: "Link issue to #2" })).toBeInTheDocument();
+  });
+
+  it("shows the runs of a plain runner workspace's started task, which needs no herdr", async () => {
+    mocked.listTaskRuns.mockResolvedValue(ok([]));
+    renderTasks(plainRunner, [
+      task(8, plainRunner, "Port CLI", {
+        status: "in_progress",
+        branch: "feat/port-cli-8",
+        worktreePath: "/srv/worktrees/port-cli-8",
+      }),
+    ]);
+
+    const details = await openDetails("Port CLI");
+    const runs = within(details).getByRole("region", { name: "Runs" });
+    expect(await within(runs).findByText("No runs yet.")).toBeInTheDocument();
+    expect(within(runs).getByRole("button", { name: "Start run of #8" })).toBeEnabled();
+    expect(within(details).queryByRole("button", { name: "Open #8 in herdr" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("note", { name: "herdr unavailable for #8" })).not.toBeInTheDocument();
+    expect(mocked.listTaskRuns).toHaveBeenCalledWith(8);
   });
 
   it("lists the git activity of a GitHub workspace's task in the order it happened", async () => {

@@ -55,17 +55,23 @@ use crate::commands::events::{
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::workspaces;
 use crate::commands::{
-    GitHubState, GitState, HerdrState, Runtime, SshConfigState, SshState, StorageState,
+    GitHubState, GitState, HerdrState, PlainRunState, Runtime, SshConfigState, SshState,
+    StorageState,
 };
 use crate::domain::model;
 use crate::mcp::tunnels::{self, Tunnels, TunnelsState};
 use crate::mcp::{self, Backend, ServerStatus};
 use crate::oauth::{self, PublicUrl};
+use crate::runtime::plain::PlainRunner;
+use crate::runtime::plain::adapter::McpEndpoint;
 use crate::storage::Storage;
 
 pub(crate) const DATABASE_FILE: &str = "toodo.sqlite3";
 
 pub(crate) const WEB_TOKEN_FILE: &str = "web-token";
+
+/// The directory in the data directory with one private directory per plain run.
+const RUNS_DIR: &str = "runs";
 
 /// The default port. The server forwards it to its SSH machines too, so agents there reach
 /// the MCP endpoint on the same port.
@@ -166,6 +172,7 @@ pub struct Services {
     ssh: SshState,
     ssh_config: SshConfigState,
     herdr: HerdrState,
+    plain: PlainRunState,
     agent_statuses: AgentStatusState,
     pull_request_statuses: PullRequestStatusState,
     backups: Backups,
@@ -347,7 +354,11 @@ fn import(config: &Config, source: &Path) -> Result<(), Box<dyn std::error::Erro
 
 fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     create_private_dir(&config.data_dir)?;
-    let storage = Storage::open(&config.data_dir.join(DATABASE_FILE))?;
+    let storage = Arc::new(Mutex::new(Storage::open(
+        &config.data_dir.join(DATABASE_FILE),
+    )?));
+    // No plain run of an earlier server process still has a process this one manages.
+    PlainRunner::recover_after_restart(&storage)?;
     let mcp_token_path = config.data_dir.join(mcp::TOKEN_FILE);
     let mcp_token = mcp::load_token(&mcp_token_path)?;
     let web_token_path = config.data_dir.join(WEB_TOKEN_FILE);
@@ -356,8 +367,19 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let listener = mcp::bind(config.listen)?;
     let port = listener.local_addr()?.port();
     let herdr = Arc::new(Herdr::new(Box::new(ProcessRunner)));
+    let mcp_url = mcp::url(port);
+    let plain = PlainRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR))
+        .with_mcp_provider(Arc::new({
+            let (url, token) = (mcp_url.clone(), mcp_token.clone());
+            move || {
+                Some(McpEndpoint {
+                    url: url.clone(),
+                    token: token.clone(),
+                })
+            }
+        }));
     let services = Arc::new(Services {
-        storage: Arc::new(Mutex::new(storage)),
+        storage,
         public_url: config.public_url.clone(),
         git: Arc::new(Git::new(Box::new(ProcessRunner))),
         github: Arc::new(GitHub::new(Box::new(ProcessRunner))),
@@ -365,11 +387,12 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         ssh_config: SshConfigFile::in_home(),
         panes: panes::Panes::new(Arc::new(panes::HerdrSockets(herdr.clone()))),
         herdr,
+        plain,
         agent_statuses: Mutex::default(),
         pull_request_statuses: Mutex::default(),
         backups: Backups::load(&config.data_dir),
         mcp: ServerStatus {
-            url: mcp::url(port),
+            url: mcp_url,
             token: Some(mcp_token.clone()),
             token_file: Some(mcp_token_path.clone()),
             instance: mcp::new_instance()?,
@@ -753,8 +776,10 @@ mod tests {
         herdr: HerdrState,
         access: Arc<dyn panes::PaneAccess>,
     ) -> Arc<Services> {
+        let storage = Arc::new(Mutex::new(Storage::open_in_memory().unwrap()));
         Arc::new(Services {
-            storage: Arc::new(Mutex::new(Storage::open_in_memory().unwrap())),
+            plain: PlainRunner::new(storage.clone(), data_dir.join(RUNS_DIR)),
+            storage,
             public_url: None,
             git: Arc::new(Git::new(Box::new(ProcessRunner))),
             github: Arc::new(GitHub::new(Box::new(ProcessRunner))),

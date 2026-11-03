@@ -354,14 +354,20 @@ impl Storage {
 
     /// Records that the runner launched a reserved run as `provider_run_ref`: the launch
     /// operation is applied, the run `running`, and a `launched` event appended, in one
-    /// transaction. A run that is already running is returned unchanged.
+    /// transaction. A run that is already running, or whose launch was already recorded
+    /// (e.g. by a runner that settled the run before its launcher got here), is returned
+    /// unchanged.
     pub fn record_launch(&mut self, run: RunId, provider_run_ref: &str) -> Result<TaskRun> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         let current = existing_run(&tx, run)?;
+        let launch = find_launch_operation(&tx, run)?;
         match current.state {
             RunState::Reserved => {}
             RunState::Running => return Ok(current),
+            _ if launch.is_some_and(|operation| operation.state == OperationState::Applied) => {
+                return Ok(current);
+            }
             from => {
                 return Err(StorageError::RunTransition {
                     run,
@@ -456,6 +462,34 @@ impl Storage {
         let finished = existing_run(&tx, run)?;
         tx.commit()?;
         Ok(finished)
+    }
+
+    /// Appends an event `kind` with `payload` to `run`, with the next sequence number and
+    /// the run's generation, and returns it. The run's state is unchanged.
+    pub fn append_run_event(
+        &mut self,
+        run: RunId,
+        kind: &str,
+        payload: Option<&str>,
+    ) -> Result<RunEvent> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let current = existing_run(&tx, run)?;
+        append_event(&tx, &current, kind, payload, at)?;
+        let sequence: i64 = tx.query_row(
+            "SELECT max(sequence) FROM run_events WHERE run_id = ?1",
+            [run.0],
+            |row| row.get(0),
+        )?;
+        tx.commit()?;
+        Ok(RunEvent {
+            run,
+            sequence,
+            generation: current.generation,
+            kind: kind.to_owned(),
+            payload: payload.map(str::to_owned),
+            observed_at: at,
+        })
     }
 
     pub fn get_run(&self, run: RunId) -> Result<Option<TaskRun>> {
@@ -809,10 +843,17 @@ mod tests {
             (settled.state, settled.ended_at),
             (RunState::Settled, Some(200))
         );
-        assert!(matches!(
-            storage.record_launch(run.id, "pane-3"),
-            Err(StorageError::RunTransition { .. })
-        ));
+        // A launcher that gets here after the run settled finds it as it is.
+        assert_eq!(storage.record_launch(run.id, "pane-3").unwrap(), settled);
+        assert_eq!(
+            storage
+                .launch_operation(run.id)
+                .unwrap()
+                .unwrap()
+                .receipt
+                .as_deref(),
+            Some("pane-1")
+        );
         assert!(matches!(
             storage.finish_run(run.id, RunState::Cancelled),
             Err(StorageError::RunTransition { .. })
@@ -861,6 +902,71 @@ mod tests {
         storage
             .reserve_run(&writer(tasks[0], "k2", Some("/wt/a")))
             .unwrap();
+    }
+
+    #[test]
+    fn a_launch_recorded_by_the_settling_side_is_kept_when_the_launcher_records_it() {
+        let (mut storage, tasks) = storage_with_tasks(1);
+        let run = storage
+            .reserve_run(&writer(tasks[0], "k", Some("/wt/a")))
+            .unwrap()
+            .into_run();
+        storage.record_launch(run.id, "pid:7").unwrap();
+        let failed = storage.finish_run(run.id, RunState::Failed).unwrap();
+
+        assert_eq!(storage.record_launch(run.id, "pid:7").unwrap(), failed);
+        assert_eq!(
+            event_kinds(&storage, run.id),
+            [
+                (1, "reserved".to_owned()),
+                (2, "launched".to_owned()),
+                (3, "failed".to_owned())
+            ]
+        );
+    }
+
+    #[test]
+    fn appended_events_follow_the_run_sequence_and_leave_its_state() {
+        let (mut storage, tasks) = storage_with_tasks(1);
+        storage.set_clock(|| 500);
+        let run = storage
+            .reserve_run(&writer(tasks[0], "k", None))
+            .unwrap()
+            .into_run();
+
+        let event = storage
+            .append_run_event(run.id, "result", Some("done"))
+            .unwrap();
+        storage.append_run_event(run.id, "exit", None).unwrap();
+
+        assert_eq!(
+            event,
+            RunEvent {
+                run: run.id,
+                sequence: 2,
+                generation: 1,
+                kind: "result".to_owned(),
+                payload: Some("done".to_owned()),
+                observed_at: 500,
+            }
+        );
+        assert_eq!(storage.run_events(run.id).unwrap()[1], event);
+        assert_eq!(
+            event_kinds(&storage, run.id),
+            [
+                (1, "reserved".to_owned()),
+                (2, "result".to_owned()),
+                (3, "exit".to_owned())
+            ]
+        );
+        assert_eq!(
+            storage.get_run(run.id).unwrap().unwrap().state,
+            RunState::Reserved
+        );
+        assert!(matches!(
+            storage.append_run_event(RunId(99), "result", None),
+            Err(StorageError::RunNotFound(RunId(99)))
+        ));
     }
 
     #[test]

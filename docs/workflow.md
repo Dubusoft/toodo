@@ -323,6 +323,24 @@ mergeable`). The check reruns every five minutes and whenever tasks change in th
 background, e.g. when a prerequisite's pull request is merged. Toodo only warns; it
 never rebases or merges the branch.
 
+### 4b. Run an agent in a plain workspace
+
+A local `local_git` or `github` workspace created with runner `plain` uses no herdr.
+Starting a task (`start_task`) creates its branch and a git worktree
+(`git worktree add`) and moves it to `in_progress`; no agent starts yet.
+
+To run an agent, call `start_plain_run` with the task id, an adapter (`claude` or
+`codex`), an optional prompt, and whether to give the agent the Toodo MCP server. The
+server starts the CLI in the task worktree, with the prompt on stdin, and returns the run.
+Only one run at a time can write to a worktree, and a run stops after 4 hours.
+
+- `list_task_runs` lists the task's runs, oldest first, with their states.
+- `get_run_log` returns a run's state, its events, and the tails of its stdout and
+  stderr (64 KiB each unless `tailBytes` says otherwise), with the MCP token redacted.
+- `stop_run` stops a live run (SIGTERM to its process group, SIGKILL after 5 seconds)
+  and marks it `cancelled`. After a server restart, unfinished runs show as `unknown`;
+  stop them before starting a new run on the same worktree.
+
 ### 5. Record commits
 
 Toodo reads the commits on the task branch that are not on the base branch

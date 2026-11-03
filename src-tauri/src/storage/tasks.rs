@@ -530,6 +530,22 @@ impl Storage {
         checkout: &TaskCheckout,
         herdr_workspace_id: &str,
     ) -> Result<Task> {
+        self.start_task_in(id, checkout, Some(herdr_workspace_id))
+    }
+
+    /// Starts a task like [`Storage::start_task`] in a worktree that no herdr workspace
+    /// has open, as runner plain does; a herdr workspace still recorded for the task is
+    /// forgotten.
+    pub fn start_task_plain(&mut self, id: TaskId, checkout: &TaskCheckout) -> Result<Task> {
+        self.start_task_in(id, checkout, None)
+    }
+
+    fn start_task_in(
+        &mut self,
+        id: TaskId,
+        checkout: &TaskCheckout,
+        herdr_workspace_id: Option<&str>,
+    ) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
@@ -547,7 +563,7 @@ impl Storage {
              WHERE id = ?1",
             params![id.0, status.as_str(), checkout.branch, worktree_path],
         )?;
-        set_herdr_workspace(&tx, id, Some(herdr_workspace_id), at)?;
+        set_herdr_workspace(&tx, id, herdr_workspace_id, at)?;
         record_event(&tx, id, status, at)?;
         let started = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;

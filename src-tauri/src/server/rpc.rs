@@ -13,13 +13,13 @@ use serde::de::DeserializeOwned;
 
 use super::Services;
 use crate::commands::types::{
-    BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost, NewTask, NewWorkspace,
-    OAuthGrantId, TaskEdit, TaskId, TaskResolution, Timestamp, Workspace, WorkspaceId,
-    WorkspaceLocation,
+    AgentAdapter, BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost, NewTask,
+    NewWorkspace, OAuthGrantId, RunId, TaskEdit, TaskId, TaskResolution, Timestamp, Workspace,
+    WorkspaceId, WorkspaceLocation,
 };
 use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
-    herdr, issues, machines, mcp, review, tasks, workspaces,
+    herdr, issues, machines, mcp, review, runs, tasks, workspaces,
 };
 
 /// What running a command gave.
@@ -237,7 +237,7 @@ commands!(s => {
         tasks::set_task_outcome(State(&s.storage), id, resolution, note)
     );
     "delete_task"(id: TaskId, force: bool) => sync Reply::result(
-        tasks::delete_task(State(&s.storage), State(&s.herdr), id, force)
+        tasks::delete_task(State(&s.storage), State(&s.git), State(&s.herdr), State(&s.plain), id, force)
     );
     "add_dependency"(task_id: TaskId, depends_on: TaskId, confirm_pause: bool) => sync Reply::result(
         tasks::add_dependency(State(&s.storage), State(&s.herdr), task_id, depends_on, confirm_pause)
@@ -270,21 +270,49 @@ commands!(s => {
         herdr::close_task_workspace(State(&s.storage), State(&s.herdr), id)
     );
 
+    "start_plain_run"(task_id: TaskId, adapter: AgentAdapter, prompt: Option<String>, mcp: bool) => sync Reply::result(
+        runs::start_plain_run(State(&s.storage), State(&s.plain), task_id, adapter, prompt, mcp)
+    );
+    "list_task_runs"(task_id: TaskId) => sync Reply::result(
+        runs::list_task_runs(State(&s.storage), task_id)
+    );
+    "get_run_log"(run_id: RunId, tail_bytes: Option<u32>) => sync Reply::result(
+        runs::get_run_log(State(&s.storage), State(&s.plain), run_id, tail_bytes)
+    );
+    "stop_run"(run_id: RunId) => sync Reply::result(
+        runs::stop_run(State(&s.storage), State(&s.plain), run_id)
+    );
+
     "refresh_commit_records"(task_id: TaskId) => sync Reply::result(
         completion::refresh_commit_records(State(&s.storage), State(&s.git), task_id)
     );
     "open_pull_request"(id: TaskId) => sync Reply::result(
         completion::open_pull_request(State(&s.storage), State(&s.git), State(&s.github), id)
     );
-    "complete_task"(id: TaskId) => sync Reply::result(
-        completion::complete_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id)
-    );
-    "conclude_task"(id: TaskId, note: String) => sync Reply::result(
-        completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note)
-    );
-    "complete_task_merged_with"(id: TaskId, merged_with_task: Option<TaskId>, pull_request_url: Option<String>) => sync Reply::result(
-        completion::complete_task_merged_with(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, merged_with_task, pull_request_url)
-    );
+    "complete_task"(id: TaskId) => sync {
+        Reply::result(runs::stop_live_runs_after(
+            completion::complete_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id),
+            &s.storage,
+            &s.plain,
+            id.into(),
+        ))
+    };
+    "conclude_task"(id: TaskId, note: String) => sync {
+        Reply::result(runs::stop_live_runs_after(
+            completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note),
+            &s.storage,
+            &s.plain,
+            id.into(),
+        ))
+    };
+    "complete_task_merged_with"(id: TaskId, merged_with_task: Option<TaskId>, pull_request_url: Option<String>) => sync {
+        Reply::result(runs::stop_live_runs_after(
+            completion::complete_task_merged_with(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, merged_with_task, pull_request_url),
+            &s.storage,
+            &s.plain,
+            id.into(),
+        ))
+    };
     "list_pull_request_statuses"() => sync Reply::value(
         completion::list_pull_request_statuses(State(&s.pull_request_statuses))
     );

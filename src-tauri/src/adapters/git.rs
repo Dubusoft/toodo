@@ -471,6 +471,44 @@ impl Git {
         }))
     }
 
+    /// Checks out the existing `branch` into a new worktree of the repository at `path`.
+    /// A worktree the repository already has at `path` is reused as it is; registrations
+    /// whose directory was deleted are pruned first so their path can be used again.
+    /// Returns whether a worktree was added.
+    pub fn add_worktree(
+        &self,
+        repo: &WorkspaceLocation,
+        path: &HostPath,
+        branch: &str,
+    ) -> Result<bool, GitError> {
+        if self.worktree_exists(repo, path)? {
+            return Ok(false);
+        }
+        let dir = Some(location_path(repo));
+        self.run(repo, dir, &["worktree", "prune"])?;
+        let path = path.to_string();
+        self.run(repo, dir, &["worktree", "add", &path, branch])?;
+        Ok(true)
+    }
+
+    /// Removes the worktree at `path` from the repository; its branch is kept. Without
+    /// `force`, git refuses a worktree with modified or untracked files.
+    pub fn remove_worktree(
+        &self,
+        repo: &WorkspaceLocation,
+        path: &HostPath,
+        force: bool,
+    ) -> Result<(), GitError> {
+        let path = path.to_string();
+        let mut args = vec!["worktree", "remove"];
+        if force {
+            args.push("--force");
+        }
+        args.push(&path);
+        self.run(repo, Some(location_path(repo)), &args)?;
+        Ok(())
+    }
+
     /// Commits reachable from `branch` but not from `base`, oldest first, read in the
     /// repository or worktree at `dir` on the machine of `location`.
     pub fn commits_between(
@@ -1068,6 +1106,71 @@ mod tests {
                 runner.invocations.lock().unwrap()[0].args,
                 ["-C", r"C:\repo", "worktree", "list", "--porcelain", "-z"]
             );
+        }
+    }
+
+    #[test]
+    fn adding_a_worktree_checks_the_branch_out_unless_the_path_is_registered() {
+        let path = HostPath::parse(r"D:\wt\some task").unwrap();
+        let (adding, runner) = git(vec![
+            Ok("worktree C:/repo\0HEAD abc\0\0".to_owned()),
+            Ok(String::new()),
+            Ok(String::new()),
+        ]);
+        assert!(
+            adding
+                .add_worktree(&local(r"C:\repo"), &path, "feat/x-1")
+                .unwrap()
+        );
+        let args: Vec<_> = runner
+            .invocations
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|invocation| invocation.args.clone())
+            .collect();
+        assert_eq!(
+            args[1..],
+            [
+                vec!["-C", r"C:\repo", "worktree", "prune"],
+                vec![
+                    "-C",
+                    r"C:\repo",
+                    "worktree",
+                    "add",
+                    r"D:\wt\some task",
+                    "feat/x-1"
+                ],
+            ]
+        );
+
+        let (reusing, runner) = git(vec![
+            Ok("worktree D:/wt/some task\0HEAD abc\0\0".to_owned()),
+        ]);
+        assert!(
+            !reusing
+                .add_worktree(&local(r"C:\repo"), &path, "feat/x-1")
+                .unwrap()
+        );
+        assert_eq!(runner.invocations.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn removing_a_worktree_forces_only_when_asked_and_runs_over_ssh() {
+        let path = HostPath::parse("/wt/task").unwrap();
+        for (force, expected) in [
+            (false, "git '-C' '/srv/repo' 'worktree' 'remove' '/wt/task'"),
+            (
+                true,
+                "git '-C' '/srv/repo' 'worktree' 'remove' '--force' '/wt/task'",
+            ),
+        ] {
+            let (git, runner) = git(vec![Ok(String::new())]);
+            git.remove_worktree(&remote("/srv/repo"), &path, force)
+                .unwrap();
+            let invocation = runner.invocations.lock().unwrap()[0].clone();
+            assert_eq!(invocation.program, "ssh");
+            assert_eq!(invocation.args.last().unwrap(), expected);
         }
     }
 

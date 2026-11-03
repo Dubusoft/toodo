@@ -1019,6 +1019,41 @@ pub(super) const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (owner_key, host_ref)
     );
     ",
+    // Version 33: the `plain` runner, which runs agent CLIs on the server itself. SQLite
+    // cannot change a CHECK constraint in place, so the workspaces table is rebuilt as
+    // the tasks table was in version 2, keeping every column and its AUTOINCREMENT
+    // counter so deleted workspace IDs are still never reused.
+    r"
+    CREATE TABLE workspaces_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('local', 'ssh')),
+        path TEXT NOT NULL,
+        herdr_machine TEXT,
+        default_base_branch TEXT NOT NULL,
+        agent_merge TEXT NOT NULL DEFAULT 'never'
+            CHECK (agent_merge IN ('never', 'after_checks')),
+        source TEXT NOT NULL DEFAULT 'github'
+            CHECK (source IN ('none', 'local_git', 'github')),
+        completion TEXT NOT NULL DEFAULT 'pr_merge'
+            CHECK (completion IN ('manual', 'local_merge', 'pr_merge')),
+        runner TEXT NOT NULL DEFAULT 'herdr'
+            CHECK (runner IN ('none', 'herdr', 'plain')),
+        axes_detected INTEGER NOT NULL DEFAULT 1
+            CHECK (axes_detected IN (0, 1)),
+        CHECK ((kind = 'local') = (herdr_machine IS NULL))
+    );
+    INSERT INTO workspaces_new (id, name, kind, path, herdr_machine, default_base_branch,
+        agent_merge, source, completion, runner, axes_detected)
+    SELECT id, name, kind, path, herdr_machine, default_base_branch, agent_merge, source,
+        completion, runner, axes_detected
+    FROM workspaces;
+    DELETE FROM sqlite_sequence WHERE name = 'workspaces_new';
+    INSERT INTO sqlite_sequence (name, seq)
+        SELECT 'workspaces_new', seq FROM sqlite_sequence WHERE name = 'workspaces';
+    DROP TABLE workspaces;
+    ALTER TABLE workspaces_new RENAME TO workspaces;
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -2766,5 +2801,103 @@ mod tests {
             )
         );
         assert_eq!(kept.len(), 5);
+    }
+
+    #[test]
+    fn version_33_keeps_workspaces_their_tasks_and_the_id_counter_and_allows_runner_plain() {
+        // Given a version-32 database with a deleted workspace and one with a task.
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..32] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 32).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (name, kind, path, herdr_machine, default_base_branch,
+                 agent_merge, source, completion, runner, axes_detected)
+                VALUES ('gone', 'local', '/gone', NULL, 'main', 'never', 'github',
+                    'pr_merge', 'herdr', 1),
+                       ('remote', 'ssh', '/srv/repo', 'devbox', 'dev', 'after_checks',
+                    'local_git', 'local_merge', 'herdr', 0);
+             DELETE FROM workspaces WHERE id = 1;
+             INSERT INTO tasks (workspace_id, type, title, status, branch, worktree_path)
+                VALUES (2, 'feat', 'Open', 'in_progress', 'feat/open-1', '/wt/open-1');",
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO workspaces (name, kind, path, default_base_branch, runner)
+                    VALUES ('plain', 'local', '/plain', 'main', 'plain')",
+                [],
+            )
+            .is_err()
+        );
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let kept: (
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            String,
+            String,
+            String,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT name, kind, herdr_machine, default_base_branch, agent_merge, source,
+                        completion, runner, axes_detected
+                 FROM workspaces WHERE id = 2",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            kept,
+            (
+                "remote".to_owned(),
+                "ssh".to_owned(),
+                Some("devbox".to_owned()),
+                "dev".to_owned(),
+                "after_checks".to_owned(),
+                "local_git".to_owned(),
+                "local_merge".to_owned(),
+                "herdr".to_owned(),
+                0
+            )
+        );
+        conn.execute(
+            "INSERT INTO workspaces (name, kind, path, default_base_branch, runner)
+                VALUES ('plain', 'local', '/plain', 'main', 'plain')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(conn.last_insert_rowid(), 3, "deleted IDs are never reused");
+        assert!(
+            conn.execute("UPDATE workspaces SET runner = 'tmux' WHERE id = 3", [])
+                .is_err()
+        );
+        // The task still belongs to its workspace and goes with it.
+        conn.execute("DELETE FROM workspaces WHERE id = 2", [])
+            .unwrap();
+        let tasks: i64 = conn
+            .query_row("SELECT count(*) FROM tasks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(tasks, 0);
     }
 }
