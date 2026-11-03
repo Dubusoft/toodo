@@ -50,6 +50,30 @@ pub enum DependencyOutcome {
 #[serde(transparent)]
 pub struct Timestamp(#[specta(type = Number)] pub i64);
 
+/// An OAuth app with an unrevoked grant and a live token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(transparent)]
+pub struct OAuthGrantId(#[specta(type = Number)] pub i64);
+
+/// A live app connection shown in Settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedApp {
+    pub grant_id: OAuthGrantId,
+    pub client_name: Option<String>,
+    pub client_id: String,
+    pub scopes: String,
+    pub created_at: Timestamp,
+    pub last_used_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedApps {
+    pub public_mcp_url: Option<String>,
+    pub apps: Vec<ConnectedApp>,
+}
+
 impl From<WorkspaceId> for model::WorkspaceId {
     fn from(id: WorkspaceId) -> Self {
         Self(id.0)
