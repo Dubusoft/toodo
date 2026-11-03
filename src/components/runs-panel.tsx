@@ -1,12 +1,12 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { ChevronRight, Play, RefreshCw, Square } from "lucide-react";
+import { Check, ChevronRight, Copy, Play, RefreshCw, SearchCheck, Square } from "lucide-react";
 import { PathLabel } from "@/components/path-label";
 import { Button } from "@/components/ui/button";
 import { When } from "@/components/when";
 import { escapeCloses } from "@/components/workspace-list";
 import type { AgentAdapter, RunEvent, RunId, RunState, Task, TaskRun } from "@/lib/bindings";
 import { normalizePath, shortPath } from "@/lib/paths";
-import { useRunLog, useStartPlainRun, useStopRun, useTaskRuns } from "@/lib/queries";
+import { useReconcileRun, useRunLog, useStartPlainRun, useStopRun, useTaskRuns } from "@/lib/queries";
 import { toneChip, tonePanel, type Tone } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
@@ -47,6 +47,12 @@ const eventLabels = new Map<string, string>([
   ["timed_out", "Timed out"],
   ["stop_requested", "Stop requested"],
   ["server_restarted", "Server restarted"],
+  ["agent_session", "Agent session"],
+  ["observation_lost", "Observation lost"],
+  ["remote_still_running", "Still running on its host"],
+  ["remote_missing", "Not found on its host"],
+  ["interrupted", "Interrupted"],
+  ["credential_cleanup_failed", "Credentials not removed"],
   ["settled", runStates.settled.label],
   ["exited", runStates.exited.label],
   ["failed", runStates.failed.label],
@@ -95,16 +101,19 @@ function RunStateBadge({ state }: { state: RunState }) {
 }
 
 /**
- * The runs of a task of a plain workspace in its details, newest first: Claude or Codex run
- * by Toodo on the task's worktree, with the events and the ends of the output of the open
- * run. A task in progress starts a run while no run holds its worktree; a run that holds it
- * can be stopped. Runs send no events: Refresh reloads them, as do coming back to the window
- * and changes to the tasks.
+ * The runs of a task of a plain or tmux workspace in its details, newest first: Claude or
+ * Codex run by Toodo on the task's worktree, on the server or the workspace's SSH machine,
+ * with the events and the ends of the output of the open run, and the command that attaches
+ * a terminal to an active tmux run. A task in progress starts a run while no run holds its
+ * worktree; a run that holds it can be stopped, and one whose end was not seen can be
+ * reconciled. Runs send no events: Refresh reloads them, as do coming back to the window and
+ * changes to the tasks.
  */
 export function RunsPanel({ task }: { task: Task }) {
   const runs = useTaskRuns(task.id);
   const startRun = useStartPlainRun();
   const stopRun = useStopRun();
+  const reconcileRun = useReconcileRun();
   const id = useId();
   const [adapter, setAdapter] = useState<AgentAdapter>("claude");
   const [mcp, setMcp] = useState(true);
@@ -117,7 +126,7 @@ export function RunsPanel({ task }: { task: Task }) {
   const inProgress = task.status === "in_progress";
   const holding = newestFirst.find((run) => activeStates.includes(run.state));
   const fetching = runs.isFetching || log.isFetching;
-  const failure = startRun.error ?? stopRun.error;
+  const failure = startRun.error ?? stopRun.error ?? reconcileRun.error;
 
   // Runs start only while the task is in progress; later the panel keeps showing the ones it had.
   if (!inProgress && runs.isSuccess && newestFirst.length === 0) {
@@ -200,7 +209,7 @@ export function RunsPanel({ task }: { task: Task }) {
           {holding && (
             <p role="note" aria-label={`Why no run of #${task.id} starts`} className="text-muted-foreground">
               {holding.state === "unknown"
-                ? `Run ${holding.generation} may still hold the worktree, since its end was not seen; stop it to start another run.`
+                ? `Run ${holding.generation} may still hold the worktree, since its end was not seen; reconcile it to check, or stop it, to start another run.`
                 : `Run ${holding.generation} is still running; stop it, or wait until it ends, to start another run.`}
             </p>
           )}
@@ -247,6 +256,20 @@ export function RunsPanel({ task }: { task: Task }) {
                       className="ml-auto shrink-0 text-muted-foreground max-md:basis-full max-md:pl-5.5"
                     />
                   </button>
+                  {run.state === "unknown" && stopping !== run.id && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      changesData
+                      aria-label={`Reconcile ${name} of #${task.id}`}
+                      title="Check on its host whether the agent of this run still runs, or how it ended; it is not started again"
+                      disabled={reconcileRun.isPending}
+                      onClick={() => reconcileRun.mutate(run)}
+                    >
+                      <SearchCheck />
+                      {reconcileRun.isPending && reconcileRun.variables.id === run.id ? "Reconciling..." : "Reconcile"}
+                    </Button>
+                  )}
                   {activeStates.includes(run.state) && stopping !== run.id && (
                     <Button
                       size="xs"
@@ -347,6 +370,7 @@ function RunDetails({ id, run, log }: { id: string; run: TaskRun; log: ReturnTyp
       )}
       {log.data && (
         <>
+          {log.data.attach !== null && <AttachCommand run={run} command={log.data.attach} />}
           <section aria-label="Events" className="flex min-w-0 flex-col gap-0.5">
             <h5 className="font-medium text-muted-foreground">Events</h5>
             <ol
@@ -375,6 +399,50 @@ function RunDetails({ id, run, log }: { id: string; run: TaskRun; log: ReturnTyp
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * The shell command that attaches a terminal to the tmux session of an active run, with a
+ * button that copies it. It runs on the server, which reaches an SSH machine's session over
+ * ssh.
+ */
+function AttachCommand({ run, command }: { run: TaskRun; command: string }) {
+  const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
+
+  async function copyCommand() {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopy("copied");
+    } catch {
+      setCopy("failed");
+    }
+  }
+
+  return (
+    <section aria-label="Attach in a terminal" className="flex min-w-0 flex-col gap-0.5">
+      <h5 className="font-medium text-muted-foreground">Attach in a terminal</h5>
+      <div className="flex min-w-0 items-center gap-2 rounded-md bg-muted py-1 pr-1 pl-2">
+        <code aria-label={`Attach command of run ${run.generation}`} className="min-w-0 flex-1 font-mono break-all">
+          {command}
+        </code>
+        <Button
+          size="xs"
+          variant="outline"
+          aria-label={`Copy the attach command of run ${run.generation}`}
+          onClick={() => void copyCommand()}
+        >
+          {copy === "copied" ? <Check /> : <Copy />}
+          Copy
+        </Button>
+      </div>
+      <p className="text-muted-foreground">
+        Run it on the Toodo server, as the user that runs Toodo, to watch the agent work.
+        <span role="status" className={cn(copy === "failed" ? "ml-1 text-destructive" : "sr-only")}>
+          {copy === "copied" ? "Copied" : copy === "failed" ? "Could not copy" : ""}
+        </span>
+      </p>
+    </section>
   );
 }
 
