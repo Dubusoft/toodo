@@ -199,6 +199,11 @@ export const commands = {
 	 */
 	stopRun: (runId: RunId) => typedError<TaskRun, CommandError>(invoke("stop_run", { runId })),
 	/**
+	 *  Reports whether herdr is installed and running and whether the `claude` and `codex`
+	 *  CLIs of plain runs are on the server's `PATH`.
+	 */
+	runnerHealth: () => typedError<RunnerHealth, CommandError>(invoke("runner_health")),
+	/**
 	 *  Reads the commits of an `in_progress` or `in_review` task's branch that are not on
 	 *  the base branch and stores them as its commit records.
 	 */
@@ -321,6 +326,16 @@ export type AgentAdapter =
 "claude" | 
 /**  Codex in exec mode (`codex exec`). */
 "codex";
+
+export type AgentHealth = {
+	adapter: AgentAdapter,
+	/**  Whether the adapter's CLI is an executable on the server's `PATH`. */
+	installed: boolean,
+	/**  Absolute path of the CLI found on `PATH`. */
+	path: string | null,
+	/**  What to do next when the CLI is missing; `None` when it is installed. */
+	message: string | null,
+};
 
 /**  Whether agents merge the pull request of their own task. Toodo itself never merges. */
 export type AgentMerge = 
@@ -550,6 +565,16 @@ export type Estimate = {
  *  progress or in review. A day is 24 hours, a week 7 days, and a month 30 days.
  */
 export type EstimateUnit = "hours" | "days" | "weeks" | "months";
+
+export type HerdrHealth = {
+	/**  Whether herdr could be run from the server's `PATH`. */
+	installed: boolean,
+	/**  Whether the herdr server on this machine is running. */
+	running: boolean,
+	version: string | null,
+	/**  Why herdr is not usable and what to do next; `None` while it is running. */
+	message: string | null,
+};
 
 /**  A machine saved in herdr with `herdr machine add`. */
 export type HerdrMachine = {
@@ -833,6 +858,16 @@ export type Runner =
  *  Only local workspaces use it.
  */
 "plain";
+
+/**
+ *  What the server can run tasks with: herdr for herdr workspaces, and the agent CLIs of
+ *  plain runs.
+ */
+export type RunnerHealth = {
+	herdr: HerdrHealth,
+	/**  Claude, then Codex. */
+	agents: AgentHealth[],
+};
 
 /**  What a workspace location holds. */
 export type Source = 

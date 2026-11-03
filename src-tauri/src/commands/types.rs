@@ -1723,6 +1723,40 @@ pub enum AgentAdapter {
     Codex,
 }
 
+/// What the server can run tasks with: herdr for herdr workspaces, and the agent CLIs of
+/// plain runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunnerHealth {
+    pub herdr: HerdrHealth,
+    /// Claude, then Codex.
+    pub agents: Vec<AgentHealth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HerdrHealth {
+    /// Whether herdr could be run from the server's `PATH`.
+    pub installed: bool,
+    /// Whether the herdr server on this machine is running.
+    pub running: bool,
+    pub version: Option<String>,
+    /// Why herdr is not usable and what to do next; `None` while it is running.
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHealth {
+    pub adapter: AgentAdapter,
+    /// Whether the adapter's CLI is an executable on the server's `PATH`.
+    pub installed: bool,
+    /// Absolute path of the CLI found on `PATH`.
+    pub path: Option<String>,
+    /// What to do next when the CLI is missing; `None` when it is installed.
+    pub message: Option<String>,
+}
+
 impl From<AgentAdapter> for plain::adapter::AgentAdapter {
     fn from(adapter: AgentAdapter) -> Self {
         match adapter {

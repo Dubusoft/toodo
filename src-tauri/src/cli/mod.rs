@@ -22,6 +22,8 @@ use agents::Outcome;
 use settings::{Bundle, DataDir, ListenFlag};
 use update::Channel;
 
+pub(crate) use process::find_on_path;
+
 /// Reads an environment variable; tests pass their own.
 type Var<'a> = &'a dyn Fn(&str) -> Option<String>;
 
