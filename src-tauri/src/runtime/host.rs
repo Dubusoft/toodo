@@ -326,7 +326,9 @@ pub fn wrapper_script(
     Ok(match os {
         HostOs::Posix => {
             let mut script = posix_directory(run);
-            script.push_str("trap '' HUP\n");
+            if !tmux {
+                script.push_str("trap '' HUP\n");
+            }
             script.push_str(&format!("umask 077\ncd {} || exit\nprintf '%s %s\\n' \"$$\" \"$(LC_ALL=C ps -o lstart= -p $$)\" > \"$run/pid\"\n", shell_quote(cwd)));
             script.push_str(
                 "if [ -f \"$run/stop\" ]; then printf '143\\n' > \"$run/exit\"; exit 143; fi\n",
@@ -345,7 +347,11 @@ pub fn wrapper_script(
                 ));
             }
             if tmux {
-                script.push_str("mkfifo -- \"$run/out.pipe\" \"$run/err.pipe\" || exit\ntee \"$run/stdout.log\" < \"$run/out.pipe\" &\nout=$!\ntee \"$run/stderr.log\" < \"$run/err.pipe\" >&2 &\nerr=$!\n");
+                script.push_str("mkfifo -- \"$run/out.pipe\" \"$run/err.pipe\" || exit\n");
+                // Redact before tee: neither the durable logs nor the terminal may
+                // contain the bearer token. index/substr treat it as literal text.
+                let redact = r#"if [ -n "${TOODO_MCP_TOKEN:-}" ]; then awk '{ s = ENVIRON["TOODO_MCP_TOKEN"]; line = $0; out = ""; while (s != "" && (i = index(line, s)) > 0) { out = out substr(line, 1, i - 1) "[redacted]"; line = substr(line, i + length(s)); } print out line; fflush(); }'; else cat; fi"#;
+                script.push_str(&format!("{redact} < \"$run/out.pipe\" | tee \"$run/stdout.log\" &\nout=$!\n{redact} < \"$run/err.pipe\" | tee \"$run/stderr.log\" >&2 &\nerr=$!\n"));
             }
             script.push_str(
                 &argv
