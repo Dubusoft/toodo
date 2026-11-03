@@ -22,6 +22,7 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  SlidersHorizontal,
   SquareTerminal,
   StickyNote,
   Trash2,
@@ -253,6 +254,8 @@ export function TaskList({
   const [timelineWorkspace, setTimelineWorkspace] = useState<WorkspaceId | null>(null);
   // The filter the user set; until then the timeline leaves finished tasks out and the list shows every status.
   const [chosenFilter, setTaskFilter] = useState<TaskFilter | null>(null);
+  // On a phone the filters fold behind a button so the view gets most of the screen.
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const agentStatuses = useAgentStatuses();
   const pullRequestStatuses = usePullRequestStatuses();
   // Done tasks are folded away until asked for, or while a search or filter is narrowing the list.
@@ -273,6 +276,13 @@ export function TaskList({
     context.workspaceName(a).localeCompare(context.workspaceName(b)),
   );
   const filter = timelineWorkspace !== null && filterOptions.includes(timelineWorkspace) ? timelineWorkspace : null;
+  // Narrowings in effect, counted on the folded filters button: workspace, search, status, and type.
+  const activeFilters = [
+    showTimeline && filter !== null,
+    taskFilter.query.trim() !== "",
+    taskFilter.statuses.length > 0,
+    taskFilter.type !== null,
+  ].filter(Boolean).length;
   // A search for a task number finds that task in any workspace, shown first, ahead of the text matches.
   const numberedId = taskNumber(taskFilter.query);
   const numberedCandidate = numberedId === null ? undefined : context.byId.get(numberedId);
@@ -365,24 +375,43 @@ export function TaskList({
                 ))}
               </div>
             )}
-            {showTimeline && (
-              <select
-                aria-label="Timeline workspace"
-                className={compactSelectClass}
-                value={filter ?? "all"}
-                onChange={(event) =>
-                  setTimelineWorkspace(event.target.value === "all" ? null : Number(event.target.value))
-                }
-              >
-                <option value="all">All workspaces</option>
-                {filterOptions.map((id) => (
-                  <option key={id} value={id}>
-                    {context.workspaceName(id)}
-                  </option>
-                ))}
-              </select>
-            )}
-            <TaskFilterBar filter={taskFilter} onChange={setTaskFilter} />
+            <Button
+              size="xs"
+              variant={filtersOpen ? "secondary" : "outline"}
+              className="ml-auto md:hidden"
+              aria-expanded={filtersOpen}
+              aria-controls="task-filters"
+              onClick={() => setFiltersOpen(!filtersOpen)}
+            >
+              <SlidersHorizontal />
+              Filters
+              {activeFilters > 0 && (
+                <span className="rounded-full bg-primary px-1.5 text-[0.625rem] leading-4 text-primary-foreground tabular-nums">
+                  {activeFilters}
+                  <span className="sr-only"> active</span>
+                </span>
+              )}
+            </Button>
+            <div id="task-filters" className={cn("contents", !filtersOpen && "max-md:hidden")}>
+              {showTimeline && (
+                <select
+                  aria-label="Timeline workspace"
+                  className={compactSelectClass}
+                  value={filter ?? "all"}
+                  onChange={(event) =>
+                    setTimelineWorkspace(event.target.value === "all" ? null : Number(event.target.value))
+                  }
+                >
+                  <option value="all">All workspaces</option>
+                  {filterOptions.map((id) => (
+                    <option key={id} value={id}>
+                      {context.workspaceName(id)}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <TaskFilterBar filter={taskFilter} onChange={setTaskFilter} />
+            </div>
           </div>
           {filtered.length === 0 && numbered === undefined ? (
             <EmptyState
