@@ -7,6 +7,9 @@ use crate::adapters::git::{
 use crate::domain::model::MachineLabel;
 use crate::domain::runtime::RunId;
 
+/// Prefix for an argv entry naming a staged file, resolved on the execution host.
+pub const RUN_FILE_PREFIX: &str = "{run}/";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostOs {
     Posix,
@@ -144,15 +147,19 @@ impl Host {
         secret_env: &[(&str, &str)],
         env: &[(&str, &str)],
     ) -> Result<Invocation, &'static str> {
-        Ok(self.script(wrapper_script(
-            self.os(),
-            run,
-            argv,
-            cwd,
-            secret_env,
-            env,
-            false,
-        )?))
+        let script = wrapper_script(self.os(), run, argv, cwd, secret_env, env, false)?;
+        if matches!(
+            self,
+            Self::Ssh {
+                os: HostOs::Posix,
+                ..
+            }
+        ) {
+            // The remote wrapper must own its session, not the ssh transport's group.
+            Ok(self.remote(format!("exec setsid --wait sh -c {}", shell_quote(&script))))
+        } else {
+            Ok(self.script(script))
+        }
     }
 
     /// Checks the recorded process identity before terminating its process tree/group.
@@ -161,6 +168,8 @@ impl Host {
         self.script(match self.os() {
             HostOs::Posix => format!(
                 "{}\
+umask 077
+if [ -d \"$run\" ]; then : > \"$run/stop\" || exit; fi
 if [ ! -f \"$run/pid\" ]; then printf 'gone\\n'; exit; fi
 IFS=' ' read -r pid identity < \"$run/pid\"
 case \"$pid\" in ''|*[!0-9]*) printf 'mismatch\\n'; exit;; esac
@@ -182,6 +191,7 @@ printf 'stopped\\n'
             ),
             HostOs::Windows => format!(
                 "{}\
+if (Test-Path -LiteralPath $run) {{ [System.IO.File]::WriteAllText((Join-Path $run 'stop'), '') }}
 if (!(Test-Path -LiteralPath (Join-Path $run 'pid'))) {{ 'gone'; exit }}
 $record = [System.IO.File]::ReadAllText((Join-Path $run 'pid')).Trim() -split ' ', 2
 $process = Get-Process -Id ([int]$record[0]) -ErrorAction SilentlyContinue
@@ -316,7 +326,11 @@ pub fn wrapper_script(
     Ok(match os {
         HostOs::Posix => {
             let mut script = posix_directory(run);
+            script.push_str("trap '' HUP\n");
             script.push_str(&format!("umask 077\ncd {} || exit\nprintf '%s %s\\n' \"$$\" \"$(LC_ALL=C ps -o lstart= -p $$)\" > \"$run/pid\"\n", shell_quote(cwd)));
+            script.push_str(
+                "if [ -f \"$run/stop\" ]; then printf '143\\n' > \"$run/exit\"; exit 143; fi\n",
+            );
             for (name, file) in secret_env {
                 script.push_str(&format!(
                     "export {}=\"$(cat \"$run\"/{})\"\n",
@@ -336,7 +350,10 @@ pub fn wrapper_script(
             script.push_str(
                 &argv
                     .iter()
-                    .map(|arg| shell_quote(arg))
+                    .map(|arg| match arg.strip_prefix(RUN_FILE_PREFIX) {
+                        Some(file) => format!("\"$run\"/{}", shell_quote(file)),
+                        None => shell_quote(arg),
+                    })
                     .collect::<Vec<_>>()
                     .join(" "),
             );
@@ -363,10 +380,34 @@ pub fn wrapper_script(
         HostOs::Windows => {
             let mut script = windows_directory(run);
             script.push_str("$info = New-Object System.Diagnostics.ProcessStartInfo\n");
+            let arguments = if argv[1..].iter().any(|arg| arg.starts_with(RUN_FILE_PREFIX)) {
+                format!(
+                    "(@({}) -join ' ')",
+                    argv[1..]
+                        .iter()
+                        .map(|arg| match arg.strip_prefix(RUN_FILE_PREFIX) {
+                            Some(file) => format!(
+                                "('\"' + (Join-Path $run {}) + '\"')",
+                                powershell_quote(file)
+                            ),
+                            None => powershell_quote(&windows_quote(arg)),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            } else {
+                powershell_quote(
+                    &argv[1..]
+                        .iter()
+                        .map(|arg| windows_quote(arg))
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+            };
             script.push_str(&format!(
                 "$info.FileName = (Get-Command -Name {} -CommandType Application -TotalCount 1).Path\n$info.Arguments = {}\n$info.WorkingDirectory = {}\n",
                 powershell_quote(program),
-                powershell_quote(&argv[1..].iter().map(|arg| windows_quote(arg)).collect::<Vec<_>>().join(" ")),
+                arguments,
                 powershell_quote(cwd)
             ));
             for (name, file) in secret_env {
@@ -384,8 +425,10 @@ pub fn wrapper_script(
 $info.RedirectStandardInput = $true
 $info.RedirectStandardOutput = $true
 $info.RedirectStandardError = $true
+if (Test-Path -LiteralPath (Join-Path $run 'stop')) { [System.IO.File]::WriteAllText((Join-Path $run 'exit'), '143'); exit 143 }
 $process = [System.Diagnostics.Process]::Start($info)
 [System.IO.File]::WriteAllText((Join-Path $run 'pid'), ($process.Id.ToString() + ' ' + $process.StartTime.ToFileTimeUtc().ToString()))
+if (Test-Path -LiteralPath (Join-Path $run 'stop')) { & taskkill /PID $process.Id /T /F | Out-Null }
 $out = $process.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput())
 $err = $process.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError())
 $brief = [System.IO.File]::OpenRead((Join-Path $run 'brief.md'))
@@ -801,6 +844,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(&launch.args[..4], ["-o", "BatchMode=yes", "--", "devbox"]);
-        assert!(launch.args[4].starts_with("sh -c '"));
+        assert!(launch.args[4].starts_with("exec setsid --wait sh -c '"));
     }
 }

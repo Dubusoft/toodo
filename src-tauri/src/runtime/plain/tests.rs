@@ -522,3 +522,452 @@ fn non_plain_runners_reject_agent_command_with_plain_next_step() {
     let herdr = Herdr::new(Box::new(Arc::new(FakeRunner::new(vec![]))));
     assert!(herdr.launch(&spec).unwrap_err().0.contains("runner plain"));
 }
+
+impl Fixture {
+    fn enable_remote(&mut self) {
+        let ssh = self.dir.path().join("ssh");
+        fs::write(
+            &ssh,
+            r#"#!/bin/sh
+HOME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export HOME
+printf '%s\n' "$@" >> "$HOME/ssh-argv"
+test ! -f "$HOME/offline" || exit 255
+while [ "$1" != "--" ]; do shift; done
+shift
+test "$1" = test-host || exit 254
+shift
+case "$1" in
+    "exec setsid "*)
+        if [ -f "$HOME/disconnect" ]; then
+            sh -c "$1" </dev/null > "$HOME/remote.out" 2> "$HOME/remote.err" &
+            read disconnect < "$HOME/transport-gate"
+            exit 255
+        fi
+        ;;
+esac
+exec sh -c "$1"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+        self.runner.ssh = ssh;
+        self.runner = self
+            .runner
+            .clone()
+            .with_tunnel_open_provider(Arc::new(|target| target == "test-host"));
+    }
+
+    fn start_remote(&self, mcp: bool) -> TaskRun {
+        let mut request = self.request("remote", AgentAdapter::Claude, mcp, 60);
+        request.host = HostRef::Ssh("test-host".into());
+        RuntimeService
+            .start_run(&self.storage, &self.runner, request)
+            .unwrap()
+    }
+
+    fn remote(&self) -> remote::Remote {
+        remote::Remote::from_run(
+            &HostRef::Ssh("test-host".into()),
+            self.dir.path().to_str(),
+            &self.runner.ssh,
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    fn reserve_remote(&self, key: &str) -> TaskRun {
+        let run = lock(&self.storage)
+            .reserve_run(&NewRun {
+                owner: OwnerKey::implicit(),
+                task: self.task,
+                request_key: key.into(),
+                runner_kind: RunnerKind::Plain,
+                role: RunRole::Observer,
+                host: HostRef::Ssh("test-host".into()),
+                checkout_path: Some(self.dir.path().to_str().unwrap().into()),
+                runtime_workspace: None,
+                adapter_profile: None,
+            })
+            .unwrap()
+            .into_run();
+        lock(&self.storage)
+            .record_launch(run.id, &format!("ssh:test-host:{}", run.id))
+            .unwrap()
+    }
+}
+
+#[test]
+fn remote_success_stages_private_credentials_and_redacts_streams() {
+    let mut fixture = Fixture::new(&format!(
+        r#"
+test "$TOODO_MCP_URL" = http://127.0.0.1:12345/mcp || exit 2
+test "$TOODO_MCP_TOKEN" = {TOKEN} || exit 3
+IFS= read -r brief
+test "$brief" = 'Implement the task' || exit 4
+while [ "$1" != --mcp-config ]; do shift; done
+test -f "$2" || exit 5
+printf '%s\n' "$TOODO_MCP_TOKEN"
+printf '%s\n' "$TOODO_MCP_TOKEN" >&2
+{RESULT}
+"#
+    ));
+    fixture.enable_remote();
+    // Remote agents must use the reverse tunnel, not the server's listen address.
+    fixture.runner.mcp = Some(Arc::new(|| {
+        Some(McpEndpoint {
+            url: "http://192.0.2.1:12345/mcp".into(),
+            token: TOKEN.into(),
+        })
+    }));
+    let run = fixture.start_remote(true);
+    assert_eq!(
+        run.provider_run_ref,
+        Some(format!("ssh:test-host:{}", run.id))
+    );
+    fixture.end(run.id, RunState::Exited, &["result"]);
+    let remote_dir = fixture
+        .dir
+        .path()
+        .join(".toodo/runs")
+        .join(run.id.to_string());
+    assert_eq!(fs::read_to_string(remote_dir.join("token")).unwrap(), TOKEN);
+    assert_eq!(
+        fs::metadata(&remote_dir).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        fs::metadata(remote_dir.join("token"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let config = fs::read_to_string(remote_dir.join("mcp.json")).unwrap();
+    assert!(config.contains("${TOODO_MCP_TOKEN}"));
+    assert!(config.contains("${TOODO_MCP_URL}"));
+    assert!(!config.contains(TOKEN));
+    let argv = fs::read_to_string(fixture.dir.path().join("ssh-argv")).unwrap();
+    assert!(!argv.contains(TOKEN));
+    let log = fixture.runner.log(run.id, 65536).unwrap();
+    assert!(log.stdout.contains("[redacted]"));
+    assert!(log.stderr.contains("[redacted]"));
+    assert!(!format!("{log:?}").contains(TOKEN));
+    assert!(!format!("{:?}", lock(&fixture.storage).run_events(run.id).unwrap()).contains(TOKEN));
+    assert_eq!(fs::read_to_string(remote_dir.join("exit")).unwrap(), "0\n");
+}
+
+#[test]
+fn remote_nonzero_exit_uses_adapter_classification() {
+    let mut fixture = Fixture::new("printf 'agent failed' >&2\nexit 17");
+    fixture.enable_remote();
+    let run = fixture.start_remote(false);
+    fixture.end(run.id, RunState::Failed, &["stderr", "exit"]);
+    assert!(
+        lock(&fixture.storage)
+            .run_events(run.id)
+            .unwrap()
+            .iter()
+            .any(|event| event.payload.as_deref() == Some("exit code 17"))
+    );
+}
+
+#[test]
+fn remote_agent_exit_255_is_distinguished_from_transport_loss() {
+    let mut fixture = Fixture::new("exit 255");
+    fixture.enable_remote();
+    let run = fixture.start_remote(false);
+    fixture.end(run.id, RunState::Failed, &["stderr", "exit"]);
+    assert_eq!(
+        fixture.remote().probe(run.id).unwrap(),
+        super::super::host::Probe::Exited(255)
+    );
+}
+
+#[test]
+fn remote_connection_loss_keeps_agent_running_until_reconciled_and_stopped() {
+    let mut fixture = Fixture::new("printf R > ready\nread value < gate");
+    fixture.enable_remote();
+    fs::write(fixture.dir.path().join("disconnect"), "").unwrap();
+    let mut transport = fifo(&fixture.dir.path().join("transport-gate"));
+    let run = fixture.start_remote(false);
+    fixture.ready();
+    transport.write_all(b"disconnect\n").unwrap();
+    fixture.end(run.id, RunState::Unknown, &["observation_lost"]);
+    assert_eq!(
+        fixture.remote().probe(run.id).unwrap(),
+        super::super::host::Probe::Running
+    );
+    assert_eq!(
+        fixture.runner.reconcile(run.id).unwrap().state,
+        RunState::Unknown
+    );
+    assert!(
+        lock(&fixture.storage)
+            .run_events(run.id)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "remote_still_running")
+    );
+    assert_eq!(
+        fixture.runner.stop(run.id).unwrap().state,
+        RunState::Cancelled
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn remote_stop_cancels_and_terminates_the_remote_process_group() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    let mut fixture = Fixture::new(
+        r#"
+sh -c 'trap "" TERM; echo $$ > child_pid; printf R > ready; read value < gate' &
+wait
+"#,
+    );
+    fixture.enable_remote();
+    let run = fixture.start_remote(false);
+    fixture.ready();
+    // An attached stream is authoritative; reconcile must not downgrade it.
+    assert_eq!(
+        fixture.runner.reconcile(run.id).unwrap().state,
+        RunState::Running
+    );
+    let pid: i32 = fs::read_to_string(fixture.dir.path().join("child_pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    assert!(fd >= 0);
+    let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
+    assert_eq!(
+        fixture.runner.stop(run.id).unwrap().state,
+        RunState::Cancelled
+    );
+    let mut descriptor = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    assert_eq!(unsafe { libc::poll(&mut descriptor, 1, 10_000) }, 1);
+    fixture.end(run.id, RunState::Cancelled, &["stop_requested"]);
+}
+
+#[test]
+fn remote_stop_failure_keeps_stream_active_until_connectivity_returns() {
+    let mut fixture = Fixture::new("printf R > ready\nread value < gate");
+    fixture.enable_remote();
+    let run = fixture.start_remote(false);
+    fixture.ready();
+    fs::write(fixture.dir.path().join("offline"), "").unwrap();
+    let error = fixture.runner.stop(run.id).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("reconcile the run once the host is reachable")
+    );
+    assert_eq!(
+        lock(&fixture.storage)
+            .get_run(run.id)
+            .unwrap()
+            .unwrap()
+            .state,
+        RunState::Running
+    );
+    assert!(
+        lock(&fixture.storage)
+            .run_events(run.id)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "stop_requested")
+    );
+    fs::remove_file(fixture.dir.path().join("offline")).unwrap();
+    assert_eq!(
+        fixture.runner.stop(run.id).unwrap().state,
+        RunState::Cancelled
+    );
+}
+
+#[test]
+fn remote_stop_before_pid_prevents_a_late_wrapper_from_starting_the_agent() {
+    let mut fixture = Fixture::new("printf unexpected > agent_started");
+    fixture.enable_remote();
+    let run = fixture.reserve_remote("late");
+    let remote = fixture.remote();
+    remote.stage(run.id, "brief.md", b"brief").unwrap();
+    assert_eq!(
+        fixture.runner.stop(run.id).unwrap().state,
+        RunState::Cancelled
+    );
+    let invocation = AgentAdapter::Claude.invocation(Path::new("unused"), None);
+    let (child, _, _) = remote
+        .spawn(
+            run.id,
+            fixture.dir.path().to_str().unwrap(),
+            &fixture.runner.claude,
+            &invocation,
+        )
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(143));
+    assert!(!fixture.dir.path().join("agent_started").exists());
+}
+
+#[test]
+fn remote_reconcile_maps_durable_evidence_and_restart_never_contacts_ssh() {
+    let mut fixture = Fixture::new(RESULT);
+    fixture.enable_remote();
+    let remote = fixture.remote();
+    let identity = std::process::Command::new("ps")
+        .args(["-o", "lstart=", "-p", &std::process::id().to_string()])
+        .env("LC_ALL", "C")
+        .output()
+        .unwrap();
+    assert!(identity.status.success());
+    let identity = String::from_utf8(identity.stdout).unwrap();
+    for (key, file, data, state, event) in [
+        ("clean", "exit", "0".to_owned(), RunState::Exited, "exit"),
+        ("failed", "exit", "19".to_owned(), RunState::Failed, "exit"),
+        (
+            "running",
+            "pid",
+            format!("{} {}", std::process::id(), identity),
+            RunState::Unknown,
+            "remote_still_running",
+        ),
+        (
+            "gone",
+            "pid",
+            "2147483647 old identity".to_owned(),
+            RunState::Failed,
+            "interrupted",
+        ),
+        (
+            "missing",
+            "brief.md",
+            String::new(),
+            RunState::Unknown,
+            "remote_missing",
+        ),
+    ] {
+        let run = fixture.reserve_remote(key);
+        remote.stage(run.id, file, data.as_bytes()).unwrap();
+        let count = fs::read_to_string(fixture.dir.path().join("ssh-argv"))
+            .unwrap()
+            .len();
+        PlainRunner::recover_after_restart(&fixture.storage).unwrap();
+        assert_eq!(
+            fs::read_to_string(fixture.dir.path().join("ssh-argv"))
+                .unwrap()
+                .len(),
+            count
+        );
+        assert_eq!(
+            lock(&fixture.storage)
+                .get_run(run.id)
+                .unwrap()
+                .unwrap()
+                .state,
+            RunState::Unknown
+        );
+        assert_eq!(fixture.runner.reconcile(run.id).unwrap().state, state);
+        let events = lock(&fixture.storage).run_events(run.id).unwrap();
+        assert!(events.iter().any(|item| item.kind == "server_restarted"));
+        assert!(events.iter().any(|item| item.kind == event));
+        if key == "failed" {
+            assert!(
+                events
+                    .iter()
+                    .any(|item| item.payload.as_deref() == Some("exit code 19"))
+            );
+        }
+    }
+    let run = fixture.reserve_remote("unreachable");
+    fs::write(fixture.dir.path().join("offline"), "").unwrap();
+    assert!(
+        fixture
+            .runner
+            .reconcile(run.id)
+            .unwrap_err()
+            .to_string()
+            .contains("reconcile the run once the host is reachable")
+    );
+    assert_eq!(
+        lock(&fixture.storage)
+            .get_run(run.id)
+            .unwrap()
+            .unwrap()
+            .state,
+        RunState::Running
+    );
+    assert!(fixture.runner.stop(run.id).is_err());
+    assert_eq!(
+        lock(&fixture.storage)
+            .get_run(run.id)
+            .unwrap()
+            .unwrap()
+            .state,
+        RunState::Running
+    );
+}
+
+#[test]
+fn remote_mcp_requires_an_open_tunnel_before_staging_or_spawning() {
+    for provider in [None, Some(Arc::new(|_: &str| false) as TunnelOpenProvider)] {
+        let mut fixture = Fixture::new(RESULT);
+        fixture.enable_remote();
+        fixture.runner.tunnel_open = provider;
+        let mut request = fixture.request("remote", AgentAdapter::Claude, true, 60);
+        request.host = HostRef::Ssh("test-host".into());
+        let error = RuntimeService
+            .start_run(&fixture.storage, &fixture.runner, request)
+            .unwrap_err();
+        assert!(error.to_string().contains("wait for the tunnel to open"));
+        assert!(error.to_string().contains("mcp false"));
+        assert!(!fixture.dir.path().join("ssh-argv").exists());
+    }
+}
+
+#[test]
+fn remote_windows_uses_native_staging_launch_stop_and_probe_scripts() {
+    use crate::adapters::git::fake::decode_powershell;
+    use crate::runtime::host::HostOs;
+    let remote = remote::Remote::from_run(
+        &HostRef::Ssh("windows".into()),
+        Some(r"C:\repo"),
+        Path::new("ssh"),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(remote.host.os(), HostOs::Windows);
+    let endpoint = McpEndpoint {
+        url: "http://127.0.0.1:12345/mcp".into(),
+        token: TOKEN.into(),
+    };
+    let invocation = AgentAdapter::Claude.invocation(Path::new("unused"), Some(&endpoint));
+    let launch = remote
+        .launch_invocation(RunId(42), r"C:\repo", Path::new("claude.exe"), &invocation)
+        .unwrap();
+    let script = decode_powershell(&launch.args[4]);
+    assert!(script.contains("(Join-Path $run 'mcp.json')"));
+    assert!(script.contains("$info.WorkingDirectory = 'C:\\repo'"));
+    assert!(
+        script.contains(
+            "$info.EnvironmentVariables['TOODO_MCP_TOKEN'] = [System.IO.File]::ReadAllText"
+        )
+    );
+    assert!(script.contains("'http://127.0.0.1:12345/mcp'"));
+    let stage = remote.host.stage(RunId(42), "token");
+    let stop = remote.host.stop(RunId(42));
+    let probe = remote.host.probe(RunId(42));
+    assert!(decode_powershell(&stage.args[4]).contains("[Console]::OpenStandardInput().CopyTo"));
+    assert!(decode_powershell(&stop.args[4]).contains("taskkill /PID $process.Id /T /F"));
+    assert!(decode_powershell(&probe.args[4]).contains("StartTime.ToFileTimeUtc()"));
+    for invocation in [launch, stage, stop, probe] {
+        let decoded = decode_powershell(&invocation.args[4]);
+        assert!(!decoded.contains(TOKEN));
+        assert!(!decoded.contains("sh -c"));
+    }
+}
