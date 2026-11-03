@@ -1,9 +1,10 @@
 //! Merging another Toodo database, such as one of the former desktop app, into this one.
 //!
 //! Workspaces and tasks with their history are added next to the data already here.
-//! Imported rows get IDs after every ID this database has used, so nothing here changes; references between imported rows move along. Devices, push
-//! subscriptions, and the lead chat of the other database are not imported: they belong
-//! to the server that kept them. Tasks forget their herdr workspace, whose ID only meant
+//! Imported rows get IDs after every ID this database has used, so nothing here changes;
+//! references between imported rows move along. Devices, push subscriptions, connected
+//! OAuth apps, and the lead chat of the other database are not imported: they belong to
+//! the server that kept them. Tasks forget their herdr workspace, whose ID only meant
 //! something to the other machine's herdr.
 
 use std::time::Duration;
@@ -108,6 +109,9 @@ pub(super) const SKIPPED: &[&str] = &[
     "machine_settings",
     "devices",
     "push_subscriptions",
+    "oauth_clients",
+    "oauth_grants",
+    "oauth_tokens",
     "chat_messages",
     "task_results",
     "task_search",
@@ -312,6 +316,9 @@ mod tests {
                  DROP TABLE task_runs;
                  DROP TABLE agent_conversations;
                  DROP TABLE runtime_workspaces;
+                 DROP TABLE oauth_tokens;
+                 DROP TABLE oauth_grants;
+                 DROP TABLE oauth_clients;
                  PRAGMA user_version = 25;",
             )
             .unwrap();
@@ -492,6 +499,38 @@ mod tests {
         assert_eq!(count(&server, "SELECT count(*) FROM tasks"), 1);
         assert_eq!(count(&server, "SELECT count(*) FROM runtime_workspaces"), 0);
         assert_eq!(server.runtime_shadow_mismatches().unwrap(), []);
+    }
+
+    #[test]
+    fn connected_oauth_apps_stay_with_the_issuing_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("other.sqlite3");
+        let mut other = Storage::open(&source).unwrap();
+        let client = super::super::oauth::Client {
+            client_id: "other-client".to_owned(),
+            secret_hash: None,
+            client_name: Some("Other app".to_owned()),
+            redirect_uris: vec!["https://client.example/callback".to_owned()],
+            auth_method: "none".to_owned(),
+            created_at: 1000,
+        };
+        other.oauth_register_client(&client).unwrap();
+        other
+            .oauth_create_grant(
+                &crate::oauth::server_owner(),
+                &client,
+                crate::oauth::Scopes::READ,
+                "other-access-hash",
+                "other-refresh-hash",
+            )
+            .unwrap();
+        drop(other);
+
+        let mut server = Storage::open_in_memory().unwrap();
+        server.import(&stage_backup(&source).unwrap()).unwrap();
+        for table in ["oauth_clients", "oauth_grants", "oauth_tokens"] {
+            assert_eq!(count(&server, &format!("SELECT count(*) FROM {table}")), 0);
+        }
     }
 
     /// A table a later migration adds has to be imported or skipped on purpose.
