@@ -242,6 +242,7 @@ impl Storage {
     /// herdr workspaces, which belong to the old machine.
     pub fn update_workspace(&mut self, workspace: &Workspace) -> Result<()> {
         let (kind, path, herdr_machine) = location_columns(&workspace.location);
+        let at = self.now();
         let tx = self.conn.transaction()?;
         let in_review: Option<i64> = tx
             .query_row(
@@ -282,11 +283,12 @@ impl Storage {
             return Err(StorageError::WorktreePathMismatch(TaskId(task)));
         }
         tx.execute(
-            "UPDATE tasks SET herdr_workspace_id = NULL
-             WHERE workspace_id = ?1 AND herdr_workspace_id IS NOT NULL
+            "UPDATE runtime_workspaces SET state = 'closed', closed_at = ?4
+             WHERE state = 'open' AND runner_kind = 'herdr'
+               AND task_id IN (SELECT id FROM tasks WHERE workspace_id = ?1)
                AND EXISTS (SELECT 1 FROM workspaces w
                            WHERE w.id = ?1 AND (w.kind <> ?2 OR w.herdr_machine IS NOT ?3))",
-            params![workspace.id.0, kind, herdr_machine],
+            params![workspace.id.0, kind, herdr_machine, at],
         )?;
         let changed = tx.execute(
             "UPDATE workspaces

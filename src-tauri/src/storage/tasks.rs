@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
+use super::runtime::set_herdr_workspace;
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::criteria::NewCriterion;
 use crate::domain::dag;
@@ -131,7 +132,9 @@ fn parse_note_kind(raw: &str) -> Result<NoteKind> {
 }
 
 const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.description, t.status,
-        t.branch, t.worktree_path, t.herdr_workspace_id, t.pull_request_url,
+        t.branch, t.worktree_path,
+        (SELECT r.provider_workspace_ref FROM runtime_workspaces r
+         WHERE r.task_id = t.id AND r.state = 'open'), t.pull_request_url,
         t.pull_request_merged_at, t.completion_note, s.number, s.title, s.additions,
         s.deletions, s.changed_files, s.merge_commit_sha, s.review_count, s.reviewer_count,
         s.first_reviewed_at, t.resolution, t.issue_number, t.issue_url, t.estimate_unit,
@@ -472,6 +475,7 @@ impl Storage {
     /// branch, worktree path, herdr workspace, and pull request URL. Status, dependencies, and workspace
     /// are changed through their own methods and are ignored here.
     pub fn update_task(&mut self, task: &Task) -> Result<()> {
+        let at = self.now();
         let tx = self.conn.transaction()?;
         let path_style: String = tx
             .query_row(
@@ -490,8 +494,8 @@ impl Storage {
         tx.execute(
             "UPDATE tasks
              SET type = ?2, title = ?3, description = ?4, branch = ?5, worktree_path = ?6,
-                 herdr_workspace_id = ?7, pull_request_url = ?8, estimate_unit = ?9,
-                 estimate_amount = ?10, due_date = ?11
+                 pull_request_url = ?7, estimate_unit = ?8, estimate_amount = ?9,
+                 due_date = ?10
              WHERE id = ?1",
             params![
                 task.id.0,
@@ -500,13 +504,13 @@ impl Storage {
                 task.description,
                 task.branch,
                 worktree_path,
-                task.herdr_workspace_id,
                 task.pull_request_url,
                 estimate_unit,
                 estimate_amount,
                 task.due_date.map(|due| due.to_string())
             ],
         )?;
+        set_herdr_workspace(&tx, task.id, task.herdr_workspace_id.as_deref(), at)?;
         tx.commit()?;
         Ok(())
     }
@@ -539,16 +543,11 @@ impl Storage {
         let worktree_path = stored_worktree_path(id, &path_style, Some(&checkout.path))?;
         tx.execute(
             "UPDATE tasks
-             SET status = ?2, branch = ?3, worktree_path = ?4, herdr_workspace_id = ?5
+             SET status = ?2, branch = ?3, worktree_path = ?4
              WHERE id = ?1",
-            params![
-                id.0,
-                status.as_str(),
-                checkout.branch,
-                worktree_path,
-                herdr_workspace_id
-            ],
+            params![id.0, status.as_str(), checkout.branch, worktree_path],
         )?;
+        set_herdr_workspace(&tx, id, Some(herdr_workspace_id), at)?;
         record_event(&tx, id, status, at)?;
         let started = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
@@ -617,12 +616,13 @@ impl Storage {
         }
         tx.execute(
             "UPDATE tasks
-             SET status = ?2, resolution = ?3, herdr_workspace_id = NULL,
+             SET status = ?2, resolution = ?3,
                  pull_request_merged_at = coalesce(?4, pull_request_merged_at),
                  completion_note = coalesce(?5, completion_note)
              WHERE id = ?1",
             params![id.0, status.as_str(), resolution.as_str(), merged_at, note],
         )?;
+        set_herdr_workspace(&tx, id, None, at)?;
         if let Some(snapshot) = pull_request {
             tx.execute(
                 "INSERT OR REPLACE INTO pull_request_snapshots (task_id, number, title,
@@ -671,7 +671,7 @@ impl Storage {
         let status = task.status.conclude()?;
         tx.execute(
             "UPDATE tasks
-             SET status = ?2, resolution = ?3, completion_note = ?4, herdr_workspace_id = NULL,
+             SET status = ?2, resolution = ?3, completion_note = ?4,
                  pull_request_url = COALESCE(?5, pull_request_url)
              WHERE id = ?1",
             params![
@@ -682,6 +682,7 @@ impl Storage {
                 pull_request_url
             ],
         )?;
+        set_herdr_workspace(&tx, id, None, at)?;
         if !commits.is_empty() {
             super::commits::write_commit_records(&tx, id, commits)?;
         }
@@ -717,7 +718,7 @@ impl Storage {
         };
         tx.execute(
             "UPDATE tasks
-             SET status = ?2, resolution = ?3, herdr_workspace_id = NULL,
+             SET status = ?2, resolution = ?3,
                  pull_request_merged_at = ?4, merged_with_pull_request_url = ?5,
                  merged_with_task_id = ?6
              WHERE id = ?1",
@@ -730,6 +731,7 @@ impl Storage {
                 merged_with.task_id.map(|task| task.0)
             ],
         )?;
+        set_herdr_workspace(&tx, id, None, at)?;
         if !commits.is_empty() {
             super::commits::write_commit_records(&tx, id, commits)?;
         }
@@ -860,14 +862,16 @@ impl Storage {
     /// Forgets the worktree and herdr workspace of a task after its worktree was removed.
     /// The branch, status, commit records, and pull request stay.
     pub fn clear_task_worktree(&mut self, id: TaskId) -> Result<Task> {
+        let at = self.now();
         let tx = self.conn.transaction()?;
         let updated = tx.execute(
-            "UPDATE tasks SET worktree_path = NULL, herdr_workspace_id = NULL WHERE id = ?1",
+            "UPDATE tasks SET worktree_path = NULL WHERE id = ?1",
             [id.0],
         )?;
         if updated == 0 {
             return Err(StorageError::TaskNotFound(id));
         }
+        set_herdr_workspace(&tx, id, None, at)?;
         let cleared = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(cleared)
@@ -881,6 +885,7 @@ impl Storage {
         path: &HostPath,
         herdr_workspace_id: &str,
     ) -> Result<Task> {
+        let at = self.now();
         let tx = self.conn.transaction()?;
         let path_style: String = tx
             .query_row(
@@ -895,9 +900,10 @@ impl Storage {
             .ok_or(StorageError::TaskNotFound(id))?;
         let worktree_path = stored_worktree_path(id, &path_style, Some(path))?;
         tx.execute(
-            "UPDATE tasks SET worktree_path = ?2, herdr_workspace_id = ?3 WHERE id = ?1",
-            params![id.0, worktree_path, herdr_workspace_id],
+            "UPDATE tasks SET worktree_path = ?2 WHERE id = ?1",
+            params![id.0, worktree_path],
         )?;
+        set_herdr_workspace(&tx, id, Some(herdr_workspace_id), at)?;
         let restored = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(restored)
@@ -905,13 +911,11 @@ impl Storage {
 
     /// Records the herdr workspace a task's worktree was opened again in.
     pub fn set_task_herdr_workspace(&mut self, id: TaskId, herdr_workspace_id: &str) -> Result<()> {
-        let updated = self.conn.execute(
-            "UPDATE tasks SET herdr_workspace_id = ?2 WHERE id = ?1",
-            params![id.0, herdr_workspace_id],
-        )?;
-        if updated == 0 {
-            return Err(StorageError::TaskNotFound(id));
-        }
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        task_workspace(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        set_herdr_workspace(&tx, id, Some(herdr_workspace_id), at)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1078,14 +1082,13 @@ impl Storage {
 
     /// Forgets the herdr workspace of a task after it was closed; the worktree stays.
     pub fn clear_task_herdr_workspace(&mut self, id: TaskId) -> Result<Task> {
-        let updated = self.conn.execute(
-            "UPDATE tasks SET herdr_workspace_id = NULL WHERE id = ?1",
-            [id.0],
-        )?;
-        if updated == 0 {
-            return Err(StorageError::TaskNotFound(id));
-        }
-        find_task(&self.conn, id)?.ok_or(StorageError::TaskNotFound(id))
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        task_workspace(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        set_herdr_workspace(&tx, id, None, at)?;
+        let cleared = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(cleared)
     }
 
     /// Removes the edge `task -> depends_on`; rejects an edge that does not exist.

@@ -1,5 +1,5 @@
-//! Runtime records: runtime workspaces (shadow-written from the herdr handles on `tasks`
-//! by triggers, see migration 29), task runs, their events, and runner operations.
+//! Runtime records: runtime workspaces (the herdr workspaces tasks are open in), task
+//! runs, their events, and runner operations.
 //!
 //! A run is reserved before the runner is asked to launch it, so a retried request finds
 //! the same run by its request key instead of launching twice.
@@ -553,28 +553,50 @@ impl Storage {
         )
         .transpose()
     }
+}
 
-    /// Tasks whose herdr handle on `tasks` disagrees with their open runtime workspace:
-    /// a handle without an open row, an open row without a handle, more than one open
-    /// row, or an open row with another reference or checkout path.
-    pub fn runtime_shadow_mismatches(&self) -> Result<Vec<TaskId>> {
-        let mut statement = self.conn.prepare(
-            "SELECT t.id FROM tasks t
-             WHERE (SELECT count(*) FROM runtime_workspaces r
-                    WHERE r.task_id = t.id AND r.state = 'open')
-                   <> (t.herdr_workspace_id IS NOT NULL)
-                OR (t.herdr_workspace_id IS NOT NULL
-                    AND NOT EXISTS (SELECT 1 FROM runtime_workspaces r
-                                    WHERE r.task_id = t.id AND r.state = 'open'
-                                      AND r.provider_workspace_ref = t.herdr_workspace_id
-                                      AND r.checkout_path IS t.worktree_path))
-             ORDER BY t.id",
+/// Records that `task` is open in the herdr workspace `handle`, or in none, at `at`, with
+/// the checkout path and branch the task has now: an open runtime workspace with another
+/// reference, or any with no handle, is closed; the open one with this reference takes
+/// the checkout path and branch along; otherwise the next generation opens.
+pub(super) fn set_herdr_workspace(
+    conn: &Connection,
+    task: TaskId,
+    handle: Option<&str>,
+    at: i64,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE runtime_workspaces SET state = 'closed', closed_at = ?3
+         WHERE task_id = ?1 AND state = 'open' AND runner_kind = 'herdr'
+           AND (?2 IS NULL OR provider_workspace_ref IS NOT ?2)",
+        params![task.0, handle, at],
+    )?;
+    let Some(handle) = handle else {
+        return Ok(());
+    };
+    let updated = conn.execute(
+        "UPDATE runtime_workspaces
+         SET checkout_path = (SELECT t.worktree_path FROM tasks t WHERE t.id = ?1),
+             branch = (SELECT t.branch FROM tasks t WHERE t.id = ?1)
+         WHERE task_id = ?1 AND state = 'open' AND provider_workspace_ref = ?2",
+        params![task.0, handle],
+    )?;
+    if updated == 0 {
+        conn.execute(
+            "INSERT INTO runtime_workspaces (task_id, host_ref, runner_kind,
+                 provider_workspace_ref, checkout_path, branch, generation, state, opened_at)
+             SELECT t.id,
+                 CASE w.kind WHEN 'ssh' THEN 'ssh:' || w.herdr_machine ELSE 'local' END,
+                 'herdr', ?2, t.worktree_path, t.branch,
+                 (SELECT coalesce(max(r.generation), 0) + 1
+                  FROM runtime_workspaces r WHERE r.task_id = t.id),
+                 'open', ?3
+             FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
+             WHERE t.id = ?1",
+            params![task.0, handle, at],
         )?;
-        let tasks = statement
-            .query_map([], |row| row.get(0).map(TaskId))?
-            .collect::<rusqlite::Result<_>>()?;
-        Ok(tasks)
     }
+    Ok(())
 }
 
 #[cfg(test)]

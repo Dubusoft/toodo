@@ -1720,24 +1720,30 @@ fn activity_of_another_or_a_missing_task_is_rejected() {
 }
 
 /// The reference, checkout path, generation, and host of the open runtime workspace of
-/// `task`, after checking that the herdr handles on `tasks` agree with it.
+/// `task`, after checking that the task reads its herdr workspace from it.
 fn open_runtime(storage: &Storage, task: &Task) -> Option<(String, Option<String>, i64, String)> {
-    assert_eq!(storage.runtime_shadow_mismatches().unwrap(), []);
-    storage
-        .open_runtime_workspace(task.id)
-        .unwrap()
-        .map(|open| {
-            (
-                open.provider_workspace_ref,
-                open.checkout_path,
-                open.generation,
-                open.host.as_wire(),
-            )
-        })
+    let open = storage.open_runtime_workspace(task.id).unwrap();
+    assert_eq!(
+        storage
+            .get_task(task.id)
+            .unwrap()
+            .unwrap()
+            .herdr_workspace_id,
+        open.as_ref()
+            .map(|open| open.provider_workspace_ref.clone())
+    );
+    open.map(|open| {
+        (
+            open.provider_workspace_ref,
+            open.checkout_path,
+            open.generation,
+            open.host.as_wire(),
+        )
+    })
 }
 
 #[test]
-fn herdr_handles_are_shadow_written_into_runtime_workspaces() {
+fn herdr_workspaces_of_tasks_are_recorded_in_runtime_workspaces() {
     let mut storage = Storage::open_in_memory().unwrap();
     let mut workspace = add_workspace(&mut storage, "Toodo", ssh_location("devbox", "/srv/toodo"));
     let task = add_task(&mut storage, &workspace, "Add login");
@@ -1843,30 +1849,4 @@ fn herdr_handles_are_shadow_written_into_runtime_workspaces() {
     // A deleted task takes its runtime workspaces along.
     storage.delete_task(task.id).unwrap();
     assert_eq!(row_count(&storage, "runtime_workspaces"), 0);
-}
-
-#[test]
-fn runtime_shadow_mismatches_finds_tasks_whose_handles_disagree() {
-    let mut storage = Storage::open_in_memory().unwrap();
-    let workspace = add_workspace(&mut storage, "Toodo", ssh_location("devbox", "/srv/toodo"));
-    let task = add_task(&mut storage, &workspace, "Add login");
-    let path = HostPath::Posix(PosixPath::parse("/wt/add-login-1").unwrap());
-    storage
-        .start_task(task.id, &checkout(path, "feat/add-login-1"), "w7")
-        .unwrap();
-    assert_eq!(storage.runtime_shadow_mismatches().unwrap(), []);
-
-    storage
-        .conn
-        .execute(
-            "UPDATE runtime_workspaces SET checkout_path = '/elsewhere'",
-            [],
-        )
-        .unwrap();
-    assert_eq!(storage.runtime_shadow_mismatches().unwrap(), [task.id]);
-    storage
-        .conn
-        .execute("UPDATE runtime_workspaces SET state = 'closed'", [])
-        .unwrap();
-    assert_eq!(storage.runtime_shadow_mismatches().unwrap(), [task.id]);
 }

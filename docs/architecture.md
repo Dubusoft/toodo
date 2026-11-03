@@ -397,13 +397,14 @@ placeholder for a later tenant context; nothing filters or authenticates by it y
 `host_ref` column names the host: `local` for a local workspace, `ssh:<target>` for an SSH
 workspace, where the target is the workspace's `herdr_machine`.
 
-The old task columns `herdr_workspace_id`, `worktree_path`, and `branch` remain the source
-of truth. SQL triggers on `tasks` shadow-write them into `runtime_workspaces`: a cleared or
-changed handle closes the open row, a new handle opens the next generation, and a moved
-checkout updates the open row. Every existing write path stays in line without Rust
-changes. The migration backfills one open row per task that has a handle and creates no
-runs. `Storage::runtime_shadow_mismatches` lists tasks whose handle and open row disagree.
-Import skips all five tables, since their handles belong to the other server's hosts.
+The open runtime workspace is the source of truth for the herdr workspace of a task; the
+task's `herdrWorkspaceId` is read from it. Storage writes it next to the task's checkout
+path and branch, which stay on `tasks` since they outlive the herdr workspace: a cleared
+or changed handle closes the open row, a new handle opens the next generation, and a moved
+checkout updates the open row. Migration 29 backfilled one open row per task that had a
+handle and created no runs; migration 31 brought the open rows in line with the handles
+once more and dropped the old `tasks.herdr_workspace_id` column. Import skips all five
+tables, since their handles belong to the other server's hosts.
 
 A checkout has one active writer at a time. The partial unique index
 `task_runs_one_active_writer` covers writer runs on the same owner, host, and checkout in
@@ -422,7 +423,7 @@ per call: a `TaskWorkspaceRuntime` for runtime workspaces and a `RunLauncher` fo
 
 - Starting, resuming, and restoring a task open its runtime workspace through
   `open_workspace`. herdr creates or reopens the worktree, then the task records the handle
-  and the triggers open the record. The service returns the task together with that record.
+  and storage opens the record. The service returns the task together with that record.
   Starting a task ends the runs still active from before it was paused as `exited`.
 - Opening a started task whose herdr workspace herdr no longer has (focus, panes) goes
   through `reopen_workspace`: herdr opens the kept checkout in a new herdr workspace, and
@@ -448,9 +449,9 @@ per call: a `TaskWorkspaceRuntime` for runtime workspaces and a `RunLauncher` fo
   run in the first pane of the task's open runtime workspace, with request key
   `mcp-agent-<task>-<n>`.
 
-The herdr event reconciliation (a worktree removed or opened again in herdr) still writes
-the herdr handles directly in `commands/events.rs`, and the triggers keep the records in
-step.
+The herdr event reconciliation (a worktree removed or opened again in herdr) in
+`commands/events.rs` forgets or records the herdr workspace of a task through the same
+storage methods, which close or open its runtime workspace.
 
 ## Components
 
