@@ -172,14 +172,7 @@ pub(crate) fn start(
             RuntimeService.start_run(storage_state, &NoRunner, request)?;
             return Ok(started);
         }
-        if workspace.runner == Runner::Plain {
-            model::check_runner_location(Runner::Plain, &workspace.location).map_err(|error| {
-                CommandError::rejected(format!(
-                    "task {id} cannot start in workspace {}: {}",
-                    workspace.name, error.0
-                ))
-            })?;
-        }
+        reject_tmux(workspace.runner)?;
         let settings = storage.get_machine_settings(&workspace.location.machine())?;
         let mut checkout = naming::task_checkout(&workspace, &settings, &task)?;
         // A paused task keeps the branch it got when it first started.
@@ -393,6 +386,7 @@ pub(crate) fn restore(
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
         (task, workspace)
     };
+    reject_tmux(workspace.runner)?;
     if workspace.runner == Runner::None && task.branch.is_none() {
         return Err(CommandError::rejected(format!(
             "task {id} belongs to workspace {}, which runs tasks without herdr (runner none), so it has no branch or worktree to restore; work on it in the workspace directory and complete it once its criteria are met",
@@ -483,6 +477,7 @@ fn task_workspace(storage: &StorageState, id: model::TaskId) -> CommandResult<Ta
     let workspace = storage
         .get_workspace(task.workspace_id)?
         .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+    reject_tmux(workspace.runner)?;
     let herdr_workspace_id = storage
         .open_runtime_workspace(id)?
         .map(|record| record.provider_workspace_ref)
@@ -675,6 +670,7 @@ fn remove_worktree(
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
         (workspace.location, path, workspace.runner)
     };
+    reject_tmux(runner)?;
     if runner == Runner::Plain {
         return remove_plain_worktree(storage, git, id, &location, &path, force);
     }
@@ -784,6 +780,16 @@ fn close_workspace(
             storage.clear_task_herdr_workspace(id)
         })?,
     )
+}
+
+fn reject_tmux(runner: Runner) -> CommandResult<()> {
+    if runner == Runner::Tmux {
+        return Err(CommandError::rejected(
+            "runner tmux task operations are not wired yet; choose runner plain or herdr \
+             in the workspace settings before starting or restoring a task",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn has_code(error: &HerdrError, expected: &str) -> bool {
@@ -2608,14 +2614,14 @@ mod tests {
     }
 
     #[test]
-    fn a_task_of_an_ssh_workspace_with_runner_plain_is_rejected_before_git_runs() {
+    fn a_task_with_runner_tmux_is_rejected_before_git_runs() {
         let fixture = fixture_with_runner(
             WorkspaceLocation::Ssh {
                 machine: MachineLabel::parse("devbox").unwrap(),
                 path: PosixPath::parse("/srv/toodo").unwrap().into(),
             },
             None,
-            Runner::Plain,
+            Runner::Tmux,
         );
         let before = stored(&fixture);
         let runtime = FakeRuntime::new(Vec::new());
@@ -2624,7 +2630,7 @@ mod tests {
 
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(
-            error.message.contains("choose runner herdr"),
+            error.message.contains("choose runner plain or herdr"),
             "{}",
             error.message
         );

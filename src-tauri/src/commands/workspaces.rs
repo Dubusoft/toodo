@@ -645,16 +645,16 @@ mod tests {
     }
 
     #[test]
-    fn an_ssh_workspace_with_runner_plain_is_rejected_before_git_or_herdr_runs() {
+    fn a_windows_ssh_workspace_with_runner_tmux_is_rejected_before_git_or_herdr_runs() {
         let prepared = prepare(
             WorkspaceSetup {
                 location: model::WorkspaceLocation::Ssh {
                     machine: model::MachineLabel::parse("devbox").unwrap(),
-                    path: crate::domain::path::PosixPath::parse("/srv/toodo")
+                    path: crate::domain::path::WindowsPath::parse(r"C:\toodo")
                         .unwrap()
                         .into(),
                 },
-                runner: Some(model::Runner::Plain),
+                runner: Some(model::Runner::Tmux),
                 ..setup(RepositorySetup::Open, None)
             },
             Vec::new(),
@@ -662,7 +662,10 @@ mod tests {
         );
 
         let error = prepared.result.unwrap_err();
-        assert!(error.message.contains("choose runner herdr"), "{error:?}");
+        assert!(
+            error.message.contains("choose runner plain or herdr"),
+            "{error:?}"
+        );
         assert!(prepared.invocations.is_empty());
         assert!(prepared.herdr_invocations.is_empty());
     }

@@ -10,6 +10,7 @@
 
 pub mod events;
 mod herdr;
+pub mod host;
 pub mod plain;
 mod workspace;
 

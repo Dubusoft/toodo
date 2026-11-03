@@ -167,6 +167,12 @@ fn start(
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
         match workspace.runner {
             Runner::Plain => {}
+            Runner::Tmux => {
+                return Err(CommandError::rejected(
+                    "runner tmux launch is not wired yet; choose runner plain in a local \
+                     workspace to start an agent run",
+                ));
+            }
             Runner::Herdr => {
                 return Err(CommandError::rejected(format!(
                     "task {id} belongs to workspace {:?} with runner herdr; start the task's \

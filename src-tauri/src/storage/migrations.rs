@@ -1054,6 +1054,87 @@ pub(super) const MIGRATIONS: &[&str] = &[
     DROP TABLE workspaces;
     ALTER TABLE workspaces_new RENAME TO workspaces;
     ",
+    // Version 34: tmux workspaces and runs. Keep the workspace ID counter, all runtime
+    // references, and the unique indexes while widening the runner constraints.
+    r"
+    CREATE TABLE workspaces_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('local', 'ssh')),
+        path TEXT NOT NULL,
+        herdr_machine TEXT,
+        default_base_branch TEXT NOT NULL,
+        agent_merge TEXT NOT NULL DEFAULT 'never'
+            CHECK (agent_merge IN ('never', 'after_checks')),
+        source TEXT NOT NULL DEFAULT 'github'
+            CHECK (source IN ('none', 'local_git', 'github')),
+        completion TEXT NOT NULL DEFAULT 'pr_merge'
+            CHECK (completion IN ('manual', 'local_merge', 'pr_merge')),
+        runner TEXT NOT NULL DEFAULT 'herdr'
+            CHECK (runner IN ('none', 'herdr', 'plain', 'tmux')),
+        axes_detected INTEGER NOT NULL DEFAULT 1 CHECK (axes_detected IN (0, 1)),
+        CHECK ((kind = 'local') = (herdr_machine IS NULL))
+    );
+    INSERT INTO workspaces_new SELECT * FROM workspaces;
+    DELETE FROM sqlite_sequence WHERE name = 'workspaces_new';
+    INSERT INTO sqlite_sequence (name, seq)
+        SELECT 'workspaces_new', seq FROM sqlite_sequence WHERE name = 'workspaces';
+    DROP TABLE workspaces;
+    ALTER TABLE workspaces_new RENAME TO workspaces;
+
+    CREATE TABLE runtime_workspaces_new (
+        id INTEGER PRIMARY KEY,
+        owner_key TEXT NOT NULL DEFAULT 'implicit',
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        host_ref TEXT NOT NULL,
+        runner_kind TEXT NOT NULL CHECK (runner_kind IN ('herdr', 'plain', 'tmux', 'none')),
+        provider_instance TEXT,
+        provider_workspace_ref TEXT NOT NULL,
+        checkout_path TEXT,
+        branch TEXT,
+        generation INTEGER NOT NULL CHECK (generation >= 1),
+        state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+        opened_at INTEGER NOT NULL,
+        closed_at INTEGER
+    );
+    INSERT INTO runtime_workspaces_new SELECT * FROM runtime_workspaces;
+    DROP TABLE runtime_workspaces;
+    ALTER TABLE runtime_workspaces_new RENAME TO runtime_workspaces;
+    CREATE UNIQUE INDEX runtime_workspaces_open_per_task
+        ON runtime_workspaces (task_id) WHERE state = 'open';
+    CREATE UNIQUE INDEX runtime_workspaces_generation
+        ON runtime_workspaces (task_id, generation);
+
+    CREATE TABLE task_runs_new (
+        id INTEGER PRIMARY KEY,
+        owner_key TEXT NOT NULL DEFAULT 'implicit',
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        runtime_workspace_id INTEGER REFERENCES runtime_workspaces (id) ON DELETE SET NULL,
+        conversation_id INTEGER REFERENCES agent_conversations (id) ON DELETE SET NULL,
+        request_key TEXT NOT NULL,
+        generation INTEGER NOT NULL CHECK (generation >= 1),
+        runner_kind TEXT NOT NULL CHECK (runner_kind IN ('herdr', 'plain', 'tmux', 'none')),
+        role TEXT NOT NULL CHECK (role IN ('writer', 'observer')),
+        host_ref TEXT NOT NULL,
+        checkout_path TEXT,
+        adapter_profile TEXT,
+        state TEXT NOT NULL CHECK (state IN
+            ('reserved', 'running', 'settled', 'exited', 'failed', 'cancelled', 'unknown')),
+        provider_run_ref TEXT,
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        ended_at INTEGER,
+        UNIQUE (owner_key, request_key),
+        UNIQUE (task_id, generation)
+    );
+    INSERT INTO task_runs_new SELECT * FROM task_runs;
+    DROP TABLE task_runs;
+    ALTER TABLE task_runs_new RENAME TO task_runs;
+    CREATE UNIQUE INDEX task_runs_one_active_writer
+        ON task_runs (owner_key, host_ref, checkout_path)
+        WHERE role = 'writer' AND checkout_path IS NOT NULL
+          AND state IN ('reserved', 'running', 'unknown');
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -2804,6 +2885,103 @@ mod tests {
     }
 
     #[test]
+    fn version_34_preserves_runtime_rows_indexes_and_triggers_and_allows_tmux() {
+        fn rows(conn: &Connection, sql: &str) -> Vec<Vec<rusqlite::types::Value>> {
+            let mut stmt = conn.prepare(sql).unwrap();
+            let columns = stmt.column_count();
+            stmt.query_map([], |row| {
+                (0..columns).map(|column| row.get(column)).collect()
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        }
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..33] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 33).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (name, kind, path, default_base_branch, runner)
+                 VALUES ('old', 'local', '/repo', 'main', 'plain'),
+                        ('deleted', 'local', '/gone', 'main', 'herdr');
+             DELETE FROM workspaces WHERE id = 2;
+             INSERT INTO tasks (workspace_id, type, title, status, branch, worktree_path)
+                 VALUES (1, 'feat', 'Preserved', 'in_progress', 'feat/old', '/repo/wt');
+             INSERT INTO runtime_workspaces (task_id, host_ref, runner_kind,
+                 provider_instance, provider_workspace_ref, checkout_path, branch,
+                 generation, state, opened_at)
+                 VALUES (1, 'local', 'herdr', 'server', 'workspace', '/repo/wt',
+                     'feat/old', 1, 'open', 10);
+             INSERT INTO agent_conversations (task_id, agent_kind, host_ref, cwd,
+                 resume_kind, resume_ref, created_at)
+                 VALUES (1, 'claude', 'local', '/repo/wt', 'exact_id', 'session', 10);
+             INSERT INTO task_runs (task_id, runtime_workspace_id, conversation_id,
+                 request_key, generation, runner_kind, role, host_ref, checkout_path,
+                 state, provider_run_ref, created_at, started_at)
+                 VALUES (1, 1, 1, 'old', 1, 'plain', 'writer', 'local', '/repo/wt',
+                     'running', 'pid:1', 10, 11);
+             INSERT INTO run_events VALUES (1, 1, 1, 'started', 'payload', 11);
+             INSERT INTO run_operations (run_id, request_key, kind, state, receipt,
+                 created_at, updated_at)
+                 VALUES (1, 'old', 'launch', 'applied', 'receipt', 10, 11);",
+        )
+        .unwrap();
+        let queries = [
+            "SELECT * FROM workspaces",
+            "SELECT * FROM tasks",
+            "SELECT * FROM runtime_workspaces",
+            "SELECT * FROM agent_conversations",
+            "SELECT * FROM task_runs",
+            "SELECT * FROM run_events",
+            "SELECT * FROM run_operations",
+            "SELECT name, sql FROM sqlite_master WHERE type IN ('index', 'trigger') ORDER BY name",
+        ];
+        let before: Vec<_> = queries.iter().map(|sql| rows(&conn, sql)).collect();
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        for (sql, expected) in queries.iter().zip(before) {
+            assert_eq!(rows(&conn, sql), expected, "{sql}");
+        }
+        conn.execute_batch(
+            "INSERT INTO workspaces (name, kind, path, default_base_branch, runner)
+                 VALUES ('tmux', 'local', '/tmux', 'main', 'tmux');
+             INSERT INTO tasks (workspace_id, type, title, status)
+                 VALUES (3, 'feat', 'Tmux', 'planned');
+             INSERT INTO runtime_workspaces (task_id, host_ref, runner_kind,
+                 provider_workspace_ref, generation, state, opened_at)
+                 VALUES (2, 'local', 'tmux', 'toodo-run-2', 1, 'open', 20);
+             INSERT INTO task_runs (task_id, runtime_workspace_id, request_key,
+                 generation, runner_kind, role, host_ref, state, created_at)
+                 VALUES (2, 2, 'tmux', 1, 'tmux', 'writer', 'local', 'reserved', 20);",
+        )
+        .unwrap();
+        assert_eq!(
+            rows(&conn, "SELECT runner FROM workspaces WHERE id = 3"),
+            vec![vec![rusqlite::types::Value::Text("tmux".into())]]
+        );
+        assert!(
+            conn.execute("UPDATE task_runs SET runner_kind = 'invalid'", [])
+                .is_err()
+        );
+        assert!(
+            conn.execute("UPDATE runtime_workspaces SET runner_kind = 'invalid'", [])
+                .is_err()
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO task_runs (task_id, request_key, generation, runner_kind, role,
+             host_ref, checkout_path, state, created_at)
+             VALUES (1, 'conflict', 2, 'tmux', 'writer', 'local', '/repo/wt', 'running', 30)",
+                [],
+            )
+            .is_err(),
+            "the active writer index still rejects a second writer"
+        );
+        assert!(rows(&conn, "PRAGMA foreign_key_check").is_empty());
+    }
+
+    #[test]
     fn version_33_keeps_workspaces_their_tasks_and_the_id_counter_and_allows_runner_plain() {
         // Given a version-32 database with a deleted workspace and one with a task.
         let mut conn = Connection::open_in_memory().unwrap();
@@ -2889,7 +3067,7 @@ mod tests {
         .unwrap();
         assert_eq!(conn.last_insert_rowid(), 3, "deleted IDs are never reused");
         assert!(
-            conn.execute("UPDATE workspaces SET runner = 'tmux' WHERE id = 3", [])
+            conn.execute("UPDATE workspaces SET runner = 'invalid' WHERE id = 3", [])
                 .is_err()
         );
         // The task still belongs to its workspace and goes with it.

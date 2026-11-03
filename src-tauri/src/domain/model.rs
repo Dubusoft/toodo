@@ -180,18 +180,20 @@ pub enum Runner {
     /// Agents in a herdr workspace on a task worktree and branch.
     Herdr,
     /// Agent CLIs that Toodo runs itself on a task worktree and branch, without herdr.
-    /// Only local workspaces use it.
     Plain,
+    /// Agent CLIs in a tmux session on a POSIX host.
+    Tmux,
 }
 
 impl Runner {
-    pub const ALL: [Self; 3] = [Self::None, Self::Herdr, Self::Plain];
+    pub const ALL: [Self; 4] = [Self::None, Self::Herdr, Self::Plain, Self::Tmux];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Herdr => "herdr",
             Self::Plain => "plain",
+            Self::Tmux => "tmux",
         }
     }
 }
@@ -266,16 +268,18 @@ pub fn check_axes(
     Ok(())
 }
 
-/// Checks that a workspace with `runner` can be at `location`. Runner plain runs agent
-/// CLIs on the server itself, so its workspaces have a local path.
+/// Checks the host requirements of a runner. Plain supports either remote OS; tmux
+/// requires a POSIX host.
 pub fn check_runner_location(
     runner: Runner,
     location: &WorkspaceLocation,
 ) -> Result<(), InvalidAxes> {
-    if runner == Runner::Plain && matches!(location, WorkspaceLocation::Ssh { .. }) {
+    if runner == Runner::Tmux
+        && matches!(location, WorkspaceLocation::Ssh { path, .. } if path.is_windows())
+    {
         return Err(InvalidAxes(
-            "runner plain runs agents on the server itself and needs a local path; choose \
-             runner herdr for an SSH workspace, or a local path for runner plain"
+            "runner tmux needs a POSIX host; choose runner plain or herdr for a Windows \
+             SSH workspace, or choose a POSIX path for runner tmux"
                 .to_owned(),
         ));
     }
@@ -602,6 +606,10 @@ mod tests {
             (Source::LocalGit, LocalMerge, Runner::Plain),
             (Source::GitHub, Manual, Runner::Plain),
             (Source::GitHub, PullRequestMerge, Runner::Plain),
+            (Source::LocalGit, Manual, Runner::Tmux),
+            (Source::LocalGit, LocalMerge, Runner::Tmux),
+            (Source::GitHub, Manual, Runner::Tmux),
+            (Source::GitHub, PullRequestMerge, Runner::Tmux),
         ];
         let mut checked = 0;
         for source in Source::ALL {
@@ -621,7 +629,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 27);
+        assert_eq!(checked, 36);
     }
 
     #[test]
@@ -669,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn only_runner_plain_needs_a_local_path() {
+    fn only_tmux_rejects_a_windows_ssh_path() {
         let local = WorkspaceLocation::Local {
             path: crate::domain::path::PosixPath::parse("/srv/repo")
                 .unwrap()
@@ -683,13 +691,16 @@ mod tests {
         };
         for runner in Runner::ALL {
             check_runner_location(runner, &local).unwrap();
+            check_runner_location(runner, &ssh).unwrap();
+            let windows = WorkspaceLocation::Ssh {
+                machine: MachineLabel::parse("devbox").unwrap(),
+                path: WindowsPath::parse(r"C:\repo").unwrap().into(),
+            };
             assert_eq!(
-                check_runner_location(runner, &ssh).is_err(),
-                runner == Runner::Plain
+                check_runner_location(runner, &windows).is_err(),
+                runner == Runner::Tmux
             );
         }
-        let message = check_runner_location(Runner::Plain, &ssh).unwrap_err().0;
-        assert!(message.contains("choose runner herdr"), "{message}");
     }
 
     #[test]
@@ -723,6 +734,9 @@ mod tests {
             CompletionMode::ALL.map(CompletionMode::as_str),
             ["manual", "local_merge", "pr_merge"]
         );
-        assert_eq!(Runner::ALL.map(Runner::as_str), ["none", "herdr", "plain"]);
+        assert_eq!(
+            Runner::ALL.map(Runner::as_str),
+            ["none", "herdr", "plain", "tmux"]
+        );
     }
 }

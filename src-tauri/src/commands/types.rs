@@ -333,8 +333,9 @@ pub enum Runner {
     /// Agents in a herdr workspace on a task worktree and branch.
     Herdr,
     /// Agent CLIs that Toodo runs itself on a task worktree and branch, without herdr.
-    /// Only local workspaces use it.
     Plain,
+    /// Agent CLIs in a tmux session on a POSIX host.
+    Tmux,
 }
 
 impl From<model::Runner> for Runner {
@@ -343,6 +344,7 @@ impl From<model::Runner> for Runner {
             model::Runner::None => Self::None,
             model::Runner::Herdr => Self::Herdr,
             model::Runner::Plain => Self::Plain,
+            model::Runner::Tmux => Self::Tmux,
         }
     }
 }
@@ -353,6 +355,7 @@ impl From<Runner> for model::Runner {
             Runner::None => Self::None,
             Runner::Herdr => Self::Herdr,
             Runner::Plain => Self::Plain,
+            Runner::Tmux => Self::Tmux,
         }
     }
 }
@@ -2096,8 +2099,9 @@ mod tests {
             serde_json::json!(["manual", "local_merge", "pr_merge"])
         );
         assert_eq!(
-            serde_json::to_value([Runner::None, Runner::Herdr, Runner::Plain]).unwrap(),
-            serde_json::json!(["none", "herdr", "plain"])
+            serde_json::to_value([Runner::None, Runner::Herdr, Runner::Plain, Runner::Tmux])
+                .unwrap(),
+            serde_json::json!(["none", "herdr", "plain", "tmux"])
         );
     }
 }

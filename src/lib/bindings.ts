@@ -828,11 +828,10 @@ export type Runner =
 "none" | 
 /**  Agents in a herdr workspace on a task worktree and branch. */
 "herdr" | 
-/**
- *  Agent CLIs that Toodo runs itself on a task worktree and branch, without herdr.
- *  Only local workspaces use it.
- */
-"plain";
+/**  Agent CLIs that Toodo runs itself on a task worktree and branch, without herdr. */
+"plain" | 
+/**  Agent CLIs in a tmux session on a POSIX host. */
+"tmux";
 
 /**  What a workspace location holds. */
 export type Source = 

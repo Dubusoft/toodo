@@ -135,9 +135,9 @@ macro_rules! wire_enum {
 
 wire_enum!(
     /// What runs agents for a task. Herdr is the default; `Plain` runs agent CLIs as
-    /// child processes of the server; `None` records the runs of tasks in workspaces with
-    /// runner none, which are worked on by hand. Only herdr has runtime workspaces.
-    RunnerKind, "runner kind", { Herdr => "herdr", None => "none", Plain => "plain" }
+    /// managed processes on the host; `Tmux` uses a POSIX tmux session; `None` records
+    /// tasks worked on by hand.
+    RunnerKind, "runner kind", { Herdr => "herdr", None => "none", Plain => "plain", Tmux => "tmux" }
 );
 
 wire_enum!(
