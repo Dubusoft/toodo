@@ -286,6 +286,10 @@ When the user starts a `planned` task whose dependencies are all `done`, Toodo:
 6. Stores `branch`, `worktreePath`, and `herdrWorkspaceId` on the task and moves it to
    `in_progress`, which records `startedAt`.
 
+The MCP `start_task` reply carries the started task with its `worktreePath`,
+`herdrWorkspaceId`, and `panes`, so an orchestrator can use them directly without reading
+the task again; see [server.md](server.md#agent-mcp-tools).
+
 A paused task that already has a branch resumes on it instead ("Resume"): Toodo opens its
 kept worktree with `herdr worktree open --cwd <repository> --path <worktreePath>
 --no-focus`, which also finds the herdr workspace that still has it open. If the

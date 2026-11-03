@@ -479,7 +479,7 @@ fn task_workspace(storage: &StorageState, id: model::TaskId) -> CommandResult<Ta
     let herdr_workspace_id = storage
         .open_runtime_workspace(id)?
         .map(|record| record.provider_workspace_ref)
-        .ok_or_else(|| no_herdr_workspace(id, &workspace))?;
+        .ok_or_else(|| no_herdr_workspace(&task, &workspace))?;
     Ok(TaskWorkspace {
         location: workspace.location,
         worktree_path: task.worktree_path,
@@ -487,11 +487,18 @@ fn task_workspace(storage: &StorageState, id: model::TaskId) -> CommandResult<Ta
     })
 }
 
-/// Why the task `id` of `workspace` has no herdr workspace to open, with the next step.
-fn no_herdr_workspace(id: model::TaskId, workspace: &model::Workspace) -> CommandError {
+/// Why `task` of `workspace` has no herdr workspace to open, with the next step.
+fn no_herdr_workspace(task: &model::Task, workspace: &model::Workspace) -> CommandError {
+    let id = task.id;
     if workspace.runner == Runner::None {
         return CommandError::rejected(format!(
             "task {id} belongs to workspace {}, which runs tasks without herdr (runner none), so it has no herdr workspace or panes; work on it in the workspace directory and complete it once its criteria are met",
+            workspace.name
+        ));
+    }
+    if workspace.runner == Runner::Plain && task.status != TaskStatus::Planned {
+        return CommandError::rejected(format!(
+            "task {id} belongs to workspace {}, which runs agents without herdr (runner plain), so it has no herdr workspace or panes; start its agent with start_plain_run and follow the run with get_run_log",
             workspace.name
         ));
     }
@@ -2697,6 +2704,43 @@ mod tests {
         let error = open(&fixture.storage, &herdr, fixture.task.id).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(error.message.contains("get_run_log"), "{}", error.message);
+        assert!(invocations(&herdr_runner).is_empty());
+    }
+
+    #[test]
+    fn a_task_with_runner_plain_names_start_plain_run_once_started() {
+        let fixture = fixture_with_runner(
+            WorkspaceLocation::Local {
+                path: PosixPath::parse("/srv/toodo").unwrap().into(),
+            },
+            None,
+            Runner::Plain,
+        );
+        let (herdr, herdr_runner) = herdr(Vec::new());
+
+        let planned = task_panes(&fixture.storage, &herdr, fixture.task.id).unwrap_err();
+        assert_eq!(planned.kind, CommandErrorKind::Rejected);
+        assert!(
+            planned.message.contains("start it first"),
+            "{}",
+            planned.message
+        );
+
+        lock(&fixture.storage)
+            .set_task_status(fixture.task.id, TaskStatus::InProgress)
+            .unwrap();
+        let started = task_panes(&fixture.storage, &herdr, fixture.task.id).unwrap_err();
+        assert_eq!(started.kind, CommandErrorKind::Rejected);
+        assert!(
+            started.message.contains("start_plain_run"),
+            "{}",
+            started.message
+        );
+        assert!(
+            !started.message.contains("start it first"),
+            "{}",
+            started.message
+        );
         assert!(invocations(&herdr_runner).is_empty());
     }
 
