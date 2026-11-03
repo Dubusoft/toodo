@@ -1,7 +1,7 @@
 # Linux Server
 
-`toodo-server` is Toodo: it runs headless on a Linux machine next to the herdr server
-there, for one user, and is used from a browser. It serves:
+`toodo-server` is Toodo: it runs headless on a Linux machine, next to the herdr server
+there if it has one, for one user, and is used from a browser. It serves:
 
 - the commands of the app as an HTTP API with a server-sent event stream (see [API](#api)),
 - the frontend, an installable web app (PWA) that uses them (see [Web App](#web-app)),
@@ -84,7 +84,7 @@ failing. Packages are staged with `scripts/package-npm.mjs`.
 
 ## Install with npm
 
-On Linux x64 or arm64 with glibc (Node.js 18 or later), as the user who runs herdr:
+On Linux x64 or arm64 with glibc (Node.js 18 or later), as the user who runs herdr (if any):
 
 ```sh
 npx @dubusoft/toodo init
@@ -96,7 +96,9 @@ app URL and the file that holds the web access token (`cat` it to sign in), and 
 URL with its token file. Where `claude` is on `PATH` it registers the MCP endpoint with
 `claude mcp add`; where `codex` is on `PATH` it writes the endpoint to
 `$CODEX_HOME/config.toml` (else `~/.codex/config.toml`). Running it again keeps the database
-and tokens. herdr is not needed to start the server; workspaces need it.
+and tokens. herdr is not needed to start the server; only workspaces with runner `herdr` (and remote
+SSH workspaces) need it. Runner `plain` runs `claude` or `codex` from the server's `PATH`,
+and runner `none` needs neither.
 
 - `--port N`: port to listen on, keeping the saved host (default `47616`).
 - `--listen HOST:PORT`: address to listen on (default `127.0.0.1:47616`).
@@ -166,8 +168,8 @@ or `toodo stop` and `toodo start`.
 
 ## Install and Update
 
-On a server, install and update from releases. As the user who runs herdr (git, gh
-logged in, ssh, curl, and a running herdr installed; no Rust toolchain needed):
+On a server, install and update from releases. As the user who runs herdr, if any (git, gh
+logged in, ssh, and curl installed; herdr only for runner `herdr`; no Rust toolchain needed):
 
 ```sh
 scripts/install-server.sh --release latest
@@ -217,8 +219,8 @@ cd src-tauri
 cargo build --release --bin toodo-server
 ```
 
-The binary is `src-tauri/target/release/toodo-server`. It needs `git`, `ssh`, `gh`, and
-`herdr` on `PATH` at runtime.
+The binary is `src-tauri/target/release/toodo-server`. It needs `git`, `ssh`, and `gh` on
+`PATH` at runtime, plus `herdr` for runner `herdr` and `claude` or `codex` for runner `plain`.
 
 ## Run
 
@@ -453,10 +455,10 @@ To publish the server through Cloudflare, see
 
 ### systemd
 
-Run it as the user who runs herdr, so it finds herdr's socket, `~/.ssh/config`, and the
+Run it as the user who runs herdr, if any, so it finds herdr's socket, `~/.ssh/config`, and the
 `gh` login. `scripts/install-server.sh` writes
 `~/.config/systemd/user/toodo-server.service` like this, with `PATH` taken from where it
-found `herdr`, `gh`, `git`, and `ssh` (and `TOODO_WEB_DIR` added when it installs the web
+found `herdr` (when installed), `gh`, `git`, and `ssh` (and `TOODO_WEB_DIR` added when it installs the web
 app):
 
 ```ini

@@ -24,7 +24,7 @@ const POLL: Duration = Duration::from_millis(100);
 const LOG_TAIL: usize = 20;
 
 /// The executable `name` in a directory of `PATH`.
-pub(super) fn find_on_path(name: &str, var: Var) -> Option<PathBuf> {
+pub(crate) fn find_on_path(name: &str, var: Var) -> Option<PathBuf> {
     let path = var("PATH")?;
     std::env::split_paths(&path)
         .filter(|dir| !dir.as_os_str().is_empty())

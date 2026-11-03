@@ -113,9 +113,10 @@ with the time the task actually took. Set due_date (YYYY-MM-DD) only when the us
 a deadline.
 5. Leave a record of your work on your task as you go; it feeds the user's reviews of \
 their work. Call add_progress_note at every milestone: when you start (your plan and \
-approach), when you take a decision worth remembering (the choice and why, e.g. a library \
+approach, right after current_task and before your first edit), when you take a decision worth remembering (the choice and why, e.g. a library \
 or approach over its alternatives), when you finish a meaningful step or change course, \
-and when you open the pull request (with its URL). Call report_blocker when something stops you that needs the user or someone else (missing \
+and when you open the pull request (with its URL). When a note call is rejected, fix the \
+arguments and call it again; a milestone counts only once its note is recorded. Call report_blocker when something stops you that needs the user or someone else (missing \
 access, an unclear requirement, a failing dependency), saying what you need. Write one \
 or two Markdown sentences per note; skip routine steps such as running tests or small \
 edits. Neither tool changes the task's status. To stop work on a task for another \
@@ -683,7 +684,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Register a repository on the machine Toodo runs on as a new workspace, as Clone or Open in the Toodo app does: clone clone_url into path, or, without clone_url, open the repository already cloned at path; then open it in herdr (runner herdr). source (github, local_git, or none for a plain directory without git or herdr), completion (pr_merge, local_merge, or manual), and runner (herdr or none) default from the repository: github + pr_merge + herdr with an origin remote, else local_git + local_merge + herdr; combinations that cannot work are rejected naming one that does. Returns the workspace with its id. Call list_workspaces first and reuse a workspace that already has the repository; a path another workspace uses is rejected. Only for repositories the user asked to add to Toodo."
+        description = "Register a repository on the machine Toodo runs on as a new workspace, as Clone or Open in the Toodo app does: clone clone_url into path, or, without clone_url, open the repository already cloned at path; then open it in herdr (runner herdr). source (github, local_git, or none for a plain directory without git or herdr), completion (pr_merge, local_merge, or manual), and runner (herdr or none) default from the repository: github + pr_merge + herdr with an origin remote, else local_git + local_merge + herdr (plain instead of herdr when herdr is not running on the server); combinations that cannot work are rejected naming one that does. Returns the workspace with its id. Call list_workspaces first and reuse a workspace that already has the repository; a path another workspace uses is rejected. Only for repositories the user asked to add to Toodo."
     )]
     async fn create_workspace(
         &self,
@@ -865,7 +866,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Record progress or a decision (what and why) on a task's history, e.g. your current task. Call it at every milestone of your task: when you start (your plan), when you take a decision, when you finish a meaningful step, and when you open the pull request (with its URL); use report_blocker for what stops you. Returns the task with its notes."
+        description = "Record progress or a decision (what and why) on a task's history, e.g. your current task. Call it at every milestone of your task: when you start (your plan, before your first edit), when you take a decision, when you finish a meaningful step, and when you open the pull request (with its URL); use report_blocker for what stops you. task_id is a number, e.g. {\"task_id\": 5, \"note\": \"Plan: ...\"}; when the call is rejected, fix the arguments and call it again. Returns the task with its notes."
     )]
     fn add_progress_note(
         &self,
@@ -1456,9 +1457,11 @@ mod tests {
         Ok(format!("{posix}\n"))
     }
 
-    /// `herdr workspace list` without the repository, then `herdr workspace create`.
+    /// `herdr status --json` of a running server, then `herdr workspace list` without the
+    /// repository, then `herdr workspace create`.
     fn herdr_opens_a_new_workspace() -> Scripted {
         vec![
+            Ok(r#"{"server":{"running":true}}"#.to_owned()),
             Ok(r#"{"id":"cli:workspace:list","result":{"workspaces":[]}}"#.to_owned()),
             Ok(
                 r#"{"id":"cli:workspace:create","result":{"workspace":{"workspace_id":"w9"}}}"#

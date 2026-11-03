@@ -3,7 +3,7 @@
 Toodo is a self-hosted app for planning and shipping code changes: `toodo-server` runs on
 a Linux machine and you use it from a browser as an installable web app (PWA). It connects a task plan to
 isolated git worktrees, AI-agent implementation sessions in
-[herdr](https://herdr.dev), commit tracking, and pull requests. It keeps a timeline of
+[herdr](https://herdr.dev) or as `claude`/`codex` child processes, commit tracking, and pull requests. It keeps a timeline of
 when each task was planned, started, and completed, so the year's work can be compiled
 into a performance report.
 
@@ -15,7 +15,8 @@ into a performance report.
 - **Worktree preparation**: before a task is implemented, create a dedicated
   `git worktree` in a separate directory via the herdr API.
 - **Implementation in herdr**: the work itself happens in herdr panes and agents
-  attached to the task's worktree.
+  attached to the task's worktree. Workspaces with runner `plain` run `claude` or
+  `codex` as child processes in the worktree instead, without herdr.
 - **Commit tracking**: record the commits (SHA, message, author, time) made for a task.
 - **Completion and PR**: a task's branch is pushed and a pull request opened for it;
   once that pull request is merged on GitHub, Toodo completes the task automatically.
@@ -40,7 +41,9 @@ into a performance report.
 ## Requirements
 
 - A Linux machine (x86_64 for release builds) for `toodo-server`
-- [herdr](https://herdr.dev), installed and running there (Toodo controls it; it is not bundled)
+- Optional: [herdr](https://herdr.dev), installed and running there, for workspaces with runner
+  `herdr` and all remote SSH workspaces (Toodo controls it; it is not bundled). Runner `plain`
+  needs `claude` or `codex` on the server's `PATH`; runner `none` needs neither
 - Git, OpenSSH, and the GitHub CLI (`gh`) on the server's `PATH`
 - A current browser to use the web app
 - For runner `tmux`: tmux on the host that runs the agent. For runner `plain` on a POSIX

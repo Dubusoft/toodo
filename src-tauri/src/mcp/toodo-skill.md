@@ -55,7 +55,8 @@ Deleting tasks happens in the Toodo app only.
    below): earlier tasks may already have decided an approach, rejected one, or left
    work you build on.
 5. Once you have a plan, call `add_progress_note` on your task with what you are about
-   to do and the approach you chose, before you change code.
+   to do and the approach you chose. Make this call before your first edit: the start
+   note comes before any code change, not after it.
 
 If a Toodo tool call fails with HTTP `401`, read the reply body: it says why (no
 `Authorization` header, not `Bearer <token>`, a token this server does not accept, or
@@ -99,6 +100,10 @@ continue the work that needs no Toodo tool.
     over another),
   - when you finish a meaningful step or change course,
   - when you open the pull request (section 4, step 3), with its URL.
+
+  `task_id` is a number, e.g. `{"task_id": 5, "note": "Plan: ..."}`. When a note call is
+  rejected, fix the arguments and call it again: a milestone counts only once its note is
+  recorded, so never move on with a note that failed.
 
   Call `report_blocker` instead when something stops you that needs the user or someone
   else, saying what you need. Skip routine steps such as running tests or small edits.

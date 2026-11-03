@@ -509,7 +509,19 @@ environment and no MCP flags are passed.
 
 Stdout is read as NDJSON lines, including a last line without a newline. Lines that
 aren't JSON or aren't known events are logged and ignored, and a line over 1 MiB is
-logged truncated and not parsed. When the process ends, its outcome settles the run:
+logged truncated and not parsed.
+
+While the run is active, each change of the agent's todo list is appended as a `todo`
+run event: a Claude `assistant` message with a `TodoWrite` tool use (`input.todos`), or a
+Codex `item.started`, `item.updated`, or `item.completed` event of a `todo_list` item.
+The payload is compact JSON `{"items":[{"text":"...","status":"pending"}]}` in the
+agent's order, with status `pending`, `in_progress`, or `completed` (an unknown Claude
+status becomes `pending`; a Codex item is `completed` or `pending`), at most 50 items of
+at most 500 bytes of text each, and redacted like every payload. A list identical to the
+last recorded one records nothing, and a failure to record it is logged without stopping
+the run.
+
+When the process ends, its outcome settles the run:
 
 | Outcome | Run state | Events |
 | --- | --- | --- |
@@ -656,7 +668,14 @@ path deletes journal history.
 - **Workspace adapter**: runs `git` for local workspaces and `ssh <machine> git ...`
   for remote ones. Uses the server user's `~/.ssh/config` and ssh-agent, the same
   configuration herdr uses.
-- **herdr adapter**: wraps herdr, which is a required, preinstalled dependency.
+- **herdr adapter**: wraps herdr, an optional preinstalled dependency needed only for
+  workspaces with runner `herdr` (remote SSH workspaces need it too).
+  - Runner health: the `runner_health` command reports whether `herdr` is on `PATH`, whether
+    it is running, and its version, and whether `claude` and `codex` are each on the server's
+    `PATH`. The web app shows it in a Runners section of Settings; the new-workspace runner
+    step prefers `plain` when herdr is missing, and the runs panel disables an agent whose
+    CLI is missing and refreshes the open run while it is active. The server itself defaults
+    an omitted runner of a local git workspace to `plain` when herdr is not running.
   - Startup health check: `herdr` on `PATH` and `herdr status --json` reports
     `server.running`. herdr 0.9.3 has no `ping` command.
   - Commands for SSH workspaces run against the remote herdr server with
@@ -824,7 +843,8 @@ path deletes journal history.
 ## Decisions
 
 - Target: `toodo-server` on Linux, used through the web app (PWA) in a browser.
-- herdr is a prerequisite; Toodo only checks that it is running and never installs it.
+- herdr is optional, needed only for runner `herdr`; Toodo checks that it is running and never
+  installs it.
 - Backend in Rust (tokio); frontend in React + TypeScript with React Flow for the DAG.
 - External tools are invoked as processes (`herdr`, `git`, `ssh`, `gh`) rather than
   reimplemented through libraries.

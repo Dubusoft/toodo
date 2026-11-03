@@ -61,9 +61,14 @@ export function defaultCompletion(source: Source): CompletionMode {
   return source === "none" ? "manual" : source === "local_git" ? "local_merge" : "pr_merge";
 }
 
-/** The runner of a new workspace with `source` until another one is picked. */
-export function defaultRunner(source: Source): Runner {
-  return source === "none" ? "none" : "herdr";
+/**
+ * The runner of a new workspace with `source` until another one is picked: herdr for a git
+ * source, or plain when `withoutHerdr`, that is when the workspace is on this server and herdr
+ * does not run there. The server's `default_runner` knows only the source.
+ */
+export function defaultRunner(source: Source, withoutHerdr = false): Runner {
+  if (source === "none") return "none";
+  return withoutHerdr ? "plain" : "herdr";
 }
 
 /** How the repository of a new workspace with `source` gets to its location until another way is picked. */
@@ -131,8 +136,11 @@ export function checkAxes({ source, completion, runner }: Axes): string | null {
   return completionProblem(source, completion) ?? runnerProblem(source, completion, runner);
 }
 
-/** What `picks` make: each pick that is unset or that an earlier one rules out is the default. */
-export function choiceOf(picks: Picks): WorkspaceChoice {
+/**
+ * What `picks` make: each pick that is unset or that an earlier one rules out is the default,
+ * with plain as the default runner when `withoutHerdr` (see `defaultRunner`).
+ */
+export function choiceOf(picks: Picks, withoutHerdr = false): WorkspaceChoice {
   const { source } = picks;
   const repository =
     picks.repository !== null && repositoryProblem(source, picks.repository) === null
@@ -143,7 +151,9 @@ export function choiceOf(picks: Picks): WorkspaceChoice {
       ? picks.completion
       : defaultCompletion(source);
   const runner =
-    picks.runner !== null && runnerProblem(source, completion, picks.runner) === null ? picks.runner : defaultRunner(source);
+    picks.runner !== null && runnerProblem(source, completion, picks.runner) === null
+      ? picks.runner
+      : defaultRunner(source, withoutHerdr);
   return { source, repository, completion, runner };
 }
 
@@ -152,9 +162,9 @@ export function choiceOf(picks: Picks): WorkspaceChoice {
  * resets to its default and stays there until it is picked again; a later pick that was
  * never made follows the defaults of the new earlier picks.
  */
-export function withPick(picks: Picks, change: Partial<Picks>): Picks {
+export function withPick(picks: Picks, change: Partial<Picks>, withoutHerdr = false): Picks {
   const next = { ...picks, ...change };
-  const choice = choiceOf(next);
+  const choice = choiceOf(next, withoutHerdr);
   return {
     source: next.source,
     repository: next.repository === choice.repository ? next.repository : null,

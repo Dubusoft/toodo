@@ -11,6 +11,7 @@ import {
   type CommitRecord,
   type Criterion,
   type HerdrMachine,
+  type RunnerHealth,
   type Task,
   type TaskAgentStatus,
   type Workspace,
@@ -45,6 +46,7 @@ vi.mock("@/lib/bindings", () => ({
     addTaskRelation: vi.fn(),
     removeTaskRelation: vi.fn(),
     herdrStatus: vi.fn(),
+    runnerHealth: vi.fn(),
     getMachineSettings: vi.fn(),
     saveMachineSettings: vi.fn(),
     startTask: vi.fn(),
@@ -88,6 +90,15 @@ vi.mock("@/lib/bindings", () => ({
 
 const mocked = vi.mocked(commands);
 const mockedEvents = vi.mocked(events, { deep: true });
+
+/** herdr runs on the server and both agent CLIs are on its PATH. */
+const readyRunners: RunnerHealth = {
+  herdr: { installed: true, running: true, version: "0.9.3", message: null },
+  agents: [
+    { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
+    { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
+  ],
+};
 const weekPeriod = (day: string) => periodBounds(weekStarting(day));
 
 const toodo: Workspace = {
@@ -255,6 +266,7 @@ describe("App", () => {
     }));
     mocked.appInfo.mockResolvedValue({ name: "toodo", version: "1.2.3" });
     mocked.herdrStatus.mockResolvedValue({ status: "ok", data: { running: true, version: "0.9.3" } });
+    mocked.runnerHealth.mockResolvedValue({ status: "ok", data: readyRunners });
     mocked.getMachineSettings.mockImplementation(async (machine) => ({
       status: "ok",
       data: { machine, worktreeRoot: null },
@@ -1537,6 +1549,27 @@ describe("App", () => {
     const panel = await screen.findByRole("region", { name: "Agent access" });
     expect(await within(panel).findByRole("alert")).toHaveTextContent("address in use");
     expect(within(panel).queryByRole("button", { name: "Copy MCP config" })).not.toBeInTheDocument();
+  });
+
+  it("shows in Settings which runners the server has and what to do about one that is not ready", async () => {
+    const stopped =
+      "The herdr server is not running; start herdr on the server for herdr workspaces, or set the workspace " +
+      "runner to plain to run claude or codex without herdr.";
+    mocked.runnerHealth.mockResolvedValue({
+      status: "ok",
+      data: { ...readyRunners, herdr: { installed: true, running: false, version: "0.9.3", message: stopped } },
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    renderApp();
+    const dialog = await openSettings("Runners");
+
+    const panel = within(dialog).getByRole("region", { name: "Runners" });
+    const herdr = await within(panel).findByRole("listitem", { name: "herdr" });
+    expect(herdr).toHaveTextContent("Not running");
+    expect(herdr).toHaveTextContent(stopped);
+    expect(within(panel).getByRole("listitem", { name: "Claude" })).toHaveTextContent("/usr/local/bin/claude");
+    expect(within(panel).getByRole("listitem", { name: "Codex" })).toHaveTextContent("Installed");
+    expect(panel).toHaveTextContent("Runner plain works without herdr.");
   });
 
   it("groups the settings in a dialog that Escape and a click beside it close", async () => {

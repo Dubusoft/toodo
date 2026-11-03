@@ -146,6 +146,21 @@ fn read_output(
     Ok(String::from_utf8_lossy(&tail).into_owned())
 }
 
+/// Appends a `todo` event while the run is active. A storage error is logged, never
+/// fatal: the reader must keep draining stdout.
+fn record_todo(storage: &Arc<Mutex<Storage>>, run: RunId, payload: &str) {
+    let mut storage = lock(storage);
+    let result = storage.get_run(run).and_then(|found| match found {
+        Some(found) if found.state.is_active() => storage
+            .append_run_event(run, "todo", Some(payload))
+            .map(drop),
+        _ => Ok(()),
+    });
+    if let Err(error) = result {
+        eprintln!("toodo: failed to record the todo list of run {run}: {error}");
+    }
+}
+
 pub(super) fn manage(mut managed: ManagedRun) {
     let pid = managed.child.id();
     let stdout = managed.child.stdout.take().unwrap();
@@ -153,11 +168,15 @@ pub(super) fn manage(mut managed: ManagedRun) {
     let sender = managed.sender.clone();
     let secret = managed.secret.clone();
     let adapter = managed.adapter;
+    let storage = managed.storage.clone();
+    let run = managed.run;
     thread::spawn(move || {
         let mut tracker = EventTracker::new(adapter);
         let result = read_output(stdout, managed.stdout, &secret, true, |line| {
-            if !line.truncated {
-                tracker.feed(&line.text);
+            if !line.truncated
+                && let Some(payload) = tracker.feed(&line.text)
+            {
+                record_todo(&storage, run, &adapter::redact(&payload, &secret));
             }
         })
         .map(|_| tracker);

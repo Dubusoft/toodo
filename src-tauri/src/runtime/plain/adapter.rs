@@ -17,6 +17,10 @@ pub const MAX_LINE_BYTES: usize = 1024 * 1024;
 pub const MAX_SUMMARY_BYTES: usize = 4 * 1024;
 /// The longest stderr tail, in bytes, kept in the `stderr` event.
 pub const MAX_STDERR_TAIL_BYTES: usize = 4 * 1024;
+/// The most todo items kept in a `todo` event; later items are dropped.
+pub const MAX_TODO_ITEMS: usize = 50;
+/// The longest todo item text, in bytes, kept in a `todo` event.
+pub const MAX_TODO_TEXT_BYTES: usize = 500;
 
 /// Name of the Claude MCP configuration file inside the run directory.
 pub const MCP_CONFIG_FILE: &str = "mcp.json";
@@ -197,6 +201,55 @@ impl LineSplitter {
     }
 }
 
+/// The status of one step in an agent's todo list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl TodoStatus {
+    pub fn as_wire(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+        }
+    }
+
+    /// Parses a Claude todo status; an unknown status is `pending`.
+    fn parse_lossy(value: &str) -> Self {
+        match value {
+            "in_progress" => Self::InProgress,
+            "completed" => Self::Completed,
+            _ => Self::Pending,
+        }
+    }
+}
+
+/// One step in an agent's todo list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TodoItem {
+    pub text: String,
+    pub status: TodoStatus,
+}
+
+/// The payload of a `todo` run event: `{"items":[{"text":..,"status":..},..]}`.
+pub fn todo_payload(items: &[TodoItem]) -> String {
+    let items: Vec<String> = items
+        .iter()
+        .map(|item| {
+            format!(
+                r#"{{"text":{},"status":"{}"}}"#,
+                Value::String(item.text.clone()),
+                item.status.as_wire()
+            )
+        })
+        .collect();
+    format!(r#"{{"items":[{}]}}"#, items.join(","))
+}
+
 /// Follows the JSON event lines of one agent process.
 #[derive(Debug)]
 pub struct EventTracker {
@@ -205,6 +258,8 @@ pub struct EventTracker {
     success: Option<String>,
     error: Option<String>,
     last_message: Option<String>,
+    /// The last todo list reported by [`EventTracker::feed`].
+    todos: Option<Vec<TodoItem>>,
 }
 
 impl EventTracker {
@@ -215,6 +270,7 @@ impl EventTracker {
             success: None,
             error: None,
             last_message: None,
+            todos: None,
         }
     }
 
@@ -234,20 +290,47 @@ impl EventTracker {
     }
 
     /// Feeds one complete line. Lines that are not JSON objects, and events of an
-    /// unknown type, are ignored.
-    pub fn feed(&mut self, line: &str) {
+    /// unknown type, are ignored. Returns the `todo` event payload (see
+    /// [`todo_payload`]) when the line changed the agent's todo list.
+    pub fn feed(&mut self, line: &str) -> Option<String> {
         let Ok(Value::Object(event)) = serde_json::from_str::<Value>(line) else {
-            return;
+            return None;
         };
         let value = Value::Object(event);
-        match self.adapter {
+        let todos = match self.adapter {
             AgentAdapter::Claude => self.feed_claude(&value),
             AgentAdapter::Codex => self.feed_codex(&value),
+        }?;
+        if self.todos.as_ref() == Some(&todos) {
+            return None;
         }
+        let payload = todo_payload(&todos);
+        self.todos = Some(todos);
+        Some(payload)
     }
 
-    fn feed_claude(&mut self, event: &Value) {
+    /// Returns the todo list of the last `TodoWrite` call in an assistant message.
+    fn feed_claude(&mut self, event: &Value) -> Option<Vec<TodoItem>> {
         match str_field(event, "type") {
+            Some("assistant") => {
+                let content = event.get("message")?.get("content")?.as_array()?;
+                return content
+                    .iter()
+                    .filter(|block| {
+                        str_field(block, "type") == Some("tool_use")
+                            && str_field(block, "name") == Some("TodoWrite")
+                    })
+                    .filter_map(|block| block.get("input")?.get("todos")?.as_array())
+                    .next_back()
+                    .map(|todos| {
+                        todo_items(todos, |todo| TodoItem {
+                            text: str_field(todo, "content").unwrap_or("").to_owned(),
+                            status: TodoStatus::parse_lossy(
+                                str_field(todo, "status").unwrap_or(""),
+                            ),
+                        })
+                    });
+            }
             Some("system") => {
                 if self.session_id.is_none() {
                     self.session_id = str_field(event, "session_id").map(str::to_owned);
@@ -273,10 +356,29 @@ impl EventTracker {
             }
             _ => {}
         }
+        None
     }
 
-    fn feed_codex(&mut self, event: &Value) {
-        match str_field(event, "type") {
+    /// Returns the todo list of a `todo_list` item.
+    fn feed_codex(&mut self, event: &Value) -> Option<Vec<TodoItem>> {
+        let kind = str_field(event, "type");
+        if matches!(
+            kind,
+            Some("item.started" | "item.updated" | "item.completed")
+        ) && let Some(item) = event.get("item")
+            && str_field(item, "type") == Some("todo_list")
+        {
+            let items = item.get("items")?.as_array()?;
+            return Some(todo_items(items, |todo| TodoItem {
+                text: str_field(todo, "text").unwrap_or("").to_owned(),
+                status: if todo.get("completed").and_then(Value::as_bool) == Some(true) {
+                    TodoStatus::Completed
+                } else {
+                    TodoStatus::Pending
+                },
+            }));
+        }
+        match kind {
             Some("thread.started") => {
                 if let Some(id) = str_field(event, "thread_id") {
                     self.session_id = Some(id.to_owned());
@@ -305,6 +407,7 @@ impl EventTracker {
             }
             _ => {}
         }
+        None
     }
 
     fn set_error(&mut self, message: &str) {
@@ -312,6 +415,21 @@ impl EventTracker {
             self.error = Some(truncate(message, MAX_SUMMARY_BYTES));
         }
     }
+}
+
+/// Maps the object entries of an agent's todo list, keeping at most
+/// [`MAX_TODO_ITEMS`] and cutting each text to [`MAX_TODO_TEXT_BYTES`].
+fn todo_items(todos: &[Value], item: impl Fn(&Value) -> TodoItem) -> Vec<TodoItem> {
+    todos
+        .iter()
+        .filter(|todo| todo.is_object())
+        .take(MAX_TODO_ITEMS)
+        .map(|todo| {
+            let mut item = item(todo);
+            item.text = truncate(&item.text, MAX_TODO_TEXT_BYTES);
+            item
+        })
+        .collect()
 }
 
 fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -687,6 +805,129 @@ mod tests {
             ],
         );
         assert_eq!(error.error_message(), Some("first"));
+    }
+
+    fn claude_todos(todos: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"plan"}},{{"type":"tool_use","name":"TodoWrite","input":{{"todos":{todos}}}}}]}}}}"#
+        )
+    }
+
+    fn codex_todos(kind: &str, items: &str) -> String {
+        format!(
+            r#"{{"type":"{kind}","item":{{"id":"item_1","type":"todo_list","items":{items}}}}}"#
+        )
+    }
+
+    #[test]
+    fn claude_todo_write_reports_the_list() {
+        let mut t = EventTracker::new(AgentAdapter::Claude);
+        let line = claude_todos(
+            r#"[{"content":"Read code","status":"completed","activeForm":"Reading"},{"content":"Write \"tests\"","status":"in_progress","activeForm":"Writing"},{"content":"Ship","status":"pending","activeForm":"Shipping"}]"#,
+        );
+        assert_eq!(
+            t.feed(&line).as_deref(),
+            Some(
+                r#"{"items":[{"text":"Read code","status":"completed"},{"text":"Write \"tests\"","status":"in_progress"},{"text":"Ship","status":"pending"}]}"#
+            )
+        );
+        assert_eq!(
+            t.feed(&claude_todos("[]")).as_deref(),
+            Some(r#"{"items":[]}"#)
+        );
+    }
+
+    #[test]
+    fn codex_todo_list_items_report_the_list() {
+        let mut t = EventTracker::new(AgentAdapter::Codex);
+        let started = codex_todos(
+            "item.started",
+            r#"[{"text":"Plan","completed":false},{"text":"Build","completed":false}]"#,
+        );
+        assert_eq!(
+            t.feed(&started).as_deref(),
+            Some(
+                r#"{"items":[{"text":"Plan","status":"pending"},{"text":"Build","status":"pending"}]}"#
+            )
+        );
+        let updated = codex_todos(
+            "item.updated",
+            r#"[{"text":"Plan","completed":true},{"text":"Build","completed":false}]"#,
+        );
+        assert_eq!(
+            t.feed(&updated).as_deref(),
+            Some(
+                r#"{"items":[{"text":"Plan","status":"completed"},{"text":"Build","status":"pending"}]}"#
+            )
+        );
+        let completed = codex_todos(
+            "item.completed",
+            r#"[{"text":"Plan","completed":true},{"text":"Build","completed":true}]"#,
+        );
+        assert_eq!(
+            t.feed(&completed).as_deref(),
+            Some(
+                r#"{"items":[{"text":"Plan","status":"completed"},{"text":"Build","status":"completed"}]}"#
+            )
+        );
+    }
+
+    #[test]
+    fn unchanged_todo_list_reports_nothing() {
+        let mut claude = EventTracker::new(AgentAdapter::Claude);
+        let line = claude_todos(r#"[{"content":"A","status":"pending"}]"#);
+        assert!(claude.feed(&line).is_some());
+        assert!(claude.feed(&line).is_none());
+        // Only the normalized list counts: a changed activeForm is no change.
+        let reworded = claude_todos(r#"[{"content":"A","status":"pending","activeForm":"x"}]"#);
+        assert!(claude.feed(&reworded).is_none());
+
+        let mut codex = EventTracker::new(AgentAdapter::Codex);
+        let items = r#"[{"text":"A","completed":false}]"#;
+        assert!(codex.feed(&codex_todos("item.started", items)).is_some());
+        assert!(codex.feed(&codex_todos("item.updated", items)).is_none());
+        assert!(codex.feed(&codex_todos("item.completed", items)).is_none());
+    }
+
+    #[test]
+    fn unknown_claude_todo_status_is_pending() {
+        let mut t = EventTracker::new(AgentAdapter::Claude);
+        let line = claude_todos(r#"[{"content":"A","status":"blocked"},{"content":"B"}]"#);
+        assert_eq!(
+            t.feed(&line).as_deref(),
+            Some(r#"{"items":[{"text":"A","status":"pending"},{"text":"B","status":"pending"}]}"#)
+        );
+    }
+
+    #[test]
+    fn todo_items_and_texts_are_capped() {
+        let long = "\u{e9}".repeat(MAX_TODO_TEXT_BYTES);
+        let todos: Vec<String> = (0..MAX_TODO_ITEMS + 5)
+            .map(|i| format!(r#"{{"content":"{long}{i}","status":"pending"}}"#))
+            .collect();
+        let line = claude_todos(&format!("[{}]", todos.join(",")));
+        let mut t = EventTracker::new(AgentAdapter::Claude);
+        let payload: Value = serde_json::from_str(&t.feed(&line).unwrap()).unwrap();
+        let items = payload["items"].as_array().unwrap();
+        assert_eq!(items.len(), MAX_TODO_ITEMS);
+        for item in items {
+            assert_eq!(item["text"].as_str().unwrap().len(), MAX_TODO_TEXT_BYTES);
+        }
+    }
+
+    #[test]
+    fn other_tool_uses_and_items_are_not_todos() {
+        let mut claude = EventTracker::new(AgentAdapter::Claude);
+        let bash = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"todos":[]}}]}}"#;
+        assert!(claude.feed(bash).is_none());
+        let text = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#;
+        assert!(claude.feed(text).is_none());
+
+        let mut codex = EventTracker::new(AgentAdapter::Codex);
+        let message = r#"{"type":"item.completed","item":{"type":"agent_message","text":"done"}}"#;
+        assert!(codex.feed(message).is_none());
+        assert!(codex.feed(r#"{"type":"turn.completed"}"#).is_none());
+        assert_eq!(codex.success_summary(), Some("done"));
     }
 
     fn ok(adapter: AgentAdapter) -> EventTracker {

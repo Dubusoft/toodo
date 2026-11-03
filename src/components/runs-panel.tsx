@@ -1,13 +1,26 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { Check, ChevronRight, Copy, Play, RefreshCw, SearchCheck, Square } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  Circle,
+  CircleCheck,
+  CircleDot,
+  Copy,
+  Play,
+  RefreshCw,
+  SearchCheck,
+  Square,
+  TriangleAlert,
+  type LucideIcon,
+} from "lucide-react";
 import { PathLabel } from "@/components/path-label";
 import { Button } from "@/components/ui/button";
 import { When } from "@/components/when";
 import { escapeCloses } from "@/components/workspace-list";
-import type { AgentAdapter, RunEvent, RunId, RunState, Task, TaskRun } from "@/lib/bindings";
+import type { AgentAdapter, RunEvent, RunId, RunnerHealth, RunState, Task, TaskRun } from "@/lib/bindings";
 import { normalizePath, shortPath } from "@/lib/paths";
-import { useReconcileRun, useRunLog, useStartPlainRun, useStopRun, useTaskRuns } from "@/lib/queries";
-import { toneChip, tonePanel, type Tone } from "@/lib/status-styles";
+import { useReconcileRun, useRunLog, useRunnerHealth, useStartPlainRun, useStopRun, useTaskRuns } from "@/lib/queries";
+import { toneChip, tonePanel, toneText, type Tone } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
 /** How each run state is named and coloured, in the tones of the status glossary. */
@@ -28,6 +41,20 @@ const adapters: readonly AgentAdapter[] = ["claude", "codex"];
 
 const adapterLabels: Record<AgentAdapter, string> = { claude: "Claude", codex: "Codex" };
 
+/** What the server says about each agent CLI it did not find on its `PATH`; empty while that is not known. */
+function missingAgents(health: RunnerHealth | undefined): Map<AgentAdapter, string> {
+  const missing = new Map<AgentAdapter, string>();
+  for (const agent of health?.agents ?? []) {
+    if (!agent.installed) {
+      missing.set(
+        agent.adapter,
+        agent.message ?? `${agent.adapter} was not found on the server's PATH; install it there, then press Refresh.`,
+      );
+    }
+  }
+  return missing;
+}
+
 /** The agent CLI a run drove, by name. */
 function adapterName(adapter: string | null): string {
   return adapter === "claude" || adapter === "codex" ? adapterLabels[adapter] : (adapter ?? "Agent");
@@ -37,6 +64,7 @@ function adapterName(adapter: string | null): string {
 const eventLabels = new Map<string, string>([
   ["reserved", "Reserved"],
   ["launched", "Launched"],
+  ["todo", "Todo list"],
   ["launch_failed", "Launch failed"],
   ["result", "Result"],
   ["result_error", "Agent error"],
@@ -64,13 +92,78 @@ function eventLabel(kind: string): string {
   return eventLabels.get(kind) ?? kind;
 }
 
+/** The state of a step of an agent's todo list, as todo events record it. */
+type TodoStatus = "pending" | "in_progress" | "completed";
+
+/** A step of an agent's todo list, in the agent's words. */
+type TodoItem = { text: string; status: TodoStatus };
+
+/** How each step of a todo list is named and marked: the step in progress stands out, done ones recede. */
+const todoStatuses: Record<TodoStatus, { label: string; icon: LucideIcon; marker: string; text: string }> = {
+  pending: { label: "Pending", icon: Circle, marker: toneText.neutral, text: "" },
+  in_progress: { label: "In progress", icon: CircleDot, marker: toneText.info, text: "font-medium" },
+  completed: {
+    label: "Done",
+    icon: CircleCheck,
+    marker: toneText.success,
+    text: "text-muted-foreground line-through decoration-muted-foreground/60",
+  },
+};
+
+function isTodoItem(item: unknown): item is TodoItem {
+  if (typeof item !== "object" || item === null) return false;
+  const { text, status } = item as Record<string, unknown>;
+  return typeof text === "string" && typeof status === "string" && Object.hasOwn(todoStatuses, status);
+}
+
 /**
- * The last event of `run`, passing over the one that only marks the state it ended in, which
- * its state chip already shows: e.g. the error of a failed run.
+ * The steps of the todo list a todo event recorded, from its payload
+ * `{"items":[{"text":...,"status":...}]}`; null for a payload of any other shape, which is shown
+ * as it is.
+ */
+function todoItems(payload: string | null): TodoItem[] | null {
+  if (payload === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    // Not JSON: shown as it is, like the payloads of other events.
+    return null;
+  }
+  const items = typeof parsed === "object" && parsed !== null && "items" in parsed ? parsed.items : null;
+  return Array.isArray(items) && items.every(isTodoItem) ? items : null;
+}
+
+function stepsDone(items: TodoItem[]): number {
+  return items.filter((item) => item.status === "completed").length;
+}
+
+/**
+ * A todo list in a line: how many of its steps are done, and the step the agent is on, or
+ * the one it takes next when none is in progress: e.g. `2/5 done; Now: Write the tests`.
+ */
+function todoSummary(items: TodoItem[]): string {
+  if (items.length === 0) return "Empty";
+  const now = items.find((item) => item.status === "in_progress");
+  const next = items.find((item) => item.status === "pending");
+  const step = now ? `Now: ${now.text}` : next ? `Next: ${next.text}` : "All done";
+  return `${stepsDone(items)}/${items.length} done; ${step}`;
+}
+
+/** A todo list as text, a line for each step with its state: the tooltip of its event. */
+function todoLines(items: TodoItem[]): string {
+  return items.map((item) => `${todoStatuses[item.status].label}: ${item.text}`).join("\n");
+}
+
+/**
+ * The last event of `run` that tells how it ended. Todo lists only show how far the agent got,
+ * and the event that only marks the state it ended in is passed over too, since its state chip
+ * already shows it: what remains is e.g. the error of a failed run.
  */
 function lastEvent(run: TaskRun, events: RunEvent[]): RunEvent | undefined {
-  const last = events.at(-1);
-  return last?.kind === run.state && events.length > 1 ? events.at(-2) : last;
+  const told = events.filter((event) => event.kind !== "todo");
+  const last = told.at(-1);
+  return last?.kind === run.state && told.length > 1 ? told.at(-2) : last;
 }
 
 /** How a run that went wrong ended stands out; a success or a stop does not. */
@@ -107,10 +200,12 @@ function RunStateBadge({ state }: { state: RunState }) {
  * a terminal to an active tmux run. A task in progress starts a run while no run holds its
  * worktree; a run that holds it can be stopped, and one whose end was not seen can be
  * reconciled. Runs send no events: Refresh reloads them, as do coming back to the window and
- * changes to the tasks.
+ * changes to the tasks, and they reload every few seconds while one is starting or running.
+ * An agent whose CLI the server did not find cannot be picked.
  */
 export function RunsPanel({ task }: { task: Task }) {
   const runs = useTaskRuns(task.id);
+  const health = useRunnerHealth();
   const startRun = useStartPlainRun();
   const stopRun = useStopRun();
   const reconcileRun = useReconcileRun();
@@ -120,13 +215,18 @@ export function RunsPanel({ task }: { task: Task }) {
   // The run whose log is open: the newest until one is picked, none once it is closed.
   const [picked, setPicked] = useState<RunId | null | undefined>(undefined);
   const [stopping, setStopping] = useState<RunId | null>(null);
+  // Only a refresh asked for shows as one: while a run is live, the runs also reload on their own.
+  const [refreshing, setRefreshing] = useState(false);
   const newestFirst = [...(runs.data ?? [])].reverse();
   const openId = picked === undefined ? (newestFirst[0]?.id ?? null) : picked;
   const log = useRunLog(openId);
   const inProgress = task.status === "in_progress";
   const holding = newestFirst.find((run) => activeStates.includes(run.state));
-  const fetching = runs.isFetching || log.isFetching;
   const failure = startRun.error ?? stopRun.error ?? reconcileRun.error;
+  const missing = missingAgents(health.data);
+  // A picked agent whose CLI the server lacks gives way to one it has; without both, none is picked.
+  const installed = adapters.filter((value) => !missing.has(value));
+  const chosen = installed.includes(adapter) ? adapter : (installed[0] ?? null);
 
   // Runs start only while the task is in progress; later the panel keeps showing the ones it had.
   if (!inProgress && runs.isSuccess && newestFirst.length === 0) {
@@ -135,13 +235,16 @@ export function RunsPanel({ task }: { task: Task }) {
 
   function start(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (chosen === null) return;
     // The new run, or the launch that failed, is the newest one now: open it.
-    startRun.mutate({ taskId: task.id, adapter, mcp }, { onSettled: () => setPicked(undefined) });
+    startRun.mutate({ taskId: task.id, adapter: chosen, mcp }, { onSettled: () => setPicked(undefined) });
   }
 
   function refresh() {
-    void runs.refetch();
-    if (openId !== null) void log.refetch();
+    setRefreshing(true);
+    void Promise.all([runs.refetch(), openId !== null && log.refetch(), health.refetch()]).finally(() =>
+      setRefreshing(false),
+    );
   }
 
   return (
@@ -155,11 +258,11 @@ export function RunsPanel({ task }: { task: Task }) {
           variant="ghost"
           className="ml-auto"
           aria-label={`Refresh runs of #${task.id}`}
-          title="Reload the runs and the log of the open run"
-          disabled={fetching}
+          title="Reload the runs, the log of the open run, and the agent CLIs found on the server"
+          disabled={refreshing}
           onClick={refresh}
         >
-          <RefreshCw className={cn(fetching && "animate-spin")} />
+          <RefreshCw className={cn(refreshing && "animate-spin")} />
           Refresh
         </Button>
       </div>
@@ -180,8 +283,10 @@ export function RunsPanel({ task }: { task: Task }) {
                   key={value}
                   type="button"
                   size="xs"
-                  variant={adapter === value ? "default" : "ghost"}
-                  aria-pressed={adapter === value}
+                  variant={chosen === value ? "default" : "ghost"}
+                  aria-pressed={chosen === value}
+                  disabled={missing.has(value)}
+                  title={missing.get(value)}
                   onClick={() => setAdapter(value)}
                 >
                   {adapterLabels[value]}
@@ -200,7 +305,7 @@ export function RunsPanel({ task }: { task: Task }) {
               size="xs"
               className="ml-auto"
               aria-label={`Start run of #${task.id}`}
-              disabled={startRun.isPending || holding !== undefined}
+              disabled={startRun.isPending || holding !== undefined || chosen === null}
             >
               <Play />
               {startRun.isPending ? "Starting..." : "Start run"}
@@ -213,6 +318,31 @@ export function RunsPanel({ task }: { task: Task }) {
                 : `Run ${holding.generation} is still running; stop it, or wait until it ends, to start another run.`}
             </p>
           )}
+          {!holding && chosen === null && (
+            <p
+              role="note"
+              aria-label={`Why no run of #${task.id} starts`}
+              className={cn("flex items-start gap-1.5", toneText.attention)}
+            >
+              <TriangleAlert aria-hidden className="mt-0.5 size-3 shrink-0" />
+              <span>
+                Neither claude nor codex was found on the server's PATH; install one of them there, then press Refresh
+                to start a run.
+              </span>
+            </p>
+          )}
+          {chosen !== null &&
+            [...missing].map(([value, message]) => (
+              <p
+                key={value}
+                role="note"
+                aria-label={`Why ${adapterLabels[value]} is unavailable`}
+                className={cn("flex items-start gap-1.5", toneText.attention)}
+              >
+                <TriangleAlert aria-hidden className="mt-0.5 size-3 shrink-0" />
+                <span>{message}</span>
+              </p>
+            ))}
         </form>
       )}
       {failure && (
@@ -324,8 +454,8 @@ export function RunsPanel({ task }: { task: Task }) {
 }
 
 /**
- * The open run: when and where it ran, how it ended, its events, and the ends of its stdout
- * and stderr. The state comes from the run list; the log is loaded again when that state
+ * The open run: when and where it ran, how it ended, the agent's todo list, its events, and
+ * the ends of its stdout and stderr. The state comes from the run list; the log is loaded again when that state
  * changes, so the two agree.
  */
 function RunDetails({ id, run, log }: { id: string; run: TaskRun; log: ReturnType<typeof useRunLog> }) {
@@ -336,6 +466,8 @@ function RunDetails({ id, run, log }: { id: string; run: TaskRun; log: ReturnTyp
   }, [listed]);
   const ended = listed !== "reserved" && listed !== "running";
   const last = log.data && ended ? lastEvent(run, log.data.events) : undefined;
+  // Each todo event holds the whole list, so the last one is where the agent is.
+  const lastTodo = log.data?.events.filter((event) => event.kind === "todo").at(-1);
 
   return (
     <div id={id} className="flex min-w-0 flex-col gap-2 border-t px-2.5 py-2">
@@ -371,27 +503,36 @@ function RunDetails({ id, run, log }: { id: string; run: TaskRun; log: ReturnTyp
       {log.data && (
         <>
           {log.data.attach !== null && <AttachCommand run={run} command={log.data.attach} />}
+          {lastTodo && <TodoList run={run} event={lastTodo} />}
           <section aria-label="Events" className="flex min-w-0 flex-col gap-0.5">
             <h5 className="font-medium text-muted-foreground">Events</h5>
             <ol
               aria-label={`Events of run ${run.generation}`}
               className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 max-md:gap-y-1.5"
             >
-              {log.data.events.map((event) => (
-                <li key={event.sequence} className="col-span-full grid grid-cols-subgrid items-baseline">
-                  <When at={event.observedAt} className="text-muted-foreground" />
-                  <span className="flex min-w-0 items-baseline gap-2">
-                    <span className="shrink-0 font-medium" title={event.kind}>
-                      {eventLabel(event.kind)}
-                    </span>
-                    {event.payload && (
-                      <span className="min-w-0 truncate text-muted-foreground" title={event.payload}>
-                        {event.payload}
+              {log.data.events.map((event) => {
+                // A todo list reads as a summary, with the whole list in its tooltip.
+                const todo = event.kind === "todo" ? todoItems(event.payload) : null;
+                const detail = todo ? todoSummary(todo) : event.payload;
+                return (
+                  <li key={event.sequence} className="col-span-full grid grid-cols-subgrid items-baseline">
+                    <When at={event.observedAt} className="text-muted-foreground" />
+                    <span className="flex min-w-0 items-baseline gap-2">
+                      <span className="shrink-0 font-medium" title={event.kind}>
+                        {eventLabel(event.kind)}
                       </span>
-                    )}
-                  </span>
-                </li>
-              ))}
+                      {detail && (
+                        <span
+                          className="min-w-0 truncate text-muted-foreground"
+                          title={todo ? todoLines(todo) : detail}
+                        >
+                          {detail}
+                        </span>
+                      )}
+                    </span>
+                  </li>
+                );
+              })}
             </ol>
           </section>
           <LogTail run={run} name="stdout" text={log.data.stdout} />
@@ -446,11 +587,56 @@ function AttachCommand({ run, command }: { run: TaskRun; command: string }) {
   );
 }
 
-/** The end of the stdout or stderr of a run, scrolled to its last line. */
+/**
+ * The agent's todo list as the last todo event of a run recorded it, each step with its state;
+ * the events keep the lists before it. A payload of any other shape is shown as it is.
+ */
+function TodoList({ run, event }: { run: TaskRun; event: RunEvent }) {
+  const items = todoItems(event.payload);
+  return (
+    <section aria-label={`Todo list of run ${run.generation}`} className="flex min-w-0 flex-col gap-0.5">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+        <h5 className="font-medium text-muted-foreground">
+          Todo list{items !== null && items.length > 0 && ` (${stepsDone(items)} of ${items.length} done)`}
+        </h5>
+        <When at={event.observedAt} prefix="Updated " className="ml-auto text-muted-foreground" />
+      </div>
+      {items === null ? (
+        <p className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words text-muted-foreground">
+          {event.payload}
+        </p>
+      ) : items.length === 0 ? (
+        <p className="text-muted-foreground">The todo list is empty.</p>
+      ) : (
+        <ol className="flex min-w-0 flex-col gap-0.5 max-md:gap-1">
+          {items.map((item, index) => {
+            const { label, icon: Icon, marker, text } = todoStatuses[item.status];
+            return (
+              // Steps have no ids: each event holds the whole list, in the agent's order.
+              <li key={index} className="flex min-w-0 gap-1.5">
+                {/* One line high, so the marker stays by the first line of a step that wraps. */}
+                <span role="img" aria-label={label} className={cn("flex h-lh shrink-0 items-center", marker)}>
+                  <Icon aria-hidden className="size-3.5" />
+                </span>
+                <span className={cn("min-w-0 break-words-keep", text)}>{item.text}</span>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+/**
+ * The end of the stdout or stderr of a run, scrolled to its last line. As a live run's output
+ * grows, the view follows it, unless it was scrolled up to read, until it is back at the end.
+ */
 function LogTail({ run, name, text }: { run: TaskRun; name: "stdout" | "stderr"; text: string }) {
   const pre = useRef<HTMLPreElement>(null);
+  const atEnd = useRef(true);
   useEffect(() => {
-    if (pre.current !== null) pre.current.scrollTop = pre.current.scrollHeight;
+    if (pre.current !== null && atEnd.current) pre.current.scrollTop = pre.current.scrollHeight;
   }, [text]);
 
   return (
@@ -461,6 +647,10 @@ function LogTail({ run, name, text }: { run: TaskRun; name: "stdout" | "stderr";
       ) : (
         <pre
           ref={pre}
+          onScroll={(event) => {
+            const { scrollHeight, clientHeight, scrollTop } = event.currentTarget;
+            atEnd.current = Math.abs(scrollHeight - clientHeight - scrollTop) <= 1;
+          }}
           // Scrollable, so it takes the focus to scroll with the keyboard.
           tabIndex={0}
           aria-label={`${name} of run ${run.generation}`}
