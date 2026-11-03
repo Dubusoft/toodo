@@ -104,3 +104,15 @@ jobs:
           # The checksum goes last: a release with both assets is complete.
           gh release upload "$TAG" "$TARBALL" --clobber
           gh release upload "$TAG" "$TARBALL.sha256" --clobber
+
+  # Publishes the npm packages once the release assets exist (built now or already there).
+  npm:
+    needs: [version, server]
+    if: always() && needs.version.result == 'success' && needs.server.result != 'failure' && needs.server.result != 'cancelled'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/npm.yml
+    with:
+      dist-tag: latest
+    secrets: inherit

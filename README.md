@@ -44,7 +44,14 @@ into a performance report.
 - Git, OpenSSH, and the GitHub CLI (`gh`) on the server's `PATH`
 - A current browser to use the web app
 
-See [docs/server.md](docs/server.md) to install it.
+See [docs/server.md](docs/server.md) to install it. On Linux x64 or arm64 (glibc) with
+Node.js, the quickest start is:
+
+```sh
+npx @dubusoft/toodo init
+```
+
+See [Install with npm](docs/server.md#install-with-npm).
 
 ## End-to-End Tests
 
@@ -99,6 +106,10 @@ To publish a release:
 Releases run from `main` rather than from tags so the Rust build cache of one release is
 reused by the next. If a release fails, run the `Release` workflow by hand on `main`; it
 completes a release whose server assets were not uploaded yet.
+
+The `Release` workflow also publishes the release to npm under the dist-tag `latest`, and
+every push to `dev` publishes an `X.Y.Z-dev.N` prerelease under `dev`; see
+[npm Packages](docs/server.md#npm-packages).
 
 ## Status
 
