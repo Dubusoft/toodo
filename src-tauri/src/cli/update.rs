@@ -88,7 +88,7 @@ pub(super) fn version() -> String {
         .ok()
         .and_then(|exe| Package::of(&exe))
         .map_or_else(
-            || env!("CARGO_PKG_VERSION").to_owned(),
+            || env!("TOODO_VERSION").to_owned(),
             |package| package.version,
         )
 }

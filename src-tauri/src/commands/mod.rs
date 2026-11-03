@@ -255,7 +255,7 @@ pub struct AppInfo {
 pub fn app_info() -> AppInfo {
     AppInfo {
         name: env!("CARGO_PKG_NAME").to_owned(),
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: env!("TOODO_VERSION").to_owned(),
     }
 }
 
@@ -269,7 +269,7 @@ mod tests {
     fn app_info_reports_crate_metadata() {
         let info = app_info();
         assert_eq!(info.name, "toodo");
-        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(info.version, env!("TOODO_VERSION"));
     }
 
     #[test]

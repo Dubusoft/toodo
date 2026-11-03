@@ -115,7 +115,10 @@ npm i -g @dubusoft/toodo
 - `toodo update [--channel dev|latest]`: update a global install and restart the server on
   it, see below.
 - `toodo --version`, `toodo --help`. `--version` prints the version of the installed npm
-  package (`toodo 1.3.2-dev.9 (commit 1c78b7a1a2b3)`).
+  package (`toodo 1.3.2-dev.9 (commit 1c78b7a1a2b3)`). `toodo-server --version` and the
+  server's start log line report the same version: the npm workflow builds both binaries
+  with `TOODO_VERSION` set to the version it publishes (`src-tauri/build.rs`); other builds
+  report the crate version.
 
 `@dubusoft/toodo` follows releases; `@dubusoft/toodo@dev` follows the `dev` branch
 (`X.Y.Z-dev.N` prereleases), for example `npx @dubusoft/toodo@dev init`.
