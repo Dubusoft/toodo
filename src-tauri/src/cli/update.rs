@@ -191,6 +191,16 @@ pub(super) fn update(
     let changed = format!("toodo {} -> {}", installed.version, new.version);
 
     if !running {
+        // The unit runs copies of the server and the web app, so `toodo start` would
+        // start the old version unless they are refreshed now.
+        if runner == Runner::Systemd {
+            service::install_bundle(&bundle, var).map_err(|cause| {
+                format!(
+                    "updated {changed}, but the service still has the old server: {cause}; \
+                     install the new one with: toodo service install{flag}"
+                )
+            })?;
+        }
         println!(
             "Updated {changed}. toodo-server is not running; start it with: toodo start{flag}"
         );
