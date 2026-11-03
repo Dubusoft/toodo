@@ -1,10 +1,11 @@
 //! Merging another Toodo database, such as one of the former desktop app, into this one.
 //!
 //! Workspaces and tasks with their history are added next to the data already here.
-//! Imported rows get IDs after every ID this database has used, so nothing here changes; references between imported rows move along. Devices, push
-//! subscriptions, and the lead chat of the other database are not imported: they belong
-//! to the server that kept them. Tasks forget their herdr workspace, whose ID only meant
-//! something to the other machine's herdr.
+//! Imported rows get IDs after every ID this database has used, so nothing here changes;
+//! references between imported rows move along. Devices, push subscriptions, connected
+//! OAuth apps, and the lead chat of the other database are not imported: they belong to
+//! the server that kept them. Tasks forget their herdr workspace: runtime records are not
+//! imported, since their IDs only meant something to the other machine's herdr.
 
 use std::time::Duration;
 
@@ -32,14 +33,27 @@ type Column = (&'static str, Option<&'static str>);
 /// The imported tables in the order they are inserted, each with its columns that are
 /// not copied as they are.
 const TABLES: &[(&str, &[Column])] = &[
-    ("workspaces", &[("id", Some("id + {w}"))]),
+    (
+        "workspaces",
+        &[
+            ("id", Some("id + {w}")),
+            // The repositories here may differ from the other machine's, so the server
+            // detects the source and completion of merge-based git workspaces again at its
+            // next start; workspaces completed manually keep what was chosen.
+            (
+                "axes_detected",
+                Some(
+                    "CASE WHEN source = 'none' OR completion = 'manual' THEN axes_detected ELSE 0 END",
+                ),
+            ),
+        ],
+    ),
     (
         "tasks",
         &[
             ("id", Some("id + {t}")),
             ("workspace_id", Some("workspace_id + {w}")),
             ("merged_with_task_id", Some("merged_with_task_id + {t}")),
-            ("herdr_workspace_id", Some("NULL")),
         ],
     ),
     (
@@ -81,6 +95,10 @@ const TABLES: &[(&str, &[Column])] = &[
         "task_criteria",
         &[("id", None), ("task_id", Some("task_id + {t}"))],
     ),
+    (
+        "task_activity",
+        &[("id", None), ("task_id", Some("task_id + {t}"))],
+    ),
 ];
 
 /// Tables that are deliberately left out, see the module documentation. `task_search` is
@@ -90,9 +108,20 @@ pub(super) const SKIPPED: &[&str] = &[
     "machine_settings",
     "devices",
     "push_subscriptions",
+    "oauth_clients",
+    "oauth_grants",
+    "oauth_tokens",
     "chat_messages",
     "task_results",
     "task_search",
+    // Runtime handles and runs belong to the other server's hosts.
+    "runtime_workspaces",
+    "agent_conversations",
+    "task_runs",
+    "run_events",
+    "run_operations",
+    "runtime_host_events",
+    "runtime_hosts",
 ];
 
 impl Storage {
@@ -199,7 +228,9 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::domain::model::{NoteKind, TaskId, TaskType, Workspace, WorkspaceLocation};
+    use crate::domain::model::{
+        NoteKind, TaskId, TaskType, Workspace, WorkspaceId, WorkspaceLocation,
+    };
     use crate::domain::path::{PosixPath, WindowsPath};
     use crate::storage::{NewTask, NewWorkspace, TaskSearch, stage_backup};
 
@@ -209,6 +240,10 @@ mod tests {
                 name: name.to_owned(),
                 location,
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap()
     }
@@ -251,7 +286,6 @@ mod tests {
         desktop
             .add_task_note(first, NoteKind::Progress, "Schema drafted")
             .unwrap();
-        desktop.set_task_herdr_workspace(first, "w1").unwrap();
         desktop
             .conn
             .execute_batch(
@@ -272,9 +306,81 @@ mod tests {
                  );
                  INSERT INTO memory_entries (workspace_id, kind, title, created_at, updated_at)
                  VALUES (NULL, 'rule', 'Reply in English', 0, 0);
+                 ALTER TABLE workspaces DROP COLUMN source;
+                 ALTER TABLE workspaces DROP COLUMN completion;
+                 ALTER TABLE workspaces DROP COLUMN runner;
+                 ALTER TABLE workspaces DROP COLUMN axes_detected;
+                 DROP TABLE task_activity;
+                 ALTER TABLE tasks ADD COLUMN herdr_workspace_id TEXT;
+                 UPDATE tasks SET herdr_workspace_id = 'w1' WHERE title = 'Add storage';
+                 DROP TABLE run_operations;
+                 DROP TABLE run_events;
+                 DROP TABLE task_runs;
+                 DROP TABLE agent_conversations;
+                 DROP TABLE runtime_workspaces;
+                 DROP TABLE runtime_host_events;
+                 DROP TABLE runtime_hosts;
+                 DROP TABLE oauth_tokens;
+                 DROP TABLE oauth_grants;
+                 DROP TABLE oauth_clients;
                  PRAGMA user_version = 25;",
             )
             .unwrap();
+    }
+
+    #[test]
+    fn imported_git_workspaces_are_detected_again_and_manual_ones_keep_their_axes() {
+        use crate::domain::model::{CompletionMode, Runner, Source};
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("other.sqlite3");
+        let mut other = Storage::open(&source).unwrap();
+        add_workspace(
+            &mut other,
+            "site",
+            WorkspaceLocation::Local {
+                path: PosixPath::parse("/srv/site").unwrap().into(),
+            },
+        );
+        other
+            .create_workspace(&NewWorkspace {
+                name: "notes".to_owned(),
+                location: WorkspaceLocation::Local {
+                    path: PosixPath::parse("/srv/notes").unwrap().into(),
+                },
+                default_base_branch: String::new(),
+                source: Source::None,
+                completion: CompletionMode::Manual,
+                runner: Runner::None,
+                axes_detected: true,
+            })
+            .unwrap();
+        drop(other);
+
+        let mut server = Storage::open_in_memory().unwrap();
+        server.import(&stage_backup(&source).unwrap()).unwrap();
+
+        let names = |workspaces: Vec<Workspace>| -> Vec<String> {
+            workspaces
+                .into_iter()
+                .map(|workspace| workspace.name)
+                .collect()
+        };
+        assert_eq!(names(server.workspaces_to_detect().unwrap()), ["site"]);
+        let notes = server
+            .list_workspaces()
+            .unwrap()
+            .into_iter()
+            .find(|workspace| workspace.name == "notes")
+            .unwrap();
+        assert_eq!(
+            (
+                notes.name.as_str(),
+                notes.source,
+                notes.completion,
+                notes.runner
+            ),
+            ("notes", Source::None, CompletionMode::Manual, Runner::None)
+        );
     }
 
     #[test]
@@ -365,6 +471,85 @@ mod tests {
                 (TaskId(2), "Add sync".to_owned())
             ]
         );
+    }
+
+    /// Imported tasks forget their herdr workspace, so they get no runtime workspace;
+    /// the runtime records of the other server stay behind.
+    #[test]
+    fn imported_tasks_have_no_runtime_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("other.sqlite3");
+        {
+            let mut other = Storage::open(&source).unwrap();
+            let workspace = add_workspace(
+                &mut other,
+                "site",
+                WorkspaceLocation::Local {
+                    path: PosixPath::parse("/srv/site").unwrap().into(),
+                },
+            );
+            let task = add_task(&mut other, &workspace, "Started");
+            let checkout = crate::domain::naming::TaskCheckout {
+                path: PosixPath::parse("/wt/started").unwrap().into(),
+                branch: "feat/started".to_owned(),
+            };
+            other.start_task(task, &checkout, "w1").unwrap();
+            other
+                .set_host_state(
+                    &crate::domain::runtime::OwnerKey::implicit(),
+                    &crate::domain::runtime::HostRef::Local,
+                    crate::runtime::events::HostState::Online,
+                )
+                .unwrap();
+            assert_eq!(count(&other, "SELECT count(*) FROM runtime_workspaces"), 1);
+            assert_eq!(count(&other, "SELECT count(*) FROM runtime_host_events"), 1);
+            assert_eq!(count(&other, "SELECT count(*) FROM runtime_hosts"), 1);
+        }
+        let mut server = Storage::open_in_memory().unwrap();
+
+        server.import(&stage_backup(&source).unwrap()).unwrap();
+
+        assert_eq!(count(&server, "SELECT count(*) FROM tasks"), 1);
+        assert_eq!(count(&server, "SELECT count(*) FROM runtime_workspaces"), 0);
+        assert_eq!(
+            count(&server, "SELECT count(*) FROM runtime_host_events"),
+            0
+        );
+        assert_eq!(count(&server, "SELECT count(*) FROM runtime_hosts"), 0);
+        let imported = server.list_tasks(WorkspaceId(1)).unwrap();
+        assert_eq!(imported[0].herdr_workspace_id, None);
+    }
+
+    #[test]
+    fn connected_oauth_apps_stay_with_the_issuing_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("other.sqlite3");
+        let mut other = Storage::open(&source).unwrap();
+        let client = super::super::oauth::Client {
+            client_id: "other-client".to_owned(),
+            secret_hash: None,
+            client_name: Some("Other app".to_owned()),
+            redirect_uris: vec!["https://client.example/callback".to_owned()],
+            auth_method: "none".to_owned(),
+            created_at: 1000,
+        };
+        other.oauth_register_client(&client).unwrap();
+        other
+            .oauth_create_grant(
+                &crate::oauth::server_owner(),
+                &client,
+                crate::oauth::Scopes::READ,
+                "other-access-hash",
+                "other-refresh-hash",
+            )
+            .unwrap();
+        drop(other);
+
+        let mut server = Storage::open_in_memory().unwrap();
+        server.import(&stage_backup(&source).unwrap()).unwrap();
+        for table in ["oauth_clients", "oauth_grants", "oauth_tokens"] {
+            assert_eq!(count(&server, &format!("SELECT count(*) FROM {table}")), 0);
+        }
     }
 
     /// A table a later migration adds has to be imported or skipped on purpose.

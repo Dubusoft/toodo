@@ -7,6 +7,9 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use super::{Result, StorageError};
 use crate::domain::criteria::{CheckKind, CheckedBy, CriterionState, done_when_items};
 
+#[cfg(test)]
+mod host_events_tests;
+
 pub(super) const MIGRATIONS: &[&str] = &[
     // Version 1: initial schema. AUTOINCREMENT keeps workspace and task IDs from being
     // reused after a delete, because task IDs are part of branch and worktree names.
@@ -734,6 +737,288 @@ pub(super) const MIGRATIONS: &[&str] = &[
     DROP INDEX IF EXISTS memory_entries_superseded_by;
     DROP TABLE IF EXISTS memory_entries;
     ",
+    // Version 27: a workspace has a source, a completion mode, and a runner. Existing
+    // workspaces get them from their tasks: a merged-locally criterion means a local git
+    // repository merged locally, a pull request criterion or URL a GitHub repository
+    // merged through pull requests. Workspaces without either keep the GitHub default
+    // with `axes_detected` 0, so the server detects them from the repository's remotes.
+    r"
+    ALTER TABLE workspaces ADD COLUMN source TEXT NOT NULL DEFAULT 'github'
+        CHECK (source IN ('none', 'local_git', 'github'));
+    ALTER TABLE workspaces ADD COLUMN completion TEXT NOT NULL DEFAULT 'pr_merge'
+        CHECK (completion IN ('manual', 'local_merge', 'pr_merge'));
+    ALTER TABLE workspaces ADD COLUMN runner TEXT NOT NULL DEFAULT 'herdr'
+        CHECK (runner IN ('none', 'herdr'));
+    ALTER TABLE workspaces ADD COLUMN axes_detected INTEGER NOT NULL DEFAULT 1
+        CHECK (axes_detected IN (0, 1));
+    UPDATE workspaces SET source = 'local_git', completion = 'local_merge'
+        WHERE EXISTS (SELECT 1 FROM task_criteria c JOIN tasks t ON t.id = c.task_id
+                      WHERE t.workspace_id = workspaces.id
+                        AND c.kind = 'branch_merged_locally');
+    UPDATE workspaces SET axes_detected = 0
+        WHERE source = 'github'
+          AND NOT EXISTS (SELECT 1 FROM task_criteria c JOIN tasks t ON t.id = c.task_id
+                          WHERE t.workspace_id = workspaces.id
+                            AND c.kind IN ('pr_merged', 'pr_open_ci_green'))
+          AND NOT EXISTS (SELECT 1 FROM tasks t
+                          WHERE t.workspace_id = workspaces.id
+                            AND t.pull_request_url IS NOT NULL);
+    ",
+    // Version 28: the git activity of each task (commits, pull request, CI results,
+    // merge), one row per event and task however often it is reported.
+    r"
+    CREATE TABLE task_activity (
+        id INTEGER PRIMARY KEY,
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        dedup_key TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        source TEXT NOT NULL,
+        external_ref TEXT NOT NULL,
+        title TEXT NOT NULL,
+        author TEXT,
+        occurred_at INTEGER NOT NULL,
+        received_at INTEGER NOT NULL,
+        confirmed_at INTEGER NOT NULL,
+        UNIQUE (task_id, dedup_key)
+    );
+    CREATE INDEX task_activity_by_task ON task_activity (task_id, occurred_at);
+    ",
+    // Version 29: runtime records. Runtime workspaces are the runner workspaces (herdr
+    // workspaces) tasks are open in, one open generation per task; task runs are the
+    // agent launches made for a task, with their events and runner operations. Owner keys
+    // are a placeholder for a later tenant context. The herdr handles on `tasks` stay the
+    // source of truth: triggers shadow-write them into `runtime_workspaces`, and every
+    // task with a herdr workspace gets an open generation-1 row. No runs are created.
+    r"
+    CREATE TABLE runtime_workspaces (
+        id INTEGER PRIMARY KEY,
+        owner_key TEXT NOT NULL DEFAULT 'implicit',
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        host_ref TEXT NOT NULL,
+        runner_kind TEXT NOT NULL CHECK (runner_kind IN ('herdr')),
+        -- NULL until the provider instance (herdr server) is verified; unverified handles
+        -- are not controlled through the runtime service.
+        provider_instance TEXT,
+        provider_workspace_ref TEXT NOT NULL,
+        checkout_path TEXT,
+        branch TEXT,
+        generation INTEGER NOT NULL CHECK (generation >= 1),
+        state TEXT NOT NULL CHECK (state IN ('open', 'closed')),
+        opened_at INTEGER NOT NULL,
+        closed_at INTEGER
+    );
+    CREATE UNIQUE INDEX runtime_workspaces_open_per_task
+        ON runtime_workspaces (task_id) WHERE state = 'open';
+    CREATE UNIQUE INDEX runtime_workspaces_generation
+        ON runtime_workspaces (task_id, generation);
+
+    CREATE TABLE agent_conversations (
+        id INTEGER PRIMARY KEY,
+        owner_key TEXT NOT NULL DEFAULT 'implicit',
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        agent_kind TEXT NOT NULL,
+        agent_version TEXT,
+        host_ref TEXT NOT NULL,
+        cwd TEXT,
+        resume_kind TEXT NOT NULL CHECK (resume_kind IN
+            ('none', 'exact_id', 'exact_path', 'named_session', 'transcript')),
+        resume_ref TEXT,
+        created_at INTEGER NOT NULL
+    );
+
+    CREATE TABLE task_runs (
+        id INTEGER PRIMARY KEY,
+        owner_key TEXT NOT NULL DEFAULT 'implicit',
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        -- NULL for a run with no runtime workspace, e.g. a task of a workspace with source
+        -- none and runner none: no checkout, no branch.
+        runtime_workspace_id INTEGER REFERENCES runtime_workspaces (id) ON DELETE SET NULL,
+        conversation_id INTEGER REFERENCES agent_conversations (id) ON DELETE SET NULL,
+        request_key TEXT NOT NULL,
+        generation INTEGER NOT NULL CHECK (generation >= 1),
+        runner_kind TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('writer', 'observer')),
+        host_ref TEXT NOT NULL,
+        checkout_path TEXT,
+        adapter_profile TEXT,
+        state TEXT NOT NULL CHECK (state IN
+            ('reserved', 'running', 'settled', 'exited', 'failed', 'cancelled', 'unknown')),
+        provider_run_ref TEXT,
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        ended_at INTEGER,
+        UNIQUE (owner_key, request_key),
+        UNIQUE (task_id, generation)
+    );
+    -- One active writer per checkout. `unknown` counts as active: a run whose fate is not
+    -- confirmed may still be writing.
+    CREATE UNIQUE INDEX task_runs_one_active_writer
+        ON task_runs (owner_key, host_ref, checkout_path)
+        WHERE role = 'writer' AND checkout_path IS NOT NULL
+          AND state IN ('reserved', 'running', 'unknown');
+
+    CREATE TABLE run_events (
+        run_id INTEGER NOT NULL REFERENCES task_runs (id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL,
+        generation INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        payload TEXT,
+        observed_at INTEGER NOT NULL,
+        PRIMARY KEY (run_id, sequence)
+    );
+
+    CREATE TABLE run_operations (
+        id INTEGER PRIMARY KEY,
+        owner_key TEXT NOT NULL DEFAULT 'implicit',
+        run_id INTEGER NOT NULL REFERENCES task_runs (id) ON DELETE CASCADE,
+        request_key TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('launch', 'input', 'stop')),
+        state TEXT NOT NULL CHECK (state IN ('pending', 'applied', 'failed')),
+        receipt TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (owner_key, request_key, kind)
+    );
+
+    INSERT INTO runtime_workspaces (task_id, host_ref, runner_kind, provider_workspace_ref,
+        checkout_path, branch, generation, state, opened_at)
+    SELECT t.id,
+        CASE w.kind WHEN 'ssh' THEN 'ssh:' || w.herdr_machine ELSE 'local' END,
+        'herdr', t.herdr_workspace_id, t.worktree_path, t.branch, 1, 'open',
+        CAST(strftime('%s', 'now') AS INTEGER)
+    FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
+    WHERE t.herdr_workspace_id IS NOT NULL;
+
+    CREATE TRIGGER runtime_workspaces_task_inserted AFTER INSERT ON tasks
+        WHEN NEW.herdr_workspace_id IS NOT NULL
+    BEGIN
+        INSERT INTO runtime_workspaces (task_id, host_ref, runner_kind,
+            provider_workspace_ref, checkout_path, branch, generation, state, opened_at)
+        SELECT NEW.id,
+            CASE w.kind WHEN 'ssh' THEN 'ssh:' || w.herdr_machine ELSE 'local' END,
+            'herdr', NEW.herdr_workspace_id, NEW.worktree_path, NEW.branch,
+            (SELECT coalesce(max(r.generation), 0) + 1
+             FROM runtime_workspaces r WHERE r.task_id = NEW.id),
+            'open', CAST(strftime('%s', 'now') AS INTEGER)
+        FROM workspaces w WHERE w.id = NEW.workspace_id;
+    END;
+    CREATE TRIGGER runtime_workspaces_task_updated
+        AFTER UPDATE OF herdr_workspace_id, worktree_path, branch ON tasks
+        WHEN OLD.herdr_workspace_id IS NOT NEW.herdr_workspace_id
+          OR OLD.worktree_path IS NOT NEW.worktree_path
+          OR OLD.branch IS NOT NEW.branch
+    BEGIN
+        UPDATE runtime_workspaces
+        SET state = 'closed', closed_at = CAST(strftime('%s', 'now') AS INTEGER)
+        WHERE task_id = NEW.id AND state = 'open' AND runner_kind = 'herdr'
+          AND (NEW.herdr_workspace_id IS NULL
+               OR provider_workspace_ref IS NOT NEW.herdr_workspace_id);
+        UPDATE runtime_workspaces
+        SET checkout_path = NEW.worktree_path, branch = NEW.branch
+        WHERE task_id = NEW.id AND state = 'open'
+          AND provider_workspace_ref = NEW.herdr_workspace_id;
+        INSERT INTO runtime_workspaces (task_id, host_ref, runner_kind,
+            provider_workspace_ref, checkout_path, branch, generation, state, opened_at)
+        SELECT NEW.id,
+            CASE w.kind WHEN 'ssh' THEN 'ssh:' || w.herdr_machine ELSE 'local' END,
+            'herdr', NEW.herdr_workspace_id, NEW.worktree_path, NEW.branch,
+            (SELECT coalesce(max(r.generation), 0) + 1
+             FROM runtime_workspaces r WHERE r.task_id = NEW.id),
+            'open', CAST(strftime('%s', 'now') AS INTEGER)
+        FROM workspaces w
+        WHERE w.id = NEW.workspace_id AND NEW.herdr_workspace_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM runtime_workspaces r
+                          WHERE r.task_id = NEW.id AND r.state = 'open'
+                            AND r.provider_workspace_ref = NEW.herdr_workspace_id);
+    END;
+    ",
+    // Version 30: OAuth clients, owner grants, and hashed rotating credentials.
+    r"
+    CREATE TABLE oauth_clients (
+        client_id TEXT PRIMARY KEY,
+        secret_hash TEXT,
+        client_name TEXT,
+        redirect_uris TEXT NOT NULL,
+        auth_method TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    CREATE TABLE oauth_grants (
+        id INTEGER PRIMARY KEY,
+        owner_key TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        client_name TEXT,
+        scopes TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        revoked_at INTEGER
+    );
+    CREATE TABLE oauth_tokens (
+        token_hash TEXT PRIMARY KEY,
+        grant_id INTEGER NOT NULL REFERENCES oauth_grants(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('access', 'refresh')),
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER
+    );
+    CREATE INDEX oauth_tokens_by_grant ON oauth_tokens(grant_id);
+    ",
+    // Version 31: runtime workspaces are the source of truth for the herdr workspace of a
+    // task. The open rows are brought in line with the herdr handles on `tasks` once more
+    // (the shadow triggers kept them so), then the triggers and the handle column go. The
+    // checkout path and branch stay on `tasks`: they outlive the herdr workspace.
+    r"
+    UPDATE runtime_workspaces
+    SET state = 'closed', closed_at = CAST(strftime('%s', 'now') AS INTEGER)
+    WHERE state = 'open' AND runner_kind = 'herdr'
+      AND NOT EXISTS (SELECT 1 FROM tasks t
+                      WHERE t.id = runtime_workspaces.task_id
+                        AND t.herdr_workspace_id = runtime_workspaces.provider_workspace_ref);
+    UPDATE runtime_workspaces
+    SET checkout_path = (SELECT t.worktree_path FROM tasks t
+                         WHERE t.id = runtime_workspaces.task_id),
+        branch = (SELECT t.branch FROM tasks t WHERE t.id = runtime_workspaces.task_id)
+    WHERE state = 'open';
+    INSERT INTO runtime_workspaces (task_id, host_ref, runner_kind, provider_workspace_ref,
+        checkout_path, branch, generation, state, opened_at)
+    SELECT t.id,
+        CASE w.kind WHEN 'ssh' THEN 'ssh:' || w.herdr_machine ELSE 'local' END,
+        'herdr', t.herdr_workspace_id, t.worktree_path, t.branch,
+        (SELECT coalesce(max(r.generation), 0) + 1
+         FROM runtime_workspaces r WHERE r.task_id = t.id),
+        'open', CAST(strftime('%s', 'now') AS INTEGER)
+    FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
+    WHERE t.herdr_workspace_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM runtime_workspaces r
+                      WHERE r.task_id = t.id AND r.state = 'open');
+
+    DROP TRIGGER runtime_workspaces_task_inserted;
+    DROP TRIGGER runtime_workspaces_task_updated;
+    ALTER TABLE tasks DROP COLUMN herdr_workspace_id;
+    ",
+    // Version 32: append-only host observations and their per-host cursors.
+    r"
+    CREATE TABLE runtime_host_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_key TEXT NOT NULL DEFAULT 'implicit',
+        host_ref TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN (
+            'workspace_opened', 'workspace_closed', 'online', 'offline', 'unknown',
+            'snapshot_reconciled')),
+        provider_workspace_ref TEXT,
+        checkout_path TEXT,
+        recorded_at TEXT NOT NULL,
+        UNIQUE (owner_key, host_ref, sequence)
+    );
+    CREATE TABLE runtime_hosts (
+        owner_key TEXT NOT NULL DEFAULT 'implicit',
+        host_ref TEXT NOT NULL,
+        last_sequence INTEGER NOT NULL DEFAULT 0,
+        reconciled_sequence INTEGER,
+        state TEXT NOT NULL DEFAULT 'unknown' CHECK (state IN ('online', 'offline', 'unknown')),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (owner_key, host_ref)
+    );
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -907,15 +1192,19 @@ mod tests {
             "task_criteria",
             "pull_request_snapshots",
         ];
+        // The herdr handle moves from `tasks` to the runtime workspaces (version 31).
         let rows = |conn: &Connection, table: &str| {
             let mut statement = conn
                 .prepare(&format!("SELECT * FROM {table} ORDER BY 1"))
                 .unwrap();
-            let columns = statement.column_count();
+            let columns: Vec<usize> = (0..statement.column_count())
+                .filter(|&column| statement.column_name(column).unwrap() != "herdr_workspace_id")
+                .collect();
             statement
                 .query_map([], |row| {
-                    (0..columns)
-                        .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                    columns
+                        .iter()
+                        .map(|&column| row.get::<_, rusqlite::types::Value>(column))
                         .collect::<rusqlite::Result<Vec<_>>>()
                 })
                 .unwrap()
@@ -932,6 +1221,15 @@ mod tests {
         // Then every field and reference survives, and new resolutions and search work.
         assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
         assert_eq!(tables.map(|table| rows(&conn, table)), before);
+        let handle: String = conn
+            .query_row(
+                "SELECT provider_workspace_ref FROM runtime_workspaces
+                 WHERE task_id = 3 AND state = 'open'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(handle, "w3");
         conn.execute(
             "INSERT INTO tasks (workspace_id, type, title, status, resolution, completion_note)
              VALUES (1, 'chore', 'Completed configuration', 'done', 'completed', 'Deployed')",
@@ -2138,6 +2436,68 @@ mod tests {
     }
 
     #[test]
+    fn version_27_infers_workspace_axes_from_their_tasks() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..26] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 26).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('local', 'local', '/local', 'main'),
+                       ('criterion', 'local', '/criterion', 'main'),
+                       ('url', 'local', '/url', 'main'),
+                       ('nothing', 'local', '/nothing', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status)
+                VALUES (1, 'feat', 'Merge locally', 'planned'),
+                       (2, 'feat', 'Open a pull request', 'planned'),
+                       (3, 'feat', 'Reviewed', 'in_review'),
+                       (4, 'feat', 'By hand', 'planned');
+             UPDATE tasks SET pull_request_url = 'https://github.com/a/b/pull/1' WHERE id = 3;
+             INSERT INTO task_criteria (task_id, position, text, kind)
+                VALUES (1, 0, 'Merged', 'branch_merged_locally'),
+                       (2, 0, 'Checks pass', 'pr_open_ci_green'),
+                       (4, 0, 'Looks right', 'manual');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let mut statement = conn
+            .prepare("SELECT source, completion, runner, axes_detected FROM workspaces ORDER BY id")
+            .unwrap();
+        let axes: Vec<(String, String, String, i64)> = statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let row = |source: &str, completion: &str, detected| {
+            (
+                source.to_owned(),
+                completion.to_owned(),
+                "herdr".to_owned(),
+                detected,
+            )
+        };
+        assert_eq!(
+            axes,
+            [
+                row("local_git", "local_merge", 1),
+                row("github", "pr_merge", 1),
+                row("github", "pr_merge", 1),
+                row("github", "pr_merge", 0),
+            ]
+        );
+        assert!(
+            conn.execute("UPDATE workspaces SET source = 'svn' WHERE id = 1", [])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn version_26_drops_project_memory_and_keeps_workspaces_and_tasks() {
         let mut conn = Connection::open_in_memory().unwrap();
         for sql in &MIGRATIONS[..25] {
@@ -2178,5 +2538,233 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kept, (1, 1));
+    }
+
+    #[test]
+    fn version_29_opens_one_runtime_workspace_per_herdr_handle_and_creates_no_runs() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..28] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 28).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (name, kind, path, herdr_machine, default_base_branch)
+                VALUES ('remote', 'ssh', '/srv/repo', 'devbox', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status, branch, worktree_path,
+                 herdr_workspace_id)
+                VALUES (1, 'feat', 'Open', 'in_progress', 'feat/open-1', '/wt/open-1', 'w1'),
+                       (1, 'feat', 'Closed', 'planned', NULL, NULL, NULL);",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let mut statement = conn
+            .prepare(
+                "SELECT task_id, owner_key, host_ref, runner_kind, provider_instance,
+                     provider_workspace_ref, checkout_path, branch, generation
+                 FROM runtime_workspaces WHERE state = 'open'",
+            )
+            .unwrap();
+        type Row = (
+            i64,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+        );
+        let open: Vec<Row> = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            open,
+            [(
+                1,
+                "implicit".to_owned(),
+                "ssh:devbox".to_owned(),
+                "herdr".to_owned(),
+                None,
+                "w1".to_owned(),
+                Some("/wt/open-1".to_owned()),
+                Some("feat/open-1".to_owned()),
+                1,
+            )]
+        );
+        let counts: (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT count(*) FROM runtime_workspaces), (SELECT count(*) FROM task_runs)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (1, 0));
+        assert!(
+            conn.execute("UPDATE runtime_workspaces SET state = 'paused'", [])
+                .is_err()
+        );
+        assert!(
+            conn.execute(
+                "INSERT INTO task_runs (task_id, request_key, generation, runner_kind, role,
+                     host_ref, state, created_at)
+                 VALUES (1, 'k', 1, 'herdr', 'writer', 'local', 'lost', 1)",
+                [],
+            )
+            .is_err()
+        );
+        conn.execute(
+            "INSERT INTO task_runs (task_id, request_key, generation, runner_kind, role,
+                 host_ref, state, created_at)
+             VALUES (1, 'k', 1, 'herdr', 'writer', 'local', 'reserved', 1)",
+            [],
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO run_operations (run_id, request_key, kind, state, created_at,
+                     updated_at)
+                 VALUES (1, 'k', 'launch', 'done', 1, 1)",
+                [],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn version_31_keeps_herdr_handles_in_runtime_workspaces_and_drops_the_task_column() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..30] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 30).unwrap();
+        // Tasks 1 to 3 got their open rows from the shadow triggers; the rows of tasks 3
+        // to 5 were then changed behind them, so they disagree with the handles on `tasks`.
+        conn.execute_batch(
+            "INSERT INTO workspaces (name, kind, path, herdr_machine, default_base_branch)
+                VALUES ('remote', 'ssh', '/srv/repo', 'devbox', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status, branch, worktree_path,
+                 herdr_workspace_id)
+                VALUES (1, 'feat', 'Open', 'in_progress', 'feat/open-1', '/wt/open-1', 'w1'),
+                       (1, 'feat', 'Lost row', 'in_progress', 'feat/lost-2', '/wt/lost-2', 'w2'),
+                       (1, 'feat', 'Other ref', 'in_progress', 'feat/other-3', '/wt/other-3', 'w3'),
+                       (1, 'feat', 'Paused', 'planned', 'feat/paused-4', '/wt/paused-4', NULL),
+                       (1, 'feat', 'Moved', 'in_progress', 'feat/moved-5', '/wt/moved-5', 'w5');
+             DELETE FROM runtime_workspaces WHERE task_id = 2;
+             UPDATE runtime_workspaces SET provider_workspace_ref = 'w-old' WHERE task_id = 3;
+             INSERT INTO runtime_workspaces (task_id, host_ref, runner_kind,
+                 provider_workspace_ref, checkout_path, branch, generation, state, opened_at)
+                VALUES (4, 'ssh:devbox', 'herdr', 'w4', '/wt/paused-4', 'feat/paused-4', 1,
+                    'open', 1);
+             UPDATE runtime_workspaces SET checkout_path = '/elsewhere' WHERE task_id = 5;",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let handle_column: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('tasks')
+                 WHERE name = 'herdr_workspace_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(handle_column, 0);
+        let triggers: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'trigger' AND name LIKE 'runtime_workspaces%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(triggers, 0);
+        type Row = (
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            String,
+        );
+        let rows: Vec<Row> = conn
+            .prepare(
+                "SELECT task_id, provider_workspace_ref, host_ref, checkout_path, branch,
+                     generation, state
+                 FROM runtime_workspaces ORDER BY task_id, generation",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let row = |task, reference: &str, path: &str, branch: &str, generation, state: &str| {
+            (
+                task,
+                reference.to_owned(),
+                "ssh:devbox".to_owned(),
+                Some(path.to_owned()),
+                Some(branch.to_owned()),
+                generation,
+                state.to_owned(),
+            )
+        };
+        assert_eq!(
+            rows,
+            [
+                row(1, "w1", "/wt/open-1", "feat/open-1", 1, "open"),
+                row(2, "w2", "/wt/lost-2", "feat/lost-2", 1, "open"),
+                row(3, "w-old", "/wt/other-3", "feat/other-3", 1, "closed"),
+                row(3, "w3", "/wt/other-3", "feat/other-3", 2, "open"),
+                row(4, "w4", "/wt/paused-4", "feat/paused-4", 1, "closed"),
+                row(5, "w5", "/wt/moved-5", "feat/moved-5", 1, "open"),
+            ]
+        );
+        let kept: Vec<(Option<String>, Option<String>)> = conn
+            .prepare("SELECT branch, worktree_path FROM tasks ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            kept[3],
+            (
+                Some("feat/paused-4".to_owned()),
+                Some("/wt/paused-4".to_owned())
+            )
+        );
+        assert_eq!(kept.len(), 5);
     }
 }

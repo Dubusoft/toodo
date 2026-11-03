@@ -10,7 +10,11 @@
 //!
 //! and tells the frontend through the [`TasksChanged`] and [`AgentStatusesChanged`]
 //! events. When the subscription ends, e.g. herdr stopped or reported `events_lost`, it
-//! subscribes again after a growing delay and reconciles with a fresh pane list. herdr
+//! subscribes again after a growing delay and reconciles with fresh workspace and pane lists.
+//! Accepted subscriptions record the host online and reconcile checkout handles through
+//! neutral runtime events. Workspace observations, host state changes and reconciles are
+//! journaled with a per-host cursor; activity remains in memory. Unreachable servers are
+//! offline, while a failed accepted stream leaves the host unknown. herdr
 //! IDs are scoped to one server, so events of one machine never touch tasks of another.
 //!
 //! herdr on a Windows host serves its API on a named pipe, which `ssh -W` cannot reach, so
@@ -28,10 +32,12 @@ use super::types::{AgentStatus, TaskAgentStatus, TaskPullRequestStatus, Workspac
 use super::{Runtime, State, StorageState, lock};
 use crate::adapters::herdr::{self, Herdr, HerdrError};
 use crate::adapters::herdr_events::{
-    Connector, EventStreamError, Flow, HerdrEvent, LocalSocket, Message, SshSocket, subscribe,
+    Connector, EventStreamError, Flow, LocalSocket, Message, SshSocket, subscribe,
 };
 use crate::domain::model::{self, HostPath, Machine, WorkspaceLocation};
-use crate::domain::path::{PosixPath, WindowsPath};
+use crate::domain::runtime::{HostRef, OwnerKey};
+use crate::runtime::RuntimeService;
+use crate::runtime::events::{HostState, translate};
 use crate::storage::{Storage, StorageError};
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -163,13 +169,38 @@ impl EventSync<'_> {
         };
         let mut failure = None;
         let result = subscribe(connector, &subscribed, |message| {
-            if message == Message::Started {
-                started = true;
-            }
-            if let Message::Event(event) = &message
-                && let Err(error) = self.apply_worktree_event(event)
-            {
-                eprintln!("toodo: failed to apply herdr event {event:?}: {error}");
+            match &message {
+                Message::Started => {
+                    started = true;
+                    // Reconciling is a recovery step: events and agent statuses keep
+                    // flowing when the workspace snapshot cannot be read.
+                    if let Err(error) = self.reconcile() {
+                        eprintln!(
+                            "toodo: failed to reconcile herdr workspaces of {}: {error}",
+                            self.machine
+                        );
+                    }
+                }
+                Message::Event(event) => {
+                    let event =
+                        translate(OwnerKey::implicit(), HostRef::from(&self.machine), event);
+                    let applied = {
+                        let mut storage = lock(self.storage);
+                        machine_tasks(&storage, &self.machine).and_then(|tasks| {
+                            RuntimeService.apply_event(&mut storage, &tasks, &event)
+                        })
+                    };
+                    match applied {
+                        Ok(changed) => {
+                            for workspace in changed {
+                                self.notifier.tasks_changed(workspace);
+                            }
+                        }
+                        Err(error) => {
+                            eprintln!("toodo: failed to apply runtime event {event:?}: {error}");
+                        }
+                    }
+                }
             }
             // Every message may change which pane runs which agent, so the statuses are
             // read again instead of patched from the event.
@@ -189,15 +220,50 @@ impl EventSync<'_> {
         SessionEnd { started, error }
     }
 
+    fn record_state(&self, state: HostState) -> Result<(), StorageError> {
+        lock(self.storage).set_host_state(
+            &OwnerKey::implicit(),
+            &HostRef::from(&self.machine),
+            state,
+        )?;
+        Ok(())
+    }
+
+    fn reconcile(&self) -> Result<(), SyncError> {
+        self.record_state(HostState::Online)?;
+        let snapshot = self.herdr.list_workspaces(&self.machine)?;
+        let changed = RuntimeService.reconcile_snapshot(
+            &mut lock(self.storage),
+            &HostRef::from(&self.machine),
+            &snapshot,
+        )?;
+        for workspace in changed {
+            self.notifier.tasks_changed(workspace);
+        }
+        Ok(())
+    }
+
     /// Follows the herdr server without an event subscription: reads the panes every
     /// `interval` for as long as `keep` says so, or until reading them fails.
     pub fn poll(&self, interval: Duration, mut keep: impl FnMut() -> bool) -> SessionEnd {
         let mut started = false;
         while keep() {
             if let Err(error) = self.refresh_agents() {
+                if let Err(error) = self.record_state(HostState::Offline) {
+                    return SessionEnd {
+                        started,
+                        error: Some(error.into()),
+                    };
+                }
                 return SessionEnd {
                     started,
                     error: Some(error),
+                };
+            }
+            if let Err(error) = self.record_state(HostState::Online) {
+                return SessionEnd {
+                    started,
+                    error: Some(error.into()),
                 };
             }
             started = true;
@@ -248,46 +314,6 @@ impl EventSync<'_> {
             self.notifier
                 .agent_statuses_changed(&all_statuses(&current));
         }
-    }
-
-    fn apply_worktree_event(&self, event: &HerdrEvent) -> Result<(), StorageError> {
-        let mut storage = lock(self.storage);
-        let tasks = machine_tasks(&storage, &self.machine)?;
-        match event {
-            HerdrEvent::WorktreeRemoved { workspace_id, .. } => {
-                for task in tasks
-                    .iter()
-                    .filter(|task| task.herdr_workspace_id.as_ref() == Some(workspace_id))
-                {
-                    storage.clear_task_worktree(task.id)?;
-                    self.notifier.tasks_changed(task.workspace_id);
-                }
-            }
-            HerdrEvent::WorktreeOpened { workspace_id, path } => {
-                for task in tasks.iter().filter(|task| {
-                    task.herdr_workspace_id.as_ref() != Some(workspace_id)
-                        && is_checkout(task.worktree_path.as_ref(), path)
-                }) {
-                    storage.set_task_herdr_workspace(task.id, workspace_id)?;
-                    self.notifier.tasks_changed(task.workspace_id);
-                }
-            }
-            HerdrEvent::AgentsChanged => {}
-        }
-        Ok(())
-    }
-}
-
-/// Whether `path`, as reported by herdr, is the worktree checkout: case-insensitively on
-/// Windows.
-fn is_checkout(worktree: Option<&HostPath>, path: &str) -> bool {
-    match worktree {
-        Some(HostPath::Windows(worktree)) => WindowsPath::parse(path)
-            .is_ok_and(|path| worktree.as_str().eq_ignore_ascii_case(path.as_str())),
-        Some(HostPath::Posix(worktree)) => {
-            PosixPath::parse(path).is_ok_and(|path| path.as_str() == worktree.as_str())
-        }
-        None => false,
     }
 }
 
@@ -470,6 +496,17 @@ fn watch(app: &dyn Runtime, machine: &Machine) {
             delay = FIRST_RETRY;
             continue;
         };
+        let state = if end.started
+            && !windows
+            && matches!(&error, SyncError::Stream(_) | SyncError::Storage(_))
+        {
+            HostState::Unknown
+        } else {
+            HostState::Offline
+        };
+        if let Err(error) = sync.record_state(state) {
+            eprintln!("toodo: failed to record runtime host state for {machine}: {error}");
+        }
         // A subscription herdr accepted, or dropped for a reason a fresh pane list fixes,
         // is retried soon; a server that stays unreachable is retried less and less often.
         if end.started || matches!(&error, SyncError::Stream(error) if error.is_transient()) {
@@ -488,6 +525,9 @@ fn watch(app: &dyn Runtime, machine: &Machine) {
 
 #[cfg(test)]
 mod tests {
+    mod recovery;
+    mod runtime_events;
+
     use std::io;
     use std::sync::Arc;
 
@@ -497,7 +537,7 @@ mod tests {
     use crate::adapters::herdr_events::fake::FakeConnector;
     use crate::domain::model::{MachineLabel, TaskType, WorkspaceLocation};
     use crate::domain::naming::TaskCheckout;
-    use crate::domain::path::PosixPath;
+    use crate::domain::path::{PosixPath, WindowsPath};
     use crate::storage::{NewTask, NewWorkspace, Storage};
 
     #[derive(Default)]
@@ -538,6 +578,10 @@ mod tests {
                     name: "toodo".to_owned(),
                     location,
                     default_base_branch: "main".to_owned(),
+                    source: crate::domain::model::Source::GitHub,
+                    completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                    runner: crate::domain::model::Runner::Herdr,
+                    axes_detected: true,
                 })
                 .unwrap();
             let task = storage
@@ -580,10 +624,15 @@ mod tests {
     }
 
     fn herdr(pane_lists: &[&str]) -> Herdr {
-        let results = pane_lists.iter().map(|panes| {
-            Ok(format!(
+        let results = pane_lists.iter().enumerate().flat_map(|(index, panes)| {
+            let mut answers = Vec::new();
+            if index == 1 {
+                answers.push(Ok(r#"{"result":{"workspaces":[]}}"#.to_owned()));
+            }
+            answers.push(Ok(format!(
                 r#"{{"id":"cli:pane:list","result":{{"panes":[{panes}]}}}}"#
-            ))
+            )));
+            answers
         });
         Herdr::new(Box::new(Arc::new(FakeRunner::new(
             results.collect::<Vec<Result<String, GitError>>>(),
@@ -717,15 +766,18 @@ mod tests {
     }
 
     /// herdr answers for `devbox`: each pane list is preceded by the machine lookup.
-    fn devbox_herdr(pane_lists: &[&str]) -> Herdr {
+    fn devbox_herdr(pane_lists: &[&str], subscription: bool) -> Herdr {
         let machines = r#"[{"id":"m2","label":"devbox","target":"devbox","session":"default","enabled":true,"selected":false}]"#;
-        let results = pane_lists.iter().flat_map(|panes| {
-            [
-                Ok(machines.to_owned()),
-                Ok(format!(
-                    r#"{{"id":"cli:pane:list","result":{{"panes":[{panes}]}}}}"#
-                )),
-            ]
+        let results = pane_lists.iter().enumerate().flat_map(|(index, panes)| {
+            let mut answers = vec![Ok(machines.to_owned())];
+            if subscription && index == 1 {
+                answers.push(Ok(r#"{"result":{"workspaces":[]}}"#.to_owned()));
+                answers.push(Ok(machines.to_owned()));
+            }
+            answers.push(Ok(format!(
+                r#"{{"id":"cli:pane:list","result":{{"panes":[{panes}]}}}}"#
+            )));
+            answers
         });
         Herdr::new(Box::new(Arc::new(FakeRunner::new(
             results.collect::<Vec<Result<String, GitError>>>(),
@@ -735,10 +787,13 @@ mod tests {
     #[test]
     fn polling_reads_the_panes_until_told_to_stop() {
         let fixture = fixture();
-        let herdr = devbox_herdr(&[
-            &pane("w1:p1", "w1", "working"),
-            &pane("w1:p1", "w1", "idle"),
-        ]);
+        let herdr = devbox_herdr(
+            &[
+                &pane("w1:p1", "w1", "working"),
+                &pane("w1:p1", "w1", "idle"),
+            ],
+            false,
+        );
         let mut rounds = 0;
         let end = sync_on(devbox(), &fixture, &herdr).poll(Duration::ZERO, || {
             rounds += 1;
@@ -785,6 +840,10 @@ mod tests {
                     path: WindowsPath::parse(r"D:\dev\toodo").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         assert!(windows_host(&storage, &Machine::Ssh(winpc)).unwrap());
@@ -796,7 +855,7 @@ mod tests {
     fn ssh_machines_apply_events_to_their_own_tasks_only() {
         let fixture = fixture();
         let empty = String::new();
-        let herdr = devbox_herdr(&[&empty, &empty, &empty, &empty]);
+        let herdr = devbox_herdr(&[&empty, &empty, &empty, &empty], true);
         let opened = r#"{"data":{"already_open":false,"type":"worktree_opened","workspace":{"workspace_id":"w9"},"worktree":{"path":"/wt/toodo/feat-add-login-2"}},"event":"worktree_opened"}"#;
         let removed = r#"{"data":{"forced":false,"type":"worktree_removed","workspace_id":"w9","worktree":{"path":"/wt/toodo/feat-add-login-2"}},"event":"worktree_removed"}"#;
         let connector = FakeConnector::new([Ok(format!("{STARTED}\n{opened}\n{removed}\n"))]);
@@ -822,7 +881,7 @@ mod tests {
         let failed = FakeConnector::new([Err(io::Error::other("no socket"))]);
         sync(&fixture, &local_herdr).run_once(&failed);
         let blocked = pane("w1:p1", "w1", "blocked");
-        let remote_herdr = devbox_herdr(&[&blocked]);
+        let remote_herdr = devbox_herdr(&[&blocked], false);
         let failed = FakeConnector::new([Err(io::Error::other("no socket"))]);
         let remote = sync_on(devbox(), &fixture, &remote_herdr);
         remote.run_once(&failed);

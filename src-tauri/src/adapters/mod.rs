@@ -8,3 +8,4 @@ pub mod herdr_events;
 pub mod herdr_panes;
 pub mod ssh;
 pub mod ssh_tunnel;
+pub mod task_runtime;

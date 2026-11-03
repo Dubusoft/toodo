@@ -16,14 +16,17 @@ export const commands = {
 	createWorkspace: (workspace: NewWorkspace) => typedError<Workspace, CommandError>(invoke("create_workspace", { workspace })),
 	/**
 	 *  Saves the name, default base branch, and agent merge policy of an existing workspace.
-	 *  Its location is kept; [`move_workspace`] changes it.
+	 *  Its location is kept, [`move_workspace`] changes it; its source, completion, and
+	 *  runner are kept as created.
 	 */
 	updateWorkspace: (workspace: Workspace) => typedError<Workspace, CommandError>(invoke("update_workspace", { workspace })),
 	/**
 	 *  Moves a workspace to the repository at `location`, e.g. one kept with a Windows path
 	 *  from the desktop app to the Windows host it lives on, keeping its tasks. The location
 	 *  must hold a git repository that no other workspace uses; it is opened in herdr like a
-	 *  new workspace. Git and herdr may run over `ssh`, so they run on a blocking thread.
+	 *  new workspace. A workspace with source none moves to the directory as given, and one
+	 *  with runner none is not opened in herdr. Git and herdr may run over `ssh`, so they run
+	 *  on a blocking thread.
 	 */
 	moveWorkspace: (id: WorkspaceId, location: WorkspaceLocation) => typedError<Workspace, CommandError>(invoke("move_workspace", { id, location })),
 	/**
@@ -72,8 +75,7 @@ export const commands = {
 	getTask: (id: TaskId) => typedError<Task, CommandError>(invoke("get_task", { id })),
 	/**
 	 *  Creates a `planned` task without dependencies, with its completion criteria. The merge
-	 *  criterion depends on whether the repository has an `origin` remote, which git may
-	 *  check over `ssh`, so this runs off the main thread.
+	 *  criterion follows the completion mode of the workspace: none for `manual`.
 	 */
 	createTask: (task: NewTask) => typedError<Task, CommandError>(invoke("create_task", { task })),
 	/**
@@ -134,6 +136,11 @@ export const commands = {
 	addDependency: (taskId: TaskId, dependsOn: TaskId, confirmPause: boolean) => typedError<DependencyOutcome, CommandError>(invoke("add_dependency", { taskId, dependsOn, confirmPause })),
 	removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(invoke("remove_dependency", { taskId, dependsOn })),
 	listCommitRecords: (taskId: TaskId) => typedError<CommitRecord[], CommandError>(invoke("list_commit_records", { taskId })),
+	/**
+	 *  The git activity of a task (commits, pull request, CI results, merge), oldest first.
+	 *  Empty for a task of a workspace without a git repository or completed by hand.
+	 */
+	listTaskActivity: (taskId: TaskId) => typedError<TaskActivity[], CommandError>(invoke("list_task_activity", { taskId })),
 	herdrStatus: () => typedError<HerdrStatus, CommandError>(invoke("herdr_status")),
 	/**
 	 *  Creates the worktree of a `planned` task whose dependencies are done through herdr
@@ -245,6 +252,10 @@ export const commands = {
 	listAgentStatuses: () => invoke<TaskAgentStatus[]>("list_agent_statuses"),
 	mcpServerInfo: () => invoke<McpServerInfo>("mcp_server_info"),
 	listMcpTunnels: () => invoke<McpTunnel[]>("list_mcp_tunnels"),
+	/**  Lists live OAuth connections and the MCP URL to paste into a chat app. */
+	listConnectedApps: () => typedError<ConnectedApps, CommandError>(invoke("list_connected_apps")),
+	/**  Disconnects an app by revoking its whole token family. */
+	revokeConnectedApp: (grantId: OAuthGrantId) => typedError<null, CommandError>(invoke("revoke_connected_app", { grantId })),
 	/**
 	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
 	 *  ordered by outcome, then by time. The caller picks the period, such as a week, a
@@ -276,6 +287,12 @@ export const events = {
 };
 
 /* Types */
+/**  What happened in the git history of a task. */
+export type ActivityKind = "commit" | "pr_opened" | "checks_passed" | "checks_failed" | "pr_merged";
+
+/**  Where an activity event was first learned from. */
+export type ActivitySource = "git_poll" | "github_poll";
+
 /**  Whether agents merge the pull request of their own task. Toodo itself never merges. */
 export type AgentMerge = 
 /**  Agents stop once the pull request is open; the user merges it. */
@@ -398,6 +415,30 @@ export type CommitRecord = {
 	author: string,
 	/**  Commit timestamp in seconds since the Unix epoch. */
 	committedAt: number,
+};
+
+/**  How the tasks of a workspace get done. */
+export type CompletionMode = 
+/**  Their criteria are met without a merge, e.g. checked by hand. */
+"manual" | 
+/**  Their branch is merged into the base branch locally. */
+"local_merge" | 
+/**  Their pull request is merged into the base branch. */
+"pr_merge";
+
+/**  A live app connection shown in Settings. */
+export type ConnectedApp = {
+	grantId: OAuthGrantId,
+	clientName: string | null,
+	clientId: string,
+	scopes: string,
+	createdAt: Timestamp,
+	lastUsedAt: Timestamp | null,
+};
+
+export type ConnectedApps = {
+	publicMcpUrl: string | null,
+	apps: ConnectedApp[],
 };
 
 /**  A completion criterion of a task. */
@@ -613,8 +654,24 @@ export type NewTask = {
 export type NewWorkspace = {
 	name: string,
 	location: WorkspaceLocation,
-	source: WorkspaceSource,
-	/**  Detected from the repository when empty or absent. */
+	/**
+	 *  How the repository gets to the location; required for a git source, absent for
+	 *  none.
+	 */
+	repository: RepositorySetup | null,
+	/**
+	 *  Omitted: github when the prepared repository has an origin remote, else
+	 *  local_git; none when `repository` is absent.
+	 */
+	source: Source | null,
+	/**
+	 *  Omitted: the default of the source (none: manual, local_git: local_merge,
+	 *  github: pr_merge).
+	 */
+	completion: CompletionMode | null,
+	/**  Omitted: the default of the source (none: none, git sources: herdr). */
+	runner: Runner | null,
+	/**  Detected from the repository when empty or absent; ignored for source none. */
 	defaultBaseBranch: string | null,
 };
 
@@ -624,6 +681,9 @@ export type NoteKind =
 "progress" | 
 /**  Something that stops the work until someone acts on it. */
 "blocker";
+
+/**  An OAuth app with an unrevoked grant and a live token. */
+export type OAuthGrantId = number;
 
 /**
  *  Why the server cannot run git in the repository of a local workspace. Paths on SSH
@@ -666,6 +726,18 @@ export type RemoteDirectory = {
 	directories: string[],
 };
 
+/**  How the repository of a new workspace gets to its location. */
+export type RepositorySetup = 
+/**  The location already holds a cloned repository. */
+{ kind: "open" } | 
+/**  Clone `url` into the location, which must not exist or be empty. */
+{ kind: "clone"; url: string } | 
+/**
+ *  Make the location, a plain folder or one that does not exist yet, a new git
+ *  repository without a remote.
+ */
+{ kind: "init" };
+
 /**  A task with activity in a reviewed period. */
 export type ReviewEntry = {
 	task: Task,
@@ -684,6 +756,22 @@ export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "wor
 
 /**  Where the reviews of a pull request stand. */
 export type ReviewStatus = "approved" | "changes_requested" | "pending";
+
+/**  What runs the work of a started task. */
+export type Runner = 
+/**  Nothing: starting a task only marks it in progress. */
+"none" | 
+/**  Agents in a herdr workspace on a task worktree and branch. */
+"herdr";
+
+/**  What a workspace location holds. */
+export type Source = 
+/**  A plain directory without a repository; tasks have no branches or worktrees. */
+"none" | 
+/**  A git repository without a GitHub remote; task branches merge locally. */
+"local_git" | 
+/**  A git repository whose `origin` remote is on GitHub; tasks ship as pull requests. */
+"github";
 
 export type Task = {
 	id: TaskId,
@@ -735,6 +823,22 @@ export type Task = {
 	notes: TaskNote[],
 	/**  What has to hold for the task to be done, in order. */
 	criteria: Criterion[],
+};
+
+/**  One event of the git activity of a task. */
+export type TaskActivity = {
+	kind: ActivityKind,
+	source: ActivitySource,
+	/**  The commit SHA of a commit or CI result, or the pull request URL. */
+	externalRef: string,
+	title: string,
+	author: string | null,
+	/**  When it happened, in seconds since the Unix epoch. */
+	occurredAt: number,
+	/**  When Toodo first stored it. */
+	receivedAt: number,
+	/**  The latest time any source reported it. */
+	confirmedAt: number,
 };
 
 /**
@@ -879,6 +983,12 @@ export type Workspace = {
 	 *  when it can. Ignored when the workspace is saved.
 	 */
 	pathProblem: PathProblem | null,
+	/**  What the location holds; set at creation and ignored when the workspace is saved. */
+	source: Source,
+	/**  How its tasks get done; set at creation and ignored when the workspace is saved. */
+	completion: CompletionMode,
+	/**  What runs started tasks; set at creation and ignored when the workspace is saved. */
+	runner: Runner,
 };
 
 export type WorkspaceId = number;
@@ -894,18 +1004,6 @@ export type WorkspaceLocation =
  *  drive or UNC path when the machine is a Windows host.
  */
 { kind: "ssh"; machine: string; path: string };
-
-/**  How the repository of a new workspace gets to its location. */
-export type WorkspaceSource = 
-/**  The location already holds a cloned repository. */
-{ kind: "open" } | 
-/**  Clone `url` into the location, which must not exist or be empty. */
-{ kind: "clone"; url: string } | 
-/**
- *  Make the location, a plain folder or one that does not exist yet, a new git
- *  repository without a remote.
- */
-{ kind: "init" };
 
 /**  Workspaces were added outside the app's own forms, e.g. by an agent through MCP. */
 export type WorkspacesChanged = null;

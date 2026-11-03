@@ -55,6 +55,104 @@ version, so an installed server compares directly with a release, and the commit
 1c78b7a1a2b3)`), so a build of a later commit is told apart from the release it reports.
 The server prints the same line when it starts. See "Releases and Updates" in the README for how a release is made.
 
+### npm Packages
+
+The same version is published to npm as `@dubusoft/toodo` (the `toodo` launcher) with
+one platform package per target, `@dubusoft/toodo-linux-x64` and
+`@dubusoft/toodo-linux-arm64`, each carrying `toodo`, `toodo-server`, and the web app.
+The `npm` workflow (`.github/workflows/npm.yml`) publishes them:
+
+- On every push to `dev`, a prerelease `X.Y.Z-dev.N` (the next patch version of
+  `package.json`, `N` the run number) under the dist-tag `dev`.
+- From the `Release` workflow, the release version under the dist-tag `latest`, skipped
+  when that version is on npm already.
+
+It publishes with the `NPM_TOKEN` secret when that is set, else through npm trusted
+publishing (OIDC). With neither set up it skips publishing with a notice instead of
+failing. Packages are staged with `scripts/package-npm.mjs`.
+
+## Install with npm
+
+On Linux x64 or arm64 with glibc (Node.js 18 or later), as the user who runs herdr:
+
+```sh
+npx @dubusoft/toodo init
+```
+
+`init` creates the data directory with its database and access tokens, saves the listen
+address in `cli.json` there, and starts `toodo-server` in the background. It prints the web
+app URL and the file that holds the web access token (`cat` it to sign in), and the MCP
+URL with its token file. Where `claude` is on `PATH` it registers the MCP endpoint with
+`claude mcp add`; where `codex` is on `PATH` it writes the endpoint to
+`$CODEX_HOME/config.toml` (else `~/.codex/config.toml`). Running it again keeps the database
+and tokens. herdr is not needed to start the server; workspaces need it.
+
+- `--port N`: port to listen on, keeping the saved host (default `47616`).
+- `--listen HOST:PORT`: address to listen on (default `127.0.0.1:47616`).
+- `--data-dir DIR`: data directory (default `$TOODO_DATA_DIR`, else the directory `init`
+  recorded, else `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server`). `init`
+  records the absolute path in `$XDG_CONFIG_HOME/toodo/data-dir` (`~/.config/toodo/data-dir`),
+  so the other commands find it without the option; they take `--data-dir` too, and the
+  option beats `$TOODO_DATA_DIR`, which beats the record.
+- `--no-mcp`: register the MCP endpoint with no agent.
+
+To have the `toodo` command at hand, install it globally:
+
+```sh
+npm i -g @dubusoft/toodo
+```
+
+- `toodo start`, `toodo stop`: start or stop the server, through systemd once the service
+  is installed, else as a background process with `server.pid` and `server.log` in the
+  data directory.
+- `toodo status`: whether the server runs and where its files are; exits `0` when it runs
+  and `3` when it is stopped.
+- `toodo service install`: run the server as the systemd user service
+  `toodo-server.service`, in the same layout as `scripts/install-server.sh`
+  (`~/.local/bin/toodo-server`, the web app in `~/.local/share/toodo-server-web`, see
+  [systemd](#systemd)). It enables and restarts the service and notes when lingering is
+  off.
+- `toodo update [--channel dev|latest] [--allow-downgrade]`: update a global install and
+  restart the server on it, see below.
+- `toodo --version`, `toodo --help`. `--version` prints the version of the installed npm
+  package (`toodo 1.3.2-dev.9 (commit 1c78b7a1a2b3)`). `toodo-server --version` and the
+  server's start log line report the same version: the npm workflow builds both binaries
+  with `TOODO_VERSION` set to the version it publishes (`src-tauri/build.rs`); other builds
+  report the crate version.
+
+`@dubusoft/toodo` follows releases; `@dubusoft/toodo@dev` follows the `dev` branch
+(`X.Y.Z-dev.N` prereleases), for example `npx @dubusoft/toodo@dev init`.
+
+To update a global install, run `toodo update`. It:
+
+1. Picks the channel: `--channel dev` or `--channel latest`, else `dev` when the installed
+   version is a prerelease and `latest` when it is a release.
+2. Resolves the channel to a version with `npm view` and stops when that version is
+   installed already. When it is older than the installed version by semver precedence
+   (`1.3.2-dev.1` is older than `1.3.2-dev.8`, and `1.3.2-dev.11` older than `1.3.2`), it
+   installs nothing and prints the command to install it anyway:
+   `toodo update --channel <channel> --allow-downgrade`. It checks that npm's global root (`npm root -g`) holds this `toodo`,
+   so it never updates another copy, and that the platform package of the version
+   (`@dubusoft/toodo-linux-x64`, ...) is on npm, which is published shortly after
+   `@dubusoft/toodo`. Then it runs `npm i -g @dubusoft/toodo@<version> --include=optional`.
+3. Restarts the server of the data directory (`--data-dir` as for the other commands) on
+   the new version, the way it runs: for the systemd user service `toodo-server.service`
+   it copies the new `toodo-server` and web app over `~/.local/bin/toodo-server` and
+   `~/.local/share/toodo-server-web` and runs `systemctl --user restart`; a server started
+   by `toodo start` is stopped and started again; on macOS a launchd job `toodo-server`
+   (`~/Library/LaunchAgents/toodo-server.plist`) is restarted with `launchctl kickstart -k`.
+   A server that is not running is left stopped; for the systemd service the new server and
+   web app are still copied, so the next `toodo start` runs the new version.
+4. Checks that the server answers (`POST /api/rpc/list_tasks` without a token is `401`).
+5. Prints the old and new version and the result.
+
+When npm fails, nothing is restarted and the running server keeps its version. When the
+server does not answer after the restart, `toodo update` exits `1` with the cause and the
+commands to find out why, restart it, or go back to the previous version.
+
+Without `toodo update`, run `npm i -g @dubusoft/toodo` again, then `toodo service install`
+or `toodo stop` and `toodo start`.
+
 ## Install and Update
 
 On a server, install and update from releases. As the user who runs herdr (git, gh
@@ -122,6 +220,7 @@ toodo-server
 | `TOODO_LISTEN` | `127.0.0.1:47616` | Address to listen on |
 | `TOODO_DATA_DIR` | `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server` | Database, backups, and access tokens |
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
+| `TOODO_PUBLIC_URL` | none | Public HTTPS origin, e.g. `https://toodo.example.com`; turns on OAuth for chat apps (see [Chat Apps over OAuth](#chat-apps-over-oauth)) |
 | `TOODO_PUSH_SUBJECT` | `https://github.com/dev-bokdong/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
 
 On first start the data directory gets two access tokens:
@@ -268,6 +367,75 @@ Besides the regular task tools, two arguments help an agent wire and start a pla
 no merge tool: agents follow the workspace's agent merge policy, which never allows merging
 past the base branch.
 
+### Chat Apps over OAuth
+
+The ChatGPT and Claude apps can plan in Toodo as a remote MCP server. They can't hold the
+static `mcp-token`, so they sign in with OAuth instead, and the server owner approves each
+one. This is public mode, and it's off by default.
+
+**Turning it on.** Set `TOODO_PUBLIC_URL` to the origin the apps reach the server at,
+for example `Environment=TOODO_PUBLIC_URL=https://toodo.example.com` in the
+[systemd](#systemd) unit. It must be `https://` with no path, query, or fragment (a
+trailing `/` is fine); `http://` is accepted only for `localhost`, `127.0.0.1`, and
+`[::1]`. Anything else stops the server at start with a message naming the expected form.
+
+Without it, nothing changes: the OAuth and discovery paths answer `404`, and `/mcp` accepts
+only the MCP token, only from loopback peers with a loopback `Host`. A request from another
+address gets `403` saying to connect through loopback or an SSH tunnel, or to set
+`TOODO_PUBLIC_URL`. With it, `/mcp` also accepts the public host, and requests may come from
+any peer (the tunnel or proxy in front is the peer). Local agents keep using `mcp-token`
+on loopback as before and still see every tool.
+
+**What a chat app can do.** An app gets one or both scopes:
+
+- `toodo.read`: `read_toodo_skill`, `list_workspaces`, `list_tasks`, `search_tasks`,
+  `get_task`.
+- `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `update_task`,
+  `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
+  `add_criterion`, `remove_criterion`, `check_criterion`, `add_progress_note`,
+  `report_blocker`, and `pause_task`.
+
+None of these runs git, herdr, gh, or ssh. `create_workspace` accepts only
+`source: "none"` from an app; git workspaces are added in the Toodo app or by a local
+agent. The tools that run things stay local: `current_task`, `start_task`, `resume_task`,
+`restore_worktree`, `set_worktree_root`, `list_machine_settings`, `complete_task`, and
+`conclude_task` never appear in an app's tool list, and calling one is refused even with
+`toodo.write`. `check_criterion` checks a stored manual criterion and never runs a
+criterion's command; `pause_task` keeps the worktree and herdr workspace. An app's
+`initialize` reply and `read_toodo_skill` carry planning instructions for a chat, not the
+worktree and pull request workflow.
+
+**Connecting.** In ChatGPT or Claude, add a custom (remote) MCP connector with the URL
+`https://toodo.example.com/mcp` and OAuth authentication; leave client ID and secret empty,
+since the app registers itself. The app finds the authorization server from the `401`
+at `/mcp`, which points at `/.well-known/oauth-protected-resource/mcp`. It then opens the
+consent page at `/oauth/authorize` in the browser: it names the app and where it returns
+to, lists the scopes (read is always granted; untick write for a read-only app), and asks
+for `web-token`. Approve, and the browser returns to the app. After 5 wrong tokens the
+request is dropped; start the connection again from the app.
+
+**Tokens and revoking.** An access token lasts an hour and a refresh token 30 days. Each
+refresh replaces both, and a refresh token presented twice revokes the whole grant, so a
+copied token stops working once either side uses it. Only SHA-256 hashes of tokens and
+client secrets are stored. To disconnect an app, revoke it under **Connected apps** in
+Settings, which also shows the public MCP URL, or disconnect it in the app itself; either
+ends its access and refresh tokens at once, and the app connects again through the consent
+page.
+
+The endpoints, all under `TOODO_PUBLIC_URL`:
+
+- `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp`:
+  protected resource metadata (RFC 9728).
+- `/.well-known/oauth-authorization-server` and `/.well-known/openid-configuration`:
+  authorization server metadata (RFC 8414).
+- `POST /oauth/register`: dynamic client registration (RFC 7591). Client ID metadata
+  documents (an `https://` URL as `client_id`) work too.
+- `GET` and `POST /oauth/authorize`: the consent page; PKCE with `S256` is required.
+- `POST /oauth/token` and `POST /oauth/revoke`.
+
+To publish the server through Cloudflare, see
+[Chat apps through the tunnel](#chat-apps-through-the-tunnel).
+
 ### systemd
 
 Run it as the user who runs herdr, so it finds herdr's socket, `~/.ssh/config`, and the
@@ -286,6 +454,7 @@ Wants=herdr-server.service
 ExecStart=/home/me/.local/bin/toodo-server
 Environment=TOODO_LISTEN=127.0.0.1:47616
 Environment=TOODO_DATA_DIR=/home/me/.local/share/toodo-server
+# Environment=TOODO_PUBLIC_URL=https://toodo.example.com   (public mode, off by default)
 Environment=PATH=/home/me/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=5
@@ -357,8 +526,9 @@ You need a domain on Cloudflare and a Zero Trust organization (the free plan doe
    `toodo.example.com` (the whole hostname, no path) with an *Allow* policy that includes
    only your own identity, for example your e-mail address with the one-time PIN login. Do
    it before the hostname resolves, so nothing is ever reachable without it. Add no
-   *Bypass* policy: the API, the event stream, and `/mcp` all sit behind the same
-   application.
+   *Bypass* policy here: the API, the event stream, and `/mcp` all sit behind this
+   application. Chat apps need a narrow bypass of their own; see
+   [Chat apps through the tunnel](#chat-apps-through-the-tunnel).
 2. **A tunnel of its own.** Create a new, remotely managed tunnel (*Networks > Tunnels*)
    for the server instead of adding a hostname to a tunnel the machine already runs for
    something else: it gets its own token, can be stopped or deleted alone, and a mistake in
@@ -420,12 +590,43 @@ Things to know:
 - `/api/events` works through the tunnel: Cloudflare passes `text/event-stream` responses
   through unbuffered, and the server's 15-second keep-alive stays below Cloudflare's idle
   timeout.
-- Agents keep using `/mcp` on loopback (or through the server's reverse SSH tunnels);
-  do not point remote agents at the public hostname, where Access stops them.
+- Agents keep using `/mcp` on loopback (or through the server's reverse SSH tunnels)
+  with `mcp-token`; don't point them at the public hostname. Only chat apps signed in with
+  OAuth use it, and only after the bypass in
+  [Chat apps through the tunnel](#chat-apps-through-the-tunnel).
 - If a phone is lost, revoke it under **Devices** in Settings from another device; the shared
   `web-token` and the other devices keep working.
 - To take it offline again, stop and disable `toodo-tunnel`; to remove it, delete the
   tunnel, its DNS record, and the Access application.
+
+#### Chat Apps through the Tunnel
+
+ChatGPT and Claude can't sign in to Access, so the paths they use must skip it while the
+rest of the hostname stays behind it. Set `TOODO_PUBLIC_URL=https://toodo.example.com` (see
+[Chat Apps over OAuth](#chat-apps-over-oauth)) and restart the server. Then, in Zero Trust,
+add one more self-hosted Access application for the same hostname with these paths only:
+
+- `toodo.example.com/mcp`
+- `toodo.example.com/oauth/*`
+- `toodo.example.com/.well-known/*`
+
+Give it a single *Bypass* policy that includes everyone. Access applies the most specific
+path, so these three skip Access and everything else, the web app, `/api`, and the event
+stream, still goes through the first application's *Allow* policy. Bypass nothing else.
+On the bypassed paths the server checks the caller itself: `/mcp` needs an OAuth access
+token, and the consent page needs `web-token`.
+
+Check from outside: `/mcp` now answers the server's own `401`, and `/api` still redirects
+to the Access login:
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/mcp
+# 401
+curl -s https://toodo.example.com/.well-known/oauth-protected-resource/mcp
+# {"resource":"https://toodo.example.com/mcp",...}
+curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_tasks
+# 302
+```
 
 ## Development
 

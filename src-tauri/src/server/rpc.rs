@@ -14,7 +14,8 @@ use serde::de::DeserializeOwned;
 use super::Services;
 use crate::commands::types::{
     BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost, NewTask, NewWorkspace,
-    TaskEdit, TaskId, TaskResolution, Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
+    OAuthGrantId, TaskEdit, TaskId, TaskResolution, Timestamp, Workspace, WorkspaceId,
+    WorkspaceLocation,
 };
 use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
@@ -165,6 +166,12 @@ macro_rules! commands {
 
 commands!(s => {
     "app_info"() => sync Reply::value(crate::commands::app_info());
+    "list_connected_apps"() => sync Reply::result(
+        mcp::list_connected_apps(State(&s.storage), State(&s.public_url))
+    );
+    "revoke_connected_app"(grant_id: OAuthGrantId) => sync Reply::result(
+        mcp::revoke_connected_app(State(&s.storage), grant_id)
+    );
 
     "list_workspaces"() => sync Reply::result(workspaces::list_workspaces(State(&s.storage)));
     "get_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::get_workspace(State(&s.storage), id));
@@ -211,13 +218,13 @@ commands!(s => {
     );
     "get_task"(id: TaskId) => sync Reply::result(tasks::get_task(State(&s.storage), id));
     "create_task"(task: NewTask) => sync Reply::result(
-        tasks::create_task(State(&s.storage), State(&s.git), task)
+        tasks::create_task(State(&s.storage), task)
     );
     "check_criterion"(task_id: TaskId, criterion_id: CriterionId, met: bool, evidence: Option<String>) => sync Reply::result(
         tasks::check_criterion(State(&s.storage), task_id, criterion_id, met, evidence)
     );
     "update_task"(task: TaskEdit) => sync Reply::result(
-        tasks::update_task(State(&s.storage), State(&s.git), task)
+        tasks::update_task(State(&s.storage), task)
     );
     "pause_task"(id: TaskId) => sync Reply::result(tasks::pause_task(State(&s.storage), id));
     "set_completion_note"(id: TaskId, note: String) => sync Reply::result(
@@ -240,6 +247,9 @@ commands!(s => {
     );
     "list_commit_records"(task_id: TaskId) => sync Reply::result(
         tasks::list_commit_records(State(&s.storage), task_id)
+    );
+    "list_task_activity"(task_id: TaskId) => sync Reply::result(
+        tasks::list_task_activity(State(&s.storage), task_id)
     );
 
     "herdr_status"() => sync Reply::result(herdr::herdr_status(State(&s.herdr)));

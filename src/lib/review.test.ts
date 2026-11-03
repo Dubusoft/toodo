@@ -110,6 +110,9 @@ const toodo: Workspace = {
   location: { kind: "local", path: "C:\\dev\\toodo" },
   defaultBaseBranch: "main",
   agentMerge: "never",
+  source: "github",
+  completion: "pr_merge",
+  runner: "herdr",
   pathProblem: null,
 };
 const herdr: Workspace = { ...toodo, id: 2, name: "herdr" };

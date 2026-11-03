@@ -10,12 +10,37 @@ use super::State;
 use super::types::{HerdrStatus, Task, TaskId, TaskPane};
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
-use crate::adapters::herdr::{AgentStatus, Herdr, HerdrError, NewWorktree, PaneAgent};
+pub(super) use crate::adapters::herdr::WORKSPACE_NOT_FOUND;
+use crate::adapters::herdr::{
+    AGENT_NOT_FOUND, AgentStatus, DIRTY_WORKTREE, Herdr, HerdrError, PaneAgent, WORKTREE_NOT_FOUND,
+};
+use crate::adapters::task_runtime::TaskWorkspaceRuntime;
 use crate::domain::criteria::{CheckKind, CriterionState};
-use crate::domain::model::{self, Machine, WorkspaceLocation};
-use crate::domain::naming;
+use crate::domain::model::{self, Machine, Runner, WorkspaceLocation};
+use crate::domain::naming::{self, TaskCheckout};
+use crate::domain::runtime::{HostRef, OwnerKey, RunRole, RunState};
 use crate::domain::status::TaskStatus;
+use crate::runtime::{
+    NoRunner, OpenFor, OpenWorktree, RunCommand, RuntimeError, RuntimeService, StartRun,
+    TaskWorktree, end_runs,
+};
 use crate::storage::{CriterionCheck, StorageError};
+
+impl From<RuntimeError> for CommandError {
+    fn from(error: RuntimeError) -> Self {
+        match error {
+            RuntimeError::Storage(error) => error.into(),
+            RuntimeError::Workspace(error) => error.into(),
+            error @ RuntimeError::Runner(_) => CommandError::external(error.to_string()),
+            error @ RuntimeError::WorkspaceNotOpen { .. } => {
+                CommandError::rejected(error.to_string())
+            }
+            error @ RuntimeError::RecordMismatch { .. } => {
+                CommandError::internal(error.to_string())
+            }
+        }
+    }
+}
 
 #[specta::specta]
 pub fn herdr_status(herdr: State<'_, HerdrState>) -> CommandResult<HerdrStatus> {
@@ -35,7 +60,7 @@ pub fn start_task(
     herdr: State<'_, HerdrState>,
     id: TaskId,
 ) -> CommandResult<Task> {
-    Ok((&start(&storage, &git, &herdr, id.into())?).into())
+    Ok((&start(&storage, &git, &**herdr, id.into())?).into())
 }
 
 /// Makes sure herdr has the workspace of a started task open without focusing it, opening
@@ -97,14 +122,18 @@ pub fn restore_task_worktree(
     Ok((&restore(&storage, &git, &herdr, id.into())?).into())
 }
 
+/// Starts a task as [`start_task`] does. A task of a workspace with runner none moves to
+/// `in_progress` with a run recorded through [`NoRunner`], which ends its earlier runs: it
+/// gets no branch, worktree, or herdr workspace, and neither git nor herdr runs.
 pub(crate) fn start(
     storage: &StorageState,
     git: &Git,
-    herdr: &Herdr,
+    runtime: &dyn TaskWorkspaceRuntime,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
-    let (workspace, mut checkout, resumed, kept_worktree, start_unknown) = {
-        let storage = lock(storage);
+    let storage_state = storage;
+    let (workspace, checkout, resumed, kept_worktree, start_unknown) = {
+        let mut storage = lock(storage);
         let task = storage
             .get_task(id)?
             .ok_or(StorageError::TaskNotFound(id))?;
@@ -120,6 +149,26 @@ pub(crate) fn start(
         let workspace = storage
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+        if workspace.runner == Runner::None {
+            // The status changes under the lock, so a second start is rejected above.
+            let started = storage.set_task_status(id, TaskStatus::InProgress)?;
+            end_runs(&mut storage, id, None, RunState::Exited)?;
+            let request = StartRun {
+                owner: OwnerKey::implicit(),
+                task: id,
+                // Unique per task: a request key never comes back once its run is recorded.
+                request_key: format!("start-{id}-{}", storage.list_task_runs(id)?.len() + 1),
+                role: RunRole::Writer,
+                host: HostRef::from(&workspace.location.machine()),
+                checkout_path: None,
+                runtime_workspace: None,
+                adapter_profile: None,
+                command: RunCommand::ByHand,
+            };
+            drop(storage);
+            RuntimeService.start_run(storage_state, &NoRunner, request)?;
+            return Ok(started);
+        }
         let settings = storage.get_machine_settings(&workspace.location.machine())?;
         let mut checkout = naming::task_checkout(&workspace, &settings, &task)?;
         // A paused task keeps the branch it got when it first started.
@@ -150,14 +199,27 @@ pub(crate) fn start(
         WorkspaceLocation::Local { path } => path.as_str(),
         WorkspaceLocation::Ssh { path, .. } => path.as_str(),
     };
+    let target = TaskWorktree {
+        task: id,
+        machine: &machine,
+        repository,
+    };
     if let Some(path) = kept_worktree {
-        match herdr.open_worktree(&machine, repository, &path.to_string()) {
-            Ok(herdr_workspace_id) => {
-                checkout.path = path;
-                return Ok(lock(storage).start_task(id, &checkout, &herdr_workspace_id)?);
-            }
+        let kept = TaskCheckout {
+            path,
+            branch: checkout.branch.clone(),
+        };
+        match RuntimeService.open_workspace(
+            storage,
+            runtime,
+            &target,
+            &kept,
+            OpenWorktree::Existing,
+            OpenFor::Start,
+        ) {
+            Ok(opened) => return Ok(opened.task),
             // The checkout was removed outside Toodo; check the branch out again below.
-            Err(error) if has_code(&error, WORKTREE_NOT_FOUND) => {}
+            Err(RuntimeError::Workspace(error)) if has_code(&error, WORKTREE_NOT_FOUND) => {}
             Err(error) => return Err(error.into()),
         }
     }
@@ -210,26 +272,28 @@ pub(crate) fn start(
         }
     };
     let path = checkout.path.to_string();
-    let herdr_workspace_id = herdr
-        .create_worktree(
-            &machine,
-            &NewWorktree {
-                repository,
-                path: &path,
-                branch: &checkout.branch,
-                base: &base,
-            },
+    let opened = RuntimeService
+        .open_workspace(
+            storage,
+            runtime,
+            &target,
+            &checkout,
+            OpenWorktree::New { base: &base },
+            OpenFor::Start,
         )
-        .inspect_err(|_| {
-            if created_branch {
-                // The herdr error is what the user needs; a branch left behind is reused
-                // by the next attempt.
-                let _ = git.delete_branch(&workspace.location, &checkout.branch);
+        .map_err(|error| match error {
+            RuntimeError::Workspace(error) => {
+                if created_branch {
+                    // The herdr error is what the user needs; a branch left behind is
+                    // reused by the next attempt.
+                    let _ = git.delete_branch(&workspace.location, &checkout.branch);
+                }
+                worktree_error(error, id, &path)
             }
-        })
-        .map_err(|error| worktree_error(error, id, &path))?;
+            error => error.into(),
+        })?;
     let mut storage = lock(storage);
-    let mut started = storage.start_task(id, &checkout, &herdr_workspace_id)?;
+    let mut started = opened.task;
     if !start_checks.is_empty() {
         started = storage.record_criterion_checks(id, &start_checks)?.0;
     }
@@ -274,6 +338,12 @@ pub(crate) fn restore(
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
         (task, workspace)
     };
+    if workspace.runner == Runner::None && task.branch.is_none() {
+        return Err(CommandError::rejected(format!(
+            "task {id} belongs to workspace {}, which runs tasks without herdr (runner none), so it has no branch or worktree to restore; work on it in the workspace directory and complete it once its criteria are met",
+            workspace.name
+        )));
+    }
     if matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview) {
         super::completion::clear_missing_worktree(storage, git, &task, &workspace)?;
     }
@@ -320,18 +390,26 @@ pub(crate) fn restore(
         WorkspaceLocation::Ssh { path, .. } => path.as_str(),
     };
     let path = checkout.path.to_string();
-    let herdr_workspace_id = herdr
-        .create_worktree(
-            &workspace.location.machine(),
-            &NewWorktree {
-                repository,
-                path: &path,
-                branch: &checkout.branch,
-                base: &base,
-            },
+    let machine = workspace.location.machine();
+    let target = TaskWorktree {
+        task: id,
+        machine: &machine,
+        repository,
+    };
+    let opened = RuntimeService
+        .open_workspace(
+            storage,
+            herdr,
+            &target,
+            &checkout,
+            OpenWorktree::New { base: &base },
+            OpenFor::Restore,
         )
-        .map_err(|error| worktree_error(error, id, &path))?;
-    Ok(lock(storage).restore_task_worktree(id, &checkout.path, &herdr_workspace_id)?)
+        .map_err(|error| match error {
+            RuntimeError::Workspace(error) => worktree_error(error, id, &path),
+            error => error.into(),
+        })?;
+    Ok(opened.task)
 }
 
 /// Where the herdr workspace of a started task is.
@@ -341,22 +419,35 @@ struct TaskWorkspace {
     herdr_workspace_id: String,
 }
 
+/// The herdr workspace of the task's open runtime workspace.
 fn task_workspace(storage: &StorageState, id: model::TaskId) -> CommandResult<TaskWorkspace> {
     let storage = lock(storage);
     let task = storage
         .get_task(id)?
         .ok_or(StorageError::TaskNotFound(id))?;
-    let herdr_workspace_id = task.herdr_workspace_id.ok_or_else(|| {
-        CommandError::rejected(format!("task {id} has no herdr workspace; start it first"))
-    })?;
     let workspace = storage
         .get_workspace(task.workspace_id)?
         .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+    let herdr_workspace_id = storage
+        .open_runtime_workspace(id)?
+        .map(|record| record.provider_workspace_ref)
+        .ok_or_else(|| no_herdr_workspace(id, &workspace))?;
     Ok(TaskWorkspace {
         location: workspace.location,
         worktree_path: task.worktree_path,
         herdr_workspace_id,
     })
+}
+
+/// Why the task `id` of `workspace` has no herdr workspace to open, with the next step.
+fn no_herdr_workspace(id: model::TaskId, workspace: &model::Workspace) -> CommandError {
+    if workspace.runner == Runner::None {
+        return CommandError::rejected(format!(
+            "task {id} belongs to workspace {}, which runs tasks without herdr (runner none), so it has no herdr workspace or panes; work on it in the workspace directory and complete it once its criteria are met",
+            workspace.name
+        ));
+    }
+    CommandError::rejected(format!("task {id} has no herdr workspace; start it first"))
 }
 
 /// Opens the worktree of a task whose herdr workspace herdr no longer has, e.g. because
@@ -377,9 +468,13 @@ fn reopen(
         WorkspaceLocation::Ssh { path, .. } => path.as_str(),
     };
     let machine = target.location.machine();
-    let reopened = herdr.open_worktree(&machine, repository, &path.to_string())?;
-    lock(storage).set_task_herdr_workspace(id, &reopened)?;
-    Ok(reopened)
+    let worktree = TaskWorktree {
+        task: id,
+        machine: &machine,
+        repository,
+    };
+    let reopened = RuntimeService.reopen_workspace(storage, herdr, &worktree, &path.to_string())?;
+    Ok(reopened.record.provider_workspace_ref)
 }
 
 /// Focuses the herdr workspace of a started task. When herdr no longer has it, the task's
@@ -455,19 +550,8 @@ fn ensure_workspace(
 }
 
 fn focus_agent(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandResult<()> {
-    let (machine, herdr_workspace_id) = {
-        let storage = lock(storage);
-        let task = storage
-            .get_task(id)?
-            .ok_or(StorageError::TaskNotFound(id))?;
-        let herdr_workspace_id = task.herdr_workspace_id.ok_or_else(|| {
-            CommandError::rejected(format!("task {id} has no herdr workspace; start it first"))
-        })?;
-        let workspace = storage
-            .get_workspace(task.workspace_id)?
-            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
-        (workspace.location.machine(), herdr_workspace_id)
-    };
+    let target = task_workspace(storage, id)?;
+    let (machine, herdr_workspace_id) = (target.location.machine(), target.herdr_workspace_id);
     let pane = herdr
         .list_panes(&machine)?
         .into_iter()
@@ -514,7 +598,7 @@ fn remove_worktree(
     id: model::TaskId,
     force: bool,
 ) -> CommandResult<model::Task> {
-    let (location, path, herdr_workspace_id) = {
+    let (location, path) = {
         let storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -531,48 +615,29 @@ fn remove_worktree(
         let workspace = storage
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
-        (
-            workspace.location,
-            path.to_string(),
-            task.herdr_workspace_id,
-        )
+        (workspace.location, path.to_string())
     };
     let machine = location.machine();
-    let dirty = |error: HerdrError| {
-        if has_code(&error, DIRTY_WORKTREE) {
-            CommandError::rejected(format!(
-                "the worktree of task {id} at {path} has modified or untracked files; \
-                 force the removal to discard them"
-            ))
-        } else {
-            error.into()
-        }
+    let repository = match &location {
+        WorkspaceLocation::Local { path } => path.as_str(),
+        WorkspaceLocation::Ssh { path, .. } => path.as_str(),
     };
-    let removed = match &herdr_workspace_id {
-        Some(workspace_id) => match herdr.remove_worktree(&machine, workspace_id, force) {
-            Ok(()) => true,
-            Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => false,
-            Err(error) => return Err(dirty(error)),
-        },
-        None => false,
+    let target = TaskWorktree {
+        task: id,
+        machine: &machine,
+        repository,
     };
-    // herdr no longer has the workspace, e.g. the user closed it or herdr lost its session,
-    // but the checkout may still exist: open it again to remove it.
-    if !removed {
-        let repository = match &location {
-            WorkspaceLocation::Local { path } => path.as_str(),
-            WorkspaceLocation::Ssh { path, .. } => path.as_str(),
-        };
-        match herdr.open_worktree(&machine, repository, &path) {
-            Ok(workspace_id) => herdr
-                .remove_worktree(&machine, &workspace_id, force)
-                .map_err(dirty)?,
-            // The checkout is already gone.
-            Err(error) if has_code(&error, WORKTREE_NOT_FOUND) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(lock(storage).clear_task_worktree(id)?)
+    RuntimeService
+        .remove_workspace(storage, herdr, &target, &path, force)
+        .map_err(|error| match error {
+            RuntimeError::Workspace(error) if has_code(&error, DIRTY_WORKTREE) => {
+                CommandError::rejected(format!(
+                    "the worktree of task {id} at {path} has modified or untracked files; \
+                     force the removal to discard them"
+                ))
+            }
+            error => error.into(),
+        })
 }
 
 /// Makes `id` depend on every task of `depends_on` for the app, where the user already
@@ -607,7 +672,7 @@ fn close_workspace(
     herdr: &Herdr,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
-    let (location, workspace_id) = {
+    let location = {
         let storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -617,31 +682,23 @@ fn close_workspace(
                 "task {id} is being worked on; pause it before closing its herdr workspace"
             )));
         }
-        let Some(workspace_id) = task.herdr_workspace_id else {
+        if task.herdr_workspace_id.is_none() {
             return Ok(task);
-        };
+        }
         let workspace = storage
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
-        (workspace.location, workspace_id)
+        workspace.location
     };
-    match herdr.close_workspace(&location.machine(), &workspace_id) {
-        Ok(()) => {}
-        // Already closed, e.g. by the user.
-        Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => {}
-        Err(error) => return Err(error.into()),
-    }
-    Ok(lock(storage).clear_task_herdr_workspace(id)?)
+    Ok(
+        RuntimeService.close_workspace(storage, herdr, id, &location.machine(), |storage| {
+            storage.clear_task_herdr_workspace(id)
+        })?,
+    )
 }
 
-/// herdr API error codes that commands handle.
-const DIRTY_WORKTREE: &str = "dirty_worktree_requires_force";
-pub(super) const WORKSPACE_NOT_FOUND: &str = "workspace_not_found";
-const WORKTREE_NOT_FOUND: &str = "worktree_not_found";
-const AGENT_NOT_FOUND: &str = "agent_not_found";
-
 pub(super) fn has_code(error: &HerdrError, expected: &str) -> bool {
-    matches!(error, HerdrError::Failed { code: Some(code), .. } if code == expected)
+    error.has_code(expected)
 }
 
 #[cfg(test)]
@@ -651,6 +708,7 @@ mod tests {
     use super::*;
     use crate::adapters::git::fake::{FakeRunner, failed};
     use crate::adapters::git::{GitError, Invocation};
+    use crate::adapters::herdr::NewWorktree;
     use crate::commands::CommandErrorKind;
     use crate::domain::model::{HostPath, MachineLabel, MachineSettings, TaskType};
     use crate::domain::path::{PosixPath, WindowsPath};
@@ -671,6 +729,10 @@ mod tests {
                 name: "Toodo".to_owned(),
                 location,
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         let task = storage
@@ -1713,6 +1775,126 @@ mod tests {
         );
     }
 
+    /// A runtime that records its calls and answers them with `results` in order.
+    struct FakeRuntime {
+        results: Mutex<Vec<Result<String, HerdrError>>>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl FakeRuntime {
+        fn new(results: Vec<Result<String, HerdrError>>) -> Self {
+            Self {
+                results: Mutex::new(results),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn answer(&self, call: String) -> Result<String, HerdrError> {
+            self.calls.lock().unwrap().push(call);
+            self.results.lock().unwrap().remove(0)
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl TaskWorkspaceRuntime for FakeRuntime {
+        fn create_worktree(
+            &self,
+            _machine: &Machine,
+            worktree: &NewWorktree<'_>,
+        ) -> Result<String, HerdrError> {
+            self.answer(format!(
+                "create {} {} {} {}",
+                worktree.repository, worktree.path, worktree.branch, worktree.base
+            ))
+        }
+
+        fn open_worktree(
+            &self,
+            _machine: &Machine,
+            repository: &str,
+            path: &str,
+        ) -> Result<String, HerdrError> {
+            self.answer(format!("open {repository} {path}"))
+        }
+
+        fn remove_worktree(
+            &self,
+            _machine: &Machine,
+            workspace_id: &str,
+            force: bool,
+        ) -> Result<(), HerdrError> {
+            self.answer(format!("remove {workspace_id} {force}"))
+                .map(drop)
+        }
+
+        fn close_workspace(
+            &self,
+            _machine: &Machine,
+            workspace_id: &str,
+        ) -> Result<(), HerdrError> {
+            self.answer(format!("close {workspace_id}")).map(drop)
+        }
+
+        fn open_repository(
+            &self,
+            _machine: &Machine,
+            path: &str,
+            label: &str,
+        ) -> Result<String, HerdrError> {
+            self.answer(format!("open repository {path} {label}"))
+        }
+    }
+
+    fn runtime_failure(code: Option<&str>) -> HerdrError {
+        HerdrError::Failed {
+            command: "herdr worktree".to_owned(),
+            code: code.map(str::to_owned),
+            message: "failed".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_runtime_failure_other_than_a_missing_checkout_keeps_a_paused_task_paused() {
+        let (fixture, _, _) = paused_task(Vec::new());
+        let before = stored(&fixture);
+        let runtime = FakeRuntime::new(vec![Err(runtime_failure(Some("workspace_open_failed")))]);
+        let git = Git::new(Box::new(Arc::new(FakeRunner::new(Vec::new()))));
+
+        let error = start(&fixture.storage, &git, &runtime, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::External);
+        assert_eq!(
+            runtime.calls(),
+            [r"open C:\dev\toodo D:\wt\toodo\feat-add-login-1"]
+        );
+        assert_eq!(stored(&fixture), before);
+    }
+
+    #[test]
+    fn a_runtime_failure_creating_the_worktree_leaves_the_task_planned() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let before = stored(&fixture);
+        let runtime = FakeRuntime::new(vec![Err(runtime_failure(None))]);
+
+        let error = start(
+            &fixture.storage,
+            &existing_base(),
+            &runtime,
+            fixture.task.id,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::External);
+        assert_eq!(
+            runtime.calls(),
+            [r"create C:\dev\toodo D:\wt\toodo\feat-add-login-1 feat/add-login-1 main"]
+        );
+        assert_eq!(stored(&fixture), before);
+    }
+
     #[test]
     fn deleting_a_task_removes_its_worktree_first() {
         let (fixture, herdr, runner) = paused_task(vec![Ok(REMOVED.to_owned())]);
@@ -2109,5 +2291,229 @@ mod tests {
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert_eq!(invocations(&runner).len(), 1);
         assert_eq!(stored(&fixture).herdr_workspace_id.as_deref(), Some("w27"));
+    }
+
+    /// A workspace with source none at a temporary directory, created through the
+    /// creation command, and a task in it with only manual criteria and, if given, a
+    /// command criterion running `command`. git and herdr must not run for either.
+    fn plain_workspace_task(
+        dir: &std::path::Path,
+        command: Option<&str>,
+    ) -> (StorageState, model::Task) {
+        use crate::commands::types;
+        let storage: StorageState = Mutex::new(Storage::open_in_memory().unwrap());
+        let (git, herdr) = (no_git(), herdr(Vec::new()).0);
+        let workspace = crate::commands::workspaces::create(
+            &storage,
+            &git,
+            &herdr,
+            types::WorkspaceSetup {
+                name: "notes".to_owned(),
+                location: WorkspaceLocation::Local {
+                    path: PosixPath::parse(dir.to_str().unwrap()).unwrap().into(),
+                },
+                repository: None,
+                source: Some(model::Source::None),
+                completion: None,
+                runner: None,
+                default_base_branch: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (workspace.source, workspace.completion, workspace.runner),
+            (
+                model::Source::None,
+                model::CompletionMode::Manual,
+                Runner::None
+            )
+        );
+        let mut criteria = vec![types::CriterionInput {
+            id: None,
+            text: Some("Outline written".to_owned()),
+            kind: Some(types::CheckKind::Manual),
+            target: None,
+        }];
+        if let Some(command) = command {
+            criteria.push(types::CriterionInput {
+                id: None,
+                text: Some("Outline checked".to_owned()),
+                kind: Some(types::CheckKind::Command),
+                target: Some(command.to_owned()),
+            });
+        }
+        let task = crate::commands::tasks::create(
+            &storage,
+            types::NewTask {
+                workspace_id: workspace.id.into(),
+                task_type: types::TaskType::Docs,
+                title: "Write the outline".to_owned(),
+                description: String::new(),
+                estimate: None,
+                due_date: None,
+                criteria,
+                // Requested, but a workspace completed manually gets no merge criterion.
+                merge_criterion: true,
+            },
+        )
+        .unwrap();
+        (storage, task)
+    }
+
+    fn no_git() -> Git {
+        Git::new(Box::new(Arc::new(FakeRunner::new(Vec::new()))))
+    }
+
+    #[test]
+    fn a_task_of_a_workspace_without_a_runner_starts_without_git_or_herdr() {
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, task) = plain_workspace_task(dir.path(), None);
+        let runtime = FakeRuntime::new(Vec::new());
+
+        let started = start(&storage, &no_git(), &runtime, task.id).unwrap();
+
+        assert!(runtime.calls().is_empty());
+        let stored = lock(&storage).get_task(task.id).unwrap().unwrap();
+        assert_eq!(stored, started);
+        assert_eq!(stored.status, TaskStatus::InProgress);
+        assert_eq!(stored.branch, None);
+        assert_eq!(stored.worktree_path, None);
+        assert_eq!(stored.herdr_workspace_id, None);
+        assert_eq!(
+            stored.timeline.last().map(|event| event.status),
+            Some(TaskStatus::InProgress)
+        );
+        let runs = lock(&storage).list_task_runs(task.id).unwrap();
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(run.runner_kind, crate::domain::runtime::RunnerKind::None);
+        assert_eq!(run.state, RunState::Running);
+        assert_eq!(run.checkout_path, None);
+        assert_eq!(run.runtime_workspace, None);
+        let events = lock(&storage).run_events(run.id).unwrap();
+        let kinds: Vec<_> = events.iter().map(|event| event.kind.as_str()).collect();
+        assert_eq!(kinds, ["reserved", "launched"]);
+
+        let again = start(&storage, &no_git(), &runtime, task.id).unwrap_err();
+        assert_eq!(again.kind, CommandErrorKind::Rejected);
+        assert_eq!(lock(&storage).list_task_runs(task.id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn branch_and_herdr_commands_name_the_next_step_for_a_task_without_a_runner() {
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, task) = plain_workspace_task(dir.path(), None);
+        start(&storage, &no_git(), &FakeRuntime::new(Vec::new()), task.id).unwrap();
+        let (herdr, _) = herdr(Vec::new());
+
+        for error in [
+            restore(&storage, &no_git(), &herdr, task.id).unwrap_err(),
+            open(&storage, &herdr, task.id).unwrap_err(),
+            ensure_workspace(&storage, &herdr, task.id).unwrap_err(),
+            focus_agent(&storage, &herdr, task.id).unwrap_err(),
+            crate::commands::completion::checkout(&storage, &no_git(), task.id)
+                .err()
+                .unwrap(),
+        ] {
+            assert_eq!(error.kind, CommandErrorKind::Rejected);
+            assert!(error.message.contains("runner none"), "{}", error.message);
+        }
+        // Deleting the task has no worktree to remove.
+        delete(&storage, &herdr, task.id, false).unwrap();
+    }
+
+    #[test]
+    fn a_task_without_a_repository_is_planned_started_checked_and_completed() {
+        use crate::adapters::github::GitHub;
+        use crate::commands::{completion, tasks, types};
+        use crate::domain::criteria::CheckedBy;
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, task) = plain_workspace_task(dir.path(), None);
+        let kinds: Vec<CheckKind> = task.criteria.iter().map(|c| c.kind).collect();
+        assert_eq!(kinds, [CheckKind::Manual]);
+
+        let runtime = FakeRuntime::new(Vec::new());
+        let started = start(&storage, &no_git(), &runtime, task.id).unwrap();
+        assert_eq!(started.status, TaskStatus::InProgress);
+        assert!(runtime.calls().is_empty());
+
+        let checked = tasks::check(
+            &mut lock(&storage),
+            Some(task.id.into()),
+            types::CriterionId(task.criteria[0].id.0),
+            true,
+            Some("Outline in notes/outline.md"),
+            CheckedBy::User,
+        )
+        .unwrap();
+        assert!(
+            checked
+                .criteria
+                .iter()
+                .all(|criterion| criterion.state == types::CriterionState::Met)
+        );
+
+        let (herdr, herdr_runner) = herdr(Vec::new());
+        let gh = Arc::new(FakeRunner::new(Vec::new()));
+        let git_runner = Arc::new(FakeRunner::new(Vec::new()));
+        let done = completion::complete(
+            &storage,
+            &Git::new(Box::new(git_runner.clone())),
+            &GitHub::new(Box::new(gh.clone())),
+            &herdr,
+            task.id,
+        )
+        .unwrap();
+
+        assert_eq!(done.status, TaskStatus::Done);
+        assert_eq!(done.branch, None);
+        assert_eq!(done.pull_request_url, None);
+        for runner in [&herdr_runner, &gh, &git_runner] {
+            assert!(invocations(runner).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_command_criterion_of_a_task_without_a_worktree_runs_in_the_workspace_location() {
+        use crate::adapters::github::GitHub;
+        use crate::commands::{completion, tasks, types};
+        use crate::domain::criteria::CheckedBy;
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, task) = plain_workspace_task(dir.path(), Some("test -f outline.md"));
+        start(&storage, &no_git(), &FakeRuntime::new(Vec::new()), task.id).unwrap();
+        tasks::check(
+            &mut lock(&storage),
+            Some(task.id.into()),
+            types::CriterionId(task.criteria[0].id.0),
+            true,
+            None,
+            CheckedBy::User,
+        )
+        .unwrap();
+        let git_runner = Arc::new(FakeRunner::new(vec![Ok(String::new())]));
+
+        let done = completion::complete(
+            &storage,
+            &Git::new(Box::new(git_runner.clone())),
+            &GitHub::new(Box::new(Arc::new(FakeRunner::new(Vec::new())))),
+            &herdr(Vec::new()).0,
+            task.id,
+        )
+        .unwrap();
+
+        assert_eq!(done.status, TaskStatus::Done);
+        let ran = invocations(&git_runner);
+        assert_eq!(ran.len(), 1);
+        assert_eq!(ran[0].program, "sh");
+        assert_eq!(
+            ran[0].args,
+            [
+                "-c".to_owned(),
+                format!(
+                    "cd '{}' && test -f outline.md",
+                    dir.path().to_str().unwrap()
+                )
+            ]
+        );
     }
 }

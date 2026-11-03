@@ -1776,7 +1776,7 @@ dependencies = [
 
 [[package]]
 name = "toodo"
-version = "1.3.1"
+version = "1.3.2"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1789,6 +1789,7 @@ dependencies = [
  "rusqlite",
  "rustls",
  "schemars",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

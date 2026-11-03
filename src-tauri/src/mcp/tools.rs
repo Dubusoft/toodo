@@ -21,7 +21,9 @@ use crate::commands::workspaces;
 use crate::commands::{CommandError, CommandErrorKind, CommandResult, StorageState, lock};
 use crate::domain::criteria::{CheckedBy, NewCriterion};
 use crate::domain::model::{self, NoteKind};
+use crate::domain::runtime::{HostRef, OwnerKey, RunRole};
 use crate::mcp::ServerStatus;
+use crate::runtime::{RunCommand, RuntimeError, RuntimeService, StartRun};
 use crate::storage::{self, Storage, StorageError, TaskSearch};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -53,6 +55,17 @@ pub struct CreateWorkspace {
     /// `clone_url`.
     #[serde(default)]
     pub init: bool,
+    /// What `path` holds: `github` (a repository with a GitHub `origin` remote),
+    /// `local_git` (a repository merged locally), or `none` (a plain directory: no git,
+    /// no herdr, no `clone_url` or `init`). Omitted: `github` when the repository has an
+    /// `origin` remote, else `local_git`.
+    pub source: Option<types::Source>,
+    /// How its tasks get done: `pr_merge` (github), `local_merge` (local_git), or
+    /// `manual` (any source). Omitted: the default of the source.
+    pub completion: Option<types::CompletionMode>,
+    /// What runs started tasks: `herdr` (git sources) or `none` (only with completion
+    /// `manual`). Omitted: `herdr` for git sources, `none` for source `none`.
+    pub runner: Option<types::Runner>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -211,6 +224,7 @@ pub(super) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
 
 /// One task ID or several, as `depends_on` of the dependency tools accepts them.
 #[derive(Deserialize, JsonSchema)]
+#[schemars(inline)]
 #[serde(
     untagged,
     expecting = "a task id or an array of task ids, e.g. 3 or [3, 4]"
@@ -491,7 +505,8 @@ pub fn list_workspaces(storage: &Storage) -> CommandResult<Vec<Workspace>> {
 }
 
 /// Creates a local workspace through the app's own setup: clone or check the repository,
-/// open it in herdr, and save it unless a workspace already uses its location.
+/// open it in herdr for runner herdr, and save it unless a workspace already uses its
+/// location. With source none the directory is saved as given.
 pub fn create_workspace(
     storage: &StorageState,
     git: &Git,
@@ -503,14 +518,28 @@ pub fn create_workspace(
             "init makes a new repository; it cannot be combined with clone_url",
         ));
     }
+    let repository = if request.source == Some(types::Source::None) {
+        if request.init || request.clone_url.is_some() {
+            return Err(CommandError::invalid_input(
+                "source none is a plain directory without a repository; omit clone_url and \
+                 init, or choose source local_git or github to clone or init one",
+            ));
+        }
+        None
+    } else {
+        Some(match request.clone_url {
+            Some(url) => types::RepositorySetup::Clone { url },
+            None if request.init => types::RepositorySetup::Init,
+            None => types::RepositorySetup::Open,
+        })
+    };
     let setup = types::NewWorkspace {
         name: request.name,
         location: types::WorkspaceLocation::Local { path: request.path },
-        source: match request.clone_url {
-            Some(url) => types::WorkspaceSource::Clone { url },
-            None if request.init => types::WorkspaceSource::Init,
-            None => types::WorkspaceSource::Open,
-        },
+        repository,
+        source: request.source,
+        completion: request.completion,
+        runner: request.runner,
         default_base_branch: request.default_base_branch,
     }
     .try_into()?;
@@ -782,7 +811,7 @@ pub fn restore_worktree(
 /// Creates a `planned` task with its dependencies. Unknown prerequisites are rejected
 /// before anything is written; a new task has no dependents, so its edges cannot close
 /// a cycle.
-pub fn create_task(storage: &StorageState, git: &Git, request: CreateTask) -> CommandResult<Task> {
+pub fn create_task(storage: &StorageState, request: CreateTask) -> CommandResult<Task> {
     let criteria = request
         .criteria
         .iter()
@@ -790,7 +819,6 @@ pub fn create_task(storage: &StorageState, git: &Git, request: CreateTask) -> Co
         .collect::<CommandResult<Vec<_>>>()?;
     let merge = task_commands::merge_criterion(
         storage,
-        git,
         request.workspace_id.into(),
         &criteria,
         request.merge_criterion.unwrap_or(true),
@@ -851,12 +879,12 @@ fn insert_task(
     get_task(storage, task.id.into())
 }
 
-/// Edits a task as `update_task` does; `origin` says whether its repository has an
-/// `origin` remote (see [`task_commands::edit_origin`]).
+/// Edits a task as `update_task` does; `completion` is the completion of its workspace
+/// (see [`task_commands::edit_completion`]).
 pub fn update_task(
     storage: &mut Storage,
     request: UpdateTask,
-    origin: Option<bool>,
+    completion: Option<model::CompletionMode>,
 ) -> CommandResult<Task> {
     let current = get_task(storage, request.id)?;
     // A done task is part of the record reviews are built on; agents add to it instead.
@@ -879,7 +907,7 @@ pub fn update_task(
             merge_criterion: false,
         },
         request.remove_merge_criterion,
-        origin,
+        completion,
     )
 }
 
@@ -894,11 +922,11 @@ pub fn new_criterion(request: &AddCriterion) -> types::CriterionInput {
 }
 
 /// Adds one criterion, pending, after the task's criteria, which stay as they are;
-/// `origin` as for [`update_task`].
+/// `completion` as for [`update_task`].
 pub fn add_criterion(
     storage: &mut Storage,
     request: AddCriterion,
-    origin: Option<bool>,
+    completion: Option<model::CompletionMode>,
 ) -> CommandResult<Task> {
     let current = get_task(storage, request.task_id)?;
     let mut criteria: Vec<types::CriterionInput> = current
@@ -919,7 +947,7 @@ pub fn add_criterion(
             criteria: Some(criteria),
             remove_merge_criterion: false,
         },
-        origin,
+        completion,
     )
 }
 
@@ -1142,7 +1170,8 @@ pub fn resume_task(
 
 /// Starts or resumes a ready `planned` task as the app's Start does, then runs
 /// `agent_command` in the first pane of its herdr workspace, with the MCP server's URL and
-/// token in its environment (see [`with_mcp_env`]).
+/// token in its environment (see [`with_mcp_env`]), as a writer run of the task (see
+/// [`run_agent`]).
 pub fn start_task(
     storage: &StorageState,
     git: &Git,
@@ -1194,13 +1223,69 @@ pub fn start_task(
     if let Some(command) = command {
         match panes.first() {
             None => started.pane_error = Some("herdr lists no pane of the task's workspace".into()),
-            Some(pane) => match herdr.run_in_pane(&pane.pane_id, &with_mcp_env(server, command)) {
-                Ok(()) => started.ran_in = Some(pane.pane_id.clone()),
-                Err(error) => started.pane_error = Some(error.to_string()),
-            },
+            Some(pane) => {
+                let line = with_mcp_env(server, command);
+                match run_agent(storage, herdr, id, &pane.pane_id, line) {
+                    Ok(pane) => started.ran_in = Some(pane),
+                    Err(error) => started.pane_error = Some(error),
+                }
+            }
         }
     }
     Ok(started)
+}
+
+/// Types `line` into `pane` of the task's open runtime workspace through
+/// [`RuntimeService::start_run`], which records it as a writer run of the task in that
+/// workspace. Returns the pane the line ran in, or why it did not run.
+fn run_agent(
+    storage: &StorageState,
+    herdr: &Herdr,
+    task: model::TaskId,
+    pane: &str,
+    line: String,
+) -> Result<String, String> {
+    let request = {
+        let storage = lock(storage);
+        let read = || -> Result<StartRun, StorageError> {
+            let open = storage.open_runtime_workspace(task)?;
+            let worktree = storage
+                .get_task(task)?
+                .ok_or(StorageError::TaskNotFound(task))?
+                .worktree_path;
+            // Unique per task, and a request key never comes back once its run is recorded.
+            let request_key = format!(
+                "mcp-agent-{task}-{}",
+                storage.list_task_runs(task)?.len() + 1
+            );
+            Ok(StartRun {
+                owner: OwnerKey::implicit(),
+                task,
+                request_key,
+                role: RunRole::Writer,
+                host: open
+                    .as_ref()
+                    .map_or(HostRef::Local, |open| open.host.clone()),
+                checkout_path: open
+                    .as_ref()
+                    .and_then(|open| open.checkout_path.clone())
+                    .or_else(|| worktree.map(|path| path.to_string())),
+                runtime_workspace: open.as_ref().map(|open| open.id),
+                adapter_profile: None,
+                command: RunCommand::InPane {
+                    pane: pane.to_owned(),
+                    line,
+                },
+            })
+        };
+        read().map_err(|error| error.to_string())?
+    };
+    match RuntimeService.start_run(storage, herdr, request) {
+        Ok(run) => Ok(run.provider_run_ref.unwrap_or_else(|| pane.to_owned())),
+        // What herdr said, as before runs were recorded.
+        Err(RuntimeError::Runner(error)) => Err(error.0),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// `command` after exporting `TOODO_MCP_URL` and `TOODO_MCP_TOKEN`, so the agent it starts
@@ -1626,6 +1711,10 @@ mod tests {
                     path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         (storage, workspace.id.into())
@@ -2589,6 +2678,10 @@ mod tests {
                     path: PosixPath::parse("/srv/app").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         let task = create(&mut storage, workspace.id.into(), "Remote", vec![]).unwrap();
@@ -2656,6 +2749,10 @@ mod tests {
                     path: WindowsPath::parse(r"C:\srv\app").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         let numbered = create(&mut storage, other.id.into(), "Deploy server", vec![]).unwrap();
@@ -2733,6 +2830,10 @@ mod tests {
                     path: WindowsPath::parse(r"C:\srv\app").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         let here = create(&mut storage, local, "Here", vec![]).unwrap();
@@ -2871,6 +2972,46 @@ mod tests {
         assert!(!with_mcp_env(&server, "claude").contains("secret"));
         server.token_file = None;
         assert_eq!(with_mcp_env(&server, "claude"), "claude");
+    }
+
+    #[test]
+    fn an_agent_command_is_typed_into_its_pane_as_a_writer_run_of_the_task() {
+        let (storage, task, _) = started(false);
+        let (herdr, herdr_runner) = fake(
+            Herdr::new,
+            vec![
+                Err(crate::adapters::git::GitError::Failed {
+                    command: "herdr pane run".to_owned(),
+                    stderr: r#"{"error":{"code":"pane_not_found","message":"no pane"}}"#.to_owned(),
+                }),
+                Ok(String::new()),
+            ],
+        );
+        let id = task.id.into();
+
+        let error = run_agent(&storage, &herdr, id, "w27:p1", "claude".to_owned()).unwrap_err();
+        let ran_in = run_agent(&storage, &herdr, id, "w27:p1", "claude".to_owned()).unwrap();
+
+        assert!(error.contains("no pane"), "{error}");
+        assert_eq!(ran_in, "w27:p1");
+        let storage = crate::commands::lock(&storage);
+        let open = storage.open_runtime_workspace(id).unwrap().unwrap();
+        let runs = storage.list_task_runs(id).unwrap();
+        use crate::domain::runtime::RunState;
+        assert_eq!(
+            runs.iter()
+                .map(|run| (run.request_key.as_str(), run.state, run.role))
+                .collect::<Vec<_>>(),
+            [
+                ("mcp-agent-1-1", RunState::Failed, RunRole::Writer),
+                ("mcp-agent-1-2", RunState::Running, RunRole::Writer),
+            ]
+        );
+        assert_eq!(runs[1].runtime_workspace, Some(open.id));
+        assert_eq!(runs[1].checkout_path, open.checkout_path);
+        assert_eq!(runs[1].provider_run_ref.as_deref(), Some("w27:p1"));
+        let invocations = herdr_runner.invocations.lock().unwrap();
+        assert_eq!(invocations[1].args, ["pane", "run", "w27:p1", "claude"]);
     }
 
     #[test]

@@ -17,7 +17,9 @@ use super::git::{
     GitError, Invocation, Runner, describe, shell_quote, ssh_invocation, windows_quote,
     windows_start,
 };
+use super::task_runtime::TaskWorkspaceRuntime;
 use crate::domain::model::{Machine, MachineLabel};
+use crate::runtime::events::SnapshotWorkspace;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HerdrError {
@@ -235,12 +237,38 @@ if (-not $herdr) {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// Types `command` into a pane of the local herdr server and presses Enter, e.g. to run
-    /// it in the pane's shell or to send it to the agent in the pane.
-    pub fn run_in_pane(&self, pane_id: &str, command: &str) -> Result<(), HerdrError> {
-        let invocation = invocation(None, &["pane", "run", pane_id, command]);
-        self.runner.run(&invocation)?;
-        Ok(())
+    /// Lists open checkouts without changing the provider's workspaces.
+    pub fn list_workspaces(&self, machine: &Machine) -> Result<Vec<SnapshotWorkspace>, HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let invocation = invocation(profile_id.as_deref(), &["workspace", "list"]);
+        let output = self.runner.run(&invocation)?;
+        let parsed = parse(&invocation, &output)?;
+        let rows = parsed
+            .pointer("/result/workspaces")
+            .and_then(Value::as_array)
+            .ok_or_else(|| unexpected(&invocation, &output))?;
+        let mut snapshot = Vec::new();
+        for row in rows {
+            let reference = row
+                .get("workspace_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| unexpected(&invocation, &output))?;
+            // Plain repository and terminal workspaces have no worktree checkout.
+            match row.get("worktree") {
+                None | Some(Value::Null) => {}
+                Some(worktree) => {
+                    let path = worktree
+                        .get("checkout_path")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| unexpected(&invocation, &output))?;
+                    snapshot.push(SnapshotWorkspace {
+                        provider_workspace_ref: reference.to_owned(),
+                        checkout_path: path.to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(snapshot)
     }
 
     /// Creates the worktree on `machine` and opens it as a herdr workspace without
@@ -363,6 +391,85 @@ if (-not $herdr) {
         }
     }
 
+    /// Opens a new tab labelled `label` in the herdr workspace `workspace_id` on `machine`
+    /// without focusing it, in `cwd` when given. Returns the ID of the tab's pane.
+    pub fn create_tab(
+        &self,
+        machine: &Machine,
+        workspace_id: &str,
+        cwd: Option<&str>,
+        label: &str,
+    ) -> Result<String, HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let mut args = vec!["tab", "create", "--workspace", workspace_id];
+        if let Some(cwd) = cwd {
+            args.extend(["--cwd", cwd]);
+        }
+        args.extend(["--label", label, "--no-focus"]);
+        let invocation = invocation(profile_id.as_deref(), &args);
+        let output = self.runner.run(&invocation)?;
+        parse(&invocation, &output)?
+            .pointer("/result/root_pane/pane_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| unexpected(&invocation, &output))
+    }
+
+    /// The pane of the first tab labelled `label` in the herdr workspace `workspace_id` on
+    /// `machine`, if it has such a tab.
+    pub fn find_tab_pane(
+        &self,
+        machine: &Machine,
+        workspace_id: &str,
+        label: &str,
+    ) -> Result<Option<String>, HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let tabs = invocation(
+            profile_id.as_deref(),
+            &["tab", "list", "--workspace", workspace_id],
+        );
+        let output = self.runner.run(&tabs)?;
+        let listed = parse(&tabs, &output)?;
+        let tab_id = listed
+            .pointer("/result/tabs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| unexpected(&tabs, &output))?
+            .iter()
+            .find(|tab| tab.get("label").and_then(Value::as_str) == Some(label))
+            .and_then(|tab| text(tab, "tab_id"));
+        let Some(tab_id) = tab_id else {
+            return Ok(None);
+        };
+        let panes = invocation(
+            profile_id.as_deref(),
+            &["pane", "list", "--workspace", workspace_id],
+        );
+        let output = self.runner.run(&panes)?;
+        let listed = parse(&panes, &output)?;
+        let pane = listed
+            .pointer("/result/panes")
+            .and_then(Value::as_array)
+            .ok_or_else(|| unexpected(&panes, &output))?
+            .iter()
+            .find(|pane| pane.get("tab_id").and_then(Value::as_str) == Some(tab_id.as_str()))
+            .and_then(|pane| text(pane, "pane_id"));
+        Ok(pane)
+    }
+
+    /// Types `command` into the pane `pane_id` on `machine` and presses Enter.
+    pub fn run_in_machine_pane(
+        &self,
+        machine: &Machine,
+        pane_id: &str,
+        command: &str,
+    ) -> Result<(), HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let invocation = invocation(profile_id.as_deref(), &["pane", "run", pane_id, command]);
+        self.runner.run(&invocation)?;
+        Ok(())
+    }
+
     /// Closes a herdr workspace. The worktree checkout it was bound to stays on disk.
     pub fn close_workspace(&self, machine: &Machine, workspace_id: &str) -> Result<(), HerdrError> {
         let profile_id = self.profile_id(machine)?;
@@ -428,6 +535,60 @@ if (-not $herdr) {
                 host: host.as_str().to_owned(),
             }),
         }
+    }
+}
+
+impl TaskWorkspaceRuntime for Herdr {
+    fn create_worktree(
+        &self,
+        machine: &Machine,
+        worktree: &NewWorktree<'_>,
+    ) -> Result<String, HerdrError> {
+        Herdr::create_worktree(self, machine, worktree)
+    }
+
+    fn open_worktree(
+        &self,
+        machine: &Machine,
+        repository: &str,
+        path: &str,
+    ) -> Result<String, HerdrError> {
+        Herdr::open_worktree(self, machine, repository, path)
+    }
+
+    fn remove_worktree(
+        &self,
+        machine: &Machine,
+        workspace_id: &str,
+        force: bool,
+    ) -> Result<(), HerdrError> {
+        Herdr::remove_worktree(self, machine, workspace_id, force)
+    }
+
+    fn close_workspace(&self, machine: &Machine, workspace_id: &str) -> Result<(), HerdrError> {
+        Herdr::close_workspace(self, machine, workspace_id)
+    }
+
+    fn open_repository(
+        &self,
+        machine: &Machine,
+        path: &str,
+        label: &str,
+    ) -> Result<String, HerdrError> {
+        Herdr::open_workspace(self, machine, path, label)
+    }
+}
+
+/// herdr API error codes that Toodo handles.
+pub const DIRTY_WORKTREE: &str = "dirty_worktree_requires_force";
+pub const WORKSPACE_NOT_FOUND: &str = "workspace_not_found";
+pub const WORKTREE_NOT_FOUND: &str = "worktree_not_found";
+pub const AGENT_NOT_FOUND: &str = "agent_not_found";
+
+impl HerdrError {
+    /// Whether herdr failed with the API error code `expected`.
+    pub fn has_code(&self, expected: &str) -> bool {
+        matches!(self, Self::Failed { code: Some(code), .. } if code == expected)
     }
 }
 
@@ -898,6 +1059,33 @@ mod tests {
             runner.invocations.lock().unwrap()[0].args,
             ["status", "--json"].map(str::to_owned)
         );
+    }
+
+    #[test]
+    fn workspace_snapshots_parse_checkout_paths_on_local_and_saved_machines() {
+        let response = r#"{"id":"cli:workspace:list","result":{"workspaces":[
+            {"workspace_id":"w2R","worktree":{"checkout_path":"/tmp/q/wt","is_linked_worktree":true}},
+            {"workspace_id":"w3","worktree":null},{"workspace_id":"w4"}]}}"#;
+        let (herdr, runner) = herdr(vec![
+            Ok(response.to_owned()),
+            machine_list(&[saved("m2", "devbox", "default", true)]),
+            Ok(response.to_owned()),
+            Ok(r#"{"result":{"workspaces":[{"workspace_id":"w5","worktree":{}}]}}"#.to_owned()),
+        ]);
+        let expected = vec![SnapshotWorkspace {
+            provider_workspace_ref: "w2R".to_owned(),
+            checkout_path: "/tmp/q/wt".to_owned(),
+        }];
+        assert_eq!(herdr.list_workspaces(&Machine::Local).unwrap(), expected);
+        assert_eq!(herdr.list_workspaces(&devbox()).unwrap(), expected);
+        assert_eq!(
+            runner.invocations.lock().unwrap()[2].args,
+            ["--machine", "m2", "workspace", "list"].map(str::to_owned)
+        );
+        assert!(matches!(
+            herdr.list_workspaces(&Machine::Local),
+            Err(HerdrError::UnexpectedOutput { .. })
+        ));
     }
 
     #[test]

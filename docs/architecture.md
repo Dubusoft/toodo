@@ -16,9 +16,10 @@ happens and never derived later from git or GitHub alone.
 
 ### Workspace
 
-A root git repository that tasks are planned against. A workspace is created either by
-cloning a repository into a path or by opening a repository already cloned at a path; see
-[workflow.md](workflow.md#1-register-a-workspace).
+A directory that tasks are planned against, usually the root of a git repository. A git
+workspace is created by cloning a repository into a path, opening a repository already
+cloned at a path, or initializing a new one; a workspace without git just records the
+directory. See [workflow.md](workflow.md#1-register-a-workspace).
 
 | Field | Description |
 | --- | --- |
@@ -29,6 +30,31 @@ cloning a repository into a path or by opening a repository already cloned at a 
 | `herdrMachine` | For `ssh` workspaces: the SSH target of the saved herdr machine (usually a `~/.ssh/config` host alias); also used as the `ssh` host. |
 | `defaultBaseBranch` | Branch that task branches start from and PRs target (e.g. `main`). Detected or entered at registration and editable afterwards from the workspace header, except while a task of the workspace is `in_review` (its open PR targets the current branch). |
 | `agentMerge` | Whether agents merge their own task PR: `never` (default; they stop once the PR is open) or `afterChecks` (they merge it into `defaultBaseBranch` once every check on it passed, never into another branch). Editable from the workspace header; agents read it from the MCP `current_task` tool. Toodo itself never merges. |
+| `source` | Where the work lives: `none` (a plain directory, no git), `local_git` (a git repository used locally only), or `github` (a git repository with an `origin` remote on GitHub). |
+| `completion` | How a task is completed: `manual` (by its manual, `url`, or `command` criteria, with no merge criterion), `local_merge` (the task branch is merged into the base branch locally), or `pr_merge` (its pull request is merged). |
+| `runner` | What runs the work: `herdr` (a task start creates a branch, a worktree, and a herdr workspace) or `none` (a task start only changes its status). |
+
+The three axes are chosen at creation and are read-only afterwards. One domain rule
+(`check_axes`) checks every combination, from the app and from MCP alike:
+
+- Source `none` needs completion `manual` and runner `none`.
+- Source `local_git` allows completion `manual` or `local_merge`.
+- Source `github` allows completion `manual` or `pr_merge`.
+- Runner `none` allows only completion `manual`, since a merge needs the task branch that
+  only a runner creates. Runner `herdr` needs a git source.
+
+An omitted axis gets its default from the source: `none` gives `manual` + `none`,
+`local_git` gives `local_merge` + `herdr`, and `github` gives `pr_merge` + `herdr`. An
+omitted source is `github` when the prepared repository has an `origin` remote,
+`local_git` when it doesn't, and `none` when no repository is given.
+
+Workspaces created before the axes existed were migrated from their tasks: one with a
+`branch_merged_locally` criterion became `local_git` + `local_merge`, one with a
+`pr_merged` or `pr_open_ci_green` criterion or a task pull request became `github` +
+`pr_merge`, all with runner `herdr`. The rest keep `github` + `pr_merge` until a
+background pass at server start checks their repository for an `origin` remote and
+stores `github` + `pr_merge` or `local_git` + `local_merge`. A failed git call leaves the
+workspace for the next start. Backups without the axes restore the same way.
 
 ### Machine Settings
 
@@ -192,6 +218,43 @@ A commit produced while implementing a task.
 Commits are discovered from the task branch, typically as
 `git log <baseBranch>..<taskBranch>` run in the worktree.
 
+### Git Activity
+
+The git activity of a task is what happened in its git history, shown as "Git activity"
+in the detailed task view. It is separate from the status history in Task Timeline.
+Each event (`domain/activity.rs`, table `task_activity`) has:
+
+| Field | Description |
+| --- | --- |
+| `kind` | `commit`, `pr_opened`, `checks_passed`, `checks_failed`, or `pr_merged`. |
+| `source` | Where it was first learned from: `git_poll` or `github_poll`. |
+| `externalRef` | Commit SHA of a commit; pull request URL when opened or merged; head commit SHA the checks ran on for a CI result. |
+| `title` | Commit summary line, pull request title, or a short CI text (`CI passed on abc1234`). |
+| `author` | Commit author, when known. |
+| `occurredAt` | When it happened. |
+| `receivedAt` | When Toodo first stored it. |
+| `confirmedAt` | The latest time any source reported it again. |
+
+Sources report the same event again on every check and in any order, so each event is
+stored once per task under its dedup key `<kind>:<externalRef>`. The source is not part
+of the key, so a GitHub webhook can later be added as another source without storing
+events twice. A repeated report keeps the first `receivedAt`, `source`, `title`, and
+`author`, takes the earlier `occurredAt` of both, and sets `confirmedAt` to its own time.
+Events are listed by `occurredAt`, then by when they were first stored, so the arrival
+order never changes the result.
+
+The background check of pull requests records it for every `in_progress` or
+`in_review` task with a branch, after looking up pull requests and before settling
+tasks, so a merge is recorded before it completes the task: the commits of the branch
+(`git_poll`) and, in a GitHub workspace for a task with a pull request, the pull
+request opened, its CI result once final, and its merge (`github_poll`). When a task is
+completed, its commit records (which include the merged pull request's commits) and the
+merge of its pull request are recorded too.
+
+Only a workspace whose source is a git repository (`local_git` or `github`) and whose
+completion is not `manual` has git activity; for the others nothing is read with git
+or `gh` and nothing is recorded.
+
 ## Timeline View
 
 The dependency graph is drawn on a time axis instead of as a free-form layered DAG, so
@@ -310,6 +373,113 @@ herdr. The server serves its commands over HTTP to the frontend, an installable 
 (PWA) used from a browser, and the server's machine is the "Local" machine; see
 [server.md](server.md). herdr owns terminals, agents, worktree checkouts, and SSH machine
 connections; Toodo owns planning, task state, commit records, and pull requests.
+
+## Runtime Records
+
+SQLite keeps a record of what runs where in seven tables (migrations 29 and 32):
+
+- `runtime_workspaces`: one row per herdr workspace a task has had. Each row carries a
+  `generation` that counts up per task, a `state` of `open` or `closed`, the
+  `provider_workspace_ref` (the herdr workspace id), `checkout_path`, and `branch`. A task
+  has at most one open row. `provider_instance` stays NULL until the herdr server behind
+  the handle is verified.
+- `agent_conversations`: an agent session a run can resume, with its `resume_kind`
+  (`none`, `exact_id`, `exact_path`, `named_session`, `transcript`) and `resume_ref`.
+- `task_runs`: one agent run of a task, with a `role` (`writer` or `observer`), a `state`
+  (`reserved`, `running`, `settled`, `exited`, `failed`, `cancelled`, `unknown`), and an
+  optional `runtime_workspace_id`. A run with no checkout has no runtime workspace.
+  Starting a task of a workspace with runner none records a `writer` run with
+  `runner_kind` `none`, no checkout, and no runtime workspace, and ends the task's earlier
+  runs as `exited`.
+- `run_events`: the ordered history of a run, keyed by `run_id` and `sequence`.
+- `run_operations`: the ledger of `launch`, `input`, and `stop` requests against a run,
+  each `pending`, `applied`, or `failed`, with a `receipt`.
+- `runtime_host_events`: an append-only journal of neutral workspace opened/closed
+  observations, host state changes, and snapshot reconciles. Its `sequence` increases
+  by one per owner and host; it is a local cursor, not a herdr subscription offset.
+  Activity changes stay in memory and repeated host states do not consume a sequence.
+- `runtime_hosts`: each host's `last_sequence`, `reconciled_sequence`, and state
+  (`online`, `offline`, or `unknown`). Accepted subscriptions and successful Windows
+  polls mark hosts online; unreachable servers are offline, and errors after an
+  accepted event stream leave the host unknown.
+
+Every table except `run_events` has `owner_key`, which defaults to `implicit`. It's a
+placeholder for a later tenant context; nothing filters or authenticates by it yet. The
+`host_ref` column names the host: `local` for a local workspace, `ssh:<target>` for an SSH
+workspace, where the target is the workspace's `herdr_machine`.
+
+The open runtime workspace is the source of truth for the herdr workspace of a task; the
+task's `herdrWorkspaceId` is read from it. Storage writes it next to the task's checkout
+path and branch, which stay on `tasks` since they outlive the herdr workspace: a cleared
+or changed handle closes the open row, a new handle opens the next generation, and a moved
+checkout updates the open row. Migration 29 backfilled one open row per task that had a
+handle and created no runs; migration 31 brought the open rows in line with the handles
+once more and dropped the old `tasks.herdr_workspace_id` column. Import skips all
+runtime tables, including the host journal and cursors, since their handles and
+observations belong to the other server's hosts.
+
+A checkout has one active writer at a time. The partial unique index
+`task_runs_one_active_writer` covers writer runs on the same owner, host, and checkout in
+`reserved`, `running`, or `unknown`; `unknown` counts because a run whose end isn't
+confirmed may still be writing. `reserve_run` reports a second writer as
+`CheckoutHasActiveWriter`.
+
+Launch is idempotent. Each run carries a `request_key`, unique per owner, and reserving
+with a known key returns the existing run instead of a new one. Reservation also writes a
+`pending` launch operation under the same key. Recording the launch marks it `applied` with
+the herdr reference as receipt, a failed launch marks it `failed`, and a retried call
+finds the operation already settled.
+
+`RuntimeService` (`src-tauri/src/runtime/`) drives these records. Runners are handed to it
+per call: a `TaskWorkspaceRuntime` for runtime workspaces and a `RunLauncher` for runs.
+
+- Starting, resuming, and restoring a task open its runtime workspace through
+  `open_workspace`. herdr creates or reopens the worktree, then the task records the handle
+  and storage opens the record. The service returns the task together with that record.
+  Starting a task ends the runs still active from before it was paused as `exited`.
+- Opening a started task whose herdr workspace herdr no longer has (focus, panes) goes
+  through `reopen_workspace`: herdr opens the kept checkout in a new herdr workspace, and
+  the new handle opens the next generation of the record. The pane commands read the herdr
+  workspace from the open record.
+- Closing a paused task's herdr workspace, completing, concluding, and completing a task
+  merged with another go through `close_workspace`. It closes the herdr workspace of the
+  open record, then runs the storage change that forgets the handle under the same lock,
+  and ends the active runs of the closed record as `exited`.
+- Deleting a task that still has a worktree goes through `remove_workspace`. It removes the
+  checkout through the herdr workspace of the open record, or reopens the checkout first
+  when there is no open record or herdr no longer has it.
+- Creating or moving a Toodo workspace opens its repository in herdr through
+  `open_repository`. A move saves the workspace through `move_workspace`: moving to another
+  host makes its tasks forget their herdr handles, which closes their records, and their
+  active runs become `unknown`, since Toodo no longer sees the old host's herdr.
+- The herdr `RunLauncher` runs a `RunCommand`. `NewTab` opens a new tab of the run's herdr
+  workspace, labelled `toodo-run-<request key>`, and types the argument vector into the
+  tab's pane; a retry finds the tab by its label and adopts it instead of opening another.
+  `InPane` types a shell line as is into an existing pane, which nothing marks, so a launch
+  whose response was lost cannot be adopted. The pane ID is the receipt.
+- The MCP `start_task` tool runs `agent_command` through `start_run` as an `InPane` writer
+  run in the first pane of the task's open runtime workspace, with request key
+  `mcp-agent-<task>-<n>`.
+
+`commands/events.rs` translates herdr observations into neutral `RuntimeEvent` values
+and applies them through `RuntimeService`. Events carry the existing `OwnerKey`
+(`implicit` today); this introduces no tenant filtering. All matching uses the host:
+identical provider references or pane IDs on two machines are unrelated. A close only
+affects the task's open runtime workspace on that host. An open adopts a matching
+checkout, except a reference used by a closed generation of that task on that host
+cannot replace its current handle. Handle observations never rewrite earlier runs.
+
+Immediately after a subscription is accepted, a read-only workspace snapshot reconciles
+the host's tasks. An open reference still present stays unchanged; a matching checkout
+under another reference is adopted with the same stale-reference guard. Missing
+checkouts are left for lazy `reopen_workspace`, not cleared. Reconciliation journals a
+`SnapshotReconciled` observation and saves its sequence as `reconciled_sequence`, so a
+fresh subscription repairs missed open events after `events_lost`. Windows keeps its
+pane polling path and does not reconcile workspace snapshots.
+
+Migration 32 adds the host journal and cursor tables. Rollback means reverting this
+event integration while leaving both tables and their journal rows in place; no runtime
+path deletes journal history.
 
 ## Components
 
@@ -476,6 +646,15 @@ connections; Toodo owns planning, task state, commit records, and pull requests.
     (`list_mcp_tunnels`); its tab and the sidebar's Settings entry count retrying tunnels.
   - The forwarded port listens on the remote loopback only, so other users of that
     machine can reach it; the bearer token keeps them out.
+- **OAuth server** (`src-tauri/src/oauth/`): the single-owner authorization server that lets
+  chat apps reach `/mcp` when `TOODO_PUBLIC_URL` is set. It serves discovery metadata,
+  dynamic client registration and client ID metadata documents, the consent page (the
+  owner approves with `web-token`), and the token and revocation endpoints. Grants carry
+  an owner key and the scopes `toodo.read` and `toodo.write`; tokens and secrets are
+  stored as SHA-256 hashes in `storage/oauth.rs`, while codes and pending consents stay in
+  memory. The MCP server checks OAuth access tokens after the static token and limits
+  those sessions to the tools that run no git, herdr, gh, or ssh command. Off by default,
+  when its routes are not mounted.
 - **Storage**: SQLite database `toodo.sqlite3` in the server's data directory (`TOODO_DATA_DIR`)
   for workspaces, machine settings, tasks, dependencies, and commit records
   (`src-tauri/src/storage/`).

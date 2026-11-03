@@ -206,6 +206,7 @@ impl From<StorageError> for CommandError {
             | StorageError::PushSubscriptionNotFound(_)
             | StorageError::DependencyNotFound { .. }
             | StorageError::RelationNotFound { .. }
+            | StorageError::RunNotFound(_)
             | StorageError::Dependency(DependencyError::UnknownTask(_)) => {
                 CommandErrorKind::NotFound
             }
@@ -216,10 +217,13 @@ impl From<StorageError> for CommandError {
             | StorageError::DependenciesNotDone { .. }
             | StorageError::PrerequisiteOfDoneTask { .. }
             | StorageError::CriteriaOfDoneTask(_)
-            | StorageError::AutomaticCriterion { .. } => CommandErrorKind::Rejected,
+            | StorageError::AutomaticCriterion { .. }
+            | StorageError::CheckoutHasActiveWriter { .. }
+            | StorageError::RunTransition { .. } => CommandErrorKind::Rejected,
             StorageError::WorktreePathMismatch(_)
             | StorageError::SelfRelation(_)
             | StorageError::CommitTaskMismatch { .. }
+            | StorageError::ActivityTaskMismatch { .. }
             | StorageError::InvalidBackup(_) => CommandErrorKind::InvalidInput,
             StorageError::Io(_) => CommandErrorKind::External,
             StorageError::Sqlite(_)
@@ -251,7 +255,7 @@ pub struct AppInfo {
 pub fn app_info() -> AppInfo {
     AppInfo {
         name: env!("CARGO_PKG_NAME").to_owned(),
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: env!("TOODO_VERSION").to_owned(),
     }
 }
 
@@ -265,7 +269,7 @@ mod tests {
     fn app_info_reports_crate_metadata() {
         let info = app_info();
         assert_eq!(info.name, "toodo");
-        assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(info.version, env!("TOODO_VERSION"));
     }
 
     #[test]

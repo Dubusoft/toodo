@@ -32,3 +32,6 @@ playwright-report
 
 # Local tool caches
 .cloudflare/
+
+# npm packaging output
+dist-npm

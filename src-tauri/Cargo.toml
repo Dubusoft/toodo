@@ -1,20 +1,24 @@
 [package]
 name = "toodo"
-version = "1.3.1"
+version = "1.3.2"
 description = "Turn a task plan into implemented, reviewed code with herdr"
 authors = []
-license = "MIT"
+license = "AGPL-3.0-only"
 edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-# The library holds the server; `toodo-server` is its binary.
+# The library holds the server and the CLI; `toodo-server` and `toodo` are their binaries.
 name = "toodo_lib"
 
 [[bin]]
 name = "toodo-server"
 path = "src/bin/toodo-server.rs"
+
+[[bin]]
+name = "toodo"
+path = "src/bin/toodo.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -33,8 +37,9 @@ base64 = "0.22"
 rmcp = { version = "3.5.1", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
 tokio = { version = "1.53.3", features = ["net", "rt", "rt-multi-thread", "macros", "signal", "sync", "fs", "time"] }
 getrandom = { version = "0.3", features = ["std"] }
-axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "ws", "query"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "ws", "query", "form"] }
 schemars = "1"
+semver = "1"
 
 [profile.release]
 codegen-units = 1

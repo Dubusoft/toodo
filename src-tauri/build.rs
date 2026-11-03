@@ -1,6 +1,15 @@
 /// Sets `TOODO_COMMIT` to the commit being built (empty outside a git checkout), so that
-/// `toodo-server --version` shows when a build is not the release it reports.
+/// `toodo-server --version` shows when a build is not the release it reports, and
+/// `TOODO_VERSION` to the version the binaries report: `$TOODO_VERSION` when the build sets
+/// it (the npm workflow passes the version it publishes, e.g. `1.3.2-dev.11`), else the
+/// crate version.
 fn main() {
+    println!("cargo:rerun-if-env-changed=TOODO_VERSION");
+    let version = std::env::var("TOODO_VERSION")
+        .ok()
+        .filter(|version| !version.is_empty())
+        .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").unwrap_or_default());
+    println!("cargo:rustc-env=TOODO_VERSION={version}");
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)

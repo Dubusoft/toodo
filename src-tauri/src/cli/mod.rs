@@ -1,0 +1,618 @@
+//! The `toodo` CLI: sets up and runs `toodo-server` for the current user, and registers
+//! its MCP endpoint with coding agents. It is shipped next to `toodo-server` (and the web
+//! app in `../web`), see [`settings::Bundle`].
+//!
+//! The server runs either as the systemd user service `toodo-server.service`, once
+//! `toodo service install` wrote it for the data directory, or detached with a pid file
+//! in the data directory, started by `toodo start`.
+
+mod agents;
+mod process;
+mod service;
+mod settings;
+mod update;
+
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+
+use crate::mcp;
+use crate::server;
+use crate::storage::Storage;
+use agents::Outcome;
+use settings::{Bundle, DataDir, ListenFlag};
+use update::Channel;
+
+/// Reads an environment variable; tests pass their own.
+type Var<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+const USAGE: &str = "Usage: toodo init [--port N | --listen HOST:PORT] [--data-dir DIR] [--no-mcp]
+       toodo start [--data-dir DIR]
+       toodo stop [--data-dir DIR]
+       toodo status [--data-dir DIR]
+       toodo service install [--data-dir DIR]
+       toodo update [--channel dev|latest] [--allow-downgrade] [--data-dir DIR]
+       toodo --version | --help
+
+Runs the Toodo server (toodo-server) for the current user and connects coding agents
+to it.
+
+Commands:
+  init             create the data directory, its database and access tokens, save the
+                   listen address, start the server, and register its MCP endpoint with
+                   Claude Code and Codex where they are on PATH
+  start            start the server in the background (through systemd once installed)
+  stop             stop the server
+  status           show whether the server runs and where its files are; exits 0 when
+                   it runs and 3 when it is stopped
+  service install  run the server as the systemd user service toodo-server.service
+  update           install the newest @dubusoft/toodo of the channel with npm, restart
+                   the server on it, and check that it answers; a failed install
+                   leaves the running server alone, and a channel version older than
+                   the installed one is not installed
+
+Options:
+  --port N            port to listen on, keeping the saved host (default 47616)
+  --listen HOST:PORT  address to listen on (default 127.0.0.1:47616); init saves it in
+                      DIR/cli.json for the other commands
+  --data-dir DIR      database, access tokens, and logs (default $TOODO_DATA_DIR, else
+                      the directory init recorded in $XDG_CONFIG_HOME/toodo/data-dir
+                      (~/.config/toodo/data-dir), else $XDG_DATA_HOME/toodo-server or
+                      ~/.local/share/toodo-server); init records it there, so the
+                      other commands find it without the option
+  --no-mcp            do not register the MCP endpoint with coding agents
+  --channel CHANNEL   npm dist-tag update installs: dev (prereleases of the dev branch)
+                      or latest (releases); default dev when the installed version is a
+                      prerelease, else latest
+  --allow-downgrade   let update install a channel version older than the installed one";
+
+/// The exit status of `toodo status` while the server is stopped.
+const STOPPED: i32 = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Command {
+    Help,
+    Version,
+    Init(InitArgs),
+    Start(Option<PathBuf>),
+    Stop(Option<PathBuf>),
+    Status(Option<PathBuf>),
+    ServiceInstall(Option<PathBuf>),
+    /// The channel, whether a downgrade is allowed, and the data directory.
+    Update(Option<Channel>, bool, Option<PathBuf>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InitArgs {
+    listen: Option<ListenFlag>,
+    data_dir: Option<PathBuf>,
+    mcp: bool,
+}
+
+/// Parses the arguments after the program name.
+fn parse(args: &[String]) -> Result<Command, String> {
+    if args.iter().any(|arg| arg == "-h" || arg == "--help") {
+        return Ok(Command::Help);
+    }
+    if args.iter().any(|arg| arg == "-V" || arg == "--version") {
+        return Ok(Command::Version);
+    }
+    let (command, options) = match args {
+        [] => return Err("missing command".to_owned()),
+        [service, install, rest @ ..] if service == "service" && install == "install" => {
+            ("service install", rest)
+        }
+        [service, ..] if service == "service" => {
+            return Err("service takes the subcommand install".to_owned());
+        }
+        [command, rest @ ..] => (command.as_str(), rest),
+    };
+    if ![
+        "init",
+        "start",
+        "stop",
+        "status",
+        "service install",
+        "update",
+    ]
+    .contains(&command)
+    {
+        return Err(format!("unknown command {command:?}"));
+    }
+    let mut init = InitArgs {
+        listen: None,
+        data_dir: None,
+        mcp: true,
+    };
+    let mut channel = None;
+    let mut allow_downgrade = false;
+    let mut options = options.iter();
+    while let Some(option) = options.next() {
+        let (name, inline) = match option.split_once('=') {
+            Some((name, value)) if name.starts_with("--") => (name, Some(value.to_owned())),
+            _ => (option.as_str(), None),
+        };
+        let takes_value = matches!(name, "--port" | "--listen" | "--data-dir" | "--channel");
+        let value = if takes_value {
+            match inline.or_else(|| options.next().cloned()) {
+                Some(value) if !value.is_empty() => value,
+                _ => return Err(format!("{name} needs a value")),
+            }
+        } else if inline.is_some() {
+            return Err(format!("{name} takes no value"));
+        } else {
+            String::new()
+        };
+        let init_only = matches!(name, "--port" | "--listen" | "--no-mcp");
+        if init_only && command != "init" {
+            return Err(format!(
+                "{name} is an option of toodo init, not of {command}"
+            ));
+        }
+        if matches!(name, "--channel" | "--allow-downgrade") && command != "update" {
+            return Err(format!(
+                "{name} is an option of toodo update, not of {command}"
+            ));
+        }
+        match name {
+            "--data-dir" => init.data_dir = Some(PathBuf::from(value)),
+            "--no-mcp" => init.mcp = false,
+            "--allow-downgrade" => allow_downgrade = true,
+            "--channel" => match Channel::parse(&value) {
+                Some(parsed) => channel = Some(parsed),
+                None => {
+                    return Err(format!("--channel takes dev or latest, got {value:?}"));
+                }
+            },
+            "--port" | "--listen" if init.listen.is_some() => {
+                return Err("give either --port or --listen, once".to_owned());
+            }
+            "--port" => match value.parse::<u16>() {
+                Ok(port) if port > 0 => init.listen = Some(ListenFlag::Port(port)),
+                _ => {
+                    return Err(format!(
+                        "--port takes a port from 1 to 65535, got {value:?}"
+                    ));
+                }
+            },
+            "--listen" => match value.parse::<SocketAddr>() {
+                Ok(address) => init.listen = Some(ListenFlag::Address(address)),
+                Err(_) => {
+                    return Err(format!(
+                        "--listen takes HOST:PORT with an IP address, e.g. 127.0.0.1:47616 or \
+                         [::]:47616, got {value:?}"
+                    ));
+                }
+            },
+            _ => return Err(format!("unknown option {option:?}")),
+        }
+    }
+    let data_dir = init.data_dir.clone();
+    Ok(match command {
+        "init" => Command::Init(init),
+        "start" => Command::Start(data_dir),
+        "stop" => Command::Stop(data_dir),
+        "status" => Command::Status(data_dir),
+        "update" => Command::Update(channel, allow_downgrade, data_dir),
+        _ => Command::ServiceInstall(data_dir),
+    })
+}
+
+pub fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let command = match parse(&args) {
+        Ok(command) => command,
+        Err(error) => {
+            eprintln!("toodo: {error}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    let var = |name: &str| std::env::var(name).ok();
+    let result = match command {
+        Command::Help => {
+            println!("{USAGE}");
+            Ok(0)
+        }
+        Command::Version => {
+            println!(
+                "{}",
+                server::with_commit("toodo", &update::version(), env!("TOODO_COMMIT"))
+            );
+            Ok(0)
+        }
+        Command::Init(args) => init(&args, &var).map(|()| 0),
+        Command::Start(dir) => data_dir(dir.as_deref(), &var)
+            .and_then(|data| start(&data, &var))
+            .map(|()| 0),
+        Command::Stop(dir) => data_dir(dir.as_deref(), &var)
+            .and_then(|data| stop(&data, &var))
+            .map(|()| 0),
+        Command::Status(dir) => data_dir(dir.as_deref(), &var).and_then(|data| status(&data, &var)),
+        Command::ServiceInstall(dir) => data_dir(dir.as_deref(), &var).and_then(|data| {
+            let listen = settings::listen(&data)?;
+            service::install(&data, listen, &var).map(|()| 0)
+        }),
+        Command::Update(channel, allow_downgrade, dir) => {
+            data_dir(dir.as_deref(), &var).and_then(|data| {
+                let flag = settings::data_dir_flag(&data, &var);
+                update::update(channel, allow_downgrade, &data, &flag, &var).map(|()| 0)
+            })
+        }
+    };
+    match result {
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            eprintln!("toodo: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn data_dir(flag: Option<&Path>, var: Var) -> Result<DataDir, String> {
+    settings::data_dir(flag, var)
+}
+
+/// Who runs the server of a data directory.
+#[derive(Debug, Clone, Copy)]
+enum Manager {
+    /// The systemd user service.
+    Service,
+    /// `toodo start`, with a pid file.
+    PidFile,
+}
+
+fn manager(data: &DataDir, var: Var) -> Result<Manager, String> {
+    Ok(if service::manages(&service::unit_path(var)?, data) {
+        Manager::Service
+    } else {
+        Manager::PidFile
+    })
+}
+
+fn is_running(manager: &Manager, data: &DataDir) -> bool {
+    match manager {
+        Manager::Service => service::is_active(),
+        Manager::PidFile => process::running_pid(data).is_some(),
+    }
+}
+
+fn init(args: &InitArgs, var: Var) -> Result<(), String> {
+    let data = settings::data_dir(args.data_dir.as_deref(), var)?;
+    let in_data = |error: &dyn std::fmt::Display| {
+        format!(
+            "cannot set up the data directory {}: {error}; check its permissions or pass \
+             another --data-dir",
+            data.path().display()
+        )
+    };
+    let saved = settings::saved_listen(&data)?;
+    let previous = saved.unwrap_or_else(settings::default_listen);
+    let listen = settings::resolve_listen(args.listen, saved);
+    let manager = manager(&data, var)?;
+    let running = is_running(&manager, &data);
+    // A busy port stops init before it creates anything.
+    if !running {
+        process::ensure_port_free(listen, &settings::data_dir_flag(&data, var))?;
+    }
+    server::create_private_dir(data.path()).map_err(|error| in_data(&error))?;
+    drop(Storage::open(&data.database()).map_err(|error| in_data(&error))?);
+    let mcp_token = mcp::load_token(&data.mcp_token()).map_err(|error| in_data(&error))?;
+    mcp::load_token(&data.web_token()).map_err(|error| in_data(&error))?;
+    settings::record_data_dir(&data, var)?;
+    let flag = settings::data_dir_flag(&data, var);
+
+    if running && listen == previous {
+        println!(
+            "toodo-server is already running on {}; keeping it",
+            settings::web_url(listen)
+        );
+    } else {
+        // The running server holds the previous port, which it gives up on restart.
+        if running && listen.port() != previous.port() {
+            process::ensure_port_free(listen, &flag)?;
+        }
+        settings::save_listen(&data, listen)?;
+        match manager {
+            Manager::Service => {
+                if listen != previous {
+                    println!("The listen address changed to {listen}; rewriting the service.");
+                    service::install(&data, listen, var)?;
+                } else {
+                    start(&data, var)?;
+                }
+            }
+            Manager::PidFile => {
+                if running {
+                    println!("The listen address changed to {listen}; restarting toodo-server.");
+                    stop(&data, var)?;
+                }
+                start(&data, var)?;
+            }
+        }
+    }
+
+    let mut failed = Vec::new();
+    if args.mcp {
+        let url = settings::mcp_url(listen);
+        for (agent, outcome) in agents::register(&url, &mcp_token, &data.mcp_token(), var) {
+            match outcome {
+                Outcome::Registered(place) => {
+                    println!("MCP for {agent}: registered {url} ({place})");
+                }
+                Outcome::Skipped => println!("MCP for {agent}: skipped ({agent} is not on PATH)"),
+                Outcome::Failed(error) => {
+                    println!("MCP for {agent}: failed: {error}");
+                    failed.push(agent);
+                }
+            }
+        }
+    } else {
+        println!("MCP: not registered with any agent (--no-mcp)");
+    }
+
+    let web_token = data.web_token();
+    println!(
+        "
+Toodo is running.
+  Web app:  {web}
+  Sign in with the web access token in {token}; print it with: cat {token}
+  MCP:      {mcp} (token in {mcp_token})
+
+Next steps:
+  {status:<22} check the server and where its files are",
+        status = format!("toodo status{flag}"),
+        web = settings::web_url(listen),
+        token = web_token.display(),
+        mcp = settings::mcp_url(listen),
+        mcp_token = data.mcp_token().display(),
+    );
+    if let Manager::PidFile = manager {
+        println!(
+            "  {:<22} keep the server running as a systemd user service",
+            format!("toodo service install{flag}")
+        );
+    }
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "registering the MCP endpoint failed for {}; run the command shown above, or fix \
+             the cause and rerun toodo init",
+            failed.join(" and ")
+        ))
+    }
+}
+
+fn start(data: &DataDir, var: Var) -> Result<(), String> {
+    let listen = settings::listen(data)?;
+    match manager(data, var)? {
+        Manager::Service => {
+            if service::is_active() {
+                println!("{} is already running", service::UNIT_NAME);
+                return Ok(());
+            }
+            service::systemctl("start")?;
+            service::wait_until_up(listen)?;
+            println!(
+                "Started {} on {}",
+                service::UNIT_NAME,
+                settings::web_url(listen)
+            );
+        }
+        Manager::PidFile => {
+            if let Some(pid) = process::running_pid(data) {
+                println!("toodo-server is already running (pid {pid})");
+                return Ok(());
+            }
+            let flag = settings::data_dir_flag(data, var);
+            process::ensure_port_free(listen, &flag)?;
+            let bundle = Bundle::find()?;
+            server::create_private_dir(data.path()).map_err(|error| {
+                format!(
+                    "cannot create {}: {error}; check the permissions of its parent or pass \
+                     another --data-dir",
+                    data.path().display()
+                )
+            })?;
+            let pid = process::spawn(&bundle, data, listen, &flag)?;
+            println!(
+                "Started toodo-server (pid {pid}) on {}; log in {}",
+                settings::web_url(listen),
+                data.log().display()
+            );
+            if bundle.web.is_none() {
+                println!(
+                    "No web app at {}; serving the API and MCP only.",
+                    bundle.web_location().display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn stop(data: &DataDir, var: Var) -> Result<(), String> {
+    match manager(data, var)? {
+        Manager::Service => {
+            if service::is_active() {
+                service::systemctl("stop")?;
+                println!("Stopped {}", service::UNIT_NAME);
+            } else {
+                println!("{} is not running", service::UNIT_NAME);
+            }
+        }
+        Manager::PidFile => {
+            if process::stop(data)? {
+                println!("Stopped toodo-server");
+            } else {
+                println!("toodo-server is not running");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Prints the state of the server; the exit status is 0 while it runs, [`STOPPED`] while
+/// it does not.
+fn status(data: &DataDir, var: Var) -> Result<i32, String> {
+    let listen = settings::listen(data)?;
+    let manager = manager(data, var)?;
+    let (running, state, log) = match manager {
+        Manager::Service => {
+            let state = service::state();
+            (
+                state == "active",
+                format!("{} {state}", service::UNIT_NAME),
+                "journalctl --user -u toodo-server".to_owned(),
+            )
+        }
+        Manager::PidFile => {
+            let pid = process::running_pid(data);
+            (
+                pid.is_some(),
+                pid.map_or_else(|| "no process".to_owned(), |pid| format!("pid {pid}")),
+                data.log().display().to_string(),
+            )
+        }
+    };
+    println!(
+        "toodo-server: {} ({state})
+  Web app:    {}
+  MCP:        {}
+  Data:       {}
+  Web token:  {}
+  MCP token:  {}
+  Log:        {log}",
+        if running { "running" } else { "stopped" },
+        settings::web_url(listen),
+        settings::mcp_url(listen),
+        data.path().display(),
+        data.web_token().display(),
+        data.mcp_token().display(),
+    );
+    if running {
+        Ok(0)
+    } else {
+        println!(
+            "Start it with: toodo start{}",
+            settings::data_dir_flag(data, var)
+        );
+        Ok(STOPPED)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed(args: &[&str]) -> Result<Command, String> {
+        parse(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn init_takes_its_options_in_both_forms() {
+        assert_eq!(
+            parsed(&["init"]).unwrap(),
+            Command::Init(InitArgs {
+                listen: None,
+                data_dir: None,
+                mcp: true
+            })
+        );
+        assert_eq!(
+            parsed(&["init", "--port", "47990", "--data-dir=/d", "--no-mcp"]).unwrap(),
+            Command::Init(InitArgs {
+                listen: Some(ListenFlag::Port(47990)),
+                data_dir: Some(PathBuf::from("/d")),
+                mcp: false
+            })
+        );
+        assert_eq!(
+            parsed(&["init", "--listen=0.0.0.0:80"]).unwrap(),
+            Command::Init(InitArgs {
+                listen: Some(ListenFlag::Address("0.0.0.0:80".parse().unwrap())),
+                data_dir: None,
+                mcp: true
+            })
+        );
+    }
+
+    #[test]
+    fn the_other_commands_take_a_data_dir() {
+        let dir = Some(PathBuf::from("/d"));
+        assert_eq!(parsed(&["start"]).unwrap(), Command::Start(None));
+        assert_eq!(
+            parsed(&["stop", "--data-dir", "/d"]).unwrap(),
+            Command::Stop(dir.clone())
+        );
+        assert_eq!(
+            parsed(&["status", "--data-dir=/d"]).unwrap(),
+            Command::Status(dir.clone())
+        );
+        assert_eq!(
+            parsed(&["service", "install", "--data-dir", "/d"]).unwrap(),
+            Command::ServiceInstall(dir.clone())
+        );
+        assert_eq!(
+            parsed(&["update"]).unwrap(),
+            Command::Update(None, false, None)
+        );
+        assert_eq!(
+            parsed(&[
+                "update",
+                "--channel=latest",
+                "--allow-downgrade",
+                "--data-dir",
+                "/d"
+            ])
+            .unwrap(),
+            Command::Update(Some(Channel::Latest), true, dir)
+        );
+    }
+
+    #[test]
+    fn help_and_version_win_over_everything_else() {
+        assert_eq!(parsed(&["--help"]).unwrap(), Command::Help);
+        assert_eq!(parsed(&["init", "--bogus", "-h"]).unwrap(), Command::Help);
+        assert_eq!(parsed(&["--version"]).unwrap(), Command::Version);
+        assert_eq!(parsed(&["-V"]).unwrap(), Command::Version);
+    }
+
+    #[test]
+    fn bad_arguments_are_rejected() {
+        let error = |args: &[&str]| parsed(args).unwrap_err();
+        assert_eq!(error(&[]), "missing command");
+        assert_eq!(error(&["run"]), "unknown command \"run\"");
+        assert_eq!(error(&["service"]), "service takes the subcommand install");
+        assert_eq!(
+            error(&["service", "remove"]),
+            "service takes the subcommand install"
+        );
+        assert_eq!(error(&["init", "--port"]), "--port needs a value");
+        assert_eq!(error(&["init", "--data-dir="]), "--data-dir needs a value");
+        assert!(error(&["init", "--port", "0"]).contains("1 to 65535"));
+        assert!(error(&["init", "--port", "http"]).contains("1 to 65535"));
+        assert!(error(&["init", "--listen", "localhost:80"]).contains("HOST:PORT"));
+        assert_eq!(
+            error(&["init", "--port", "1", "--listen", "127.0.0.1:2"]),
+            "give either --port or --listen, once"
+        );
+        assert_eq!(
+            error(&["start", "--port", "1"]),
+            "--port is an option of toodo init, not of start"
+        );
+        assert_eq!(error(&["init", "--no-mcp=yes"]), "--no-mcp takes no value");
+        assert_eq!(
+            error(&["update", "--channel", "beta"]),
+            "--channel takes dev or latest, got \"beta\""
+        );
+        assert_eq!(
+            error(&["start", "--channel", "dev"]),
+            "--channel is an option of toodo update, not of start"
+        );
+        assert_eq!(
+            error(&["start", "--allow-downgrade"]),
+            "--allow-downgrade is an option of toodo update, not of start"
+        );
+        assert_eq!(error(&["status", "extra"]), "unknown option \"extra\"");
+    }
+}

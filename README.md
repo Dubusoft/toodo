@@ -44,7 +44,15 @@ into a performance report.
 - Git, OpenSSH, and the GitHub CLI (`gh`) on the server's `PATH`
 - A current browser to use the web app
 
-See [docs/server.md](docs/server.md) to install it.
+See [docs/server.md](docs/server.md) to install it. On Linux x64 or arm64 (glibc) with
+Node.js, the quickest start is:
+
+```sh
+npx @dubusoft/toodo init
+```
+
+See [Install with npm](docs/server.md#install-with-npm). After `npm i -g @dubusoft/toodo`,
+`toodo update` installs the newest version and restarts the server on it.
 
 ## End-to-End Tests
 
@@ -100,6 +108,10 @@ Releases run from `main` rather than from tags so the Rust build cache of one re
 reused by the next. If a release fails, run the `Release` workflow by hand on `main`; it
 completes a release whose server assets were not uploaded yet.
 
+The `Release` workflow also publishes the release to npm under the dist-tag `latest`, and
+every push to `dev` publishes an `X.Y.Z-dev.N` prerelease under `dev`; see
+[npm Packages](docs/server.md#npm-packages).
+
 ## Status
 
 Early bootstrap. Setup instructions will be added with the project scaffold.
@@ -108,6 +120,19 @@ Early bootstrap. Setup instructions will be added with the project scaffold.
 
 All repository content (docs, code, comments, commits, PRs) is written in English.
 
+## Contributing
+
+Outside contributions are accepted under the [Contributor License Agreement](CLA.md).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to sign it in a pull request.
+
 ## License
 
-Toodo is released under the [MIT License](LICENSE).
+Copyright (C) 2026 dev-bokdong
+
+Toodo is licensed under the [GNU Affero General Public License v3.0 only](LICENSE)
+(`AGPL-3.0-only`). If you run a modified Toodo for users over a network, the AGPL requires
+you to offer those users the source of your modified version.
+
+Versions released before this license change, up to and including v1.3.1, were released
+under the MIT License and remain available under it. Releases after v1.3.1 are
+`AGPL-3.0-only`.

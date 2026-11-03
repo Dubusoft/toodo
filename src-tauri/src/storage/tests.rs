@@ -27,6 +27,10 @@ fn add_workspace(storage: &mut Storage, name: &str, location: WorkspaceLocation)
             name: name.to_owned(),
             location,
             default_base_branch: "main".to_owned(),
+            source: crate::domain::model::Source::GitHub,
+            completion: crate::domain::model::CompletionMode::PullRequestMerge,
+            runner: crate::domain::model::Runner::Herdr,
+            axes_detected: true,
         })
         .unwrap()
 }
@@ -1540,4 +1544,309 @@ fn dependencies_not_done_names_each_blocker_and_its_next_step() {
         error.to_string(),
         "task 2 cannot start yet: #1 is done as not_adopted (remove_dependency task_id 2 depends_on 1 to unblock, or complete #1 with merged_with); #7 is planned (wait for it)"
     );
+}
+
+#[test]
+fn workspaces_with_undetected_axes_are_listed_until_their_axes_are_saved() {
+    use crate::domain::model::{CompletionMode, Runner, Source};
+    let mut storage = Storage::open_in_memory().unwrap();
+    let known = add_workspace(&mut storage, "known", local_location(r"C:\dev\known"));
+    let unknown = storage
+        .create_workspace(&NewWorkspace {
+            name: "unknown".to_owned(),
+            location: local_location(r"C:\dev\unknown"),
+            default_base_branch: "main".to_owned(),
+            source: Source::GitHub,
+            completion: CompletionMode::PullRequestMerge,
+            runner: Runner::Herdr,
+            axes_detected: false,
+        })
+        .unwrap();
+    assert_eq!(
+        storage.workspaces_to_detect().unwrap(),
+        std::slice::from_ref(&unknown)
+    );
+
+    storage
+        .save_detected_axes(unknown.id, Source::LocalGit, CompletionMode::LocalMerge)
+        .unwrap();
+
+    assert!(storage.workspaces_to_detect().unwrap().is_empty());
+    let stored = storage.get_workspace(unknown.id).unwrap().unwrap();
+    assert_eq!(
+        (stored.source, stored.completion, stored.runner),
+        (Source::LocalGit, CompletionMode::LocalMerge, Runner::Herdr)
+    );
+    assert_eq!(storage.get_workspace(known.id).unwrap().unwrap(), known);
+    let mut renamed = stored.clone();
+    renamed.name = "renamed".to_owned();
+    renamed.source = Source::GitHub;
+    storage.update_workspace(&renamed).unwrap();
+    assert_eq!(
+        storage.get_workspace(unknown.id).unwrap().unwrap().source,
+        Source::LocalGit
+    );
+    assert!(matches!(
+        storage.save_detected_axes(WorkspaceId(99), Source::GitHub, CompletionMode::Manual),
+        Err(StorageError::WorkspaceNotFound(_))
+    ));
+}
+
+fn activity(
+    task: TaskId,
+    kind: crate::domain::activity::ActivityKind,
+    source: crate::domain::activity::ActivitySource,
+    external_ref: &str,
+    title: &str,
+    occurred_at: i64,
+) -> crate::domain::activity::ActivityEvent {
+    crate::domain::activity::ActivityEvent {
+        task_id: task,
+        kind,
+        source,
+        external_ref: external_ref.to_owned(),
+        title: title.to_owned(),
+        author: Some(format!("{title} author")),
+        occurred_at,
+    }
+}
+
+#[test]
+fn activity_is_stored_once_per_event_whatever_the_order_of_reports() {
+    use crate::domain::activity::{ActivityKind::*, ActivitySource::*};
+    // The same events, each reported by two sources with different times and titles.
+    let first = |task| {
+        vec![
+            activity(task, Commit, GitPoll, "aaa", "Commit aaa", 30),
+            activity(task, PullRequestOpened, GitHubPoll, "pr", "Add login", 50),
+            activity(task, Commit, GitPoll, "bbb", "Commit bbb", 40),
+        ]
+    };
+    let second = |task| {
+        vec![
+            activity(task, PullRequestOpened, GitPoll, "pr", "Renamed", 45),
+            activity(task, Commit, GitHubPoll, "aaa", "Other title", 35),
+            activity(task, Commit, GitHubPoll, "bbb", "Other title", 20),
+        ]
+    };
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "toodo", local_location(r"C:\dev\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+
+    // When A gets the first reports, then the second, and B the other way around, each
+    // batch twice.
+    assert_eq!(storage.record_activity(a.id, &first(a.id), 100).unwrap(), 3);
+    assert_eq!(storage.record_activity(a.id, &first(a.id), 110).unwrap(), 0);
+    assert_eq!(
+        storage.record_activity(a.id, &second(a.id), 120).unwrap(),
+        0
+    );
+    assert_eq!(
+        storage.record_activity(a.id, &second(a.id), 130).unwrap(),
+        0
+    );
+    assert_eq!(
+        storage.record_activity(b.id, &second(b.id), 100).unwrap(),
+        3
+    );
+    assert_eq!(
+        storage.record_activity(b.id, &second(b.id), 110).unwrap(),
+        0
+    );
+    assert_eq!(storage.record_activity(b.id, &first(b.id), 120).unwrap(), 0);
+    assert_eq!(storage.record_activity(b.id, &first(b.id), 130).unwrap(), 0);
+
+    // Then each event is one row at its earliest time, first received at 100, confirmed
+    // by the last report, and listed in the same order for both.
+    assert_eq!(row_count(&storage, "task_activity"), 6);
+    let summary = |task: &Task| {
+        storage
+            .list_activity(task.id)
+            .unwrap()
+            .into_iter()
+            .map(|recorded| {
+                assert_eq!(recorded.received_at, 100);
+                assert_eq!(recorded.confirmed_at, 130);
+                (
+                    recorded.event.kind,
+                    recorded.event.external_ref,
+                    recorded.event.occurred_at,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let expected = vec![
+        (Commit, "bbb".to_owned(), 20),
+        (Commit, "aaa".to_owned(), 30),
+        (PullRequestOpened, "pr".to_owned(), 45),
+    ];
+    assert_eq!(summary(&a), expected);
+    assert_eq!(summary(&b), expected);
+    // The first report keeps its source, title, and author.
+    let a_events = storage.list_activity(a.id).unwrap();
+    assert_eq!(a_events[2].event.source, GitHubPoll);
+    assert_eq!(a_events[2].event.title, "Add login");
+    assert_eq!(
+        a_events[2].event.author.as_deref(),
+        Some("Add login author")
+    );
+    let b_events = storage.list_activity(b.id).unwrap();
+    assert_eq!(b_events[2].event.source, GitPoll);
+    assert_eq!(b_events[2].event.title, "Renamed");
+
+    // Deleting a task drops its activity.
+    storage.delete_task(b.id).unwrap();
+    assert_eq!(row_count(&storage, "task_activity"), 3);
+}
+
+#[test]
+fn activity_of_another_or_a_missing_task_is_rejected() {
+    use crate::domain::activity::{ActivityKind::Commit, ActivitySource::GitPoll};
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "toodo", local_location(r"C:\dev\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+
+    assert!(matches!(
+        storage.record_activity(a.id, &[activity(b.id, Commit, GitPoll, "aaa", "x", 1)], 5),
+        Err(StorageError::ActivityTaskMismatch { expected, found }) if expected == a.id && found == b.id
+    ));
+    assert!(matches!(
+        storage.record_activity(TaskId(99), &[], 5),
+        Err(StorageError::TaskNotFound(TaskId(99)))
+    ));
+    assert_eq!(row_count(&storage, "task_activity"), 0);
+}
+
+/// The reference, checkout path, generation, and host of the open runtime workspace of
+/// `task`, after checking that the task reads its herdr workspace from it.
+fn open_runtime(storage: &Storage, task: &Task) -> Option<(String, Option<String>, i64, String)> {
+    let open = storage.open_runtime_workspace(task.id).unwrap();
+    assert_eq!(
+        storage
+            .get_task(task.id)
+            .unwrap()
+            .unwrap()
+            .herdr_workspace_id,
+        open.as_ref()
+            .map(|open| open.provider_workspace_ref.clone())
+    );
+    open.map(|open| {
+        (
+            open.provider_workspace_ref,
+            open.checkout_path,
+            open.generation,
+            open.host.as_wire(),
+        )
+    })
+}
+
+#[test]
+fn herdr_workspaces_of_tasks_are_recorded_in_runtime_workspaces() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let mut workspace = add_workspace(&mut storage, "Toodo", ssh_location("devbox", "/srv/toodo"));
+    let task = add_task(&mut storage, &workspace, "Add login");
+    assert_eq!(open_runtime(&storage, &task), None);
+    let open = |reference: &str, path: &str, generation| {
+        Some((
+            reference.to_owned(),
+            Some(path.to_owned()),
+            generation,
+            "ssh:devbox".to_owned(),
+        ))
+    };
+    let first = HostPath::Posix(PosixPath::parse("/wt/add-login-1").unwrap());
+    let second = HostPath::Posix(PosixPath::parse("/wt/add-login-2").unwrap());
+
+    // Start.
+    storage
+        .start_task(task.id, &checkout(first.clone(), "feat/add-login-1"), "w7")
+        .unwrap();
+    assert_eq!(
+        open_runtime(&storage, &task),
+        open("w7", "/wt/add-login-1", 1)
+    );
+    let branch: Option<String> = storage
+        .conn
+        .query_row(
+            "SELECT branch FROM runtime_workspaces WHERE task_id = ?1 AND state = 'open'",
+            [task.id.0],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(branch.as_deref(), Some("feat/add-login-1"));
+
+    // Close the herdr workspace, then open the worktree again in a new one.
+    storage.clear_task_herdr_workspace(task.id).unwrap();
+    assert_eq!(open_runtime(&storage, &task), None);
+    storage.set_task_herdr_workspace(task.id, "w8").unwrap();
+    assert_eq!(
+        open_runtime(&storage, &task),
+        open("w8", "/wt/add-login-1", 2)
+    );
+
+    // Remove the worktree, restore it elsewhere, then move it within the same workspace.
+    storage.clear_task_worktree(task.id).unwrap();
+    assert_eq!(open_runtime(&storage, &task), None);
+    storage
+        .restore_task_worktree(task.id, &first, "w9")
+        .unwrap();
+    assert_eq!(
+        open_runtime(&storage, &task),
+        open("w9", "/wt/add-login-1", 3)
+    );
+    storage
+        .restore_task_worktree(task.id, &second, "w9")
+        .unwrap();
+    assert_eq!(
+        open_runtime(&storage, &task),
+        open("w9", "/wt/add-login-2", 3)
+    );
+
+    // Complete, then reopen with a new handle.
+    storage.complete_task(task.id, Some(1), None, &[]).unwrap();
+    assert_eq!(open_runtime(&storage, &task), None);
+    storage.reopen_task(task.id, "Needs more work").unwrap();
+    storage.set_task_herdr_workspace(task.id, "w10").unwrap();
+    assert_eq!(
+        open_runtime(&storage, &task),
+        open("w10", "/wt/add-login-2", 4)
+    );
+
+    // A workspace that keeps its machine keeps the handle; another machine closes it.
+    workspace.name = "Toodo app".to_owned();
+    storage.update_workspace(&workspace).unwrap();
+    assert_eq!(
+        open_runtime(&storage, &task),
+        open("w10", "/wt/add-login-2", 4)
+    );
+    workspace.location = ssh_location("other", "/srv/toodo");
+    storage.update_workspace(&workspace).unwrap();
+    assert_eq!(open_runtime(&storage, &task), None);
+
+    let closed: Vec<(i64, String, bool)> = storage
+        .conn
+        .prepare(
+            "SELECT generation, state, closed_at IS NOT NULL FROM runtime_workspaces
+             WHERE task_id = ?1 ORDER BY generation",
+        )
+        .unwrap()
+        .query_map([task.id.0], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        closed,
+        (1..=4)
+            .map(|generation| (generation, "closed".to_owned(), true))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(row_count(&storage, "task_runs"), 0);
+
+    // A deleted task takes its runtime workspaces along.
+    storage.delete_task(task.id).unwrap();
+    assert_eq!(row_count(&storage, "runtime_workspaces"), 0);
 }

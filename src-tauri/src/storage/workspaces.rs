@@ -4,8 +4,8 @@ use rusqlite::{OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::model::{
-    AgentMerge, HostPath, Machine, MachineLabel, MachineSettings, TaskId, Workspace, WorkspaceId,
-    WorkspaceLocation,
+    AgentMerge, CompletionMode, HostPath, Machine, MachineLabel, MachineSettings, Runner, Source,
+    TaskId, Workspace, WorkspaceId, WorkspaceLocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,10 +13,33 @@ pub struct NewWorkspace {
     pub name: String,
     pub location: WorkspaceLocation,
     pub default_base_branch: String,
+    pub source: Source,
+    pub completion: CompletionMode,
+    pub runner: Runner,
+    /// Whether `source` and `completion` are known; `false` for workspaces whose axes the
+    /// server still detects from the repository (see [`Storage::workspaces_to_detect`]).
+    pub axes_detected: bool,
 }
 
-const WORKSPACE_COLUMNS: &str =
-    "id, name, kind, path, herdr_machine, default_base_branch, agent_merge";
+const WORKSPACE_COLUMNS: &str = "id, name, kind, path, herdr_machine, default_base_branch, \
+     agent_merge, source, completion, runner";
+
+/// The value of `wire` among `values`, as a stored column of workspace `id` names it.
+fn parse_axis<T: Copy>(
+    id: i64,
+    column: &str,
+    values: &[T],
+    as_str: fn(T) -> &'static str,
+    wire: &str,
+) -> Result<T> {
+    values
+        .iter()
+        .copied()
+        .find(|&value| as_str(value) == wire)
+        .ok_or_else(|| {
+            StorageError::InvalidData(format!("workspace {id} has an unknown {column} {wire:?}"))
+        })
+}
 
 fn agent_merge_column(agent_merge: AgentMerge) -> &'static str {
     match agent_merge {
@@ -49,6 +72,9 @@ struct WorkspaceRow {
     herdr_machine: Option<String>,
     default_base_branch: String,
     agent_merge: String,
+    source: String,
+    completion: String,
+    runner: String,
 }
 
 impl WorkspaceRow {
@@ -61,6 +87,9 @@ impl WorkspaceRow {
             herdr_machine: row.get(4)?,
             default_base_branch: row.get(5)?,
             agent_merge: row.get(6)?,
+            source: row.get(7)?,
+            completion: row.get(8)?,
+            runner: row.get(9)?,
         })
     }
 
@@ -96,6 +125,27 @@ impl WorkspaceRow {
             location,
             default_base_branch: self.default_base_branch,
             agent_merge,
+            source: parse_axis(
+                self.id,
+                "source",
+                &Source::ALL,
+                Source::as_str,
+                &self.source,
+            )?,
+            completion: parse_axis(
+                self.id,
+                "completion",
+                &CompletionMode::ALL,
+                CompletionMode::as_str,
+                &self.completion,
+            )?,
+            runner: parse_axis(
+                self.id,
+                "runner",
+                &Runner::ALL,
+                Runner::as_str,
+                &self.runner,
+            )?,
         })
     }
 }
@@ -104,9 +154,20 @@ impl Storage {
     pub fn create_workspace(&mut self, new: &NewWorkspace) -> Result<Workspace> {
         let (kind, path, herdr_machine) = location_columns(&new.location);
         self.conn.execute(
-            "INSERT INTO workspaces (name, kind, path, herdr_machine, default_base_branch)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![new.name, kind, path, herdr_machine, new.default_base_branch],
+            "INSERT INTO workspaces (name, kind, path, herdr_machine, default_base_branch,
+                 source, completion, runner, axes_detected)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                new.name,
+                kind,
+                path,
+                herdr_machine,
+                new.default_base_branch,
+                new.source.as_str(),
+                new.completion.as_str(),
+                new.runner.as_str(),
+                new.axes_detected
+            ],
         )?;
         Ok(Workspace {
             id: WorkspaceId(self.conn.last_insert_rowid()),
@@ -114,7 +175,41 @@ impl Storage {
             location: new.location.clone(),
             default_base_branch: new.default_base_branch.clone(),
             agent_merge: AgentMerge::default(),
+            source: new.source,
+            completion: new.completion,
+            runner: new.runner,
         })
+    }
+
+    /// Workspaces whose source and completion are not known yet, e.g. ones the schema
+    /// migration could not infer from their tasks, to detect from their repository.
+    pub fn workspaces_to_detect(&self) -> Result<Vec<Workspace>> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {WORKSPACE_COLUMNS} FROM workspaces WHERE axes_detected = 0 ORDER BY id"
+        ))?;
+        let rows = statement
+            .query_map([], WorkspaceRow::read)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter().map(WorkspaceRow::into_workspace).collect()
+    }
+
+    /// Stores the source and completion detected for workspace `id` and marks its axes
+    /// known; its runner is kept.
+    pub fn save_detected_axes(
+        &mut self,
+        id: WorkspaceId,
+        source: Source,
+        completion: CompletionMode,
+    ) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE workspaces SET source = ?2, completion = ?3, axes_detected = 1
+             WHERE id = ?1",
+            params![id.0, source.as_str(), completion.as_str()],
+        )?;
+        if changed == 0 {
+            return Err(StorageError::WorkspaceNotFound(id));
+        }
+        Ok(())
     }
 
     pub fn get_workspace(&self, id: WorkspaceId) -> Result<Option<Workspace>> {
@@ -139,13 +234,15 @@ impl Storage {
         rows.into_iter().map(WorkspaceRow::into_workspace).collect()
     }
 
-    /// Saves the workspace. Its base branch cannot change while one of its tasks is in
+    /// Saves the workspace; its source, completion, and runner are kept as created. Its
+    /// base branch cannot change while one of its tasks is in
     /// review: the open pull request targets the current branch. A new location keeps the
     /// tasks; it is rejected while a task has a worktree path of another kind (Windows or
     /// POSIX) than the new repository path, and on another machine the tasks forget their
     /// herdr workspaces, which belong to the old machine.
     pub fn update_workspace(&mut self, workspace: &Workspace) -> Result<()> {
         let (kind, path, herdr_machine) = location_columns(&workspace.location);
+        let at = self.now();
         let tx = self.conn.transaction()?;
         let in_review: Option<i64> = tx
             .query_row(
@@ -186,11 +283,12 @@ impl Storage {
             return Err(StorageError::WorktreePathMismatch(TaskId(task)));
         }
         tx.execute(
-            "UPDATE tasks SET herdr_workspace_id = NULL
-             WHERE workspace_id = ?1 AND herdr_workspace_id IS NOT NULL
+            "UPDATE runtime_workspaces SET state = 'closed', closed_at = ?4
+             WHERE state = 'open' AND runner_kind = 'herdr'
+               AND task_id IN (SELECT id FROM tasks WHERE workspace_id = ?1)
                AND EXISTS (SELECT 1 FROM workspaces w
                            WHERE w.id = ?1 AND (w.kind <> ?2 OR w.herdr_machine IS NOT ?3))",
-            params![workspace.id.0, kind, herdr_machine],
+            params![workspace.id.0, kind, herdr_machine, at],
         )?;
         let changed = tx.execute(
             "UPDATE workspaces

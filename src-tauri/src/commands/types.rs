@@ -8,7 +8,9 @@ use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
 use crate::adapters::{git, github, herdr, ssh};
-use crate::domain::{backup, criteria, model, path, plan, review, ssh_config, status, timeline};
+use crate::domain::{
+    activity, backup, criteria, model, path, plan, review, ssh_config, status, timeline,
+};
 use crate::storage;
 
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
@@ -47,6 +49,30 @@ pub enum DependencyOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(transparent)]
 pub struct Timestamp(#[specta(type = Number)] pub i64);
+
+/// An OAuth app with an unrevoked grant and a live token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(transparent)]
+pub struct OAuthGrantId(#[specta(type = Number)] pub i64);
+
+/// A live app connection shown in Settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedApp {
+    pub grant_id: OAuthGrantId,
+    pub client_name: Option<String>,
+    pub client_id: String,
+    pub scopes: String,
+    pub created_at: Timestamp,
+    pub last_used_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedApps {
+    pub public_mcp_url: Option<String>,
+    pub apps: Vec<ConnectedApp>,
+}
 
 impl From<WorkspaceId> for model::WorkspaceId {
     fn from(id: WorkspaceId) -> Self {
@@ -222,6 +248,106 @@ pub struct Workspace {
     /// Why the server cannot use the repository path, so it can be corrected; `null`
     /// when it can. Ignored when the workspace is saved.
     pub path_problem: Option<PathProblem>,
+    /// What the location holds; set at creation and ignored when the workspace is saved.
+    pub source: Source,
+    /// How its tasks get done; set at creation and ignored when the workspace is saved.
+    pub completion: CompletionMode,
+    /// What runs started tasks; set at creation and ignored when the workspace is saved.
+    pub runner: Runner,
+}
+
+/// What a workspace location holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    /// A plain directory without a repository; tasks have no branches or worktrees.
+    None,
+    /// A git repository without a GitHub remote; task branches merge locally.
+    LocalGit,
+    /// A git repository whose `origin` remote is on GitHub; tasks ship as pull requests.
+    #[serde(rename = "github")]
+    GitHub,
+}
+
+impl From<model::Source> for Source {
+    fn from(source: model::Source) -> Self {
+        match source {
+            model::Source::None => Self::None,
+            model::Source::LocalGit => Self::LocalGit,
+            model::Source::GitHub => Self::GitHub,
+        }
+    }
+}
+
+impl From<Source> for model::Source {
+    fn from(source: Source) -> Self {
+        match source {
+            Source::None => Self::None,
+            Source::LocalGit => Self::LocalGit,
+            Source::GitHub => Self::GitHub,
+        }
+    }
+}
+
+/// How the tasks of a workspace get done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CompletionMode {
+    /// Their criteria are met without a merge, e.g. checked by hand.
+    Manual,
+    /// Their branch is merged into the base branch locally.
+    LocalMerge,
+    /// Their pull request is merged into the base branch.
+    #[serde(rename = "pr_merge")]
+    PullRequestMerge,
+}
+
+impl From<model::CompletionMode> for CompletionMode {
+    fn from(completion: model::CompletionMode) -> Self {
+        match completion {
+            model::CompletionMode::Manual => Self::Manual,
+            model::CompletionMode::LocalMerge => Self::LocalMerge,
+            model::CompletionMode::PullRequestMerge => Self::PullRequestMerge,
+        }
+    }
+}
+
+impl From<CompletionMode> for model::CompletionMode {
+    fn from(completion: CompletionMode) -> Self {
+        match completion {
+            CompletionMode::Manual => Self::Manual,
+            CompletionMode::LocalMerge => Self::LocalMerge,
+            CompletionMode::PullRequestMerge => Self::PullRequestMerge,
+        }
+    }
+}
+
+/// What runs the work of a started task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Runner {
+    /// Nothing: starting a task only marks it in progress.
+    None,
+    /// Agents in a herdr workspace on a task worktree and branch.
+    Herdr,
+}
+
+impl From<model::Runner> for Runner {
+    fn from(runner: model::Runner) -> Self {
+        match runner {
+            model::Runner::None => Self::None,
+            model::Runner::Herdr => Self::Herdr,
+        }
+    }
+}
+
+impl From<Runner> for model::Runner {
+    fn from(runner: Runner) -> Self {
+        match runner {
+            Runner::None => Self::None,
+            Runner::Herdr => Self::Herdr,
+        }
+    }
 }
 
 impl From<&model::Workspace> for Workspace {
@@ -233,6 +359,9 @@ impl From<&model::Workspace> for Workspace {
             default_base_branch: workspace.default_base_branch.clone(),
             agent_merge: workspace.agent_merge.into(),
             path_problem: PathProblem::of(&workspace.location),
+            source: workspace.source.into(),
+            completion: workspace.completion.into(),
+            runner: workspace.runner.into(),
         }
     }
 }
@@ -292,18 +421,26 @@ impl From<AgentMerge> for model::AgentMerge {
 }
 
 impl Workspace {
-    /// The workspace with its settings from this one and the given `location`; the
-    /// location of a saved workspace only changes by moving it.
-    pub(crate) fn into_model(
-        self,
-        location: model::WorkspaceLocation,
-    ) -> CommandResult<model::Workspace> {
+    /// The workspace with its settings from this one and the location, source,
+    /// completion, and runner of `stored`, the saved workspace: the location only changes
+    /// by moving it, the other three never after creation. The default base branch may be
+    /// empty only for source none, which has no repository.
+    pub(crate) fn into_model(self, stored: &model::Workspace) -> CommandResult<model::Workspace> {
+        let default_base_branch = match stored.source {
+            model::Source::None => self.default_base_branch.trim().to_owned(),
+            model::Source::LocalGit | model::Source::GitHub => {
+                required("default base branch", self.default_base_branch)?
+            }
+        };
         Ok(model::Workspace {
             id: self.id.into(),
             name: required("workspace name", self.name)?,
-            location,
-            default_base_branch: required("default base branch", self.default_base_branch)?,
+            location: stored.location.clone(),
+            default_base_branch,
             agent_merge: self.agent_merge.into(),
+            source: stored.source,
+            completion: stored.completion,
+            runner: stored.runner,
         })
     }
 }
@@ -311,7 +448,7 @@ impl Workspace {
 /// How the repository of a new workspace gets to its location.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-pub enum WorkspaceSource {
+pub enum RepositorySetup {
     /// The location already holds a cloned repository.
     Open,
     /// Clone `url` into the location, which must not exist or be empty.
@@ -326,8 +463,18 @@ pub enum WorkspaceSource {
 pub struct NewWorkspace {
     pub name: String,
     pub location: WorkspaceLocation,
-    pub source: WorkspaceSource,
-    /// Detected from the repository when empty or absent.
+    /// How the repository gets to the location; required for a git source, absent for
+    /// none.
+    pub repository: Option<RepositorySetup>,
+    /// Omitted: github when the prepared repository has an origin remote, else
+    /// local_git; none when `repository` is absent.
+    pub source: Option<Source>,
+    /// Omitted: the default of the source (none: manual, local_git: local_merge,
+    /// github: pr_merge).
+    pub completion: Option<CompletionMode>,
+    /// Omitted: the default of the source (none: none, git sources: herdr).
+    pub runner: Option<Runner>,
+    /// Detected from the repository when empty or absent; ignored for source none.
     pub default_base_branch: Option<String>,
 }
 
@@ -336,7 +483,13 @@ pub struct NewWorkspace {
 pub struct WorkspaceSetup {
     pub name: String,
     pub location: model::WorkspaceLocation,
-    pub source: WorkspaceSource,
+    /// `None` exactly when the source is none.
+    pub repository: Option<RepositorySetup>,
+    /// `None` when the repository decides it: github with an origin remote, else
+    /// local_git. Never `Some(Source::None)` with a repository.
+    pub source: Option<model::Source>,
+    pub completion: Option<model::CompletionMode>,
+    pub runner: Option<model::Runner>,
     pub default_base_branch: Option<String>,
 }
 
@@ -344,16 +497,43 @@ impl TryFrom<NewWorkspace> for WorkspaceSetup {
     type Error = CommandError;
 
     fn try_from(new: NewWorkspace) -> CommandResult<Self> {
+        let source = new.source.map(model::Source::from);
+        let repository = match (new.repository, source) {
+            (Some(_), Some(model::Source::None)) => {
+                return Err(CommandError::invalid_input(
+                    "source none has no repository; omit repository, or choose source \
+                     local_git or github to open, clone, or init one",
+                ));
+            }
+            (None, Some(source @ (model::Source::LocalGit | model::Source::GitHub))) => {
+                return Err(CommandError::invalid_input(format!(
+                    "source {source} needs a repository; set repository to open, clone, or \
+                     init one, or choose source none for a plain directory"
+                )));
+            }
+            (Some(RepositorySetup::Init), Some(model::Source::GitHub)) => {
+                return Err(CommandError::invalid_input(
+                    "a new repository has no origin remote for source github; choose source \
+                     local_git for a new repository, or clone the GitHub repository instead",
+                ));
+            }
+            (None, _) => None,
+            (Some(RepositorySetup::Clone { url }), _) => Some(RepositorySetup::Clone {
+                url: required("repository URL", url)?,
+            }),
+            (Some(setup), _) => Some(setup),
+        };
         Ok(Self {
             name: required("workspace name", new.name)?,
             location: new.location.try_into()?,
-            source: match new.source {
-                WorkspaceSource::Open => WorkspaceSource::Open,
-                WorkspaceSource::Init => WorkspaceSource::Init,
-                WorkspaceSource::Clone { url } => WorkspaceSource::Clone {
-                    url: required("repository URL", url)?,
-                },
+            source: if repository.is_none() {
+                Some(model::Source::None)
+            } else {
+                source
             },
+            repository,
+            completion: new.completion.map(Into::into),
+            runner: new.runner.map(Into::into),
             default_base_branch: new
                 .default_base_branch
                 .map(|branch| branch.trim().to_owned())
@@ -1232,6 +1412,88 @@ impl From<&model::CommitRecord> for CommitRecord {
     }
 }
 
+/// What happened in the git history of a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum ActivityKind {
+    #[serde(rename = "commit")]
+    Commit,
+    #[serde(rename = "pr_opened")]
+    PullRequestOpened,
+    #[serde(rename = "checks_passed")]
+    ChecksPassed,
+    #[serde(rename = "checks_failed")]
+    ChecksFailed,
+    #[serde(rename = "pr_merged")]
+    PullRequestMerged,
+}
+
+impl From<activity::ActivityKind> for ActivityKind {
+    fn from(kind: activity::ActivityKind) -> Self {
+        match kind {
+            activity::ActivityKind::Commit => Self::Commit,
+            activity::ActivityKind::PullRequestOpened => Self::PullRequestOpened,
+            activity::ActivityKind::ChecksPassed => Self::ChecksPassed,
+            activity::ActivityKind::ChecksFailed => Self::ChecksFailed,
+            activity::ActivityKind::PullRequestMerged => Self::PullRequestMerged,
+        }
+    }
+}
+
+/// Where an activity event was first learned from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub enum ActivitySource {
+    #[serde(rename = "git_poll")]
+    GitPoll,
+    #[serde(rename = "github_poll")]
+    GitHubPoll,
+}
+
+impl From<activity::ActivitySource> for ActivitySource {
+    fn from(source: activity::ActivitySource) -> Self {
+        match source {
+            activity::ActivitySource::GitPoll => Self::GitPoll,
+            activity::ActivitySource::GitHubPoll => Self::GitHubPoll,
+        }
+    }
+}
+
+/// One event of the git activity of a task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskActivity {
+    pub kind: ActivityKind,
+    pub source: ActivitySource,
+    /// The commit SHA of a commit or CI result, or the pull request URL.
+    pub external_ref: String,
+    pub title: String,
+    pub author: Option<String>,
+    /// When it happened, in seconds since the Unix epoch.
+    #[specta(type = Number)]
+    pub occurred_at: i64,
+    /// When Toodo first stored it.
+    #[specta(type = Number)]
+    pub received_at: i64,
+    /// The latest time any source reported it.
+    #[specta(type = Number)]
+    pub confirmed_at: i64,
+}
+
+impl From<&activity::RecordedActivity> for TaskActivity {
+    fn from(recorded: &activity::RecordedActivity) -> Self {
+        let event = &recorded.event;
+        Self {
+            kind: event.kind.into(),
+            source: event.source.into(),
+            external_ref: event.external_ref.clone(),
+            title: event.title.clone(),
+            author: event.author.clone(),
+            occurred_at: event.occurred_at,
+            received_at: recorded.received_at,
+            confirmed_at: recorded.confirmed_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct HerdrStatus {
@@ -1515,34 +1777,83 @@ mod tests {
         );
     }
 
-    #[test]
-    fn new_workspace_requires_a_name_and_a_clone_url() {
-        let new = |name: &str, source: WorkspaceSource, branch: Option<&str>| NewWorkspace {
+    fn new_workspace(
+        name: &str,
+        repository: Option<RepositorySetup>,
+        branch: Option<&str>,
+    ) -> NewWorkspace {
+        NewWorkspace {
             name: name.to_owned(),
             location: WorkspaceLocation::Local {
                 path: LOCAL.1.to_owned(),
             },
-            source,
+            repository,
+            source: None,
+            completion: None,
+            runner: None,
             default_base_branch: branch.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn new_workspace_requires_a_name_and_a_clone_url() {
+        let new = |name: &str, repository: RepositorySetup, branch: Option<&str>| {
+            new_workspace(name, Some(repository), branch)
         };
-        let clone = |url: &str| WorkspaceSource::Clone {
+        let clone = |url: &str| RepositorySetup::Clone {
             url: url.to_owned(),
         };
         let parsed =
             WorkspaceSetup::try_from(new(" toodo ", clone(" git@h:a.git "), Some(" main ")))
                 .unwrap();
         assert_eq!(parsed.name, "toodo");
-        assert_eq!(parsed.source, clone("git@h:a.git"));
+        assert_eq!(parsed.repository, Some(clone("git@h:a.git")));
+        assert_eq!(parsed.source, None);
         assert_eq!(parsed.default_base_branch.as_deref(), Some("main"));
         let blank_branch =
-            WorkspaceSetup::try_from(new("toodo", WorkspaceSource::Open, Some(" "))).unwrap();
+            WorkspaceSetup::try_from(new("toodo", RepositorySetup::Open, Some(" "))).unwrap();
         assert_eq!(blank_branch.default_base_branch, None);
         for invalid in [
-            new("  ", WorkspaceSource::Open, None),
+            new("  ", RepositorySetup::Open, None),
             new("toodo", clone(" "), None),
         ] {
             let error = WorkspaceSetup::try_from(invalid).unwrap_err();
             assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn new_workspace_matches_its_repository_to_its_source() {
+        let without_repository =
+            WorkspaceSetup::try_from(new_workspace("notes", None, None)).unwrap();
+        assert_eq!(without_repository.source, Some(model::Source::None));
+        let with = |repository: Option<RepositorySetup>, source: Source| NewWorkspace {
+            source: Some(source),
+            ..new_workspace("toodo", repository, None)
+        };
+        let local =
+            WorkspaceSetup::try_from(with(Some(RepositorySetup::Init), Source::LocalGit)).unwrap();
+        assert_eq!(local.source, Some(model::Source::LocalGit));
+        for (invalid, message) in [
+            (
+                with(Some(RepositorySetup::Open), Source::None),
+                "source none has no repository; omit repository, or choose source local_git \
+                 or github to open, clone, or init one",
+            ),
+            (
+                with(None, Source::GitHub),
+                "source github needs a repository; set repository to open, clone, or init \
+                 one, or choose source none for a plain directory",
+            ),
+            (
+                with(Some(RepositorySetup::Init), Source::GitHub),
+                "a new repository has no origin remote for source github; choose source \
+                 local_git for a new repository, or clone the GitHub repository instead",
+            ),
+        ] {
+            let error = WorkspaceSetup::try_from(invalid).unwrap_err();
+            assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+            assert_eq!(error.message, message);
         }
     }
 
@@ -1596,15 +1907,43 @@ mod tests {
         let new: NewWorkspace = serde_json::from_value(serde_json::json!({
             "name": "toodo",
             "location": { "kind": "local", "path": r"C:\dev\toodo" },
-            "source": { "kind": "clone", "url": "git@h:a.git" },
+            "repository": { "kind": "clone", "url": "git@h:a.git" },
+            "source": "github",
+            "completion": "pr_merge",
+            "runner": "herdr",
             "defaultBaseBranch": null
         }))
         .unwrap();
         assert_eq!(
-            new.source,
-            WorkspaceSource::Clone {
+            new.repository,
+            Some(RepositorySetup::Clone {
                 url: "git@h:a.git".to_owned()
-            }
+            })
+        );
+        assert_eq!(
+            (new.source, new.completion, new.runner),
+            (
+                Some(Source::GitHub),
+                Some(CompletionMode::PullRequestMerge),
+                Some(Runner::Herdr)
+            )
+        );
+        assert_eq!(
+            serde_json::to_value([Source::None, Source::LocalGit, Source::GitHub]).unwrap(),
+            serde_json::json!(["none", "local_git", "github"])
+        );
+        assert_eq!(
+            serde_json::to_value([
+                CompletionMode::Manual,
+                CompletionMode::LocalMerge,
+                CompletionMode::PullRequestMerge
+            ])
+            .unwrap(),
+            serde_json::json!(["manual", "local_merge", "pr_merge"])
+        );
+        assert_eq!(
+            serde_json::to_value([Runner::None, Runner::Herdr]).unwrap(),
+            serde_json::json!(["none", "herdr"])
         );
     }
 }
