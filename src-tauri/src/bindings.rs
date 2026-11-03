@@ -17,7 +17,8 @@ use specta_typescript::{Error, Exporter, FrameworkExporter, Typescript, define};
 
 use crate::commands::events::{self, names};
 use crate::commands::{
-    self, backup, completion, freshness, herdr, issues, machines, mcp, review, tasks, workspaces,
+    self, backup, completion, freshness, herdr, issues, machines, mcp, review, runs, tasks,
+    workspaces,
 };
 
 const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
@@ -68,6 +69,10 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         herdr::focus_agent_pane,
         herdr::restore_task_worktree,
         herdr::close_task_workspace,
+        runs::start_plain_run,
+        runs::list_task_runs,
+        runs::get_run_log,
+        runs::stop_run,
         completion::refresh_commit_records,
         completion::open_pull_request,
         completion::complete_task,

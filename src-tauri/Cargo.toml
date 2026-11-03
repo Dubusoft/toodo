@@ -41,6 +41,9 @@ axum = { version = "0.8.9", default-features = false, features = ["http1", "toki
 schemars = "1"
 semver = "1"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [profile.release]
 codegen-units = 1
 lto = true

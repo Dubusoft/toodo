@@ -8,9 +8,11 @@ use specta_typescript::Number;
 
 use super::{CommandError, CommandResult};
 use crate::adapters::{git, github, herdr, ssh};
+use crate::domain::runtime as domain_runtime;
 use crate::domain::{
     activity, backup, criteria, model, path, plan, review, ssh_config, status, timeline,
 };
+use crate::runtime::plain;
 use crate::storage;
 
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
@@ -330,6 +332,9 @@ pub enum Runner {
     None,
     /// Agents in a herdr workspace on a task worktree and branch.
     Herdr,
+    /// Agent CLIs that Toodo runs itself on a task worktree and branch, without herdr.
+    /// Only local workspaces use it.
+    Plain,
 }
 
 impl From<model::Runner> for Runner {
@@ -337,6 +342,7 @@ impl From<model::Runner> for Runner {
         match runner {
             model::Runner::None => Self::None,
             model::Runner::Herdr => Self::Herdr,
+            model::Runner::Plain => Self::Plain,
         }
     }
 }
@@ -346,6 +352,7 @@ impl From<Runner> for model::Runner {
         match runner {
             Runner::None => Self::None,
             Runner::Herdr => Self::Herdr,
+            Runner::Plain => Self::Plain,
         }
     }
 }
@@ -1690,6 +1697,153 @@ impl From<&storage::BackupFile> for BackupEntry {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(transparent)]
+pub struct RunId(#[specta(type = Number)] pub i64);
+
+impl From<RunId> for domain_runtime::RunId {
+    fn from(id: RunId) -> Self {
+        Self(id.0)
+    }
+}
+
+impl From<domain_runtime::RunId> for RunId {
+    fn from(id: domain_runtime::RunId) -> Self {
+        Self(id.0)
+    }
+}
+
+/// The agent CLI a plain run drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentAdapter {
+    /// Claude Code in print mode (`claude -p`).
+    Claude,
+    /// Codex in exec mode (`codex exec`).
+    Codex,
+}
+
+impl From<AgentAdapter> for plain::adapter::AgentAdapter {
+    fn from(adapter: AgentAdapter) -> Self {
+        match adapter {
+            AgentAdapter::Claude => Self::Claude,
+            AgentAdapter::Codex => Self::Codex,
+        }
+    }
+}
+
+/// Where a run is in its life.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    /// Recorded, not launched yet.
+    Reserved,
+    /// Launched and not ended.
+    Running,
+    /// Ended with a successful result.
+    Settled,
+    /// Ended on its own, or ended after its result without success.
+    Exited,
+    /// Ended with an error result, without a result, or past its time limit.
+    Failed,
+    /// Stopped on request.
+    Cancelled,
+    /// Its end was not observed, e.g. the server restarted while it ran.
+    Unknown,
+}
+
+impl From<domain_runtime::RunState> for RunState {
+    fn from(state: domain_runtime::RunState) -> Self {
+        match state {
+            domain_runtime::RunState::Reserved => Self::Reserved,
+            domain_runtime::RunState::Running => Self::Running,
+            domain_runtime::RunState::Settled => Self::Settled,
+            domain_runtime::RunState::Exited => Self::Exited,
+            domain_runtime::RunState::Failed => Self::Failed,
+            domain_runtime::RunState::Cancelled => Self::Cancelled,
+            domain_runtime::RunState::Unknown => Self::Unknown,
+        }
+    }
+}
+
+/// A run of a task: an agent launch and its outcome.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRun {
+    pub id: RunId,
+    pub task_id: TaskId,
+    pub request_key: String,
+    /// Increases from 1 per task.
+    #[specta(type = Number)]
+    pub generation: i64,
+    /// `plain`, `herdr`, or `none`.
+    pub runner_kind: String,
+    /// `writer` or `observer`.
+    pub role: String,
+    /// The agent CLI of a plain run: `claude` or `codex`.
+    pub adapter: Option<String>,
+    pub checkout_path: Option<String>,
+    pub state: RunState,
+    /// The runner's reference of the launch, e.g. `pid:<pid>` for a plain run.
+    pub provider_run_ref: Option<String>,
+    pub created_at: Timestamp,
+    pub started_at: Option<Timestamp>,
+    pub ended_at: Option<Timestamp>,
+}
+
+impl From<&storage::TaskRun> for TaskRun {
+    fn from(run: &storage::TaskRun) -> Self {
+        Self {
+            id: run.id.into(),
+            task_id: run.task.into(),
+            request_key: run.request_key.clone(),
+            generation: run.generation,
+            runner_kind: run.runner_kind.as_wire().to_owned(),
+            role: run.role.as_wire().to_owned(),
+            adapter: run.adapter_profile.clone(),
+            checkout_path: run.checkout_path.clone(),
+            state: run.state.into(),
+            provider_run_ref: run.provider_run_ref.clone(),
+            created_at: Timestamp(run.created_at),
+            started_at: run.started_at.map(Timestamp),
+            ended_at: run.ended_at.map(Timestamp),
+        }
+    }
+}
+
+/// Something observed about a run, e.g. its result or how it exited.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunEvent {
+    /// Increases from 1 per run.
+    #[specta(type = Number)]
+    pub sequence: i64,
+    pub kind: String,
+    pub payload: Option<String>,
+    pub observed_at: Timestamp,
+}
+
+impl From<&storage::RunEvent> for RunEvent {
+    fn from(event: &storage::RunEvent) -> Self {
+        Self {
+            sequence: event.sequence,
+            kind: event.kind.clone(),
+            payload: event.payload.clone(),
+            observed_at: Timestamp(event.observed_at),
+        }
+    }
+}
+
+/// A run with its events and the ends of its output, with the MCP token redacted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunLog {
+    pub run: TaskRun,
+    pub events: Vec<RunEvent>,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 pub(crate) fn map_all<'a, T: 'a, U: From<&'a T>>(items: &'a [T]) -> Vec<U> {
     items.iter().map(U::from).collect()
 }
@@ -1942,8 +2096,8 @@ mod tests {
             serde_json::json!(["manual", "local_merge", "pr_merge"])
         );
         assert_eq!(
-            serde_json::to_value([Runner::None, Runner::Herdr]).unwrap(),
-            serde_json::json!(["none", "herdr"])
+            serde_json::to_value([Runner::None, Runner::Herdr, Runner::Plain]).unwrap(),
+            serde_json::json!(["none", "herdr", "plain"])
         );
     }
 }

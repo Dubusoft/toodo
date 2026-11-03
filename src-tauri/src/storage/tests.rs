@@ -878,6 +878,30 @@ fn start_task_records_the_worktree_and_moves_to_in_progress() {
 }
 
 #[test]
+fn start_task_plain_records_the_worktree_without_a_herdr_workspace() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = add_task(&mut storage, &workspace, "Add login");
+    let path = HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap());
+
+    let started = storage
+        .start_task_plain(task.id, &checkout(path.clone(), "feat/add-login-1"))
+        .unwrap();
+
+    assert_eq!(started.status, InProgress);
+    assert_eq!(started.branch.as_deref(), Some("feat/add-login-1"));
+    assert_eq!(started.worktree_path, Some(path.clone()));
+    assert_eq!(started.herdr_workspace_id, None);
+    assert_eq!(storage.open_runtime_workspace(task.id).unwrap(), None);
+    assert_eq!(storage.get_task(task.id).unwrap().unwrap(), started);
+    assert!(
+        storage
+            .start_task_plain(task.id, &checkout(path, "feat/add-login-1"))
+            .is_err()
+    );
+}
+
+#[test]
 fn clear_task_worktree_keeps_the_branch_and_status() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));

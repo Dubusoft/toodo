@@ -14,6 +14,7 @@ pub mod issues;
 pub mod machines;
 pub mod mcp;
 pub mod review;
+pub mod runs;
 pub mod tasks;
 pub mod types;
 pub mod workspaces;
@@ -68,6 +69,9 @@ pub type HerdrState = Arc<Herdr>;
 pub type GitHubState = Arc<GitHub>;
 
 pub type SshState = Arc<Ssh>;
+
+/// The plain runner, which runs agent CLIs for tasks of workspaces with runner plain.
+pub type PlainRunState = crate::runtime::plain::PlainRunner;
 
 /// `None` when the home directory, and so the SSH config, cannot be found.
 pub type SshConfigState = Option<SshConfigFile>;

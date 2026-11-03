@@ -54,6 +54,11 @@ impl RunLauncher for Herdr {
     /// receipt is the pane ID.
     fn launch(&self, spec: &LaunchSpec) -> Result<LaunchReceipt, RunnerError> {
         let argv = match &spec.command {
+            RunCommand::Agent(_) => {
+                return Err(RunnerError(
+                    "start an agent run with runner plain instead of runner herdr".to_owned(),
+                ));
+            }
             RunCommand::NewTab(argv) => argv,
             RunCommand::InPane { pane, line } => {
                 self.run_in_machine_pane(&machine(&spec.host)?, pane, line)

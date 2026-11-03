@@ -134,10 +134,10 @@ macro_rules! wire_enum {
 }
 
 wire_enum!(
-    /// What runs agents for a task. Herdr is the default and, for now, the only runner
-    /// that launches anything; `None` records the runs of tasks in workspaces with runner
-    /// none, which are worked on by hand. Only herdr has runtime workspaces.
-    RunnerKind, "runner kind", { Herdr => "herdr", None => "none" }
+    /// What runs agents for a task. Herdr is the default; `Plain` runs agent CLIs as
+    /// child processes of the server; `None` records the runs of tasks in workspaces with
+    /// runner none, which are worked on by hand. Only herdr has runtime workspaces.
+    RunnerKind, "runner kind", { Herdr => "herdr", None => "none", Plain => "plain" }
 );
 
 wire_enum!(

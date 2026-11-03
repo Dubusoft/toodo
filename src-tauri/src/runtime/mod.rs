@@ -10,6 +10,7 @@
 
 pub mod events;
 mod herdr;
+pub mod plain;
 mod workspace;
 
 use std::fmt;
@@ -107,6 +108,8 @@ impl From<HerdrError> for RuntimeError {
 /// What a run executes, and where in its runtime workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunCommand {
+    /// An agent CLI launched as a managed child of the plain runner.
+    Agent(AgentLaunch),
     /// An argument vector, never a shell string, run in a new tab of the runtime
     /// workspace that is labelled after the request key, so a retry can find it again.
     // No command launches runs in new tabs yet, so nothing outside tests builds this.
@@ -118,6 +121,15 @@ pub enum RunCommand {
     InPane { pane: String, line: String },
     /// Nothing to run: the work is done by hand, as in a workspace with runner none.
     ByHand,
+}
+
+/// The agent and input of a plain run. The brief is fed on stdin, never in argv.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentLaunch {
+    pub adapter: plain::adapter::AgentAdapter,
+    pub brief: String,
+    pub mcp: bool,
+    pub timeout_secs: u64,
 }
 
 /// What a runner needs to launch one run.
@@ -165,6 +177,11 @@ impl RunLauncher for NoRunner {
     }
 
     fn launch(&self, spec: &LaunchSpec) -> Result<LaunchReceipt, RunnerError> {
+        if matches!(spec.command, RunCommand::Agent(_)) {
+            return Err(RunnerError(
+                "start an agent run with runner plain instead of runner none".to_owned(),
+            ));
+        }
         Ok(LaunchReceipt {
             provider_run_ref: spec.request_key.clone(),
         })

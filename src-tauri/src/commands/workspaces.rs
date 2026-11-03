@@ -141,6 +141,10 @@ fn prepare_workspace(
     existing: &[model::Workspace],
 ) -> CommandResult<storage::NewWorkspace> {
     ensure_unused(existing, &setup.location)?;
+    if let Some(runner) = setup.runner {
+        model::check_runner_location(runner, &setup.location)
+            .map_err(|error| CommandError::invalid_input(error.0))?;
+    }
     let Some(repository) = setup.repository else {
         let (source, completion, runner) =
             resolve_axes(model::Source::None, setup.completion, setup.runner)?;
@@ -319,6 +323,8 @@ pub async fn move_workspace(
         (workspace, others)
     };
     ensure_unused(&others, &target)?;
+    model::check_runner_location(workspace.runner, &target)
+        .map_err(|error| CommandError::invalid_input(error.0))?;
     let git = GitState::clone(&git);
     let herdr = HerdrState::clone(&herdr);
     let name = workspace.name.clone();
@@ -636,6 +642,56 @@ mod tests {
             ]
             .map(str::to_owned)
         );
+    }
+
+    #[test]
+    fn an_ssh_workspace_with_runner_plain_is_rejected_before_git_or_herdr_runs() {
+        let prepared = prepare(
+            WorkspaceSetup {
+                location: model::WorkspaceLocation::Ssh {
+                    machine: model::MachineLabel::parse("devbox").unwrap(),
+                    path: crate::domain::path::PosixPath::parse("/srv/toodo")
+                        .unwrap()
+                        .into(),
+                },
+                runner: Some(model::Runner::Plain),
+                ..setup(RepositorySetup::Open, None)
+            },
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let error = prepared.result.unwrap_err();
+        assert!(error.message.contains("choose runner herdr"), "{error:?}");
+        assert!(prepared.invocations.is_empty());
+        assert!(prepared.herdr_invocations.is_empty());
+    }
+
+    #[test]
+    fn a_local_workspace_with_runner_plain_is_not_opened_in_herdr() {
+        let prepared = prepare(
+            WorkspaceSetup {
+                runner: Some(model::Runner::Plain),
+                ..setup(RepositorySetup::Open, None)
+            },
+            vec![
+                Ok("C:/dev/toodo\n".to_owned()),
+                Ok("origin/main\n".to_owned()),
+                Ok("origin\n".to_owned()),
+            ],
+            Vec::new(),
+        );
+
+        let new = prepared.result.unwrap();
+        assert_eq!(
+            (new.source, new.completion, new.runner),
+            (
+                model::Source::GitHub,
+                model::CompletionMode::PullRequestMerge,
+                model::Runner::Plain
+            )
+        );
+        assert!(prepared.herdr_invocations.is_empty());
     }
 
     fn storage_with_workspace() -> (StorageState, model::WorkspaceId) {
