@@ -374,6 +374,54 @@ herdr. The server serves its commands over HTTP to the frontend, an installable 
 [server.md](server.md). herdr owns terminals, agents, worktree checkouts, and SSH machine
 connections; Toodo owns planning, task state, commit records, and pull requests.
 
+## Runtime Records
+
+SQLite keeps a record of what runs where, in five tables (migration 29):
+
+- `runtime_workspaces`: one row per herdr workspace a task has had. Each row carries a
+  `generation` that counts up per task, a `state` of `open` or `closed`, the
+  `provider_workspace_ref` (the herdr workspace id), `checkout_path`, and `branch`. A task
+  has at most one open row. `provider_instance` stays NULL until the herdr server behind
+  the handle is verified.
+- `agent_conversations`: an agent session a run can resume, with its `resume_kind`
+  (`none`, `exact_id`, `exact_path`, `named_session`, `transcript`) and `resume_ref`.
+- `task_runs`: one agent run of a task, with a `role` (`writer` or `observer`), a `state`
+  (`reserved`, `running`, `settled`, `exited`, `failed`, `cancelled`, `unknown`), and an
+  optional `runtime_workspace_id`. A run with no checkout has no runtime workspace.
+- `run_events`: the ordered history of a run, keyed by `run_id` and `sequence`.
+- `run_operations`: the ledger of `launch`, `input`, and `stop` requests against a run,
+  each `pending`, `applied`, or `failed`, with a `receipt`.
+
+Every table except `run_events` has `owner_key`, which defaults to `implicit`. It's a
+placeholder for a later tenant context; nothing filters or authenticates by it yet. The
+`host_ref` column names the host: `local` for a local workspace, `ssh:<target>` for an SSH
+workspace, where the target is the workspace's `herdr_machine`.
+
+The old task columns `herdr_workspace_id`, `worktree_path`, and `branch` remain the source
+of truth. SQL triggers on `tasks` shadow-write them into `runtime_workspaces`: a cleared or
+changed handle closes the open row, a new handle opens the next generation, and a moved
+checkout updates the open row. Every existing write path stays in line without Rust
+changes. The migration backfills one open row per task that has a handle and creates no
+runs. `Storage::runtime_shadow_mismatches` lists tasks whose handle and open row disagree.
+Import skips all five tables, since their handles belong to the other server's hosts.
+
+A checkout has one active writer at a time. The partial unique index
+`task_runs_one_active_writer` covers writer runs on the same owner, host, and checkout in
+`reserved`, `running`, or `unknown`; `unknown` counts because a run whose end isn't
+confirmed may still be writing. `reserve_run` reports a second writer as
+`CheckoutHasActiveWriter`.
+
+Launch is idempotent. Each run carries a `request_key`, unique per owner, and reserving
+with a known key returns the existing run instead of a new one. Reservation also writes a
+`pending` launch operation under the same key. Recording the launch marks it `applied` with
+the herdr reference as receipt, a failed launch marks it `failed`, and a retried call
+finds the operation already settled.
+
+`RuntimeService` (`src-tauri/src/runtime/`) drives these records over a `RunLauncher`
+trait, tested with a fake launcher. No command uses it yet: starting, restoring, and
+closing herdr workspaces still run through `commands/herdr.rs`, and the triggers keep the
+runtime records in step.
+
 ## Components
 
 ```
