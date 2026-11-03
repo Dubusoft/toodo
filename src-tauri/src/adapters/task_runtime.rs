@@ -1,4 +1,5 @@
-//! The worktree operations starting a task needs from the tool that hosts its workspace.
+//! The worktree operations starting, restoring, and deleting a task need from the tool
+//! that hosts its workspace.
 //!
 //! herdr is the only implementation. The signatures still use herdr's types
 //! ([`NewWorktree`], [`HerdrError`]) until another implementation needs its own.
@@ -23,4 +24,13 @@ pub trait TaskWorkspaceRuntime {
         repository: &str,
         path: &str,
     ) -> Result<String, HerdrError>;
+
+    /// Removes the worktree checkout of a workspace and closes the workspace; the branch is
+    /// kept. Without `force`, a checkout with modified or untracked files is refused.
+    fn remove_worktree(
+        &self,
+        machine: &Machine,
+        workspace_id: &str,
+        force: bool,
+    ) -> Result<(), HerdrError>;
 }

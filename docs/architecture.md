@@ -417,10 +417,22 @@ with a known key returns the existing run instead of a new one. Reservation also
 the herdr reference as receipt, a failed launch marks it `failed`, and a retried call
 finds the operation already settled.
 
-`RuntimeService` (`src-tauri/src/runtime/`) drives these records over a `RunLauncher`
-trait, tested with a fake launcher. No command uses it yet: starting, restoring, and
-closing herdr workspaces still run through `commands/herdr.rs`, and the triggers keep the
-runtime records in step.
+`RuntimeService` (`src-tauri/src/runtime/`) drives these records. Runners are handed to it
+per call: a `TaskWorkspaceRuntime` for runtime workspaces and a `RunLauncher` for runs.
+
+- Starting, resuming, and restoring a task open its runtime workspace through
+  `open_workspace`. herdr creates or reopens the worktree, then the task records the handle
+  and the triggers open the record. The service returns the task together with that record.
+- Deleting a task that still has a worktree goes through `remove_workspace`. It removes the
+  checkout through the herdr workspace of the open record, or reopens the checkout first
+  when there is no open record or herdr no longer has it.
+- The herdr `RunLauncher` opens each run in a new tab of the run's herdr workspace, labelled
+  `toodo-run-<request key>`, and types the run's command into the tab's pane. The pane ID is
+  the receipt. A retry finds the tab by its label and adopts it instead of opening another.
+  No command launches runs yet.
+
+Workspace creation and moves, closing workspaces, completion, and pane commands still write
+the herdr handles directly in `commands/`, and the triggers keep the records in step.
 
 ## Components
 

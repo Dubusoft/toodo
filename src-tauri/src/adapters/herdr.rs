@@ -364,6 +364,85 @@ if (-not $herdr) {
         }
     }
 
+    /// Opens a new tab labelled `label` in the herdr workspace `workspace_id` on `machine`
+    /// without focusing it, in `cwd` when given. Returns the ID of the tab's pane.
+    pub fn create_tab(
+        &self,
+        machine: &Machine,
+        workspace_id: &str,
+        cwd: Option<&str>,
+        label: &str,
+    ) -> Result<String, HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let mut args = vec!["tab", "create", "--workspace", workspace_id];
+        if let Some(cwd) = cwd {
+            args.extend(["--cwd", cwd]);
+        }
+        args.extend(["--label", label, "--no-focus"]);
+        let invocation = invocation(profile_id.as_deref(), &args);
+        let output = self.runner.run(&invocation)?;
+        parse(&invocation, &output)?
+            .pointer("/result/root_pane/pane_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| unexpected(&invocation, &output))
+    }
+
+    /// The pane of the first tab labelled `label` in the herdr workspace `workspace_id` on
+    /// `machine`, if it has such a tab.
+    pub fn find_tab_pane(
+        &self,
+        machine: &Machine,
+        workspace_id: &str,
+        label: &str,
+    ) -> Result<Option<String>, HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let tabs = invocation(
+            profile_id.as_deref(),
+            &["tab", "list", "--workspace", workspace_id],
+        );
+        let output = self.runner.run(&tabs)?;
+        let listed = parse(&tabs, &output)?;
+        let tab_id = listed
+            .pointer("/result/tabs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| unexpected(&tabs, &output))?
+            .iter()
+            .find(|tab| tab.get("label").and_then(Value::as_str) == Some(label))
+            .and_then(|tab| text(tab, "tab_id"));
+        let Some(tab_id) = tab_id else {
+            return Ok(None);
+        };
+        let panes = invocation(
+            profile_id.as_deref(),
+            &["pane", "list", "--workspace", workspace_id],
+        );
+        let output = self.runner.run(&panes)?;
+        let listed = parse(&panes, &output)?;
+        let pane = listed
+            .pointer("/result/panes")
+            .and_then(Value::as_array)
+            .ok_or_else(|| unexpected(&panes, &output))?
+            .iter()
+            .find(|pane| pane.get("tab_id").and_then(Value::as_str) == Some(tab_id.as_str()))
+            .and_then(|pane| text(pane, "pane_id"));
+        Ok(pane)
+    }
+
+    /// Types `command` into the pane `pane_id` on `machine` and presses Enter.
+    pub fn run_in_machine_pane(
+        &self,
+        machine: &Machine,
+        pane_id: &str,
+        command: &str,
+    ) -> Result<(), HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let invocation = invocation(profile_id.as_deref(), &["pane", "run", pane_id, command]);
+        self.runner.run(&invocation)?;
+        Ok(())
+    }
+
     /// Closes a herdr workspace. The worktree checkout it was bound to stays on disk.
     pub fn close_workspace(&self, machine: &Machine, workspace_id: &str) -> Result<(), HerdrError> {
         let profile_id = self.profile_id(machine)?;
@@ -448,6 +527,28 @@ impl TaskWorkspaceRuntime for Herdr {
         path: &str,
     ) -> Result<String, HerdrError> {
         Herdr::open_worktree(self, machine, repository, path)
+    }
+
+    fn remove_worktree(
+        &self,
+        machine: &Machine,
+        workspace_id: &str,
+        force: bool,
+    ) -> Result<(), HerdrError> {
+        Herdr::remove_worktree(self, machine, workspace_id, force)
+    }
+}
+
+/// herdr API error codes that Toodo handles.
+pub const DIRTY_WORKTREE: &str = "dirty_worktree_requires_force";
+pub const WORKSPACE_NOT_FOUND: &str = "workspace_not_found";
+pub const WORKTREE_NOT_FOUND: &str = "worktree_not_found";
+pub const AGENT_NOT_FOUND: &str = "agent_not_found";
+
+impl HerdrError {
+    /// Whether herdr failed with the API error code `expected`.
+    pub fn has_code(&self, expected: &str) -> bool {
+        matches!(self, Self::Failed { code: Some(code), .. } if code == expected)
     }
 }
 
