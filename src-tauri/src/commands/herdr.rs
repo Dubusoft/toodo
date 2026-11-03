@@ -397,6 +397,7 @@ struct TaskWorkspace {
     herdr_workspace_id: String,
 }
 
+/// The herdr workspace of the task's open runtime workspace.
 fn task_workspace(storage: &StorageState, id: model::TaskId) -> CommandResult<TaskWorkspace> {
     let storage = lock(storage);
     let task = storage
@@ -405,8 +406,9 @@ fn task_workspace(storage: &StorageState, id: model::TaskId) -> CommandResult<Ta
     let workspace = storage
         .get_workspace(task.workspace_id)?
         .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
-    let herdr_workspace_id = task
-        .herdr_workspace_id
+    let herdr_workspace_id = storage
+        .open_runtime_workspace(id)?
+        .map(|record| record.provider_workspace_ref)
         .ok_or_else(|| no_herdr_workspace(id, &workspace))?;
     Ok(TaskWorkspace {
         location: workspace.location,
@@ -444,9 +446,13 @@ fn reopen(
         WorkspaceLocation::Ssh { path, .. } => path.as_str(),
     };
     let machine = target.location.machine();
-    let reopened = herdr.open_worktree(&machine, repository, &path.to_string())?;
-    lock(storage).set_task_herdr_workspace(id, &reopened)?;
-    Ok(reopened)
+    let worktree = TaskWorktree {
+        task: id,
+        machine: &machine,
+        repository,
+    };
+    let reopened = RuntimeService.reopen_workspace(storage, herdr, &worktree, &path.to_string())?;
+    Ok(reopened.record.provider_workspace_ref)
 }
 
 /// Focuses the herdr workspace of a started task. When herdr no longer has it, the task's
@@ -522,19 +528,8 @@ fn ensure_workspace(
 }
 
 fn focus_agent(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> CommandResult<()> {
-    let (machine, herdr_workspace_id) = {
-        let storage = lock(storage);
-        let task = storage
-            .get_task(id)?
-            .ok_or(StorageError::TaskNotFound(id))?;
-        let workspace = storage
-            .get_workspace(task.workspace_id)?
-            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
-        let herdr_workspace_id = task
-            .herdr_workspace_id
-            .ok_or_else(|| no_herdr_workspace(id, &workspace))?;
-        (workspace.location.machine(), herdr_workspace_id)
-    };
+    let target = task_workspace(storage, id)?;
+    let (machine, herdr_workspace_id) = (target.location.machine(), target.herdr_workspace_id);
     let pane = herdr
         .list_panes(&machine)?
         .into_iter()
@@ -655,7 +650,7 @@ fn close_workspace(
     herdr: &Herdr,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
-    let (location, workspace_id) = {
+    let location = {
         let storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -665,21 +660,19 @@ fn close_workspace(
                 "task {id} is being worked on; pause it before closing its herdr workspace"
             )));
         }
-        let Some(workspace_id) = task.herdr_workspace_id else {
+        if task.herdr_workspace_id.is_none() {
             return Ok(task);
-        };
+        }
         let workspace = storage
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
-        (workspace.location, workspace_id)
+        workspace.location
     };
-    match herdr.close_workspace(&location.machine(), &workspace_id) {
-        Ok(()) => {}
-        // Already closed, e.g. by the user.
-        Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => {}
-        Err(error) => return Err(error.into()),
-    }
-    Ok(lock(storage).clear_task_herdr_workspace(id)?)
+    Ok(
+        RuntimeService.close_workspace(storage, herdr, id, &location.machine(), |storage| {
+            storage.clear_task_herdr_workspace(id)
+        })?,
+    )
 }
 
 pub(super) fn has_code(error: &HerdrError, expected: &str) -> bool {
@@ -1813,6 +1806,23 @@ mod tests {
         ) -> Result<(), HerdrError> {
             self.answer(format!("remove {workspace_id} {force}"))
                 .map(drop)
+        }
+
+        fn close_workspace(
+            &self,
+            _machine: &Machine,
+            workspace_id: &str,
+        ) -> Result<(), HerdrError> {
+            self.answer(format!("close {workspace_id}")).map(drop)
+        }
+
+        fn open_repository(
+            &self,
+            _machine: &Machine,
+            path: &str,
+            label: &str,
+        ) -> Result<String, HerdrError> {
+            self.answer(format!("open repository {path} {label}"))
         }
     }
 

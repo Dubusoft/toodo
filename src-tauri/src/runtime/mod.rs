@@ -103,8 +103,21 @@ impl From<HerdrError> for RuntimeError {
     }
 }
 
-/// What a runner needs to launch one run. The command is an argument vector, never a
-/// shell string.
+/// What a run executes, and where in its runtime workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunCommand {
+    /// An argument vector, never a shell string, run in a new tab of the runtime
+    /// workspace that is labelled after the request key, so a retry can find it again.
+    // No command launches runs in new tabs yet, so nothing outside tests builds this.
+    #[cfg_attr(not(test), allow(dead_code))]
+    NewTab(Vec<String>),
+    /// A line typed as is into the shell of an existing pane, e.g. the command an agent
+    /// asked to run in the first pane of a task's workspace. Nothing marks the pane, so a
+    /// launch whose response was lost cannot be found again.
+    InPane { pane: String, line: String },
+}
+
+/// What a runner needs to launch one run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchSpec {
     pub run: RunId,
@@ -116,7 +129,7 @@ pub struct LaunchSpec {
     /// The runner's reference of the run's runtime workspace (the herdr workspace ID), or
     /// `None` for a run without one.
     pub workspace_ref: Option<String>,
-    pub argv: Vec<String>,
+    pub command: RunCommand,
 }
 
 /// The runner's proof of a launch.
@@ -147,7 +160,7 @@ pub struct StartRun {
     /// The task's open runtime workspace the run is launched in, if any.
     pub runtime_workspace: Option<RuntimeWorkspaceId>,
     pub adapter_profile: Option<String>,
-    pub argv: Vec<String>,
+    pub command: RunCommand,
 }
 
 /// Keeps runtime records in step with the runners it is handed.
@@ -162,8 +175,6 @@ impl RuntimeService {
     /// Reserves the run, launches it through `launcher` (or adopts a launch the runner
     /// already made for the request key), and records the launch. Repeating a request
     /// returns the same run.
-    // Agent launches move onto this in a follow-up, so nothing outside tests calls it yet.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn start_run(
         &self,
         storage: &Mutex<Storage>,
@@ -209,7 +220,7 @@ impl RuntimeService {
             host: run.host.clone(),
             cwd: run.checkout_path.clone(),
             workspace_ref,
-            argv: request.argv,
+            command: request.command,
         };
         let receipt = match launcher.find_launch(&spec) {
             Ok(Some(receipt)) => receipt,
@@ -367,7 +378,7 @@ mod tests {
             checkout_path: checkout.map(str::to_owned),
             runtime_workspace: None,
             adapter_profile: None,
-            argv: vec!["agent".to_owned()],
+            command: RunCommand::NewTab(vec!["agent".to_owned()]),
         }
     }
 
@@ -426,7 +437,7 @@ mod tests {
                 host: run.host.clone(),
                 cwd: run.checkout_path.clone(),
                 workspace_ref: None,
-                argv: req.argv.clone(),
+                command: req.command.clone(),
             })
             .unwrap();
 

@@ -30,7 +30,6 @@ use std::time::Duration;
 use super::{Runtime, State};
 
 use super::events::Notifier;
-use super::herdr::{WORKSPACE_NOT_FOUND, has_code};
 use super::types::{self, CommitRecord, Task, TaskId};
 use super::{CommandError, CommandResult, GitHubState, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::{Git, GitError, LocalMerge};
@@ -45,6 +44,7 @@ use crate::domain::issue::{closes_issue, with_closing_reference};
 use crate::domain::model::{self, WorkspaceLocation};
 use crate::domain::remote::GitHubRepository;
 use crate::domain::status::TaskStatus;
+use crate::runtime::RuntimeService;
 use crate::storage::{CriterionCheck, StorageError};
 
 /// Reads the commits of an `in_progress` or `in_review` task's branch that are not on
@@ -1015,19 +1015,13 @@ fn finish_task(
         }
         _ => (None, None, branch_commits(git, task, workspace)?),
     };
-    // A workspace herdr no longer has was already closed, e.g. by the user.
-    if let Some(workspace_id) = &task.herdr_workspace_id {
-        match herdr.close_workspace(&workspace.location.machine(), workspace_id) {
-            Ok(()) => {}
-            Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    let mut storage = lock(storage);
-    Ok(match note {
-        Some(note) => storage.complete_task_without_pull_request(id, note, &commits)?,
-        None => storage.complete_task(id, merged_at, snapshot.as_ref(), &commits)?,
-    })
+    let machine = workspace.location.machine();
+    Ok(
+        RuntimeService.close_workspace(storage, herdr, id, &machine, |storage| match note {
+            Some(note) => storage.complete_task_without_pull_request(id, note, &commits),
+            None => storage.complete_task(id, merged_at, snapshot.as_ref(), &commits),
+        })?,
+    )
 }
 
 /// The commits of a task's branch since it started (the start commit a
@@ -1129,15 +1123,12 @@ pub(crate) fn conclude(
             }
         },
     };
-    // A workspace herdr no longer has was already closed, e.g. by the user.
-    if let Some(workspace_id) = &task.herdr_workspace_id {
-        match herdr.close_workspace(&workspace.location.machine(), workspace_id) {
-            Ok(()) => {}
-            Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(lock(storage).conclude_task(id, note, &records, closed)?)
+    let machine = workspace.location.machine();
+    Ok(
+        RuntimeService.close_workspace(storage, herdr, id, &machine, |storage| {
+            storage.conclude_task(id, note, &records, closed)
+        })?,
+    )
 }
 
 /// The merged pull request that shipped the work of a task without a pull request of its
@@ -1282,21 +1273,12 @@ pub(crate) fn complete_merged_with(
             PullRequestState::Closed => {}
         }
     }
-    // A workspace herdr no longer has was already closed, e.g. by the user.
-    if let Some(workspace_id) = &task.herdr_workspace_id {
-        match herdr.close_workspace(&workspace.location.machine(), workspace_id) {
-            Ok(()) => {}
-            Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(lock(storage).complete_task_merged_with(
-        id,
-        &merged_with,
-        resolution,
-        merged_at,
-        &records,
-    )?)
+    let machine = workspace.location.machine();
+    Ok(
+        RuntimeService.close_workspace(storage, herdr, id, &machine, |storage| {
+            storage.complete_task_merged_with(id, &merged_with, resolution, merged_at, &records)
+        })?,
+    )
 }
 
 /// What shipped a task's work, for messages: the pull request, or the task without one.

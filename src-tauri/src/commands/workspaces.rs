@@ -11,6 +11,7 @@ use crate::adapters::git::Git;
 use crate::adapters::herdr::Herdr;
 use crate::domain::model;
 use crate::domain::status::TaskStatus;
+use crate::runtime::RuntimeService;
 use crate::storage::{self, StorageError};
 
 #[specta::specta]
@@ -225,7 +226,12 @@ fn prepare_workspace(
     };
     let (source, completion, runner) = resolve_axes(source, setup.completion, setup.runner)?;
     if runner == model::Runner::Herdr {
-        herdr.open_workspace(&location.machine(), location_path(&location), &setup.name)?;
+        RuntimeService.open_repository(
+            herdr,
+            &location.machine(),
+            location_path(&location),
+            &setup.name,
+        )?;
     }
     Ok(storage::NewWorkspace {
         name: setup.name,
@@ -324,7 +330,12 @@ pub async fn move_workspace(
         let root = git.repository_root(&target)?;
         ensure_unused(&others, &root)?;
         if runner == model::Runner::Herdr {
-            herdr.open_workspace(&root.machine(), location_path(&root), &name)?;
+            RuntimeService.open_repository(
+                &*herdr,
+                &root.machine(),
+                location_path(&root),
+                &name,
+            )?;
         }
         Ok(root)
     })
@@ -343,7 +354,7 @@ pub async fn move_workspace(
             .collect::<Vec<_>>(),
         &moved.location,
     )?;
-    storage.update_workspace(&moved)?;
+    RuntimeService.move_workspace(&mut storage, &moved)?;
     Ok((&moved).into())
 }
 

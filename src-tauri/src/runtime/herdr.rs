@@ -1,9 +1,10 @@
 //! herdr as a [`RunLauncher`]: a run is launched in a new tab of its runtime workspace's
 //! herdr workspace, labelled after the run's request key, and its command is typed into
 //! the tab's pane. Finding that tab again adopts the launch, so a retry never opens a
-//! second tab for the same request.
+//! second tab for the same request. A run in an existing pane has its line typed into that
+//! pane instead.
 
-use super::{LaunchReceipt, LaunchSpec, RunLauncher, RunnerError};
+use super::{LaunchReceipt, LaunchSpec, RunCommand, RunLauncher, RunnerError};
 use crate::adapters::git::shell_quote;
 use crate::adapters::herdr::{Herdr, HerdrError};
 use crate::domain::model::{Machine, MachineLabel};
@@ -35,7 +36,7 @@ impl RunLauncher for Herdr {
     }
 
     fn find_launch(&self, spec: &LaunchSpec) -> Result<Option<LaunchReceipt>, RunnerError> {
-        let Some(workspace) = &spec.workspace_ref else {
+        let (Some(workspace), RunCommand::NewTab(_)) = (&spec.workspace_ref, &spec.command) else {
             return Ok(None);
         };
         let pane = self
@@ -49,8 +50,19 @@ impl RunLauncher for Herdr {
     }
 
     /// Opens the run's tab and types its command, quoted for a POSIX shell, into the
-    /// tab's pane. The receipt is the pane ID.
+    /// tab's pane, or types the line of a run in an existing pane into that pane. The
+    /// receipt is the pane ID.
     fn launch(&self, spec: &LaunchSpec) -> Result<LaunchReceipt, RunnerError> {
+        let argv = match &spec.command {
+            RunCommand::NewTab(argv) => argv,
+            RunCommand::InPane { pane, line } => {
+                self.run_in_machine_pane(&machine(&spec.host)?, pane, line)
+                    .map_err(runner_error)?;
+                return Ok(LaunchReceipt {
+                    provider_run_ref: pane.clone(),
+                });
+            }
+        };
         let workspace = spec.workspace_ref.as_deref().ok_or_else(|| {
             RunnerError(format!(
                 "run {} of task {} has no herdr workspace to launch in; start the task so it \
@@ -58,7 +70,7 @@ impl RunLauncher for Herdr {
                 spec.run, spec.task
             ))
         })?;
-        if spec.argv.is_empty() {
+        if argv.is_empty() {
             return Err(RunnerError(format!(
                 "run {} of task {} has no command; start the run with the agent's command as \
                  its argument vector",
@@ -66,8 +78,7 @@ impl RunLauncher for Herdr {
             )));
         }
         let machine = machine(&spec.host)?;
-        let command = spec
-            .argv
+        let command = argv
             .iter()
             .map(|word| shell_quote(word))
             .collect::<Vec<_>>()
@@ -122,8 +133,29 @@ mod tests {
             host,
             cwd: Some("/wt/add-login".to_owned()),
             workspace_ref: workspace.map(str::to_owned),
-            argv: vec!["claude".to_owned(), "fix it's login".to_owned()],
+            command: RunCommand::NewTab(vec!["claude".to_owned(), "fix it's login".to_owned()]),
         }
+    }
+
+    #[test]
+    fn a_run_in_an_existing_pane_gets_its_line_typed_as_is_and_is_never_found_again() {
+        let (herdr, runner) = herdr(vec![Ok(String::new())]);
+        let in_pane = LaunchSpec {
+            command: RunCommand::InPane {
+                pane: "w27:p1".to_owned(),
+                line: "export A=1; claude".to_owned(),
+            },
+            ..spec(HostRef::Local, Some("w27"))
+        };
+
+        assert_eq!(herdr.find_launch(&in_pane).unwrap(), None);
+        let receipt = herdr.launch(&in_pane).unwrap();
+
+        assert_eq!(receipt.provider_run_ref, "w27:p1");
+        assert_eq!(
+            args(&runner),
+            [["pane", "run", "w27:p1", "export A=1; claude"].map(str::to_owned)]
+        );
     }
 
     const TAB_CREATED: &str = r#"{"id":"cli:tab:create","result":{"type":"tab_created",
@@ -224,7 +256,7 @@ mod tests {
         let error = herdr.launch(&spec(HostRef::Local, None)).unwrap_err();
         assert!(error.0.contains("start the task"), "{error}");
         let without_command = LaunchSpec {
-            argv: Vec::new(),
+            command: RunCommand::NewTab(Vec::new()),
             ..spec(HostRef::Local, Some("w27"))
         };
         let error = herdr.launch(&without_command).unwrap_err();
