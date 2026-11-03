@@ -20,6 +20,7 @@ vi.mock("@/lib/queries", async (importOriginal) => ({
   useWorkspaces: () => query(workspaces),
   useHerdrMachines: () => query([]),
   useHomeDirectory: () => query("/home/me"),
+  useDirectories: () => query({ path: "/home/me", directories: [] }),
   useCreateWorkspace: () => mutation,
   useDeleteWorkspace: () => mutation,
 }));

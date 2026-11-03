@@ -148,13 +148,14 @@ export function useHerdrMachines() {
 }
 
 /**
- * Subdirectories of `path` on `machine` (the server for `local`); `null`
- * lists the home directory.
+ * Subdirectories of `path` on `machine` (the server for `local`); nothing is listed
+ * while `path` is `null`.
  */
 export function useDirectories(machine: Machine, path: string | null) {
   return useQuery({
     queryKey: queryKeys.directories(machine, path),
     queryFn: () => unwrap(commands.listDirectories(machine, path)),
+    enabled: path !== null,
     retry: false,
   });
 }

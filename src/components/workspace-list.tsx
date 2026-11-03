@@ -1,6 +1,6 @@
 import { useId, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { Ban, ChevronLeft, ChevronRight, Laptop, Plus, Server, TriangleAlert, X } from "lucide-react";
-import { RemoteFolderBrowser, joinPath } from "@/components/remote-folder-browser";
+import { FolderInput, joinPath, withoutTrailingSeparator } from "@/components/folder-input";
 import { Button } from "@/components/ui/button";
 import type {
   CompletionMode,
@@ -392,14 +392,13 @@ export function MoveWorkspaceForm({ workspace, onClose }: { workspace: Workspace
   const workspaces = useWorkspaces();
   const [machine, setMachine] = useState<MachineKey>(machineKeyOf(workspace.location));
   const [folder, setFolder] = useState(workspace.location.path);
-  const [browsing, setBrowsing] = useState(false);
   const remotes = [
     ...new Set([
       ...(herdrMachines.data ?? []).map((saved) => saved.target),
       ...(workspaces.data ?? []).flatMap((w) => (w.location.kind === "ssh" ? [w.location.machine] : [])),
     ]),
   ];
-  const path = folder.trim();
+  const path = withoutTrailingSeparator(folder.trim());
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -424,10 +423,7 @@ export function MoveWorkspaceForm({ workspace, onClose }: { workspace: Workspace
             id={id}
             className={inputClass}
             value={machine ?? ""}
-            onChange={(e) => {
-              setMachine(e.target.value === "" ? null : e.target.value);
-              setBrowsing(false);
-            }}
+            onChange={(e) => setMachine(e.target.value === "" ? null : e.target.value)}
             autoFocus
           >
             <option value="">Local (this server)</option>
@@ -441,33 +437,17 @@ export function MoveWorkspaceForm({ workspace, onClose }: { workspace: Workspace
       </Field>
       <Field label="Folder" help="The repository's own folder on that machine.">
         {({ id, describedBy }) => (
-          <div className="flex gap-1">
-            <input
-              id={id}
-              className={inputClass}
-              aria-describedby={describedBy}
-              value={folder}
-              onChange={(e) => setFolder(e.target.value)}
-              required
-            />
-            <Button type="button" size="sm" variant="outline" onClick={() => setBrowsing((open) => !open)} aria-expanded={browsing}>
-              Browse...
-            </Button>
-          </div>
+          <FolderInput
+            id={id}
+            machine={machine === null ? { kind: "local" } : { kind: "ssh", label: machine }}
+            className={inputClass}
+            describedBy={describedBy}
+            value={folder}
+            onChange={setFolder}
+            required
+          />
         )}
       </Field>
-      {browsing && (
-        <RemoteFolderBrowser
-          key={machine ?? ""}
-          machine={machine === null ? { kind: "local" } : { kind: "ssh", label: machine }}
-          initialPath=""
-          onSelect={(picked) => {
-            setFolder(picked);
-            setBrowsing(false);
-          }}
-          onCancel={() => setBrowsing(false)}
-        />
-      )}
       {moveWorkspace.isError && (
         <p role="alert" className="text-xs break-words text-destructive">
           {moveWorkspace.error.message}
@@ -652,7 +632,6 @@ function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogP
   const [folderDraft, setFolder] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
-  const [browsing, setBrowsing] = useState(false);
 
   const label = machine ?? "Local";
   const target: Machine = machine === null ? { kind: "local" } : { kind: "ssh", label: machine };
@@ -666,7 +645,9 @@ function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogP
   const folderUntouched = !cloning && folderDraft === null;
   const effectiveName = name ?? (cloning ? repositoryName(url) : folderUntouched ? "" : baseName(folder));
   const path =
-    cloning && folder.trim() && effectiveName.trim() ? joinPath(folder.trim(), effectiveName.trim()) : folder.trim();
+    cloning && folder.trim() && effectiveName.trim()
+      ? joinPath(folder.trim(), effectiveName.trim())
+      : withoutTrailingSeparator(folder.trim());
   const last = step === steps.length - 1;
   const busy = createWorkspace.isPending;
   const labels = submitLabels[choice.repository ?? "none"];
@@ -685,7 +666,6 @@ function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogP
   }
 
   function goTo(index: number) {
-    setBrowsing(false);
     setStep(index);
   }
 
@@ -861,39 +841,18 @@ function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogP
                 )}
                 <Field label={cloning ? "Parent folder" : "Folder"} help={folderHelp}>
                   {({ id, describedBy }) => (
-                    <div className="flex gap-1">
-                      <input
-                        id={id}
-                        className={inputClass}
-                        aria-describedby={describedBy}
-                        value={folder}
-                        onChange={(e) => setFolder(e.target.value)}
-                        required
-                        autoFocus={!cloning}
-                      />
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setBrowsing((open) => !open)}
-                        aria-expanded={browsing}
-                      >
-                        Browse...
-                      </Button>
-                    </div>
+                    <FolderInput
+                      id={id}
+                      machine={target}
+                      className={inputClass}
+                      describedBy={describedBy}
+                      value={folder}
+                      onChange={setFolder}
+                      required
+                      autoFocus={!cloning}
+                    />
                   )}
                 </Field>
-                {browsing && (
-                  <RemoteFolderBrowser
-                    machine={target}
-                    initialPath={folder}
-                    onSelect={(picked) => {
-                      setFolder(picked);
-                      setBrowsing(false);
-                    }}
-                    onCancel={() => setBrowsing(false)}
-                  />
-                )}
                 <Field label="Name">
                   {({ id }) => (
                     <input
