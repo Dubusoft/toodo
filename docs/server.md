@@ -46,6 +46,15 @@ workspace header, pick the machine, and enter the same repository path. Toodo ch
 the path holds a git repository and opens it in herdr; the tasks stay with the workspace.
 A move cannot change the kind of path while a task has a worktree of the other kind.
 
+### Agent Runs on SSH Hosts
+
+Runner `plain` and runner `tmux` run agents on an SSH workspace's host without herdr, so
+that host needs `claude` or `codex` on its `PATH`. A POSIX host also needs util-linux
+`setsid` with `--wait` for plain runs (macOS lacks it; use runner `herdr` there), and
+tmux for runner `tmux`. Windows hosts take plain runs only. Run files live in
+`~/.toodo/runs/<run id>` on the host. See Remote Plain Runs and tmux Runs in
+[architecture.md](architecture.md).
+
 ## Versions and Releases
 
 Every GitHub release `vX.Y.Z` carries
@@ -341,6 +350,10 @@ contents of `mcp-token`):
 
 Agents on the server's SSH machines reach the same URL through the reverse tunnels the
 server keeps open to them.
+
+Remote plain and tmux runs use that tunnel too. The server stages the token in a private
+file in the run directory on the host, and the run's wrapper reads it into
+`TOODO_MCP_TOKEN`, so it never shows up in a process list.
 
 Settings > Agent access in the web app copies this config or the MCP token alone
 ("Copy MCP token for agents"; it is not the web sign-in token), checks with **Test

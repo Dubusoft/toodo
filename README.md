@@ -43,6 +43,8 @@ into a performance report.
 - [herdr](https://herdr.dev), installed and running there (Toodo controls it; it is not bundled)
 - Git, OpenSSH, and the GitHub CLI (`gh`) on the server's `PATH`
 - A current browser to use the web app
+- For runner `tmux`: tmux on the host that runs the agent. For runner `plain` on a POSIX
+  SSH host: util-linux `setsid` (with `--wait`) there
 
 See [docs/server.md](docs/server.md) to install it. On Linux x64 or arm64 (glibc) with
 Node.js, the quickest start is:

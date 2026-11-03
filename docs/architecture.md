@@ -32,7 +32,7 @@ directory. See [workflow.md](workflow.md#1-register-a-workspace).
 | `agentMerge` | Whether agents merge their own task PR: `never` (default; they stop once the PR is open) or `afterChecks` (they merge it into `defaultBaseBranch` once every check on it passed, never into another branch). Editable from the workspace header; agents read it from the MCP `current_task` tool. Toodo itself never merges. |
 | `source` | Where the work lives: `none` (a plain directory, no git), `local_git` (a git repository used locally only), or `github` (a git repository with an `origin` remote on GitHub). |
 | `completion` | How a task is completed: `manual` (by its manual, `url`, or `command` criteria, with no merge criterion), `local_merge` (the task branch is merged into the base branch locally), or `pr_merge` (its pull request is merged). |
-| `runner` | What runs the work: `herdr` (a task start creates a branch, a worktree, and a herdr workspace), `plain` (a task start creates a branch and a git worktree, and agent runs are child processes of the server, without herdr), or `none` (a task start only changes its status). |
+| `runner` | What runs the work: `herdr` (a task start creates a branch, a worktree, and a herdr workspace), `plain` (a task start creates a branch and a git worktree, and agent runs are child processes of the server, without herdr), `tmux` (like `plain`, but each agent run is a detached tmux session on the workspace's host), or `none` (a task start only changes its status). |
 
 The three axes are chosen at creation and are read-only afterwards. One domain rule
 (`check_axes`) checks every combination, from the app and from MCP alike:
@@ -41,13 +41,18 @@ The three axes are chosen at creation and are read-only afterwards. One domain r
 - Source `local_git` allows completion `manual` or `local_merge`.
 - Source `github` allows completion `manual` or `pr_merge`.
 - Runner `none` allows only completion `manual`, since a merge needs the task branch that
-  only a runner creates. Runners `herdr` and `plain` need a git source and allow the
-  same completions.
-- Runner `plain` needs a `local` location: creating or moving an SSH workspace with it is
-  rejected, with the hint to choose runner `herdr` for SSH workspaces.
+  only a runner creates. Runners `herdr`, `plain`, and `tmux` need a git source and allow
+  the same completions.
+- Runner `plain` accepts local and SSH workspaces on POSIX or Windows hosts.
+- Runner `tmux` accepts local and POSIX SSH workspaces. A Windows SSH path is rejected,
+  with runner `plain` or `herdr` named as the choice that works there.
 
 No default picks `plain`; a workspace uses it only when created with it explicitly.
 Migration 33 widens the `runner` check of `workspaces` to allow it.
+
+Migration 34 widens the `runner` checks of `workspaces` and `runtime_workspaces` to allow
+`tmux`, and adds a check on `task_runs.runner_kind` (`herdr`, `plain`, `tmux`, `none`).
+SSH workspaces with runner `herdr` and their saved herdr machines work as before.
 
 An omitted axis gets its default from the source: `none` gives `manual` + `none`,
 `local_git` gives `local_merge` + `herdr`, and `github` gives `pr_merge` + `herdr`. An
@@ -477,7 +482,7 @@ registered there), and records the task `in_progress` with no runtime workspace.
 active runs of the task end as `exited`. Deleting such a task removes its worktree with
 `git worktree remove` and keeps the branch. Starting a task launches no agent; runs are
 started separately through `start_plain_run` (`src-tauri/src/commands/runs.rs`), only for
-an `in_progress` task of a local plain workspace that has a worktree.
+an `in_progress` task of a plain or tmux workspace that has a worktree, local or SSH.
 
 `PlainRunner` lives in server state for the server's lifetime. Each run launches the
 `claude` or `codex` CLI from the server's `PATH`:
@@ -532,6 +537,80 @@ A second launch is guarded three ways: the request key (`plain-<task>-<n>`) make
 key instead of spawning again, and the one-active-writer index rejects another writer on
 the worktree. A process that ends before its launch is recorded still settles: the settle
 path records the launch first.
+
+### Remote Plain Runs
+
+On an SSH workspace, `PlainRunner` runs the agent on the workspace's host over `ssh`.
+`src-tauri/src/runtime/host.rs` builds every host command; the host's OS comes from the
+workspace path style (`HostPath::is_windows`), and a Windows host is never treated as
+POSIX. POSIX hosts get `sh` scripts. Windows hosts get PowerShell sent as
+`powershell -EncodedCommand`, with native Windows quoting.
+
+Each run stages a private run directory on the host, `~/.toodo/runs/<run id>` (under
+`%USERPROFILE%` on Windows; mode 0700 with 0600 files on POSIX). `brief.md`, the MCP
+token file, and Claude's `mcp.json` reach it on the stdin of `ssh`, never in arguments.
+A wrapper script in that directory starts the agent, records its PID and start time, and
+writes its exit code to a file. On POSIX the wrapper runs under util-linux
+`setsid --wait`, so it owns its own process group and its real exit code comes back; a
+host without it fails the launch with a message to install util-linux `setsid` or use
+runner `herdr`. The receipt is `ssh:<target>:<run id>`. Stdout and stderr stream back
+through the same redaction, parsing, and outcome table as a local run.
+
+`stop_run` first runs a stop script on the host. It checks that the recorded PID still
+has the recorded start time, then sends SIGTERM and SIGKILL to the whole process group
+(POSIX) or runs `taskkill /T /F` (Windows). If the host can't be reached, the run keeps
+`stop_requested` and stays active, and the error says to restore the connection and
+reconcile.
+
+A lost connection is never taken as the agent exiting. When `ssh` fails without durable
+exit evidence on the host, the run becomes `unknown` with `observation_lost` and keeps the
+checkout; nothing is relaunched. After a server restart, remote plain runs become
+`unknown` with `server_restarted` without contacting the host. `reconcile_run` settles
+such a run from the host's files: a recorded exit 0 becomes `exited`, another exit code
+`failed`, a live agent stays `unknown` with `remote_still_running`, a vanished agent
+becomes `failed` with `interrupted`, and a missing run directory stays `unknown` with
+`remote_missing`. An unreachable host leaves the run as it was.
+
+Once a remote run ends, its `token` and `mcp.json` are removed from the host; the brief,
+logs, PID, and exit files stay. A failed cleanup appends `credential_cleanup_failed` and
+doesn't change the outcome.
+
+### MCP for Remote Runs
+
+A remote agent reaches MCP through the reverse tunnel the server already keeps to every
+machine with an SSH workspace (`src-tauri/src/mcp/tunnels.rs`), at
+`http://127.0.0.1:<server port>/mcp` on that host. No new tunnel is opened per run. A run
+with MCP on starts only while that machine's tunnel is open; otherwise the error says to
+wait for the tunnel or start the run with MCP off. The bearer token is written to the run
+directory's private `token` file and read by the wrapper into `TOODO_MCP_TOKEN`; it never
+appears in argv (remote argv is visible in `ps`), logs, run events, or the database.
+
+### tmux Runs
+
+A workspace with runner `tmux` prepares tasks like runner `plain` (a git worktree, locally
+or over `ssh`, without herdr), and `start_plain_run` starts its agent runs through
+`TmuxRunner` (`src-tauri/src/runtime/tmux/`). It works on the server and on POSIX SSH
+hosts, and tmux must be installed on the host that runs the agent; a missing tmux fails
+the launch with a message to install it there.
+
+Each run is a detached session `toodo-run-<run id>` with the worktree as its working
+directory and receipt `tmux:<local|ssh:host>:toodo-run-<run id>`. Files are staged the same
+way as plain runs, in `<data dir>/runs/<run id>` locally or `~/.toodo/runs/<run id>` on
+the host, and MCP uses the same token file and tunnel rules. The wrapper copies stdout and
+stderr into `stdout.log` and `stderr.log`, kept apart from what the terminal shows, with
+the token redacted. It writes the exit code, then signals `tmux wait-for`, which a monitor
+in the server waits on to settle the run with the plain outcome table.
+
+While a run is active, `get_run_log` returns an `attach` command (`tmux attach -t ...`,
+or `ssh -t <host> ...` for a remote one) to watch the session in a terminal. It's a view
+only; Toodo never drives the agent through it. `stop_run` kills the session and marks the
+run `cancelled`.
+
+Sessions outlive the server. On start, `TmuxRunner::recover_after_restart` checks local
+runs: a live session is observed again (the run goes back to `running` with `recovered`),
+an ended one settles from its exit file. Remote runs become `unknown` with
+`observation_lost` without contacting the host, and `reconcile_run` settles them the same
+way later. A lost connection leaves the run `unknown` rather than ending it.
 
 `commands/events.rs` translates herdr observations into neutral `RuntimeEvent` values
 and applies them through `RuntimeService`. Events carry the existing `OwnerKey`
