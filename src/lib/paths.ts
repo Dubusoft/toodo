@@ -42,6 +42,11 @@ export function normalizePath(path: string): string {
   return joined === "" ? "." : joined;
 }
 
+/** Whether `path` is a Windows drive or UNC path, as listed on a Windows host. */
+export function isWindowsPath(path: string): boolean {
+  return /^[a-zA-Z]:/.test(path) || path.startsWith("\\\\");
+}
+
 /**
  * The last `keep` folders of the normalized `path`, led by an ellipsis when earlier folders
  * are left out, e.g. "…/repos/toodo" for "/data/repos/toodo".

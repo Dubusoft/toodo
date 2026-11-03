@@ -32,6 +32,10 @@ const accepted = new Set([
   "github/pr_merge/herdr",
   "github/manual/plain",
   "github/pr_merge/plain",
+  "local_git/manual/tmux",
+  "local_git/local_merge/tmux",
+  "github/manual/tmux",
+  "github/pr_merge/tmux",
 ]);
 
 const everyAxes: Axes[] = sources.flatMap((source) =>
@@ -45,7 +49,7 @@ const only = (source: Source): Picks => ({ source, repository: null, completion:
 
 describe("workspace axes", () => {
   it("accepts exactly the combinations the server accepts", () => {
-    expect(everyAxes).toHaveLength(27);
+    expect(everyAxes).toHaveLength(36);
     for (const axes of everyAxes) {
       expect(checkAxes(axes) === null, key(axes)).toBe(accepted.has(key(axes)));
     }
@@ -65,18 +69,18 @@ describe("workspace axes", () => {
     expect(completionProblem("local_git", "pr_merge")).toContain(sourceLabels.github);
   });
 
-  it("allows no runner only with manual completion and herdr and plain only with a git source", () => {
+  it("allows no runner only with manual completion and herdr, plain, and tmux only with a git source", () => {
     const allowed = (source: Source, completion: CompletionMode) =>
       runners.filter((runner) => runnerProblem(source, completion, runner) === null);
     expect(allowed("none", "manual")).toEqual(["none"]);
-    expect(allowed("local_git", "manual")).toEqual(["herdr", "plain", "none"]);
-    expect(allowed("local_git", "local_merge")).toEqual(["herdr", "plain"]);
-    expect(allowed("github", "manual")).toEqual(["herdr", "plain", "none"]);
-    expect(allowed("github", "pr_merge")).toEqual(["herdr", "plain"]);
+    expect(allowed("local_git", "manual")).toEqual(["herdr", "plain", "tmux", "none"]);
+    expect(allowed("local_git", "local_merge")).toEqual(["herdr", "plain", "tmux"]);
+    expect(allowed("github", "manual")).toEqual(["herdr", "plain", "tmux", "none"]);
+    expect(allowed("github", "pr_merge")).toEqual(["herdr", "plain", "tmux"]);
   });
 
   it("names the choice a ruled out runner needs", () => {
-    for (const runner of ["herdr", "plain"] as const) {
+    for (const runner of ["herdr", "plain", "tmux"] as const) {
       expect(runnerProblem("none", "manual", runner)).toContain(sourceLabels.local_git);
       expect(runnerProblem("none", "manual", runner)).toContain(sourceLabels.github);
     }
@@ -84,13 +88,30 @@ describe("workspace axes", () => {
     expect(runnerProblem("github", "pr_merge", "none")).toContain(completionLabels.manual);
   });
 
-  it("allows runner plain only on this server and names the choices that work elsewhere", () => {
+  it("allows every runner on this server and on a POSIX SSH machine, and rules out only tmux on a Windows one", () => {
+    const anyHost = [
+      { kind: "local", path: "/home/me/site" },
+      // A local workspace runs on this server whatever its path says; only an SSH path tells the host's kind.
+      { kind: "local", path: "D:\\dev\\site" },
+      { kind: "ssh", path: "/srv/site" },
+    ] as const;
+    const windows = [
+      { kind: "ssh", path: "D:\\dev\\site" },
+      { kind: "ssh", path: "c:/dev/site" },
+      { kind: "ssh", path: "\\\\fileserver\\share\\site" },
+    ] as const;
     for (const runner of runners) {
-      expect(runnerLocationProblem(runner, "local")).toBeNull();
-      expect(runnerLocationProblem(runner, "ssh") === null).toBe(runner !== "plain");
+      for (const location of anyHost) {
+        expect(runnerLocationProblem(runner, location), `${runner} at ${location.path}`).toBeNull();
+      }
+      for (const location of windows) {
+        expect(runnerLocationProblem(runner, location) === null, `${runner} at ${location.path}`).toBe(runner !== "tmux");
+      }
     }
-    expect(runnerLocationProblem("plain", "ssh")).toContain(runnerLabels.herdr);
-    expect(runnerLocationProblem("plain", "ssh")).toContain("Local");
+    const problem = runnerLocationProblem("tmux", windows[0]);
+    expect(problem).toContain("POSIX");
+    expect(problem).toContain(runnerLabels.plain);
+    expect(problem).toContain(runnerLabels.herdr);
   });
 
   it("offers every repository setup for local git, no new repository for GitHub, and none for a plain folder", () => {

@@ -532,7 +532,7 @@ const completionDescriptions: Record<CompletionMode, string> = {
 
 const runnerDescriptions: Record<Runner, string> = {
   herdr: "Opens agents in herdr on a worktree and branch of the task.",
-  plain: "Runs Claude or Codex on this server in a worktree and branch of the task, without herdr.",
+  plain: "Runs Claude or Codex in the background in a worktree and branch of the task, without herdr.",
   tmux: "Runs Claude or Codex in a tmux session in a worktree and branch of the task, without herdr.",
   none: "Only marks the task in progress.",
 };
@@ -822,9 +822,10 @@ function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogP
                   value: runner,
                   label: runnerLabels[runner],
                   description: runnerDescriptions[runner],
-                  // The machine is picked before the dialog opens, so its rule comes first.
+                  // The machine is picked before the dialog opens, and the folder starts at its home,
+                  // whose path tells a Windows host apart, so its rule comes first.
                   problem:
-                    runnerLocationProblem(runner, machine === null ? "local" : "ssh") ??
+                    runnerLocationProblem(runner, { kind: machine === null ? "local" : "ssh", path }) ??
                     runnerProblem(choice.source, choice.completion, runner),
                 }))}
                 onChange={(runner) => choose({ runner })}

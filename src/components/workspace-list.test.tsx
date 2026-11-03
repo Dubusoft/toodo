@@ -15,12 +15,13 @@ import {
 const mutation = { mutate: vi.fn(), isPending: false, isError: false };
 const query = <T,>(data: T) => ({ data, isPending: false, isError: false });
 let workspaces: Workspace[] = [];
+let home = "/home/me";
 
 vi.mock("@/lib/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/queries")>()),
   useWorkspaces: () => query(workspaces),
   useHerdrMachines: () => query([]),
-  useHomeDirectory: () => query("/home/me"),
+  useHomeDirectory: () => query(home),
   useDirectories: () => query({ path: "/home/me", directories: [] }),
   useCreateWorkspace: () => mutation,
   useDeleteWorkspace: () => mutation,
@@ -28,6 +29,7 @@ vi.mock("@/lib/queries", async (importOriginal) => ({
 
 beforeEach(() => {
   workspaces = [];
+  home = "/home/me";
   mutation.mutate.mockClear();
 });
 
@@ -36,6 +38,26 @@ function openNewWorkspace() {
   render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "Add workspace on Local" }));
   return screen.getByRole("dialog", { name: "New workspace on Local" });
+}
+
+/** Renders the list with a workspace on the SSH machine devbox and opens the new workspace dialog for devbox. */
+function openNewWorkspaceOnDevbox() {
+  workspaces = [
+    {
+      id: 2,
+      name: "site",
+      location: { kind: "ssh", machine: "devbox", path: "/srv/site" },
+      defaultBaseBranch: "main",
+      agentMerge: "never",
+      pathProblem: null,
+      source: "github",
+      completion: "pr_merge",
+      runner: "herdr",
+    },
+  ];
+  render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "Add workspace on devbox" }));
+  return screen.getByRole("dialog", { name: "New workspace on devbox" });
 }
 
 const option = (dialog: HTMLElement, name: string) => within(dialog).getByRole("radio", { name });
@@ -234,37 +256,73 @@ describe("Runner plain", () => {
     expect(plain).not.toBeChecked();
   });
 
-  it("is ruled out on an SSH machine for every source, with the reason", () => {
-    workspaces = [
+  it("is offered on an SSH machine and adds the workspace with it", () => {
+    const dialog = openNewWorkspaceOnDevbox();
+    fireEvent.click(option(dialog, "Local git"));
+    next(dialog);
+    next(dialog);
+    const plain = option(dialog, runnerLabels.plain);
+    expect(plain).toBeEnabled();
+    fireEvent.click(plain);
+    next(dialog);
+    fireEvent.change(within(dialog).getByLabelText("Folder"), { target: { value: "/home/me/tools" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open workspace" }));
+
+    expect(mutation.mutate).toHaveBeenCalledWith(
       {
-        id: 2,
+        name: "tools",
+        location: { kind: "ssh", machine: "devbox", path: "/home/me/tools" },
+        repository: { kind: "open" },
+        source: "local_git",
+        completion: "local_merge",
+        runner: "plain",
+        defaultBaseBranch: null,
+      },
+      expect.anything(),
+    );
+  });
+});
+
+describe("Runner tmux", () => {
+  it("is offered on a POSIX SSH machine and adds the workspace with it", () => {
+    const dialog = openNewWorkspaceOnDevbox();
+    next(dialog);
+    next(dialog);
+    const tmux = option(dialog, runnerLabels.tmux);
+    expect(tmux).toBeEnabled();
+    fireEvent.click(tmux);
+    expect(tmux).toBeChecked();
+    next(dialog);
+    fireEvent.change(within(dialog).getByLabelText("Folder"), { target: { value: "/home/me/site" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open workspace" }));
+
+    expect(mutation.mutate).toHaveBeenCalledWith(
+      {
         name: "site",
-        location: { kind: "ssh", machine: "devbox", path: "/srv/site" },
-        defaultBaseBranch: "main",
-        agentMerge: "never",
-        pathProblem: null,
+        location: { kind: "ssh", machine: "devbox", path: "/home/me/site" },
+        repository: { kind: "open" },
         source: "github",
         completion: "pr_merge",
-        runner: "herdr",
+        runner: "tmux",
+        defaultBaseBranch: null,
       },
-    ];
-    render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Add workspace on devbox" }));
-    const dialog = screen.getByRole("dialog", { name: "New workspace on devbox" });
+      expect.anything(),
+    );
+  });
 
-    for (const source of ["GitHub", "Local git"]) {
-      fireEvent.click(option(dialog, source));
-      next(dialog);
-      next(dialog);
-      const plain = option(dialog, runnerLabels.plain);
-      expect(plain).toBeDisabled();
-      expect(plain).toHaveAccessibleDescription(runnerLocationProblem("plain", "ssh")!);
-      fireEvent.click(plain);
-      expect(plain).not.toBeChecked();
-      expect(option(dialog, "herdr")).toBeChecked();
-      back(dialog);
-      back(dialog);
-    }
+  it("is ruled out on a Windows SSH machine with the reason, while plain and herdr are offered", () => {
+    home = "C:\\Users\\me";
+    const dialog = openNewWorkspaceOnDevbox();
+    next(dialog);
+    next(dialog);
+
+    const tmux = option(dialog, runnerLabels.tmux);
+    expect(tmux).toBeDisabled();
+    expect(tmux).toHaveAccessibleDescription(runnerLocationProblem("tmux", { kind: "ssh", path: home })!);
+    fireEvent.click(tmux);
+    expect(tmux).not.toBeChecked();
+    expect(option(dialog, runnerLabels.plain)).toBeEnabled();
+    expect(option(dialog, runnerLabels.herdr)).toBeChecked();
   });
 });
 
