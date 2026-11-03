@@ -16,9 +16,10 @@ happens and never derived later from git or GitHub alone.
 
 ### Workspace
 
-A root git repository that tasks are planned against. A workspace is created either by
-cloning a repository into a path or by opening a repository already cloned at a path; see
-[workflow.md](workflow.md#1-register-a-workspace).
+A directory that tasks are planned against, usually the root of a git repository. A git
+workspace is created by cloning a repository into a path, opening a repository already
+cloned at a path, or initializing a new one; a workspace without git just records the
+directory. See [workflow.md](workflow.md#1-register-a-workspace).
 
 | Field | Description |
 | --- | --- |
@@ -29,6 +30,31 @@ cloning a repository into a path or by opening a repository already cloned at a 
 | `herdrMachine` | For `ssh` workspaces: the SSH target of the saved herdr machine (usually a `~/.ssh/config` host alias); also used as the `ssh` host. |
 | `defaultBaseBranch` | Branch that task branches start from and PRs target (e.g. `main`). Detected or entered at registration and editable afterwards from the workspace header, except while a task of the workspace is `in_review` (its open PR targets the current branch). |
 | `agentMerge` | Whether agents merge their own task PR: `never` (default; they stop once the PR is open) or `afterChecks` (they merge it into `defaultBaseBranch` once every check on it passed, never into another branch). Editable from the workspace header; agents read it from the MCP `current_task` tool. Toodo itself never merges. |
+| `source` | Where the work lives: `none` (a plain directory, no git), `local_git` (a git repository used locally only), or `github` (a git repository with an `origin` remote on GitHub). |
+| `completion` | How a task is completed: `manual` (by its manual, `url`, or `command` criteria, with no merge criterion), `local_merge` (the task branch is merged into the base branch locally), or `pr_merge` (its pull request is merged). |
+| `runner` | What runs the work: `herdr` (a task start creates a branch, a worktree, and a herdr workspace) or `none` (a task start only changes its status). |
+
+The three axes are chosen at creation and are read-only afterwards. One domain rule
+(`check_axes`) checks every combination, from the app and from MCP alike:
+
+- Source `none` needs completion `manual` and runner `none`.
+- Source `local_git` allows completion `manual` or `local_merge`.
+- Source `github` allows completion `manual` or `pr_merge`.
+- Runner `none` allows only completion `manual`, since a merge needs the task branch that
+  only a runner creates. Runner `herdr` needs a git source.
+
+An omitted axis gets its default from the source: `none` gives `manual` + `none`,
+`local_git` gives `local_merge` + `herdr`, and `github` gives `pr_merge` + `herdr`. An
+omitted source is `github` when the prepared repository has an `origin` remote,
+`local_git` when it doesn't, and `none` when no repository is given.
+
+Workspaces created before the axes existed were migrated from their tasks: one with a
+`branch_merged_locally` criterion became `local_git` + `local_merge`, one with a
+`pr_merged` or `pr_open_ci_green` criterion or a task pull request became `github` +
+`pr_merge`, all with runner `herdr`. The rest keep `github` + `pr_merge` until a
+background pass at server start checks their repository for an `origin` remote and
+stores `github` + `pr_merge` or `local_git` + `local_merge`. A failed git call leaves the
+workspace for the next start. Backups without the axes restore the same way.
 
 ### Machine Settings
 
