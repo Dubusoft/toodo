@@ -1,5 +1,6 @@
-//! The worktree operations starting, restoring, and deleting a task need from the tool
-//! that hosts its workspace.
+//! The workspace operations Toodo needs from the tool that hosts task worktrees: opening,
+//! closing, and removing the workspace of a task, and opening a repository when a Toodo
+//! workspace is created or moved.
 //!
 //! herdr is the only implementation. The signatures still use herdr's types
 //! ([`NewWorktree`], [`HerdrError`]) until another implementation needs its own.
@@ -33,4 +34,16 @@ pub trait TaskWorkspaceRuntime {
         workspace_id: &str,
         force: bool,
     ) -> Result<(), HerdrError>;
+
+    /// Closes a workspace; the worktree checkout it was bound to stays on disk.
+    fn close_workspace(&self, machine: &Machine, workspace_id: &str) -> Result<(), HerdrError>;
+
+    /// Opens the repository checkout at `path` as a workspace labelled `label` without
+    /// focusing it, unless a workspace already has it open; returns the workspace ID.
+    fn open_repository(
+        &self,
+        machine: &Machine,
+        path: &str,
+        label: &str,
+    ) -> Result<String, HerdrError>;
 }

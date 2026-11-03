@@ -236,14 +236,6 @@ if (-not $herdr) {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// Types `command` into a pane of the local herdr server and presses Enter, e.g. to run
-    /// it in the pane's shell or to send it to the agent in the pane.
-    pub fn run_in_pane(&self, pane_id: &str, command: &str) -> Result<(), HerdrError> {
-        let invocation = invocation(None, &["pane", "run", pane_id, command]);
-        self.runner.run(&invocation)?;
-        Ok(())
-    }
-
     /// Creates the worktree on `machine` and opens it as a herdr workspace without
     /// focusing it. Returns the ID of the herdr workspace.
     pub fn create_worktree(
@@ -536,6 +528,19 @@ impl TaskWorkspaceRuntime for Herdr {
         force: bool,
     ) -> Result<(), HerdrError> {
         Herdr::remove_worktree(self, machine, workspace_id, force)
+    }
+
+    fn close_workspace(&self, machine: &Machine, workspace_id: &str) -> Result<(), HerdrError> {
+        Herdr::close_workspace(self, machine, workspace_id)
+    }
+
+    fn open_repository(
+        &self,
+        machine: &Machine,
+        path: &str,
+        label: &str,
+    ) -> Result<String, HerdrError> {
+        Herdr::open_workspace(self, machine, path, label)
     }
 }
 
