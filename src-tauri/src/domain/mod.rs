@@ -1,5 +1,6 @@
 //! Core domain model and rules. Pure logic: no I/O, no Tauri, no storage.
 
+pub mod activity;
 pub mod backup;
 pub mod criteria;
 pub mod dag;

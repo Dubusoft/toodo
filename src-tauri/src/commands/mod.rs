@@ -220,6 +220,7 @@ impl From<StorageError> for CommandError {
             StorageError::WorktreePathMismatch(_)
             | StorageError::SelfRelation(_)
             | StorageError::CommitTaskMismatch { .. }
+            | StorageError::ActivityTaskMismatch { .. }
             | StorageError::InvalidBackup(_) => CommandErrorKind::InvalidInput,
             StorageError::Io(_) => CommandErrorKind::External,
             StorageError::Sqlite(_)

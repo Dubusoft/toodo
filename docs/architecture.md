@@ -218,6 +218,43 @@ A commit produced while implementing a task.
 Commits are discovered from the task branch, typically as
 `git log <baseBranch>..<taskBranch>` run in the worktree.
 
+### Git Activity
+
+The git activity of a task is what happened in its git history, shown as "Git activity"
+in the detailed task view. It is separate from the status history in Task Timeline.
+Each event (`domain/activity.rs`, table `task_activity`) has:
+
+| Field | Description |
+| --- | --- |
+| `kind` | `commit`, `pr_opened`, `checks_passed`, `checks_failed`, or `pr_merged`. |
+| `source` | Where it was first learned from: `git_poll` or `github_poll`. |
+| `externalRef` | Commit SHA of a commit; pull request URL when opened or merged; head commit SHA the checks ran on for a CI result. |
+| `title` | Commit summary line, pull request title, or a short CI text (`CI passed on abc1234`). |
+| `author` | Commit author, when known. |
+| `occurredAt` | When it happened. |
+| `receivedAt` | When Toodo first stored it. |
+| `confirmedAt` | The latest time any source reported it again. |
+
+Sources report the same event again on every check and in any order, so each event is
+stored once per task under its dedup key `<kind>:<externalRef>`. The source is not part
+of the key, so a GitHub webhook can later be added as another source without storing
+events twice. A repeated report keeps the first `receivedAt`, `source`, `title`, and
+`author`, takes the earlier `occurredAt` of both, and sets `confirmedAt` to its own time.
+Events are listed by `occurredAt`, then by when they were first stored, so the arrival
+order never changes the result.
+
+The background check of pull requests records it for every `in_progress` or
+`in_review` task with a branch, after looking up pull requests and before settling
+tasks, so a merge is recorded before it completes the task: the commits of the branch
+(`git_poll`) and, in a GitHub workspace for a task with a pull request, the pull
+request opened, its CI result once final, and its merge (`github_poll`). When a task is
+completed, its commit records (which include the merged pull request's commits) and the
+merge of its pull request are recorded too.
+
+Only a workspace whose source is a git repository (`local_git` or `github`) and whose
+completion is not `manual` has git activity; for the others nothing is read with git
+or `gh` and nothing is recorded.
+
 ## Timeline View
 
 The dependency graph is drawn on a time axis instead of as a free-form layered DAG, so

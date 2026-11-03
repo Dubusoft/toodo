@@ -105,6 +105,61 @@ fn parse_viewed_pull_request(value: &Value) -> Option<ViewedPullRequest> {
     })
 }
 
+/// What a pull request shows on the git activity timeline of its task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestActivity {
+    pub number: i64,
+    pub url: String,
+    pub title: String,
+    /// Creation time in seconds since the Unix epoch.
+    pub created_at: i64,
+    /// Merge time in seconds since the Unix epoch; `None` until it is merged.
+    pub merged_at: Option<i64>,
+    /// The commit at the head of its branch, which its checks ran on.
+    pub head_sha: Option<String>,
+    /// The combined state of its checks with the latest time one of them finished,
+    /// if known; `None` when it has no checks.
+    pub checks: Option<(ChecksState, Option<i64>)>,
+}
+
+/// Fields requested with `--json` for a [`PullRequestActivity`].
+const PULL_REQUEST_ACTIVITY_FIELDS: &str =
+    "number,title,url,createdAt,state,mergedAt,headRefOid,statusCheckRollup";
+
+fn parse_pull_request_activity(value: &Value) -> Option<PullRequestActivity> {
+    let field = |name: &str| value.get(name).and_then(Value::as_str);
+    let merged_at = match value.get("mergedAt")? {
+        Value::Null => None,
+        Value::String(raw) => Some(parse_utc_timestamp(raw)?),
+        _ => return None,
+    };
+    let rollup = value.get("statusCheckRollup")?.as_array()?;
+    // `gh` prints the zero time `0001-01-01T00:00:00Z` for a check that has not finished.
+    let finished_at = rollup
+        .iter()
+        .filter_map(|check| {
+            let name = match check.get("__typename")?.as_str()? {
+                "CheckRun" => "completedAt",
+                "StatusContext" => "startedAt",
+                _ => return None,
+            };
+            parse_utc_timestamp(check.get(name)?.as_str()?)
+        })
+        .filter(|time| *time > 0)
+        .max();
+    Some(PullRequestActivity {
+        number: value.get("number")?.as_i64()?,
+        url: field("url")?.to_owned(),
+        title: field("title")?.to_owned(),
+        created_at: parse_utc_timestamp(field("createdAt")?)?,
+        merged_at,
+        head_sha: field("headRefOid")
+            .filter(|sha| !sha.is_empty())
+            .map(str::to_owned),
+        checks: parse_checks(rollup)?.map(|state| (state, finished_at)),
+    })
+}
+
 /// Combines check runs (GitHub Actions) and commit statuses: any failure fails the
 /// pull request, otherwise any unfinished check keeps it pending.
 fn parse_checks(rollup: &[Value]) -> Option<Option<ChecksState>> {
@@ -428,6 +483,17 @@ impl GitHub {
             .ok()
             .as_ref()
             .and_then(parse_viewed_pull_request)
+            .ok_or_else(|| unexpected(&invocation, &output))
+    }
+
+    /// The pull request at `url` as its task's git activity timeline shows it.
+    pub fn pull_request_activity(&self, url: &str) -> Result<PullRequestActivity, GitError> {
+        let invocation = invocation(&["pr", "view", url, "--json", PULL_REQUEST_ACTIVITY_FIELDS]);
+        let output = self.runner.run(&invocation)?;
+        serde_json::from_str::<Value>(&output)
+            .ok()
+            .as_ref()
+            .and_then(parse_pull_request_activity)
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
@@ -879,6 +945,77 @@ mod tests {
                 "case {index}"
             );
         }
+    }
+
+    #[test]
+    fn pull_request_activity_reads_creation_merge_head_and_checks() {
+        let view = |merged_at: &str, checks: &str| {
+            Ok(format!(
+                r#"{{"createdAt":"2026-10-08T10:00:00Z","headRefOid":"abc1234def","mergedAt":{merged_at},"number":7,"state":"OPEN","statusCheckRollup":[{checks}],"title":"Add login","url":"{URL}"}}"#
+            ))
+        };
+        let run = |status: &str, conclusion: &str, completed_at: &str| {
+            format!(
+                r#"{{"__typename":"CheckRun","status":"{status}","conclusion":"{conclusion}","completedAt":"{completed_at}"}}"#
+            )
+        };
+        let context = |state: &str, started_at: &str| {
+            format!(
+                r#"{{"__typename":"StatusContext","state":"{state}","startedAt":"{started_at}"}}"#
+            )
+        };
+        let passed = run("COMPLETED", "SUCCESS", "2026-10-08T11:00:00Z");
+        let failed = run("COMPLETED", "FAILURE", "2026-10-08T10:30:00Z");
+        let running = run("IN_PROGRESS", "", "0001-01-01T00:00:00Z");
+        let (github, runner) = github(vec![
+            view(
+                &format!("\"{MERGED_AT}\""),
+                &format!("{passed},{}", context("SUCCESS", "2026-10-08T12:00:00Z")),
+            ),
+            view("null", &format!("{passed},{failed}")),
+            view("null", &running),
+            view("null", ""),
+            Ok(r#"{"number":7,"url":"x"}"#.to_owned()),
+        ]);
+        let created_at = 1_791_453_600;
+
+        let merged = github.pull_request_activity(URL).unwrap();
+        assert_eq!(
+            merged,
+            PullRequestActivity {
+                number: 7,
+                url: URL.to_owned(),
+                title: "Add login".to_owned(),
+                created_at,
+                merged_at: Some(MERGED_AT_SECONDS),
+                head_sha: Some("abc1234def".to_owned()),
+                checks: Some((ChecksState::Passing, Some(created_at + 7_200))),
+            }
+        );
+        assert_eq!(
+            github.pull_request_activity(URL).unwrap().checks,
+            Some((ChecksState::Failing, Some(created_at + 3_600)))
+        );
+        assert_eq!(
+            github.pull_request_activity(URL).unwrap().checks,
+            Some((ChecksState::Pending, None))
+        );
+        let unchecked = github.pull_request_activity(URL).unwrap();
+        assert_eq!((unchecked.checks, unchecked.merged_at), (None, None));
+        assert!(matches!(
+            github.pull_request_activity(URL),
+            Err(GitError::UnexpectedOutput { .. })
+        ));
+        assert_eq!(
+            runner.invocations.lock().unwrap()[0],
+            invocation(&[
+                "pr",
+                "view",
+                URL,
+                "--json",
+                "number,title,url,createdAt,state,mergedAt,headRefOid,statusCheckRollup"
+            ])
+        );
     }
 
     /// `gh pr view --json` output of a merged pull request by `ada`.
