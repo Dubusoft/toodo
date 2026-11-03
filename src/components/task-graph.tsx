@@ -561,7 +561,13 @@ export function TaskGraph({
 
   return (
     <section aria-label="Task timeline" className="flex flex-1 flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
+      {/* On a phone the controls stay on one line that scrolls sideways, until the legend opens below them. */}
+      <div
+        className={cn(
+          "flex flex-wrap items-center gap-2 text-xs",
+          !legendOpen && "max-md:flex-nowrap max-md:overflow-x-auto max-md:[scrollbar-width:none] max-md:*:shrink-0",
+        )}
+      >
         <div role="group" aria-label="Timeline scale" className="flex gap-1">
           {timelineScales.map((option) => (
             <Button
@@ -592,7 +598,7 @@ export function TaskGraph({
           <div role="group" aria-label="Timeline position" className="flex gap-1">
             <Button size="xs" variant="outline" onClick={showEarliest}>
               <ChevronsLeft />
-              Earliest task
+              <span className="max-md:sr-only">Earliest task</span>
             </Button>
             <Button size="xs" variant="outline" disabled={layout.nowX === null} onClick={showToday}>
               Today
