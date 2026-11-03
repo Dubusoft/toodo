@@ -269,7 +269,7 @@ fn end_runs_if_closed(
 
 /// Ends the task's active runs as `state`: those in the runtime workspace `workspace`, or
 /// all of them for `None`.
-fn end_runs(
+pub fn end_runs(
     storage: &mut Storage,
     task: TaskId,
     workspace: Option<RuntimeWorkspaceId>,

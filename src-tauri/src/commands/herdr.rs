@@ -18,8 +18,12 @@ use crate::adapters::task_runtime::TaskWorkspaceRuntime;
 use crate::domain::criteria::{CheckKind, CriterionState};
 use crate::domain::model::{self, Machine, Runner, WorkspaceLocation};
 use crate::domain::naming::{self, TaskCheckout};
+use crate::domain::runtime::{HostRef, OwnerKey, RunRole, RunState};
 use crate::domain::status::TaskStatus;
-use crate::runtime::{OpenFor, OpenWorktree, RuntimeError, RuntimeService, TaskWorktree};
+use crate::runtime::{
+    NoRunner, OpenFor, OpenWorktree, RunCommand, RuntimeError, RuntimeService, StartRun,
+    TaskWorktree, end_runs,
+};
 use crate::storage::{CriterionCheck, StorageError};
 
 impl From<RuntimeError> for CommandError {
@@ -118,15 +122,16 @@ pub fn restore_task_worktree(
     Ok((&restore(&storage, &git, &herdr, id.into())?).into())
 }
 
-/// Starts a task as [`start_task`] does. A task of a workspace with runner none only moves
-/// to `in_progress`: it gets no branch, worktree, or herdr workspace, and neither git nor
-/// herdr runs.
+/// Starts a task as [`start_task`] does. A task of a workspace with runner none moves to
+/// `in_progress` with a run recorded through [`NoRunner`], which ends its earlier runs: it
+/// gets no branch, worktree, or herdr workspace, and neither git nor herdr runs.
 pub(crate) fn start(
     storage: &StorageState,
     git: &Git,
     runtime: &dyn TaskWorkspaceRuntime,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
+    let storage_state = storage;
     let (workspace, checkout, resumed, kept_worktree, start_unknown) = {
         let mut storage = lock(storage);
         let task = storage
@@ -145,7 +150,24 @@ pub(crate) fn start(
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
         if workspace.runner == Runner::None {
-            return Ok(storage.set_task_status(id, TaskStatus::InProgress)?);
+            // The status changes under the lock, so a second start is rejected above.
+            let started = storage.set_task_status(id, TaskStatus::InProgress)?;
+            end_runs(&mut storage, id, None, RunState::Exited)?;
+            let request = StartRun {
+                owner: OwnerKey::implicit(),
+                task: id,
+                // Unique per task: a request key never comes back once its run is recorded.
+                request_key: format!("start-{id}-{}", storage.list_task_runs(id)?.len() + 1),
+                role: RunRole::Writer,
+                host: HostRef::from(&workspace.location.machine()),
+                checkout_path: None,
+                runtime_workspace: None,
+                adapter_profile: None,
+                command: RunCommand::ByHand,
+            };
+            drop(storage);
+            RuntimeService.start_run(storage_state, &NoRunner, request)?;
+            return Ok(started);
         }
         let settings = storage.get_machine_settings(&workspace.location.machine())?;
         let mut checkout = naming::task_checkout(&workspace, &settings, &task)?;
@@ -2361,6 +2383,20 @@ mod tests {
             stored.timeline.last().map(|event| event.status),
             Some(TaskStatus::InProgress)
         );
+        let runs = lock(&storage).list_task_runs(task.id).unwrap();
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(run.runner_kind, crate::domain::runtime::RunnerKind::None);
+        assert_eq!(run.state, RunState::Running);
+        assert_eq!(run.checkout_path, None);
+        assert_eq!(run.runtime_workspace, None);
+        let events = lock(&storage).run_events(run.id).unwrap();
+        let kinds: Vec<_> = events.iter().map(|event| event.kind.as_str()).collect();
+        assert_eq!(kinds, ["reserved", "launched"]);
+
+        let again = start(&storage, &no_git(), &runtime, task.id).unwrap_err();
+        assert_eq!(again.kind, CommandErrorKind::Rejected);
+        assert_eq!(lock(&storage).list_task_runs(task.id).unwrap().len(), 1);
     }
 
     #[test]
