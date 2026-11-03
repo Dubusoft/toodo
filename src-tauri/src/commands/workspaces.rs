@@ -228,7 +228,17 @@ fn prepare_workspace(
         None if has_origin(origin)? => model::Source::GitHub,
         None => model::Source::LocalGit,
     };
-    let (source, completion, runner) = resolve_axes(source, setup.completion, setup.runner)?;
+    // An omitted runner of a local git workspace falls back to plain when herdr cannot
+    // run, so a server without herdr still creates workspaces.
+    let (source, completion, mut runner) = resolve_axes(source, setup.completion, setup.runner)?;
+    if setup.runner.is_none()
+        && matches!(location, model::WorkspaceLocation::Local { .. })
+        && !herdr.server_status().is_ok_and(|status| status.running)
+    {
+        runner = model::Runner::Plain;
+        model::check_axes(source, completion, runner)
+            .map_err(|error| CommandError::invalid_input(error.0))?;
+    }
     if runner == model::Runner::Herdr {
         RuntimeService.open_repository(
             herdr,
@@ -576,6 +586,14 @@ mod tests {
         ]
     }
 
+    /// `herdr status --json` of a running server, which a local workspace with an omitted
+    /// runner asks for, then the replies of [`herdr_opens_a_new_workspace`].
+    fn herdr_runs_and_opens_a_new_workspace() -> Vec<Result<String, GitError>> {
+        std::iter::once(Ok(r#"{"server":{"running":true}}"#.to_owned()))
+            .chain(herdr_opens_a_new_workspace())
+            .collect()
+    }
+
     struct Prepared {
         result: CommandResult<storage::NewWorkspace>,
         invocations: Vec<Invocation>,
@@ -611,7 +629,7 @@ mod tests {
                 Ok("origin/main\n".to_owned()),
                 Ok("origin\n".to_owned()),
             ],
-            herdr_opens_a_new_workspace(),
+            herdr_runs_and_opens_a_new_workspace(),
         );
         let new = prepared.result.unwrap();
         assert_eq!(new.location, local(r"C:\dev\toodo"));
@@ -630,7 +648,7 @@ mod tests {
         );
         assert_eq!(prepared.invocations[1].args[..2], ["-C", r"C:\dev\toodo"]);
         assert_eq!(
-            prepared.herdr_invocations[1].args,
+            prepared.herdr_invocations[2].args,
             [
                 "workspace",
                 "create",
@@ -692,6 +710,45 @@ mod tests {
             )
         );
         assert!(prepared.herdr_invocations.is_empty());
+    }
+
+    #[test]
+    fn an_omitted_runner_defaults_to_plain_when_herdr_cannot_be_run() {
+        let prepared = prepare(
+            setup(RepositorySetup::Open, None),
+            vec![
+                Ok("C:/dev/toodo\n".to_owned()),
+                Ok("origin/main\n".to_owned()),
+                Ok("origin\n".to_owned()),
+            ],
+            vec![Err(GitError::Spawn {
+                program: "herdr".to_owned(),
+                message: "No such file or directory (os error 2)".to_owned(),
+            })],
+        );
+
+        assert_eq!(prepared.result.unwrap().runner, model::Runner::Plain);
+        assert_eq!(prepared.herdr_invocations.len(), 1);
+        assert_eq!(
+            prepared.herdr_invocations[0].args,
+            ["status", "--json"].map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn an_omitted_runner_defaults_to_herdr_when_herdr_is_running() {
+        let prepared = prepare(
+            setup(RepositorySetup::Open, None),
+            vec![
+                Ok("C:/dev/toodo\n".to_owned()),
+                Ok("origin/main\n".to_owned()),
+                Ok("origin\n".to_owned()),
+            ],
+            herdr_runs_and_opens_a_new_workspace(),
+        );
+
+        assert_eq!(prepared.result.unwrap().runner, model::Runner::Herdr);
+        assert_eq!(prepared.herdr_invocations.len(), 3);
     }
 
     fn storage_with_workspace() -> (StorageState, model::WorkspaceId) {
@@ -885,14 +942,14 @@ mod tests {
         let prepared = prepare(
             setup(source, Some("develop")),
             vec![Ok(String::new())],
-            herdr_opens_a_new_workspace(),
+            herdr_runs_and_opens_a_new_workspace(),
         );
         let new = prepared.result.unwrap();
         assert_eq!(new.location, local(r"C:\dev\toodo\src"));
         assert_eq!(new.default_base_branch, "develop");
         assert_eq!(prepared.invocations[0].args[0], "clone");
         assert_eq!(prepared.invocations.len(), 1);
-        assert_eq!(prepared.herdr_invocations[1].args[3], r"C:\dev\toodo\src");
+        assert_eq!(prepared.herdr_invocations[2].args[3], r"C:\dev\toodo\src");
     }
 
     #[test]
@@ -900,10 +957,13 @@ mod tests {
         let prepared = prepare(
             setup(RepositorySetup::Open, Some("main")),
             vec![Ok("C:/dev/toodo\n".to_owned()), Ok("origin\n".to_owned())],
-            vec![Err(GitError::Spawn {
-                program: "herdr".to_owned(),
-                message: "program not found".to_owned(),
-            })],
+            vec![
+                Ok(r#"{"server":{"running":true}}"#.to_owned()),
+                Err(GitError::Spawn {
+                    program: "herdr".to_owned(),
+                    message: "program not found".to_owned(),
+                }),
+            ],
         );
         assert_eq!(
             prepared.result.unwrap_err().kind,
@@ -1113,7 +1173,7 @@ mod tests {
         let prepared = prepare(
             setup(RepositorySetup::Open, Some("main")),
             vec![Ok("C:/dev/toodo\n".to_owned()), Ok("upstream\n".to_owned())],
-            herdr_opens_a_new_workspace(),
+            herdr_runs_and_opens_a_new_workspace(),
         );
         let new = prepared.result.unwrap();
         assert_eq!(

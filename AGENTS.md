@@ -49,8 +49,10 @@ See [`docs/architecture.md`](docs/architecture.md) for the domain model and
 
 - **Target**: `toodo-server` on Linux, used through the web app (PWA) it serves to
   browsers on any device; see `docs/server.md`. There is no native app.
-- **Prerequisite**: herdr is installed and running on the server. Toodo is a companion
-  app that controls herdr; it never installs, updates, or bundles herdr. Git, OpenSSH
+- **Prerequisite**: herdr is optional; workspaces with runner `herdr` (and remote SSH
+  workspaces) need it installed and running on the server, while runner `plain` runs
+  `claude` or `codex` from the server's `PATH` and runner `none` needs neither. Toodo
+  controls herdr; it never installs, updates, or bundles herdr. Git, OpenSSH
   (`ssh`), and `gh` are also expected on the server's `PATH`.
 - **Backend**: Rust with tokio and axum: commands over HTTP, events over server-sent
   events, MCP, and Web Push. TypeScript bindings for the commands are generated with
@@ -153,7 +155,7 @@ frontend); it runs no tests, lints, or format checks. Run the tests, clippy, and
 
 ## Integrations
 
-- **herdr** (required, preinstalled): terminal workspace manager for AI coding agents.
+- **herdr** (optional, preinstalled; needed for runner `herdr`): terminal workspace manager for AI coding agents.
   - On startup, check that `herdr` is on `PATH` and `herdr status --json` reports the
     server as running.
   - Commands go through the herdr CLI (`herdr worktree create|open|list|remove`,

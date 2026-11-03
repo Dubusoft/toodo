@@ -14,6 +14,7 @@ pub mod issues;
 pub mod machines;
 pub mod mcp;
 pub mod review;
+pub mod runners;
 pub mod runs;
 pub mod tasks;
 pub mod types;

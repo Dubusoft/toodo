@@ -19,7 +19,7 @@ use crate::commands::types::{
 };
 use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
-    herdr, issues, machines, mcp, review, runs, tasks, workspaces,
+    herdr, issues, machines, mcp, review, runners, runs, tasks, workspaces,
 };
 
 /// What running a command gave.
@@ -282,6 +282,7 @@ commands!(s => {
     "stop_run"(run_id: RunId) => sync Reply::result(
         runs::stop_run(State(&s.storage), State(&s.plain), run_id)
     );
+    "runner_health"() => sync Reply::result(runners::runner_health(State(&s.herdr)));
 
     "refresh_commit_records"(task_id: TaskId) => sync Reply::result(
         completion::refresh_commit_records(State(&s.storage), State(&s.git), task_id)
