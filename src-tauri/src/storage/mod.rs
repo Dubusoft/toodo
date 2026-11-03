@@ -280,7 +280,10 @@ impl fmt::Display for StorageError {
                 f,
                 "activity of task {found} cannot be stored for task {expected}; record it for task {found}"
             ),
-            Self::RunNotFound(id) => write!(f, "run {id} does not exist"),
+            Self::RunNotFound(id) => write!(
+                f,
+                "run {id} does not exist; list the runs of its task to find the run to use"
+            ),
             Self::CheckoutHasActiveWriter {
                 checkout,
                 run,
