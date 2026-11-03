@@ -222,6 +222,7 @@ pub(super) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
 
 /// One task ID or several, as `depends_on` of the dependency tools accepts them.
 #[derive(Deserialize, JsonSchema)]
+#[schemars(inline)]
 #[serde(
     untagged,
     expecting = "a task id or an array of task ids, e.g. 3 or [3, 4]"
