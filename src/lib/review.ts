@@ -177,6 +177,11 @@ function plural(count: number, noun: string): string {
   return `${count} ${count === 1 ? noun : `${noun}s`}`;
 }
 
+/** The pull request number of a GitHub pull request URL. */
+export function pullRequestNumber(url: string): string | null {
+  return /\/pull\/(\d+)/.exec(url)?.[1] ?? null;
+}
+
 /** The number, size, and reviews of a merged pull request, e.g. `#12, +10/-3 in 2 files, 1 review`. */
 export function pullRequestStats(pullRequest: PullRequestSnapshot): string {
   return `#${pullRequest.number}, +${pullRequest.additions}/-${pullRequest.deletions} in ${plural(

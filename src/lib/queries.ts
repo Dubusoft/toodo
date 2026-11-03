@@ -56,6 +56,7 @@ export const queryKeys = {
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
   branches: (workspace: WorkspaceId) => ["branches", workspace] as const,
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
+  taskActivity: (taskId: TaskId) => ["tasks", taskId, "activity"] as const,
   branchFreshness: (taskId: TaskId) => ["tasks", taskId, "branch-freshness"] as const,
   herdrMachines: ["herdr-machines"] as const,
   backups: ["backups"] as const,
@@ -412,6 +413,18 @@ export function useCommitRecords(taskId: TaskId, enabled: boolean) {
   });
 }
 
+/**
+ * The git activity of a task, oldest first: commits, its pull request, CI results, and the merge.
+ * The background checks record it and send tasks-changed, which refetches it.
+ */
+export function useTaskActivity(taskId: TaskId, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.taskActivity(taskId),
+    queryFn: () => unwrap(commands.listTaskActivity(taskId)),
+    enabled,
+  });
+}
+
 export function useRefreshCommitRecords() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -442,11 +455,12 @@ export function useCompleteTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: TaskId) => unwrap(commands.completeTask(id)),
-    // Completing records the commits of the merged pull request.
+    // Completing records the commits of the merged pull request and its git activity.
     onSuccess: (task) =>
       Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
         queryClient.invalidateQueries({ queryKey: queryKeys.commitRecords(task.id) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.taskActivity(task.id) }),
       ]),
   });
 }

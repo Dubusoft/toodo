@@ -10,6 +10,7 @@ import {
   Crosshair,
   Flag,
   FolderGit2,
+  GitCommitHorizontal,
   GitMerge,
   GitPullRequest,
   Inbox,
@@ -26,6 +27,7 @@ import {
   Trash2,
   Upload,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
@@ -49,6 +51,7 @@ import { CollapsibleForm } from "@/components/collapsible-form";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import { MoreMenu, type Action } from "@/components/more-menu";
 import type {
+  ActivityKind,
   AgentMerge,
   CheckKind,
   CheckedBy,
@@ -103,6 +106,7 @@ import {
   useSetCompletionNote,
   useSetTaskOutcome,
   useStartTask,
+  useTaskActivity,
   useTaskRelations,
   useTasks,
   useUpdateTask,
@@ -110,7 +114,7 @@ import {
   useWorkspaceBranches,
   useWorkspaces,
 } from "@/lib/queries";
-import { pullRequestStats } from "@/lib/review";
+import { pullRequestNumber, pullRequestStats } from "@/lib/review";
 import {
   dependenciesDone,
   dependencyEditableStatuses,
@@ -152,6 +156,7 @@ import {
 import { cn } from "@/lib/utils";
 import { workspaceCapabilities, type WorkspaceCapabilities } from "@/lib/workspace-capabilities";
 import { reachability, subscribeReachability } from "@/web/connection";
+import { openUrl } from "@/web/opener";
 
 const Markdown = lazy(() => import("@/components/markdown"));
 // The timeline pulls in React Flow, so it loads only when it is first shown.
@@ -1295,6 +1300,7 @@ function TaskRow({
       )}
       {detailed && <RelatedTasks task={task} tasks={tasks} context={context} navigation={navigation} />}
       {detailed && <CommitList task={task} detailed />}
+      {detailed && <TaskActivity task={task} capabilities={capabilities} />}
       {detailed && <TaskNotes task={task} detailed />}
       {final && !editing && (detailed || addingNote) && (
         <CompletionNote task={task} adding={addingNote} onAdded={() => setAddingNote(false)} />
@@ -2474,6 +2480,93 @@ function CommitList({ task, detailed }: { task: Task; detailed: boolean }) {
     </ul>
   );
   return detailed ? <DetailField label={`Commits (${commits.data.length})`}>{list}</DetailField> : list;
+}
+
+/** How each kind of git activity is named and marked, in the tones of the status glossary. */
+const activityKinds: Record<ActivityKind, { label: string; icon: LucideIcon; tone: Tone }> = {
+  commit: { label: "Commit", icon: GitCommitHorizontal, tone: "neutral" },
+  pr_opened: { label: "Pull request opened", icon: GitPullRequest, tone: "review" },
+  checks_passed: { label: "CI passed", icon: CircleCheck, tone: "success" },
+  checks_failed: { label: "CI failed", icon: CircleX, tone: "danger" },
+  pr_merged: { label: "Merged", icon: GitMerge, tone: "success" },
+};
+
+/** A pull request of the git activity as a short link, e.g. `#12`. */
+function PullRequestRef({ url }: { url: string }) {
+  const number = pullRequestNumber(url);
+  const open = (event: { preventDefault: () => void }) => {
+    event.preventDefault();
+    openUrl(url).catch((error: unknown) => console.error(`Failed to open ${url}`, error));
+  };
+  return (
+    <a
+      href={url}
+      title={url}
+      aria-label={number ? `Pull request #${number}` : "Pull request"}
+      onClick={open}
+      onAuxClick={open}
+      className="shrink-0 text-primary underline underline-offset-2 hover:no-underline"
+    >
+      {number ? `#${number}` : "PR"}
+    </a>
+  );
+}
+
+/**
+ * The git activity of a task in the details sheet, oldest first: its commits, pull request,
+ * CI results, and merge, as the background checks saw them. Only workspaces with a git
+ * repository whose merges complete tasks track it, so the others show nothing.
+ */
+function TaskActivity({ task, capabilities }: { task: Task; capabilities: WorkspaceCapabilities }) {
+  const tracked = capabilities.git && capabilities.merge;
+  const activity = useTaskActivity(task.id, tracked && (task.status !== "planned" || isPaused(task)));
+
+  if (!tracked) {
+    return null;
+  }
+  if (activity.isError) {
+    return (
+      <p role="alert" className="text-xs text-destructive">
+        Failed to load git activity: {activity.error.message}
+      </p>
+    );
+  }
+  if (!activity.data || activity.data.length === 0) {
+    return null;
+  }
+  return (
+    <DetailField label="Git activity">
+      <ol
+        aria-label={`Git activity of #${task.id}`}
+        className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 max-md:gap-y-1.5"
+      >
+        {activity.data.map(({ kind, externalRef, title, author, occurredAt }) => {
+          const { label, icon: Icon, tone } = activityKinds[kind];
+          return (
+            <li
+              key={`${kind}:${externalRef}`}
+              className="col-span-full grid grid-cols-subgrid items-baseline"
+              title={author ?? undefined}
+            >
+              <When className="text-muted-foreground" at={occurredAt} />
+              <span className="flex min-w-0 items-baseline gap-2 max-md:flex-wrap max-md:gap-y-0">
+                <span className={cn("inline-flex shrink-0 items-baseline gap-1", toneText[tone])}>
+                  <Icon aria-hidden className="size-3 self-center" />
+                  {label}
+                </span>
+                {kind === "pr_opened" || kind === "pr_merged" ? (
+                  <PullRequestRef url={externalRef} />
+                ) : (
+                  <code className="shrink-0 text-muted-foreground">{externalRef.slice(0, 7)}</code>
+                )}
+                <span className="min-w-0 break-words-keep max-md:basis-full">{title}</span>
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </DetailField>
+  );
 }
 
 const noteKindLabels: Record<NoteKind, string> = { progress: "Progress", blocker: "Blocker" };

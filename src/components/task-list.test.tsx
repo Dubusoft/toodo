@@ -3,8 +3,9 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskList, type TaskDraft } from "@/components/task-list";
-import { commands, type Task, type Workspace } from "@/lib/bindings";
+import { commands, type Task, type TaskActivity, type Workspace } from "@/lib/bindings";
 import { queryKeys } from "@/lib/queries";
+import { formatWhen } from "@/lib/timeline";
 
 vi.mock("@/lib/bindings", () => ({
   commands: {
@@ -12,6 +13,7 @@ vi.mock("@/lib/bindings", () => ({
     listTasks: vi.fn(),
     listTaskRelations: vi.fn(),
     listCommitRecords: vi.fn(),
+    listTaskActivity: vi.fn(),
     listAgentStatuses: vi.fn(),
     listPullRequestStatuses: vi.fn(),
     herdrStatus: vi.fn(),
@@ -54,6 +56,14 @@ const folder: Workspace = {
   source: "none",
   completion: "manual",
   runner: "none",
+};
+
+const manualGitHub: Workspace = {
+  ...github,
+  id: 4,
+  name: "handbook",
+  location: { kind: "local", path: "/srv/handbook" },
+  completion: "manual",
 };
 
 const allKinds = ["Manual", "URL responds", "Command succeeds", "PR open with green CI"];
@@ -100,6 +110,19 @@ function task(id: number, workspace: Workspace, title: string, overrides: Partia
     notes: [],
     criteria: [],
     ...overrides,
+  };
+}
+
+function activity(kind: TaskActivity["kind"], externalRef: string, title: string, occurredAt: number): TaskActivity {
+  return {
+    kind,
+    source: kind === "commit" ? "git_poll" : "github_poll",
+    externalRef,
+    title,
+    author: null,
+    occurredAt,
+    receivedAt: occurredAt,
+    confirmedAt: occurredAt,
   };
 }
 
@@ -171,6 +194,7 @@ describe("TaskList by workspace source, completion, and runner", () => {
     mocked.listAgentStatuses.mockResolvedValue([]);
     mocked.listPullRequestStatuses.mockResolvedValue([]);
     mocked.listCommitRecords.mockResolvedValue(ok([]));
+    mocked.listTaskActivity.mockResolvedValue(ok([]));
     mocked.listTaskRelations.mockResolvedValue(ok([]));
     mocked.branchFreshness.mockResolvedValue(
       ok({ base: "origin/main", behind: 0, fetchError: null, mergeable: null, mergeableError: null }),
@@ -304,4 +328,53 @@ describe("TaskList by workspace source, completion, and runner", () => {
     const menu = await openMenu(2, details);
     expect(within(menu).getByRole("menuitem", { name: "Link issue to #2" })).toBeInTheDocument();
   });
+
+  it("lists the git activity of a GitHub workspace's task in the order it happened", async () => {
+    const pr = "https://github.com/acme/app/pull/7";
+    mocked.listTaskActivity.mockResolvedValue(
+      ok([
+        activity("commit", "1111111aaaa", "Add review form", 1700000000),
+        activity("pr_opened", pr, "Review UI", 1700000600),
+        activity("checks_failed", "1111111aaaa", "CI failed on 1111111", 1700001200),
+        activity("commit", "2222222bbbb", "Fix review layout", 1700086400),
+        activity("checks_passed", "2222222bbbb", "CI passed on 2222222", 1700087000),
+        activity("pr_merged", pr, "Review UI", 1700172800),
+      ]),
+    );
+    renderTasks(github, [
+      task(2, github, "Review UI", { status: "in_review", branch: "feat/review-ui-2", pullRequestUrl: pr }),
+    ]);
+
+    const details = await openDetails("Review UI");
+    const list = await within(details).findByRole("list", { name: "Git activity of #2" });
+    const row = (at: number, ...parts: string[]) => formatWhen(at) + parts.join("");
+    expect(within(list).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      row(1700000000, "Commit", "1111111", "Add review form"),
+      row(1700000600, "Pull request opened", "#7", "Review UI"),
+      row(1700001200, "CI failed", "1111111", "CI failed on 1111111"),
+      row(1700086400, "Commit", "2222222", "Fix review layout"),
+      row(1700087000, "CI passed", "2222222", "CI passed on 2222222"),
+      row(1700172800, "Merged", "#7", "Review UI"),
+    ]);
+    const links = within(list).getAllByRole("link", { name: "Pull request #7" });
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([pr, pr]);
+    expect(mocked.listTaskActivity).toHaveBeenCalledWith(2);
+  });
+
+  it.each([{ workspace: manualGitHub }, { workspace: folder }])(
+    "shows no git activity for a task of a $workspace.source workspace completed by hand",
+    async ({ workspace }) => {
+      mocked.listCommitRecords.mockResolvedValue(
+        ok([{ taskId: 6, sha: "3333333cccc", message: "Draft outline", author: "Ada", committedAt: 1700000000 }]),
+      );
+      mocked.listTaskActivity.mockResolvedValue(ok([activity("commit", "3333333cccc", "Draft outline", 1700000000)]));
+      renderTasks(workspace, [task(6, workspace, "Write outline", { status: "in_progress" })]);
+
+      const details = await openDetails("Write outline");
+      // The commits load like the activity would, so the activity had its chance to show.
+      expect(await within(details).findByRole("list", { name: "Commits of #6" })).toBeInTheDocument();
+      expect(within(details).queryByRole("region", { name: "Git activity" })).not.toBeInTheDocument();
+      expect(mocked.listTaskActivity).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -53,6 +53,7 @@ vi.mock("@/lib/bindings", () => ({
     restoreTaskWorktree: vi.fn(),
     closeTaskWorkspace: vi.fn(),
     listCommitRecords: vi.fn(),
+    listTaskActivity: vi.fn(),
     refreshCommitRecords: vi.fn(),
     branchFreshness: vi.fn(),
     openPullRequest: vi.fn(),
@@ -259,6 +260,7 @@ describe("App", () => {
       data: { machine, worktreeRoot: null },
     }));
     mocked.listCommitRecords.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listTaskActivity.mockResolvedValue({ status: "ok", data: [] });
     mocked.listTaskRelations.mockResolvedValue({ status: "ok", data: [] });
     mocked.branchFreshness.mockResolvedValue({
       status: "ok",
