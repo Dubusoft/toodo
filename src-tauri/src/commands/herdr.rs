@@ -11,6 +11,7 @@ use super::types::{HerdrStatus, Task, TaskId, TaskPane};
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
 use crate::adapters::herdr::{AgentStatus, Herdr, HerdrError, NewWorktree, PaneAgent};
+use crate::adapters::task_runtime::TaskWorkspaceRuntime;
 use crate::domain::criteria::{CheckKind, CriterionState};
 use crate::domain::model::{self, Machine, WorkspaceLocation};
 use crate::domain::naming;
@@ -35,7 +36,7 @@ pub fn start_task(
     herdr: State<'_, HerdrState>,
     id: TaskId,
 ) -> CommandResult<Task> {
-    Ok((&start(&storage, &git, &herdr, id.into())?).into())
+    Ok((&start(&storage, &git, &**herdr, id.into())?).into())
 }
 
 /// Makes sure herdr has the workspace of a started task open without focusing it, opening
@@ -100,7 +101,7 @@ pub fn restore_task_worktree(
 pub(crate) fn start(
     storage: &StorageState,
     git: &Git,
-    herdr: &Herdr,
+    runtime: &dyn TaskWorkspaceRuntime,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
     let (workspace, mut checkout, resumed, kept_worktree, start_unknown) = {
@@ -151,7 +152,7 @@ pub(crate) fn start(
         WorkspaceLocation::Ssh { path, .. } => path.as_str(),
     };
     if let Some(path) = kept_worktree {
-        match herdr.open_worktree(&machine, repository, &path.to_string()) {
+        match runtime.open_worktree(&machine, repository, &path.to_string()) {
             Ok(herdr_workspace_id) => {
                 checkout.path = path;
                 return Ok(lock(storage).start_task(id, &checkout, &herdr_workspace_id)?);
@@ -210,7 +211,7 @@ pub(crate) fn start(
         }
     };
     let path = checkout.path.to_string();
-    let herdr_workspace_id = herdr
+    let herdr_workspace_id = runtime
         .create_worktree(
             &machine,
             &NewWorktree {
@@ -1711,6 +1712,99 @@ mod tests {
             ]
             .map(str::to_owned)
         );
+    }
+
+    /// A runtime that records its calls and answers them with `results` in order.
+    struct FakeRuntime {
+        results: Mutex<Vec<Result<String, HerdrError>>>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl FakeRuntime {
+        fn new(results: Vec<Result<String, HerdrError>>) -> Self {
+            Self {
+                results: Mutex::new(results),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn answer(&self, call: String) -> Result<String, HerdrError> {
+            self.calls.lock().unwrap().push(call);
+            self.results.lock().unwrap().remove(0)
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl TaskWorkspaceRuntime for FakeRuntime {
+        fn create_worktree(
+            &self,
+            _machine: &Machine,
+            worktree: &NewWorktree<'_>,
+        ) -> Result<String, HerdrError> {
+            self.answer(format!(
+                "create {} {} {} {}",
+                worktree.repository, worktree.path, worktree.branch, worktree.base
+            ))
+        }
+
+        fn open_worktree(
+            &self,
+            _machine: &Machine,
+            repository: &str,
+            path: &str,
+        ) -> Result<String, HerdrError> {
+            self.answer(format!("open {repository} {path}"))
+        }
+    }
+
+    fn runtime_failure(code: Option<&str>) -> HerdrError {
+        HerdrError::Failed {
+            command: "herdr worktree".to_owned(),
+            code: code.map(str::to_owned),
+            message: "failed".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_runtime_failure_other_than_a_missing_checkout_keeps_a_paused_task_paused() {
+        let (fixture, _, _) = paused_task(Vec::new());
+        let before = stored(&fixture);
+        let runtime = FakeRuntime::new(vec![Err(runtime_failure(Some("workspace_open_failed")))]);
+        let git = Git::new(Box::new(Arc::new(FakeRunner::new(Vec::new()))));
+
+        let error = start(&fixture.storage, &git, &runtime, fixture.task.id).unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::External);
+        assert_eq!(
+            runtime.calls(),
+            [r"open C:\dev\toodo D:\wt\toodo\feat-add-login-1"]
+        );
+        assert_eq!(stored(&fixture), before);
+    }
+
+    #[test]
+    fn a_runtime_failure_creating_the_worktree_leaves_the_task_planned() {
+        let fixture = local_fixture(Some(r"D:\wt"));
+        let before = stored(&fixture);
+        let runtime = FakeRuntime::new(vec![Err(runtime_failure(None))]);
+
+        let error = start(
+            &fixture.storage,
+            &existing_base(),
+            &runtime,
+            fixture.task.id,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind, CommandErrorKind::External);
+        assert_eq!(
+            runtime.calls(),
+            [r"create C:\dev\toodo D:\wt\toodo\feat-add-login-1 feat/add-login-1 main"]
+        );
+        assert_eq!(stored(&fixture), before);
     }
 
     #[test]

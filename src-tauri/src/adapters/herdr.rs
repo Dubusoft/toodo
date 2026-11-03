@@ -17,6 +17,7 @@ use super::git::{
     GitError, Invocation, Runner, describe, shell_quote, ssh_invocation, windows_quote,
     windows_start,
 };
+use super::task_runtime::TaskWorkspaceRuntime;
 use crate::domain::model::{Machine, MachineLabel};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -428,6 +429,25 @@ if (-not $herdr) {
                 host: host.as_str().to_owned(),
             }),
         }
+    }
+}
+
+impl TaskWorkspaceRuntime for Herdr {
+    fn create_worktree(
+        &self,
+        machine: &Machine,
+        worktree: &NewWorktree<'_>,
+    ) -> Result<String, HerdrError> {
+        Herdr::create_worktree(self, machine, worktree)
+    }
+
+    fn open_worktree(
+        &self,
+        machine: &Machine,
+        repository: &str,
+        path: &str,
+    ) -> Result<String, HerdrError> {
+        Herdr::open_worktree(self, machine, repository, path)
     }
 }
 
