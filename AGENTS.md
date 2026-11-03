@@ -93,6 +93,7 @@ Layout:
     locally or over `ssh`, `herdr.rs` drives the herdr CLI, `github.rs` opens pull
     requests with `gh`, `ssh.rs` reads and appends hosts in `~/.ssh/config` and lists
     remote directories), each behind a trait with a fake for tests.
+  - `src-tauri/src/runtime/plain/`: the plain runner, which runs `claude` or `codex` as child processes in a task worktree.
   - `src-tauri/src/mcp/`: MCP server for coding agents (rmcp over loopback HTTP with a
     bearer token); `tools.rs` holds the tool logic over `Storage`.
   - `src-tauri/src/oauth/`: OAuth authorization server for chat apps on `/mcp`, mounted

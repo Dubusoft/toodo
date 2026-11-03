@@ -32,7 +32,7 @@ directory. See [workflow.md](workflow.md#1-register-a-workspace).
 | `agentMerge` | Whether agents merge their own task PR: `never` (default; they stop once the PR is open) or `afterChecks` (they merge it into `defaultBaseBranch` once every check on it passed, never into another branch). Editable from the workspace header; agents read it from the MCP `current_task` tool. Toodo itself never merges. |
 | `source` | Where the work lives: `none` (a plain directory, no git), `local_git` (a git repository used locally only), or `github` (a git repository with an `origin` remote on GitHub). |
 | `completion` | How a task is completed: `manual` (by its manual, `url`, or `command` criteria, with no merge criterion), `local_merge` (the task branch is merged into the base branch locally), or `pr_merge` (its pull request is merged). |
-| `runner` | What runs the work: `herdr` (a task start creates a branch, a worktree, and a herdr workspace) or `none` (a task start only changes its status). |
+| `runner` | What runs the work: `herdr` (a task start creates a branch, a worktree, and a herdr workspace), `plain` (a task start creates a branch and a git worktree, and agent runs are child processes of the server, without herdr), or `none` (a task start only changes its status). |
 
 The three axes are chosen at creation and are read-only afterwards. One domain rule
 (`check_axes`) checks every combination, from the app and from MCP alike:
@@ -41,7 +41,13 @@ The three axes are chosen at creation and are read-only afterwards. One domain r
 - Source `local_git` allows completion `manual` or `local_merge`.
 - Source `github` allows completion `manual` or `pr_merge`.
 - Runner `none` allows only completion `manual`, since a merge needs the task branch that
-  only a runner creates. Runner `herdr` needs a git source.
+  only a runner creates. Runners `herdr` and `plain` need a git source and allow the
+  same completions.
+- Runner `plain` needs a `local` location: creating or moving an SSH workspace with it is
+  rejected, with the hint to choose runner `herdr` for SSH workspaces.
+
+No default picks `plain`; a workspace uses it only when created with it explicitly.
+Migration 33 widens the `runner` check of `workspaces` to allow it.
 
 An omitted axis gets its default from the source: `none` gives `manual` + `none`,
 `local_git` gives `local_merge` + `herdr`, and `github` gives `pr_merge` + `herdr`. An
@@ -460,6 +466,72 @@ per call: a `TaskWorkspaceRuntime` for runtime workspaces and a `RunLauncher` fo
 - The MCP `start_task` tool runs `agent_command` through `start_run` as an `InPane` writer
   run in the first pane of the task's open runtime workspace, with request key
   `mcp-agent-<task>-<n>`.
+- The plain `RunLauncher` (`PlainRunner`, `src-tauri/src/runtime/plain/`) runs a
+  `RunCommand::Agent`; see Plain Runs below.
+
+### Plain Runs
+
+A task of a workspace with runner `plain` starts without herdr: Toodo creates the task
+branch, runs `git worktree add` at the task's checkout path (reusing a worktree already
+registered there), and records the task `in_progress` with no runtime workspace. Earlier
+active runs of the task end as `exited`. Deleting such a task removes its worktree with
+`git worktree remove` and keeps the branch. Starting a task launches no agent; runs are
+started separately through `start_plain_run` (`src-tauri/src/commands/runs.rs`), only for
+an `in_progress` task of a local plain workspace that has a worktree.
+
+`PlainRunner` lives in server state for the server's lifetime. Each run launches the
+`claude` or `codex` CLI from the server's `PATH`:
+
+- Claude: `claude -p --output-format stream-json --verbose --permission-mode
+  bypassPermissions`, plus `--mcp-config <run dir>/mcp.json --strict-mcp-config` with MCP.
+- Codex: `codex exec --json --full-auto`, plus
+  `-c mcp_servers.toodo.url="<url>" -c mcp_servers.toodo.bearer_token_env_var="TOODO_MCP_TOKEN"`
+  with MCP, then `-`.
+
+The child runs in its own process group with the task worktree as its working
+directory, and its PID is the receipt (`pid:<pid>`). Every run gets a private directory
+`<data dir>/runs/<run id>/` (mode 0700) holding `brief.md` (the prompt), `stdout.log`,
+`stderr.log`, and for Claude with MCP `mcp.json`, all mode 0600. The prompt reaches the
+child on stdin from `brief.md`, never in its arguments. Without a prompt, the brief is the
+task title, description, and criteria, plus an instruction to call the MCP `current_task`
+tool when MCP is on.
+
+With MCP on, the child environment gets `TOODO_MCP_URL` and `TOODO_MCP_TOKEN` (the
+server's MCP bearer). The token is only there: `mcp.json` refers to it as
+`${TOODO_MCP_TOKEN}`, and every occurrence in both logs and in run event payloads is
+replaced with `[redacted]`. With MCP off, both variables are removed from the child
+environment and no MCP flags are passed.
+
+Stdout is read as NDJSON lines, including a last line without a newline. Lines that
+aren't JSON or aren't known events are logged and ignored, and a line over 1 MiB is
+logged truncated and not parsed. When the process ends, its outcome settles the run:
+
+| Outcome | Run state | Events |
+| --- | --- | --- |
+| Success result, exit 0 | `settled` | `result` (summary, up to 4 KiB) |
+| Error result (Claude `is_error`, Codex `turn.failed` or `error`) | `failed` | `result_error` |
+| No result, exit 0 | `failed` | `no_result` |
+| No result, non-zero exit or signal | `failed` | `stderr` (last 4 KiB, redacted), `exit` |
+| Success result, then non-zero exit or signal | `exited` | `exit_after_result` |
+| Timeout (4 hours) | `failed` | `timed_out` |
+| `stop_run` | `cancelled` | `stop_requested` |
+
+A timeout or stop sends SIGTERM to the process group and SIGKILL 5 seconds later if it
+is still alive. `stop_run` on a run with no live process marks it `cancelled` directly.
+A missing CLI fails the launch with a message to install it on the server's `PATH` or use
+the other adapter. Deleting a task through the app stops its live plain runs first;
+completing or concluding it stops them once the completion succeeded.
+
+When the server starts, plain runs still `reserved` or `running` from the previous
+process become `unknown` with event `server_restarted`. Since `unknown` still counts as
+an active writer, `stop_run` on such a run (which cancels it) frees the checkout for a new
+run.
+
+A second launch is guarded three ways: the request key (`plain-<task>-<n>`) makes
+`start_run` idempotent, `PlainRunner` returns the receipt of a live launch with the same
+key instead of spawning again, and the one-active-writer index rejects another writer on
+the worktree. A process that ends before its launch is recorded still settles: the settle
+path records the launch first.
 
 `commands/events.rs` translates herdr observations into neutral `RuntimeEvent` values
 and applies them through `RuntimeService`. Events carry the existing `OwnerKey`
