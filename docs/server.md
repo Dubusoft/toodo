@@ -64,8 +64,10 @@ The `npm` workflow (`.github/workflows/npm.yml`) publishes them:
 
 - On every push to `dev`, a prerelease `X.Y.Z-dev.N` (the next patch version of
   `package.json`, `N` the run number) under the dist-tag `dev`.
-- From the `Release` workflow, the release version under the dist-tag `latest`, skipped
-  when that version is on npm already.
+- In a run on `main` with dist-tag `latest`, the release version under the dist-tag
+  `latest`, skipped when that version is on npm already. The `Release` workflow starts
+  this run; a failed or skipped publish is retried by running the `npm` workflow by hand
+  on `main` with dist-tag `latest`.
 
 It publishes with the `NPM_TOKEN` secret when that is set, else through npm trusted
 publishing (OIDC). With neither set up it skips publishing with a notice instead of

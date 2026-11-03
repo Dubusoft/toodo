@@ -108,9 +108,10 @@ Releases run from `main` rather than from tags so the Rust build cache of one re
 reused by the next. If a release fails, run the `Release` workflow by hand on `main`; it
 completes a release whose server assets were not uploaded yet.
 
-The `Release` workflow also publishes the release to npm under the dist-tag `latest`, and
-every push to `dev` publishes an `X.Y.Z-dev.N` prerelease under `dev`; see
-[npm Packages](docs/server.md#npm-packages).
+The `Release` workflow also starts the `npm` workflow on `main` with dist-tag `latest` to
+publish the release to npm. If that publish fails or is skipped, run the `npm` workflow by
+hand on `main` with dist-tag `latest`. Every push to `dev` publishes an `X.Y.Z-dev.N`
+prerelease under `dev`; see [npm Packages](docs/server.md#npm-packages).
 
 ## Status
 

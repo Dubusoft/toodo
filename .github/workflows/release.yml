@@ -105,14 +105,18 @@ jobs:
           gh release upload "$TAG" "$TARBALL" --clobber
           gh release upload "$TAG" "$TARBALL.sha256" --clobber
 
-  # Publishes the npm packages once the release assets exist (built now or already there).
+  # Starts the npm workflow on main for the latest channel once the release assets exist
+  # (built now or already there). It is dispatched, not called with "uses:", because npm
+  # trusted publishing checks the workflow file that starts the run, which must be npm.yml.
   npm:
     needs: [version, server]
     if: always() && needs.version.result == 'success' && needs.server.result != 'failure' && needs.server.result != 'cancelled'
+    runs-on: ubuntu-latest
     permissions:
-      contents: read
-      id-token: write
-    uses: ./.github/workflows/npm.yml
-    with:
-      dist-tag: latest
-    secrets: inherit
+      actions: write
+    steps:
+      - name: Dispatch the npm workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow run npm.yml --ref "$GITHUB_REF_NAME" -f dist-tag=latest
