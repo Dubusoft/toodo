@@ -7,6 +7,9 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use super::{Result, StorageError};
 use crate::domain::criteria::{CheckKind, CheckedBy, CriterionState, done_when_items};
 
+#[cfg(test)]
+mod host_events_tests;
+
 pub(super) const MIGRATIONS: &[&str] = &[
     // Version 1: initial schema. AUTOINCREMENT keeps workspace and task IDs from being
     // reused after a delete, because task IDs are part of branch and worktree names.
@@ -990,6 +993,31 @@ pub(super) const MIGRATIONS: &[&str] = &[
     DROP TRIGGER runtime_workspaces_task_inserted;
     DROP TRIGGER runtime_workspaces_task_updated;
     ALTER TABLE tasks DROP COLUMN herdr_workspace_id;
+    ",
+    // Version 32: append-only host observations and their per-host cursors.
+    r"
+    CREATE TABLE runtime_host_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_key TEXT NOT NULL DEFAULT 'implicit',
+        host_ref TEXT NOT NULL,
+        sequence INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN (
+            'workspace_opened', 'workspace_closed', 'online', 'offline', 'unknown',
+            'snapshot_reconciled')),
+        provider_workspace_ref TEXT,
+        checkout_path TEXT,
+        recorded_at TEXT NOT NULL,
+        UNIQUE (owner_key, host_ref, sequence)
+    );
+    CREATE TABLE runtime_hosts (
+        owner_key TEXT NOT NULL DEFAULT 'implicit',
+        host_ref TEXT NOT NULL,
+        last_sequence INTEGER NOT NULL DEFAULT 0,
+        reconciled_sequence INTEGER,
+        state TEXT NOT NULL DEFAULT 'unknown' CHECK (state IN ('online', 'offline', 'unknown')),
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (owner_key, host_ref)
+    );
     ",
 ];
 

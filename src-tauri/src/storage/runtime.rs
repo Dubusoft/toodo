@@ -4,6 +4,9 @@
 //! A run is reserved before the runner is asked to launch it, so a retried request finds
 //! the same run by its request key instead of launching twice.
 
+mod host_events;
+pub use host_events::HostCursor;
+
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::domain::model::TaskId;

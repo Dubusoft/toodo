@@ -19,6 +19,7 @@ use super::git::{
 };
 use super::task_runtime::TaskWorkspaceRuntime;
 use crate::domain::model::{Machine, MachineLabel};
+use crate::runtime::events::SnapshotWorkspace;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HerdrError {
@@ -234,6 +235,40 @@ if (-not $herdr) {
             .and_then(Value::as_array)
             .and_then(|rows| rows.iter().map(pane).collect())
             .ok_or_else(|| unexpected(&invocation, &output))
+    }
+
+    /// Lists open checkouts without changing the provider's workspaces.
+    pub fn list_workspaces(&self, machine: &Machine) -> Result<Vec<SnapshotWorkspace>, HerdrError> {
+        let profile_id = self.profile_id(machine)?;
+        let invocation = invocation(profile_id.as_deref(), &["workspace", "list"]);
+        let output = self.runner.run(&invocation)?;
+        let parsed = parse(&invocation, &output)?;
+        let rows = parsed
+            .pointer("/result/workspaces")
+            .and_then(Value::as_array)
+            .ok_or_else(|| unexpected(&invocation, &output))?;
+        let mut snapshot = Vec::new();
+        for row in rows {
+            let reference = row
+                .get("workspace_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| unexpected(&invocation, &output))?;
+            // Plain repository and terminal workspaces have no worktree checkout.
+            match row.get("worktree") {
+                None | Some(Value::Null) => {}
+                Some(worktree) => {
+                    let path = worktree
+                        .get("checkout_path")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| unexpected(&invocation, &output))?;
+                    snapshot.push(SnapshotWorkspace {
+                        provider_workspace_ref: reference.to_owned(),
+                        checkout_path: path.to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(snapshot)
     }
 
     /// Creates the worktree on `machine` and opens it as a herdr workspace without
@@ -1024,6 +1059,33 @@ mod tests {
             runner.invocations.lock().unwrap()[0].args,
             ["status", "--json"].map(str::to_owned)
         );
+    }
+
+    #[test]
+    fn workspace_snapshots_parse_checkout_paths_on_local_and_saved_machines() {
+        let response = r#"{"id":"cli:workspace:list","result":{"workspaces":[
+            {"workspace_id":"w2R","worktree":{"checkout_path":"/tmp/q/wt","is_linked_worktree":true}},
+            {"workspace_id":"w3","worktree":null},{"workspace_id":"w4"}]}}"#;
+        let (herdr, runner) = herdr(vec![
+            Ok(response.to_owned()),
+            machine_list(&[saved("m2", "devbox", "default", true)]),
+            Ok(response.to_owned()),
+            Ok(r#"{"result":{"workspaces":[{"workspace_id":"w5","worktree":{}}]}}"#.to_owned()),
+        ]);
+        let expected = vec![SnapshotWorkspace {
+            provider_workspace_ref: "w2R".to_owned(),
+            checkout_path: "/tmp/q/wt".to_owned(),
+        }];
+        assert_eq!(herdr.list_workspaces(&Machine::Local).unwrap(), expected);
+        assert_eq!(herdr.list_workspaces(&devbox()).unwrap(), expected);
+        assert_eq!(
+            runner.invocations.lock().unwrap()[2].args,
+            ["--machine", "m2", "workspace", "list"].map(str::to_owned)
+        );
+        assert!(matches!(
+            herdr.list_workspaces(&Machine::Local),
+            Err(HerdrError::UnexpectedOutput { .. })
+        ));
     }
 
     #[test]
