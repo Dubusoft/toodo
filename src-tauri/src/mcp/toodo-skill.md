@@ -54,6 +54,8 @@ Deleting tasks happens in the Toodo app only.
 4. Before you plan, look up the history of the subject (see "Finding earlier work"
    below): earlier tasks may already have decided an approach, rejected one, or left
    work you build on.
+5. Once you have a plan, call `add_progress_note` on your task with what you are about
+   to do and the approach you chose, before you change code.
 
 If a Toodo tool call fails with HTTP `401`, read the reply body: it says why (no
 `Authorization` header, not `Bearer <token>`, a token this server does not accept, or
@@ -90,8 +92,16 @@ continue the work that needs no Toodo tool.
 ## 2. Work
 
 - Change only this worktree, on the task's branch.
-- Call `add_progress_note` when you take a decision worth remembering (the choice and why)
-  or finish a meaningful step.
+- Leave a progress note at every milestone; the notes are the record of your work in the
+  task's details. Call `add_progress_note` with one or two Markdown sentences:
+  - when you start (section 1, step 5),
+  - when you take a decision worth remembering (the choice and why, e.g. one approach
+    over another),
+  - when you finish a meaningful step or change course,
+  - when you open the pull request (section 4, step 3), with its URL.
+
+  Call `report_blocker` instead when something stops you that needs the user or someone
+  else, saying what you need. Skip routine steps such as running tests or small edits.
 - When the work has to stop for a reason other than a prerequisite task (the user asks
   you to hold, or you wait on something outside Toodo), call `pause_task` with the
   reason and end your turn. It pauses the task as the app's Pause does and records the
@@ -130,7 +140,8 @@ its scope (a bug in the base branch, a missing API, a refactor the change depend
    `gh pr create --base <baseBranch> --head <branch>`, titled with the task title, with
    a body that summarizes the change and lists the criteria. If a pull request
    for the branch already exists, push to it instead of opening another. A pull request
-   into any other base is ignored by Toodo.
+   into any other base is ignored by Toodo. Then call `add_progress_note` with the pull
+   request URL and what it changes.
 4. Merge it only if the workspace allows it. `current_task` returns `agentMerge`:
    - `never` (the default): stop there. Do not merge the pull request; the user merges
      it, and the merge completes the task.

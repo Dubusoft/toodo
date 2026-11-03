@@ -110,9 +110,10 @@ days, weeks, or months of active work); the user's reviews compare it \
 with the time the task actually took. Set due_date (YYYY-MM-DD) only when the user named \
 a deadline.
 5. Leave a record of your work on your task as you go; it feeds the user's reviews of \
-their work. Call add_progress_note when you take a decision worth remembering (the choice \
-and why, e.g. a library or approach over its alternatives) or finish a meaningful step, \
-and report_blocker when something stops you that needs the user or someone else (missing \
+their work. Call add_progress_note at every milestone: when you start (your plan and \
+approach), when you take a decision worth remembering (the choice and why, e.g. a library \
+or approach over its alternatives), when you finish a meaningful step or change course, \
+and when you open the pull request (with its URL). Call report_blocker when something stops you that needs the user or someone else (missing \
 access, an unclear requirement, a failing dependency), saying what you need. Write one \
 or two Markdown sentences per note; skip routine steps such as running tests or small \
 edits. Neither tool changes the task's status. To stop work on a task for another \
@@ -727,7 +728,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Record progress or a decision (what and why) on a task's history, e.g. your current task. Returns the task with its notes."
+        description = "Record progress or a decision (what and why) on a task's history, e.g. your current task. Call it at every milestone of your task: when you start (your plan), when you take a decision, when you finish a meaningful step, and when you open the pull request (with its URL); use report_blocker for what stops you. Returns the task with its notes."
     )]
     fn add_progress_note(
         &self,
