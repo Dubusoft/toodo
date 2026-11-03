@@ -1789,6 +1789,7 @@ dependencies = [
  "rusqlite",
  "rustls",
  "schemars",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
