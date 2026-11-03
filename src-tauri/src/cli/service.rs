@@ -159,28 +159,12 @@ pub(super) fn install(data: &DataDir, listen: SocketAddr, var: Var) -> Result<()
     }
     let bundle = Bundle::find()?;
     let bin_dir = settings::home(var)?.join(".local/bin");
-    let share_dir = settings::data_home(var)?;
 
     if process::stop(data)? {
         println!("Stopped the toodo-server started by toodo start; the service replaces it.");
     }
 
-    let server = install_file(&bundle.server, &bin_dir, "toodo-server")?;
-    println!("Installed {}", server.display());
-    let web_dir = match &bundle.web {
-        Some(web) => {
-            let dir = install_dir(web, &share_dir, "toodo-server-web")?;
-            println!("Installed the web app in {}", dir.display());
-            Some(dir)
-        }
-        None => {
-            println!(
-                "No web app at {}; the service serves the API and MCP only.",
-                bundle.web_location().display()
-            );
-            None
-        }
-    };
+    let (server, web_dir) = install_bundle(&bundle, var)?;
 
     let tools: Vec<PathBuf> = ["herdr", "gh", "git", "ssh"]
         .iter()
@@ -220,6 +204,33 @@ pub(super) fn install(data: &DataDir, listen: SocketAddr, var: Var) -> Result<()
     }
     println!("Logs: journalctl --user -u toodo-server");
     Ok(())
+}
+
+/// Copies the server and the web app of `bundle` to where the unit runs them from:
+/// `~/.local/bin/toodo-server` and `$XDG_DATA_HOME/toodo-server-web`. Returns both paths.
+pub(super) fn install_bundle(
+    bundle: &Bundle,
+    var: Var,
+) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let bin_dir = settings::home(var)?.join(".local/bin");
+    let share_dir = settings::data_home(var)?;
+    let server = install_file(&bundle.server, &bin_dir, "toodo-server")?;
+    println!("Installed {}", server.display());
+    let web_dir = match &bundle.web {
+        Some(web) => {
+            let dir = install_dir(web, &share_dir, "toodo-server-web")?;
+            println!("Installed the web app in {}", dir.display());
+            Some(dir)
+        }
+        None => {
+            println!(
+                "No web app at {}; the service serves the API and MCP only.",
+                bundle.web_location().display()
+            );
+            None
+        }
+    };
+    Ok((server, web_dir))
 }
 
 fn user(var: Var) -> Option<String> {

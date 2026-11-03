@@ -51,7 +51,8 @@ Node.js, the quickest start is:
 npx @dubusoft/toodo init
 ```
 
-See [Install with npm](docs/server.md#install-with-npm).
+See [Install with npm](docs/server.md#install-with-npm). After `npm i -g @dubusoft/toodo`,
+`toodo update` installs the newest version and restarts the server on it.
 
 ## End-to-End Tests
 
