@@ -10,13 +10,33 @@ use super::State;
 use super::types::{HerdrStatus, Task, TaskId, TaskPane};
 use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
 use crate::adapters::git::Git;
-use crate::adapters::herdr::{AgentStatus, Herdr, HerdrError, NewWorktree, PaneAgent};
+pub(super) use crate::adapters::herdr::WORKSPACE_NOT_FOUND;
+use crate::adapters::herdr::{
+    AGENT_NOT_FOUND, AgentStatus, DIRTY_WORKTREE, Herdr, HerdrError, PaneAgent, WORKTREE_NOT_FOUND,
+};
 use crate::adapters::task_runtime::TaskWorkspaceRuntime;
 use crate::domain::criteria::{CheckKind, CriterionState};
 use crate::domain::model::{self, Machine, Runner, WorkspaceLocation};
-use crate::domain::naming;
+use crate::domain::naming::{self, TaskCheckout};
 use crate::domain::status::TaskStatus;
+use crate::runtime::{OpenFor, OpenWorktree, RuntimeError, RuntimeService, TaskWorktree};
 use crate::storage::{CriterionCheck, StorageError};
+
+impl From<RuntimeError> for CommandError {
+    fn from(error: RuntimeError) -> Self {
+        match error {
+            RuntimeError::Storage(error) => error.into(),
+            RuntimeError::Workspace(error) => error.into(),
+            error @ RuntimeError::Runner(_) => CommandError::external(error.to_string()),
+            error @ RuntimeError::WorkspaceNotOpen { .. } => {
+                CommandError::rejected(error.to_string())
+            }
+            error @ RuntimeError::RecordMismatch { .. } => {
+                CommandError::internal(error.to_string())
+            }
+        }
+    }
+}
 
 #[specta::specta]
 pub fn herdr_status(herdr: State<'_, HerdrState>) -> CommandResult<HerdrStatus> {
@@ -107,7 +127,7 @@ pub(crate) fn start(
     runtime: &dyn TaskWorkspaceRuntime,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
-    let (workspace, mut checkout, resumed, kept_worktree, start_unknown) = {
+    let (workspace, checkout, resumed, kept_worktree, start_unknown) = {
         let mut storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -157,14 +177,27 @@ pub(crate) fn start(
         WorkspaceLocation::Local { path } => path.as_str(),
         WorkspaceLocation::Ssh { path, .. } => path.as_str(),
     };
+    let target = TaskWorktree {
+        task: id,
+        machine: &machine,
+        repository,
+    };
     if let Some(path) = kept_worktree {
-        match runtime.open_worktree(&machine, repository, &path.to_string()) {
-            Ok(herdr_workspace_id) => {
-                checkout.path = path;
-                return Ok(lock(storage).start_task(id, &checkout, &herdr_workspace_id)?);
-            }
+        let kept = TaskCheckout {
+            path,
+            branch: checkout.branch.clone(),
+        };
+        match RuntimeService.open_workspace(
+            storage,
+            runtime,
+            &target,
+            &kept,
+            OpenWorktree::Existing,
+            OpenFor::Start,
+        ) {
+            Ok(opened) => return Ok(opened.task),
             // The checkout was removed outside Toodo; check the branch out again below.
-            Err(error) if has_code(&error, WORKTREE_NOT_FOUND) => {}
+            Err(RuntimeError::Workspace(error)) if has_code(&error, WORKTREE_NOT_FOUND) => {}
             Err(error) => return Err(error.into()),
         }
     }
@@ -217,26 +250,28 @@ pub(crate) fn start(
         }
     };
     let path = checkout.path.to_string();
-    let herdr_workspace_id = runtime
-        .create_worktree(
-            &machine,
-            &NewWorktree {
-                repository,
-                path: &path,
-                branch: &checkout.branch,
-                base: &base,
-            },
+    let opened = RuntimeService
+        .open_workspace(
+            storage,
+            runtime,
+            &target,
+            &checkout,
+            OpenWorktree::New { base: &base },
+            OpenFor::Start,
         )
-        .inspect_err(|_| {
-            if created_branch {
-                // The herdr error is what the user needs; a branch left behind is reused
-                // by the next attempt.
-                let _ = git.delete_branch(&workspace.location, &checkout.branch);
+        .map_err(|error| match error {
+            RuntimeError::Workspace(error) => {
+                if created_branch {
+                    // The herdr error is what the user needs; a branch left behind is
+                    // reused by the next attempt.
+                    let _ = git.delete_branch(&workspace.location, &checkout.branch);
+                }
+                worktree_error(error, id, &path)
             }
-        })
-        .map_err(|error| worktree_error(error, id, &path))?;
+            error => error.into(),
+        })?;
     let mut storage = lock(storage);
-    let mut started = storage.start_task(id, &checkout, &herdr_workspace_id)?;
+    let mut started = opened.task;
     if !start_checks.is_empty() {
         started = storage.record_criterion_checks(id, &start_checks)?.0;
     }
@@ -333,18 +368,26 @@ pub(crate) fn restore(
         WorkspaceLocation::Ssh { path, .. } => path.as_str(),
     };
     let path = checkout.path.to_string();
-    let herdr_workspace_id = herdr
-        .create_worktree(
-            &workspace.location.machine(),
-            &NewWorktree {
-                repository,
-                path: &path,
-                branch: &checkout.branch,
-                base: &base,
-            },
+    let machine = workspace.location.machine();
+    let target = TaskWorktree {
+        task: id,
+        machine: &machine,
+        repository,
+    };
+    let opened = RuntimeService
+        .open_workspace(
+            storage,
+            herdr,
+            &target,
+            &checkout,
+            OpenWorktree::New { base: &base },
+            OpenFor::Restore,
         )
-        .map_err(|error| worktree_error(error, id, &path))?;
-    Ok(lock(storage).restore_task_worktree(id, &checkout.path, &herdr_workspace_id)?)
+        .map_err(|error| match error {
+            RuntimeError::Workspace(error) => worktree_error(error, id, &path),
+            error => error.into(),
+        })?;
+    Ok(opened.task)
 }
 
 /// Where the herdr workspace of a started task is.
@@ -538,7 +581,7 @@ fn remove_worktree(
     id: model::TaskId,
     force: bool,
 ) -> CommandResult<model::Task> {
-    let (location, path, herdr_workspace_id) = {
+    let (location, path) = {
         let storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -555,48 +598,29 @@ fn remove_worktree(
         let workspace = storage
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
-        (
-            workspace.location,
-            path.to_string(),
-            task.herdr_workspace_id,
-        )
+        (workspace.location, path.to_string())
     };
     let machine = location.machine();
-    let dirty = |error: HerdrError| {
-        if has_code(&error, DIRTY_WORKTREE) {
-            CommandError::rejected(format!(
-                "the worktree of task {id} at {path} has modified or untracked files; \
-                 force the removal to discard them"
-            ))
-        } else {
-            error.into()
-        }
+    let repository = match &location {
+        WorkspaceLocation::Local { path } => path.as_str(),
+        WorkspaceLocation::Ssh { path, .. } => path.as_str(),
     };
-    let removed = match &herdr_workspace_id {
-        Some(workspace_id) => match herdr.remove_worktree(&machine, workspace_id, force) {
-            Ok(()) => true,
-            Err(error) if has_code(&error, WORKSPACE_NOT_FOUND) => false,
-            Err(error) => return Err(dirty(error)),
-        },
-        None => false,
+    let target = TaskWorktree {
+        task: id,
+        machine: &machine,
+        repository,
     };
-    // herdr no longer has the workspace, e.g. the user closed it or herdr lost its session,
-    // but the checkout may still exist: open it again to remove it.
-    if !removed {
-        let repository = match &location {
-            WorkspaceLocation::Local { path } => path.as_str(),
-            WorkspaceLocation::Ssh { path, .. } => path.as_str(),
-        };
-        match herdr.open_worktree(&machine, repository, &path) {
-            Ok(workspace_id) => herdr
-                .remove_worktree(&machine, &workspace_id, force)
-                .map_err(dirty)?,
-            // The checkout is already gone.
-            Err(error) if has_code(&error, WORKTREE_NOT_FOUND) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(lock(storage).clear_task_worktree(id)?)
+    RuntimeService
+        .remove_workspace(storage, herdr, &target, &path, force)
+        .map_err(|error| match error {
+            RuntimeError::Workspace(error) if has_code(&error, DIRTY_WORKTREE) => {
+                CommandError::rejected(format!(
+                    "the worktree of task {id} at {path} has modified or untracked files; \
+                     force the removal to discard them"
+                ))
+            }
+            error => error.into(),
+        })
 }
 
 /// Makes `id` depend on every task of `depends_on` for the app, where the user already
@@ -658,14 +682,8 @@ fn close_workspace(
     Ok(lock(storage).clear_task_herdr_workspace(id)?)
 }
 
-/// herdr API error codes that commands handle.
-const DIRTY_WORKTREE: &str = "dirty_worktree_requires_force";
-pub(super) const WORKSPACE_NOT_FOUND: &str = "workspace_not_found";
-const WORKTREE_NOT_FOUND: &str = "worktree_not_found";
-const AGENT_NOT_FOUND: &str = "agent_not_found";
-
 pub(super) fn has_code(error: &HerdrError, expected: &str) -> bool {
-    matches!(error, HerdrError::Failed { code: Some(code), .. } if code == expected)
+    error.has_code(expected)
 }
 
 #[cfg(test)]
@@ -675,6 +693,7 @@ mod tests {
     use super::*;
     use crate::adapters::git::fake::{FakeRunner, failed};
     use crate::adapters::git::{GitError, Invocation};
+    use crate::adapters::herdr::NewWorktree;
     use crate::commands::CommandErrorKind;
     use crate::domain::model::{HostPath, MachineLabel, MachineSettings, TaskType};
     use crate::domain::path::{PosixPath, WindowsPath};
@@ -1784,6 +1803,16 @@ mod tests {
             path: &str,
         ) -> Result<String, HerdrError> {
             self.answer(format!("open {repository} {path}"))
+        }
+
+        fn remove_worktree(
+            &self,
+            _machine: &Machine,
+            workspace_id: &str,
+            force: bool,
+        ) -> Result<(), HerdrError> {
+            self.answer(format!("remove {workspace_id} {force}"))
+                .map(drop)
         }
     }
 
