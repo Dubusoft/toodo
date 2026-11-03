@@ -32,7 +32,21 @@ type Column = (&'static str, Option<&'static str>);
 /// The imported tables in the order they are inserted, each with its columns that are
 /// not copied as they are.
 const TABLES: &[(&str, &[Column])] = &[
-    ("workspaces", &[("id", Some("id + {w}"))]),
+    (
+        "workspaces",
+        &[
+            ("id", Some("id + {w}")),
+            // The repositories here may differ from the other machine's, so the server
+            // detects the source and completion of merge-based git workspaces again at its
+            // next start; workspaces completed manually keep what was chosen.
+            (
+                "axes_detected",
+                Some(
+                    "CASE WHEN source = 'none' OR completion = 'manual' THEN axes_detected ELSE 0 END",
+                ),
+            ),
+        ],
+    ),
     (
         "tasks",
         &[
@@ -209,6 +223,10 @@ mod tests {
                 name: name.to_owned(),
                 location,
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap()
     }
@@ -272,9 +290,68 @@ mod tests {
                  );
                  INSERT INTO memory_entries (workspace_id, kind, title, created_at, updated_at)
                  VALUES (NULL, 'rule', 'Reply in English', 0, 0);
+                 ALTER TABLE workspaces DROP COLUMN source;
+                 ALTER TABLE workspaces DROP COLUMN completion;
+                 ALTER TABLE workspaces DROP COLUMN runner;
+                 ALTER TABLE workspaces DROP COLUMN axes_detected;
                  PRAGMA user_version = 25;",
             )
             .unwrap();
+    }
+
+    #[test]
+    fn imported_git_workspaces_are_detected_again_and_manual_ones_keep_their_axes() {
+        use crate::domain::model::{CompletionMode, Runner, Source};
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("other.sqlite3");
+        let mut other = Storage::open(&source).unwrap();
+        add_workspace(
+            &mut other,
+            "site",
+            WorkspaceLocation::Local {
+                path: PosixPath::parse("/srv/site").unwrap().into(),
+            },
+        );
+        other
+            .create_workspace(&NewWorkspace {
+                name: "notes".to_owned(),
+                location: WorkspaceLocation::Local {
+                    path: PosixPath::parse("/srv/notes").unwrap().into(),
+                },
+                default_base_branch: String::new(),
+                source: Source::None,
+                completion: CompletionMode::Manual,
+                runner: Runner::None,
+                axes_detected: true,
+            })
+            .unwrap();
+        drop(other);
+
+        let mut server = Storage::open_in_memory().unwrap();
+        server.import(&stage_backup(&source).unwrap()).unwrap();
+
+        let names = |workspaces: Vec<Workspace>| -> Vec<String> {
+            workspaces
+                .into_iter()
+                .map(|workspace| workspace.name)
+                .collect()
+        };
+        assert_eq!(names(server.workspaces_to_detect().unwrap()), ["site"]);
+        let notes = server
+            .list_workspaces()
+            .unwrap()
+            .into_iter()
+            .find(|workspace| workspace.name == "notes")
+            .unwrap();
+        assert_eq!(
+            (
+                notes.name.as_str(),
+                notes.source,
+                notes.completion,
+                notes.runner
+            ),
+            ("notes", Source::None, CompletionMode::Manual, Runner::None)
+        );
     }
 
     #[test]

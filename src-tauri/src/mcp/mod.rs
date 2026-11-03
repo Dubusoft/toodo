@@ -136,8 +136,8 @@ reports it missing and the user tells you where worktrees go. Never change or cl
 root that is set unless the user asks.
 9. A task is done when its completion criteria are met. Toodo checks every kind but \
 manual itself, about once a minute: pr_merged and pr_open_ci_green from the task's pull \
-request, branch_merged_locally from the repository (for workspaces without an origin \
-remote, where the task branch is merged into baseBranch locally and nothing is pushed), \
+request, branch_merged_locally from the repository (for workspaces with completion local_merge, \
+where the task branch is merged into baseBranch locally and nothing is pushed), \
 url by fetching its target, and command by running its target in the task worktree once \
 every criterion but the merge criterion is met, so it can check the work before the \
 merge. Check a manual criterion of your task with \
@@ -539,7 +539,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Register a repository on the machine Toodo runs on as a new workspace, as Clone or Open in the Toodo app does: clone clone_url into path, or, without clone_url, open the repository already cloned at path; then open it in herdr. Returns the workspace with its id. Call list_workspaces first and reuse a workspace that already has the repository; a path another workspace uses is rejected. Only for repositories the user asked to add to Toodo."
+        description = "Register a repository on the machine Toodo runs on as a new workspace, as Clone or Open in the Toodo app does: clone clone_url into path, or, without clone_url, open the repository already cloned at path; then open it in herdr (runner herdr). source (github, local_git, or none for a plain directory without git or herdr), completion (pr_merge, local_merge, or manual), and runner (herdr or none) default from the repository: github + pr_merge + herdr with an origin remote, else local_git + local_merge + herdr; combinations that cannot work are rejected naming one that does. Returns the workspace with its id. Call list_workspaces first and reuse a workspace that already has the repository; a path another workspace uses is rejected. Only for repositories the user asked to add to Toodo."
     )]
     async fn create_workspace(
         &self,
@@ -644,14 +644,14 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Create a planned task in a workspace with its completion criteria, optionally depending on existing tasks (depends_on) and related to others (related). Without merge_criterion false, its first criterion is the merge: the pull request is merged, or, in a repository without an origin remote, the branch is merged into the base branch locally."
+        description = "Create a planned task in a workspace with its completion criteria, optionally depending on existing tasks (depends_on) and related to others (related). Without merge_criterion false, its first criterion is the merge, which follows the workspace completion: the pull request is merged (pr_merge), or the branch is merged into the base branch locally (local_merge); a workspace with completion manual gets no merge criterion and accepts only manual, url, and command criteria."
     )]
     async fn create_task(
         &self,
         Parameters(request): Parameters<tools::CreateTask>,
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
-            .blocking(move |backend| tools::create_task(backend.storage(), backend.git(), request))
+            .blocking(move |backend| tools::create_task(backend.storage(), request))
             .await?;
         self.announce(result)
     }
@@ -667,7 +667,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Add one completion criterion after the criteria of a task that is not done, which stay as they are, e.g. {\"task_id\": 5, \"text\": \"Tests pass\", \"kind\": \"command\", \"target\": \"npm test\"}. target is the URL of a url criterion or the shell command of a command criterion. Rejects a second merge criterion, pr_merged or pr_open_ci_green in a repository without an origin remote, and branch_merged_locally in one with an origin remote. Returns the task with its criteria."
+        description = "Add one completion criterion after the criteria of a task that is not done, which stay as they are, e.g. {\"task_id\": 5, \"text\": \"Tests pass\", \"kind\": \"command\", \"target\": \"npm test\"}. target is the URL of a url criterion or the shell command of a command criterion. Rejects a second merge criterion and kinds the workspace completion rules out: pr_merged and pr_open_ci_green need completion pr_merge, branch_merged_locally needs local_merge, and completion manual takes only manual, url, and command criteria. Returns the task with its criteria."
     )]
     async fn add_criterion(
         &self,
@@ -675,15 +675,9 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| {
-                let input = tools::new_criterion(&request);
-                let origin = task_commands::edit_origin(
-                    backend.storage(),
-                    backend.git(),
-                    request.task_id,
-                    Some(std::slice::from_ref(&input)),
-                    false,
-                )?;
-                tools::add_criterion(&mut lock(backend.storage()), request, origin)
+                let completion =
+                    task_commands::edit_completion(backend.storage(), request.task_id)?;
+                tools::add_criterion(&mut lock(backend.storage()), request, completion)
             })
             .await?;
         self.announce(result)
@@ -708,14 +702,8 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| {
-                let origin = task_commands::edit_origin(
-                    backend.storage(),
-                    backend.git(),
-                    request.id,
-                    request.criteria.as_deref(),
-                    false,
-                )?;
-                tools::update_task(&mut lock(backend.storage()), request, origin)
+                let completion = task_commands::edit_completion(backend.storage(), request.id)?;
+                tools::update_task(&mut lock(backend.storage()), request, completion)
             })
             .await?;
         self.announce(result)
@@ -1028,6 +1016,10 @@ mod tests {
                     path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         storage
@@ -1163,7 +1155,7 @@ mod tests {
     /// tool; git and herdr then return `git` and `herdr`.
     fn server_with_site(git: Scripted, herdr: Scripted) -> (Arc<TestBackend>, ToodoMcp) {
         let (storage, _) = storage_with_task(None);
-        let mut git_results = vec![toplevel("/dev/site")];
+        let mut git_results = vec![toplevel("/dev/site"), Ok("origin\n".to_owned())];
         git_results.extend(git);
         let mut herdr_results = herdr_opens_a_new_workspace();
         herdr_results.extend(herdr);
@@ -1190,7 +1182,7 @@ mod tests {
         let (storage, _) = storage_with_task(None);
         let backend = Arc::new(TestBackend::scripted(
             storage,
-            vec![toplevel("/dev/site")],
+            vec![toplevel("/dev/site"), Ok("origin\n".to_owned())],
             herdr_opens_a_new_workspace(),
         ));
         let server = ToodoMcp::new(backend.clone());
@@ -1206,6 +1198,18 @@ mod tests {
 
         let workspace = created_workspace(&result);
         assert_eq!(workspace["name"], "site");
+        assert_eq!(
+            (
+                &workspace["source"],
+                &workspace["completion"],
+                &workspace["runner"]
+            ),
+            (
+                &serde_json::json!("github"),
+                &serde_json::json!("pr_merge"),
+                &serde_json::json!("herdr")
+            )
+        );
         assert_eq!(
             workspace["location"],
             serde_json::json!({"kind": "local", "path": host("/dev/site")})
@@ -1249,6 +1253,107 @@ mod tests {
                 .contains(&"git@github.com:me/site.git".to_owned())
         );
         assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn creating_a_workspace_without_a_repository_runs_neither_git_nor_herdr() {
+        let (storage, _) = storage_with_task(None);
+        // Neither git nor herdr may run: their scripts are empty.
+        let backend = Arc::new(TestBackend::scripted(storage, Vec::new(), Vec::new()));
+        let server = ToodoMcp::new(backend.clone());
+
+        let rejected = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "notes",
+                "path": host("/dev/notes"),
+                "source": "none",
+                "init": true,
+            }),
+        );
+        assert_eq!(
+            error_text(&rejected),
+            "InvalidInput: source none is a plain directory without a repository; omit \
+             clone_url and init, or choose source local_git or github to clone or init one"
+        );
+
+        let result = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "notes",
+                "path": host("/dev/notes"),
+                "source": "none",
+            }),
+        );
+        let workspace = created_workspace(&result);
+        assert_eq!(workspace["location"]["path"], host("/dev/notes"));
+        assert_eq!(workspace["defaultBaseBranch"], "");
+        assert_eq!(
+            (
+                &workspace["source"],
+                &workspace["completion"],
+                &workspace["runner"]
+            ),
+            (
+                &serde_json::json!("none"),
+                &serde_json::json!("manual"),
+                &serde_json::json!("none")
+            )
+        );
+        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn creating_a_workspace_takes_its_completion_and_runner() {
+        let (storage, _) = storage_with_task(None);
+        // A local_git source needs no remote check, and runner none no herdr.
+        let backend = Arc::new(TestBackend::scripted(
+            storage,
+            vec![toplevel("/dev/site")],
+            Vec::new(),
+        ));
+        let server = ToodoMcp::new(backend.clone());
+
+        let invalid = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "site",
+                "path": host("/dev/site"),
+                "source": "local_git",
+                "runner": "none",
+            }),
+        );
+        assert!(
+            error_text(&invalid).starts_with(
+                "InvalidInput: completion local_merge merges the task branch that only a runner"
+            ),
+            "{invalid}"
+        );
+
+        let result = create_workspace(
+            &server,
+            serde_json::json!({
+                "name": "site",
+                "path": host("/dev/site"),
+                "default_base_branch": "main",
+                "source": "local_git",
+                "completion": "manual",
+                "runner": "none",
+            }),
+        );
+        let workspace = created_workspace(&result);
+        assert_eq!(
+            (
+                &workspace["source"],
+                &workspace["completion"],
+                &workspace["runner"]
+            ),
+            (
+                &serde_json::json!("local_git"),
+                &serde_json::json!("manual"),
+                &serde_json::json!("none")
+            )
+        );
     }
 
     #[test]
@@ -1346,6 +1451,10 @@ mod tests {
                     path: PosixPath::parse("/srv/site").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         storage

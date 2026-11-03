@@ -6,10 +6,11 @@ use super::State;
 
 use super::completion::checkout;
 use super::types::{BranchFreshness, TaskId};
-use super::{CommandResult, GitHubState, GitState, StorageState};
+use super::{CommandResult, GitHubState, GitState, StorageState, lock};
 use crate::adapters::git::Git;
 use crate::adapters::github::GitHub;
 use crate::domain::model;
+use crate::storage::StorageError;
 
 /// Counts the commits of the base branch (fetched from `origin` first) that the task's
 /// branch lacks, and asks GitHub whether its pull request, if any, merges without
@@ -26,12 +27,26 @@ pub fn branch_freshness(
     freshness(&storage, &git, &github, id.into())
 }
 
+/// The freshness [`branch_freshness`] reports; also `None` for a task without a branch of a
+/// workspace with runner none, which has no branch to fall behind.
 fn freshness(
     storage: &StorageState,
     git: &Git,
     github: &GitHub,
     id: model::TaskId,
 ) -> CommandResult<Option<BranchFreshness>> {
+    {
+        let storage = lock(storage);
+        let task = storage
+            .get_task(id)?
+            .ok_or(StorageError::TaskNotFound(id))?;
+        let workspace = storage
+            .get_workspace(task.workspace_id)?
+            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+        if task.branch.is_none() && workspace.runner == model::Runner::None {
+            return Ok(None);
+        }
+    }
     let checkout = checkout(storage, git, id)?;
     let Some(behind) = git.commits_behind(
         &checkout.location,
@@ -83,6 +98,10 @@ mod tests {
                     path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         let task = storage

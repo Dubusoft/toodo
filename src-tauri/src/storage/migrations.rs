@@ -734,6 +734,33 @@ pub(super) const MIGRATIONS: &[&str] = &[
     DROP INDEX IF EXISTS memory_entries_superseded_by;
     DROP TABLE IF EXISTS memory_entries;
     ",
+    // Version 27: a workspace has a source, a completion mode, and a runner. Existing
+    // workspaces get them from their tasks: a merged-locally criterion means a local git
+    // repository merged locally, a pull request criterion or URL a GitHub repository
+    // merged through pull requests. Workspaces without either keep the GitHub default
+    // with `axes_detected` 0, so the server detects them from the repository's remotes.
+    r"
+    ALTER TABLE workspaces ADD COLUMN source TEXT NOT NULL DEFAULT 'github'
+        CHECK (source IN ('none', 'local_git', 'github'));
+    ALTER TABLE workspaces ADD COLUMN completion TEXT NOT NULL DEFAULT 'pr_merge'
+        CHECK (completion IN ('manual', 'local_merge', 'pr_merge'));
+    ALTER TABLE workspaces ADD COLUMN runner TEXT NOT NULL DEFAULT 'herdr'
+        CHECK (runner IN ('none', 'herdr'));
+    ALTER TABLE workspaces ADD COLUMN axes_detected INTEGER NOT NULL DEFAULT 1
+        CHECK (axes_detected IN (0, 1));
+    UPDATE workspaces SET source = 'local_git', completion = 'local_merge'
+        WHERE EXISTS (SELECT 1 FROM task_criteria c JOIN tasks t ON t.id = c.task_id
+                      WHERE t.workspace_id = workspaces.id
+                        AND c.kind = 'branch_merged_locally');
+    UPDATE workspaces SET axes_detected = 0
+        WHERE source = 'github'
+          AND NOT EXISTS (SELECT 1 FROM task_criteria c JOIN tasks t ON t.id = c.task_id
+                          WHERE t.workspace_id = workspaces.id
+                            AND c.kind IN ('pr_merged', 'pr_open_ci_green'))
+          AND NOT EXISTS (SELECT 1 FROM tasks t
+                          WHERE t.workspace_id = workspaces.id
+                            AND t.pull_request_url IS NOT NULL);
+    ",
 ];
 
 /// Data steps that run right after the SQL of the migration to the given version, for
@@ -2135,6 +2162,68 @@ mod tests {
             )
             .unwrap();
         assert_eq!(found, 1);
+    }
+
+    #[test]
+    fn version_27_infers_workspace_axes_from_their_tasks() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..26] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 26).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('local', 'local', '/local', 'main'),
+                       ('criterion', 'local', '/criterion', 'main'),
+                       ('url', 'local', '/url', 'main'),
+                       ('nothing', 'local', '/nothing', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status)
+                VALUES (1, 'feat', 'Merge locally', 'planned'),
+                       (2, 'feat', 'Open a pull request', 'planned'),
+                       (3, 'feat', 'Reviewed', 'in_review'),
+                       (4, 'feat', 'By hand', 'planned');
+             UPDATE tasks SET pull_request_url = 'https://github.com/a/b/pull/1' WHERE id = 3;
+             INSERT INTO task_criteria (task_id, position, text, kind)
+                VALUES (1, 0, 'Merged', 'branch_merged_locally'),
+                       (2, 0, 'Checks pass', 'pr_open_ci_green'),
+                       (4, 0, 'Looks right', 'manual');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+        let mut statement = conn
+            .prepare("SELECT source, completion, runner, axes_detected FROM workspaces ORDER BY id")
+            .unwrap();
+        let axes: Vec<(String, String, String, i64)> = statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let row = |source: &str, completion: &str, detected| {
+            (
+                source.to_owned(),
+                completion.to_owned(),
+                "herdr".to_owned(),
+                detected,
+            )
+        };
+        assert_eq!(
+            axes,
+            [
+                row("local_git", "local_merge", 1),
+                row("github", "pr_merge", 1),
+                row("github", "pr_merge", 1),
+                row("github", "pr_merge", 0),
+            ]
+        );
+        assert!(
+            conn.execute("UPDATE workspaces SET source = 'svn' WHERE id = 1", [])
+                .is_err()
+        );
     }
 
     #[test]

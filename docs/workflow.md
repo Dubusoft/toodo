@@ -111,17 +111,19 @@ it when (`user`, `agent`, or `toodo`):
 | `pr_open_ci_green` | Toodo | the task's pull request is open and all its checks passed (or it is merged) |
 | `branch_merged_locally` | Toodo | the task branch has commits since it started and the local base branch contains it |
 | `url` | Toodo | a GET of its target, an http(s) URL, following redirects, answers 2xx or 3xx (evidence `GET <url> -> <status>`) |
-| `command` | Toodo | its target, a shell command, exits with status 0 in the task worktree (`sh`, over `ssh` for SSH workspaces) |
+| `command` | Toodo | its target, a shell command, exits with status 0 in the task worktree, or the workspace directory for a task without one (`sh`, over `ssh` for SSH workspaces) |
 
 Criteria are set when the task is created, in the app or through MCP (`create_task`), and
 can be edited later (`update_task`, or one at a time through MCP with `add_criterion` and
 `remove_criterion`) until the task is done: a kept criterion keeps its state unless its
 kind or target changes. Unless its author opts out, a new task gets the merge criterion
-first: `pr_merged` when the repository has an `origin` remote, `branch_merged_locally`
-otherwise; "Done when merged" in the edit form puts it back on a task without one. A task
-has at most one merge criterion, and criteria its repository could never meet are
-rejected when they are added or their kind changes: `pr_merged` and `pr_open_ci_green`
-without an `origin` remote, `branch_merged_locally` with one. `branch_merged_locally`
+first, chosen by the workspace completion: `pr_merged` for `pr_merge`,
+`branch_merged_locally` for `local_merge`, and none at all for `manual`; "Done when
+merged" in the edit form puts it back on a task without one. A task has at most one merge
+criterion, and criteria its workspace could never meet are rejected when they are added
+or their kind changes: `branch_merged_locally` under `pr_merge`, `pr_merged` and
+`pr_open_ci_green` under `local_merge`, and all three under `manual`, where tasks use
+`manual`, `url`, and `command` criteria. `branch_merged_locally`
 keeps the commit the branch started from (read when Toodo creates the branch, or the fork point once the branch is
 ahead of its base), so a branch nobody committed to does not count as merged.
 
@@ -183,13 +185,29 @@ workspace allows agents to merge), which completes the task. Concluding (step 7b
 the same, without the pull request lookup. "Open PR" is rejected because there is no
 GitHub repository to open it on.
 
+## Workspaces Without Git or a Runner
+
+A workspace with source `none` is a plain directory: Toodo runs no git and no herdr for
+it, and its tasks have no branch, worktree, pull request, or review. Its completion is
+`manual`, so tasks finish by their `manual`, `url`, and `command` criteria (step 7), and
+`command` criteria run in the workspace directory.
+
+With runner `none` (any source), starting a task only moves it to `in_progress` and
+records `startedAt`; step 3 creates nothing. Actions that need a branch, worktree, herdr
+workspace, or pull request (restore worktree, open in herdr, open PR, freshness, delete
+worktree) are hidden or rejected with the step that works instead.
+
 ## Lifecycle
 
 ### 1. Register a workspace
 
 The user picks a directory on the server's machine ("Local"), or a remote directory on a saved herdr SSH
-machine (its SSH target plus a POSIX path, or a Windows path on a Windows host), and one of
-these sources:
+machine (its SSH target plus a POSIX path, or a Windows path on a Windows host), then picks
+the workspace source, completion, and runner in that order (see
+[architecture.md](architecture.md#workspace)); options the earlier choices rule out are
+shown disabled with the reason. Source `none` stores the directory as given, with no
+git or herdr call. A git source needs one of these repository setups (`init` only with
+`local_git`, since a new repository has no `origin`; `github` requires an `origin` remote):
 
 - **Clone**: Toodo runs `git clone <url> <path>`. The path must not exist or must be an
   empty directory.

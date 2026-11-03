@@ -53,6 +53,7 @@ use crate::commands::events::{
     TasksChanged, WorkspacesChanged, names,
 };
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
+use crate::commands::workspaces;
 use crate::commands::{
     GitHubState, GitState, HerdrState, Runtime, SshConfigState, SshState, StorageState,
 };
@@ -364,6 +365,17 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     events::spawn(services.clone())?;
     backup::spawn(services.clone())?;
     completion::spawn(services.clone())?;
+    // Detecting workspace axes may run git over ssh; startup does not wait for it.
+    std::thread::Builder::new()
+        .name("workspace-axes".to_owned())
+        .spawn({
+            let services = services.clone();
+            move || {
+                if workspaces::detect_axes(&services.storage, &services.git) > 0 {
+                    services.workspaces_changed();
+                }
+            }
+        })?;
     tunnels::spawn(services.clone(), services.tunnels.clone())?;
 
     let app = router(
@@ -742,6 +754,10 @@ mod tests {
                     path: PosixPath::parse(&format!("/srv/{name}")).unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
     }

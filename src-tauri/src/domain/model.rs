@@ -101,8 +101,183 @@ pub struct Workspace {
     pub id: WorkspaceId,
     pub name: String,
     pub location: WorkspaceLocation,
+    /// Empty for a workspace with source [`Source::None`], which has no repository.
     pub default_base_branch: String,
     pub agent_merge: AgentMerge,
+    pub source: Source,
+    pub completion: CompletionMode,
+    pub runner: Runner,
+}
+
+/// What a workspace location holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Source {
+    /// A plain directory without a repository; tasks have no branches or worktrees.
+    None,
+    /// A git repository without a GitHub remote; task branches merge locally.
+    LocalGit,
+    /// A git repository whose `origin` remote is on GitHub; tasks ship as pull requests.
+    GitHub,
+}
+
+impl Source {
+    pub const ALL: [Self; 3] = [Self::None, Self::LocalGit, Self::GitHub];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::LocalGit => "local_git",
+            Self::GitHub => "github",
+        }
+    }
+
+    /// Whether the location holds a git repository.
+    pub fn is_git(self) -> bool {
+        self != Self::None
+    }
+}
+
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// How the tasks of a workspace get done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompletionMode {
+    /// Their criteria are met without a merge, e.g. checked by hand.
+    Manual,
+    /// Their branch is merged into the base branch locally.
+    LocalMerge,
+    /// Their pull request is merged into the base branch.
+    PullRequestMerge,
+}
+
+impl CompletionMode {
+    pub const ALL: [Self; 3] = [Self::Manual, Self::LocalMerge, Self::PullRequestMerge];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::LocalMerge => "local_merge",
+            Self::PullRequestMerge => "pr_merge",
+        }
+    }
+}
+
+impl fmt::Display for CompletionMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What runs the work of a started task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Runner {
+    /// Nothing: starting a task only marks it in progress.
+    None,
+    /// Agents in a herdr workspace on a task worktree and branch.
+    Herdr,
+}
+
+impl Runner {
+    pub const ALL: [Self; 2] = [Self::None, Self::Herdr];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Herdr => "herdr",
+        }
+    }
+}
+
+impl fmt::Display for Runner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// A source, completion, and runner that do not work together; the message names a
+/// combination that does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidAxes(pub String);
+
+impl fmt::Display for InvalidAxes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for InvalidAxes {}
+
+/// Checks that a workspace can work with `source`, `completion`, and `runner` together.
+pub fn check_axes(
+    source: Source,
+    completion: CompletionMode,
+    runner: Runner,
+) -> Result<(), InvalidAxes> {
+    let invalid = |message: String| Err(InvalidAxes(message));
+    match (source, completion) {
+        (Source::None, CompletionMode::LocalMerge | CompletionMode::PullRequestMerge) => {
+            return invalid(format!(
+                "completion {completion} needs a git repository; choose completion manual for \
+                 source none, or source {} for completion {completion}",
+                if completion == CompletionMode::LocalMerge {
+                    Source::LocalGit
+                } else {
+                    Source::GitHub
+                }
+            ));
+        }
+        (Source::LocalGit, CompletionMode::PullRequestMerge) => {
+            return invalid(
+                "source local_git has no pull requests; choose completion local_merge or \
+                 manual, or source github for a repository with a GitHub origin remote"
+                    .to_owned(),
+            );
+        }
+        (Source::GitHub, CompletionMode::LocalMerge) => {
+            return invalid(
+                "source github completes tasks through pull requests; choose completion \
+                 pr_merge or manual, or source local_git to merge task branches locally"
+                    .to_owned(),
+            );
+        }
+        _ => {}
+    }
+    if source == Source::None && runner == Runner::Herdr {
+        return invalid(
+            "runner herdr needs a git repository for task worktrees; choose runner none for \
+             source none, or source local_git or github for runner herdr"
+                .to_owned(),
+        );
+    }
+    if runner == Runner::None && completion != CompletionMode::Manual {
+        return invalid(format!(
+            "completion {completion} merges the task branch that only a runner creates; \
+             choose runner herdr for completion {completion}, or completion manual for \
+             runner none"
+        ));
+    }
+    Ok(())
+}
+
+/// The completion of a workspace created with `source` and no completion given.
+pub fn default_completion(source: Source) -> CompletionMode {
+    match source {
+        Source::None => CompletionMode::Manual,
+        Source::LocalGit => CompletionMode::LocalMerge,
+        Source::GitHub => CompletionMode::PullRequestMerge,
+    }
+}
+
+/// The runner of a workspace created with `source` and no runner given.
+pub fn default_runner(source: Source) -> Runner {
+    match source {
+        Source::None => Runner::None,
+        Source::LocalGit | Source::GitHub => Runner::Herdr,
+    }
 }
 
 /// Whether agents merge the pull request of their own task. Toodo never merges; this
@@ -387,4 +562,115 @@ pub struct CommitRecord {
     pub author: String,
     /// Commit timestamp in seconds since the Unix epoch.
     pub committed_at: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_listed_axes_combinations_are_allowed() {
+        use CompletionMode::{LocalMerge, Manual, PullRequestMerge};
+        let allowed = [
+            (Source::None, Manual, Runner::None),
+            (Source::LocalGit, Manual, Runner::None),
+            (Source::LocalGit, Manual, Runner::Herdr),
+            (Source::LocalGit, LocalMerge, Runner::Herdr),
+            (Source::GitHub, Manual, Runner::None),
+            (Source::GitHub, Manual, Runner::Herdr),
+            (Source::GitHub, PullRequestMerge, Runner::Herdr),
+        ];
+        let mut checked = 0;
+        for source in Source::ALL {
+            for completion in CompletionMode::ALL {
+                for runner in Runner::ALL {
+                    let result = check_axes(source, completion, runner);
+                    let combination = (source, completion, runner);
+                    assert_eq!(
+                        result.is_ok(),
+                        allowed.contains(&combination),
+                        "{combination:?}: {result:?}"
+                    );
+                    if let Err(InvalidAxes(message)) = result {
+                        assert!(message.contains("choose"), "{message}");
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 18);
+    }
+
+    #[test]
+    fn rejections_name_a_combination_that_works() {
+        let message =
+            |source, completion, runner| check_axes(source, completion, runner).unwrap_err().0;
+        assert_eq!(
+            message(Source::None, CompletionMode::PullRequestMerge, Runner::None),
+            "completion pr_merge needs a git repository; choose completion manual for source \
+             none, or source github for completion pr_merge"
+        );
+        assert_eq!(
+            message(Source::None, CompletionMode::Manual, Runner::Herdr),
+            "runner herdr needs a git repository for task worktrees; choose runner none for \
+             source none, or source local_git or github for runner herdr"
+        );
+        assert_eq!(
+            message(
+                Source::LocalGit,
+                CompletionMode::PullRequestMerge,
+                Runner::Herdr
+            ),
+            "source local_git has no pull requests; choose completion local_merge or manual, \
+             or source github for a repository with a GitHub origin remote"
+        );
+        assert_eq!(
+            message(Source::GitHub, CompletionMode::LocalMerge, Runner::Herdr),
+            "source github completes tasks through pull requests; choose completion pr_merge \
+             or manual, or source local_git to merge task branches locally"
+        );
+        assert_eq!(
+            message(
+                Source::GitHub,
+                CompletionMode::PullRequestMerge,
+                Runner::None
+            ),
+            "completion pr_merge merges the task branch that only a runner creates; choose \
+             runner herdr for completion pr_merge, or completion manual for runner none"
+        );
+    }
+
+    #[test]
+    fn defaults_follow_the_source_and_are_allowed() {
+        let defaults =
+            Source::ALL.map(|source| (source, default_completion(source), default_runner(source)));
+        assert_eq!(
+            defaults,
+            [
+                (Source::None, CompletionMode::Manual, Runner::None),
+                (Source::LocalGit, CompletionMode::LocalMerge, Runner::Herdr),
+                (
+                    Source::GitHub,
+                    CompletionMode::PullRequestMerge,
+                    Runner::Herdr
+                ),
+            ]
+        );
+        for (source, completion, runner) in defaults {
+            check_axes(source, completion, runner).unwrap();
+        }
+    }
+
+    #[test]
+    fn axes_have_their_wire_names() {
+        assert_eq!(
+            Source::ALL.map(Source::as_str),
+            ["none", "local_git", "github"]
+        );
+        assert_eq!(
+            CompletionMode::ALL.map(CompletionMode::as_str),
+            ["manual", "local_merge", "pr_merge"]
+        );
+        assert_eq!(Runner::ALL.map(Runner::as_str), ["none", "herdr"]);
+    }
 }

@@ -244,7 +244,12 @@ repository Toodo does not have yet:
    the repository into a new or empty directory, or leave it out to open a repository
    already cloned there. Pass `init: true` instead to make a plain folder a new git
    repository without a remote, whose tasks merge into the base branch locally. Set `default_base_branch` when pull requests go into a branch
-   other than the repository's default one, e.g. `dev`.
+   other than the repository's default one, e.g. `dev`. Optional `source` (`none`,
+   `local_git`, `github`), `completion` (`manual`, `local_merge`, `pr_merge`), and
+   `runner` (`none`, `herdr`) pick the workspace axes. Left out, the source follows the
+   repository (`github` with an `origin` remote, else `local_git`) and the rest follow the
+   source, as before. `source: "none"` is a plain directory without git or herdr; don't
+   pass `clone_url` or `init` with it.
 3. Use the `id` it returns as `workspace_id` for `create_task`.
 
 # Setting a machine's worktree root

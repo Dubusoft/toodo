@@ -141,6 +141,9 @@ mod tests {
             },
             default_base_branch: "main".to_owned(),
             agent_merge: AgentMerge::Never,
+            source: crate::domain::model::Source::GitHub,
+            completion: crate::domain::model::CompletionMode::PullRequestMerge,
+            runner: crate::domain::model::Runner::Herdr,
         }
     }
 
@@ -158,6 +161,9 @@ mod tests {
             },
             default_base_branch: "main".to_owned(),
             agent_merge: AgentMerge::Never,
+            source: crate::domain::model::Source::GitHub,
+            completion: crate::domain::model::CompletionMode::PullRequestMerge,
+            runner: crate::domain::model::Runner::Herdr,
         }
     }
 

@@ -27,6 +27,10 @@ fn add_workspace(storage: &mut Storage, name: &str, location: WorkspaceLocation)
             name: name.to_owned(),
             location,
             default_base_branch: "main".to_owned(),
+            source: crate::domain::model::Source::GitHub,
+            completion: crate::domain::model::CompletionMode::PullRequestMerge,
+            runner: crate::domain::model::Runner::Herdr,
+            axes_detected: true,
         })
         .unwrap()
 }
@@ -1540,4 +1544,50 @@ fn dependencies_not_done_names_each_blocker_and_its_next_step() {
         error.to_string(),
         "task 2 cannot start yet: #1 is done as not_adopted (remove_dependency task_id 2 depends_on 1 to unblock, or complete #1 with merged_with); #7 is planned (wait for it)"
     );
+}
+
+#[test]
+fn workspaces_with_undetected_axes_are_listed_until_their_axes_are_saved() {
+    use crate::domain::model::{CompletionMode, Runner, Source};
+    let mut storage = Storage::open_in_memory().unwrap();
+    let known = add_workspace(&mut storage, "known", local_location(r"C:\dev\known"));
+    let unknown = storage
+        .create_workspace(&NewWorkspace {
+            name: "unknown".to_owned(),
+            location: local_location(r"C:\dev\unknown"),
+            default_base_branch: "main".to_owned(),
+            source: Source::GitHub,
+            completion: CompletionMode::PullRequestMerge,
+            runner: Runner::Herdr,
+            axes_detected: false,
+        })
+        .unwrap();
+    assert_eq!(
+        storage.workspaces_to_detect().unwrap(),
+        std::slice::from_ref(&unknown)
+    );
+
+    storage
+        .save_detected_axes(unknown.id, Source::LocalGit, CompletionMode::LocalMerge)
+        .unwrap();
+
+    assert!(storage.workspaces_to_detect().unwrap().is_empty());
+    let stored = storage.get_workspace(unknown.id).unwrap().unwrap();
+    assert_eq!(
+        (stored.source, stored.completion, stored.runner),
+        (Source::LocalGit, CompletionMode::LocalMerge, Runner::Herdr)
+    );
+    assert_eq!(storage.get_workspace(known.id).unwrap().unwrap(), known);
+    let mut renamed = stored.clone();
+    renamed.name = "renamed".to_owned();
+    renamed.source = Source::GitHub;
+    storage.update_workspace(&renamed).unwrap();
+    assert_eq!(
+        storage.get_workspace(unknown.id).unwrap().unwrap().source,
+        Source::LocalGit
+    );
+    assert!(matches!(
+        storage.save_detected_axes(WorkspaceId(99), Source::GitHub, CompletionMode::Manual),
+        Err(StorageError::WorkspaceNotFound(_))
+    ));
 }

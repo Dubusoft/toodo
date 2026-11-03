@@ -6,11 +6,10 @@ use super::types::{
     self, CommitRecord, CriterionId, DependencyOutcome, NewTask, Task, TaskEdit, TaskId,
     TaskRelation,
 };
-use super::{CommandError, CommandResult, GitState, HerdrState, StorageState, lock};
-use crate::adapters::git::Git;
+use super::{CommandError, CommandResult, HerdrState, StorageState, lock};
 use crate::domain::criteria::{self, CheckKind, CheckedBy, NewCriterion};
 use crate::domain::model;
-use crate::domain::model::TaskResolution;
+use crate::domain::model::{CompletionMode, TaskResolution};
 use crate::domain::status::TaskStatus;
 use crate::storage::{self, CriterionEdit, Storage, StorageError};
 
@@ -30,88 +29,68 @@ pub fn get_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<T
 }
 
 /// Creates a `planned` task without dependencies, with its completion criteria. The merge
-/// criterion depends on whether the repository has an `origin` remote, which git may
-/// check over `ssh`, so this runs off the main thread.
+/// criterion follows the completion mode of the workspace: none for `manual`.
 #[specta::specta]
-pub fn create_task(
-    storage: State<'_, StorageState>,
-    git: State<'_, GitState>,
-    task: NewTask,
-) -> CommandResult<Task> {
-    Ok((&create(&storage, &git, task)?).into())
+pub fn create_task(storage: State<'_, StorageState>, task: NewTask) -> CommandResult<Task> {
+    Ok((&create(&storage, task)?).into())
 }
 
-/// Creates a task as [`create_task`] does.
-pub(crate) fn create(
-    storage: &StorageState,
-    git: &Git,
-    task: NewTask,
-) -> CommandResult<model::Task> {
+/// Creates a task as [`create_task`] does. Its merge criterion follows the completion of
+/// its workspace (see [`merge_criterion`]); git does not run.
+pub(crate) fn create(storage: &StorageState, task: NewTask) -> CommandResult<model::Task> {
     let wants_merge = task.merge_criterion;
     let mut new: storage::NewTask = task.try_into()?;
-    if let Some(merge) =
-        merge_criterion(storage, git, new.workspace_id, &new.criteria, wants_merge)?
-    {
+    if let Some(merge) = merge_criterion(storage, new.workspace_id, &new.criteria, wants_merge)? {
         new.criteria.insert(0, merge);
     }
     Ok(lock(storage).create_task(&new)?)
 }
 
-/// Checks the `criteria` of a new task of `workspace` against its repository (see
+/// Checks the `criteria` of a new task of `workspace` against its completion (see
 /// [`check_kinds`]) and returns the merge criterion it gets in front of them when
-/// `wants_merge` and they have none: its pull request is merged, or, in a repository
-/// without an `origin` remote, its branch is merged locally. Git runs without the database
-/// lock. A local repository the server cannot reach (see [`types::PathProblem`]) is not
-/// asked and gets the pull request criterion, so its tasks can still be planned.
+/// `wants_merge` and they have none: its pull request is merged (pr_merge), or its
+/// branch is merged locally (local_merge). A workspace completed manually adds none.
 pub(crate) fn merge_criterion(
     storage: &StorageState,
-    git: &Git,
     workspace: model::WorkspaceId,
     criteria: &[NewCriterion],
     wants_merge: bool,
 ) -> CommandResult<Option<NewCriterion>> {
     let kinds: Vec<CheckKind> = criteria.iter().map(|criterion| criterion.kind).collect();
+    let completion = completion(storage, workspace)?;
+    check_kinds(&kinds, &kinds, Some(completion))?;
     let adds_merge = wants_merge && !kinds.iter().any(|&kind| is_merge(kind));
-    let origin = if adds_merge || kinds.iter().any(|&kind| needs_origin_check(kind)) {
-        origin(storage, git, workspace)?
-    } else {
-        None
-    };
-    check_kinds(&kinds, &kinds, origin)?;
-    Ok(adds_merge.then(|| NewCriterion::merge(origin.unwrap_or(true))))
+    Ok(adds_merge.then(|| merge_for(completion)).flatten())
 }
 
-/// Whether the repository of `workspace` has an `origin` remote, asked without the
-/// database lock; `None` for a local repository the server cannot reach (see
-/// [`types::PathProblem`]), whose criteria are not checked against it.
-fn origin(
+/// The completion of `workspace`.
+fn completion(
     storage: &StorageState,
-    git: &Git,
     workspace: model::WorkspaceId,
-) -> CommandResult<Option<bool>> {
-    let workspace = lock(storage)
+) -> CommandResult<CompletionMode> {
+    Ok(lock(storage)
         .get_workspace(workspace)?
-        .ok_or(StorageError::WorkspaceNotFound(workspace))?;
-    if types::PathProblem::of(&workspace.location).is_some() {
-        return Ok(None);
-    }
-    Ok(Some(git.has_origin(&workspace.location)?))
+        .ok_or(StorageError::WorkspaceNotFound(workspace))?
+        .completion)
 }
 
-/// Kinds a task can only meet in a repository with an `origin` remote, or only in one
-/// without.
-fn needs_origin_check(kind: CheckKind) -> bool {
-    kind.is_pull_request() || kind == CheckKind::BranchMergedLocally
+/// The merge criterion a task of a workspace with `completion` gets; none for manual.
+fn merge_for(completion: CompletionMode) -> Option<NewCriterion> {
+    match completion {
+        CompletionMode::PullRequestMerge => Some(NewCriterion::merge(true)),
+        CompletionMode::LocalMerge => Some(NewCriterion::merge(false)),
+        CompletionMode::Manual => None,
+    }
 }
 
 /// Rejects criteria a task could never meet: more than one merge criterion among all
-/// `kinds`, and among the `added` ones (new or with a changed kind) a pull request
-/// criterion in a repository without an `origin` remote or a merged-locally one in a
-/// repository with one. `origin` is `None` when that is not known.
+/// `kinds`, and among the `added` ones (new or with a changed kind) a kind the workspace
+/// `completion` rules out: pull request criteria without pr_merge, a merged-locally one
+/// without local_merge. `completion` is `None` when it is not checked.
 fn check_kinds(
     kinds: &[CheckKind],
     added: &[CheckKind],
-    origin: Option<bool>,
+    completion: Option<CompletionMode>,
 ) -> CommandResult<()> {
     let merges: Vec<String> = kinds
         .iter()
@@ -120,21 +99,34 @@ fn check_kinds(
         .collect();
     if merges.len() > 1 {
         return Err(CommandError::invalid_input(format!(
-            "a task has one merge criterion, but these criteria have {} ({}); keep only the one of the workspace repository, pr_merged with an origin remote or branch_merged_locally without one, and leave out or remove_criterion the other",
+            "a task has one merge criterion, but these criteria have {} ({}); keep only the one of the workspace completion, pr_merged for pr_merge or branch_merged_locally for local_merge, and leave out or remove_criterion the other",
             merges.len(),
             merges.join(", ")
         )));
     }
-    match origin {
-        Some(false) => match added.iter().find(|kind| kind.is_pull_request()) {
+    match completion {
+        Some(CompletionMode::Manual) => match added
+            .iter()
+            .find(|&&kind| kind.is_pull_request() || kind == CheckKind::BranchMergedLocally)
+        {
             Some(kind) => Err(CommandError::invalid_input(format!(
-                "the workspace repository has no origin remote, so its tasks get no pull request and a {kind} criterion could never be met; use branch_merged_locally for the merge or a manual criterion instead, or add an origin remote to the repository first"
+                "the workspace completes its tasks manually, without a branch or pull request, so a {kind} criterion could never be met; use a manual, url, or command criterion instead"
             ))),
             None => Ok(()),
         },
-        Some(true) if added.contains(&CheckKind::BranchMergedLocally) => {
+        Some(CompletionMode::LocalMerge) => {
+            match added.iter().find(|kind| kind.is_pull_request()) {
+                Some(kind) => Err(CommandError::invalid_input(format!(
+                    "the workspace completes its tasks by merging their branch locally (local_merge), so they get no pull request and a {kind} criterion could never be met; use branch_merged_locally for the merge or a manual, url, or command criterion instead"
+                ))),
+                None => Ok(()),
+            }
+        }
+        Some(CompletionMode::PullRequestMerge)
+            if added.contains(&CheckKind::BranchMergedLocally) =>
+        {
             Err(CommandError::invalid_input(
-                "the workspace repository has an origin remote, so its tasks merge through a pull request; use pr_merged instead of branch_merged_locally",
+                "the workspace completes its tasks through a merged pull request (pr_merge); use pr_merged instead of branch_merged_locally",
             ))
         }
         _ => Ok(()),
@@ -145,62 +137,34 @@ fn check_kinds(
 /// criterion there is deliberate. With `mergeCriterion`, a task without a merge
 /// criterion gets the one of its repository back in front of its criteria.
 #[specta::specta]
-pub fn update_task(
-    storage: State<'_, StorageState>,
-    git: State<'_, GitState>,
-    task: TaskEdit,
-) -> CommandResult<Task> {
-    let origin = edit_origin(
-        &storage,
-        &git,
-        task.id,
-        task.criteria.as_deref(),
-        task.merge_criterion,
-    )?;
-    edit_task(&mut lock(&storage), task, true, origin)
+pub fn update_task(storage: State<'_, StorageState>, task: TaskEdit) -> CommandResult<Task> {
+    let completion = edit_completion(&storage, task.id)?;
+    edit_task(&mut lock(&storage), task, true, completion)
 }
 
-/// Whether the repository of the task `id` has an `origin` remote, as [`edit_task`]
-/// needs it for `inputs` (and the merge criterion when `adds_merge`): asked only when
-/// one of them adds a criterion, or changes its kind, to one that depends on it.
-pub(crate) fn edit_origin(
+/// The completion of the workspace of the task `id`, which [`edit_task`] checks the
+/// criteria against and takes the merge criterion from.
+pub(crate) fn edit_completion(
     storage: &StorageState,
-    git: &Git,
     id: TaskId,
-    inputs: Option<&[types::CriterionInput]>,
-    adds_merge: bool,
-) -> CommandResult<Option<bool>> {
+) -> CommandResult<Option<CompletionMode>> {
     let task = lock(storage)
         .get_task(id.into())?
         .ok_or(StorageError::TaskNotFound(id.into()))?;
-    let has_merge = task.criteria.iter().any(|known| is_merge(known.kind));
-    let asks = inputs.unwrap_or_default().iter().any(|input| {
-        let known = input.id.and_then(|id| {
-            let id: criteria::CriterionId = id.into();
-            task.criteria.iter().find(|known| known.id == id)
-        });
-        input.kind.is_some_and(|kind| {
-            let kind: CheckKind = kind.into();
-            needs_origin_check(kind) && known.is_none_or(|known| known.kind != kind)
-        })
-    });
-    if asks || (adds_merge && !has_merge) {
-        origin(storage, git, task.workspace_id)
-    } else {
-        Ok(None)
-    }
+    completion(storage, task.workspace_id).map(Some)
 }
 
 /// Edits a task. New `criteria` replace the current ones; unless `may_remove_merge`, a
 /// list that would delete the task's merge criterion is rejected. With `merge_criterion`,
-/// a task left without a merge criterion gets the one of its repository in front.
-/// `origin` says whether the repository has an `origin` remote (see [`edit_origin`]),
-/// which the criteria are checked against (see [`check_kinds`]).
+/// a task left without a merge criterion gets the one of its workspace completion in
+/// front (none for manual). `completion` is the completion of its workspace (see
+/// [`edit_completion`]), which the criteria are checked against (see [`check_kinds`]);
+/// `None` checks no kinds and takes the pull request criterion as the merge.
 pub(crate) fn edit_task(
     storage: &mut Storage,
     edit: TaskEdit,
     may_remove_merge: bool,
-    origin: Option<bool>,
+    completion: Option<CompletionMode>,
 ) -> CommandResult<Task> {
     let title = edit.title.trim();
     if title.is_empty() {
@@ -232,12 +196,15 @@ pub(crate) fn edit_task(
             return Err(StorageError::CriteriaOfDoneTask(task.id).into());
         }
         let mut edits = criterion_edits(storage, &task, criteria, may_remove_merge)?;
-        if edit.merge_criterion && !edits.iter().any(|edit| is_merge(edit.criterion.kind)) {
+        if edit.merge_criterion
+            && !edits.iter().any(|edit| is_merge(edit.criterion.kind))
+            && let Some(merge) = merge_for(completion.unwrap_or(CompletionMode::PullRequestMerge))
+        {
             edits.insert(
                 0,
                 CriterionEdit {
                     id: None,
-                    criterion: NewCriterion::merge(origin.unwrap_or(true)),
+                    criterion: merge,
                 },
             );
         }
@@ -251,7 +218,7 @@ pub(crate) fn edit_task(
             })
             .map(|edit| edit.criterion.kind)
             .collect();
-        check_kinds(&kinds, &added, origin)?;
+        check_kinds(&kinds, &added, completion)?;
         storage.set_criteria(task.id, &edits)?;
     }
     storage.update_task(&task)?;
@@ -666,11 +633,9 @@ pub fn list_commit_records(
 mod tests {
     use super::*;
     use crate::commands::CommandErrorKind;
-    use crate::domain::model::{self, WorkspaceLocation};
-    use std::sync::Arc;
+    use crate::domain::model::{self, Runner, Source, WorkspaceLocation};
 
-    use crate::adapters::git::fake::FakeRunner;
-    use crate::domain::path::{PosixPath, WindowsPath};
+    use crate::domain::path::WindowsPath;
     use crate::storage::{NewTask, NewWorkspace};
 
     fn storage_with_task() -> (Storage, model::Task) {
@@ -682,6 +647,10 @@ mod tests {
                     path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         let mut task = storage
@@ -713,54 +682,101 @@ mod tests {
         }
     }
 
-    fn git(results: Vec<Result<String, crate::adapters::git::GitError>>) -> (Git, Arc<FakeRunner>) {
-        let runner = Arc::new(FakeRunner::new(results));
-        (Git::new(Box::new(runner.clone())), runner)
-    }
-
-    fn storage_with_workspace(location: WorkspaceLocation) -> (StorageState, model::WorkspaceId) {
+    /// A workspace with `completion` and the source and runner that go with it.
+    fn storage_with_workspace(completion: CompletionMode) -> (StorageState, model::WorkspaceId) {
+        let (source, runner) = match completion {
+            CompletionMode::PullRequestMerge => (Source::GitHub, Runner::Herdr),
+            CompletionMode::LocalMerge => (Source::LocalGit, Runner::Herdr),
+            CompletionMode::Manual => (Source::None, Runner::None),
+        };
         let mut storage = Storage::open_in_memory().unwrap();
         let workspace = storage
             .create_workspace(&NewWorkspace {
                 name: "quest".to_owned(),
-                location,
+                location: WorkspaceLocation::Local {
+                    path: WindowsPath::parse(r"D:\dev\quest").unwrap().into(),
+                },
                 default_base_branch: "main".to_owned(),
+                source,
+                completion,
+                runner,
+                axes_detected: true,
             })
             .unwrap();
         (StorageState::new(storage), workspace.id)
     }
 
-    #[test]
-    fn a_task_of_a_workspace_the_server_cannot_reach_is_created_without_git() {
-        let missing = tempfile::tempdir().unwrap().path().join("gone");
-        for location in [
-            WorkspaceLocation::Local {
-                path: WindowsPath::parse(r"D:\dev\quest").unwrap().into(),
-            },
-            WorkspaceLocation::Local {
-                path: PosixPath::parse(missing.to_str().unwrap()).unwrap().into(),
-            },
-        ] {
-            let (storage, workspace) = storage_with_workspace(location);
-            let (git, runner) = git(Vec::new());
-            let task = create(&storage, &git, new_task(workspace)).unwrap();
-            assert_eq!(task.criteria[0].kind, CheckKind::PullRequestMerged);
-            assert!(runner.invocations.lock().unwrap().is_empty());
+    fn criterion(kind: types::CheckKind) -> types::CriterionInput {
+        types::CriterionInput {
+            id: None,
+            text: Some("Done".to_owned()),
+            kind: Some(kind),
+            target: None,
         }
     }
 
     #[test]
-    fn a_task_of_a_reachable_repository_takes_its_merge_criterion_from_git() {
-        let repo = tempfile::tempdir().unwrap();
-        let (storage, workspace) = storage_with_workspace(WorkspaceLocation::Local {
-            path: PosixPath::parse(repo.path().to_str().unwrap())
-                .unwrap()
-                .into(),
-        });
-        let (git, runner) = git(vec![Ok("upstream\n".to_owned())]);
-        let task = create(&storage, &git, new_task(workspace)).unwrap();
-        assert_eq!(task.criteria[0].kind, CheckKind::BranchMergedLocally);
-        assert_eq!(runner.invocations.lock().unwrap().len(), 1);
+    fn a_new_task_takes_its_merge_criterion_from_the_workspace_completion() {
+        for (completion, merge) in [
+            (
+                CompletionMode::PullRequestMerge,
+                Some(CheckKind::PullRequestMerged),
+            ),
+            (
+                CompletionMode::LocalMerge,
+                Some(CheckKind::BranchMergedLocally),
+            ),
+            (CompletionMode::Manual, None),
+        ] {
+            let (storage, workspace) = storage_with_workspace(completion);
+            let mut task = new_task(workspace);
+            task.criteria = vec![criterion(types::CheckKind::Manual)];
+            let created = create(&storage, task).unwrap();
+            let kinds: Vec<CheckKind> = created.criteria.iter().map(|c| c.kind).collect();
+            let expected: Vec<CheckKind> = merge.into_iter().chain([CheckKind::Manual]).collect();
+            assert_eq!(kinds, expected, "{completion}");
+        }
+    }
+
+    #[test]
+    fn criteria_the_workspace_completion_rules_out_are_rejected_on_create() {
+        use types::CheckKind::{BranchMergedLocally, PrMerged, PrOpenCiGreen};
+        for (completion, kind, next) in [
+            (
+                CompletionMode::PullRequestMerge,
+                BranchMergedLocally,
+                "use pr_merged",
+            ),
+            (
+                CompletionMode::LocalMerge,
+                PrMerged,
+                "branch_merged_locally",
+            ),
+            (
+                CompletionMode::LocalMerge,
+                PrOpenCiGreen,
+                "branch_merged_locally",
+            ),
+            (CompletionMode::Manual, PrMerged, "manual, url, or command"),
+            (
+                CompletionMode::Manual,
+                PrOpenCiGreen,
+                "manual, url, or command",
+            ),
+            (
+                CompletionMode::Manual,
+                BranchMergedLocally,
+                "manual, url, or command",
+            ),
+        ] {
+            let (storage, workspace) = storage_with_workspace(completion);
+            let mut task = new_task(workspace);
+            task.criteria = vec![criterion(kind)];
+            let error = create(&storage, task).unwrap_err();
+            assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+            assert!(error.message.contains(next), "{}", error.message);
+            assert!(lock(&storage).list_all_tasks().unwrap().is_empty());
+        }
     }
 
     #[test]
@@ -1065,19 +1081,36 @@ mod tests {
         let rejected = |kinds: &[CheckKind], added: &[CheckKind], origin| {
             check_kinds(kinds, added, origin).unwrap_err().message
         };
+        use CompletionMode::{LocalMerge, PullRequestMerge};
         let both = [PullRequestMerged, BranchMergedLocally];
         assert!(rejected(&both, &[], None).contains("one merge criterion"));
         let ci = [PullRequestOpenChecksPassed];
-        assert!(rejected(&ci, &ci, Some(false)).contains("branch_merged_locally"));
+        assert!(rejected(&ci, &ci, Some(LocalMerge)).contains("branch_merged_locally"));
         let local = [BranchMergedLocally];
-        assert!(rejected(&local, &local, Some(true)).contains("use pr_merged"));
-        // Kept criteria are not checked again, and an unknown origin checks nothing.
-        check_kinds(&[PullRequestMerged, Manual], &[Manual], Some(false)).unwrap();
+        assert!(rejected(&local, &local, Some(PullRequestMerge)).contains("use pr_merged"));
+        for kind in [
+            PullRequestMerged,
+            PullRequestOpenChecksPassed,
+            BranchMergedLocally,
+        ] {
+            assert!(
+                rejected(&[kind], &[kind], Some(CompletionMode::Manual))
+                    .contains("use a manual, url, or command criterion")
+            );
+        }
+        // Kept criteria are not checked again, and an unknown completion checks nothing.
+        check_kinds(&[PullRequestMerged, Manual], &[Manual], Some(LocalMerge)).unwrap();
+        check_kinds(
+            &[Manual, CheckKind::Url],
+            &[Manual],
+            Some(CompletionMode::Manual),
+        )
+        .unwrap();
         check_kinds(&local, &local, None).unwrap();
         check_kinds(
             &[PullRequestMerged, PullRequestOpenChecksPassed],
             &ci,
-            Some(true),
+            Some(PullRequestMerge),
         )
         .unwrap();
     }
@@ -1097,11 +1130,27 @@ mod tests {
         };
         let unchanged = edit_task(&mut storage, edit(false), true, None).unwrap();
         assert!(unchanged.criteria.is_empty());
-        let merged = edit_task(&mut storage, edit(true), true, Some(false)).unwrap();
+        // A workspace completed manually has no merge criterion to put back.
+        let manual =
+            edit_task(&mut storage, edit(true), true, Some(CompletionMode::Manual)).unwrap();
+        assert!(manual.criteria.is_empty());
+        let merged = edit_task(
+            &mut storage,
+            edit(true),
+            true,
+            Some(CompletionMode::LocalMerge),
+        )
+        .unwrap();
         let kinds: Vec<_> = merged.criteria.iter().map(|c| c.kind).collect();
         assert_eq!(kinds, [types::CheckKind::BranchMergedLocally]);
         // A task that has one keeps it.
-        let again = edit_task(&mut storage, edit(true), true, Some(true)).unwrap();
+        let again = edit_task(
+            &mut storage,
+            edit(true),
+            true,
+            Some(CompletionMode::PullRequestMerge),
+        )
+        .unwrap();
         assert_eq!(again.criteria, merged.criteria);
     }
 }
