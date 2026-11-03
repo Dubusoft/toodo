@@ -269,7 +269,7 @@ pub(crate) fn program_version(program: &str) -> String {
     with_commit(program, env!("CARGO_PKG_VERSION"), env!("TOODO_COMMIT"))
 }
 
-fn with_commit(program: &str, version: &str, commit: &str) -> String {
+pub(crate) fn with_commit(program: &str, version: &str, commit: &str) -> String {
     if commit.is_empty() {
         format!("{program} {version}")
     } else {

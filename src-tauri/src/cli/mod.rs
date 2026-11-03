@@ -10,6 +10,7 @@ mod agents;
 mod process;
 mod service;
 mod settings;
+mod update;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,7 @@ use crate::server;
 use crate::storage::Storage;
 use agents::Outcome;
 use settings::{Bundle, DataDir, ListenFlag};
+use update::Channel;
 
 /// Reads an environment variable; tests pass their own.
 type Var<'a> = &'a dyn Fn(&str) -> Option<String>;
@@ -28,6 +30,7 @@ const USAGE: &str = "Usage: toodo init [--port N | --listen HOST:PORT] [--data-d
        toodo stop [--data-dir DIR]
        toodo status [--data-dir DIR]
        toodo service install [--data-dir DIR]
+       toodo update [--channel dev|latest] [--data-dir DIR]
        toodo --version | --help
 
 Runs the Toodo server (toodo-server) for the current user and connects coding agents
@@ -42,6 +45,9 @@ Commands:
   status           show whether the server runs and where its files are; exits 0 when
                    it runs and 3 when it is stopped
   service install  run the server as the systemd user service toodo-server.service
+  update           install the newest @dubusoft/toodo of the channel with npm, restart
+                   the server on it, and check that it answers; a failed install
+                   leaves the running server alone
 
 Options:
   --port N            port to listen on, keeping the saved host (default 47616)
@@ -52,7 +58,10 @@ Options:
                       (~/.config/toodo/data-dir), else $XDG_DATA_HOME/toodo-server or
                       ~/.local/share/toodo-server); init records it there, so the
                       other commands find it without the option
-  --no-mcp            do not register the MCP endpoint with coding agents";
+  --no-mcp            do not register the MCP endpoint with coding agents
+  --channel CHANNEL   npm dist-tag update installs: dev (prereleases of the dev branch)
+                      or latest (releases); default dev when the installed version is a
+                      prerelease, else latest";
 
 /// The exit status of `toodo status` while the server is stopped.
 const STOPPED: i32 = 3;
@@ -66,6 +75,7 @@ enum Command {
     Stop(Option<PathBuf>),
     Status(Option<PathBuf>),
     ServiceInstall(Option<PathBuf>),
+    Update(Option<Channel>, Option<PathBuf>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,7 +103,16 @@ fn parse(args: &[String]) -> Result<Command, String> {
         }
         [command, rest @ ..] => (command.as_str(), rest),
     };
-    if !["init", "start", "stop", "status", "service install"].contains(&command) {
+    if ![
+        "init",
+        "start",
+        "stop",
+        "status",
+        "service install",
+        "update",
+    ]
+    .contains(&command)
+    {
         return Err(format!("unknown command {command:?}"));
     }
     let mut init = InitArgs {
@@ -101,13 +120,14 @@ fn parse(args: &[String]) -> Result<Command, String> {
         data_dir: None,
         mcp: true,
     };
+    let mut channel = None;
     let mut options = options.iter();
     while let Some(option) = options.next() {
         let (name, inline) = match option.split_once('=') {
             Some((name, value)) if name.starts_with("--") => (name, Some(value.to_owned())),
             _ => (option.as_str(), None),
         };
-        let takes_value = matches!(name, "--port" | "--listen" | "--data-dir");
+        let takes_value = matches!(name, "--port" | "--listen" | "--data-dir" | "--channel");
         let value = if takes_value {
             match inline.or_else(|| options.next().cloned()) {
                 Some(value) if !value.is_empty() => value,
@@ -124,9 +144,20 @@ fn parse(args: &[String]) -> Result<Command, String> {
                 "{name} is an option of toodo init, not of {command}"
             ));
         }
+        if name == "--channel" && command != "update" {
+            return Err(format!(
+                "--channel is an option of toodo update, not of {command}"
+            ));
+        }
         match name {
             "--data-dir" => init.data_dir = Some(PathBuf::from(value)),
             "--no-mcp" => init.mcp = false,
+            "--channel" => match Channel::parse(&value) {
+                Some(parsed) => channel = Some(parsed),
+                None => {
+                    return Err(format!("--channel takes dev or latest, got {value:?}"));
+                }
+            },
             "--port" | "--listen" if init.listen.is_some() => {
                 return Err("give either --port or --listen, once".to_owned());
             }
@@ -156,6 +187,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "start" => Command::Start(data_dir),
         "stop" => Command::Stop(data_dir),
         "status" => Command::Status(data_dir),
+        "update" => Command::Update(channel, data_dir),
         _ => Command::ServiceInstall(data_dir),
     })
 }
@@ -176,7 +208,10 @@ pub fn main() {
             Ok(0)
         }
         Command::Version => {
-            println!("{}", server::program_version("toodo"));
+            println!(
+                "{}",
+                server::with_commit("toodo", &update::version(), env!("TOODO_COMMIT"))
+            );
             Ok(0)
         }
         Command::Init(args) => init(&args, &var).map(|()| 0),
@@ -190,6 +225,10 @@ pub fn main() {
         Command::ServiceInstall(dir) => data_dir(dir.as_deref(), &var).and_then(|data| {
             let listen = settings::listen(&data)?;
             service::install(&data, listen, &var).map(|()| 0)
+        }),
+        Command::Update(channel, dir) => data_dir(dir.as_deref(), &var).and_then(|data| {
+            let flag = settings::data_dir_flag(&data, &var);
+            update::update(channel, &data, &flag, &var).map(|()| 0)
         }),
     };
     match result {
@@ -504,7 +543,12 @@ mod tests {
         );
         assert_eq!(
             parsed(&["service", "install", "--data-dir", "/d"]).unwrap(),
-            Command::ServiceInstall(dir)
+            Command::ServiceInstall(dir.clone())
+        );
+        assert_eq!(parsed(&["update"]).unwrap(), Command::Update(None, None));
+        assert_eq!(
+            parsed(&["update", "--channel=latest", "--data-dir", "/d"]).unwrap(),
+            Command::Update(Some(Channel::Latest), dir)
         );
     }
 
@@ -540,6 +584,14 @@ mod tests {
             "--port is an option of toodo init, not of start"
         );
         assert_eq!(error(&["init", "--no-mcp=yes"]), "--no-mcp takes no value");
+        assert_eq!(
+            error(&["update", "--channel", "beta"]),
+            "--channel takes dev or latest, got \"beta\""
+        );
+        assert_eq!(
+            error(&["start", "--channel", "dev"]),
+            "--channel is an option of toodo update, not of start"
+        );
         assert_eq!(error(&["status", "extra"]), "unknown option \"extra\"");
     }
 }
