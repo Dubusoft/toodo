@@ -1,0 +1,34 @@
+.omo/*
+!.omo/plans/
+!.omo/omo.jsonc
+.codegraph/
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+dist-web
+test-results
+playwright-report
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local tool caches
+.cloudflare/

@@ -1,0 +1,51 @@
+[package]
+name = "toodo"
+version = "1.3.1"
+description = "Turn a task plan into implemented, reviewed code with herdr"
+authors = []
+license = "MIT"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The library holds the server; `toodo-server` is its binary.
+name = "toodo_lib"
+
+[[bin]]
+name = "toodo-server"
+path = "src/bin/toodo-server.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+specta = { version = "=2.0.0-rc.25", features = ["derive", "function"] }
+specta-typescript = "0.0.12"
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+tower-http = { version = "0.6", features = ["fs"] }
+futures-util = { version = "0.3", default-features = false }
+sha2 = "0.10"
+# Web Push: message encryption and VAPID signing, and posting to push services.
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+base64 = "0.22"
+rmcp = { version = "3.5.1", features = ["server", "macros", "transport-streamable-http-server", "schemars"] }
+tokio = { version = "1.53.3", features = ["net", "rt", "rt-multi-thread", "macros", "signal", "sync", "fs", "time"] }
+getrandom = { version = "0.3", features = ["std"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "ws", "query"] }
+schemars = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+[dev-dependencies]
+tempfile = "3"
+# Generating the frontend's bindings (src/bindings.rs).
+heck = "0.5"
+specta-serde = "0.0.12"
+tokio-tungstenite = "0.29"

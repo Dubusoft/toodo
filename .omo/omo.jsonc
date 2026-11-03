@@ -1,0 +1,17 @@
+{
+  "memory": {
+    "agent": "toodo"
+  },
+  "categories": {
+    // Built-in chain minus claude-fable-5-1: start from the next fallback.
+    "visual-engineering": {
+      "models": [
+        { "model": "anthropic-subscription/claude-opus-5-5", "variant": "max" },
+        { "model": "kimi-coding/kimi-k3", "variant": "max" }
+      ]
+    }
+  },
+  "_migrations": [
+    "2026-08-reasoning-unification"
+  ]
+}

@@ -1,0 +1,42 @@
+name: Frontend
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+    paths-ignore:
+      - "src-tauri/**"
+      - "docs/**"
+      - "**.md"
+  pull_request:
+    paths-ignore:
+      - "src-tauri/**"
+      - "docs/**"
+      - "**.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontend-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+
+      # CI only typechecks; tests run locally (see AGENTS.md).
+      - name: Typecheck
+        run: npm run typecheck
