@@ -150,6 +150,7 @@ import {
   type Tone,
 } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
+import { workspaceCapabilities, type WorkspaceCapabilities } from "@/lib/workspace-capabilities";
 import { reachability, subscribeReachability } from "@/web/connection";
 
 const Markdown = lazy(() => import("@/components/markdown"));
@@ -197,11 +198,13 @@ function statusStyle(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
   return shownStatusStyle(shownStatus(task, byId));
 }
 
-/** What the task list needs to name tasks of other workspaces. */
+/** What the task list needs to name tasks of other workspaces and to know what their workspaces have. */
 type TaskContext = {
   /** Tasks of every workspace, by ID. */
   byId: ReadonlyMap<TaskId, Task>;
   workspaceName: (id: WorkspaceId) => string;
+  /** What the tasks of a workspace have, such as pull requests or herdr. */
+  capabilities: (id: WorkspaceId) => WorkspaceCapabilities;
 };
 
 /** `#id`, prefixed with the workspace name when the task belongs to another workspace than `of`. */
@@ -250,10 +253,11 @@ export function TaskList({
   // Done tasks are folded away until asked for, or while a search or filter is narrowing the list.
   const [doneShown, setDoneShown] = useState<boolean | null>(null);
   const [detailId, setDetailId] = useState<TaskId | null>(null);
-  const names = new Map(workspaces.data?.map((entry) => [entry.id, entry.name]));
+  const byWorkspace = new Map(workspaces.data?.map((entry) => [entry.id, entry]));
   const context: TaskContext = {
     byId: new Map(allTasks.data?.map((task) => [task.id, task])),
-    workspaceName: (id) => names.get(id) ?? `Workspace ${id}`,
+    workspaceName: (id) => byWorkspace.get(id)?.name ?? `Workspace ${id}`,
+    capabilities: (id) => workspaceCapabilities(byWorkspace.get(id)),
   };
   const tasks =
     workspace === null ? allTasks.data : allTasks.data?.filter((task) => task.workspaceId === workspace.id);
@@ -311,14 +315,14 @@ export function TaskList({
         {workspace ? (
           <>
             <BaseBranchForm workspace={workspace} />
-            <AgentMergeSetting workspace={workspace} />
+            {workspaceCapabilities(workspace).merge && <AgentMergeSetting workspace={workspace} />}
           </>
         ) : (
           <p className="text-sm text-muted-foreground max-md:hidden">Tasks of every workspace and the dependencies between them.</p>
         )}
       </header>
 
-      {workspace && <WorktreeRootForm workspace={workspace} />}
+      {workspace && workspaceCapabilities(workspace).herdr && <WorktreeRootForm workspace={workspace} />}
 
       {workspace && onDraftChange && <NewTaskForm workspace={workspace} draft={draft} onChange={onDraftChange} />}
 
@@ -724,13 +728,16 @@ function TaskRow({
   // A prerequisite that would pause this started task, waiting for confirmation.
   const [confirmingPrerequisite, setConfirmingPrerequisite] = useState<TaskId | null>(null);
   const herdrRunning = herdr.data?.running === true;
+  // Tasks of a plain directory have no branch, worktree, pull request, or herdr workspace.
+  const capabilities = context.capabilities(task.workspaceId);
   const inReview = task.status === "in_review";
   const active = task.status === "in_progress" || inReview;
-  const hasWorktree = active && task.worktreePath !== null;
+  const hasWorktree = capabilities.herdr && active && task.worktreePath !== null;
   const agentStatus = agentStatuses.data?.find((entry) => entry.taskId === task.id)?.status;
-  const pullRequestStatus = inReview
-    ? pullRequestStatuses.data?.find((entry) => entry.taskId === task.id)
-    : undefined;
+  const pullRequestStatus =
+    capabilities.pullRequests && inReview
+      ? pullRequestStatuses.data?.find((entry) => entry.taskId === task.id)
+      : undefined;
   const finishing = refreshCommits.isPending || openPullRequest.isPending || completeTask.isPending;
   const final = task.status === "done";
   const criteriaMet = task.criteria.every((criterion) => criterion.state === "met");
@@ -797,16 +804,19 @@ function TaskRow({
           ariaLabel: `${paused ? "Resume" : "Start"} #${task.id}`,
           icon: <Play />,
           title: startable
-            ? needsHerdr(undefined)
+            ? capabilities.herdr
+              ? needsHerdr(undefined)
+              : undefined
             : notAdopted.length > 0
               ? "A dependency was not adopted; remove it to start"
               : "Waits until all its dependencies are done",
-          disabled: !startable || !herdrRunning || startTask.isPending,
+          // Without herdr, starting only marks the task in progress.
+          disabled: !startable || (capabilities.herdr && !herdrRunning) || startTask.isPending,
           onSelect: () => startTask.mutate(task.id),
         }
       : null;
   const restore: Action | null =
-    active && (task.worktreePath === null || task.worktreeMissing) && task.branch !== null
+    capabilities.herdr && active && (task.worktreePath === null || task.worktreeMissing) && task.branch !== null
       ? {
           key: "restore", changesData: true,
           label: restoreWorktree.isPending ? "Restoring..." : "Restore worktree",
@@ -818,7 +828,7 @@ function TaskRow({
         }
       : null;
   const openPr: Action | null =
-    hasWorktree && !inReview
+    capabilities.pullRequests && hasWorktree && !inReview
       ? {
           key: "open-pr", changesData: true,
           label: openPullRequest.isPending ? "Pushing..." : "Open PR",
@@ -840,13 +850,15 @@ function TaskRow({
             ? `${unmetCriteria} of ${task.criteria.length} criteria not met yet; check the manual ones under Criteria, Toodo checks the automatic ones every minute`
             : herdrBlocked
               ? needsHerdr(undefined)
-              : "Complete the task; its herdr workspace is closed and the worktree kept",
+              : capabilities.herdr
+                ? "Complete the task; its herdr workspace is closed and the worktree kept"
+                : undefined,
           disabled: finishing || herdrBlocked || !criteriaMet,
           onSelect: () => completeTask.mutate(task.id),
         }
       : null;
   const push: Action | null =
-    hasWorktree && inReview
+    capabilities.pullRequests && hasWorktree && inReview
       ? {
           key: "push", changesData: true,
           label: openPullRequest.isPending ? "Pushing..." : "Push to PR",
@@ -857,7 +869,7 @@ function TaskRow({
         }
       : null;
   const openInHerdr: Action | null =
-    active && task.herdrWorkspaceId
+    capabilities.herdr && active && task.herdrWorkspaceId
       ? {
           key: "open", changesData: true,
           label: "Open in herdr",
@@ -869,7 +881,7 @@ function TaskRow({
         }
       : null;
   const focusPane: Action | null =
-    detailed && active && task.herdrWorkspaceId && agentStatus
+    detailed && capabilities.herdr && active && task.herdrWorkspaceId && agentStatus
       ? {
           key: "focus", changesData: true,
           label: "Focus agent pane",
@@ -898,7 +910,9 @@ function TaskRow({
         icon: <CircleSlash />,
         title: herdrBlocked
           ? needsHerdr(undefined)
-          : "Finish without merging, e.g. research whose result is not adopted; an open pull request is closed",
+          : capabilities.pullRequests
+            ? "Finish without merging, e.g. research whose result is not adopted; an open pull request is closed"
+            : "Finish without merging, e.g. research whose result is not adopted",
         disabled: finishing || herdrBlocked,
         onSelect: () => setConcluding(true),
       }
@@ -909,7 +923,7 @@ function TaskRow({
   );
   // Secondary actions always sit in the "More" menu, Delete last.
   const secondaryActions: (Action | null)[] = [
-    !final && task.issue === null && !linkingIssue
+    capabilities.github && !final && task.issue === null && !linkingIssue
       ? {
           key: "link-issue",
           label: "Link issue",
@@ -926,7 +940,9 @@ function TaskRow({
           label: "Pause",
           ariaLabel: `Pause #${task.id}`,
           icon: <Pause />,
-          title: "Pause: stop working on the task; it keeps its branch, worktree, and pull request and can be resumed",
+          title: capabilities.herdr
+            ? "Pause: stop working on the task; it keeps its branch, worktree, and pull request and can be resumed"
+            : "Pause: stop working on the task; it can be resumed",
           disabled: pauseTask.isPending,
           onSelect: () => pauseTask.mutate(task.id),
         }
@@ -937,7 +953,9 @@ function TaskRow({
           label: "Complete as shipped by...",
           ariaLabel: `Complete #${task.id} as shipped by another task or pull request`,
           icon: <GitMerge />,
-          title: "The work did ship, through another task or a merged pull request: mark it done as that one ended",
+          title: capabilities.github
+            ? "The work did ship, through another task or a merged pull request: mark it done as that one ended"
+            : "The work did ship, through another task: mark it done as that one ended",
           onSelect: () => setCorrecting("shipped"),
         }
       : null,
@@ -957,7 +975,9 @@ function TaskRow({
           label: "Reopen",
           ariaLabel: `Reopen #${task.id}`,
           icon: <RotateCcw />,
-          title: "Reopen a task completed or concluded by mistake; it is paused and resumes on its branch",
+          title: capabilities.herdr
+            ? "Reopen a task completed or concluded by mistake; it is paused and resumes on its branch"
+            : "Reopen a task completed or concluded by mistake; it is paused and can be resumed",
           onSelect: () => setCorrecting("reopen"),
         }
       : null,
@@ -1038,7 +1058,7 @@ function TaskRow({
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
             <span className="text-xs text-muted-foreground">Editing</span>
           </div>
-          <TaskEditForm task={task} onDone={() => setEditing(false)} />
+          <TaskEditForm task={task} capabilities={capabilities} onDone={() => setEditing(false)} />
         </div>
       ) : (
         <div className={cn("flex min-w-0 flex-col", detailed ? "gap-1.5" : "gap-0.5")}>
@@ -1169,9 +1189,11 @@ function TaskRow({
             <select
               aria-label={`Add dependency to #${task.id}`}
               title={
-                task.status === "in_progress"
-                  ? "A prerequisite that is not done pauses this task and closes its herdr workspace; the worktree is kept"
-                  : undefined
+                task.status !== "in_progress"
+                  ? undefined
+                  : capabilities.herdr
+                    ? "A prerequisite that is not done pauses this task and closes its herdr workspace; the worktree is kept"
+                    : "A prerequisite that is not done pauses this task"
               }
               className={cn(compactSelectClass, "max-w-48")}
               value=""
@@ -1222,7 +1244,7 @@ function TaskRow({
           Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
         </p>
       )}
-      {paused && waitingOn.length > 0 && task.herdrWorkspaceId !== null && (
+      {capabilities.herdr && paused && waitingOn.length > 0 && task.herdrWorkspaceId !== null && (
         <OpenWorkspaceNote
           taskId={task.id}
           collapsed={keepingWorkspace}
@@ -1235,12 +1257,12 @@ function TaskRow({
       {detailed && hasWorktree && <BranchFreshnessNote taskId={task.id} />}
       {detailed && <TaskPlan task={task} />}
       {detailed && <TaskTimeline task={task} detailed />}
-      {detailed && task.branch && (
+      {detailed && capabilities.herdr && task.branch && (
         <DetailField label="Branch">
           <span className="break-all font-mono select-all">{task.branch}</span>
         </DetailField>
       )}
-      {detailed && task.worktreePath && (
+      {detailed && capabilities.herdr && task.worktreePath && (
         <DetailField label="Worktree">
           <PathLabel
             label={`worktree path of #${task.id}`}
@@ -1250,7 +1272,7 @@ function TaskRow({
           />
         </DetailField>
       )}
-      {detailed && task.pullRequestUrl && (
+      {detailed && capabilities.pullRequests && task.pullRequestUrl && (
         <DetailField label="Pull request">
           <span className="break-all font-mono select-all">{task.pullRequestUrl}</span>
           {task.pullRequest && (
@@ -1290,6 +1312,7 @@ function TaskRow({
       {concluding && !editing && (
         <ConcludeForm
           task={task}
+          capabilities={capabilities}
           onDone={() => setConcluding(false)}
           onShipped={() => {
             setConcluding(false);
@@ -1301,7 +1324,9 @@ function TaskRow({
         <ShippedByForm task={task} tasks={tasks} context={context} onDone={() => setCorrecting(null)} />
       )}
       {correcting === "outcome" && !editing && <OutcomeForm task={task} onDone={() => setCorrecting(null)} />}
-      {correcting === "reopen" && !editing && <ReopenForm task={task} onDone={() => setCorrecting(null)} />}
+      {correcting === "reopen" && !editing && (
+        <ReopenForm task={task} capabilities={capabilities} onDone={() => setCorrecting(null)} />
+      )}
       {!editing && !concluding && correcting === null && (
         <div className="flex flex-wrap items-center gap-1 max-md:gap-2">
           {primary && actionButton(primary, detailed ? "default" : "outline")}
@@ -1461,7 +1486,15 @@ function StatusBadge({ task, byId }: { task: Task; byId: ReadonlyMap<TaskId, Tas
   );
 }
 
-function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
+function TaskEditForm({
+  task,
+  capabilities,
+  onDone,
+}: {
+  task: Task;
+  capabilities: WorkspaceCapabilities;
+  onDone: () => void;
+}) {
   const updateTask = useUpdateTask();
   const [taskType, setTaskType] = useState<TaskType>(task.taskType);
   const [title, setTitle] = useState(task.title);
@@ -1554,23 +1587,25 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
         <div className="flex flex-col gap-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
             <span className="font-medium text-muted-foreground">Completion criteria</span>
-            <label
-              className="flex items-center gap-1.5 max-md:min-h-11"
-              title="Keep or add the criterion that its pull request is merged, or its branch merged locally in a repository without origin"
-            >
-              <input
-                type="checkbox"
-                aria-label={`Done when merged, #${task.id}`}
-                checked={hasMerge || addMerge}
-                onChange={(e) => {
-                  setAddMerge(e.target.checked && !hasMerge);
-                  if (!e.target.checked) setCriteria(criteria.filter((draft) => !isMergeKind(draft.kind)));
-                }}
-              />
-              Done when merged
-            </label>
+            {capabilities.merge && (
+              <label
+                className="flex items-center gap-1.5 max-md:min-h-11"
+                title="Keep or add the criterion that its pull request is merged, or its branch merged locally in a repository without origin"
+              >
+                <input
+                  type="checkbox"
+                  aria-label={`Done when merged, #${task.id}`}
+                  checked={hasMerge || addMerge}
+                  onChange={(e) => {
+                    setAddMerge(e.target.checked && !hasMerge);
+                    if (!e.target.checked) setCriteria(criteria.filter((draft) => !isMergeKind(draft.kind)));
+                  }}
+                />
+                Done when merged
+              </label>
+            )}
           </div>
-          <CriteriaEditor taskId={task.id} criteria={criteria} onChange={setCriteria} />
+          <CriteriaEditor taskId={task.id} capabilities={capabilities} criteria={criteria} onChange={setCriteria} />
         </div>
       )}
       {guard.asking ? (
@@ -1603,7 +1638,17 @@ function TaskEditForm({ task, onDone }: { task: Task; onDone: () => void }) {
  * Concludes an active task without merging: the conclusion, why the work is not adopted, is
  * required and becomes its completion note.
  */
-function ConcludeForm({ task, onDone, onShipped }: { task: Task; onDone: () => void; onShipped: () => void }) {
+function ConcludeForm({
+  task,
+  capabilities,
+  onDone,
+  onShipped,
+}: {
+  task: Task;
+  capabilities: WorkspaceCapabilities;
+  onDone: () => void;
+  onShipped: () => void;
+}) {
   const concludeTask = useConcludeTask();
   const [note, setNote] = useState("");
   const guard = useDiscardGuard(note.trim() !== "", onDone, concludeTask.isPending);
@@ -1621,8 +1666,12 @@ function ConcludeForm({ task, onDone, onShipped }: { task: Task; onDone: () => v
       onKeyDown={guard.onKeyDown}
     >
       <p className="text-xs text-muted-foreground">
-        Finish #{task.id} without merging. It is marked not adopted, its pull request is closed with the
-        conclusion as a comment, and the branch is kept. Tasks that depend on it stay blocked.
+        Finish #{task.id} without merging. It is marked not adopted
+        {capabilities.herdr &&
+          (capabilities.pullRequests
+            ? ", its pull request is closed with the conclusion as a comment, and the branch is kept"
+            : " and its branch is kept")}
+        . Tasks that depend on it stay blocked.
       </p>
       <textarea
         className={cn(inputClass, "h-auto min-h-16 py-1.5")}
@@ -1657,7 +1706,11 @@ function ConcludeForm({ task, onDone, onShipped }: { task: Task; onDone: () => v
             size="xs"
             variant="outline"
             aria-label={`Complete #${task.id} as shipped by another task or pull request`}
-            title="The work shipped through another task or a merged pull request: complete the task instead"
+            title={
+              capabilities.github
+                ? "The work shipped through another task or a merged pull request: complete the task instead"
+                : "The work shipped through another task: complete the task instead"
+            }
             disabled={concludeTask.isPending}
             onClick={onShipped}
           >
@@ -1689,7 +1742,15 @@ const resolutionNames: Record<TaskResolution, string> = {
  * Reopens a done task completed or concluded by mistake. The reason is required and kept as
  * a progress note with the earlier outcome.
  */
-function ReopenForm({ task, onDone }: { task: Task; onDone: () => void }) {
+function ReopenForm({
+  task,
+  capabilities,
+  onDone,
+}: {
+  task: Task;
+  capabilities: WorkspaceCapabilities;
+  onDone: () => void;
+}) {
   const reopenTask = useReopenTask();
   const [reason, setReason] = useState("");
   const guard = useDiscardGuard(reason.trim() !== "", onDone, reopenTask.isPending);
@@ -1702,8 +1763,8 @@ function ReopenForm({ task, onDone }: { task: Task; onDone: () => void }) {
   return (
     <form onSubmit={submit} aria-label={`Reopen #${task.id}`} className="flex flex-col gap-1" onKeyDown={guard.onKeyDown}>
       <p className="text-xs text-muted-foreground">
-        Reopen #{task.id}: it is paused with its branch and commits, and Resume continues the work. Its outcome and
-        completion note are cleared and kept, with your reason, as a progress note.
+        Reopen #{task.id}: it is paused{capabilities.herdr && " with its branch and commits"}, and Resume continues the
+        work. Its outcome and completion note are cleared and kept, with your reason, as a progress note.
       </p>
       <textarea
         className={cn(inputClass, "h-auto min-h-16 py-1.5")}
@@ -1834,6 +1895,8 @@ function ShippedByForm({
   onDone: () => void;
 }) {
   const completeMergedWith = useCompleteTaskMergedWith();
+  // Only a GitHub repository has pull requests to name instead of a task.
+  const { github } = context.capabilities(task.workspaceId);
   // Only work that shipped can carry this task's work with it.
   const shippers = tasks
     .filter(
@@ -1869,8 +1932,9 @@ function ShippedByForm({
       onKeyDown={guard.onKeyDown}
     >
       <p className="text-xs text-muted-foreground">
-        Complete #{task.id} as shipped by another task or a merged pull request into its base branch. It becomes done as
-        that one ended, and tasks that depend on it can start. An open pull request of its own must be closed first.
+        Complete #{task.id} as shipped by another task{github && " or a merged pull request into its base branch"}. It
+        becomes done as that one ended, and tasks that depend on it can start.
+        {github && " An open pull request of its own must be closed first."}
       </p>
       <select
         aria-label={`Task that shipped #${task.id}`}
@@ -1879,14 +1943,14 @@ function ShippedByForm({
         onChange={(e) => setShipper(e.target.value)}
         autoFocus
       >
-        <option value="">A pull request URL instead</option>
+        <option value="">{github ? "A pull request URL instead" : "Choose a task..."}</option>
         {shippers.map((other) => (
           <option key={other.id} value={other.id}>
             {taskRef(other.id, task.workspaceId, context)} {other.title}
           </option>
         ))}
       </select>
-      {!byTask && (
+      {github && !byTask && (
         <input
           className={inputClass}
           type="url"
@@ -2543,6 +2607,8 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
   const updateWorkspace = useUpdateWorkspace();
   const createBaseBranch = useCreateBaseBranch();
   const tasks = useTasks();
+  // A plain directory has no base branch to show or change.
+  const { git } = workspaceCapabilities(workspace);
   // An open pull request targets the current branch, so it stays while a task awaits completion.
   const inReview = tasks.data?.filter((task) => task.workspaceId === workspace.id && task.status === "in_review");
   const locked = inReview === undefined || inReview.length > 0;
@@ -2597,18 +2663,24 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
         >
           Move
         </Button>
-        <span className="shrink-0">&middot; base</span>
-        <code className="text-foreground">{workspace.defaultBaseBranch}</code>
+        {git && (
+          <>
+            <span className="shrink-0">&middot; base</span>
+            <code className="text-foreground">{workspace.defaultBaseBranch}</code>
+          </>
+        )}
         {workspace.pathProblem && <PathProblemNote problem={workspace.pathProblem} className="max-md:basis-full" />}
-        <Button
-          size="xs"
-          variant="ghost"
-          aria-label="Change base branch"
-          disabled={locked}
-          onClick={open}
-        >
-          Change
-        </Button>
+        {git && (
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label="Change base branch"
+            disabled={locked}
+            onClick={open}
+          >
+            Change
+          </Button>
+        )}
         {inReview && inReview.length > 0 && (
           <span className="text-xs max-md:basis-full md:truncate">
             Locked while {inReview.map((task) => `#${task.id}`).join(", ")} {inReview.length > 1 ? "are" : "is"}{" "}
@@ -2894,13 +2966,6 @@ const criterionKindLabels: Record<CheckKind, string> = {
   branch_merged_locally: "Merged locally",
 };
 
-/**
- * Kinds the criteria editor offers. The merge criterion (`pr_merged`, or
- * `branch_merged_locally` in a repository without `origin`) comes from "Done when merged"
- * in the new and edit forms and keeps its kind when the task is edited.
- */
-const editableCriterionKinds: CheckKind[] = ["manual", "url", "command", "pr_open_ci_green"];
-
 /** Kinds of the merge criterion, of which a task has at most one. */
 function isMergeKind(kind: CheckKind): boolean {
   return kind === "pr_merged" || kind === "branch_merged_locally";
@@ -2956,10 +3021,17 @@ function targetProblem(draft: CriterionDraft): string | null {
  */
 function CriteriaEditor({
   criteria,
+  capabilities,
   onChange,
   taskId,
 }: {
   criteria: CriterionDraft[];
+  /**
+   * What the task's workspace has, which decides the kinds offered. The merge criterion
+   * comes from "Done when merged" in the new and edit forms and keeps its kind when the
+   * task is edited.
+   */
+  capabilities: WorkspaceCapabilities;
   onChange: (criteria: CriterionDraft[]) => void;
   taskId?: TaskId;
 }) {
@@ -2982,7 +3054,7 @@ function CriteriaEditor({
           {criteria.map((draft, index) => {
             const n = index + 1;
             const problem = targetProblem(draft);
-            const fixedKind = !editableCriterionKinds.includes(draft.kind);
+            const fixedKind = !capabilities.criterionKinds.includes(draft.kind);
             return (
               // Below md each criterion is a block: its text on the first line, kind and remove on the next.
               <li
@@ -3008,7 +3080,7 @@ function CriteriaEditor({
                   title={fixedKind ? "The merge criterion keeps its kind" : "How the criterion is checked"}
                   onChange={(e) => update(draft.key, { kind: e.target.value as CheckKind })}
                 >
-                  {(fixedKind ? [draft.kind] : editableCriterionKinds).map((kind) => (
+                  {(fixedKind ? [draft.kind] : capabilities.criterionKinds).map((kind) => (
                     <option key={kind} value={kind}>
                       {criterionKindLabels[kind]}
                     </option>
@@ -3026,7 +3098,9 @@ function CriteriaEditor({
                       problem ??
                       (draft.kind === "url"
                         ? "Toodo checks that a GET of this URL succeeds"
-                        : "Toodo checks that this command exits with 0 in the task worktree")
+                        : capabilities.herdr
+                          ? "Toodo checks that this command exits with 0 in the task worktree"
+                          : "Toodo checks that this command exits with 0 in the workspace directory")
                     }
                     placeholder={draft.kind === "url" ? "https://example.com/health" : "npm test"}
                     value={draft.target}
@@ -3288,6 +3362,7 @@ function NewTaskForm({
   onChange: (draft: TaskDraft) => void;
 }) {
   const createTask = useCreateTask();
+  const capabilities = workspaceCapabilities(workspace);
   const [expanded, setExpanded] = useState(false);
   const { taskType, title, description, issue } = draft;
   const issueNumber = parseIssueNumber(issue);
@@ -3315,7 +3390,8 @@ function NewTaskForm({
         estimate,
         dueDate: draft.dueDate || null,
         criteria: criterionInputs(draft.criteria),
-        mergeCriterion: draft.mergeCriterion,
+        // Tasks completed without a merge get no merge criterion.
+        mergeCriterion: capabilities.merge && draft.mergeCriterion,
         issue: issueNumber,
       },
       {
@@ -3366,16 +3442,18 @@ function NewTaskForm({
               onChange={setDescription}
               className="flex-1"
             />
-            <input
-              className={cn(inputClass, "mt-7 w-36 shrink-0 max-md:mt-13")}
-              inputMode="numeric"
-              placeholder="Issue # (optional)"
-              aria-label="Issue number"
-              aria-invalid={invalidIssue}
-              title="An issue of the workspace repository; the pull request closes it on merge"
-              value={issue}
-              onChange={(e) => setIssue(e.target.value)}
-            />
+            {capabilities.github && (
+              <input
+                className={cn(inputClass, "mt-7 w-36 shrink-0 max-md:mt-13")}
+                inputMode="numeric"
+                placeholder="Issue # (optional)"
+                aria-label="Issue number"
+                aria-invalid={invalidIssue}
+                title="An issue of the workspace repository; the pull request closes it on merge"
+                value={issue}
+                onChange={(e) => setIssue(e.target.value)}
+              />
+            )}
           </div>
           <PlanFields
             suffix=""
@@ -3385,19 +3463,25 @@ function NewTaskForm({
           <div className="flex flex-col gap-1 border-t pt-2">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
               <span className="font-medium text-muted-foreground">Completion criteria</span>
-              <label
-                className="flex items-center gap-1.5 max-md:min-h-11"
-                title="Add the criterion that its pull request is merged, or its branch merged locally in a repository without origin"
-              >
-                <input
-                  type="checkbox"
-                  checked={draft.mergeCriterion}
-                  onChange={(e) => onChange({ ...draft, mergeCriterion: e.target.checked })}
-                />
-                Done when merged
-              </label>
+              {capabilities.merge && (
+                <label
+                  className="flex items-center gap-1.5 max-md:min-h-11"
+                  title="Add the criterion that its pull request is merged, or its branch merged locally in a repository without origin"
+                >
+                  <input
+                    type="checkbox"
+                    checked={draft.mergeCriterion}
+                    onChange={(e) => onChange({ ...draft, mergeCriterion: e.target.checked })}
+                  />
+                  Done when merged
+                </label>
+              )}
             </div>
-            <CriteriaEditor criteria={draft.criteria} onChange={(criteria) => onChange({ ...draft, criteria })} />
+            <CriteriaEditor
+              capabilities={capabilities}
+              criteria={draft.criteria}
+              onChange={(criteria) => onChange({ ...draft, criteria })}
+            />
           </div>
         </>
       )}

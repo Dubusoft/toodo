@@ -96,6 +96,9 @@ const toodo: Workspace = {
   defaultBaseBranch: "main",
   agentMerge: "never",
   pathProblem: null,
+  source: "github",
+  completion: "pr_merge",
+  runner: "herdr",
 };
 
 const herdr: Workspace = {
@@ -105,6 +108,9 @@ const herdr: Workspace = {
   defaultBaseBranch: "develop",
   agentMerge: "never",
   pathProblem: null,
+  source: "github",
+  completion: "pr_merge",
+  runner: "herdr",
 };
 
 function task(id: number, workspaceId: number, title: string, overrides: Partial<Task> = {}): Task {
@@ -184,6 +190,20 @@ async function openSettings(section: string) {
   const dialog = screen.getByRole("dialog", { name: "Settings" });
   fireEvent.click(within(dialog).getByRole("tab", { name: new RegExp(`^${section}`) }));
   return dialog;
+}
+
+/** Opens the new workspace dialog of the machine labeled `machine` in the sidebar. */
+async function openNewWorkspace(machine: string) {
+  fireEvent.click(await screen.findByRole("button", { name: `Add workspace on ${machine}` }));
+  return screen.getByRole("dialog", { name: `New workspace on ${machine}` });
+}
+
+/** Moves the new workspace dialog on from its first step to the details, keeping the picks shown on the way. */
+function nextToDetails(dialog: HTMLElement) {
+  for (const step of ["Completion", "Runner", "Details"]) {
+    fireEvent.click(within(dialog).getByRole("button", { name: "Next" }));
+    expect(within(dialog).getByRole("button", { current: "step" })).toHaveTextContent(step);
+  }
 }
 
 /** Renders the app and opens one workspace, since the app starts on All workspaces. */
@@ -912,7 +932,10 @@ describe("App", () => {
 
     await screen.findByText("No workspaces yet.");
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [opened] });
-    fireEvent.click(screen.getByRole("button", { name: "Open on Local" }));
+    const dialog = await openNewWorkspace("Local");
+    expect(within(dialog).getByRole("radio", { name: "GitHub" })).toBeChecked();
+    expect(within(dialog).getByRole("radio", { name: "Open existing" })).toBeChecked();
+    nextToDetails(dialog);
     await waitFor(() => expect(screen.getByLabelText("Folder")).toHaveValue("/home/me/"));
     fireEvent.click(screen.getByRole("button", { name: "Browse..." }));
     const browser = screen.getByRole("group", { name: "Browse folders on the server" });
@@ -928,13 +951,24 @@ describe("App", () => {
     expect(mocked.createWorkspace).toHaveBeenCalledWith({
       name: "toodo",
       location: { kind: "local", path: "/home/me/toodo" },
-      source: { kind: "open" },
+      repository: { kind: "open" },
+      source: "github",
+      completion: "pr_merge",
+      runner: "herdr",
       defaultBaseBranch: null,
     });
+    expect(screen.queryByRole("dialog", { name: "New workspace on Local" })).not.toBeInTheDocument();
   });
 
   it("makes a local folder a new repository", async () => {
-    const notes: Workspace = { ...toodo, id: 3, name: "notes", location: { kind: "local", path: "/home/me/notes" } };
+    const notes: Workspace = {
+      ...toodo,
+      id: 3,
+      name: "notes",
+      location: { kind: "local", path: "/home/me/notes" },
+      source: "local_git",
+      completion: "local_merge",
+    };
     mocked.listWorkspaces.mockResolvedValueOnce({ status: "ok", data: [] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     mocked.createWorkspace.mockResolvedValue({ status: "ok", data: notes });
@@ -943,18 +977,23 @@ describe("App", () => {
 
     await screen.findByText("No workspaces yet.");
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [notes] });
-    fireEvent.click(screen.getByRole("button", { name: "Init on Local" }));
-    const form = screen.getByRole("form", { name: "Init workspace on Local" });
-    await waitFor(() => expect(within(form).getByLabelText("Folder")).toHaveValue("/home/me/"));
-    fireEvent.change(within(form).getByLabelText("Folder"), { target: { value: "/home/me/notes" } });
-    expect(within(form).getByLabelText("Name")).toHaveValue("notes");
-    fireEvent.click(within(form).getByRole("button", { name: "Init workspace" }));
+    const dialog = await openNewWorkspace("Local");
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Local git" }));
+    fireEvent.click(within(dialog).getByRole("radio", { name: "New repository" }));
+    nextToDetails(dialog);
+    await waitFor(() => expect(within(dialog).getByLabelText("Folder")).toHaveValue("/home/me/"));
+    fireEvent.change(within(dialog).getByLabelText("Folder"), { target: { value: "/home/me/notes" } });
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("notes");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Init workspace" }));
 
     expect(await screen.findByRole("heading", { name: "notes" })).toBeInTheDocument();
     expect(mocked.createWorkspace).toHaveBeenCalledWith({
       name: "notes",
       location: { kind: "local", path: "/home/me/notes" },
-      source: { kind: "init" },
+      repository: { kind: "init" },
+      source: "local_git",
+      completion: "local_merge",
+      runner: "herdr",
       defaultBaseBranch: null,
     });
   });
@@ -977,7 +1016,9 @@ describe("App", () => {
 
     await screen.findByText("No workspaces yet.");
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [herdr] });
-    fireEvent.click(await screen.findByRole("button", { name: "Clone on devbox" }));
+    const dialog = await openNewWorkspace("devbox");
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Clone URL" }));
+    nextToDetails(dialog);
     fireEvent.change(screen.getByLabelText("Repository URL"), {
       target: { value: "git@github.com:o/herdr.git" },
     });
@@ -1004,7 +1045,10 @@ describe("App", () => {
     expect(mocked.createWorkspace).toHaveBeenCalledWith({
       name: "herdr",
       location: { kind: "ssh", machine: "devbox", path: "/home/me/src/herdr" },
-      source: { kind: "clone", url: "git@github.com:o/herdr.git" },
+      repository: { kind: "clone", url: "git@github.com:o/herdr.git" },
+      source: "github",
+      completion: "pr_merge",
+      runner: "herdr",
       defaultBaseBranch: null,
     });
   });

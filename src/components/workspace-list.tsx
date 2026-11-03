@@ -1,15 +1,20 @@
-import { useId, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import { Laptop, Plus, Server, TriangleAlert, X } from "lucide-react";
+import { useId, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { Ban, ChevronLeft, ChevronRight, Laptop, Plus, Server, TriangleAlert, X } from "lucide-react";
 import { RemoteFolderBrowser, joinPath } from "@/components/remote-folder-browser";
 import { Button } from "@/components/ui/button";
 import type {
+  CompletionMode,
   HerdrMachine,
+  Machine,
+  NewWorkspace,
   PathProblem,
+  Runner,
+  Source,
   Workspace,
   WorkspaceId,
   WorkspaceLocation,
-  WorkspaceSource,
 } from "@/lib/bindings";
+import { keepFocusIn } from "@/lib/focus-trap";
 import { normalizePath, shortPath } from "@/lib/paths";
 import {
   useCreateWorkspace,
@@ -20,6 +25,23 @@ import {
   useWorkspaces,
 } from "@/lib/queries";
 import { cn } from "@/lib/utils";
+import {
+  choiceOf,
+  completionLabels,
+  completionProblem,
+  completions,
+  repositoryKinds,
+  repositoryLabels,
+  repositoryProblem,
+  runnerLabels,
+  runnerProblem,
+  runners,
+  sourceLabels,
+  sources,
+  withPick,
+  type Picks,
+  type RepositoryKind,
+} from "@/lib/workspace-axes";
 import { reachability, subscribeReachability, unreachableCause } from "@/web/connection";
 
 export const inputClass =
@@ -61,25 +83,25 @@ export function PathProblemNote({ problem, className }: { problem: PathProblem; 
   );
 }
 
+/** The source, completion, and runner of a workspace, read-only: they are set when it is added. */
+export function WorkspaceAxes({ workspace }: { workspace: Workspace }) {
+  const source = sourceLabels[workspace.source];
+  const completion = completionLabels[workspace.completion];
+  const runner = runnerLabels[workspace.runner];
+  return (
+    <span
+      className="text-xs text-muted-foreground"
+      title={`Source ${source}, completion ${completion}, runner ${runner}; set when the workspace was added`}
+    >
+      {/* A narrow sidebar wraps the line between the axes, not inside one. */}
+      <span className="whitespace-nowrap">{source}</span> &middot; <span className="whitespace-nowrap">{completion}</span>{" "}
+      &middot; <span className="whitespace-nowrap">{runner}</span>
+    </span>
+  );
+}
+
 /** SSH host of a herdr machine, or `null` for this computer. */
 type MachineKey = string | null;
-
-type Mode = WorkspaceSource["kind"];
-
-/**
- * How each way of adding a workspace on a machine is offered and submitted. The buttons are
- * text only, so the three of them leave room for the machine name in the narrow sidebar.
- */
-const modes: Record<Mode, { label: string; title: string; submit: string; pending: string }> = {
-  clone: { label: "Clone", title: "Clone a repository", submit: "Clone workspace", pending: "Cloning..." },
-  open: { label: "Open", title: "Open a cloned repository", submit: "Open workspace", pending: "Opening..." },
-  init: {
-    label: "Init",
-    title: "Make a folder a new git repository",
-    submit: "Init workspace",
-    pending: "Initializing...",
-  },
-};
 
 function machineKeyOf(location: WorkspaceLocation): MachineKey {
   return location.kind === "local" ? null : location.machine;
@@ -142,7 +164,13 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
   const reach = useSyncExternalStore(subscribeReachability, reachability);
   const serverDown = reach === "unreachable" || reach === "retrying";
   const herdrMachines = useHerdrMachines();
-  const [adding, setAdding] = useState<{ machine: MachineKey; mode: Mode } | null>(null);
+  const [adding, setAdding] = useState<{ machine: MachineKey } | null>(null);
+  // The new workspace dialog gives the focus back to the button that opened it.
+  const opener = useRef<HTMLElement | null>(null);
+  const stopAdding = () => {
+    setAdding(null);
+    opener.current?.focus();
+  };
   const [addingMachine, setAddingMachine] = useState(false);
 
   const saved = herdrMachines.data ?? [];
@@ -195,7 +223,6 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
           machines.map((machine) => {
             const label = machine ?? "Local";
             const items = workspaces.data.filter((w) => machineKeyOf(w.location) === machine);
-            const active = adding?.machine === machine ? adding.mode : null;
             const problem = machine !== null && herdrMachines.isSuccess ? herdrProblem(machine, saved) : null;
             return (
               <section key={label} aria-label={`Machine ${label}`} className="flex flex-col gap-1">
@@ -209,32 +236,22 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
                     <span className="truncate">{label}</span>
                     {problem && <span className="ml-1.5 font-normal text-destructive">{problem}</span>}
                   </h3>
-                  {(["clone", "open", "init"] as const).map((mode) => (
-                    <Button
-                      key={mode}
-                      size="xs"
-                      variant={active === mode ? "secondary" : "outline"}
-                      aria-label={`${modes[mode].label} on ${label}`}
-                      aria-pressed={active === mode}
-                      title={modes[mode].title}
-                      onClick={() => setAdding(active === mode ? null : { machine, mode })}
-                    >
-                      {modes[mode].label}
-                    </Button>
-                  ))}
-                </div>
-                {active && (
-                  <NewWorkspaceForm
-                    key={active}
-                    machine={machine}
-                    mode={active}
-                    onCreated={(workspace) => {
-                      setAdding(null);
-                      onSelect(workspace.id);
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    aria-label={`Add workspace on ${label}`}
+                    title="Add a workspace on this machine"
+                    aria-haspopup="dialog"
+                    aria-expanded={adding !== null && adding.machine === machine}
+                    onClick={(event) => {
+                      opener.current = event.currentTarget;
+                      setAdding({ machine });
                     }}
-                    onCancel={() => setAdding(null)}
-                  />
-                )}
+                  >
+                    <Plus />
+                    Add
+                  </Button>
+                </div>
                 {items.length > 0 && (
                   <ul className="flex flex-col gap-1">
                     {items.map((workspace) => (
@@ -251,6 +268,16 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
             );
           })}
       </div>
+      {adding && (
+        <NewWorkspaceDialog
+          machine={adding.machine}
+          onCreated={(workspace) => {
+            stopAdding();
+            onSelect(workspace.id);
+          }}
+          onClose={stopAdding}
+        />
+      )}
     </section>
   );
 }
@@ -284,6 +311,7 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           <span className="truncate text-xs text-muted-foreground" title={describeLocation(workspace.location)}>
             {shortPath(workspace.location.path)}
           </span>
+          <WorkspaceAxes workspace={workspace} />
           {workspace.pathProblem && <PathProblemNote problem={workspace.pathProblem} />}
         </button>
         {!confirming && (
@@ -500,128 +528,445 @@ function AddMachineHelp({ onClose }: { onClose: () => void }) {
   );
 }
 
-type NewWorkspaceFormProps = {
-  machine: MachineKey;
-  mode: Mode;
-  onCreated: (workspace: Workspace) => void;
-  onCancel: () => void;
+/** The steps of a new workspace, in order; the options of a step depend on the steps before it. */
+const steps = ["Source", "Completion", "Runner", "Details"] as const;
+
+const sourceDescriptions: Record<Source, string> = {
+  none: "A folder without git. Tasks get no branch, worktree, or pull request.",
+  local_git: "A git repository without GitHub. Task branches merge locally.",
+  github: "A git repository with a GitHub origin. Tasks ship as pull requests.",
 };
 
-function NewWorkspaceForm({ machine, mode, onCreated, onCancel }: NewWorkspaceFormProps) {
+const repositoryDescriptions: Record<RepositoryKind, string> = {
+  open: "The folder already holds the repository.",
+  init: "Make a folder a new git repository without a remote.",
+  clone: "Clone a repository URL into a new folder.",
+};
+
+const completionDescriptions: Record<CompletionMode, string> = {
+  manual: "When its criteria are met; nothing is merged.",
+  local_merge: "Once its branch is merged into the base branch locally.",
+  pr_merge: "Once its pull request is merged into the base branch.",
+};
+
+const runnerDescriptions: Record<Runner, string> = {
+  herdr: "Opens agents in herdr on a worktree and branch of the task.",
+  none: "Only marks the task in progress.",
+};
+
+/** The submit button of the last step, by how the folder becomes a workspace. */
+const submitLabels: Record<RepositoryKind | "none", { submit: string; pending: string }> = {
+  clone: { submit: "Clone workspace", pending: "Cloning..." },
+  open: { submit: "Open workspace", pending: "Opening..." },
+  init: { submit: "Init workspace", pending: "Initializing..." },
+  none: { submit: "Add workspace", pending: "Adding..." },
+};
+
+type Choice<T extends string> = {
+  value: T;
+  label: string;
+  description: string;
+  /** Why an earlier step rules the option out; the option is disabled and shows this instead of its description. */
+  problem: string | null;
+};
+
+/** One choice of a step, as a group of radio cards. */
+function ChoiceGroup<T extends string>({
+  legend,
+  value,
+  choices,
+  onChange,
+  autoFocus = false,
+}: {
+  legend: string;
+  value: T | null;
+  choices: Choice<T>[];
+  onChange: (value: T) => void;
+  /** Focuses the picked option when the group appears, as the first choice of its step. */
+  autoFocus?: boolean;
+}) {
+  const id = useId();
+  return (
+    <fieldset className="flex min-w-0 flex-col gap-1.5">
+      <legend className="mb-1.5 text-sm font-medium">{legend}</legend>
+      {choices.map((choice) => {
+        const checked = choice.value === value;
+        const disabled = choice.problem !== null;
+        const labelId = `${id}-${choice.value}`;
+        return (
+          <label
+            key={choice.value}
+            className={cn(
+              "flex items-start gap-2.5 rounded-lg border px-3 py-2 transition-colors has-focus-visible:border-ring has-focus-visible:ring-3 has-focus-visible:ring-ring/50",
+              disabled ? "cursor-not-allowed border-dashed" : "cursor-pointer hover:bg-muted",
+              checked && "border-ring bg-secondary hover:bg-secondary",
+            )}
+          >
+            <input
+              type="radio"
+              name={id}
+              value={choice.value}
+              checked={checked}
+              disabled={disabled}
+              autoFocus={autoFocus && checked}
+              aria-labelledby={labelId}
+              aria-describedby={`${labelId}-about`}
+              onChange={() => onChange(choice.value)}
+              className="mt-0.5 size-4 shrink-0 accent-primary"
+            />
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span id={labelId} className={cn("text-sm font-medium", disabled && "text-muted-foreground")}>
+                {choice.label}
+              </span>
+              <span id={`${labelId}-about`} className="flex items-start gap-1 text-xs text-muted-foreground">
+                {disabled && <Ban aria-hidden className="mt-0.5 size-3 shrink-0" />}
+                {choice.problem ?? choice.description}
+              </span>
+            </span>
+          </label>
+        );
+      })}
+    </fieldset>
+  );
+}
+
+type NewWorkspaceDialogProps = {
+  machine: MachineKey;
+  onCreated: (workspace: Workspace) => void;
+  onClose: () => void;
+};
+
+/**
+ * Adds a workspace on `machine` step by step: what its folder holds and how a repository gets
+ * there, when its tasks are done, and what starting one does; then where it lives. An option
+ * that an earlier step rules out is disabled with the reason, and changing an earlier step
+ * resets a later pick that it rules out to the default.
+ */
+function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogProps) {
   const createWorkspace = useCreateWorkspace();
+  const dialog = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const [step, setStep] = useState(0);
+  const [picks, setPicks] = useState<Picks>({ source: "github", repository: null, completion: null, runner: null });
   const [url, setUrl] = useState("");
   const [folderDraft, setFolder] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [baseBranch, setBaseBranch] = useState("");
   const [browsing, setBrowsing] = useState(false);
 
-  const cloning = mode === "clone";
-  const home = useHomeDirectory(machine === null ? { kind: "local" } : { kind: "ssh", label: machine }).data;
-  // A clone makes a new folder under home. Open and Init name the repository's own folder,
-  // so they start inside home, and the folder has to be finished before submitting.
+  const label = machine ?? "Local";
+  const target: Machine = machine === null ? { kind: "local" } : { kind: "ssh", label: machine };
+  const choice = choiceOf(picks);
+  const cloning = choice.repository === "clone";
+  const home = useHomeDirectory(target).data;
+  // A clone makes a new folder under home. The others name the workspace's own folder, so
+  // they start inside home, and the folder has to be finished before submitting.
   const startFolder = home === undefined ? "" : cloning ? home : withSeparator(home);
   const folder = folderDraft ?? startFolder;
   const folderUntouched = !cloning && folderDraft === null;
   const effectiveName = name ?? (cloning ? repositoryName(url) : folderUntouched ? "" : baseName(folder));
-  const folderLabel = cloning ? "Parent folder" : "Folder";
   const path =
     cloning && folder.trim() && effectiveName.trim() ? joinPath(folder.trim(), effectiveName.trim()) : folder.trim();
+  const last = step === steps.length - 1;
+  const busy = createWorkspace.isPending;
+  const labels = submitLabels[choice.repository ?? "none"];
+  const summaries = [sourceLabels[choice.source], completionLabels[choice.completion], runnerLabels[choice.runner], label];
+  const folderHelp = cloning
+    ? undefined
+    : choice.source === "none"
+      ? "The folder the tasks are about. Toodo runs no git or herdr there."
+      : "The repository's own folder.";
+
+  function choose(change: Partial<Picks>) {
+    const next = withPick(picks, change);
+    // A clone names the folder to clone into, the others the workspace's own folder.
+    if ((choiceOf(next).repository === "clone") !== cloning) setFolder(null);
+    setPicks(next);
+  }
+
+  function goTo(index: number) {
+    setBrowsing(false);
+    setStep(index);
+  }
+
+  function close() {
+    if (!busy) onClose();
+  }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const location: WorkspaceLocation =
-      machine === null ? { kind: "local", path } : { kind: "ssh", machine, path };
-    const source: WorkspaceSource = mode === "clone" ? { kind: "clone", url } : { kind: mode };
-    createWorkspace.mutate(
-      { name: effectiveName, location, source, defaultBaseBranch: baseBranch.trim() || null },
-      { onSuccess: onCreated },
-    );
+    if (!last) {
+      goTo(step + 1);
+      return;
+    }
+    const location: WorkspaceLocation = machine === null ? { kind: "local", path } : { kind: "ssh", machine, path };
+    const workspace: NewWorkspace = {
+      name: effectiveName,
+      location,
+      repository:
+        choice.repository === null
+          ? null
+          : choice.repository === "clone"
+            ? { kind: "clone", url }
+            : { kind: choice.repository },
+      source: choice.source,
+      completion: choice.completion,
+      runner: choice.runner,
+      defaultBaseBranch: choice.source === "none" ? null : baseBranch.trim() || null,
+    };
+    createWorkspace.mutate(workspace, { onSuccess: onCreated });
   }
 
   return (
-    <form
-      onSubmit={submit}
-      aria-label={`${modes[mode].label} workspace on ${machine ?? "Local"}`}
-      className="flex flex-col gap-2 rounded-lg border p-2"
-      onKeyDown={escapeCloses(onCancel, createWorkspace.isPending)}
-    >
-      {cloning && (
-        <Field label="Repository URL">
-          {({ id }) => (
-            <input
-              id={id}
-              className={inputClass}
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              required
-            />
-          )}
-        </Field>
-      )}
-      <Field label={folderLabel} help={cloning ? undefined : "The repository's own folder."}>
-        {({ id, describedBy }) => (
-          <div className="flex gap-1">
-            <input
-              id={id}
-              className={inputClass}
-              aria-describedby={describedBy}
-              value={folder}
-              onChange={(e) => setFolder(e.target.value)}
-              required
-            />
-            <Button type="button" size="sm" variant="outline" onClick={() => setBrowsing((open) => !open)} aria-expanded={browsing}>
-              Browse...
+    <div className="fixed inset-0 z-50">
+      <div aria-hidden className="absolute inset-0 bg-black/40 max-md:hidden" onClick={close} />
+      <div
+        ref={dialog}
+        role="dialog"
+        aria-modal
+        aria-labelledby={titleId}
+        onKeyDown={(event) => {
+          if (event.key === "Tab") keepFocusIn(dialog.current, event.nativeEvent);
+          else escapeCloses(onClose, busy)(event);
+        }}
+        className={cn(
+          "relative flex flex-col overflow-hidden bg-background text-foreground",
+          "max-md:h-full max-md:pt-[env(safe-area-inset-top)] max-md:pb-[env(safe-area-inset-bottom)]",
+          "md:absolute md:top-1/2 md:left-1/2 md:h-[min(40rem,calc(100dvh-4rem))] md:w-[min(36rem,calc(100vw-4rem))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-2xl md:border md:shadow-xl",
+        )}
+      >
+        <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+          <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-2 md:px-6 md:pt-4">
+            <h2 id={titleId} className="min-w-0 flex-1 truncate text-base font-semibold">
+              New workspace on {label}
+            </h2>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Close new workspace"
+              title="Close (Esc)"
+              disabled={busy}
+              onClick={close}
+            >
+              <X />
             </Button>
           </div>
-        )}
-      </Field>
-      {browsing && (
-        <RemoteFolderBrowser
-          machine={machine === null ? { kind: "local" } : { kind: "ssh", label: machine }}
-          initialPath={folder}
-          onSelect={(picked) => {
-            setFolder(picked);
-            setBrowsing(false);
-          }}
-          onCancel={() => setBrowsing(false)}
-        />
-      )}
-      <Field label="Name">
-        {({ id }) => (
-          <input
-            id={id}
-            className={inputClass}
-            value={effectiveName}
-            onChange={(e) => setName(e.target.value)}
-            required
-          />
-        )}
-      </Field>
-      {cloning && folder.trim() && effectiveName.trim() && <p className="truncate text-xs text-muted-foreground" title={path}>Clones into {path}</p>}
-      {mode === "init" && (
-        <p className="text-xs text-muted-foreground">
-          The folder is created if it does not exist and becomes a git repository without a remote.
-        </p>
-      )}
-      <Field label="Base branch" help={mode === "init" ? "Uses main if empty." : "Detected from the repository if empty."}>
-        {({ id, describedBy }) => (
-          <input
-            id={id}
-            className={inputClass}
-            aria-describedby={describedBy}
-            value={baseBranch}
-            onChange={(e) => setBaseBranch(e.target.value)}
-          />
-        )}
-      </Field>
-      {createWorkspace.isError && (
-        <p role="alert" className="text-xs text-destructive">
-          {createWorkspace.error.message}
-        </p>
-      )}
-      <Button type="submit" size="sm" disabled={createWorkspace.isPending || folderUntouched}>
-        {createWorkspace.isPending ? modes[mode].pending : modes[mode].submit}
-      </Button>
-    </form>
+          <ol aria-label="Steps" className="grid shrink-0 grid-cols-2 gap-1 px-4 pb-3 md:grid-cols-4 md:px-6">
+            {steps.map((title, index) => {
+              const current = index === step;
+              return (
+                <li key={title} className="min-w-0">
+                  <button
+                    type="button"
+                    aria-current={current ? "step" : undefined}
+                    disabled={busy}
+                    onClick={() => goTo(index)}
+                    className={cn(
+                      "flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none",
+                      current && "bg-secondary hover:bg-secondary",
+                    )}
+                  >
+                    <span
+                      aria-hidden
+                      className={cn(
+                        "flex size-5 shrink-0 items-center justify-center rounded-full border text-xs font-medium",
+                        current ? "border-primary bg-primary text-primary-foreground" : "text-muted-foreground",
+                      )}
+                    >
+                      {index + 1}
+                    </span>
+                    <span className="flex min-w-0 flex-col">
+                      <span className="text-xs font-medium">{title}</span>
+                      <span className="truncate text-xs text-muted-foreground">{summaries[index]}</span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain border-t px-4 py-4 md:px-6">
+            {step === 0 && (
+              <>
+                <ChoiceGroup
+                  legend="What does the workspace folder hold?"
+                  value={choice.source}
+                  autoFocus
+                  choices={sources.map((source) => ({
+                    value: source,
+                    label: sourceLabels[source],
+                    description: sourceDescriptions[source],
+                    problem: null,
+                  }))}
+                  onChange={(source) => choose({ source })}
+                />
+                {choice.source !== "none" && (
+                  <ChoiceGroup
+                    legend="How does the repository get there?"
+                    value={choice.repository}
+                    choices={repositoryKinds.map((kind) => ({
+                      value: kind,
+                      label: repositoryLabels[kind],
+                      description: repositoryDescriptions[kind],
+                      problem: repositoryProblem(choice.source, kind),
+                    }))}
+                    onChange={(repository) => choose({ repository })}
+                  />
+                )}
+              </>
+            )}
+            {step === 1 && (
+              <ChoiceGroup
+                legend="When is a task done?"
+                value={choice.completion}
+                autoFocus
+                choices={completions.map((completion) => ({
+                  value: completion,
+                  label: completionLabels[completion],
+                  description: completionDescriptions[completion],
+                  problem: completionProblem(choice.source, completion),
+                }))}
+                onChange={(completion) => choose({ completion })}
+              />
+            )}
+            {step === 2 && (
+              <ChoiceGroup
+                legend="What does starting a task do?"
+                value={choice.runner}
+                autoFocus
+                choices={runners.map((runner) => ({
+                  value: runner,
+                  label: runnerLabels[runner],
+                  description: runnerDescriptions[runner],
+                  problem: runnerProblem(choice.source, choice.completion, runner),
+                }))}
+                onChange={(runner) => choose({ runner })}
+              />
+            )}
+            {last && (
+              <div className="flex flex-col gap-3">
+                {cloning && (
+                  <Field label="Repository URL">
+                    {({ id }) => (
+                      <input
+                        id={id}
+                        className={inputClass}
+                        value={url}
+                        onChange={(e) => setUrl(e.target.value)}
+                        required
+                        autoFocus
+                      />
+                    )}
+                  </Field>
+                )}
+                <Field label={cloning ? "Parent folder" : "Folder"} help={folderHelp}>
+                  {({ id, describedBy }) => (
+                    <div className="flex gap-1">
+                      <input
+                        id={id}
+                        className={inputClass}
+                        aria-describedby={describedBy}
+                        value={folder}
+                        onChange={(e) => setFolder(e.target.value)}
+                        required
+                        autoFocus={!cloning}
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setBrowsing((open) => !open)}
+                        aria-expanded={browsing}
+                      >
+                        Browse...
+                      </Button>
+                    </div>
+                  )}
+                </Field>
+                {browsing && (
+                  <RemoteFolderBrowser
+                    machine={target}
+                    initialPath={folder}
+                    onSelect={(picked) => {
+                      setFolder(picked);
+                      setBrowsing(false);
+                    }}
+                    onCancel={() => setBrowsing(false)}
+                  />
+                )}
+                <Field label="Name">
+                  {({ id }) => (
+                    <input
+                      id={id}
+                      className={inputClass}
+                      value={effectiveName}
+                      onChange={(e) => setName(e.target.value)}
+                      required
+                    />
+                  )}
+                </Field>
+                {cloning && folder.trim() && effectiveName.trim() && (
+                  <p className="truncate text-xs text-muted-foreground" title={path}>
+                    Clones into {path}
+                  </p>
+                )}
+                {choice.repository === "init" && (
+                  <p className="text-xs text-muted-foreground">
+                    The folder is created if it does not exist and becomes a git repository without a remote.
+                  </p>
+                )}
+                {choice.source !== "none" && (
+                  <Field
+                    label="Base branch"
+                    help={choice.repository === "init" ? "Uses main if empty." : "Detected from the repository if empty."}
+                  >
+                    {({ id, describedBy }) => (
+                      <input
+                        id={id}
+                        className={inputClass}
+                        aria-describedby={describedBy}
+                        value={baseBranch}
+                        onChange={(e) => setBaseBranch(e.target.value)}
+                      />
+                    )}
+                  </Field>
+                )}
+                {createWorkspace.isError && (
+                  <p role="alert" className="text-xs break-words text-destructive">
+                    {createWorkspace.error.message}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2 border-t px-4 py-3 md:px-6">
+            {step === 0 ? (
+              <Button type="button" variant="ghost" disabled={busy} onClick={close}>
+                Cancel
+              </Button>
+            ) : (
+              <Button type="button" variant="ghost" disabled={busy} onClick={() => goTo(step - 1)}>
+                <ChevronLeft data-icon="inline-start" />
+                Back
+              </Button>
+            )}
+            <Button type="submit" className="ml-auto" changesData={last} disabled={busy || (last && folderUntouched)}>
+              {last ? (
+                busy ? (
+                  labels.pending
+                ) : (
+                  labels.submit
+                )
+              ) : (
+                <>
+                  Next
+                  <ChevronRight data-icon="inline-end" />
+                </>
+              )}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }

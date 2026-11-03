@@ -13,7 +13,7 @@ use crate::adapters::git::Git;
 use crate::adapters::herdr::{AgentStatus, Herdr, HerdrError, NewWorktree, PaneAgent};
 use crate::adapters::task_runtime::TaskWorkspaceRuntime;
 use crate::domain::criteria::{CheckKind, CriterionState};
-use crate::domain::model::{self, Machine, WorkspaceLocation};
+use crate::domain::model::{self, Machine, Runner, WorkspaceLocation};
 use crate::domain::naming;
 use crate::domain::status::TaskStatus;
 use crate::storage::{CriterionCheck, StorageError};
@@ -98,6 +98,9 @@ pub fn restore_task_worktree(
     Ok((&restore(&storage, &git, &herdr, id.into())?).into())
 }
 
+/// Starts a task as [`start_task`] does. A task of a workspace with runner none only moves
+/// to `in_progress`: it gets no branch, worktree, or herdr workspace, and neither git nor
+/// herdr runs.
 pub(crate) fn start(
     storage: &StorageState,
     git: &Git,
@@ -105,7 +108,7 @@ pub(crate) fn start(
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
     let (workspace, mut checkout, resumed, kept_worktree, start_unknown) = {
-        let storage = lock(storage);
+        let mut storage = lock(storage);
         let task = storage
             .get_task(id)?
             .ok_or(StorageError::TaskNotFound(id))?;
@@ -121,6 +124,9 @@ pub(crate) fn start(
         let workspace = storage
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+        if workspace.runner == Runner::None {
+            return Ok(storage.set_task_status(id, TaskStatus::InProgress)?);
+        }
         let settings = storage.get_machine_settings(&workspace.location.machine())?;
         let mut checkout = naming::task_checkout(&workspace, &settings, &task)?;
         // A paused task keeps the branch it got when it first started.
@@ -275,6 +281,12 @@ pub(crate) fn restore(
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
         (task, workspace)
     };
+    if workspace.runner == Runner::None && task.branch.is_none() {
+        return Err(CommandError::rejected(format!(
+            "task {id} belongs to workspace {}, which runs tasks without herdr (runner none), so it has no branch or worktree to restore; work on it in the workspace directory and complete it once its criteria are met",
+            workspace.name
+        )));
+    }
     if matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview) {
         super::completion::clear_missing_worktree(storage, git, &task, &workspace)?;
     }
@@ -347,17 +359,28 @@ fn task_workspace(storage: &StorageState, id: model::TaskId) -> CommandResult<Ta
     let task = storage
         .get_task(id)?
         .ok_or(StorageError::TaskNotFound(id))?;
-    let herdr_workspace_id = task.herdr_workspace_id.ok_or_else(|| {
-        CommandError::rejected(format!("task {id} has no herdr workspace; start it first"))
-    })?;
     let workspace = storage
         .get_workspace(task.workspace_id)?
         .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+    let herdr_workspace_id = task
+        .herdr_workspace_id
+        .ok_or_else(|| no_herdr_workspace(id, &workspace))?;
     Ok(TaskWorkspace {
         location: workspace.location,
         worktree_path: task.worktree_path,
         herdr_workspace_id,
     })
+}
+
+/// Why the task `id` of `workspace` has no herdr workspace to open, with the next step.
+fn no_herdr_workspace(id: model::TaskId, workspace: &model::Workspace) -> CommandError {
+    if workspace.runner == Runner::None {
+        return CommandError::rejected(format!(
+            "task {id} belongs to workspace {}, which runs tasks without herdr (runner none), so it has no herdr workspace or panes; work on it in the workspace directory and complete it once its criteria are met",
+            workspace.name
+        ));
+    }
+    CommandError::rejected(format!("task {id} has no herdr workspace; start it first"))
 }
 
 /// Opens the worktree of a task whose herdr workspace herdr no longer has, e.g. because
@@ -461,12 +484,12 @@ fn focus_agent(storage: &StorageState, herdr: &Herdr, id: model::TaskId) -> Comm
         let task = storage
             .get_task(id)?
             .ok_or(StorageError::TaskNotFound(id))?;
-        let herdr_workspace_id = task.herdr_workspace_id.ok_or_else(|| {
-            CommandError::rejected(format!("task {id} has no herdr workspace; start it first"))
-        })?;
         let workspace = storage
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+        let herdr_workspace_id = task
+            .herdr_workspace_id
+            .ok_or_else(|| no_herdr_workspace(id, &workspace))?;
         (workspace.location.machine(), herdr_workspace_id)
     };
     let pane = herdr
@@ -672,6 +695,10 @@ mod tests {
                 name: "Toodo".to_owned(),
                 location,
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         let task = storage
@@ -2203,5 +2230,215 @@ mod tests {
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert_eq!(invocations(&runner).len(), 1);
         assert_eq!(stored(&fixture).herdr_workspace_id.as_deref(), Some("w27"));
+    }
+
+    /// A workspace with source none at a temporary directory, created through the
+    /// creation command, and a task in it with only manual criteria and, if given, a
+    /// command criterion running `command`. git and herdr must not run for either.
+    fn plain_workspace_task(
+        dir: &std::path::Path,
+        command: Option<&str>,
+    ) -> (StorageState, model::Task) {
+        use crate::commands::types;
+        let storage: StorageState = Mutex::new(Storage::open_in_memory().unwrap());
+        let (git, herdr) = (no_git(), herdr(Vec::new()).0);
+        let workspace = crate::commands::workspaces::create(
+            &storage,
+            &git,
+            &herdr,
+            types::WorkspaceSetup {
+                name: "notes".to_owned(),
+                location: WorkspaceLocation::Local {
+                    path: PosixPath::parse(dir.to_str().unwrap()).unwrap().into(),
+                },
+                repository: None,
+                source: Some(model::Source::None),
+                completion: None,
+                runner: None,
+                default_base_branch: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (workspace.source, workspace.completion, workspace.runner),
+            (
+                model::Source::None,
+                model::CompletionMode::Manual,
+                Runner::None
+            )
+        );
+        let mut criteria = vec![types::CriterionInput {
+            id: None,
+            text: Some("Outline written".to_owned()),
+            kind: Some(types::CheckKind::Manual),
+            target: None,
+        }];
+        if let Some(command) = command {
+            criteria.push(types::CriterionInput {
+                id: None,
+                text: Some("Outline checked".to_owned()),
+                kind: Some(types::CheckKind::Command),
+                target: Some(command.to_owned()),
+            });
+        }
+        let task = crate::commands::tasks::create(
+            &storage,
+            types::NewTask {
+                workspace_id: workspace.id.into(),
+                task_type: types::TaskType::Docs,
+                title: "Write the outline".to_owned(),
+                description: String::new(),
+                estimate: None,
+                due_date: None,
+                criteria,
+                // Requested, but a workspace completed manually gets no merge criterion.
+                merge_criterion: true,
+            },
+        )
+        .unwrap();
+        (storage, task)
+    }
+
+    fn no_git() -> Git {
+        Git::new(Box::new(Arc::new(FakeRunner::new(Vec::new()))))
+    }
+
+    #[test]
+    fn a_task_of_a_workspace_without_a_runner_starts_without_git_or_herdr() {
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, task) = plain_workspace_task(dir.path(), None);
+        let runtime = FakeRuntime::new(Vec::new());
+
+        let started = start(&storage, &no_git(), &runtime, task.id).unwrap();
+
+        assert!(runtime.calls().is_empty());
+        let stored = lock(&storage).get_task(task.id).unwrap().unwrap();
+        assert_eq!(stored, started);
+        assert_eq!(stored.status, TaskStatus::InProgress);
+        assert_eq!(stored.branch, None);
+        assert_eq!(stored.worktree_path, None);
+        assert_eq!(stored.herdr_workspace_id, None);
+        assert_eq!(
+            stored.timeline.last().map(|event| event.status),
+            Some(TaskStatus::InProgress)
+        );
+    }
+
+    #[test]
+    fn branch_and_herdr_commands_name_the_next_step_for_a_task_without_a_runner() {
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, task) = plain_workspace_task(dir.path(), None);
+        start(&storage, &no_git(), &FakeRuntime::new(Vec::new()), task.id).unwrap();
+        let (herdr, _) = herdr(Vec::new());
+
+        for error in [
+            restore(&storage, &no_git(), &herdr, task.id).unwrap_err(),
+            open(&storage, &herdr, task.id).unwrap_err(),
+            ensure_workspace(&storage, &herdr, task.id).unwrap_err(),
+            focus_agent(&storage, &herdr, task.id).unwrap_err(),
+            crate::commands::completion::checkout(&storage, &no_git(), task.id)
+                .err()
+                .unwrap(),
+        ] {
+            assert_eq!(error.kind, CommandErrorKind::Rejected);
+            assert!(error.message.contains("runner none"), "{}", error.message);
+        }
+        // Deleting the task has no worktree to remove.
+        delete(&storage, &herdr, task.id, false).unwrap();
+    }
+
+    #[test]
+    fn a_task_without_a_repository_is_planned_started_checked_and_completed() {
+        use crate::adapters::github::GitHub;
+        use crate::commands::{completion, tasks, types};
+        use crate::domain::criteria::CheckedBy;
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, task) = plain_workspace_task(dir.path(), None);
+        let kinds: Vec<CheckKind> = task.criteria.iter().map(|c| c.kind).collect();
+        assert_eq!(kinds, [CheckKind::Manual]);
+
+        let runtime = FakeRuntime::new(Vec::new());
+        let started = start(&storage, &no_git(), &runtime, task.id).unwrap();
+        assert_eq!(started.status, TaskStatus::InProgress);
+        assert!(runtime.calls().is_empty());
+
+        let checked = tasks::check(
+            &mut lock(&storage),
+            Some(task.id.into()),
+            types::CriterionId(task.criteria[0].id.0),
+            true,
+            Some("Outline in notes/outline.md"),
+            CheckedBy::User,
+        )
+        .unwrap();
+        assert!(
+            checked
+                .criteria
+                .iter()
+                .all(|criterion| criterion.state == types::CriterionState::Met)
+        );
+
+        let (herdr, herdr_runner) = herdr(Vec::new());
+        let gh = Arc::new(FakeRunner::new(Vec::new()));
+        let git_runner = Arc::new(FakeRunner::new(Vec::new()));
+        let done = completion::complete(
+            &storage,
+            &Git::new(Box::new(git_runner.clone())),
+            &GitHub::new(Box::new(gh.clone())),
+            &herdr,
+            task.id,
+        )
+        .unwrap();
+
+        assert_eq!(done.status, TaskStatus::Done);
+        assert_eq!(done.branch, None);
+        assert_eq!(done.pull_request_url, None);
+        for runner in [&herdr_runner, &gh, &git_runner] {
+            assert!(invocations(runner).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_command_criterion_of_a_task_without_a_worktree_runs_in_the_workspace_location() {
+        use crate::adapters::github::GitHub;
+        use crate::commands::{completion, tasks, types};
+        use crate::domain::criteria::CheckedBy;
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, task) = plain_workspace_task(dir.path(), Some("test -f outline.md"));
+        start(&storage, &no_git(), &FakeRuntime::new(Vec::new()), task.id).unwrap();
+        tasks::check(
+            &mut lock(&storage),
+            Some(task.id.into()),
+            types::CriterionId(task.criteria[0].id.0),
+            true,
+            None,
+            CheckedBy::User,
+        )
+        .unwrap();
+        let git_runner = Arc::new(FakeRunner::new(vec![Ok(String::new())]));
+
+        let done = completion::complete(
+            &storage,
+            &Git::new(Box::new(git_runner.clone())),
+            &GitHub::new(Box::new(Arc::new(FakeRunner::new(Vec::new())))),
+            &herdr(Vec::new()).0,
+            task.id,
+        )
+        .unwrap();
+
+        assert_eq!(done.status, TaskStatus::Done);
+        let ran = invocations(&git_runner);
+        assert_eq!(ran.len(), 1);
+        assert_eq!(ran[0].program, "sh");
+        assert_eq!(
+            ran[0].args,
+            [
+                "-c".to_owned(),
+                format!(
+                    "cd '{}' && test -f outline.md",
+                    dir.path().to_str().unwrap()
+                )
+            ]
+        );
     }
 }

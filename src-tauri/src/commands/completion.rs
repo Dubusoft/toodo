@@ -173,14 +173,20 @@ pub(super) fn checkout(
             task.status
         )));
     }
+    let workspace = stored
+        .get_workspace(task.workspace_id)?
+        .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
     let Some(branch) = task.branch.clone() else {
+        if workspace.runner == model::Runner::None {
+            return Err(CommandError::rejected(format!(
+                "task {id} belongs to workspace {}, which runs tasks without herdr (runner none), so it has no branch to record commits from, push, or open a pull request for; complete it with complete_task once its criteria are met",
+                workspace.name
+            )));
+        }
         return Err(CommandError::rejected(format!(
             "task {id} has no branch; start it in the Toodo app first"
         )));
     };
-    let workspace = stored
-        .get_workspace(task.workspace_id)?
-        .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
     drop(stored);
     if clear_missing_worktree(storage, git, &task, &workspace)? {
         task = lock(storage)
@@ -876,7 +882,8 @@ fn check_url(git: &Git, url: &str) -> (CriterionState, Option<String>) {
 }
 
 /// What running `command` in the worktree of `task` finds; pending while the worktree
-/// is missing.
+/// is missing. A task that never had a worktree (no branch, e.g. of a workspace with
+/// runner none) runs it in the workspace location.
 fn check_command(
     git: &Git,
     task: &model::Task,
@@ -890,6 +897,17 @@ fn check_command(
         evidence: Some(evidence),
         target: None,
     };
+    let run = |dir: &str| match git.run_command(location, dir, command) {
+        Ok(output) => check(
+            CriterionState::Met,
+            clip(&format!("`{command}` succeeded\n{}", output.trim())),
+        ),
+        Err(error) => check(CriterionState::Failed, clip(&error.to_string())),
+    };
+    if task.worktree_path.is_none() && task.branch.is_none() {
+        let (WorkspaceLocation::Local { path } | WorkspaceLocation::Ssh { path, .. }) = location;
+        return run(&path.to_string());
+    }
     let exists = task.worktree_path.as_ref().map_or(Ok(false), |worktree| {
         git.worktree_exists(location, worktree)
     });
@@ -903,13 +921,7 @@ fn check_command(
             );
         }
     };
-    match git.run_command(location, &worktree.to_string(), command) {
-        Ok(output) => check(
-            CriterionState::Met,
-            clip(&format!("`{command}` succeeded\n{}", output.trim())),
-        ),
-        Err(error) => check(CriterionState::Failed, clip(&error.to_string())),
-    }
+    run(&worktree.to_string())
 }
 
 /// Checks the met `url` and `command` criteria of `task` that this pass did not
@@ -1668,6 +1680,10 @@ mod tests {
                 name: "toodo".to_owned(),
                 location,
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         let new_task = |title: &str| NewTask {

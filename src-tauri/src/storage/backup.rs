@@ -181,6 +181,10 @@ mod tests {
                         .into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         let first = storage
@@ -306,6 +310,48 @@ mod tests {
             .map(|workspace| workspace.name)
             .collect();
         assert_eq!(names, ["toodo"]);
+        // A backup from before the axes restores with the defaults, to be detected.
+        let workspace = storage.list_workspaces().unwrap().pop().unwrap();
+        assert_eq!(
+            (workspace.source, workspace.completion, workspace.runner),
+            (
+                crate::domain::model::Source::GitHub,
+                crate::domain::model::CompletionMode::PullRequestMerge,
+                crate::domain::model::Runner::Herdr
+            )
+        );
+        assert_eq!(storage.workspaces_to_detect().unwrap(), [workspace]);
+    }
+
+    #[test]
+    fn a_backup_keeps_the_axes_of_its_workspaces() {
+        use crate::domain::model::{CompletionMode, Runner, Source};
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open(dir.path());
+        storage
+            .create_workspace(&NewWorkspace {
+                name: "notes".to_owned(),
+                location: WorkspaceLocation::Local {
+                    path: WindowsPath::parse(r"C:\dev\notes").unwrap().into(),
+                },
+                default_base_branch: String::new(),
+                source: Source::None,
+                completion: CompletionMode::Manual,
+                runner: Runner::None,
+                axes_detected: true,
+            })
+            .unwrap();
+        let export = dir.path().join("export.sqlite3");
+        storage.export_to(&export).unwrap();
+
+        let mut restored = Storage::open_in_memory().unwrap();
+        restored.restore(stage_backup(&export).unwrap()).unwrap();
+
+        assert_eq!(
+            restored.list_workspaces().unwrap(),
+            storage.list_workspaces().unwrap()
+        );
+        assert!(restored.workspaces_to_detect().unwrap().is_empty());
     }
 
     #[test]

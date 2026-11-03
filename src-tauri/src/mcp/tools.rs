@@ -53,6 +53,17 @@ pub struct CreateWorkspace {
     /// `clone_url`.
     #[serde(default)]
     pub init: bool,
+    /// What `path` holds: `github` (a repository with a GitHub `origin` remote),
+    /// `local_git` (a repository merged locally), or `none` (a plain directory: no git,
+    /// no herdr, no `clone_url` or `init`). Omitted: `github` when the repository has an
+    /// `origin` remote, else `local_git`.
+    pub source: Option<types::Source>,
+    /// How its tasks get done: `pr_merge` (github), `local_merge` (local_git), or
+    /// `manual` (any source). Omitted: the default of the source.
+    pub completion: Option<types::CompletionMode>,
+    /// What runs started tasks: `herdr` (git sources) or `none` (only with completion
+    /// `manual`). Omitted: `herdr` for git sources, `none` for source `none`.
+    pub runner: Option<types::Runner>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -491,7 +502,8 @@ pub fn list_workspaces(storage: &Storage) -> CommandResult<Vec<Workspace>> {
 }
 
 /// Creates a local workspace through the app's own setup: clone or check the repository,
-/// open it in herdr, and save it unless a workspace already uses its location.
+/// open it in herdr for runner herdr, and save it unless a workspace already uses its
+/// location. With source none the directory is saved as given.
 pub fn create_workspace(
     storage: &StorageState,
     git: &Git,
@@ -503,14 +515,28 @@ pub fn create_workspace(
             "init makes a new repository; it cannot be combined with clone_url",
         ));
     }
+    let repository = if request.source == Some(types::Source::None) {
+        if request.init || request.clone_url.is_some() {
+            return Err(CommandError::invalid_input(
+                "source none is a plain directory without a repository; omit clone_url and \
+                 init, or choose source local_git or github to clone or init one",
+            ));
+        }
+        None
+    } else {
+        Some(match request.clone_url {
+            Some(url) => types::RepositorySetup::Clone { url },
+            None if request.init => types::RepositorySetup::Init,
+            None => types::RepositorySetup::Open,
+        })
+    };
     let setup = types::NewWorkspace {
         name: request.name,
         location: types::WorkspaceLocation::Local { path: request.path },
-        source: match request.clone_url {
-            Some(url) => types::WorkspaceSource::Clone { url },
-            None if request.init => types::WorkspaceSource::Init,
-            None => types::WorkspaceSource::Open,
-        },
+        repository,
+        source: request.source,
+        completion: request.completion,
+        runner: request.runner,
         default_base_branch: request.default_base_branch,
     }
     .try_into()?;
@@ -782,7 +808,7 @@ pub fn restore_worktree(
 /// Creates a `planned` task with its dependencies. Unknown prerequisites are rejected
 /// before anything is written; a new task has no dependents, so its edges cannot close
 /// a cycle.
-pub fn create_task(storage: &StorageState, git: &Git, request: CreateTask) -> CommandResult<Task> {
+pub fn create_task(storage: &StorageState, request: CreateTask) -> CommandResult<Task> {
     let criteria = request
         .criteria
         .iter()
@@ -790,7 +816,6 @@ pub fn create_task(storage: &StorageState, git: &Git, request: CreateTask) -> Co
         .collect::<CommandResult<Vec<_>>>()?;
     let merge = task_commands::merge_criterion(
         storage,
-        git,
         request.workspace_id.into(),
         &criteria,
         request.merge_criterion.unwrap_or(true),
@@ -851,12 +876,12 @@ fn insert_task(
     get_task(storage, task.id.into())
 }
 
-/// Edits a task as `update_task` does; `origin` says whether its repository has an
-/// `origin` remote (see [`task_commands::edit_origin`]).
+/// Edits a task as `update_task` does; `completion` is the completion of its workspace
+/// (see [`task_commands::edit_completion`]).
 pub fn update_task(
     storage: &mut Storage,
     request: UpdateTask,
-    origin: Option<bool>,
+    completion: Option<model::CompletionMode>,
 ) -> CommandResult<Task> {
     let current = get_task(storage, request.id)?;
     // A done task is part of the record reviews are built on; agents add to it instead.
@@ -879,7 +904,7 @@ pub fn update_task(
             merge_criterion: false,
         },
         request.remove_merge_criterion,
-        origin,
+        completion,
     )
 }
 
@@ -894,11 +919,11 @@ pub fn new_criterion(request: &AddCriterion) -> types::CriterionInput {
 }
 
 /// Adds one criterion, pending, after the task's criteria, which stay as they are;
-/// `origin` as for [`update_task`].
+/// `completion` as for [`update_task`].
 pub fn add_criterion(
     storage: &mut Storage,
     request: AddCriterion,
-    origin: Option<bool>,
+    completion: Option<model::CompletionMode>,
 ) -> CommandResult<Task> {
     let current = get_task(storage, request.task_id)?;
     let mut criteria: Vec<types::CriterionInput> = current
@@ -919,7 +944,7 @@ pub fn add_criterion(
             criteria: Some(criteria),
             remove_merge_criterion: false,
         },
-        origin,
+        completion,
     )
 }
 
@@ -1626,6 +1651,10 @@ mod tests {
                     path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         (storage, workspace.id.into())
@@ -2589,6 +2618,10 @@ mod tests {
                     path: PosixPath::parse("/srv/app").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         let task = create(&mut storage, workspace.id.into(), "Remote", vec![]).unwrap();
@@ -2656,6 +2689,10 @@ mod tests {
                     path: WindowsPath::parse(r"C:\srv\app").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         let numbered = create(&mut storage, other.id.into(), "Deploy server", vec![]).unwrap();
@@ -2733,6 +2770,10 @@ mod tests {
                     path: WindowsPath::parse(r"C:\srv\app").unwrap().into(),
                 },
                 default_base_branch: "main".to_owned(),
+                source: crate::domain::model::Source::GitHub,
+                completion: crate::domain::model::CompletionMode::PullRequestMerge,
+                runner: crate::domain::model::Runner::Herdr,
+                axes_detected: true,
             })
             .unwrap();
         let here = create(&mut storage, local, "Here", vec![]).unwrap();
