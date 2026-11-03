@@ -483,8 +483,8 @@ export function useRunLog(runId: RunId | null) {
 }
 
 /**
- * Starts Claude or Codex on the worktree of an `in_progress` task of a plain workspace, with
- * the task as its prompt. A launch that fails is still recorded as a failed run, so the runs
+ * Starts Claude or Codex on the worktree of an `in_progress` task of a plain or tmux workspace,
+ * with the task as its prompt. A launch that fails is still recorded as a failed run, so the runs
  * are refetched either way.
  */
 export function useStartPlainRun() {
@@ -496,12 +496,28 @@ export function useStartPlainRun() {
   });
 }
 
-/** Stops a plain run: it ends as cancelled; a run that already ended stays as it is. */
+/** Stops a plain or tmux run: it ends as cancelled; a run that already ended stays as it is. */
 export function useStopRun() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (run: TaskRun) => unwrap(commands.stopRun(run.id)),
     onSettled: (_stopped, _error, run) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.taskRuns(run.taskId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.runLog(run.id) }),
+      ]),
+  });
+}
+
+/**
+ * Settles a run whose end was not seen (`unknown`, e.g. after a server restart or a lost SSH
+ * connection) from what its host recorded; it never starts the agent again.
+ */
+export function useReconcileRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (run: TaskRun) => unwrap(commands.reconcileRun(run.id)),
+    onSettled: (_reconciled, _error, run) =>
       Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.taskRuns(run.taskId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.runLog(run.id) }),

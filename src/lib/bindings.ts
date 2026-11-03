@@ -123,8 +123,8 @@ export const commands = {
 	 *  Deletes a task with its dependency edges and commit records. A task that still has a worktree
 	 *  first removes it through herdr, which also closes its herdr workspace; the branch is
 	 *  kept. Without `force`, a worktree with modified or untracked files is rejected and the
-	 *  task is kept. A task of a workspace with runner plain has its worktree removed by git,
-	 *  and its plain runs that are still running are stopped first.
+	 *  task is kept. A task of a workspace with runner plain or tmux has its worktree removed
+	 *  by git, and its plain and tmux runs that are still running are stopped first.
 	 */
 	deleteTask: (id: TaskId, force: boolean) => typedError<null, CommandError>(invoke("delete_task", { id, force })),
 	/**
@@ -179,28 +179,42 @@ export const commands = {
 	closeTaskWorkspace: (id: TaskId) => typedError<Task, CommandError>(invoke("close_task_workspace", { id })),
 	/**
 	 *  Starts `adapter` (Claude or Codex) as a writer run in the worktree of an `in_progress`
-	 *  task of a local workspace with runner plain. The prompt goes to the agent on stdin;
-	 *  without one (or a blank one) it is the task's title, description, and criteria, and
-	 *  with `mcp` it also tells the agent to call the Toodo MCP `current_task` tool. With
-	 *  `mcp` the agent gets the server's MCP endpoint and token in its environment only.
-	 *  Returns the run as recorded right after the launch.
+	 *  task of a workspace with runner plain or tmux, on the server or on the workspace's SSH
+	 *  machine. Runner plain runs the agent as a child process (over `ssh` for an SSH
+	 *  workspace); runner tmux runs it in a detached tmux session that `get_run_log` tells how
+	 *  to attach to. The prompt goes to the agent on stdin; without one (or a blank one) it is
+	 *  the task's title, description, and criteria, and with `mcp` it also tells the agent to
+	 *  call the Toodo MCP `current_task` tool. With `mcp` the agent gets the server's MCP
+	 *  endpoint and token in its environment only; on an SSH machine it reaches the server
+	 *  through the machine's MCP tunnel, which must be open. Returns the run as recorded right
+	 *  after the launch.
 	 */
 	startPlainRun: (taskId: TaskId, adapter: AgentAdapter, prompt: string | null, mcp: boolean) => typedError<TaskRun, CommandError>(invoke("start_plain_run", { taskId, adapter, prompt, mcp })),
 	/**  The runs of a task, oldest first. */
 	listTaskRuns: (taskId: TaskId) => typedError<TaskRun[], CommandError>(invoke("list_task_runs", { taskId })),
 	/**
 	 *  A run with its events and the last `tail_bytes` (default 64 KiB, at most 4 MiB) of its
-	 *  stdout and stderr logs, with the MCP token redacted.
+	 *  stdout and stderr logs, with the MCP token redacted. For an active tmux run, `attach`
+	 *  is the shell command that opens its terminal session (a view of the run, not a way
+	 *  to control it).
 	 */
 	getRunLog: (runId: RunId, tailBytes: number | null) => typedError<RunLog, CommandError>(invoke("get_run_log", { runId, tailBytes })),
 	/**
-	 *  Stops a plain run: its process group is terminated (killed after a grace period) and
-	 *  the run ends as `cancelled`. A run that already ended is returned as it is.
+	 *  Stops a plain or tmux run: a plain run's process group is terminated (killed after a
+	 *  grace period), a tmux run's session is killed, and the run ends as `cancelled`. A run
+	 *  that already ended is returned as it is.
 	 */
 	stopRun: (runId: RunId) => typedError<TaskRun, CommandError>(invoke("stop_run", { runId })),
 	/**
-	 *  Reports whether herdr is installed and running and whether the `claude` and `codex`
-	 *  CLIs of plain runs are on the server's `PATH`.
+	 *  Settles a plain or tmux run whose observation was lost (state `unknown`, e.g. after a
+	 *  server restart or an SSH disconnect) from what its host recorded: its exit, a session
+	 *  or process that still runs, or neither. It never starts the agent again. A run that is
+	 *  observed or already ended is returned as it is.
+	 */
+	reconcileRun: (runId: RunId) => typedError<TaskRun, CommandError>(invoke("reconcile_run", { runId })),
+	/**
+	 *  Reports whether herdr is installed and running, whether tmux runs, and whether the
+	 *  `claude` and `codex` CLIs of plain and tmux runs are on the server's `PATH`.
 	 */
 	runnerHealth: () => typedError<RunnerHealth, CommandError>(invoke("runner_health")),
 	/**
@@ -831,6 +845,8 @@ export type RunLog = {
 	events: RunEvent[],
 	stdout: string,
 	stderr: string,
+	/**  For an active tmux run, the shell command that attaches a terminal to its session. */
+	attach: string | null,
 };
 
 /**  Where a run is in its life. */
@@ -856,11 +872,10 @@ export type Runner =
 "none" | 
 /**  Agents in a herdr workspace on a task worktree and branch. */
 "herdr" | 
-/**
- *  Agent CLIs that Toodo runs itself on a task worktree and branch, without herdr.
- *  Only local workspaces use it.
- */
-"plain";
+/**  Agent CLIs that Toodo runs itself on a task worktree and branch, without herdr. */
+"plain" | 
+/**  Agent CLIs in a tmux session on a POSIX host. */
+"tmux";
 
 /**
  *  What the server can run tasks with: herdr for herdr workspaces, and the agent CLIs of
@@ -868,6 +883,8 @@ export type Runner =
  */
 export type RunnerHealth = {
 	herdr: HerdrHealth,
+	/**  tmux for local workspaces with runner tmux. */
+	tmux: TmuxHealth,
 	/**  Claude, then Codex. */
 	agents: AgentHealth[],
 };
@@ -1074,7 +1091,7 @@ export type TaskRun = {
 	requestKey: string,
 	/**  Increases from 1 per task. */
 	generation: number,
-	/**  `plain`, `herdr`, or `none`. */
+	/**  `plain`, `tmux`, `herdr`, or `none`. */
 	runnerKind: string,
 	/**  `writer` or `observer`. */
 	role: string,
@@ -1100,6 +1117,15 @@ export type TasksChanged = {
 
 /**  Seconds since the Unix epoch (UTC). */
 export type Timestamp = number;
+
+export type TmuxHealth = {
+	/**  Whether `tmux -V` ran from the server's `PATH`. */
+	installed: boolean,
+	/**  The version `tmux -V` printed, such as `tmux 3.4`. */
+	version: string | null,
+	/**  What to do next when tmux cannot run; `None` when it can. */
+	message: string | null,
+};
 
 export type Workspace = {
 	id: WorkspaceId,

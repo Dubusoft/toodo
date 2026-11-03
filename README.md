@@ -46,6 +46,8 @@ into a performance report.
   needs `claude` or `codex` on the server's `PATH`; runner `none` needs neither
 - Git, OpenSSH, and the GitHub CLI (`gh`) on the server's `PATH`
 - A current browser to use the web app
+- For runner `tmux`: tmux on the host that runs the agent. For runner `plain` on a POSIX
+  SSH host: util-linux `setsid` (with `--wait`) there
 
 See [docs/server.md](docs/server.md) to install it. On Linux x64 or arm64 (glibc) with
 Node.js, the quickest start is:

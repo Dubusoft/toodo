@@ -1,25 +1,36 @@
-//! The health of the runners on the server: herdr for herdr workspaces, and the agent
-//! CLIs plain runs launch. Missing tools are reported, never an error.
+//! The health of the runners on the server: herdr for herdr workspaces, tmux for local
+//! tmux workspaces, and the agent CLIs plain and tmux runs launch. Missing tools are
+//! reported, never an error.
 
 use super::State;
 
-use super::types::{AgentAdapter, AgentHealth, HerdrHealth, RunnerHealth};
+use super::types::{AgentAdapter, AgentHealth, HerdrHealth, RunnerHealth, TmuxHealth};
 use super::{CommandResult, HerdrState};
 use crate::adapters::herdr::{Herdr, HerdrError};
 use crate::cli::find_on_path;
 use crate::runtime::plain::adapter;
 
-/// Reports whether herdr is installed and running and whether the `claude` and `codex`
-/// CLIs of plain runs are on the server's `PATH`.
+/// Reports whether herdr is installed and running, whether tmux runs, and whether the
+/// `claude` and `codex` CLIs of plain and tmux runs are on the server's `PATH`.
 #[specta::specta]
 pub fn runner_health(herdr: State<'_, HerdrState>) -> CommandResult<RunnerHealth> {
-    Ok(health(&herdr, &|name| std::env::var(name).ok()))
+    let tmux = std::process::Command::new("tmux")
+        .arg("-V")
+        .stdin(std::process::Stdio::null())
+        .output();
+    Ok(health(&herdr, tmux, &|name| std::env::var(name).ok()))
 }
 
-/// [`runner_health`] with the environment variables read through `var`.
-fn health(herdr: &Herdr, var: &dyn Fn(&str) -> Option<String>) -> RunnerHealth {
+/// [`runner_health`] with the output of `tmux -V` given and the environment variables
+/// read through `var`.
+fn health(
+    herdr: &Herdr,
+    tmux: std::io::Result<std::process::Output>,
+    var: &dyn Fn(&str) -> Option<String>,
+) -> RunnerHealth {
     RunnerHealth {
         herdr: herdr_health(herdr.server_status()),
+        tmux: tmux_health(tmux),
         agents: [AgentAdapter::Claude, AgentAdapter::Codex]
             .into_iter()
             .map(|adapter| agent_health(adapter, var))
@@ -63,6 +74,39 @@ fn herdr_health(status: Result<crate::adapters::herdr::ServerStatus, HerdrError>
             message: Some(format!(
                 "Cannot read the herdr server status: {error}; start herdr on the server \
                  and check `herdr status --json`, {WITHOUT_HERDR}."
+            )),
+        },
+    }
+}
+
+/// tmux is usable when `tmux -V` runs and succeeds. SSH workspaces run the tmux of their
+/// host, which this does not check.
+fn tmux_health(output: std::io::Result<std::process::Output>) -> TmuxHealth {
+    const NEXT: &str = "install tmux on the server's PATH for local tmux workspaces, or \
+                        set the workspace runner to plain";
+    match output {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            TmuxHealth {
+                installed: true,
+                version: (!version.is_empty()).then_some(version),
+                message: None,
+            }
+        }
+        Ok(output) => TmuxHealth {
+            installed: false,
+            version: None,
+            message: Some(format!(
+                "tmux -V failed ({}: {}); {NEXT}.",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
+        },
+        Err(error) => TmuxHealth {
+            installed: false,
+            version: None,
+            message: Some(format!(
+                "tmux was not found on the server's PATH ({error}); {NEXT}."
             )),
         },
     }
@@ -112,6 +156,39 @@ mod tests {
         None
     }
 
+    fn no_tmux() -> std::io::Result<std::process::Output> {
+        Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+    }
+
+    fn output(code: i32, stdout: &str, stderr: &str) -> std::io::Result<std::process::Output> {
+        use std::os::unix::process::ExitStatusExt;
+        Ok(std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        })
+    }
+
+    #[test]
+    fn tmux_reports_its_version_or_the_next_step() {
+        assert_eq!(
+            tmux_health(output(0, "tmux 3.6\n", "")),
+            TmuxHealth {
+                installed: true,
+                version: Some("tmux 3.6".to_owned()),
+                message: None,
+            }
+        );
+        let missing = tmux_health(no_tmux());
+        assert!(!missing.installed);
+        let message = missing.message.unwrap();
+        assert!(message.contains("install tmux"), "{message}");
+        assert!(message.contains("runner to plain"), "{message}");
+        let failed = tmux_health(output(1, "", "broken"));
+        assert!(!failed.installed);
+        assert!(failed.message.unwrap().contains("broken"));
+    }
+
     #[test]
     fn missing_herdr_is_reported_as_not_installed() {
         let health = health(
@@ -119,6 +196,7 @@ mod tests {
                 program: "herdr".to_owned(),
                 message: "No such file or directory (os error 2)".to_owned(),
             })),
+            no_tmux(),
             &no_path,
         );
         assert!(!health.herdr.installed);
@@ -136,6 +214,7 @@ mod tests {
                 r#"{"server":{"running":true,"version":"0.9.5","socket":"/tmp/herdr.sock"}}"#
                     .to_owned(),
             )),
+            no_tmux(),
             &no_path,
         );
         assert_eq!(
@@ -153,6 +232,7 @@ mod tests {
     fn stopped_herdr_is_installed_but_not_running() {
         let health = health(
             &herdr(Ok(r#"{"server":{"running":false}}"#.to_owned())),
+            no_tmux(),
             &no_path,
         );
         assert!(health.herdr.installed);
@@ -171,6 +251,7 @@ mod tests {
 
         let health = health(
             &herdr(Ok(r#"{"server":{"running":true}}"#.to_owned())),
+            no_tmux(),
             &var,
         );
         assert_eq!(

@@ -73,6 +73,7 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         runs::list_task_runs,
         runs::get_run_log,
         runs::stop_run,
+        runs::reconcile_run,
         runners::runner_health,
         completion::refresh_commit_records,
         completion::open_pull_request,

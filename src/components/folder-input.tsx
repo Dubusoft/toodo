@@ -1,15 +1,11 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import type { Machine } from "@/lib/bindings";
+import { isWindowsPath } from "@/lib/paths";
 import { useDirectories } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
 /** Wait after the last keystroke before listing a folder, so typing does not send a request per key. */
 const listDelayMs = 200;
-
-/** Whether `path` is a Windows drive or UNC path, as listed on a Windows host. */
-function isWindowsPath(path: string): boolean {
-  return /^[a-zA-Z]:/.test(path) || path.startsWith("\\\\");
-}
 
 /** `name` inside the folder `base`, with the separator of the path's kind. */
 export function joinPath(base: string, name: string): string {

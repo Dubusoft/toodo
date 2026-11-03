@@ -49,9 +49,10 @@ See [`docs/architecture.md`](docs/architecture.md) for the domain model and
 
 - **Target**: `toodo-server` on Linux, used through the web app (PWA) it serves to
   browsers on any device; see `docs/server.md`. There is no native app.
-- **Prerequisite**: herdr is optional; workspaces with runner `herdr` (and remote SSH
-  workspaces) need it installed and running on the server, while runner `plain` runs
-  `claude` or `codex` from the server's `PATH` and runner `none` needs neither. Toodo
+- **Prerequisite**: herdr is optional; workspaces with runner `herdr` need it installed
+  and running on the server, while runner `plain` runs `claude` or `codex` from the
+  `PATH` of the server or the workspace's SSH host, runner `tmux` also needs `tmux`
+  there, and runner `none` needs neither. Toodo
   controls herdr; it never installs, updates, or bundles herdr. Git, OpenSSH
   (`ssh`), and `gh` are also expected on the server's `PATH`.
 - **Backend**: Rust with tokio and axum: commands over HTTP, events over server-sent
@@ -95,7 +96,11 @@ Layout:
     locally or over `ssh`, `herdr.rs` drives the herdr CLI, `github.rs` opens pull
     requests with `gh`, `ssh.rs` reads and appends hosts in `~/.ssh/config` and lists
     remote directories), each behind a trait with a fake for tests.
-  - `src-tauri/src/runtime/plain/`: the plain runner, which runs `claude` or `codex` as child processes in a task worktree.
+  - `src-tauri/src/runtime/plain/`: the plain runner, which runs `claude` or `codex` as child processes in a task worktree, locally or on an SSH host.
+  - `src-tauri/src/runtime/host.rs`: builds run commands for the local host or an SSH host
+    (POSIX `sh` or Windows PowerShell): staging, wrapper, stop, probe, and tmux commands.
+  - `src-tauri/src/runtime/tmux/`: the tmux runner, which runs each agent in a detached
+    tmux session locally or on a POSIX SSH host, and recovers sessions after a restart.
   - `src-tauri/src/mcp/`: MCP server for coding agents (rmcp over loopback HTTP with a
     bearer token); `tools.rs` holds the tool logic over `Storage`.
   - `src-tauri/src/oauth/`: OAuth authorization server for chat apps on `/mcp`, mounted

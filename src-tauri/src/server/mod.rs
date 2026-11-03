@@ -56,21 +56,23 @@ use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::workspaces;
 use crate::commands::{
     GitHubState, GitState, HerdrState, PlainRunState, Runtime, SshConfigState, SshState,
-    StorageState,
+    StorageState, TmuxRunState,
 };
 use crate::domain::model;
 use crate::mcp::tunnels::{self, Tunnels, TunnelsState};
 use crate::mcp::{self, Backend, ServerStatus};
 use crate::oauth::{self, PublicUrl};
-use crate::runtime::plain::PlainRunner;
 use crate::runtime::plain::adapter::McpEndpoint;
+use crate::runtime::plain::{McpProvider, PlainRunner};
+use crate::runtime::tmux::TmuxRunner;
 use crate::storage::Storage;
 
 pub(crate) const DATABASE_FILE: &str = "toodo.sqlite3";
 
 pub(crate) const WEB_TOKEN_FILE: &str = "web-token";
 
-/// The directory in the data directory with one private directory per plain run.
+/// The directory in the data directory with one private directory per plain or local
+/// tmux run.
 const RUNS_DIR: &str = "runs";
 
 /// The default port. The server forwards it to its SSH machines too, so agents there reach
@@ -173,6 +175,7 @@ pub struct Services {
     ssh_config: SshConfigState,
     herdr: HerdrState,
     plain: PlainRunState,
+    tmux: TmuxRunState,
     agent_statuses: AgentStatusState,
     pull_request_statuses: PullRequestStatusState,
     backups: Backups,
@@ -368,16 +371,31 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let port = listener.local_addr()?.port();
     let herdr = Arc::new(Herdr::new(Box::new(ProcessRunner)));
     let mcp_url = mcp::url(port);
-    let plain = PlainRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR))
-        .with_mcp_provider(Arc::new({
-            let (url, token) = (mcp_url.clone(), mcp_token.clone());
-            move || {
-                Some(McpEndpoint {
-                    url: url.clone(),
-                    token: token.clone(),
-                })
-            }
-        }));
+    let endpoint: McpProvider = Arc::new({
+        let (url, token) = (mcp_url.clone(), mcp_token.clone());
+        move || {
+            Some(McpEndpoint {
+                url: url.clone(),
+                token: token.clone(),
+            })
+        }
+    });
+    let tunnels: TunnelsState = Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), port)));
+    let instance = load_instance_id(&config.data_dir.join("instance-id"))?;
+    let plain = PlainRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR), &instance)
+        .with_mcp_provider(endpoint.clone())
+        .with_tunnel_open_provider(tunnels::open_provider(&tunnels));
+    let tmux = TmuxRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR), &instance)
+        .with_mcp_provider(endpoint)
+        .with_tunnel_open_provider(tunnels::open_provider(&tunnels));
+    // Local tmux sessions outlive the server: observe the live ones again and settle the
+    // ended ones. Remote ones become unknown without SSH, for reconcile_run.
+    if let Err(error) = tmux.recover_after_restart(&storage) {
+        eprintln!(
+            "toodo-server: could not recover tmux runs ({error}); settle them with \
+             reconcile_run once tmux works"
+        );
+    }
     let services = Arc::new(Services {
         storage,
         public_url: config.public_url.clone(),
@@ -388,6 +406,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         panes: panes::Panes::new(Arc::new(panes::HerdrSockets(herdr.clone()))),
         herdr,
         plain,
+        tmux,
         agent_statuses: Mutex::default(),
         pull_request_statuses: Mutex::default(),
         backups: Backups::load(&config.data_dir),
@@ -399,7 +418,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             error: None,
             rejections: mcp::Rejections::default(),
         },
-        tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), port))),
+        tunnels,
         events: broadcast::channel(EVENT_BUFFER).0,
         restore_limit: files::RESTORE_LIMIT,
         push,
@@ -463,6 +482,39 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(PoisonError::into_inner)
         .shut_down();
     Ok(served?)
+}
+
+/// The runner namespace belongs to this data directory, not to a database backup.
+/// Never replace even an invalid existing id: that could orphan live runs.
+fn load_instance_id(path: &Path) -> std::io::Result<String> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    match options.open(path) {
+        Ok(mut file) => {
+            let id = mcp::new_instance()?;
+            file.write_all(id.as_bytes())?;
+            file.sync_all()?;
+            Ok(id)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let id = std::fs::read_to_string(path)?;
+            if id.len() != 12
+                || !id
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            {
+                return Err(std::io::Error::other(format!(
+                    "invalid server instance id in {}; restore the original instance-id file before starting the server",
+                    path.display()
+                )));
+            }
+            Ok(id)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Creates the data directory, which holds the access tokens, so that on Unix only the
@@ -610,6 +662,35 @@ async fn interrupted() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runner_instance_is_persisted_and_never_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("instance-id");
+        let id = load_instance_id(&path).unwrap();
+        assert_eq!(id.len(), 12);
+        assert!(
+            id.bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        );
+        assert_eq!(load_instance_id(&path).unwrap(), id);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::write(&path, "invalid").unwrap();
+        assert!(
+            load_instance_id(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("restore the original instance-id")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "invalid");
+    }
 
     #[test]
     fn the_default_config_listens_on_loopback_and_keeps_data_in_home() {
@@ -778,7 +859,8 @@ mod tests {
     ) -> Arc<Services> {
         let storage = Arc::new(Mutex::new(Storage::open_in_memory().unwrap()));
         Arc::new(Services {
-            plain: PlainRunner::new(storage.clone(), data_dir.join(RUNS_DIR)),
+            plain: PlainRunner::new(storage.clone(), data_dir.join(RUNS_DIR), "0123456789ab"),
+            tmux: TmuxRunner::new(storage.clone(), data_dir.join(RUNS_DIR), "0123456789ab"),
             storage,
             public_url: None,
             git: Arc::new(Git::new(Box::new(ProcessRunner))),

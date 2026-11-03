@@ -388,6 +388,32 @@ impl Storage {
         Ok(launched)
     }
 
+    /// Restores observation only after a tmux runner confirmed that this session is
+    /// alive. Ordinary launch recording must never revive an Unknown run.
+    pub fn resume_observed_run(&mut self, run: RunId, provider_run_ref: &str) -> Result<TaskRun> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let current = existing_run(&tx, run)?;
+        if current.runner_kind != RunnerKind::Tmux
+            || current.state != RunState::Unknown
+            || current.provider_run_ref.as_deref() != Some(provider_run_ref)
+        {
+            return Err(StorageError::RunTransition {
+                run,
+                from: current.state,
+                to: RunState::Running,
+            });
+        }
+        tx.execute(
+            "UPDATE task_runs SET state = 'running', ended_at = NULL WHERE id = ?1",
+            [run.0],
+        )?;
+        append_event(&tx, &current, "recovered", Some(provider_run_ref), at)?;
+        let recovered = existing_run(&tx, run)?;
+        tx.commit()?;
+        Ok(recovered)
+    }
+
     /// Records that the runner could not launch a reserved run: the launch operation and
     /// the run fail, and a `launch_failed` event carries `error`, in one transaction. A
     /// run whose launch already failed is returned unchanged.
@@ -797,6 +823,39 @@ mod tests {
             .unwrap()
             .into_run();
         assert_eq!((next.task, next.generation), (b, 5));
+    }
+
+    #[test]
+    fn confirmed_tmux_recovery_requires_unknown_state_and_matching_session() {
+        let (mut storage, tasks) = storage_with_tasks(1);
+        let mut new = writer(tasks[0], "tmux-recovery", Some("/wt/recovery"));
+        new.runner_kind = RunnerKind::Tmux;
+        let run = storage.reserve_run(&new).unwrap().into_run();
+        let reference = format!("tmux:local:toodo-run-{}", run.id);
+        let launched = storage.record_launch(run.id, &reference).unwrap();
+        assert!(storage.resume_observed_run(run.id, &reference).is_err());
+        storage.finish_run(run.id, RunState::Unknown).unwrap();
+        assert!(
+            storage
+                .resume_observed_run(run.id, "different-session")
+                .is_err()
+        );
+        let recovered = storage.resume_observed_run(run.id, &reference).unwrap();
+        assert_eq!(recovered.state, RunState::Running);
+        assert_eq!(recovered.started_at, launched.started_at);
+        assert_eq!(recovered.ended_at, None);
+        assert_eq!(
+            storage.run_events(run.id).unwrap().last().unwrap().kind,
+            "recovered"
+        );
+        storage.finish_run(run.id, RunState::Exited).unwrap();
+        assert!(storage.resume_observed_run(run.id, &reference).is_err());
+        new.request_key = "plain-recovery".into();
+        new.runner_kind = RunnerKind::Plain;
+        let run = storage.reserve_run(&new).unwrap().into_run();
+        storage.record_launch(run.id, "plain").unwrap();
+        storage.finish_run(run.id, RunState::Unknown).unwrap();
+        assert!(storage.resume_observed_run(run.id, "plain").is_err());
     }
 
     #[test]

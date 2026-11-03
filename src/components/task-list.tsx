@@ -212,6 +212,8 @@ type TaskContext = {
   workspaceName: (id: WorkspaceId) => string;
   /** What the tasks of a workspace have, such as pull requests or herdr. */
   capabilities: (id: WorkspaceId) => WorkspaceCapabilities;
+  /** Whether the workspace is on an SSH machine, whose agent CLIs the server does not check. */
+  remote: (id: WorkspaceId) => boolean;
 };
 
 /** `#id`, prefixed with the workspace name when the task belongs to another workspace than `of`. */
@@ -267,6 +269,7 @@ export function TaskList({
     byId: new Map(allTasks.data?.map((task) => [task.id, task])),
     workspaceName: (id) => byWorkspace.get(id)?.name ?? `Workspace ${id}`,
     capabilities: (id) => workspaceCapabilities(byWorkspace.get(id)),
+    remote: (id) => byWorkspace.get(id)?.location.kind === "ssh",
   };
   const tasks =
     workspace === null ? allTasks.data : allTasks.data?.filter((task) => task.workspaceId === workspace.id);
@@ -338,7 +341,8 @@ export function TaskList({
         )}
       </header>
 
-      {workspace && workspaceCapabilities(workspace).herdr && <WorktreeRootForm workspace={workspace} />}
+      {/* Every runner but none starts tasks in worktrees under the worktree root of the machine. */}
+      {workspace && workspace.runner !== "none" && <WorktreeRootForm workspace={workspace} />}
 
       {workspace && onDraftChange && <NewTaskForm workspace={workspace} draft={draft} onChange={onDraftChange} />}
 
@@ -1317,8 +1321,10 @@ function TaskRow({
           )}
         </DetailField>
       )}
-      {/* A started task of a plain workspace has its runs here; one in progress starts them. */}
-      {detailed && capabilities.plainRuns && (task.status !== "planned" || isPaused(task)) && <RunsPanel task={task} />}
+      {/* A started task of a plain or tmux workspace has its runs here; one in progress starts them. */}
+      {detailed && capabilities.plainRuns && (task.status !== "planned" || isPaused(task)) && (
+        <RunsPanel task={task} remote={context.remote(task.workspaceId)} />
+      )}
       {detailed && task.mergedWith && (
         <ShippedWith
           task={task}

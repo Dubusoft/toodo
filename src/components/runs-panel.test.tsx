@@ -18,6 +18,7 @@ vi.mock("@/lib/bindings", () => ({
     getRunLog: vi.fn(),
     startPlainRun: vi.fn(),
     stopRun: vi.fn(),
+    reconcileRun: vi.fn(),
     runnerHealth: vi.fn(),
   },
 }));
@@ -87,8 +88,8 @@ function event(sequence: number, kind: string, payload: string | null = null): R
   return { sequence, kind, payload, observedAt: 1_791_970_000 + sequence };
 }
 
-function log(of: TaskRun, events: RunEvent[], stdout = "", stderr = ""): RunLog {
-  return { run: of, events, stdout, stderr };
+function log(of: TaskRun, events: RunEvent[], stdout = "", stderr = "", attach: string | null = null): RunLog {
+  return { run: of, events, stdout, stderr, attach };
 }
 
 const launched = (of: TaskRun) => [event(1, "reserved"), event(2, "launched", of.providerRunRef)];
@@ -102,6 +103,7 @@ const notFound = (adapter: AgentAdapter) =>
 function health(missing: AgentAdapter[] = []): RunnerHealth {
   return {
     herdr: { installed: false, running: false, version: null, message: "herdr was not found on the server's PATH." },
+    tmux: { installed: true, version: "tmux 3.6", message: null },
     agents: (["claude", "codex"] as const).map((adapter) =>
       missing.includes(adapter)
         ? { adapter, installed: false, path: null, message: notFound(adapter) }
@@ -117,10 +119,10 @@ function todo(sequence: number, steps: TodoStep[]): RunEvent {
   return event(sequence, "todo", JSON.stringify({ items: steps.map(([text, status]) => ({ text, status })) }));
 }
 
-function renderPanel(task: Task = inProgress) {
+function renderPanel(task: Task = inProgress, remote = false) {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <RunsPanel task={task} />
+      <RunsPanel task={task} remote={remote} />
     </QueryClientProvider>,
   );
 }
@@ -221,6 +223,75 @@ describe("RunsPanel", () => {
     expect(screen.getByLabelText("stderr of run 2")).toHaveTextContent("warning: retrying (1/3)");
     expect(mocked.getRunLog).toHaveBeenCalledWith(42, null);
     expect(screen.queryByRole("button", { name: /^Stop run/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Attach in a terminal" })).not.toBeInTheDocument();
+  });
+
+  it("shows the command that attaches a terminal to an active tmux run and copies it", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const attach = "ssh -t 'devbox' ''\\''tmux'\\'' attach -t '\\''toodo-0123456789ab-run-41'\\'''";
+    const running: TaskRun = {
+      ...run(1, "running"),
+      runnerKind: "tmux",
+      requestKey: "tmux-7-1",
+      providerRunRef: "tmux:ssh:devbox:toodo-0123456789ab-run-41",
+    };
+    mocked.listTaskRuns.mockResolvedValue(ok([running]));
+    mocked.getRunLog.mockResolvedValue(ok(log(running, launched(running), "", "", attach)));
+    renderPanel();
+
+    const section = await screen.findByRole("region", { name: "Attach in a terminal" });
+    expect(within(section).getByLabelText("Attach command of run 1").textContent).toBe(attach);
+    fireEvent.click(within(section).getByRole("button", { name: "Copy the attach command of run 1" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(attach));
+    expect(await within(section).findByRole("status")).toHaveTextContent("Copied");
+    // A run that is observed needs no reconcile.
+    expect(screen.queryByRole("button", { name: "Reconcile run 1 of #7" })).not.toBeInTheDocument();
+  });
+
+  it("reconciles a run whose end was not seen, which frees the worktree once it has ended", async () => {
+    const unknown = run(1, "unknown");
+    const exited: TaskRun = { ...unknown, state: "exited", endedAt: 1_791_970_900 };
+    const lost = [...launched(unknown), event(3, "observation_lost", "restore SSH connectivity and reconcile the run")];
+    mocked.listTaskRuns.mockResolvedValueOnce(ok([unknown])).mockResolvedValue(ok([exited]));
+    mocked.getRunLog
+      .mockResolvedValueOnce(ok(log(unknown, [...lost, event(4, "unknown")])))
+      .mockResolvedValue(ok(log(exited, [...lost, event(4, "unknown"), event(5, "exit", "exit code 0"), event(6, "exited")])));
+    mocked.reconcileRun.mockResolvedValue(ok(exited));
+    renderPanel();
+
+    await screen.findByRole("button", { name: "Run 1, Claude, Unknown" });
+    expect(screen.getByRole("button", { name: "Start run of #7" })).toBeDisabled();
+    expect(screen.getByRole("note", { name: "Why no run of #7 starts" })).toHaveTextContent("reconcile it");
+    expect(await screen.findByRole("note", { name: "Last event of run 1" })).toHaveTextContent("Observation lost");
+    fireEvent.click(screen.getByRole("button", { name: "Reconcile run 1 of #7" }));
+
+    await waitFor(() => expect(mocked.reconcileRun).toHaveBeenCalledWith(41));
+    expect(await screen.findByRole("button", { name: "Run 1, Claude, Exited" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("note", { name: "Last event of run 1" })).toHaveTextContent("exit code 0"));
+    expect(screen.queryByRole("button", { name: "Reconcile run 1 of #7" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start run of #7" })).toBeEnabled();
+  });
+
+  it("keeps a run unknown and shows why when its host cannot be reached", async () => {
+    const unknown = run(1, "unknown");
+    mocked.listTaskRuns.mockResolvedValue(ok([unknown]));
+    mocked.getRunLog.mockResolvedValue(
+      ok(log(unknown, [...launched(unknown), event(3, "server_restarted"), event(4, "unknown")])),
+    );
+    mocked.reconcileRun.mockResolvedValue({
+      status: "error",
+      error: { kind: "external", message: "ssh devbox: Connection refused; restore SSH connectivity and reconcile again" },
+    });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reconcile run 1 of #7" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Connection refused");
+    expect(mocked.reconcileRun).toHaveBeenCalledWith(41);
+    expect(screen.getByRole("button", { name: "Run 1, Claude, Unknown" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reconcile run 1 of #7" })).toBeEnabled();
   });
 
   it("shows the latest todo list of a run with the state of each step", async () => {
@@ -412,6 +483,24 @@ describe("RunsPanel", () => {
 
     await waitFor(() => expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "codex", null, true));
     expect(await screen.findByRole("button", { name: "Run 1, Codex, Running" })).toBeInTheDocument();
+  });
+
+  it("offers both agents on an SSH machine even when the server lacks their CLIs", async () => {
+    const started = run(1, "running", "claude");
+    mocked.runnerHealth.mockResolvedValue(ok(health(["claude", "codex"])));
+    mocked.listTaskRuns.mockResolvedValueOnce(ok([])).mockResolvedValue(ok([started]));
+    mocked.startPlainRun.mockResolvedValue(ok(started));
+    mocked.getRunLog.mockResolvedValue(ok(log(started, launched(started))));
+    renderPanel(inProgress, true);
+
+    const form = await screen.findByRole("form", { name: "New run of #7" });
+    await waitFor(() => expect(mocked.runnerHealth).toHaveBeenCalled());
+    expect(within(form).getByRole("button", { name: "Claude" })).toBeEnabled();
+    expect(within(form).getByRole("button", { name: "Codex" })).toBeEnabled();
+    expect(screen.queryByRole("note", { name: "Why Claude is unavailable" })).not.toBeInTheDocument();
+    fireEvent.click(within(form).getByRole("button", { name: "Start run of #7" }));
+
+    await waitFor(() => expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "claude", null, true));
   });
 
   it("keeps Start run disabled while neither agent CLI is on the server, until Refresh finds one", async () => {

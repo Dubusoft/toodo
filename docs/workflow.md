@@ -344,6 +344,21 @@ Only one run at a time can write to a worktree, and a run stops after 4 hours.
 - `stop_run` stops a live run (SIGTERM to its process group, SIGKILL after 5 seconds)
   and marks it `cancelled`. After a server restart, unfinished runs show as `unknown`;
   stop them before starting a new run on the same worktree.
+- `reconcile_run` settles an `unknown` run from what is left on its host (exit file,
+  process, or tmux session). It never starts the agent again.
+
+The same commands work on SSH workspaces with runner `plain`: the agent runs on the
+workspace's host, and a lost connection leaves the run `unknown` until you reconcile it.
+SSH workspaces with runner `herdr` keep running agents in herdr; `start_plain_run`
+rejects them and points to opening the task in herdr.
+
+### 4c. Run an agent in a tmux workspace
+
+A workspace with runner `tmux` (local, or SSH on a POSIX host with tmux installed)
+prepares tasks the same way as runner `plain`. `start_plain_run` starts each run in a
+detached tmux session `toodo-<instance>-run-<run id>`. While it runs, `get_run_log` includes an
+`attach` command that opens the session in a terminal. Logs stay in their own files, and
+the session survives a server restart; the server picks it up again on start.
 
 ### 5. Record commits
 

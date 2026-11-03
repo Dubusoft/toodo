@@ -39,6 +39,11 @@ describe("workspaceCapabilities", () => {
     expect(plain).toMatchObject({ git: true, herdr: false, plainRuns: true, merge: true });
   });
 
+  it("runs the agents of a tmux runner's tasks itself too, without herdr", () => {
+    const tmux = workspaceCapabilities({ source: "github", completion: "pr_merge", runner: "tmux" });
+    expect(tmux).toMatchObject({ git: true, herdr: false, plainRuns: true, pullRequests: true, merge: true });
+  });
+
   it("opens pull requests from the task branches of a GitHub workspace with runner plain", () => {
     const plain = workspaceCapabilities({ source: "github", completion: "pr_merge", runner: "plain" });
     expect(plain).toMatchObject({ github: true, herdr: false, plainRuns: true, pullRequests: true, merge: true });

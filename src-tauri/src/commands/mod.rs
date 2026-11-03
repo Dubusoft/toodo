@@ -74,6 +74,10 @@ pub type SshState = Arc<Ssh>;
 /// The plain runner, which runs agent CLIs for tasks of workspaces with runner plain.
 pub type PlainRunState = crate::runtime::plain::PlainRunner;
 
+/// The tmux runner, which runs agent CLIs in detached tmux sessions for tasks of
+/// workspaces with runner tmux.
+pub type TmuxRunState = crate::runtime::tmux::TmuxRunner;
+
 /// `None` when the home directory, and so the SSH config, cannot be found.
 pub type SshConfigState = Option<SshConfigFile>;
 

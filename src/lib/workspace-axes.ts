@@ -1,4 +1,5 @@
 import type { CompletionMode, RepositorySetup, Runner, Source, WorkspaceLocation } from "@/lib/bindings";
+import { isWindowsPath } from "@/lib/paths";
 
 /**
  * What a workspace location holds (source), when its tasks count as done (completion), and
@@ -27,7 +28,7 @@ export type Picks = {
 
 export const sources: readonly Source[] = ["none", "local_git", "github"];
 export const completions: readonly CompletionMode[] = ["manual", "local_merge", "pr_merge"];
-export const runners: readonly Runner[] = ["herdr", "plain", "none"];
+export const runners: readonly Runner[] = ["herdr", "plain", "tmux", "none"];
 export const repositoryKinds: readonly RepositoryKind[] = ["open", "init", "clone"];
 
 export const sourceLabels: Record<Source, string> = {
@@ -46,6 +47,7 @@ export const runnerLabels: Record<Runner, string> = {
   none: "No runner",
   herdr: "herdr",
   plain: "Plain",
+  tmux: "tmux",
 };
 
 export const repositoryLabels: Record<RepositoryKind, string> = {
@@ -101,19 +103,23 @@ export function runnerProblem(source: Source, completion: CompletionMode, runner
     return "Needs a git repository for task worktrees; choose source Local git or GitHub";
   }
   if (runner === "none" && completion !== "manual") {
-    return `${completionLabels[completion]} needs the task branch that herdr or ${runnerLabels.plain} creates; choose completion Manual`;
+    return `${completionLabels[completion]} needs the task branch that herdr, ${runnerLabels.plain}, or ${runnerLabels.tmux} creates; choose completion Manual`;
   }
   return null;
 }
 
 /**
- * Mirrors `check_runner_location`: why `runner` cannot run the tasks of a workspace at a
- * location of `kind`, naming the choice that can; `null` when it can. Runner plain runs the
- * agents on the server itself.
+ * Mirrors `check_runner_location`: why `runner` cannot run the tasks of a workspace at
+ * `location`, naming the choice that can; `null` when it can. Runner tmux needs a POSIX host,
+ * so an SSH machine whose path is a Windows drive or UNC path rules it out; the other runners
+ * work on either kind of host.
  */
-export function runnerLocationProblem(runner: Runner, kind: WorkspaceLocation["kind"]): string | null {
-  if (runner === "plain" && kind === "ssh") {
-    return "Runs agents on this server only; choose herdr for an SSH machine, or add the workspace on Local";
+export function runnerLocationProblem(
+  runner: Runner,
+  location: Pick<WorkspaceLocation, "kind" | "path">,
+): string | null {
+  if (runner === "tmux" && location.kind === "ssh" && isWindowsPath(location.path)) {
+    return `Needs a POSIX host; choose ${runnerLabels.plain} or ${runnerLabels.herdr} for a Windows SSH workspace, or choose a POSIX path for ${runnerLabels.tmux}`;
   }
   return null;
 }

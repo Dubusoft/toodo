@@ -333,8 +333,9 @@ pub enum Runner {
     /// Agents in a herdr workspace on a task worktree and branch.
     Herdr,
     /// Agent CLIs that Toodo runs itself on a task worktree and branch, without herdr.
-    /// Only local workspaces use it.
     Plain,
+    /// Agent CLIs in a tmux session on a POSIX host.
+    Tmux,
 }
 
 impl From<model::Runner> for Runner {
@@ -343,6 +344,7 @@ impl From<model::Runner> for Runner {
             model::Runner::None => Self::None,
             model::Runner::Herdr => Self::Herdr,
             model::Runner::Plain => Self::Plain,
+            model::Runner::Tmux => Self::Tmux,
         }
     }
 }
@@ -353,6 +355,7 @@ impl From<Runner> for model::Runner {
             Runner::None => Self::None,
             Runner::Herdr => Self::Herdr,
             Runner::Plain => Self::Plain,
+            Runner::Tmux => Self::Tmux,
         }
     }
 }
@@ -1730,8 +1733,21 @@ pub enum AgentAdapter {
 #[serde(rename_all = "camelCase")]
 pub struct RunnerHealth {
     pub herdr: HerdrHealth,
+    /// tmux for local workspaces with runner tmux.
+    pub tmux: TmuxHealth,
     /// Claude, then Codex.
     pub agents: Vec<AgentHealth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TmuxHealth {
+    /// Whether `tmux -V` ran from the server's `PATH`.
+    pub installed: bool,
+    /// The version `tmux -V` printed, such as `tmux 3.4`.
+    pub version: Option<String>,
+    /// What to do next when tmux cannot run; `None` when it can.
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
@@ -1811,7 +1827,7 @@ pub struct TaskRun {
     /// Increases from 1 per task.
     #[specta(type = Number)]
     pub generation: i64,
-    /// `plain`, `herdr`, or `none`.
+    /// `plain`, `tmux`, `herdr`, or `none`.
     pub runner_kind: String,
     /// `writer` or `observer`.
     pub role: String,
@@ -1877,6 +1893,8 @@ pub struct RunLog {
     pub events: Vec<RunEvent>,
     pub stdout: String,
     pub stderr: String,
+    /// For an active tmux run, the shell command that attaches a terminal to its session.
+    pub attach: Option<String>,
 }
 
 pub(crate) fn map_all<'a, T: 'a, U: From<&'a T>>(items: &'a [T]) -> Vec<U> {
@@ -2131,8 +2149,9 @@ mod tests {
             serde_json::json!(["manual", "local_merge", "pr_merge"])
         );
         assert_eq!(
-            serde_json::to_value([Runner::None, Runner::Herdr, Runner::Plain]).unwrap(),
-            serde_json::json!(["none", "herdr", "plain"])
+            serde_json::to_value([Runner::None, Runner::Herdr, Runner::Plain, Runner::Tmux])
+                .unwrap(),
+            serde_json::json!(["none", "herdr", "plain", "tmux"])
         );
     }
 }

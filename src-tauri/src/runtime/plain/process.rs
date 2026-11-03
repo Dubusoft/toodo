@@ -20,6 +20,7 @@ use crate::storage::{Storage, StorageError, TaskRun};
 
 pub(super) enum Signal {
     Stop,
+    RemoteStop(mpsc::Sender<Result<(), RunnerError>>),
     Exit(std::io::Result<ExitStatus>),
     Stdout(std::io::Result<EventTracker>),
     Stderr(std::io::Result<String>),
@@ -63,6 +64,7 @@ pub(super) struct ManagedRun {
     pub run: RunId,
     pub receipt: LaunchReceipt,
     pub end: Arc<Completion>,
+    pub remote: Option<super::remote::Remote>,
 }
 
 fn signal_group(pid: u32, signal: i32) -> bool {
@@ -197,6 +199,7 @@ pub(super) fn manage(mut managed: ManagedRun) {
         let mut exit = None;
         let mut tracker = None;
         let mut stderr = None;
+        let mut observation_lost = false;
         while exit.is_none()
             || tracker.is_none()
             || stderr.is_none()
@@ -212,11 +215,31 @@ pub(super) fn manage(mut managed: ManagedRun) {
                     deadline = Instant::now() + Duration::from_secs(5);
                 }
                 Ok(Signal::Stop) => {}
+                Ok(Signal::RemoteStop(reply)) => {
+                    let mut result = managed.remote.as_ref().unwrap().stop(managed.run);
+                    if result.is_ok() {
+                        termination = Some(ExitKind::Stopped);
+                        signal_group(pid, libc::SIGTERM);
+                        deadline = Instant::now() + Duration::from_secs(5);
+                    } else if let Err(error) =
+                        lock(&managed.storage).append_run_event(managed.run, "stop_requested", None)
+                    {
+                        result = Err(RunnerError(format!(
+                            "{error}; reconcile the run once the host is reachable"
+                        )));
+                    }
+                    let _ = reply.send(result);
+                }
                 Ok(Signal::Exit(status)) => exit = Some(status),
                 Ok(Signal::Stdout(result)) => tracker = Some(result),
                 Ok(Signal::Stderr(result)) => stderr = Some(result),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if termination.is_none() {
+                        if let Some(remote) = &managed.remote
+                            && remote.stop(managed.run).is_err()
+                        {
+                            observation_lost = true;
+                        }
                         termination = Some(ExitKind::TimedOut);
                         signal_group(pid, libc::SIGTERM);
                         deadline = Instant::now() + Duration::from_secs(5);
@@ -234,11 +257,33 @@ pub(super) fn manage(mut managed: ManagedRun) {
             let status = exit.unwrap().map_err(io_error)?;
             let tracker = tracker.unwrap().map_err(io_error)?;
             let stderr = stderr.unwrap().map_err(io_error)?;
-            let exit = termination.unwrap_or_else(|| match status.code() {
+            let mut exit = termination.unwrap_or_else(|| match status.code() {
                 Some(code) => ExitKind::Code(code),
                 None => ExitKind::Signal(status.signal().unwrap_or(0)),
             });
-            let outcome = adapter::classify(&tracker, exit, &stderr);
+            if termination.is_none()
+                && let Some(remote) = &managed.remote
+            {
+                if status.code() == Some(255) {
+                    // SSH's transport failure is not evidence of the agent's exit.
+                    match remote.probe(managed.run) {
+                        Ok(crate::runtime::host::Probe::Exited(code)) => {
+                            exit = ExitKind::Code(code)
+                        }
+                        _ => observation_lost = true,
+                    }
+                } else if status.code().is_none() {
+                    observation_lost = true;
+                }
+            }
+            let mut outcome = adapter::classify(&tracker, exit, &stderr);
+            if observation_lost {
+                outcome.state = RunState::Unknown;
+                outcome.events = vec![(
+                    "observation_lost",
+                    "SSH observation was lost; reconcile the run once the host is reachable".into(),
+                )];
+            }
             let mut storage = lock(&managed.storage);
             let run = storage
                 .get_run(managed.run)?
@@ -258,6 +303,12 @@ pub(super) fn manage(mut managed: ManagedRun) {
             }
             Ok(storage.finish_run(run.id, outcome.state)?)
         })();
+        // An agent that may still run keeps its credentials until the run ends.
+        if let (Some(remote), Ok(run)) = (&managed.remote, &result)
+            && !run.state.is_active()
+        {
+            remote.remove_credentials(&managed.storage, run.id);
+        }
         *managed.end.result.lock().unwrap() = Some(result);
         managed.end.changed.notify_all();
     });

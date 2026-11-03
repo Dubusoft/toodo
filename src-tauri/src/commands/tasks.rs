@@ -6,7 +6,10 @@ use super::types::{
     self, CommitRecord, CriterionId, DependencyOutcome, NewTask, Task, TaskActivity, TaskEdit,
     TaskId, TaskRelation,
 };
-use super::{CommandError, CommandResult, GitState, HerdrState, PlainRunState, StorageState, lock};
+use super::{
+    CommandError, CommandResult, GitState, HerdrState, PlainRunState, StorageState, TmuxRunState,
+    lock,
+};
 use crate::domain::criteria::{self, CheckKind, CheckedBy, NewCriterion};
 use crate::domain::model;
 use crate::domain::model::{CompletionMode, TaskResolution};
@@ -540,14 +543,15 @@ fn note_completion(storage: &mut Storage, id: TaskId, note: &str) -> CommandResu
 /// Deletes a task with its dependency edges and commit records. A task that still has a worktree
 /// first removes it through herdr, which also closes its herdr workspace; the branch is
 /// kept. Without `force`, a worktree with modified or untracked files is rejected and the
-/// task is kept. A task of a workspace with runner plain has its worktree removed by git,
-/// and its plain runs that are still running are stopped first.
+/// task is kept. A task of a workspace with runner plain or tmux has its worktree removed
+/// by git, and its plain and tmux runs that are still running are stopped first.
 #[specta::specta]
 pub fn delete_task(
     storage: State<'_, StorageState>,
     git: State<'_, GitState>,
     herdr: State<'_, HerdrState>,
     runs: State<'_, PlainRunState>,
+    tmux: State<'_, TmuxRunState>,
     id: TaskId,
     force: bool,
 ) -> CommandResult<()> {
@@ -560,7 +564,7 @@ pub fn delete_task(
     let keeps_worktree = task.worktree_path.is_some()
         && matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview);
     if !keeps_worktree {
-        super::runs::stop_live_runs(&storage, &runs, id)?;
+        super::runs::stop_live_runs(&storage, &runs, &tmux, id)?;
     }
     super::herdr::delete(&storage, &git, &herdr, id, force)
 }
