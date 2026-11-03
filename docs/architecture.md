@@ -388,6 +388,9 @@ SQLite keeps a record of what runs where, in five tables (migration 29):
 - `task_runs`: one agent run of a task, with a `role` (`writer` or `observer`), a `state`
   (`reserved`, `running`, `settled`, `exited`, `failed`, `cancelled`, `unknown`), and an
   optional `runtime_workspace_id`. A run with no checkout has no runtime workspace.
+  Starting a task of a workspace with runner none records a `writer` run with
+  `runner_kind` `none`, no checkout, and no runtime workspace, and ends the task's earlier
+  runs as `exited`.
 - `run_events`: the ordered history of a run, keyed by `run_id` and `sequence`.
 - `run_operations`: the ledger of `launch`, `input`, and `stop` requests against a run,
   each `pending`, `applied`, or `failed`, with a `receipt`.

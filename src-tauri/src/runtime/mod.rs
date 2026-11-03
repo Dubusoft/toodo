@@ -21,7 +21,7 @@ use crate::domain::runtime::{
 };
 use crate::storage::{NewRun, Storage, StorageError, TaskRun};
 
-pub use workspace::{OpenFor, OpenWorktree, TaskWorktree};
+pub use workspace::{OpenFor, OpenWorktree, TaskWorktree, end_runs};
 
 /// A runner failure, with a message that names what to do next.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +115,8 @@ pub enum RunCommand {
     /// asked to run in the first pane of a task's workspace. Nothing marks the pane, so a
     /// launch whose response was lost cannot be found again.
     InPane { pane: String, line: String },
+    /// Nothing to run: the work is done by hand, as in a workspace with runner none.
+    ByHand,
 }
 
 /// What a runner needs to launch one run.
@@ -145,6 +147,27 @@ pub trait RunLauncher {
     /// a retry after a lost response adopt it instead of launching again.
     fn find_launch(&self, spec: &LaunchSpec) -> Result<Option<LaunchReceipt>, RunnerError>;
     fn launch(&self, spec: &LaunchSpec) -> Result<LaunchReceipt, RunnerError>;
+}
+
+/// The launcher of runs of tasks in workspaces with runner none: nothing is launched, and
+/// the run stands for the work done by hand. Its provider reference is the request key.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoRunner;
+
+impl RunLauncher for NoRunner {
+    fn kind(&self) -> RunnerKind {
+        RunnerKind::None
+    }
+
+    fn find_launch(&self, _spec: &LaunchSpec) -> Result<Option<LaunchReceipt>, RunnerError> {
+        Ok(None)
+    }
+
+    fn launch(&self, spec: &LaunchSpec) -> Result<LaunchReceipt, RunnerError> {
+        Ok(LaunchReceipt {
+            provider_run_ref: spec.request_key.clone(),
+        })
+    }
 }
 
 /// A request to start a run. The runner kind comes from the launcher.

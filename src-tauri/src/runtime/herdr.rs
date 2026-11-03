@@ -62,6 +62,13 @@ impl RunLauncher for Herdr {
                     provider_run_ref: pane.clone(),
                 });
             }
+            RunCommand::ByHand => {
+                return Err(RunnerError(format!(
+                    "run {} of task {} has nothing for herdr to run; start the run with the \
+                     agent's command as its argument vector or as a line for a pane",
+                    spec.run, spec.task
+                )));
+            }
         };
         let workspace = spec.workspace_ref.as_deref().ok_or_else(|| {
             RunnerError(format!(
