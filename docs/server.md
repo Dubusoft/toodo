@@ -55,6 +55,70 @@ version, so an installed server compares directly with a release, and the commit
 1c78b7a1a2b3)`), so a build of a later commit is told apart from the release it reports.
 The server prints the same line when it starts. See "Releases and Updates" in the README for how a release is made.
 
+### npm Packages
+
+The same version is published to npm as `@dubusoft/toodo` (the `toodo` launcher) with
+one platform package per target, `@dubusoft/toodo-linux-x64` and
+`@dubusoft/toodo-linux-arm64`, each carrying `toodo`, `toodo-server`, and the web app.
+The `npm` workflow (`.github/workflows/npm.yml`) publishes them:
+
+- On every push to `dev`, a prerelease `X.Y.Z-dev.N` (the next patch version of
+  `package.json`, `N` the run number) under the dist-tag `dev`.
+- From the `Release` workflow, the release version under the dist-tag `latest`, skipped
+  when that version is on npm already.
+
+It publishes with the `NPM_TOKEN` secret when that is set, else through npm trusted
+publishing (OIDC). With neither set up it skips publishing with a notice instead of
+failing. Packages are staged with `scripts/package-npm.mjs`.
+
+## Install with npm
+
+On Linux x64 or arm64 with glibc (Node.js 18 or later), as the user who runs herdr:
+
+```sh
+npx @dubusoft/toodo init
+```
+
+`init` creates the data directory with its database and access tokens, saves the listen
+address in `cli.json` there, and starts `toodo-server` in the background. It prints the web
+app URL and the file that holds the web access token (`cat` it to sign in), and the MCP
+URL with its token file. Where `claude` is on `PATH` it registers the MCP endpoint with
+`claude mcp add`; where `codex` is on `PATH` it writes the endpoint to
+`$CODEX_HOME/config.toml` (else `~/.codex/config.toml`). Running it again keeps the database
+and tokens. herdr is not needed to start the server; workspaces need it.
+
+- `--port N`: port to listen on, keeping the saved host (default `47616`).
+- `--listen HOST:PORT`: address to listen on (default `127.0.0.1:47616`).
+- `--data-dir DIR`: data directory (default `$TOODO_DATA_DIR`, else the directory `init`
+  recorded, else `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server`). `init`
+  records the absolute path in `$XDG_CONFIG_HOME/toodo/data-dir` (`~/.config/toodo/data-dir`),
+  so the other commands find it without the option; they take `--data-dir` too, and the
+  option beats `$TOODO_DATA_DIR`, which beats the record.
+- `--no-mcp`: register the MCP endpoint with no agent.
+
+To have the `toodo` command at hand, install it globally:
+
+```sh
+npm i -g @dubusoft/toodo
+```
+
+- `toodo start`, `toodo stop`: start or stop the server, through systemd once the service
+  is installed, else as a background process with `server.pid` and `server.log` in the
+  data directory.
+- `toodo status`: whether the server runs and where its files are; exits `0` when it runs
+  and `3` when it is stopped.
+- `toodo service install`: run the server as the systemd user service
+  `toodo-server.service`, in the same layout as `scripts/install-server.sh`
+  (`~/.local/bin/toodo-server`, the web app in `~/.local/share/toodo-server-web`, see
+  [systemd](#systemd)). It enables and restarts the service and notes when lingering is
+  off.
+- `toodo --version`, `toodo --help`.
+
+`@dubusoft/toodo` follows releases; `@dubusoft/toodo@dev` follows the `dev` branch
+(`X.Y.Z-dev.N` prereleases), for example `npx @dubusoft/toodo@dev init`. To update a global
+install, run `npm i -g @dubusoft/toodo` again, then `toodo service install` or
+`toodo stop` and `toodo start`.
+
 ## Install and Update
 
 On a server, install and update from releases. As the user who runs herdr (git, gh

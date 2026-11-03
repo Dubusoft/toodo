@@ -98,6 +98,12 @@ Layout:
   - `src-tauri/src/storage/`: SQLite persistence (`rusqlite`, bundled SQLite). Schema
     changes go in a new entry appended to `migrations.rs`; never edit a released one.
     `import.rs` backs `toodo-server import`.
+  - `src-tauri/src/cli/`: the `toodo` CLI (binary `toodo`, `src/bin/toodo.rs`): `init`,
+    `start`, `stop`, `status`, `service install`, and MCP registration with Claude Code
+    and Codex.
+- `npm/toodo/`: the `@dubusoft/toodo` npm package (launcher `bin/toodo.js`, README).
+- `scripts/package-npm.mjs`: stages the npm packages (main and per-platform) for
+  publishing.
 
 ## Commands
 
@@ -119,6 +125,9 @@ Run from the repository root unless noted. Package manager is npm.
   merge `dev` into `main`; see the "Releases" section of `README.md`.
   `npm run check-version` checks that the version files agree. A release carries
   `toodo-server` and the web app (packaged by `scripts/package-server.sh`)
+- Package (npm): `node scripts/package-npm.mjs --version X.Y.Z --web dist-web --out dist-npm
+  --binaries linux-x64=<dir with toodo and toodo-server>`; never run `npm publish` by hand,
+  the `npm` workflow publishes
 
 After changing a command signature, run `cargo test` in `src-tauri/` and commit the
 updated `src/lib/bindings.ts` together with the Rust change. A test in `server/rpc.rs`
