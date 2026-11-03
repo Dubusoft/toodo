@@ -390,6 +390,33 @@ fn codex_turn_completed_settles() {
 }
 
 #[test]
+fn changed_todo_lists_are_recorded_while_running() {
+    let todo = |status: &str| {
+        format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"TodoWrite","input":{{"todos":[{{"content":"Fix","status":"{status}","activeForm":"Fixing"}}]}}}}]}}}}"#
+        )
+    };
+    let (pending, progress) = (todo("pending"), todo("in_progress"));
+    // The gate holds output until the launch is recorded, so the events keep their order.
+    let mut fixture = Fixture::new(&format!(
+        "printf R > ready\nread value < gate\nprintf '%s\\n' '{pending}' '{progress}' '{progress}'\n{RESULT}"
+    ));
+    let run = fixture.start(AgentAdapter::Claude, false, 30);
+    fixture.ready();
+    fixture.release();
+    fixture.end(run.id, RunState::Settled, &["todo", "todo", "result"]);
+    let events = lock(&fixture.storage).run_events(run.id).unwrap();
+    assert_eq!(
+        events[2].payload.as_deref(),
+        Some(r#"{"items":[{"text":"Fix","status":"pending"}]}"#)
+    );
+    assert_eq!(
+        events[3].payload.as_deref(),
+        Some(r#"{"items":[{"text":"Fix","status":"in_progress"}]}"#)
+    );
+}
+
+#[test]
 fn codex_turn_failed_fails() {
     let fixture =
         Fixture::new(r#"printf '%s\n' '{"type":"turn.failed","error":{"message":"try again"}}'"#);
