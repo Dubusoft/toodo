@@ -125,8 +125,8 @@ pub fn restore_task_worktree(
 /// Starts a task as [`start_task`] does. A task of a workspace with runner none moves to
 /// `in_progress` with a run recorded through [`NoRunner`], which ends its earlier runs: it
 /// gets no branch, worktree, or herdr workspace, and neither git nor herdr runs. A task of
-/// a workspace with runner plain gets its branch and a git worktree like with herdr, but
-/// herdr never runs: git adds the worktree (reusing one already registered at its path),
+/// a workspace with a git-managed runner (plain or tmux), local or on an SSH machine, gets
+/// its branch and a git worktree like with herdr, but herdr never runs: git adds the worktree (reusing one already registered at its path),
 /// and the task's earlier runs end. Its agents are started as runs of their own.
 pub(crate) fn start(
     storage: &StorageState,
@@ -172,7 +172,6 @@ pub(crate) fn start(
             RuntimeService.start_run(storage_state, &NoRunner, request)?;
             return Ok(started);
         }
-        reject_tmux(workspace.runner)?;
         let settings = storage.get_machine_settings(&workspace.location.machine())?;
         let mut checkout = naming::task_checkout(&workspace, &settings, &task)?;
         // A paused task keeps the branch it got when it first started.
@@ -208,7 +207,7 @@ pub(crate) fn start(
         machine: &machine,
         repository,
     };
-    let plain = workspace.runner == Runner::Plain;
+    let plain = git_managed(workspace.runner);
     let kept_worktree = match kept_worktree {
         // git reuses the kept worktree, or checks the branch out there again if it is gone.
         Some(path) if plain => {
@@ -386,7 +385,6 @@ pub(crate) fn restore(
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
         (task, workspace)
     };
-    reject_tmux(workspace.runner)?;
     if workspace.runner == Runner::None && task.branch.is_none() {
         return Err(CommandError::rejected(format!(
             "task {id} belongs to workspace {}, which runs tasks without herdr (runner none), so it has no branch or worktree to restore; work on it in the workspace directory and complete it once its criteria are met",
@@ -642,8 +640,8 @@ pub(super) fn delete(
 /// Removes the worktree of a task that is not in progress or in review (a finished task,
 /// or a paused one) through herdr, which also closes
 /// its herdr workspace, and forgets both on the task. The branch is kept. Without `force`,
-/// a worktree with modified or untracked files is rejected. A task of a workspace with
-/// runner plain has no herdr workspace: git removes its worktree.
+/// a worktree with modified or untracked files is rejected. A task of a workspace with a
+/// git-managed runner (plain or tmux) has no herdr workspace: git removes its worktree.
 fn remove_worktree(
     storage: &StorageState,
     git: &Git,
@@ -670,8 +668,7 @@ fn remove_worktree(
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
         (workspace.location, path, workspace.runner)
     };
-    reject_tmux(runner)?;
-    if runner == Runner::Plain {
+    if git_managed(runner) {
         return remove_plain_worktree(storage, git, id, &location, &path, force);
     }
     let path = path.to_string();
@@ -698,7 +695,7 @@ fn remove_worktree(
         })
 }
 
-/// Removes the git worktree at `path` of a task of a workspace with runner plain and
+/// Removes the git worktree at `path` of a task of a workspace with runner plain or tmux and
 /// forgets it on the task; a worktree git no longer has is only forgotten.
 fn remove_plain_worktree(
     storage: &StorageState,
@@ -782,12 +779,20 @@ fn close_workspace(
     )
 }
 
+/// Whether git, not herdr, adds and removes the task worktrees of a workspace with
+/// `runner`.
+fn git_managed(runner: Runner) -> bool {
+    matches!(runner, Runner::Plain | Runner::Tmux)
+}
+
+/// A task of a workspace with runner tmux has no herdr workspace or panes; its agents
+/// run in tmux sessions of their own.
 fn reject_tmux(runner: Runner) -> CommandResult<()> {
     if runner == Runner::Tmux {
         return Err(CommandError::rejected(
-            "runner tmux task operations are not wired yet, and a workspace keeps the runner \
-             it was created with; delete this workspace, add the repository again and choose \
-             runner plain or herdr, then start the task",
+            "this task belongs to a workspace with runner tmux, which has no herdr workspace \
+             or panes; start its agent with start_plain_run and attach to the run with the \
+             attach command get_run_log returns",
         ));
     }
     Ok(())
@@ -2615,7 +2620,71 @@ mod tests {
     }
 
     #[test]
-    fn a_task_with_runner_tmux_is_rejected_before_git_runs() {
+    fn a_task_with_runner_tmux_on_ssh_starts_in_a_git_worktree_without_herdr() {
+        let devbox = MachineLabel::parse("devbox").unwrap();
+        let fixture = fixture_with_runner(
+            WorkspaceLocation::Ssh {
+                machine: devbox.clone(),
+                path: PosixPath::parse("/srv/toodo").unwrap().into(),
+            },
+            Some(MachineSettings::Ssh {
+                machine: devbox,
+                worktree_root: Some(PosixPath::parse("/wt").unwrap().into()),
+            }),
+            Runner::Tmux,
+        );
+        let git_runner = plain_start_git();
+        let runtime = FakeRuntime::new(Vec::new());
+
+        let started = start(
+            &fixture.storage,
+            &Git::new(Box::new(git_runner.clone())),
+            &runtime,
+            fixture.task.id,
+        )
+        .unwrap();
+
+        assert!(runtime.calls().is_empty());
+        assert_eq!(started.status, TaskStatus::InProgress);
+        assert_eq!(
+            started.worktree_path,
+            Some(HostPath::parse("/wt/toodo/feat-add-login-1").unwrap())
+        );
+        assert_eq!(started.herdr_workspace_id, None);
+        let add = invocations(&git_runner).pop().unwrap();
+        assert_eq!(add.program, "ssh");
+        let command = add.args.last().unwrap();
+        assert!(
+            command.contains("'worktree' 'add' '/wt/toodo/feat-add-login-1'"),
+            "{command}"
+        );
+
+        lock(&fixture.storage)
+            .set_task_status(fixture.task.id, TaskStatus::Planned)
+            .unwrap();
+        let git_runner = Arc::new(FakeRunner::new(vec![
+            Ok("worktree /wt/toodo/feat-add-login-1\0HEAD abc\0\0".to_owned()),
+            Ok(String::new()),
+        ]));
+        let (herdr, herdr_runner) = herdr(Vec::new());
+        delete(
+            &fixture.storage,
+            &Git::new(Box::new(git_runner.clone())),
+            &herdr,
+            fixture.task.id,
+            false,
+        )
+        .unwrap();
+        assert!(invocations(&herdr_runner).is_empty());
+        let remove = invocations(&git_runner).pop().unwrap();
+        assert!(
+            remove.args.last().unwrap().contains("'worktree' 'remove'"),
+            "{remove:?}"
+        );
+    }
+
+    #[test]
+    fn a_task_with_runner_tmux_has_no_herdr_workspace_to_open() {
         let fixture = fixture_with_runner(
             WorkspaceLocation::Ssh {
                 machine: MachineLabel::parse("devbox").unwrap(),
@@ -2624,19 +2693,11 @@ mod tests {
             None,
             Runner::Tmux,
         );
-        let before = stored(&fixture);
-        let runtime = FakeRuntime::new(Vec::new());
-
-        let error = start(&fixture.storage, &no_git(), &runtime, fixture.task.id).unwrap_err();
-
+        let (herdr, herdr_runner) = herdr(Vec::new());
+        let error = open(&fixture.storage, &herdr, fixture.task.id).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
-        assert!(
-            error.message.contains("choose runner plain or herdr"),
-            "{}",
-            error.message
-        );
-        assert!(runtime.calls().is_empty());
-        assert_eq!(stored(&fixture), before);
+        assert!(error.message.contains("get_run_log"), "{}", error.message);
+        assert!(invocations(&herdr_runner).is_empty());
     }
 
     #[test]

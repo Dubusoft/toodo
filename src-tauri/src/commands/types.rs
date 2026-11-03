@@ -1779,7 +1779,7 @@ pub struct TaskRun {
     /// Increases from 1 per task.
     #[specta(type = Number)]
     pub generation: i64,
-    /// `plain`, `herdr`, or `none`.
+    /// `plain`, `tmux`, `herdr`, or `none`.
     pub runner_kind: String,
     /// `writer` or `observer`.
     pub role: String,
@@ -1845,6 +1845,8 @@ pub struct RunLog {
     pub events: Vec<RunEvent>,
     pub stdout: String,
     pub stderr: String,
+    /// For an active tmux run, the shell command that attaches a terminal to its session.
+    pub attach: Option<String>,
 }
 
 pub(crate) fn map_all<'a, T: 'a, U: From<&'a T>>(items: &'a [T]) -> Vec<U> {

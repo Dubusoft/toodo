@@ -237,7 +237,7 @@ commands!(s => {
         tasks::set_task_outcome(State(&s.storage), id, resolution, note)
     );
     "delete_task"(id: TaskId, force: bool) => sync Reply::result(
-        tasks::delete_task(State(&s.storage), State(&s.git), State(&s.herdr), State(&s.plain), id, force)
+        tasks::delete_task(State(&s.storage), State(&s.git), State(&s.herdr), State(&s.plain), State(&s.tmux), id, force)
     );
     "add_dependency"(task_id: TaskId, depends_on: TaskId, confirm_pause: bool) => sync Reply::result(
         tasks::add_dependency(State(&s.storage), State(&s.herdr), task_id, depends_on, confirm_pause)
@@ -271,16 +271,19 @@ commands!(s => {
     );
 
     "start_plain_run"(task_id: TaskId, adapter: AgentAdapter, prompt: Option<String>, mcp: bool) => sync Reply::result(
-        runs::start_plain_run(State(&s.storage), State(&s.plain), task_id, adapter, prompt, mcp)
+        runs::start_plain_run(State(&s.storage), State(&s.plain), State(&s.tmux), task_id, adapter, prompt, mcp)
     );
     "list_task_runs"(task_id: TaskId) => sync Reply::result(
         runs::list_task_runs(State(&s.storage), task_id)
     );
     "get_run_log"(run_id: RunId, tail_bytes: Option<u32>) => sync Reply::result(
-        runs::get_run_log(State(&s.storage), State(&s.plain), run_id, tail_bytes)
+        runs::get_run_log(State(&s.storage), State(&s.plain), State(&s.tmux), run_id, tail_bytes)
     );
     "stop_run"(run_id: RunId) => sync Reply::result(
-        runs::stop_run(State(&s.storage), State(&s.plain), run_id)
+        runs::stop_run(State(&s.storage), State(&s.plain), State(&s.tmux), run_id)
+    );
+    "reconcile_run"(run_id: RunId) => sync Reply::result(
+        runs::reconcile_run(State(&s.storage), State(&s.plain), State(&s.tmux), run_id)
     );
 
     "refresh_commit_records"(task_id: TaskId) => sync Reply::result(
@@ -294,6 +297,7 @@ commands!(s => {
             completion::complete_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id),
             &s.storage,
             &s.plain,
+            &s.tmux,
             id.into(),
         ))
     };
@@ -302,6 +306,7 @@ commands!(s => {
             completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note),
             &s.storage,
             &s.plain,
+            &s.tmux,
             id.into(),
         ))
     };
@@ -310,6 +315,7 @@ commands!(s => {
             completion::complete_task_merged_with(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, merged_with_task, pull_request_url),
             &s.storage,
             &s.plain,
+            &s.tmux,
             id.into(),
         ))
     };

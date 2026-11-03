@@ -119,6 +119,20 @@ impl Tunnels {
     }
 }
 
+/// Whether the reverse tunnel to an SSH target is open, for the plain and tmux runners,
+/// which admit a remote run with MCP only through an open tunnel.
+pub fn open_provider(tunnels: &TunnelsState) -> crate::runtime::plain::TunnelOpenProvider {
+    let tunnels = tunnels.clone();
+    Arc::new(move |target: &str| {
+        tunnels
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .statuses()
+            .iter()
+            .any(|status| status.machine.as_str() == target && status.state == TunnelState::Open)
+    })
+}
+
 impl Entry {
     fn fail(&mut self, reason: String, now: Instant) {
         self.state = TunnelState::Retrying;
@@ -211,6 +225,28 @@ mod tests {
                 status("gpu", TunnelState::Connecting, None),
             ]
         );
+    }
+
+    #[test]
+    fn the_open_provider_admits_only_machines_whose_tunnel_is_open() {
+        let forwarder = Arc::new(FakeForwarder::default());
+        let tunnels: TunnelsState =
+            Arc::new(Mutex::new(Tunnels::new(Box::new(forwarder.clone()), 47615)));
+        let open = open_provider(&tunnels);
+        let now = Instant::now();
+        tunnels
+            .lock()
+            .unwrap()
+            .reconcile(&machines(&["devbox", "gpu"]), now);
+        assert!(!open("devbox"), "a connecting tunnel is not open");
+        *forwarder.opened.lock().unwrap()[0].state.lock().unwrap() = ForwardState::Open;
+        tunnels
+            .lock()
+            .unwrap()
+            .reconcile(&machines(&["devbox", "gpu"]), now);
+        assert!(open("devbox"));
+        assert!(!open("gpu"));
+        assert!(!open("unknown"));
     }
 
     #[test]

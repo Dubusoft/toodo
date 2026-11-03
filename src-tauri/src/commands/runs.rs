@@ -1,15 +1,16 @@
 //! Commands for the runs of tasks: starting an agent CLI for a task of a workspace with
-//! runner plain, listing the runs of a task, reading the log of a run, and stopping one.
+//! runner plain or tmux, listing the runs of a task, reading the log of a run, settling a
+//! run whose observation was lost, and stopping one.
 
 use std::fmt::Write;
 
 use super::types::{self, AgentAdapter, RunId, RunLog, TaskId, TaskRun};
-use super::{CommandError, CommandResult, PlainRunState, State, StorageState, lock};
-use crate::domain::model::{self, Runner, WorkspaceLocation};
+use super::{CommandError, CommandResult, PlainRunState, State, StorageState, TmuxRunState, lock};
+use crate::domain::model::{self, Runner};
 use crate::domain::runtime::{self as domain_runtime, HostRef, OwnerKey, RunRole, RunnerKind};
 use crate::domain::status::TaskStatus;
 use crate::runtime::plain::adapter;
-use crate::runtime::{AgentLaunch, RunCommand, RuntimeService, StartRun};
+use crate::runtime::{AgentLaunch, RunCommand, RunLauncher, RuntimeService, StartRun};
 use crate::storage::{self, StorageError};
 
 /// How long a plain run may take before it is stopped and fails.
@@ -20,21 +21,26 @@ const DEFAULT_TAIL_BYTES: u32 = 64 * 1024;
 const MAX_TAIL_BYTES: u32 = 4 * 1024 * 1024;
 
 /// Starts `adapter` (Claude or Codex) as a writer run in the worktree of an `in_progress`
-/// task of a local workspace with runner plain. The prompt goes to the agent on stdin;
-/// without one (or a blank one) it is the task's title, description, and criteria, and
-/// with `mcp` it also tells the agent to call the Toodo MCP `current_task` tool. With
-/// `mcp` the agent gets the server's MCP endpoint and token in its environment only.
-/// Returns the run as recorded right after the launch.
+/// task of a workspace with runner plain or tmux, on the server or on the workspace's SSH
+/// machine. Runner plain runs the agent as a child process (over `ssh` for an SSH
+/// workspace); runner tmux runs it in a detached tmux session that `get_run_log` tells how
+/// to attach to. The prompt goes to the agent on stdin; without one (or a blank one) it is
+/// the task's title, description, and criteria, and with `mcp` it also tells the agent to
+/// call the Toodo MCP `current_task` tool. With `mcp` the agent gets the server's MCP
+/// endpoint and token in its environment only; on an SSH machine it reaches the server
+/// through the machine's MCP tunnel, which must be open. Returns the run as recorded right
+/// after the launch.
 #[specta::specta]
 pub fn start_plain_run(
     storage: State<'_, StorageState>,
     runs: State<'_, PlainRunState>,
+    tmux: State<'_, TmuxRunState>,
     task_id: TaskId,
     adapter: AgentAdapter,
     prompt: Option<String>,
     mcp: bool,
 ) -> CommandResult<TaskRun> {
-    Ok((&start(&storage, &runs, task_id.into(), adapter, prompt, mcp)?).into())
+    Ok((&start(&storage, &runs, &tmux, task_id.into(), adapter, prompt, mcp)?).into())
 }
 
 /// The runs of a task, oldest first.
@@ -51,12 +57,34 @@ pub fn list_task_runs(
     Ok(types::map_all(&storage.list_task_runs(id)?))
 }
 
+/// The run `id`, rejected with the next step unless it is a plain or tmux run.
+fn managed_run(
+    storage: &StorageState,
+    id: domain_runtime::RunId,
+    command: &str,
+) -> CommandResult<storage::TaskRun> {
+    let run = lock(storage)
+        .get_run(id)?
+        .ok_or(StorageError::RunNotFound(id))?;
+    if !matches!(run.runner_kind, RunnerKind::Plain | RunnerKind::Tmux) {
+        return Err(CommandError::rejected(format!(
+            "run {id} is a {} run, and {command} handles only plain and tmux runs; manage it \
+             where it runs, e.g. in its herdr pane",
+            run.runner_kind
+        )));
+    }
+    Ok(run)
+}
+
 /// A run with its events and the last `tail_bytes` (default 64 KiB, at most 4 MiB) of its
-/// stdout and stderr logs, with the MCP token redacted.
+/// stdout and stderr logs, with the MCP token redacted. For an active tmux run, `attach`
+/// is the shell command that opens its terminal session (a view of the run, not a way
+/// to control it).
 #[specta::specta]
 pub fn get_run_log(
     storage: State<'_, StorageState>,
     runs: State<'_, PlainRunState>,
+    tmux: State<'_, TmuxRunState>,
     run_id: RunId,
     tail_bytes: Option<u32>,
 ) -> CommandResult<RunLog> {
@@ -68,67 +96,100 @@ pub fn get_run_log(
         )));
     }
     let id = run_id.into();
-    let events = {
+    let (kind, events) = {
         let storage = lock(&storage);
-        storage.get_run(id)?.ok_or(StorageError::RunNotFound(id))?;
-        storage.run_events(id)?
+        let run = storage.get_run(id)?.ok_or(StorageError::RunNotFound(id))?;
+        (run.runner_kind, storage.run_events(id)?)
     };
-    let log = runs.log(id, tail as usize)?;
+    let log = match kind {
+        RunnerKind::Tmux => tmux.log(id, tail as usize)?,
+        _ => runs.log(id, tail as usize)?,
+    };
     // Read after the log, so the state is at least as new as the output.
     let run = lock(&storage)
         .get_run(id)?
         .ok_or(StorageError::RunNotFound(id))?;
+    let attach = if kind == RunnerKind::Tmux && run.state.is_active() {
+        tmux.attach_command(id)
+    } else {
+        None
+    };
     Ok(RunLog {
         run: (&run).into(),
         events: types::map_all(&events),
         stdout: log.stdout,
         stderr: log.stderr,
+        attach,
     })
 }
 
-/// Stops a plain run: its process group is terminated (killed after a grace period) and
-/// the run ends as `cancelled`. A run that already ended is returned as it is.
+/// Stops a plain or tmux run: a plain run's process group is terminated (killed after a
+/// grace period), a tmux run's session is killed, and the run ends as `cancelled`. A run
+/// that already ended is returned as it is.
 #[specta::specta]
 pub fn stop_run(
     storage: State<'_, StorageState>,
     runs: State<'_, PlainRunState>,
+    tmux: State<'_, TmuxRunState>,
     run_id: RunId,
 ) -> CommandResult<TaskRun> {
     let id = run_id.into();
-    let run = lock(&storage)
-        .get_run(id)?
-        .ok_or(StorageError::RunNotFound(id))?;
-    if run.runner_kind != RunnerKind::Plain {
-        return Err(CommandError::rejected(format!(
-            "run {id} is a {} run, and stop_run stops only plain runs; stop it where it runs, \
-             e.g. in its herdr pane",
-            run.runner_kind
-        )));
-    }
-    Ok((&runs.stop(id)?).into())
+    let run = managed_run(&storage, id, "stop_run")?;
+    Ok((&stop(&runs, &tmux, &run)?).into())
 }
 
-/// Stops the plain runs of `task` that may still have a process, before the task is
-/// deleted or completed.
+/// Settles a plain or tmux run whose observation was lost (state `unknown`, e.g. after a
+/// server restart or an SSH disconnect) from what its host recorded: its exit, a session
+/// or process that still runs, or neither. It never starts the agent again. A run that is
+/// observed or already ended is returned as it is.
+#[specta::specta]
+pub fn reconcile_run(
+    storage: State<'_, StorageState>,
+    runs: State<'_, PlainRunState>,
+    tmux: State<'_, TmuxRunState>,
+    run_id: RunId,
+) -> CommandResult<TaskRun> {
+    let id = run_id.into();
+    let run = managed_run(&storage, id, "reconcile_run")?;
+    let settled = match run.runner_kind {
+        RunnerKind::Tmux => tmux.reconcile(id)?,
+        _ => runs.reconcile(id)?,
+    };
+    Ok((&settled).into())
+}
+
+fn stop(
+    runs: &PlainRunState,
+    tmux: &TmuxRunState,
+    run: &storage::TaskRun,
+) -> CommandResult<storage::TaskRun> {
+    Ok(match run.runner_kind {
+        RunnerKind::Tmux => tmux.stop(run.id)?,
+        _ => runs.stop(run.id)?,
+    })
+}
+
+/// Stops the plain and tmux runs of `task` that may still have a process, before the task
+/// is deleted or completed.
 pub(crate) fn stop_live_runs(
     storage: &StorageState,
     runs: &PlainRunState,
+    tmux: &TmuxRunState,
     task: model::TaskId,
 ) -> CommandResult<()> {
     let live: Vec<_> = lock(storage)
         .list_task_runs(task)?
         .into_iter()
         .filter(|run| {
-            run.runner_kind == RunnerKind::Plain
+            matches!(run.runner_kind, RunnerKind::Plain | RunnerKind::Tmux)
                 && matches!(
                     run.state,
                     domain_runtime::RunState::Reserved | domain_runtime::RunState::Running
                 )
         })
-        .map(|run| run.id)
         .collect();
     for run in live {
-        runs.stop(run)?;
+        stop(runs, tmux, &run)?;
     }
     Ok(())
 }
@@ -137,13 +198,15 @@ pub(crate) fn stop_live_runs_after<T>(
     result: CommandResult<T>,
     storage: &StorageState,
     runs: &PlainRunState,
+    tmux: &TmuxRunState,
     task: model::TaskId,
 ) -> CommandResult<T> {
     if result.is_ok()
-        && let Err(error) = stop_live_runs(storage, runs, task)
+        && let Err(error) = stop_live_runs(storage, runs, tmux, task)
     {
         eprintln!(
-            "could not stop plain runs for task {task}: {error:?}; stop_run is the next step"
+            "could not stop plain or tmux runs for task {task}: {error:?}; stop_run is the \
+             next step"
         );
     }
     result
@@ -152,12 +215,13 @@ pub(crate) fn stop_live_runs_after<T>(
 fn start(
     storage: &StorageState,
     runs: &PlainRunState,
+    tmux: &TmuxRunState,
     id: model::TaskId,
     agent: AgentAdapter,
     prompt: Option<String>,
     mcp: bool,
 ) -> CommandResult<storage::TaskRun> {
-    let (task, worktree, generation) = {
+    let (task, worktree, generation, host, runner) = {
         let storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -166,14 +230,7 @@ fn start(
             .get_workspace(task.workspace_id)?
             .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
         match workspace.runner {
-            Runner::Plain => {}
-            Runner::Tmux => {
-                return Err(CommandError::rejected(
-                    "runner tmux launch is not wired yet, and a workspace keeps the runner \
-                     it was created with; delete this workspace, add the repository again \
-                     at a local path with runner plain, then start a plain run",
-                ));
-            }
+            Runner::Plain | Runner::Tmux => {}
             Runner::Herdr => {
                 return Err(CommandError::rejected(format!(
                     "task {id} belongs to workspace {:?} with runner herdr; start the task's \
@@ -184,18 +241,11 @@ fn start(
             Runner::None => {
                 return Err(CommandError::rejected(format!(
                     "task {id} belongs to workspace {:?} with runner none, which runs no \
-                     agents; work on it by hand, or plan it in a local workspace with runner \
-                     plain",
+                     agents; work on it by hand, or plan it in a workspace with runner plain \
+                     or tmux",
                     workspace.name
                 )));
             }
-        }
-        if !matches!(workspace.location, WorkspaceLocation::Local { .. }) {
-            return Err(CommandError::rejected(format!(
-                "workspace {:?} of task {id} is on an SSH machine, and plain runs run only on \
-                 the server; move the workspace to a local path, or use runner herdr",
-                workspace.name
-            )));
         }
         if task.status != TaskStatus::InProgress {
             return Err(CommandError::rejected(format!(
@@ -213,20 +263,27 @@ fn start(
             .list_task_runs(id)?
             .last()
             .map_or(1, |run| run.generation + 1);
+        // The worktree path keeps its style, which tells the runner the host's OS.
         let worktree = worktree.to_string();
-        (task, worktree, generation)
+        let host = HostRef::from(&workspace.location.machine());
+        (task, worktree, generation, host, workspace.runner)
     };
     let brief = match prompt.filter(|prompt| !prompt.trim().is_empty()) {
         Some(prompt) => prompt,
         None => default_brief(&task, &worktree, mcp),
     };
     let agent = adapter::AgentAdapter::from(agent);
+    let (launcher, prefix): (&dyn RunLauncher, _) = match runner {
+        Runner::Tmux => (tmux, "tmux"),
+        _ => (runs, "plain"),
+    };
     let request = StartRun {
         owner: OwnerKey::implicit(),
         task: id,
-        request_key: format!("plain-{id}-{generation}"),
+        // Unique per task: the generation grows with every run of the task.
+        request_key: format!("{prefix}-{id}-{generation}"),
         role: RunRole::Writer,
-        host: HostRef::Local,
+        host,
         checkout_path: Some(worktree),
         runtime_workspace: None,
         adapter_profile: Some(agent.as_wire().to_owned()),
@@ -237,7 +294,7 @@ fn start(
             timeout_secs: RUN_TIMEOUT_SECS,
         }),
     };
-    Ok(RuntimeService.start_run(storage, runs, request)?)
+    Ok(RuntimeService.start_run(storage, launcher, request)?)
 }
 
 /// The prompt of a run started without one: the task's title, description, and criteria,
@@ -276,26 +333,48 @@ mod tests {
     use crate::adapters::herdr::Herdr;
     use crate::commands::{CommandErrorKind, tasks};
     use crate::domain::model::{CompletionMode, HostPath, Source, TaskType};
+    use crate::domain::model::{MachineLabel, WorkspaceLocation};
     use crate::domain::naming::TaskCheckout;
     use crate::domain::path::PosixPath;
     use crate::runtime::plain::PlainRunner;
-    use crate::storage::{NewTask, NewWorkspace, Storage};
+    use crate::runtime::tmux::TmuxRunner;
+    use crate::storage::{NewRun, NewTask, NewWorkspace, Storage};
 
     const WAIT: Duration = Duration::from_secs(15);
+    /// Runs the remote command of `ssh -o BatchMode=yes -- test-host <command>` locally,
+    /// with its own directory as home, and records the arguments.
+    const FAKE_SSH: &str = r#"#!/bin/sh
+HOME=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export HOME
+printf '%s\n' "$@" >> "$HOME/ssh-argv"
+while [ "$1" != "--" ]; do shift; done
+shift
+test "$1" = test-host || exit 254
+shift
+exec sh -c "$1"
+"#;
     const RESULT: &str =
         r#"printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done"}'"#;
 
     struct Fixture {
         storage: Arc<StorageState>,
         runs: PlainRunState,
+        tmux: TmuxRunState,
         task: model::TaskId,
         worktree: HostPath,
         _dir: tempfile::TempDir,
     }
 
-    /// A planned task of a local workspace with `runner`, and a plain runner whose Claude
-    /// and Codex CLIs are the shell script `script`.
+    /// A planned task of a local workspace with `runner`, and plain and tmux runners whose
+    /// Claude and Codex CLIs are the shell script `script`.
     fn fixture(runner: Runner, script: &str) -> Fixture {
+        fixture_at(runner, script, false)
+    }
+
+    /// Like [`fixture`]; with `ssh` the workspace is on the SSH machine `test-host`, which
+    /// a fake `ssh` reaches by running the remote command locally with the temporary
+    /// directory as its home.
+    fn fixture_at(runner: Runner, script: &str, ssh: bool) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("agent");
         fs::write(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
@@ -303,14 +382,19 @@ mod tests {
         let worktree = dir.path().join("worktree");
         fs::create_dir(&worktree).unwrap();
         let mut storage = Storage::open_in_memory().unwrap();
+        let path = PosixPath::parse(dir.path().to_str().unwrap()).unwrap();
+        let location = if ssh {
+            WorkspaceLocation::Ssh {
+                machine: MachineLabel::parse("test-host").unwrap(),
+                path: path.into(),
+            }
+        } else {
+            WorkspaceLocation::Local { path: path.into() }
+        };
         let workspace = storage
             .create_workspace(&NewWorkspace {
                 name: "toodo".to_owned(),
-                location: WorkspaceLocation::Local {
-                    path: PosixPath::parse(dir.path().to_str().unwrap())
-                        .unwrap()
-                        .into(),
-                },
+                location,
                 default_base_branch: "main".to_owned(),
                 source: Source::LocalGit,
                 completion: CompletionMode::LocalMerge,
@@ -331,11 +415,24 @@ mod tests {
             .unwrap()
             .id;
         let storage = Arc::new(Mutex::new(storage));
+        let ssh = dir.path().join("ssh");
+        fs::write(&ssh, FAKE_SSH).unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
         let runs = PlainRunner::new(storage.clone(), dir.path().join("runs"))
-            .with_programs(&program, &program);
+            .with_programs(&program, &program)
+            .with_ssh_program(&ssh);
+        let tmux = TmuxRunner::new(storage.clone(), dir.path().join("runs"))
+            .with_programs(&program, &program)
+            .with_ssh_program(&ssh)
+            .with_tmux_program(std::env::var_os("TOODO_TEST_TMUX").unwrap_or_else(|| "tmux".into()))
+            .with_socket(format!(
+                "toodo-test-{}",
+                dir.path().file_name().unwrap().to_string_lossy()
+            ));
         Fixture {
             storage,
             runs,
+            tmux,
             task,
             worktree: PosixPath::parse(worktree.to_str().unwrap()).unwrap().into(),
             _dir: dir,
@@ -359,6 +456,7 @@ mod tests {
             start_plain_run(
                 State(&self.storage),
                 State(&self.runs),
+                State(&self.tmux),
                 self.task.into(),
                 AgentAdapter::Claude,
                 prompt.map(str::to_owned),
@@ -367,10 +465,38 @@ mod tests {
         }
 
         fn end(&self, run: &TaskRun) -> types::RunState {
-            self.runs
-                .wait_for_end(run.id.into(), WAIT)
-                .map(|run| run.state.into())
-                .expect("the run ends")
+            let ended = if run.runner_kind == "tmux" {
+                self.tmux.wait_for_end(run.id.into(), WAIT)
+            } else {
+                self.runs.wait_for_end(run.id.into(), WAIT)
+            };
+            ended.map(|run| run.state.into()).expect("the run ends")
+        }
+
+        fn log(&self, run: &TaskRun) -> RunLog {
+            get_run_log(
+                State(&self.storage),
+                State(&self.runs),
+                State(&self.tmux),
+                run.id,
+                None,
+            )
+            .unwrap()
+        }
+
+        /// Whether the tmux of the tests runs; tests that need it skip without it.
+        fn has_tmux(&self) -> bool {
+            let program = std::env::var_os("TOODO_TEST_TMUX").unwrap_or_else(|| "tmux".into());
+            let works = std::process::Command::new(program)
+                .arg("-V")
+                .output()
+                .is_ok_and(|output| output.status.success());
+            if !works {
+                eprintln!(
+                    "SKIP real tmux test: install tmux or set TOODO_TEST_TMUX to a working binary"
+                );
+            }
+            works
         }
     }
 
@@ -395,6 +521,7 @@ mod tests {
         let log = get_run_log(
             State(&fixture.storage),
             State(&fixture.runs),
+            State(&fixture.tmux),
             first.id,
             None,
         )
@@ -410,6 +537,7 @@ mod tests {
         let log = get_run_log(
             State(&fixture.storage),
             State(&fixture.runs),
+            State(&fixture.tmux),
             second.id,
             Some(4096),
         )
@@ -422,6 +550,7 @@ mod tests {
         let error = get_run_log(
             State(&fixture.storage),
             State(&fixture.runs),
+            State(&fixture.tmux),
             first.id,
             Some(0),
         )
@@ -459,9 +588,22 @@ mod tests {
         fixture.start_task();
 
         let run = fixture.run(None).unwrap();
-        let stopped = stop_run(State(&fixture.storage), State(&fixture.runs), run.id).unwrap();
+        let stopped = stop_run(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            run.id,
+        )
+        .unwrap();
         assert_eq!(stopped.state, types::RunState::Cancelled);
-        let log = get_run_log(State(&fixture.storage), State(&fixture.runs), run.id, None).unwrap();
+        let log = get_run_log(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            run.id,
+            None,
+        )
+        .unwrap();
         assert!(
             log.events
                 .iter()
@@ -484,6 +626,7 @@ mod tests {
             State(&Arc::new(Git::new(Box::new(ProcessRunner)))),
             State(&Arc::new(Herdr::new(Box::new(ProcessRunner)))),
             State(&fixture.runs),
+            State(&fixture.tmux),
             fixture.task.into(),
             false,
         )
@@ -504,6 +647,7 @@ mod tests {
                 Err::<(), _>(error),
                 &fixture.storage,
                 &fixture.runs,
+                &fixture.tmux,
                 fixture.task
             )
             .is_err()
@@ -518,8 +662,149 @@ mod tests {
         );
 
         assert!(
-            stop_live_runs_after(Ok(()), &fixture.storage, &fixture.runs, fixture.task).is_ok()
+            stop_live_runs_after(
+                Ok(()),
+                &fixture.storage,
+                &fixture.runs,
+                &fixture.tmux,
+                fixture.task
+            )
+            .is_ok()
         );
         assert_eq!(fixture.end(&rejected), types::RunState::Cancelled);
+    }
+
+    #[test]
+    fn a_tmux_workspace_runs_its_agent_in_a_tmux_session() {
+        let fixture = fixture(
+            Runner::Tmux,
+            &format!("test -f started && exec sleep 600\n: > started\n{RESULT}"),
+        );
+        if !fixture.has_tmux() {
+            return;
+        }
+        fixture.start_task();
+
+        let first = fixture.run(None).unwrap();
+        assert_eq!(first.runner_kind, "tmux");
+        assert_eq!(first.request_key, format!("tmux-{}-1", fixture.task));
+        assert_eq!(
+            first.provider_run_ref,
+            Some(format!("tmux:local:toodo-run-{}", first.id.0))
+        );
+        assert_eq!(fixture.end(&first), types::RunState::Settled);
+        let log = fixture.log(&first);
+        assert!(log.stdout.contains(r#""result":"done""#), "{}", log.stdout);
+        assert_eq!(log.attach, None, "an ended run has no session to attach to");
+
+        let live = fixture.run(None).unwrap();
+        assert_eq!(live.request_key, format!("tmux-{}-2", fixture.task));
+        let attach = fixture.log(&live).attach.expect("an active tmux run");
+        assert!(
+            attach.contains("attach -t") && attach.contains(&format!("toodo-run-{}", live.id.0)),
+            "{attach}"
+        );
+        let reconciled = reconcile_run(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            live.id,
+        )
+        .unwrap();
+        assert_eq!(reconciled.state, types::RunState::Running);
+        let stopped = stop_run(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            live.id,
+        )
+        .unwrap();
+        assert_eq!(stopped.state, types::RunState::Cancelled);
+    }
+
+    #[test]
+    fn a_plain_run_of_an_ssh_workspace_runs_over_ssh() {
+        let fixture = fixture_at(
+            Runner::Plain,
+            &format!("IFS= read -r title\nprintf '%s\\n' \"$title\"\n{RESULT}"),
+            true,
+        );
+        fixture.start_task();
+
+        let run = fixture.run(None).unwrap();
+        assert_eq!(run.runner_kind, "plain");
+        assert_eq!(
+            lock(&fixture.storage)
+                .get_run(run.id.into())
+                .unwrap()
+                .unwrap()
+                .host,
+            HostRef::Ssh("test-host".to_owned())
+        );
+        assert_eq!(
+            run.provider_run_ref,
+            Some(format!("ssh:test-host:{}", run.id.0))
+        );
+        assert_eq!(fixture.end(&run), types::RunState::Settled);
+        let log = fixture.log(&run);
+        assert!(log.stdout.contains("# Add login"), "{}", log.stdout);
+        assert_eq!(log.attach, None);
+        let argv = fs::read_to_string(fixture._dir.path().join("ssh-argv")).unwrap();
+        assert!(
+            argv.contains("test-host") && argv.contains("setsid --wait"),
+            "{argv}"
+        );
+        let reconciled = reconcile_run(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            run.id,
+        )
+        .unwrap();
+        assert_eq!(reconciled.state, types::RunState::Settled);
+    }
+
+    #[test]
+    fn an_ssh_herdr_workspace_still_starts_its_agents_in_herdr() {
+        let fixture = fixture_at(Runner::Herdr, "touch launched", true);
+        fixture.start_task();
+        let error = fixture.run(None).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("open_task_in_herdr"), "{error:?}");
+        assert!(!fixture._dir.path().join("ssh-argv").exists());
+        assert!(
+            list_task_runs(State(&fixture.storage), fixture.task.into())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn reconciling_a_herdr_run_is_rejected_with_the_next_step() {
+        let fixture = fixture(Runner::Herdr, "touch launched");
+        let run = lock(&fixture.storage)
+            .reserve_run(&NewRun {
+                owner: OwnerKey::implicit(),
+                task: fixture.task,
+                request_key: "herdr".to_owned(),
+                runner_kind: RunnerKind::Herdr,
+                role: RunRole::Writer,
+                host: HostRef::Local,
+                checkout_path: None,
+                runtime_workspace: None,
+                adapter_profile: None,
+            })
+            .unwrap()
+            .into_run();
+        let error = reconcile_run(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            run.id.into(),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("herdr pane"), "{error:?}");
+        assert!(error.message.contains("reconcile_run"), "{error:?}");
     }
 }

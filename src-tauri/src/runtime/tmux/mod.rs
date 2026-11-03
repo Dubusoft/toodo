@@ -83,15 +83,45 @@ impl TmuxRunner {
         }
     }
 
+    #[cfg(test)]
     pub fn with_tmux_program(mut self, program: impl Into<PathBuf>) -> Self {
         self.tmux = program.into();
         self
     }
 
-    /// A private tmux server name, principally for isolated integration tests.
+    /// A private tmux server name, for isolated integration tests.
+    #[cfg(test)]
     pub fn with_socket(mut self, socket: impl Into<String>) -> Self {
         self.socket = Some(socket.into());
         self
+    }
+
+    #[cfg(test)]
+    pub fn with_programs(mut self, claude: impl Into<PathBuf>, codex: impl Into<PathBuf>) -> Self {
+        self.claude = claude.into();
+        self.codex = codex.into();
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_ssh_program(mut self, ssh: impl Into<PathBuf>) -> Self {
+        self.ssh = ssh.into();
+        self
+    }
+
+    /// Waits for the observation of a run to settle it, without polling its record.
+    #[cfg(test)]
+    pub fn wait_for_end(&self, run: RunId, timeout: std::time::Duration) -> Option<TaskRun> {
+        let observation = lock(&self.observations).get(&run).cloned()?;
+        let result = lock(&observation.result);
+        let (result, _) = observation
+            .changed
+            .wait_timeout_while(result, timeout, |result| result.is_none())
+            .unwrap();
+        result
+            .as_ref()
+            .and_then(|result| result.as_ref().ok())
+            .cloned()
     }
 
     pub fn with_mcp_provider(mut self, provider: McpProvider) -> Self {
