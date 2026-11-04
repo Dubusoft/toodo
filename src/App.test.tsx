@@ -461,6 +461,43 @@ describe("App", () => {
     expect(screen.queryByText("Add storage")).not.toBeInTheDocument();
   });
 
+  it("names reviewed tasks without a plan and adds an estimate from the review", async () => {
+    const at = Date.now() / 1000 - 60;
+    const unplanned = task(1, 1, "Add storage", { status: "done" });
+    const estimated = { ...unplanned, estimate: { unit: "hours" as const, amount: 2 } };
+    let reviewed = unplanned;
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.reviewPeriod.mockImplementation(async () => ({
+      status: "ok",
+      data: [{ task: reviewed, outcome: "completed", at, commits: [], archived: false }],
+    }));
+    mocked.updateTask.mockImplementation(async () => {
+      reviewed = estimated;
+      return { status: "ok", data: estimated };
+    });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+    const plan = await screen.findByRole("region", { name: "Plan vs actual" });
+    expect(plan).toHaveTextContent("No reviewed task has an estimate or a due date");
+    expect(within(plan).getByText("Missing plan").nextSibling).toHaveTextContent(
+      "1 task without an estimate, 1 task without a due date; add them from the marks on the tasks below",
+    );
+    const completed = screen.getByRole("region", { name: "Completed" });
+    fireEvent.click(within(completed).getByRole("button", { name: "Edit plan of #1: no estimate or due date" }));
+    const form = within(completed).getByRole("form", { name: "Edit task #1" });
+    expect(within(form).getByLabelText("Estimate of #1")).toHaveFocus();
+    fireEvent.change(within(form).getByLabelText("Estimate of #1"), { target: { value: "2" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    expect(await within(completed).findByRole("button", { name: "Edit plan of #1: no due date" })).toBeInTheDocument();
+    expect(within(completed).queryByRole("form", { name: "Edit task #1" })).not.toBeInTheDocument();
+    expect(mocked.updateTask).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1, estimate: { unit: "hours", amount: 2 }, dueDate: null, criteria: null }),
+    );
+  });
+
   it("plans dependencies across workspaces and lists every workspace together", async () => {
     const api = task(1, 1, "Add low level API");
     const ui = task(3, 2, "Build UI");
@@ -2725,6 +2762,32 @@ describe("App", () => {
       criteria: null,
       mergeCriterion: false,
     });
+  });
+
+  it("marks tasks missing an estimate or due date and opens the edit form at the missing field", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add login", { dueDate: "2026-11-01" }),
+        task(2, 1, "Add search", { estimate: { unit: "days", amount: 2 } }),
+        task(3, 1, "Add export", { estimate: { unit: "hours", amount: 3 }, dueDate: "2026-11-01" }),
+      ],
+    });
+    await renderWorkspace();
+
+    const noEstimate = await screen.findByRole("button", { name: "Edit plan of #1: no estimate" });
+    expect(noEstimate).toHaveTextContent("No estimate");
+    expect(screen.getByRole("button", { name: "Edit plan of #2: no due date" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Edit plan of #3/ })).not.toBeInTheDocument();
+
+    fireEvent.click(noEstimate);
+    const form = screen.getByRole("form", { name: "Edit task #1" });
+    expect(within(form).getByLabelText("Estimate of #1")).toHaveFocus();
+    fireEvent.click(within(form).getByRole("button", { name: "Discard" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit plan of #2: no due date" }));
+    expect(within(screen.getByRole("form", { name: "Edit task #2" })).getByLabelText("Due date of #2")).toHaveFocus();
   });
 
   it("puts the merge criterion back on a task without one and removes it again", async () => {

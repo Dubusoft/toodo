@@ -5,7 +5,7 @@ import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import type { Task, TaskType } from "@/lib/bindings";
 import { useUpdateTask } from "@/lib/queries";
-import { formatLabels, parseLabels } from "@/lib/plan";
+import { formatLabels, type MissingPlanField, parseLabels } from "@/lib/plan";
 import { cn } from "@/lib/utils";
 import { type WorkspaceCapabilities } from "@/lib/workspace-capabilities";
 import { taskTypes } from "@/components/task-common";
@@ -23,10 +23,13 @@ import {
 export function TaskEditForm({
   task,
   capabilities,
+  focusPlan,
   onDone,
 }: {
   task: Task;
   capabilities: WorkspaceCapabilities;
+  /** The plan field that takes the focus instead of the title, e.g. when adding a missing estimate. */
+  focusPlan?: MissingPlanField;
   onDone: () => void;
 }) {
   const updateTask = useUpdateTask();
@@ -111,7 +114,7 @@ export function TaskEditForm({
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           required
-          autoFocus
+          autoFocus={focusPlan === undefined}
         />
       </div>
       <MarkdownEditor
@@ -120,7 +123,7 @@ export function TaskEditForm({
         value={description}
         onChange={setDescription}
       />
-      <PlanFields suffix={` of #${task.id}`} plan={plan} onChange={setPlan} />
+      <PlanFields suffix={` of #${task.id}`} plan={plan} onChange={setPlan} autoFocus={focusPlan} />
       {task.status !== "done" && (
         <div className="flex flex-col gap-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">

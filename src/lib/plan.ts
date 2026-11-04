@@ -44,6 +44,23 @@ export function secondsPastDue(task: Task, now: Timestamp): number {
   return Math.max(until - dueEnd(task.dueDate), 0);
 }
 
+/** Plan fields a task has no value for, which leave it out of the review's plan comparison. */
+export type MissingPlanField = "estimate" | "dueDate";
+
+/** The plan fields `task` lacks: its estimate first, then its due date. */
+export function missingPlan(task: Task): MissingPlanField[] {
+  return [
+    ...(task.estimate === null ? ["estimate" as const] : []),
+    ...(task.dueDate === null ? ["dueDate" as const] : []),
+  ];
+}
+
+/** What a task lacks, e.g. `No estimate or due date`; null when it lacks nothing. */
+export function missingPlanLabel(missing: readonly MissingPlanField[]): string | null {
+  if (missing.length === 0) return null;
+  return `No ${missing.map((field) => (field === "estimate" ? "estimate" : "due date")).join(" or ")}`;
+}
+
 function formatAmount(amount: number): string {
   return String(Math.round(amount * 100) / 100);
 }
