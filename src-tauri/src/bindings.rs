@@ -72,6 +72,8 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         herdr::close_task_workspace,
         runs::start_plain_run,
         runs::list_task_runs,
+        runs::get_machine_runs,
+        runs::set_machine_run_limit,
         runs::get_run_log,
         runs::stop_run,
         runs::reconcile_run,

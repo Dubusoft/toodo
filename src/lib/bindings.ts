@@ -212,11 +212,22 @@ export const commands = {
 	 *  instead of starting a new one, and the new run joins the run's conversation. Returns
 	 *  the run as recorded right after the launch. The agent runs with the model, permission
 	 *  mode, and time limit the task sets, or else its workspace (see
-	 *  `get_task_agent_options`).
+	 *  `get_task_agent_options`). While the machine runs as many runs as its limit allows (see
+	 *  `set_machine_run_limit`), or earlier runs wait for it, the run is returned `queued`
+	 *  with its place in the queue, and starts on its own once a run slot frees; a queued
+	 *  follow-up then resumes the latest session of its conversation.
 	 */
 	startPlainRun: (taskId: TaskId, adapter: AgentAdapter, prompt: string | null, mcp: boolean, followUpOf: number | null) => typedError<TaskRun, CommandError>(invoke("start_plain_run", { taskId, adapter, prompt, mcp, followUpOf })),
 	/**  The runs of a task, oldest first. */
 	listTaskRuns: (taskId: TaskId) => typedError<TaskRun[], CommandError>(invoke("list_task_runs", { taskId })),
+	/**  How many plain and tmux runs `machine` runs at once, and how many run or wait there. */
+	getMachineRuns: (machine: Machine) => typedError<MachineRuns, CommandError>(invoke("get_machine_runs", { machine })),
+	/**
+	 *  Sets how many plain and tmux runs `machine` runs at once; `None` (null) for no limit.
+	 *  Further runs wait in the machine's queue. Raising or removing the limit starts queued
+	 *  runs right away; lowering it stops no run.
+	 */
+	setMachineRunLimit: (machine: Machine, maxConcurrentRuns: number | null) => typedError<MachineRuns, CommandError>(invoke("set_machine_run_limit", { machine, maxConcurrentRuns })),
 	/**
 	 *  A run with its events and the last `tail_bytes` (default 64 KiB, at most 4 MiB) of its
 	 *  stdout and stderr logs, with the MCP token redacted. For an active tmux run, `attach`
@@ -226,8 +237,9 @@ export const commands = {
 	getRunLog: (runId: RunId, tailBytes: number | null) => typedError<RunLog, CommandError>(invoke("get_run_log", { runId, tailBytes })),
 	/**
 	 *  Stops a plain or tmux run: a plain run's process group is terminated (killed after a
-	 *  grace period), a tmux run's session is killed, and the run ends as `cancelled`. A run
-	 *  that already ended is returned as it is.
+	 *  grace period), a tmux run's session is killed, and the run ends as `cancelled`. A
+	 *  queued run leaves its queue as `cancelled` without starting. A run that already ended
+	 *  is returned as it is.
 	 */
 	stopRun: (runId: RunId) => typedError<TaskRun, CommandError>(invoke("stop_run", { runId })),
 	/**
@@ -746,6 +758,19 @@ export type LinkedIssue = {
 
 export type Machine = { kind: "local" } | { kind: "ssh"; label: string };
 
+/**  The runs of a machine: how many may run at once, and how many run or wait. */
+export type MachineRuns = {
+	machine: Machine,
+	/**
+	 *  The most plain and tmux runs the machine runs at once; further runs wait in its
+	 *  queue. `None` for no limit.
+	 */
+	maxConcurrentRuns: number | null,
+	/**  The plain and tmux runs that are starting, running, or whose end was not seen. */
+	activeRuns: number,
+	queuedRuns: number,
+};
+
 export type MachineSettings = {
 	machine: Machine,
 	/**
@@ -997,6 +1022,8 @@ export type RunLog = {
 
 /**  Where a run is in its life. */
 export type RunState = 
+/**  Waiting in its host's queue until fewer runs than the host's limit run there. */
+"queued" | 
 /**  Recorded, not launched yet. */
 "reserved" | 
 /**  Launched and not ended. */
@@ -1305,6 +1332,11 @@ export type TaskRun = {
 	 *  once the agent reported it: what a follow-up run (`follow_up_of` this run) resumes.
 	 */
 	agentSession: string | null,
+	/**
+	 *  For a queued run, where it is in its host's queue, from 1 for the run that starts
+	 *  next; `None` for any other run.
+	 */
+	queuePosition: number | null,
 };
 
 export type TaskStatus = "planned" | "in_progress" | "in_review" | "done";

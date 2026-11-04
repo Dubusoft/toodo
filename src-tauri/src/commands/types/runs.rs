@@ -94,6 +94,8 @@ impl From<AgentAdapter> for plain::adapter::AgentAdapter {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
+    /// Waiting in its host's queue until fewer runs than the host's limit run there.
+    Queued,
     /// Recorded, not launched yet.
     Reserved,
     /// Launched and not ended.
@@ -113,6 +115,7 @@ pub enum RunState {
 impl From<domain_runtime::RunState> for RunState {
     fn from(state: domain_runtime::RunState) -> Self {
         match state {
+            domain_runtime::RunState::Queued => Self::Queued,
             domain_runtime::RunState::Reserved => Self::Reserved,
             domain_runtime::RunState::Running => Self::Running,
             domain_runtime::RunState::Settled => Self::Settled,
@@ -157,6 +160,22 @@ pub struct TaskRun {
     /// The agent session (Claude session id, Codex thread id) of this run's conversation,
     /// once the agent reported it: what a follow-up run (`follow_up_of` this run) resumes.
     pub agent_session: Option<String>,
+    /// For a queued run, where it is in its host's queue, from 1 for the run that starts
+    /// next; `None` for any other run.
+    pub queue_position: Option<u32>,
+}
+
+/// The runs of a machine: how many may run at once, and how many run or wait.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineRuns {
+    pub machine: super::Machine,
+    /// The most plain and tmux runs the machine runs at once; further runs wait in its
+    /// queue. `None` for no limit.
+    pub max_concurrent_runs: Option<u32>,
+    /// The plain and tmux runs that are starting, running, or whose end was not seen.
+    pub active_runs: u32,
+    pub queued_runs: u32,
 }
 
 /// Tokens an agent reported using in a run.
@@ -202,6 +221,7 @@ impl From<&storage::TaskRun> for TaskRun {
             usage: run.usage.map(RunUsage::from),
             follow_up_of: run.follows.map(RunId::from),
             agent_session: run.session.clone(),
+            queue_position: None,
         }
     }
 }

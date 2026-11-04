@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::log::{LogBytes, LogStream};
 use super::{LaunchReceipt, LaunchSpec, RunCommand, RunLauncher, RunnerError, RuntimeError, lock};
 use crate::domain::runtime::{HostRef, RunId, RunState, RunnerKind};
 use crate::storage::{Storage, StorageError, TaskRun};
@@ -345,6 +346,34 @@ impl PlainRunner {
             stdout: tail("stdout.log")?,
             stderr: tail("stderr.log")?,
         })
+    }
+
+    /// Reads at most `max` bytes of a log of `run` from byte `offset`. Plain logs are
+    /// redacted as they are written, on the server even for an SSH run.
+    pub fn read_log(
+        &self,
+        run: RunId,
+        stream: LogStream,
+        offset: u64,
+        max: usize,
+    ) -> Result<LogBytes, RunnerError> {
+        let path = self.runs_dir.join(run.to_string()).join(stream.file_name());
+        super::log::read_file(&path, offset, max).map_err(io_error)
+    }
+
+    /// Removes the files of an ended run: its directory on the server and, for an SSH run,
+    /// the one on its host.
+    pub fn remove_files(&self, run: &TaskRun) -> Result<(), RuntimeError> {
+        if let Some(remote) = remote::Remote::from_run(
+            &run.host,
+            run.checkout_path.as_deref(),
+            &self.ssh,
+            &self.instance,
+        )? {
+            remote.remove_directory(run.id)?;
+        }
+        super::log::remove_dir(&self.runs_dir.join(run.id.to_string())).map_err(io_error)?;
+        Ok(())
     }
 
     /// Takes over the plain runs of an earlier server process. A local run whose wrapper

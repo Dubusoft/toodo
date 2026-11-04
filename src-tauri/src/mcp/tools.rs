@@ -2616,6 +2616,11 @@ fn run_status_of(run: &storage::TaskRun) -> RunStatus {
     let id = run.id;
     let managed = matches!(run.runner_kind, RunnerKind::Plain | RunnerKind::Tmux);
     let next = match (run.state, managed) {
+        (RunState::Queued, true) => format!(
+            "it waits in the queue of its machine, which runs no more runs at once than its \
+             limit; it starts on its own when a run there ends, so call run_status again \
+             later, or stop_run with run_id {id} to leave the queue"
+        ),
         (RunState::Reserved | RunState::Running, true) => format!(
             "it is running; call run_status again later, run_log with run_id {id} for its \
              output so far, or stop_run to stop it"
@@ -2650,7 +2655,7 @@ fn run_status_of(run: &storage::TaskRun) -> RunStatus {
     };
     RunStatus {
         run: run.into(),
-        active: run.state.is_active(),
+        active: run.state.is_open(),
         next,
     }
 }

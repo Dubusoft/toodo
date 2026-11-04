@@ -11,6 +11,7 @@
 pub mod events;
 mod herdr;
 pub mod host;
+pub mod log;
 pub mod plain;
 pub mod tmux;
 mod workspace;

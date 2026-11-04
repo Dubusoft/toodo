@@ -7,6 +7,7 @@ import {
   CircleDot,
   Copy,
   CornerDownRight,
+  Download,
   MessageSquareReply,
   Play,
   RefreshCw,
@@ -26,9 +27,12 @@ import { useReconcileRun, useRunLog, useRunnerHealth, useStartPlainRun, useStopR
 import { toneChip, tonePanel, toneText, type Tone } from "@/lib/status-styles";
 import { formatFull, formatWhen } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
+import { downloadRunLog } from "@/web/files";
+import { followRunLog, type RunLogChunk, type RunLogName } from "@/web/run-log";
 
 /** How each run state is named and coloured, in the tones of the status glossary. */
 const runStates: Record<RunState, { label: string; tone: Tone }> = {
+  queued: { label: "Queued", tone: "neutral" },
   reserved: { label: "Starting", tone: "info" },
   running: { label: "Running", tone: "info" },
   settled: { label: "Succeeded", tone: "success" },
@@ -82,7 +86,7 @@ function ActivityBadge({ run, now }: { run: TaskRun; now: number }) {
 }
 
 /** A run in these states holds the task's worktree: it can be stopped, and no other run starts before it ends. */
-const activeStates: readonly RunState[] = ["reserved", "running", "unknown"];
+const activeStates: readonly RunState[] = ["queued", "reserved", "running", "unknown"];
 
 const adapters: readonly AgentAdapter[] = ["claude", "codex"];
 
@@ -125,6 +129,7 @@ export function canFollowUp(run: TaskRun, runs: readonly TaskRun[]): boolean {
 
 /** Names of the events runs record; the event that marks the state a run ended in is named like the state. */
 const eventLabels = new Map<string, string>([
+  ["queued", "Queued"],
   ["reserved", "Reserved"],
   ["launched", "Launched"],
   ["todo", "Todo list"],
@@ -144,6 +149,7 @@ const eventLabels = new Map<string, string>([
   ["remote_missing", "Not found on its host"],
   ["interrupted", "Interrupted"],
   ["credential_cleanup_failed", "Credentials not removed"],
+  ["files_removed", "Log removed"],
   ["settled", runStates.settled.label],
   ["exited", runStates.exited.label],
   ["failed", runStates.failed.label],
@@ -259,7 +265,7 @@ function RunStateBadge({ state }: { state: RunState }) {
 /**
  * The runs of a task of a plain or tmux workspace in its details, newest first: Claude or
  * Codex run by Toodo on the task's worktree, on the server or the workspace's SSH machine,
- * with the events and the ends of the output of the open run, and the command that attaches
+ * with the events and the streamed output of the open run, and the command that attaches
  * a terminal to an active tmux run. A task in progress starts a run while no run holds its
  * worktree; a run that holds it can be stopped, and one whose end was not seen can be
  * reconciled. Runs send no events: Refresh reloads them, as do coming back to the window and
@@ -398,9 +404,11 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
           </div>
           {holding && (
             <p role="note" aria-label={`Why no run of #${task.id} starts`} className="text-muted-foreground">
-              {holding.state === "unknown"
-                ? `Run ${holding.generation} may still hold the worktree, since its end was not seen; reconcile it to check, or stop it, to start another run.`
-                : `Run ${holding.generation} is still running; stop it, or wait until it ends, to start another run.`}
+              {holding.state === "queued"
+                ? `Run ${holding.generation} waits for a free run slot on its machine${holding.queuePosition === null ? "" : ` (number ${holding.queuePosition} in the queue)`}; it starts on its own when a run there ends. Stop it to leave the queue.`
+                : holding.state === "unknown"
+                  ? `Run ${holding.generation} may still hold the worktree, since its end was not seen; reconcile it to check, or stop it, to start another run.`
+                  : `Run ${holding.generation} is still running; stop it, or wait until it ends, to start another run.`}
             </p>
           )}
           {!holding && chosen === null && (
@@ -470,6 +478,15 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
                       className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
                     />
                     <RunStateBadge state={run.state} />
+                    {run.queuePosition !== null && (
+                      <span
+                        aria-label={`Run ${run.generation} is number ${run.queuePosition} in the queue`}
+                        title="Where this run is in the queue of its machine; number 1 starts next"
+                        className="shrink-0 text-muted-foreground"
+                      >
+                        #{run.queuePosition} in queue
+                      </span>
+                    )}
                     <ActivityBadge run={run} now={now} />
                     <span className="shrink-0 font-medium">Run {run.generation}</span>
                     <span className="min-w-0 truncate text-muted-foreground">{adapterName(run.adapter)}</span>
@@ -543,7 +560,9 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
                     onKeyDown={escapeCloses(() => setStopping(null), stopRun.isPending)}
                   >
                     <span className="min-w-0 flex-1 basis-48">
-                      Stop {name}? Its agent is stopped if it still runs; the changes it made stay in the worktree.
+                      {run.state === "queued"
+                        ? `Stop ${name}? It leaves the queue without starting.`
+                        : `Stop ${name}? Its agent is stopped if it still runs; the changes it made stay in the worktree.`}
                     </span>
                     <Button
                       size="xs"
@@ -610,7 +629,7 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
 
 /**
  * The open run: when and where it ran, how it ended, the agent's todo list, its events, and
- * the ends of its stdout and stderr. The state comes from the run list; the log is loaded again when that state
+ * its stdout and stderr. The state comes from the run list; the log is loaded again when that state
  * changes, so the two agree.
  */
 function RunDetails({ id, run, log }: { id: string; run: TaskRun; log: ReturnType<typeof useRunLog> }) {
@@ -619,7 +638,7 @@ function RunDetails({ id, run, log }: { id: string; run: TaskRun; log: ReturnTyp
     if (log.data !== undefined && log.data.run.state !== listed) void log.refetch();
     // Only a change of the listed state asks for the log again.
   }, [listed]);
-  const ended = listed !== "reserved" && listed !== "running";
+  const ended = listed !== "queued" && listed !== "reserved" && listed !== "running";
   const last = log.data && ended ? lastEvent(run, log.data.events) : undefined;
   // Each todo event holds the whole list, so the last one is where the agent is.
   const lastTodo = log.data?.events.filter((event) => event.kind === "todo").at(-1);
@@ -664,6 +683,12 @@ function RunDetails({ id, run, log }: { id: string; run: TaskRun; log: ReturnTyp
       {log.data && (
         <>
           {log.data.attach !== null && <AttachCommand run={run} command={log.data.attach} />}
+          {log.data.events.some((event) => event.kind === "files_removed") && (
+            <p role="note" className="text-muted-foreground">
+              The logs of run {run.generation} were removed with its directory after the server's retention period
+              (TOODO_RUN_RETENTION_DAYS).
+            </p>
+          )}
           {lastTodo && <TodoList run={run} event={lastTodo} />}
           <section aria-label="Events" className="flex min-w-0 flex-col gap-0.5">
             <h5 className="font-medium text-muted-foreground">Events</h5>
@@ -696,11 +721,81 @@ function RunDetails({ id, run, log }: { id: string; run: TaskRun; log: ReturnTyp
               })}
             </ol>
           </section>
-          <LogTail run={run} name="stdout" text={log.data.stdout} />
-          <LogTail run={run} name="stderr" text={log.data.stderr} />
         </>
       )}
+      <RunLogs run={run} />
     </div>
+  );
+}
+
+/** The most of each log the app keeps; the start of a longer one is dropped, and the whole one downloaded. */
+const maxLogChars = 1_000_000;
+
+type LogText = { text: string; cut: boolean };
+
+type LogView = { stdout: LogText; stderr: LogText; ended: boolean; error: string | null };
+
+const emptyLogView: LogView = {
+  stdout: { text: "", cut: false },
+  stderr: { text: "", cut: false },
+  ended: false,
+  error: null,
+};
+
+/** `log` with the text of `chunk` added: `cut` once the start of the log is not in it. */
+export function appendChunk(log: LogText, chunk: RunLogChunk): LogText {
+  let text = log.text + chunk.text;
+  let cut = log.cut || (log.text === "" && chunk.offset > 0);
+  if (text.length > maxLogChars) {
+    text = text.slice(text.length - maxLogChars);
+    // Start at a whole line.
+    const lineEnd = text.indexOf("\n");
+    if (lineEnd >= 0) text = text.slice(lineEnd + 1);
+    cut = true;
+  }
+  return { text, cut };
+}
+
+/** The logs of run `runId` as the server streams them. */
+function useRunLogStream(runId: RunId): LogView {
+  const [view, setView] = useState<LogView>(emptyLogView);
+  useEffect(() => {
+    setView(emptyLogView);
+    return followRunLog(runId, {
+      onChunk: (chunk) =>
+        setView((view) => ({ ...view, error: null, [chunk.stream]: appendChunk(view[chunk.stream], chunk) })),
+      onEnd: () => setView((view) => ({ ...view, ended: true })),
+      onError: (error) => setView((view) => ({ ...view, error })),
+    });
+  }, [runId]);
+  return view;
+}
+
+/**
+ * The stdout and stderr of a run, streamed while it runs, with a filter that shows only the
+ * lines holding a text, and buttons that download each whole log.
+ */
+function RunLogs({ run }: { run: TaskRun }) {
+  const logs = useRunLogStream(run.id);
+  const [query, setQuery] = useState("");
+  return (
+    <section aria-label={`Logs of run ${run.generation}`} className="flex min-w-0 flex-col gap-2">
+      <input
+        type="search"
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Find in the logs"
+        aria-label={`Find in the logs of run ${run.generation}`}
+        className="h-7 min-w-0 rounded-md border bg-transparent px-2 outline-none focus-visible:ring-3 focus-visible:ring-ring/50 max-md:h-11"
+      />
+      {logs.error !== null && (
+        <p role="alert" className="break-words text-destructive">
+          Failed to read the log of run {run.generation}: {logs.error}
+        </p>
+      )}
+      <LogTail run={run} name="stdout" log={logs.stdout} query={query} />
+      <LogTail run={run} name="stderr" log={logs.stderr} query={query} />
+    </section>
   );
 }
 
@@ -789,22 +884,72 @@ function TodoList({ run, event }: { run: TaskRun; event: RunEvent }) {
   );
 }
 
+/** The lines of `text` that hold `query`, ignoring case. */
+export function matchingLines(text: string, query: string): string[] {
+  const needle = query.toLowerCase();
+  return text.split("\n").filter((line) => line.toLowerCase().includes(needle));
+}
+
 /**
- * The end of the stdout or stderr of a run, scrolled to its last line. As a live run's output
- * grows, the view follows it, unless it was scrolled up to read, until it is back at the end.
+ * The stdout or stderr of a run, scrolled to its last line, or only its lines that hold
+ * `query`. As a live run's output grows, the view follows it, unless it was scrolled up to
+ * read, until it is back at the end.
  */
-function LogTail({ run, name, text }: { run: TaskRun; name: "stdout" | "stderr"; text: string }) {
+function LogTail({ run, name, log, query }: { run: TaskRun; name: RunLogName; log: LogText; query: string }) {
   const pre = useRef<HTMLPreElement>(null);
   const atEnd = useRef(true);
+  const [download, setDownload] = useState<{ state: "idle" | "busy" } | { state: "failed"; message: string }>({
+    state: "idle",
+  });
+  const matches = query === "" ? null : matchingLines(log.text, query);
+  const text = matches === null ? log.text : matches.join("\n");
   useEffect(() => {
     if (pre.current !== null && atEnd.current) pre.current.scrollTop = pre.current.scrollHeight;
   }, [text]);
 
+  function save() {
+    setDownload({ state: "busy" });
+    downloadRunLog(run.id, name).then(
+      () => setDownload({ state: "idle" }),
+      (error: unknown) =>
+        setDownload({ state: "failed", message: error instanceof Error ? error.message : String(error) }),
+    );
+  }
+
   return (
     <section aria-label={name} className="flex min-w-0 flex-col gap-0.5">
-      <h5 className="font-mono font-medium text-muted-foreground">{name}</h5>
-      {text === "" ? (
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2">
+        <h5 className="font-mono font-medium text-muted-foreground">{name}</h5>
+        {matches !== null && (
+          <span className="text-muted-foreground">
+            {matches.length} matching {matches.length === 1 ? "line" : "lines"}
+          </span>
+        )}
+        {log.cut && matches === null && (
+          <span className="text-muted-foreground">Earlier output is in the download.</span>
+        )}
+        <Button
+          size="xs"
+          variant="ghost"
+          className="ml-auto"
+          aria-label={`Download the ${name} of run ${run.generation}`}
+          title={`Download the whole ${name} of this run as a text file`}
+          disabled={download.state === "busy"}
+          onClick={save}
+        >
+          <Download />
+          Download
+        </Button>
+      </div>
+      {download.state === "failed" && (
+        <p role="alert" className="break-words text-destructive">
+          Failed to download the {name}: {download.message}
+        </p>
+      )}
+      {log.text === "" ? (
         <p className="text-muted-foreground">No output.</p>
+      ) : matches?.length === 0 ? (
+        <p className="text-muted-foreground">No line holds "{query}".</p>
       ) : (
         <pre
           ref={pre}

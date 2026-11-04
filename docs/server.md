@@ -250,6 +250,7 @@ toodo-server
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
 | `TOODO_PUBLIC_URL` | none | Public HTTPS origin, e.g. `https://toodo.example.com`; turns on OAuth for chat apps (see [Chat Apps over OAuth](#chat-apps-over-oauth)) |
 | `TOODO_PUSH_SUBJECT` | `https://github.com/dev-bokdong/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
+| `TOODO_RUN_RETENTION_DAYS` | `30` | Days after which the directory of an ended plain or tmux run, with its logs, is removed, on the server and on the SSH machine it ran on; `0` keeps them |
 
 On first start the data directory gets two access tokens:
 
@@ -787,6 +788,16 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
 - `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
   file name `list_backups` reports; `404` for any other name.
+- `GET /api/runs/{id}/log`: the stdout and stderr of a plain or tmux run as server-sent
+  events: the last 64 KiB of each (`?tail=<bytes>` for another amount), then what the
+  agent writes, read every half second (every two seconds on an SSH machine). Each `log`
+  event is `{ stream, offset, next, text }` with byte offsets in the log and complete
+  lines, redacted of the run's MCP token; its id `<stdout next>:<stderr next>` lets a
+  client that reconnects with `Last-Event-ID` resume where it was. An `end` event closes
+  the stream once the run ended and both logs were sent; an `error` event reports a
+  failed read, after which the stream tries again.
+- `GET /api/runs/{id}/log/{stdout|stderr}`: a whole log as a `text/plain` attachment
+  named `run-<id>-<stream>.log`, up to where it was when asked.
 - `POST /api/backups/restore`: replaces all data with the Toodo database sent as the
   request body (`application/octet-stream`, at most 256 MB, else `413`). The current data
   is saved as a pre-restore backup first, which is the JSON result, like `restore_backup`.

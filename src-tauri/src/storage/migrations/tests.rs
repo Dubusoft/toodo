@@ -1852,6 +1852,80 @@ fn version_38_keeps_runs_without_activity_and_drops_transitions_with_their_task(
 }
 
 #[test]
+fn version_40_keeps_runs_and_machine_settings_and_allows_queued_runs_and_run_limits() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    for sql in &MIGRATIONS[..39] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 39).unwrap();
+    conn.execute_batch(
+        "INSERT INTO workspaces (name, kind, path, default_base_branch, runner)
+             VALUES ('old', 'local', '/repo', 'main', 'plain');
+         INSERT INTO tasks (workspace_id, type, title, status)
+             VALUES (1, 'feat', 'Ran', 'in_progress');
+         INSERT INTO task_runs (task_id, request_key, generation, runner_kind, role,
+             host_ref, checkout_path, state, created_at, output_tokens)
+             VALUES (1, 'old', 1, 'plain', 'writer', 'local', '/wt', 'running', 10, 7);
+         INSERT INTO run_events (run_id, sequence, generation, kind, observed_at)
+             VALUES (1, 1, 1, 'reserved', 10);
+         INSERT INTO machine_settings (kind, label, worktree_root) VALUES ('local', '', '/wt');",
+    )
+    .unwrap();
+    migrate(&mut conn).unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    let kept: (String, Option<i64>, i64) = conn
+        .query_row(
+            "SELECT state, output_tokens, (SELECT count(*) FROM run_events) FROM task_runs
+             WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(kept, ("running".to_owned(), Some(7), 1));
+    let limit: Option<i64> = conn
+        .query_row(
+            "SELECT max_concurrent_runs FROM machine_settings",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(limit, None);
+    assert!(
+        conn.execute("UPDATE machine_settings SET max_concurrent_runs = 0", [])
+            .is_err()
+    );
+    // A queued writer holds the checkout like the running one does.
+    assert!(
+        conn.execute(
+            "INSERT INTO task_runs (task_id, request_key, generation, runner_kind, role,
+                 host_ref, checkout_path, state, created_at)
+             VALUES (1, 'next', 2, 'plain', 'writer', 'local', '/wt', 'queued', 20)",
+            [],
+        )
+        .is_err()
+    );
+    conn.execute("UPDATE task_runs SET state = 'settled' WHERE id = 1", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO task_runs (task_id, request_key, generation, runner_kind, role,
+             host_ref, checkout_path, state, created_at)
+         VALUES (1, 'next', 2, 'plain', 'writer', 'local', '/wt', 'queued', 20)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO queued_runs (run_id, prompt, mcp) VALUES (2, NULL, 1)",
+        [],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
+    let left: i64 = conn
+        .query_row("SELECT count(*) FROM queued_runs", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+#[test]
 fn version_33_keeps_workspaces_their_tasks_and_the_id_counter_and_allows_runner_plain() {
     // Given a version-32 database with a deleted workspace and one with a task.
     let mut conn = Connection::open_in_memory().unwrap();

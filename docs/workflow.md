@@ -356,6 +356,15 @@ run that is still active, reported no session, ran another agent, or ran in anot
 worktree cannot be followed up; start a new run instead. In the app, Follow up on the
 newest run of a conversation does the same.
 
+Each machine (the server, or an SSH host) can limit how many plain and tmux runs it runs
+at once (`set_machine_run_limit`, or Runs at once beside the worktree root in the app; no
+limit by default). A run started while the machine is at its limit, or while earlier runs
+wait there, is returned `queued` with its place in the machine's queue (`queuePosition`).
+Queued runs start oldest first, on their own, within a few seconds of a run there ending;
+`get_machine_runs` shows the limit and how many runs are active and queued. A queued run
+already holds its worktree, `stop_run` takes it out of the queue as `cancelled`, and one
+whose task left `in_progress` meanwhile fails with a `launch_failed` event that says why.
+
 - `list_task_runs` lists the task's runs, oldest first, with their states.
 - `get_run_log` returns a run's state, its events, and the tails of its stdout and
   stderr (64 KiB each unless `tailBytes` says otherwise), with the MCP token redacted.
@@ -363,6 +372,10 @@ newest run of a conversation does the same.
   Codex `todo_list`) adds a `todo` event whose payload is
   `{"items":[{"text":"...","status":"pending|in_progress|completed"}]}`, so the latest
   `todo` event is the agent's current plan.
+- The app streams the open run's stdout and stderr as the agent writes them, can show
+  only the lines that hold a text, and downloads a whole log. The server removes the run
+  directory of a run that ended more than `TOODO_RUN_RETENTION_DAYS` days ago (30 by
+  default), which adds a `files_removed` event; its logs read as empty from then on.
 - `stop_run` stops a live run (SIGTERM to its process group, SIGKILL after 5 seconds)
   and marks it `cancelled`. A server restart does not end a local run: the
   server follows it again, or settles it from its output if it ended meanwhile. Remote

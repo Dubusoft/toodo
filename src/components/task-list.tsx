@@ -33,7 +33,7 @@ import {
   type TaskContext,
 } from "@/components/task-common";
 import { TaskRow } from "@/components/task-row";
-import { AgentMergeSetting, BaseBranchForm, WorktreeRootForm } from "@/components/workspace-settings";
+import { AgentMergeSetting, BaseBranchForm, RunLimitForm, WorktreeRootForm } from "@/components/workspace-settings";
 import { WorkspaceAgentOptions } from "@/components/agent-options";
 import { type TaskDraft, emptyDraft, NewTaskForm } from "@/components/new-task-form";
 
@@ -205,6 +205,8 @@ export function TaskList({
 
       {/* Every runner but none starts tasks in worktrees under the worktree root of the machine. */}
       {workspace && workspace.runner !== "none" && <WorktreeRootForm workspace={workspace} />}
+      {/* Only plain and tmux runs are started by Toodo, so only they count against a limit. */}
+      {workspace && (workspace.runner === "plain" || workspace.runner === "tmux") && <RunLimitForm workspace={workspace} />}
 
       {workspace && onDraftChange && <NewTaskForm workspace={workspace} draft={draft} onChange={onDraftChange} />}
 

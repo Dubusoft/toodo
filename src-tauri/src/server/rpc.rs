@@ -197,6 +197,7 @@ pub const READ_COMMANDS: &[&str] = &[
     "list_agent_status_transitions",
     "herdr_status",
     "list_task_runs",
+    "get_machine_runs",
     "get_run_log",
     "get_workspace_agent_options",
     "get_task_agent_options",
@@ -335,6 +336,12 @@ commands!(s => {
     );
     "set_task_agent_options"(task_id: TaskId, options: AgentOptions) => sync Reply::result(
         agent_options::set_task_agent_options(State(&s.storage), task_id, options)
+    );
+    "get_machine_runs"(machine: Machine) => sync Reply::result(
+        runs::get_machine_runs(State(s.reader()), machine)
+    );
+    "set_machine_run_limit"(machine: Machine, max_concurrent_runs: Option<u32>) => sync Reply::result(
+        runs::set_machine_run_limit(State(&s.storage), machine, max_concurrent_runs)
     );
     "list_task_runs"(task_id: TaskId) => sync Reply::result(
         runs::list_task_runs(State(s.reader()), task_id)

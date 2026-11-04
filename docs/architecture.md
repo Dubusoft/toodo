@@ -603,6 +603,18 @@ frees the checkout for a new run.
 The systemd unit from `toodo service install` sets `KillMode=process`, so stopping or
 restarting the service ends only the server process, not the agents of its runs.
 
+A machine's run limit is `machine_settings.max_concurrent_runs` (NULL for no limit). It
+counts the plain and tmux runs on the host that are `reserved`, `running`, or `unknown`.
+`start_plain_run` decides under a process-wide admission lock: when the host is at its
+limit or already has queued runs, the run is recorded in state `queued` (event `queued`),
+with its prompt and MCP choice in `queued_runs`, and nothing launches. The server's
+`run-queue` thread starts queued runs oldest first per host while slots are free, after a
+stop or a limit change and at least every 3 seconds: it checks the task again, moves the
+run to `reserved` with a pending launch operation, and launches it through the same
+request key, with the agent options current at that moment. A queued writer is in the
+active writer index, so its task starts no second run; `stop_run` cancels it without
+launching. Queued runs survive a restart and are picked up by the thread.
+
 A second launch is guarded three ways: the request key (`plain-<task>-<n>`) makes
 `start_run` idempotent, `PlainRunner` returns the receipt of a live launch with the same
 key instead of spawning again, and the one-active-writer index rejects another writer on
