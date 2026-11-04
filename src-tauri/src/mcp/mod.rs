@@ -758,6 +758,22 @@ impl ToodoMcp {
     }
 
     #[tool(
+        description = "Archive a workspace that is no longer used, as Remove in the Toodo app does: it leaves list_workspaces and the task lists with its tasks, whose history, notes, criteria, and commits stay in review_report, and only the user can restore it or delete it for good in the app. Its repository, worktrees, and branches are not touched. It takes two calls: without confirm nothing changes and the reply (confirmed false) says what archiving does; then call again with {\"id\": 2, \"confirm\": true}. Rejected while a task of the workspace is in_progress or in_review (finish it or pause_task it first), while a planned task of another workspace depends on one of its tasks (remove_dependency first), and while a run of its tasks is queued or active (stop_run first). Returns {confirmed, workspace, message}."
+    )]
+    async fn archive_workspace(
+        &self,
+        Parameters(request): Parameters<tools::ArchiveWorkspace>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = tools::archive_workspace(&mut lock(self.backend.storage()), request);
+        if let Ok(change) = &result
+            && change.confirmed
+        {
+            self.backend.workspaces_changed();
+        }
+        reply(result)
+    }
+
+    #[tool(
         description = "List the settings of the machine Toodo runs on (machine kind local) and of every known SSH machine (kind ssh with its label, the SSH host): saved in herdr, hosting a workspace, or with saved settings. worktreeRoot is the directory that holds task worktrees there; start_task is rejected for tasks on a machine whose worktreeRoot is null. herdrError tells why herdr's saved machines could not be read."
     )]
     async fn list_machine_settings(&self) -> Result<CallToolResult, ErrorData> {
@@ -3319,6 +3335,7 @@ mod tests {
             "set_worktree_root",
             "list_machine_settings",
             "update_workspace",
+            "archive_workspace",
             "complete_task",
             "conclude_task",
             "delete_task",

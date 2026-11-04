@@ -951,6 +951,10 @@ path deletes journal history.
     without it the reply says what the change would do. `delete_task` deletes only
     `planned` tasks, through the app's Delete; `reopen_task` runs the app's Reopen with
     the same checks. Both are local-only.
+  - `archive_workspace` works the same way: without `confirm: true` it only describes
+    the change, and with it archives the workspace through the app's Remove. It is
+    rejected while a task of the workspace is `in_progress` or `in_review`, and it is
+    local-only.
   - Agent access in Settings copies an MCP client config with the URL and token
     (`mcp_server_info`), tests that the server accepts that token, and shows the server
     instance and the last request `/mcp` turned away with its reason. `401` bodies at
