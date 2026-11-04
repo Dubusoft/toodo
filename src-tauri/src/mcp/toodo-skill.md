@@ -268,6 +268,12 @@ repository Toodo does not have yet:
    pass `clone_url` or `init` with it.
 3. Use the `id` it returns as `workspace_id` for `create_task`.
 
+To change a workspace that exists, call `update_workspace` with its `id` and only the
+fields that change: `name`, `default_base_branch`, `agent_merge`, `completion`, `runner`,
+or `path`, the new absolute path of its repository after it moved (also the fix for a
+`pathProblem` in `list_workspaces`). A base branch must exist in the repository, and a
+path must be inside a git repository no other workspace uses.
+
 # Setting a machine's worktree root
 
 Toodo creates each started task's worktree under the worktree root of the machine its

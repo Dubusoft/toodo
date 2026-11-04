@@ -252,9 +252,9 @@ pub struct Workspace {
     pub path_problem: Option<PathProblem>,
     /// What the location holds; set at creation and ignored when the workspace is saved.
     pub source: Source,
-    /// How its tasks get done; set at creation and ignored when the workspace is saved.
+    /// How its tasks get done.
     pub completion: CompletionMode,
-    /// What runs started tasks; set at creation and ignored when the workspace is saved.
+    /// What runs started tasks.
     pub runner: Runner,
 }
 
@@ -431,10 +431,11 @@ impl From<AgentMerge> for model::AgentMerge {
 }
 
 impl Workspace {
-    /// The workspace with its settings from this one and the location, source,
-    /// completion, and runner of `stored`, the saved workspace: the location only changes
-    /// by moving it, the other three never after creation. The default base branch may be
-    /// empty only for source none, which has no repository.
+    /// The workspace with its settings from this one and the location and source of
+    /// `stored`, the saved workspace: the location only changes by moving it, the source
+    /// never after creation. The default base branch may be empty only for source none,
+    /// which has no repository; completion and runner must work with the source and the
+    /// location (see [`model::check_axes`] and [`model::check_runner_location`]).
     pub(crate) fn into_model(self, stored: &model::Workspace) -> CommandResult<model::Workspace> {
         let default_base_branch = match stored.source {
             model::Source::None => self.default_base_branch.trim().to_owned(),
@@ -442,6 +443,10 @@ impl Workspace {
                 required("default base branch", self.default_base_branch)?
             }
         };
+        let (completion, runner) = (self.completion.into(), self.runner.into());
+        model::check_axes(stored.source, completion, runner)
+            .and_then(|()| model::check_runner_location(runner, &stored.location))
+            .map_err(|error| CommandError::invalid_input(error.0))?;
         Ok(model::Workspace {
             id: self.id.into(),
             name: required("workspace name", self.name)?,
@@ -449,8 +454,8 @@ impl Workspace {
             default_base_branch,
             agent_merge: self.agent_merge.into(),
             source: stored.source,
-            completion: stored.completion,
-            runner: stored.runner,
+            completion,
+            runner,
         })
     }
 }
