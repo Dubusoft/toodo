@@ -5,8 +5,8 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/task-list";
 import { TaskLabels } from "@/components/task-common";
 import { inputClass } from "@/components/workspace-list";
-import type { ReviewEntry, ReviewOutcome, TaskId, Workspace } from "@/lib/bindings";
-import { useReview, useWorkspaces } from "@/lib/queries";
+import type { BackfillSummary, ReviewEntry, ReviewOutcome, TaskId, Workspace } from "@/lib/bindings";
+import { useBackfillPullRequests, useReview, useWorkspaces } from "@/lib/queries";
 import {
   commitSubject,
   durationKeys,
@@ -110,6 +110,20 @@ function ExportMenu({ disabled, children }: { disabled: boolean; children: (clos
   );
 }
 
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** What importing merged pull requests added, for the status line. */
+export function backfillNotice(summary: BackfillSummary, noun: string): string {
+  const skipped =
+    summary.skipped > 0 ? ` Left out ${plural(summary.skipped, "pull request")} a task already records.` : "";
+  if (summary.imported === 0) {
+    return `Found no new pull requests you merged in this ${noun}.${skipped}`;
+  }
+  return `Imported ${plural(summary.imported, "merged pull request")} as done tasks.${skipped}`;
+}
+
 function MenuItem({ onSelect, children }: { onSelect: () => void; children: React.ReactNode }) {
   return (
     <button
@@ -130,6 +144,9 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   const { start, end } = periodBounds(period);
   const review = useReview(start, end);
   const workspaces = useWorkspaces();
+  const backfill = useBackfillPullRequests();
+  const [backfillFailures, setBackfillFailures] = useState<string[]>([]);
+  const onGitHub = workspaces.data?.some((workspace) => workspace.source === "github") ?? false;
   const names = new Map(workspaces.data?.map((workspace) => [workspace.id, workspace.name]));
   const entries = review.data && filterEntries(review.data, filter);
   // The chosen label stays listed when the period has no task with it.
@@ -147,7 +164,20 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
 
   function moveTo(next: ReviewPeriod) {
     setNotice(null);
+    setBackfillFailures([]);
     setPeriod(next);
+  }
+
+  async function importPullRequests() {
+    setNotice(null);
+    setBackfillFailures([]);
+    try {
+      const summary = await backfill.mutateAsync({ start, end });
+      setNotice(backfillNotice(summary, noun));
+      setBackfillFailures(summary.failures);
+    } catch (error) {
+      setNotice(`Could not import pull requests: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   function switchKind(kind: PeriodKind) {
@@ -356,6 +386,13 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           {notice}
         </p>
       )}
+      {backfillFailures.length > 0 && (
+        <ul role="alert" aria-label="Pull requests not imported" className="text-xs text-destructive print:hidden">
+          {backfillFailures.map((failure) => (
+            <li key={failure}>{failure}</li>
+          ))}
+        </ul>
+      )}
 
       {/* Stays mounted so screen readers hear loading start and finish for each period. */}
       <p role="status" className={cn("text-sm text-muted-foreground", !review.isPending && "sr-only")}>
@@ -377,11 +414,26 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
               ? `No recorded activity in this ${noun}.`
               : `No recorded activity in this ${noun} matches the filters.`
           }
-          hint="Pick another period or change the filters to look at other work."
+          hint={
+            review.data?.length === 0
+              ? `Toodo records each task as it is planned, started, opened for review, and completed, with the commits of its branch, so reviews fill up as you work. Work merged before Toodo tracked it is not here: ${
+                  onGitHub
+                    ? `import the pull requests you merged in this ${noun} to add it.`
+                    : "add a workspace with a GitHub repository to import the pull requests you merged."
+                }`
+              : "Pick another period or change the filters to look at other work."
+          }
           action={
-            <Button size="sm" variant="outline" onClick={() => moveTo(shiftPeriod(period, -1))}>
-              Show the {noun} before
-            </Button>
+            <div className="flex flex-wrap justify-center gap-2 print:hidden">
+              {review.data?.length === 0 && onGitHub && (
+                <Button size="sm" disabled={backfill.isPending} onClick={() => void importPullRequests()}>
+                  {backfill.isPending ? "Importing..." : "Import merged pull requests"}
+                </Button>
+              )}
+              <Button size="sm" variant="outline" onClick={() => moveTo(shiftPeriod(period, -1))}>
+                Show the {noun} before
+              </Button>
+            </div>
           }
         />
       )}

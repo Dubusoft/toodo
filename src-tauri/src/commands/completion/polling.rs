@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use crate::adapters::git::GitError;
 use crate::adapters::github::{
-    GitHub, MergeState, MergedPullRequest, NewPullRequest, PullRequest, PullRequestActivity,
-    PullRequestDetails, ViewedPullRequest, pull_request_repository,
+    GitHub, ListedPullRequest, MergeState, MergedPullRequest, NewPullRequest, PullRequest,
+    PullRequestActivity, PullRequestDetails, ViewedPullRequest, pull_request_repository,
 };
 use crate::domain::model::LinkedIssue;
 use crate::domain::remote::GitHubRepository;
@@ -190,6 +190,18 @@ impl GitHub for PollingGitHub<'_> {
     ) -> Result<Vec<PullRequestDetails>, GitError> {
         self.allowed()?;
         self.inner.open_pull_requests(repository)
+    }
+
+    fn merged_pull_requests(
+        &self,
+        repository: &GitHubRepository,
+        base: &str,
+        since: i64,
+        until: i64,
+    ) -> Result<Vec<ListedPullRequest>, GitError> {
+        self.allowed()?;
+        self.inner
+            .merged_pull_requests(repository, base, since, until)
     }
 
     fn rate_limit_backoff(&self) -> Option<Duration> {

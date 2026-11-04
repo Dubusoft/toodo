@@ -55,7 +55,8 @@ pub use runtime::{
 };
 pub use search::TaskSearch;
 pub use tasks::{
-    AddedDependencies, DependencyChange, NewPlanTask, NewTask, PauseRule, PlanLink, TaskQuery,
+    AddedDependencies, DependencyChange, MergedPullRequestTask, NewPlanTask, NewTask, PauseRule,
+    PlanLink, TaskQuery,
 };
 pub use workspaces::NewWorkspace;
 

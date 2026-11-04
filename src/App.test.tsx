@@ -80,6 +80,7 @@ vi.mock("@/lib/bindings", () => ({
     saveBackupSettings: vi.fn(),
     restoreBackup: vi.fn(),
     reviewPeriod: vi.fn(),
+    backfillPullRequests: vi.fn(),
   },
   events: {
     tasksChanged: { listen: vi.fn() },
@@ -325,6 +326,53 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Toodo" })).toBeInTheDocument();
     expect(await screen.findByText("v1.2.3")).toBeInTheDocument();
     expect(await screen.findByText("No workspaces yet.")).toBeInTheDocument();
+  });
+
+  it("explains how an empty review fills up and imports the pull requests merged in the period", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 14, 10));
+    const at = new Date(2026, 9, 13, 15).getTime() / 1000;
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    let imported = false;
+    mocked.reviewPeriod.mockImplementation(async () => ({
+      status: "ok",
+      data: imported
+        ? [
+            {
+              task: task(5, 1, "Add storage", { status: "done", pullRequestUrl: "https://github.com/acme/toodo/pull/7" }),
+              outcome: "completed",
+              at,
+              commits: [],
+            },
+          ]
+        : [],
+    }));
+    mocked.backfillPullRequests.mockImplementation(async () => {
+      imported = true;
+      return {
+        status: "ok",
+        data: { imported: 1, skipped: 2, failures: ["Workspace herdr: gh is not signed in; run gh auth login"] },
+      };
+    });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+
+    expect(await screen.findByText("No recorded activity in this week.")).toBeInTheDocument();
+    expect(screen.getByText(/so reviews fill up as you work/)).toHaveTextContent(
+      "import the pull requests you merged in this week to add it.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Import merged pull requests" }));
+
+    const { start, end } = weekPeriod("2026-10-12");
+    await waitFor(() => expect(mocked.backfillPullRequests).toHaveBeenCalledWith(start, end));
+    expect(await screen.findByText("Imported 1 merged pull request as done tasks. Left out 2 pull requests a task already records.")).toBeInTheDocument();
+    expect(screen.getByRole("alert", { name: "Pull requests not imported" })).toHaveTextContent(
+      "Workspace herdr: gh is not signed in; run gh auth login",
+    );
+    const completed = await screen.findByRole("region", { name: "Completed" });
+    expect(within(completed).getByText("Add storage")).toBeInTheDocument();
   });
 
   it("flags a workspace whose path the server cannot use in the sidebar and its header", async () => {

@@ -57,6 +57,8 @@ notes you write.
 - Each task is listed once, under the most advanced milestone it reached in the period,
   with its pull request and completion note.
 - Export copies the review as Markdown, saves it as Markdown or CSV, or prints it.
+- An empty period offers to import the pull requests you merged in it on GitHub as done
+  tasks, for work from before Toodo recorded it.
 
 The review is the source for status updates and a year-end report.
 [docs/architecture.md](docs/architecture.md#review) defines each number.
