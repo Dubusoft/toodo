@@ -792,9 +792,11 @@ impl RunLauncher for TmuxRunner {
                 })?;
             endpoint.url = format!("http://127.0.0.1:{port}/mcp");
         }
-        let mut invocation = agent
-            .adapter
-            .invocation(Path::new(host::RUN_FILE_PREFIX), endpoint.as_ref());
+        let mut invocation = agent.adapter.invocation(
+            Path::new(host::RUN_FILE_PREFIX),
+            endpoint.as_ref(),
+            &agent.options,
+        );
         // Path::join preserves the {run}/ prefix for host-native resolution.
         if let Some(at) = invocation.args.iter().position(|arg| arg == "--mcp-config") {
             invocation.args[at + 1] =

@@ -11,6 +11,7 @@ import {
   commands,
   events,
   type AgentAdapter,
+  type AgentOptions,
   type BackupSettings,
   type CommandError,
   type CriterionId,
@@ -79,6 +80,9 @@ export const queryKeys = {
   taskActivity: (taskId: TaskId) => ["tasks", taskId, "activity"] as const,
   branchFreshness: (taskId: TaskId) => ["tasks", taskId, "branch-freshness"] as const,
   taskRuns: (taskId: TaskId) => ["tasks", taskId, "runs"] as const,
+  /** Under "agent-options", so saving a workspace's options refetches the task views that show them. */
+  workspaceAgentOptions: (workspace: WorkspaceId) => ["agent-options", "workspace", workspace] as const,
+  taskAgentOptions: (taskId: TaskId) => ["agent-options", "task", taskId] as const,
   /** Not under "tasks": agent status changes refetch them, task changes do not. */
   agentStatusTransitions: (taskId: TaskId) => ["agent-status-transitions", taskId] as const,
   /** Not under "tasks": a log can be large, so it is refetched only for its run. */
@@ -613,6 +617,42 @@ export function useStartPlainRun() {
     mutationFn: ({ taskId, adapter, mcp }: { taskId: TaskId; adapter: AgentAdapter; mcp: boolean }) =>
       unwrap(commands.startPlainRun(taskId, adapter, null, mcp)),
     onSettled: (_run, _error, { taskId }) => queryClient.invalidateQueries({ queryKey: queryKeys.taskRuns(taskId) }),
+  });
+}
+
+/** The model, permission mode, and time limit a workspace sets for the runs of its tasks. */
+export function useWorkspaceAgentOptions(workspace: WorkspaceId) {
+  return useQuery({
+    queryKey: queryKeys.workspaceAgentOptions(workspace),
+    queryFn: () => unwrap(commands.getWorkspaceAgentOptions(workspace)),
+  });
+}
+
+/** The launch options a task overrides, and the ones its workspace sets for the rest. */
+export function useTaskAgentOptions(taskId: TaskId) {
+  return useQuery({
+    queryKey: queryKeys.taskAgentOptions(taskId),
+    queryFn: () => unwrap(commands.getTaskAgentOptions(taskId)),
+  });
+}
+
+/** Saves the launch options of a workspace; runs started later use them. */
+export function useSetWorkspaceAgentOptions() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspace, options }: { workspace: WorkspaceId; options: AgentOptions }) =>
+      unwrap(commands.setWorkspaceAgentOptions(workspace, options)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agent-options"] }),
+  });
+}
+
+/** Saves the launch options a task overrides; runs started later use them. */
+export function useSetTaskAgentOptions() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ taskId, options }: { taskId: TaskId; options: AgentOptions }) =>
+      unwrap(commands.setTaskAgentOptions(taskId, options)),
+    onSuccess: (saved, { taskId }) => queryClient.setQueryData(queryKeys.taskAgentOptions(taskId), saved),
   });
 }
 

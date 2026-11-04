@@ -340,7 +340,13 @@ Starting a task (`start_task`) creates its branch and a git worktree
 To run an agent, call `start_plain_run` with the task id, an adapter (`claude` or
 `codex`), an optional prompt, and whether to give the agent the Toodo MCP server. The
 server starts the CLI in the task worktree, with the prompt on stdin, and returns the run.
-Only one run at a time can write to a worktree, and a run stops after 4 hours.
+Only one run at a time can write to a worktree, and a run stops after its time limit.
+
+The workspace's agent options set the model, permission mode (`read_only`, `edit`, or
+`bypass`), and time limit (in minutes, 4 hours by default) that runs of its tasks start
+with; a task can override each of them (`set_workspace_agent_options`,
+`set_task_agent_options`, or Agents and Runs with in the app). Runs started afterwards
+use the new values.
 
 - `list_task_runs` lists the task's runs, oldest first, with their states.
 - `get_run_log` returns a run's state, its events, and the tails of its stdout and

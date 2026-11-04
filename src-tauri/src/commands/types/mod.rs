@@ -1,6 +1,7 @@
 //! Serializable shapes of the domain model exchanged with the frontend. Inputs are
 //! validated when they are converted into domain types.
 
+mod agent_options;
 mod agents;
 mod backups;
 mod criterion;
@@ -12,6 +13,7 @@ mod tasks;
 mod tests;
 mod workspaces;
 
+pub use agent_options::*;
 pub use agents::*;
 pub use backups::*;
 pub use criterion::*;

@@ -13,6 +13,7 @@ import {
   TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
+import { TaskAgentOptions } from "@/components/agent-options";
 import { PathLabel } from "@/components/path-label";
 import { Button } from "@/components/ui/button";
 import { When } from "@/components/when";
@@ -313,6 +314,7 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
           Refresh
         </Button>
       </div>
+      {inProgress && <TaskAgentOptions task={task} />}
       {inProgress && (
         <form
           aria-label={`New run of #${task.id}`}

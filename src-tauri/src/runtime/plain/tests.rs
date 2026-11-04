@@ -105,6 +105,7 @@ impl Fixture {
                 adapter,
                 brief: "Implement the task".to_owned(),
                 mcp,
+                options: Default::default(),
                 timeout_secs,
             }),
         }
@@ -1031,7 +1032,8 @@ fn remote_stop_before_pid_prevents_a_late_wrapper_from_starting_the_agent() {
         fixture.runner.stop(run.id).unwrap().state,
         RunState::Cancelled
     );
-    let invocation = AgentAdapter::Claude.invocation(Path::new("unused"), None);
+    let invocation =
+        AgentAdapter::Claude.invocation(Path::new("unused"), None, &Default::default());
     let (child, _, _) = remote
         .spawn(
             run.id,
@@ -1226,7 +1228,8 @@ fn remote_windows_uses_native_staging_launch_stop_and_probe_scripts() {
         url: "http://127.0.0.1:12345/mcp".into(),
         token: TOKEN.into(),
     };
-    let invocation = AgentAdapter::Claude.invocation(Path::new("unused"), Some(&endpoint));
+    let invocation =
+        AgentAdapter::Claude.invocation(Path::new("unused"), Some(&endpoint), &Default::default());
     let launch = remote
         .launch_invocation(RunId(42), r"C:\repo", Path::new("claude.exe"), &invocation)
         .unwrap();

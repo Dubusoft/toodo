@@ -190,6 +190,8 @@ pub struct AgentLaunch {
     pub adapter: plain::adapter::AgentAdapter,
     pub brief: String,
     pub mcp: bool,
+    /// The model and permission mode the agent is launched with.
+    pub options: plain::adapter::LaunchOptions,
     pub timeout_secs: u64,
 }
 

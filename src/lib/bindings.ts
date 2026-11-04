@@ -208,7 +208,8 @@ export const commands = {
 	 *  call the Toodo MCP `current_task` tool. With `mcp` the agent gets the server's MCP
 	 *  endpoint and token in its environment only; on an SSH machine it reaches the server
 	 *  through the machine's MCP tunnel, which must be open. Returns the run as recorded right
-	 *  after the launch.
+	 *  after the launch. The agent runs with the model, permission mode, and time limit the
+	 *  task sets, or else its workspace (see `get_task_agent_options`).
 	 */
 	startPlainRun: (taskId: TaskId, adapter: AgentAdapter, prompt: string | null, mcp: boolean) => typedError<TaskRun, CommandError>(invoke("start_plain_run", { taskId, adapter, prompt, mcp })),
 	/**  The runs of a task, oldest first. */
@@ -233,6 +234,20 @@ export const commands = {
 	 *  observed or already ended is returned as it is.
 	 */
 	reconcileRun: (runId: RunId) => typedError<TaskRun, CommandError>(invoke("reconcile_run", { runId })),
+	/**  The launch options a workspace sets for the runs of its tasks. */
+	getWorkspaceAgentOptions: (workspaceId: WorkspaceId) => typedError<AgentOptions, CommandError>(invoke("get_workspace_agent_options", { workspaceId })),
+	/**
+	 *  Replaces the launch options a workspace sets for the runs of its tasks; a `null`
+	 *  value keeps the built-in default. Runs started later use them.
+	 */
+	setWorkspaceAgentOptions: (workspaceId: WorkspaceId, options: AgentOptions) => typedError<AgentOptions, CommandError>(invoke("set_workspace_agent_options", { workspaceId, options })),
+	/**  The launch options a task overrides and the ones its workspace sets. */
+	getTaskAgentOptions: (taskId: TaskId) => typedError<TaskAgentOptions, CommandError>(invoke("get_task_agent_options", { taskId })),
+	/**
+	 *  Replaces the launch options a task overrides; a `null` value takes its workspace's.
+	 *  Runs started later use them.
+	 */
+	setTaskAgentOptions: (taskId: TaskId, options: AgentOptions) => typedError<TaskAgentOptions, CommandError>(invoke("set_task_agent_options", { taskId, options })),
 	/**
 	 *  Reports whether herdr is installed and running, whether tmux runs, and whether the
 	 *  `claude` and `codex` CLIs of plain and tmux runs are on the server's `PATH`.
@@ -383,6 +398,25 @@ export type AgentMerge =
  *  on it passed.
  */
 "afterChecks";
+
+/**
+ *  How agents of runs are launched. On a workspace, `null` keeps the agent CLI's default
+ *  model, the agent's default permission mode (Claude `bypass`, Codex `edit`), and a
+ *  time limit of 240 minutes; on a task, `null` takes the workspace's value.
+ */
+export type AgentOptions = {
+	/**
+	 *  The model passed to the agent CLI with `--model`, e.g. `sonnet` or `gpt-5-codex`;
+	 *  blank for none.
+	 */
+	model: string | null,
+	permissionMode: PermissionMode | null,
+	/**
+	 *  How long a plain run may take before it is stopped and fails, from 1 to 10080
+	 *  minutes (a week). tmux runs have no time limit.
+	 */
+	timeLimitMinutes: number | null,
+};
 
 /**  What the agent working on a task in herdr is doing. */
 export type AgentStatus = "idle" | "working" | "blocked" | "done";
@@ -860,6 +894,21 @@ export type PathProblem =
 /**  A server path that is not a directory, e.g. a repository that was moved. */
 "missing";
 
+/**  How much the agent of a plain or tmux run may do without asking. */
+export type PermissionMode = 
+/**  Read and plan only: Claude `--permission-mode plan`, Codex `--sandbox read-only`. */
+"read_only" | 
+/**
+ *  Edit files in the worktree: Claude `--permission-mode acceptEdits`, Codex
+ *  `--full-auto`.
+ */
+"edit" | 
+/**
+ *  Anything, without permission checks or a sandbox: Claude `--permission-mode
+ *  bypassPermissions`, Codex `--dangerously-bypass-approvals-and-sandbox`.
+ */
+"bypass";
+
 /**  A merged pull request as GitHub reported it when it completed its task. */
 export type PullRequestSnapshot = {
 	number: number,
@@ -1068,6 +1117,15 @@ export type TaskActivity = {
 	receivedAt: number,
 	/**  The latest time any source reported it. */
 	confirmedAt: number,
+};
+
+/**
+ *  The launch options of a task's runs: what the task overrides and what its workspace
+ *  sets for the rest.
+ */
+export type TaskAgentOptions = {
+	task: AgentOptions,
+	workspace: AgentOptions,
 };
 
 /**

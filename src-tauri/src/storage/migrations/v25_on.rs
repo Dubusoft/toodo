@@ -555,4 +555,18 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     ALTER TABLE task_runs ADD COLUMN cached_input_tokens INTEGER;
     ALTER TABLE task_runs ADD COLUMN output_tokens INTEGER;
     ",
+    // Version 39: how agents of runs are launched, set by a workspace for its tasks and
+    // overridden by a task; NULL leaves a value to the workspace or the built-in default.
+    r"
+    ALTER TABLE workspaces ADD COLUMN agent_model TEXT;
+    ALTER TABLE workspaces ADD COLUMN agent_permission_mode TEXT
+        CHECK (agent_permission_mode IN ('read_only', 'edit', 'bypass'));
+    ALTER TABLE workspaces ADD COLUMN run_time_limit_minutes INTEGER
+        CHECK (run_time_limit_minutes > 0);
+    ALTER TABLE tasks ADD COLUMN agent_model TEXT;
+    ALTER TABLE tasks ADD COLUMN agent_permission_mode TEXT
+        CHECK (agent_permission_mode IN ('read_only', 'edit', 'bypass'));
+    ALTER TABLE tasks ADD COLUMN run_time_limit_minutes INTEGER
+        CHECK (run_time_limit_minutes > 0);
+    ",
 ];

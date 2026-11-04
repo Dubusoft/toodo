@@ -508,11 +508,27 @@ an `in_progress` task of a plain or tmux workspace that has a worktree, local or
 `PlainRunner` lives in server state for the server's lifetime. Each run launches the
 `claude` or `codex` CLI from the server's `PATH`:
 
-- Claude: `claude -p --output-format stream-json --verbose --permission-mode
-  bypassPermissions`, plus `--mcp-config <run dir>/mcp.json --strict-mcp-config` with MCP.
-- Codex: `codex exec --json --full-auto`, plus
+- Claude: `claude -p --output-format stream-json --verbose --permission-mode <mode>`,
+  plus `--model <model>` when one is set, plus
+  `--mcp-config <run dir>/mcp.json --strict-mcp-config` with MCP.
+- Codex: `codex exec --json <permission flags>`, plus `--model <model>` when one is set,
+  plus
   `-c mcp_servers.toodo.url="<url>" -c mcp_servers.toodo.bearer_token_env_var="TOODO_MCP_TOKEN"`
   with MCP, then `-`.
+
+The model, permission mode, and time limit come from the task's agent options, and each
+value the task leaves unset from its workspace's (`set_task_agent_options`,
+`set_workspace_agent_options`, stored in the `agent_model`, `agent_permission_mode`, and
+`run_time_limit_minutes` columns of `tasks` and `workspaces`). Without either, the agent
+CLI's default model is used, Claude runs `bypassPermissions` and Codex `--full-auto`, and
+the time limit is 4 hours. The permission modes map to the CLIs as follows; tmux runs use
+the same flags but have no time limit.
+
+| Mode | Claude `--permission-mode` | Codex |
+| --- | --- | --- |
+| `read_only` | `plan` | `--sandbox read-only` |
+| `edit` | `acceptEdits` | `--full-auto` |
+| `bypass` | `bypassPermissions` | `--dangerously-bypass-approvals-and-sandbox` |
 
 The child runs in its own process group with the task worktree as its working
 directory, and its PID is the receipt (`pid:<pid>`). Every run gets a private directory
@@ -551,7 +567,7 @@ When the process ends, its outcome settles the run:
 | No result, exit 0 | `failed` | `no_result` |
 | No result, non-zero exit or signal | `failed` | `stderr` (last 4 KiB, redacted), `exit` |
 | Success result, then non-zero exit or signal | `exited` | `exit_after_result` |
-| Timeout (4 hours) | `failed` | `timed_out` |
+| Time limit (4 hours unless set) | `failed` | `timed_out` |
 | `stop_run` | `cancelled` | `stop_requested` |
 
 A timeout or stop sends SIGTERM to the process group and SIGKILL 5 seconds later if it
