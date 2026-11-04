@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ChartColumn, FolderPlus, Layers, ListTodo, Menu, Settings, X } from "lucide-react";
 import { AgentAccessStatus } from "@/components/agent-access-panel";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { InstallBanner } from "@/components/install-banner";
 import { NeedsAttention } from "@/components/needs-attention";
@@ -119,7 +120,9 @@ export default function App() {
             <X />
           </Button>
         </div>
-        <NeedsAttention onShow={showTask} />
+        <ErrorBoundary label="the tasks that need attention">
+          <NeedsAttention onShow={showTask} />
+        </ErrorBoundary>
         <nav className="flex flex-col gap-0.5">
           <Button
             variant={reviewing ? "secondary" : "ghost"}
@@ -144,13 +147,15 @@ export default function App() {
             All workspaces
           </Button>
         </nav>
-        <WorkspaceList
-          selectedId={reviewing || showingAll ? null : (selected?.id ?? null)}
-          onSelect={(id) => {
-            setSelectedId(id);
-            openPage(null);
-          }}
-        />
+        <ErrorBoundary label="the workspace list">
+          <WorkspaceList
+            selectedId={reviewing || showingAll ? null : (selected?.id ?? null)}
+            onSelect={(id) => {
+              setSelectedId(id);
+              openPage(null);
+            }}
+          />
+        </ErrorBoundary>
         <Button
           variant="ghost"
           className="mt-auto shrink-0 justify-start"
@@ -182,36 +187,38 @@ export default function App() {
         <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6">
           <InstallBanner />
           <HerdrBanner />
-          {reviewing ? (
-            <Review onShowTask={showTask} />
-          ) : showingAll && workspaces.data?.length ? (
-            <TaskList
-              key="all"
-              workspace={null}
-              timelineScale={timelineScale}
-              onTimelineScaleChange={setTimelineScale}
-              shownTask={shownTask}
-              onTaskShown={() => setShownTask(null)}
-            />
-          ) : selected ? (
-            <TaskList
-              key={selected.id}
-              workspace={selected}
-              timelineScale={timelineScale}
-              onTimelineScaleChange={setTimelineScale}
-              draft={drafts.get(selected.id)}
-              onDraftChange={(draft) => setDraft(selected.id, draft)}
-            />
-          ) : (
-            // A failed load is explained, with a retry, in the sidebar's workspace list.
-            !workspaces.isPending && !workspaces.isError && (
-              <EmptyState
-                icon={<FolderPlus />}
-                title="Create a workspace to start planning tasks."
-                hint={`Clone a repository, open one already cloned, or make a folder a new repository, on the server or a saved herdr machine.`}
+          <ErrorBoundary label="this view" resetKey={reviewing ? "review" : showingAll ? "all" : selected?.id}>
+            {reviewing ? (
+              <Review onShowTask={showTask} />
+            ) : showingAll && workspaces.data?.length ? (
+              <TaskList
+                key="all"
+                workspace={null}
+                timelineScale={timelineScale}
+                onTimelineScaleChange={setTimelineScale}
+                shownTask={shownTask}
+                onTaskShown={() => setShownTask(null)}
               />
-            )
-          )}
+            ) : selected ? (
+              <TaskList
+                key={selected.id}
+                workspace={selected}
+                timelineScale={timelineScale}
+                onTimelineScaleChange={setTimelineScale}
+                draft={drafts.get(selected.id)}
+                onDraftChange={(draft) => setDraft(selected.id, draft)}
+              />
+            ) : (
+              // A failed load is explained, with a retry, in the sidebar's workspace list.
+              !workspaces.isPending && !workspaces.isError && (
+                <EmptyState
+                  icon={<FolderPlus />}
+                  title="Create a workspace to start planning tasks."
+                  hint={`Clone a repository, open one already cloned, or make a folder a new repository, on the server or a saved herdr machine.`}
+                />
+              )
+            )}
+          </ErrorBoundary>
         </main>
       </div>
       <SettingsDialog

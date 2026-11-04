@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React, { type ReactNode } from "react";
 import ReactDOM from "react-dom/client";
 import App from "@/App";
+import { ErrorBoundary } from "@/components/error-boundary";
 import "@/index.css";
 import { initTheme } from "@/lib/theme";
 import { onReachable, watchConnection } from "@/web/connection";
@@ -16,7 +17,11 @@ const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement)
 function render(app: ReactNode) {
   root.render(
     <React.StrictMode>
-      <QueryClientProvider client={queryClient}>{app}</QueryClientProvider>
+      <QueryClientProvider client={queryClient}>
+        <ErrorBoundary label="Toodo" className="m-4">
+          {app}
+        </ErrorBoundary>
+      </QueryClientProvider>
     </React.StrictMode>,
   );
 }
