@@ -189,7 +189,7 @@ pub(super) fn review(args: &ReviewArgs, data: &DataDir, var: Var) -> Result<(), 
 }
 
 /// The status code and JSON body of an HTTP/1.1 response, with a chunked body decoded.
-fn parse_response(response: &[u8]) -> Option<(u16, Value)> {
+pub(super) fn parse_response(response: &[u8]) -> Option<(u16, Value)> {
     let split = response
         .windows(4)
         .position(|window| window == b"\r\n\r\n")?;

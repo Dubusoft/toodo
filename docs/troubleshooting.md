@@ -12,12 +12,14 @@ Check whether the server runs:
 
 ```sh
 toodo status          # exits 0 when it runs, 3 when it is stopped
+toodo doctor          # versions, health, data files, and tools, with the fix of each problem
 toodo start
 ```
 
-For the systemd user service, read its log with `journalctl --user -u toodo-server -n 50`;
-a server started by `toodo start` without the service logs to `server.log` in the data
-directory. `toodo start` and `toodo init` stop with
+Read the server log with `toodo logs` (`--follow` keeps printing new lines); it reads
+`journalctl --user -u toodo-server` for the systemd user service and `server.log` in the
+data directory for a server started by `toodo start`. `toodo restart` starts the server
+again. `toodo start` and `toodo init` stop with
 `127.0.0.1:47616 is already in use by another program; pick another port with: toodo init --port <port>`
 when another program has the port; run the command it prints.
 
@@ -43,9 +45,10 @@ asks you to sign in again with `web-token`.
 `toodo update` stays on the channel of the installed version: `dev` for a prerelease,
 `latest` for a release. When the newest version of that channel is older than the
 installed one, it prints the command that installs it anyway,
-`toodo update --channel <channel> --allow-downgrade`. When the server does not answer
-after an update, `toodo update` exits `1` with the commands to find out why and to go
-back to the previous version.
+`toodo update --channel <channel> --allow-downgrade`. `toodo update --check` shows what
+the channel has without installing it. When the server does not answer after an update,
+`toodo update` goes back to the previous version by itself and exits `1`; `toodo logs`
+shows why the new version did not start.
 
 ## Workspaces and Runners
 

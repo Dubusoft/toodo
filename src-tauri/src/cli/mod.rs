@@ -7,12 +7,14 @@
 //! directory, or detached with a pid file in the data directory, started by `toodo start`.
 
 mod agents;
+mod doctor;
 mod launchd;
 mod process;
 mod review;
 mod service;
 mod settings;
 mod tools;
+mod uninstall;
 mod update;
 
 use std::net::SocketAddr;
@@ -32,9 +34,13 @@ type Var<'a> = &'a dyn Fn(&str) -> Option<String>;
 const USAGE: &str = "Usage: toodo init [--port N | --listen HOST:PORT] [--data-dir DIR] [--no-mcp]
        toodo start [--data-dir DIR]
        toodo stop [--data-dir DIR]
+       toodo restart [--data-dir DIR]
        toodo status [--data-dir DIR]
+       toodo doctor [--data-dir DIR]
+       toodo logs [--lines N] [--follow] [--data-dir DIR]
        toodo service install [--port N | --listen HOST:PORT] [--data-dir DIR]
-       toodo update [--channel dev|latest] [--allow-downgrade] [--data-dir DIR]
+       toodo update [--channel dev|latest] [--allow-downgrade | --check] [--data-dir DIR]
+       toodo uninstall [--delete-data] [--data-dir DIR]
        toodo review [--period week|month|quarter|year|custom] [--date DAY]
                     [--from DAY] [--to DAY] [--format markdown|csv] [--data-dir DIR]
        toodo --version | --help
@@ -52,15 +58,26 @@ Commands:
                    installed), and register its MCP endpoint again with the agents init
                    registered it with, so they get a replaced token
   stop             stop the server
+  restart          stop the server and start it again (through systemd or launchd once
+                   installed), and register its MCP endpoint again like start
   status           show whether the server runs and where its files are; exits 0 when
                    it runs and 3 when it is stopped
+  doctor           check the versions of toodo and the running server, whether the
+                   server runs and answers, its data files, and the tools it runs;
+                   exits 0 when it finds no problem and 1 when it does
+  logs             print the end of the server log (of journalctl for the service)
   service install  run the server as the systemd user service toodo-server.service, or
                    on macOS as the launchd agent toodo-server, which starts at login
   update           install the newest @dubusoft/toodo of the channel with npm, restart
                    the server on it, check that it answers, and register its MCP
                    endpoint again like start; a failed install
-                   leaves the running server alone, and a channel version older than
-                   the installed one is not installed
+                   leaves the running server alone, a server that does not answer
+                   after the update goes back to the previous version, and a channel
+                   version older than the installed one is not installed; --check
+                   only reports whether the channel has a newer version
+  uninstall        stop the server and remove its service, the server copies the
+                   service runs, and the MCP registrations; the data directory stays
+                   unless --delete-data
   review           print the review of a week, month, quarter, year, or custom period
                    as Markdown or CSV, rendered by the running server
 
@@ -78,6 +95,10 @@ Options:
                       or latest (releases); default dev when the installed version is a
                       prerelease, else latest
   --allow-downgrade   let update install a channel version older than the installed one
+  --check             let update only report whether the channel has a newer version
+  --lines N, -n N     how many lines of the log logs prints (default 50)
+  --follow, -f        let logs keep printing new lines until interrupted
+  --delete-data       let uninstall delete the data directory too
 
 `toodo COMMAND --help` shows the options of one command.";
 
@@ -118,6 +139,44 @@ service install wrote the service, else as a process with server.pid and server.
             "Stops the server, through systemd (launchd on macOS) once the service is installed.",
             DATA_DIR_OPTION.to_owned(),
         ),
+        "restart" => (
+            "toodo restart [--data-dir DIR]",
+            "Stops the server and starts it again: through systemd (launchd on macOS) once toodo
+service install wrote the service, else as a process with server.pid and server.log in DIR.
+Then it registers the MCP endpoint again with the agents init registered it with.",
+            DATA_DIR_OPTION.to_owned(),
+        ),
+        "doctor" => (
+            "toodo doctor [--data-dir DIR]",
+            "Checks the versions of toodo and the running server, whether the server runs and
+answers, the database and tokens in DIR, and git, gh, ssh, herdr, tmux, and the agent
+CLIs, and prints each problem with what to do about it. Exits 0 when it finds no
+problem and 1 when it does; herdr, tmux, and the agent CLIs only some runners need are
+shown but not counted as problems.",
+            DATA_DIR_OPTION.to_owned(),
+        ),
+        "logs" => (
+            "toodo logs [--lines N] [--follow] [--data-dir DIR]",
+            "Prints the end of the server log: of journalctl for the systemd service, of
+~/Library/Logs/toodo-server.log for the launchd agent, else of server.log in DIR.",
+            format!(
+                "  --lines N, -n N     how many lines to print (default {LOG_LINES})
+  --follow, -f        keep printing new lines until interrupted
+{DATA_DIR_OPTION}"
+            ),
+        ),
+        "uninstall" => (
+            "toodo uninstall [--delete-data] [--data-dir DIR]",
+            "Stops the server and removes what toodo set up for it: the systemd service (the
+launchd agent on macOS) with the copies of the server and the web app it runs, the
+registration of its MCP endpoint with Claude Code and Codex, and the record of DIR in
+~/.config/toodo/data-dir. DIR with the database, tokens, and backups stays unless
+--delete-data. The toodo command itself stays; npm rm -g @dubusoft/toodo removes it.",
+            format!(
+                "  --delete-data       delete DIR too, if it holds a Toodo database
+{DATA_DIR_OPTION}"
+            ),
+        ),
         "status" => (
             "toodo status [--data-dir DIR]",
             "Shows whether the server runs, its web app and MCP URLs, and where its data,
@@ -139,15 +198,18 @@ saves a new listen address first, like init. On macOS it writes the launchd agen
             format!("{}\n{DATA_DIR_OPTION}", review::OPTIONS),
         ),
         _ => (
-            "toodo update [--channel dev|latest] [--allow-downgrade] [--data-dir DIR]",
+            "toodo update [--channel dev|latest] [--allow-downgrade | --check] [--data-dir DIR]",
             "Installs the newest @dubusoft/toodo of the channel with npm, restarts the server
-on it, and checks that it answers. A failed install leaves the running server alone.",
+on it, and checks that it answers. A failed install leaves the running server alone; a
+server that does not answer after the update goes back to the previous version. With
+--check it only reports whether the channel has a newer version.",
             format!(
                 "  --channel CHANNEL   npm dist-tag to install: dev (prereleases of the dev \
                  branch)
                       or latest (releases); default dev when the installed version is a
                       prerelease, else latest
   --allow-downgrade   install a channel version older than the installed one
+  --check             only report whether the channel has a newer version
 {DATA_DIR_OPTION}"
             ),
         ),
@@ -174,6 +236,9 @@ fn exposure_warning(listen: SocketAddr) -> Option<String> {
 /// The exit status of `toodo status` while the server is stopped.
 const STOPPED: i32 = 3;
 
+/// The lines `toodo logs` prints by default.
+const LOG_LINES: u32 = 50;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
     /// The overview, or the help of the named command.
@@ -182,12 +247,32 @@ enum Command {
     Init(InitArgs),
     Start(Option<PathBuf>),
     Stop(Option<PathBuf>),
+    Restart(Option<PathBuf>),
     Status(Option<PathBuf>),
+    Doctor(Option<PathBuf>),
+    Logs(LogsArgs),
+    /// Whether to delete the data directory, and the data directory.
+    Uninstall(bool, Option<PathBuf>),
     /// The listen address to save and the data directory.
     ServiceInstall(Option<ListenFlag>, Option<PathBuf>),
-    /// The channel, whether a downgrade is allowed, and the data directory.
-    Update(Option<Channel>, bool, Option<PathBuf>),
+    Update(UpdateArgs),
     Review(review::ReviewArgs),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LogsArgs {
+    lines: u32,
+    follow: bool,
+    data_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdateArgs {
+    channel: Option<Channel>,
+    allow_downgrade: bool,
+    /// Only report whether the channel has a newer version.
+    check: bool,
+    data_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,13 +282,27 @@ struct InitArgs {
     mcp: bool,
 }
 
+/// The commands [`parse`] takes options for itself; `service install` and `review` aside.
+const COMMANDS: [&str; 9] = [
+    "init",
+    "start",
+    "stop",
+    "restart",
+    "status",
+    "doctor",
+    "logs",
+    "update",
+    "uninstall",
+];
+
 /// Parses the arguments after the program name.
 fn parse(args: &[String]) -> Result<Command, String> {
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
         let command = match args.first().map(String::as_str) {
             Some("service") => Some("service install"),
-            Some(name) => ["init", "start", "stop", "status", "update", "review"]
+            Some(name) => COMMANDS
                 .into_iter()
+                .chain(["review"])
                 .find(|command| *command == name),
             None => None,
         };
@@ -225,16 +324,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         }
         [command, rest @ ..] => (command.as_str(), rest),
     };
-    if ![
-        "init",
-        "start",
-        "stop",
-        "status",
-        "service install",
-        "update",
-    ]
-    .contains(&command)
-    {
+    if command != "service install" && !COMMANDS.contains(&command) {
         return Err(format!("unknown command {command:?}"));
     }
     let mut init = InitArgs {
@@ -244,13 +334,20 @@ fn parse(args: &[String]) -> Result<Command, String> {
     };
     let mut channel = None;
     let mut allow_downgrade = false;
+    let mut check = false;
+    let mut lines = LOG_LINES;
+    let mut follow = false;
+    let mut delete_data = false;
     let mut options = options.iter();
     while let Some(option) = options.next() {
         let (name, inline) = match option.split_once('=') {
             Some((name, value)) if name.starts_with("--") => (name, Some(value.to_owned())),
             _ => (option.as_str(), None),
         };
-        let takes_value = matches!(name, "--port" | "--listen" | "--data-dir" | "--channel");
+        let takes_value = matches!(
+            name,
+            "--port" | "--listen" | "--data-dir" | "--channel" | "--lines" | "-n"
+        );
         let value = if takes_value {
             match inline.or_else(|| options.next().cloned()) {
                 Some(value) if !value.is_empty() => value,
@@ -272,15 +369,34 @@ fn parse(args: &[String]) -> Result<Command, String> {
                 "{name} is an option of toodo init, not of {command}"
             ));
         }
-        if matches!(name, "--channel" | "--allow-downgrade") && command != "update" {
+        if matches!(name, "--channel" | "--allow-downgrade" | "--check") && command != "update" {
             return Err(format!(
                 "{name} is an option of toodo update, not of {command}"
+            ));
+        }
+        if matches!(name, "--lines" | "-n" | "--follow" | "-f") && command != "logs" {
+            return Err(format!(
+                "{name} is an option of toodo logs, not of {command}"
+            ));
+        }
+        if name == "--delete-data" && command != "uninstall" {
+            return Err(format!(
+                "{name} is an option of toodo uninstall, not of {command}"
             ));
         }
         match name {
             "--data-dir" => init.data_dir = Some(PathBuf::from(value)),
             "--no-mcp" => init.mcp = false,
             "--allow-downgrade" => allow_downgrade = true,
+            "--check" => check = true,
+            "--follow" | "-f" => follow = true,
+            "--delete-data" => delete_data = true,
+            "--lines" | "-n" => match value.parse::<u32>() {
+                Ok(parsed) => lines = parsed,
+                Err(_) => {
+                    return Err(format!("{name} takes a number of lines, got {value:?}"));
+                }
+            },
             "--channel" => match Channel::parse(&value) {
                 Some(parsed) => channel = Some(parsed),
                 None => {
@@ -310,13 +426,33 @@ fn parse(args: &[String]) -> Result<Command, String> {
             _ => return Err(format!("unknown option {option:?}")),
         }
     }
+    if check && allow_downgrade {
+        return Err(
+            "--check only reports and installs nothing; drop --allow-downgrade, or drop \
+             --check to install"
+                .to_owned(),
+        );
+    }
     let data_dir = init.data_dir.clone();
     Ok(match command {
         "init" => Command::Init(init),
         "start" => Command::Start(data_dir),
         "stop" => Command::Stop(data_dir),
+        "restart" => Command::Restart(data_dir),
         "status" => Command::Status(data_dir),
-        "update" => Command::Update(channel, allow_downgrade, data_dir),
+        "doctor" => Command::Doctor(data_dir),
+        "logs" => Command::Logs(LogsArgs {
+            lines,
+            follow,
+            data_dir,
+        }),
+        "uninstall" => Command::Uninstall(delete_data, data_dir),
+        "update" => Command::Update(UpdateArgs {
+            channel,
+            allow_downgrade,
+            check,
+            data_dir,
+        }),
         _ => Command::ServiceInstall(init.listen, data_dir),
     })
 }
@@ -357,16 +493,29 @@ pub fn main() {
         Command::Stop(dir) => data_dir(dir.as_deref(), &var)
             .and_then(|data| stop(&data, &var))
             .map(|()| 0),
+        Command::Restart(dir) => data_dir(dir.as_deref(), &var).and_then(|data| {
+            restart(&data, &var)?;
+            agents::refresh(&data, settings::listen(&data)?, &var);
+            Ok(0)
+        }),
         Command::Status(dir) => data_dir(dir.as_deref(), &var).and_then(|data| status(&data, &var)),
+        Command::Doctor(dir) => {
+            data_dir(dir.as_deref(), &var).and_then(|data| doctor::doctor(&data, &var))
+        }
+        Command::Logs(args) => {
+            data_dir(args.data_dir.as_deref(), &var).and_then(|data| logs(&data, &args, &var))
+        }
+        Command::Uninstall(delete_data, dir) => data_dir(dir.as_deref(), &var)
+            .and_then(|data| uninstall::uninstall(&data, delete_data, &var))
+            .map(|()| 0),
         Command::ServiceInstall(flag, dir) => data_dir(dir.as_deref(), &var)
             .and_then(|data| service_install(&data, flag, &var))
             .map(|()| 0),
-        Command::Update(channel, allow_downgrade, dir) => {
-            data_dir(dir.as_deref(), &var).and_then(|data| {
-                let flag = settings::data_dir_flag(&data, &var);
-                update::update(channel, allow_downgrade, &data, &flag, &var).map(|()| 0)
-            })
-        }
+        Command::Update(args) if args.check => update::check(args.channel, &var).map(|()| 0),
+        Command::Update(args) => data_dir(args.data_dir.as_deref(), &var).and_then(|data| {
+            let flag = settings::data_dir_flag(&data, &var);
+            update::update(args.channel, args.allow_downgrade, &data, &flag, &var).map(|()| 0)
+        }),
         Command::Review(args) => data_dir(args.data_dir.as_deref(), &var)
             .and_then(|data| review::review(&args, &data, &var))
             .map(|()| 0),
@@ -661,12 +810,107 @@ fn stop(data: &DataDir, var: Var) -> Result<(), String> {
     Ok(())
 }
 
-/// Prints the state of the server; the exit status is 0 while it runs, [`STOPPED`] while
-/// it does not.
-fn status(data: &DataDir, var: Var) -> Result<i32, String> {
+fn restart(data: &DataDir, var: Var) -> Result<(), String> {
     let listen = settings::listen(data)?;
+    match manager(data, var)? {
+        Manager::Service => {
+            service::systemctl("restart")?;
+            service::wait_until_up(listen)?;
+            println!(
+                "Restarted {} on {}",
+                service::UNIT_NAME,
+                settings::web_url(listen)
+            );
+        }
+        Manager::Launchd => {
+            if launchd::is_running() {
+                launchd::kickstart(true)?;
+            } else {
+                launchd::start(var)?;
+            }
+            launchd::wait_until_up(listen, var)?;
+            println!(
+                "Restarted launchd job {} on {}",
+                launchd::LABEL,
+                settings::web_url(listen)
+            );
+        }
+        Manager::PidFile => {
+            if process::stop(data)? {
+                println!("Stopped toodo-server");
+            }
+            start(data, var)?;
+        }
+    }
+    Ok(())
+}
+
+/// Prints the end of the server log, and with `follow` new lines until interrupted, by
+/// running `journalctl` or `tail` in place of this process.
+fn logs(data: &DataDir, args: &LogsArgs, var: Var) -> Result<i32, String> {
+    use std::os::unix::process::CommandExt;
+
+    let lines = args.lines.to_string();
     let manager = manager(data, var)?;
-    let (running, state, log) = match manager {
+    let mut command = match manager {
+        Manager::Service => {
+            let mut command = std::process::Command::new("journalctl");
+            command.args([
+                "--user",
+                "-u",
+                service::UNIT_NAME,
+                "--no-pager",
+                "-n",
+                &lines,
+            ]);
+            if args.follow {
+                command.arg("-f");
+            }
+            command
+        }
+        Manager::Launchd | Manager::PidFile => {
+            let log = if matches!(manager, Manager::Launchd) {
+                launchd::log_path(var)?
+            } else {
+                data.log()
+            };
+            if !log.is_file() {
+                return Err(format!(
+                    "there is no server log at {} yet; the server writes it once it runs, so \
+                     start it with: toodo start{}",
+                    log.display(),
+                    settings::data_dir_flag(data, var)
+                ));
+            }
+            // BSD tail on macOS takes no options after the file.
+            let mut command = std::process::Command::new("tail");
+            command.args(["-n", &lines]);
+            if args.follow {
+                command.arg("-f");
+            }
+            command.arg(log);
+            command
+        }
+    };
+    let program = command.get_program().to_string_lossy().into_owned();
+    let error = command.exec();
+    Err(format!(
+        "cannot run {program}: {error}; check that it is on PATH, or read the log shown by \
+         toodo status{}",
+        settings::data_dir_flag(data, var)
+    ))
+}
+
+/// Whether the server runs, who runs it, and where its log is.
+struct ServerState {
+    running: bool,
+    /// The unit, launchd job, or pid, with its state.
+    description: String,
+    log: String,
+}
+
+fn server_state(manager: &Manager, data: &DataDir, var: Var) -> Result<ServerState, String> {
+    let (running, description, log) = match manager {
         Manager::Service => {
             let state = service::state();
             (
@@ -689,6 +933,23 @@ fn status(data: &DataDir, var: Var) -> Result<i32, String> {
             )
         }
     };
+    Ok(ServerState {
+        running,
+        description,
+        log,
+    })
+}
+
+/// Prints the state of the server; the exit status is 0 while it runs, [`STOPPED`] while
+/// it does not.
+fn status(data: &DataDir, var: Var) -> Result<i32, String> {
+    let listen = settings::listen(data)?;
+    let manager = manager(data, var)?;
+    let ServerState {
+        running,
+        description: state,
+        log,
+    } = server_state(&manager, data, var)?;
     println!(
         "toodo-server: {} ({state})
   Web app:    {}
@@ -780,7 +1041,12 @@ mod tests {
         );
         assert_eq!(
             parsed(&["update"]).unwrap(),
-            Command::Update(None, false, None)
+            Command::Update(UpdateArgs {
+                channel: None,
+                allow_downgrade: false,
+                check: false,
+                data_dir: None
+            })
         );
         assert_eq!(
             parsed(&[
@@ -791,7 +1057,58 @@ mod tests {
                 "/d"
             ])
             .unwrap(),
-            Command::Update(Some(Channel::Latest), true, dir)
+            Command::Update(UpdateArgs {
+                channel: Some(Channel::Latest),
+                allow_downgrade: true,
+                check: false,
+                data_dir: dir.clone()
+            })
+        );
+        assert_eq!(
+            parsed(&["update", "--check", "--channel", "dev"]).unwrap(),
+            Command::Update(UpdateArgs {
+                channel: Some(Channel::Dev),
+                allow_downgrade: false,
+                check: true,
+                data_dir: None
+            })
+        );
+        assert_eq!(
+            parsed(&["restart", "--data-dir", "/d"]).unwrap(),
+            Command::Restart(dir.clone())
+        );
+        assert_eq!(parsed(&["doctor"]).unwrap(), Command::Doctor(None));
+        assert_eq!(
+            parsed(&["logs"]).unwrap(),
+            Command::Logs(LogsArgs {
+                lines: LOG_LINES,
+                follow: false,
+                data_dir: None
+            })
+        );
+        assert_eq!(
+            parsed(&["logs", "-n", "200", "-f", "--data-dir=/d"]).unwrap(),
+            Command::Logs(LogsArgs {
+                lines: 200,
+                follow: true,
+                data_dir: dir.clone()
+            })
+        );
+        assert_eq!(
+            parsed(&["logs", "--lines=5", "--follow"]).unwrap(),
+            Command::Logs(LogsArgs {
+                lines: 5,
+                follow: true,
+                data_dir: None
+            })
+        );
+        assert_eq!(
+            parsed(&["uninstall"]).unwrap(),
+            Command::Uninstall(false, None)
+        );
+        assert_eq!(
+            parsed(&["uninstall", "--delete-data", "--data-dir", "/d"]).unwrap(),
+            Command::Uninstall(true, dir)
         );
     }
 
@@ -809,6 +1126,14 @@ mod tests {
         assert_eq!(
             parsed(&["update", "--help"]).unwrap(),
             Command::Help(Some("update"))
+        );
+        assert_eq!(
+            parsed(&["logs", "-h"]).unwrap(),
+            Command::Help(Some("logs"))
+        );
+        assert_eq!(
+            parsed(&["uninstall", "--help"]).unwrap(),
+            Command::Help(Some("uninstall"))
         );
         assert_eq!(parsed(&["run", "--help"]).unwrap(), Command::Help(None));
         assert_eq!(parsed(&["--version"]).unwrap(), Command::Version);
@@ -856,6 +1181,23 @@ mod tests {
             "--allow-downgrade is an option of toodo update, not of start"
         );
         assert_eq!(error(&["status", "extra"]), "unknown option \"extra\"");
+        assert_eq!(
+            error(&["status", "--check"]),
+            "--check is an option of toodo update, not of status"
+        );
+        assert!(error(&["update", "--check", "--allow-downgrade"]).contains("drop"));
+        assert_eq!(
+            error(&["doctor", "--follow"]),
+            "--follow is an option of toodo logs, not of doctor"
+        );
+        assert_eq!(
+            error(&["logs", "-n", "many"]),
+            "-n takes a number of lines, got \"many\""
+        );
+        assert_eq!(
+            error(&["stop", "--delete-data"]),
+            "--delete-data is an option of toodo uninstall, not of stop"
+        );
     }
 
     #[test]

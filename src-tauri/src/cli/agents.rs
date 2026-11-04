@@ -97,6 +97,46 @@ pub(super) fn refresh(data: &DataDir, listen: SocketAddr, var: Var) {
     }
 }
 
+/// Removes the registration of `url` from Claude Code and Codex, and prints what
+/// happened; a registration of another URL, e.g. of another server, is left alone.
+pub(super) fn unregister(url: &str, var: Var) {
+    if process::find_on_path("claude", var).is_some()
+        && process::output("claude", &["mcp", "get", SERVER_NAME]).is_ok_and(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains(url)
+        })
+    {
+        match process::run(
+            "claude",
+            &["mcp", "remove", "--scope", "user", SERVER_NAME],
+            &format!("remove it yourself with: claude mcp remove --scope user {SERVER_NAME}"),
+        ) {
+            Ok(_) => println!("MCP for claude: removed {url}"),
+            Err(error) => println!("MCP for claude: failed: {error}"),
+        }
+    }
+    let path = match codex_config(var) {
+        Ok(path) => path,
+        Err(error) => {
+            println!("MCP for codex: failed: {error}");
+            return;
+        }
+    };
+    let Ok(existing) = fs::read_to_string(&path) else {
+        return;
+    };
+    let (rest, table) = remove_table(&existing, CODEX_TABLE);
+    if !table.is_some_and(|table| table.contains(&format!("url = \"{url}\""))) {
+        return;
+    }
+    match write_private(&path, &rest) {
+        Ok(()) => println!("MCP for codex: removed {url} from {}", path.display()),
+        Err(error) => println!(
+            "MCP for codex: cannot update {}: {error}; delete its {CODEX_TABLE} table yourself",
+            path.display()
+        ),
+    }
+}
+
 fn claude(url: &str, token_file: &Path) -> Outcome {
     // A registration from an earlier init may have another port or header.
     drop(process::output(
@@ -204,6 +244,29 @@ pub(super) fn upsert_table(existing: &str, header: &str, table: &str) -> String 
         text.push_str(&lines[end..].concat());
     }
     text
+}
+
+/// `existing` without the table that starts at the line `header`, and that table, if
+/// there is one; the blank lines before it go with it.
+pub(super) fn remove_table(existing: &str, header: &str) -> (String, Option<String>) {
+    let lines: Vec<&str> = existing.split_inclusive('\n').collect();
+    let Some(start) = lines.iter().position(|line| line.trim() == header) else {
+        return (existing.to_owned(), None);
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|line| line.starts_with('['))
+        .map_or(lines.len(), |offset| start + 1 + offset);
+    let before = lines[..start]
+        .iter()
+        .rposition(|line| !line.trim().is_empty())
+        .map_or(0, |last| last + 1);
+    let mut rest: String = lines[..before].concat();
+    if end < lines.len() && !rest.is_empty() {
+        rest.push('\n');
+    }
+    rest.push_str(&lines[end..].concat());
+    (rest, Some(lines[start..end].concat()))
 }
 
 /// Writes `text` to `path`, readable by the owner only, creating its directory.
@@ -337,6 +400,20 @@ mod tests {
             upsert_table(last, CODEX_TABLE, TABLE),
             format!("[a]\nb = 1\n{TABLE}")
         );
+    }
+
+    #[test]
+    fn removing_the_table_keeps_the_other_tables() {
+        let other = "model = \"o3\"\n\n[mcp_servers.other]\nurl = \"x\"\n";
+        let (rest, removed) = remove_table(&format!("{other}\n{TABLE}"), CODEX_TABLE);
+        assert_eq!(rest, other);
+        assert_eq!(removed.as_deref(), Some(TABLE));
+        let (rest, removed) =
+            remove_table(&format!("[a]\nb = 1\n\n{TABLE}\n[c]\nd = 2\n"), CODEX_TABLE);
+        assert_eq!(rest, "[a]\nb = 1\n\n[c]\nd = 2\n");
+        assert_eq!(removed.as_deref(), Some(&*format!("{TABLE}\n")));
+        assert_eq!(remove_table(other, CODEX_TABLE), (other.to_owned(), None));
+        assert_eq!(remove_table(TABLE, CODEX_TABLE).0, "");
     }
 
     #[test]
