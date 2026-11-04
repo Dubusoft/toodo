@@ -22,6 +22,7 @@ pub mod runners;
 pub mod runs;
 pub mod tasks;
 pub mod types;
+pub mod updates;
 pub mod workspaces;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};

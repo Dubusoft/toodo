@@ -181,6 +181,7 @@ macro_rules! commands {
 /// because it shows the MCP token, which can change data.
 pub const READ_COMMANDS: &[&str] = &[
     "app_info",
+    "check_update",
     "list_connected_apps",
     "list_workspaces",
     "get_workspace",
@@ -221,6 +222,7 @@ pub const READ_COMMANDS: &[&str] = &[
 
 commands!(s => {
     "app_info"() => sync Reply::value(crate::commands::app_info());
+    "check_update"() => async Reply::value(crate::commands::updates::check_update().await);
     "list_connected_apps"() => sync Reply::result(
         mcp::list_connected_apps(State(s.reader()), State(&s.public_url))
     );

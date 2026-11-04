@@ -6,6 +6,11 @@ import { type EventCallback, listen } from "@/web/event";
 /** Commands */
 export const commands = {
 	appInfo: () => invoke<AppInfo>("app_info"),
+	/**
+	 *  Asks the npm registry (`TOODO_NPM_REGISTRY`, else the public one) for the newest
+	 *  version on the channel of the running server.
+	 */
+	checkUpdate: () => invoke<UpdateCheck>("check_update"),
 	listWorkspaces: () => typedError<Workspace[], CommandError>(invoke("list_workspaces")),
 	getWorkspace: (id: WorkspaceId) => typedError<Workspace, CommandError>(invoke("get_workspace", { id })),
 	/**
@@ -1689,6 +1694,20 @@ export type ToolHealth = {
 	version: string | null,
 	/**  Why the tool is not ready and what to do next; `None` when it is ready. */
 	message: string | null,
+};
+
+/**  The version this server runs and the newest one on the npm channel it follows. */
+export type UpdateCheck = {
+	/**  The version this server runs. */
+	current: string,
+	/**  The npm dist-tag the version follows: `dev` for a prerelease, else `latest`. */
+	channel: string,
+	/**  The version on the channel, when the registry told it. */
+	latest: string | null,
+	/**  Whether `latest` is newer than `current`. */
+	newer: boolean,
+	/**  Why the newest version is unknown, with what to do about it. */
+	error: string | null,
 };
 
 export type Workspace = {
