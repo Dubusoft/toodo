@@ -312,6 +312,7 @@ impl From<StorageError> for CommandError {
             | StorageError::RestoreClosesCycle(_)
             | StorageError::BaseBranchInReview { .. }
             | StorageError::PrerequisiteOfDoneTask { .. }
+            | StorageError::DependencyOfDoneTask { .. }
             | StorageError::CriteriaOfDoneTask(_)
             | StorageError::AutomaticCriterion { .. }
             | StorageError::CheckoutHasActiveWriter { .. }

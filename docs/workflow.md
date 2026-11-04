@@ -25,9 +25,11 @@ planned -----------------> in_progress ---------> in_review ---------> done (mer
 
 Whether a `planned` task can be started is not a state: it can be started once every
 task it depends on is `done` and merged, none of them `not_adopted` (it is **ready**). Its
-dependencies can change while it is `planned` or `in_progress`, and through MCP also while
-it is `in_review`; a `done` task cannot get new prerequisites (plan a follow-up task that
-depends on them instead). Removing a dependency that does not exist, or a related link
+dependencies can change while it is `planned`, `in_progress`, or `in_review`, the same in
+the app and through MCP; a `done` task keeps the dependencies it finished with: it cannot
+get new prerequisites (plan a follow-up task that depends on them instead) or lose one
+(reopen it first). The app offers only prerequisites that would not close a cycle, and the
+server rejects a cyclic edge from either side. Removing a dependency that does not exist, or a related link
 that does not exist, is rejected. The UI names a `planned` task that was worked on before
 "Paused" and offers "Resume" instead of "Start". MCP's `list_tasks` and `get_task` give
 each task `ready` and `blockedBy`, the tasks it depends on that are not done yet or were
@@ -83,7 +85,8 @@ What the app and MCP can each do with a task:
 | Action | App | MCP |
 | --- | --- | --- |
 | Create and edit tasks | Yes | Yes (`create_task`, `update_task`) |
-| Add and remove dependencies and related links | Yes, while `planned` or `in_progress` | Yes, also while `in_review` |
+| Add and remove dependencies | Yes, while `planned`, `in_progress`, or `in_review` | Yes, while `planned`, `in_progress`, or `in_review` |
+| Add and remove related links | Yes | Yes (`add_related`, `remove_related`) |
 | See whether a task is ready and what blocks it | Status chips and "Waiting on" | `ready` and `blockedBy` |
 | Start, resume, and pause | Yes | Yes (`start_task`, `resume_task`, `pause_task`) |
 | Check manual criteria | Yes | Yes (`check_criterion`) |

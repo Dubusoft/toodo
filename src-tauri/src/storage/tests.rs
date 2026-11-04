@@ -653,22 +653,26 @@ fn a_done_task_cannot_wait_on_new_prerequisites() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
     let a = add_task(&mut storage, &workspace, "A");
+    let base = add_task(&mut storage, &workspace, "Base");
     let fix = add_task(&mut storage, &workspace, "Fix");
-    for status in [InProgress, InReview, Done] {
+    for status in [InProgress, InReview] {
         storage.set_task_status(a.id, status).unwrap();
     }
+    // A task in review still gets prerequisites, as in the app.
+    storage.add_dependency(a.id, base.id).unwrap();
+    storage.set_task_status(a.id, Done).unwrap();
 
     assert!(matches!(
         storage.add_dependency(a.id, fix.id),
         Err(StorageError::PrerequisiteOfDoneTask { task, .. }) if task == a.id
     ));
-    assert!(
-        storage
-            .get_task(a.id)
-            .unwrap()
-            .unwrap()
-            .depends_on
-            .is_empty()
+    assert!(matches!(
+        storage.remove_dependency(a.id, base.id),
+        Err(StorageError::DependencyOfDoneTask { task, depends_on }) if task == a.id && depends_on == base.id
+    ));
+    assert_eq!(
+        storage.get_task(a.id).unwrap().unwrap().depends_on,
+        std::collections::BTreeSet::from([base.id])
     );
 }
 

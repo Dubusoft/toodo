@@ -121,17 +121,26 @@ describe("canAddDependency", () => {
     task(5),
   ];
 
-  it("allows a new dependency for a planned or in-progress task", () => {
+  it("allows a new dependency for a planned, in-progress, or in-review task", () => {
     expect(canAddDependency(tasks, 3, 2)).toBe(true);
     expect(canAddDependency(tasks, 1, 5)).toBe(true);
     expect(canAddDependency(tasks, 5, 3)).toBe(true);
+    expect(canAddDependency(tasks, 5, 4)).toBe(true);
   });
 
   it("rejects self, duplicate, and locked edges", () => {
     expect(canAddDependency(tasks, 5, 5)).toBe(false);
     expect(canAddDependency(tasks, 1, 2)).toBe(false);
-    expect(canAddDependency(tasks, 5, 4)).toBe(false);
+    expect(canAddDependency(tasks, 5, 1)).toBe(false);
     expect(canAddDependency(tasks, 5, 42)).toBe(false);
+  });
+
+  it("rejects an edge that would close a cycle, directly or through other tasks", () => {
+    const chain = [task(1), task(2, { dependsOn: [1] }), task(3, { dependsOn: [2] }), task(4)];
+    expect(canAddDependency(chain, 2, 1)).toBe(false);
+    expect(canAddDependency(chain, 3, 1)).toBe(false);
+    expect(canAddDependency(chain, 4, 1)).toBe(true);
+    expect(canAddDependency(chain, 1, 3)).toBe(true);
   });
 });
 

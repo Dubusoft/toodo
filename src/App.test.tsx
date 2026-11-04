@@ -2726,25 +2726,32 @@ describe("App", () => {
     expect(mocked.removeDependency).toHaveBeenCalledWith(2, 1);
   });
 
-  it("shows why a dependency was rejected", async () => {
+  it("does not offer a dependency that would close a cycle and shows why one was rejected", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({
       status: "ok",
-      data: [task(1, 1, "Add storage"), task(2, 1, "Add UI", { status: "planned", dependsOn: [1] })],
+      data: [
+        task(1, 1, "Add storage"),
+        task(2, 1, "Add UI", { status: "planned", dependsOn: [1] }),
+        task(3, 1, "Add docs", { status: "planned", dependsOn: [2] }),
+        task(4, 1, "Add search"),
+      ],
     });
     mocked.addDependency.mockResolvedValue({
       status: "error",
-      error: { kind: "rejected", code: "rejected", message: "dependency would create a cycle: #1 -> #2 -> #1" },
+      error: { kind: "rejected", code: "rejected", message: "dependency would create a cycle: #1 -> #4 -> #1" },
     });
     await renderWorkspace();
 
     const details = await openDetails("Add storage");
-    fireEvent.change(within(details).getByRole("combobox", { name: "Add dependency to #1" }), {
-      target: { value: "2" },
-    });
+    const add = within(details).getByRole("combobox", { name: "Add dependency to #1" });
+    expect(within(add).queryByRole("option", { name: "#2 Add UI" })).not.toBeInTheDocument();
+    expect(within(add).queryByRole("option", { name: "#3 Add docs" })).not.toBeInTheDocument();
+    // The server checks the whole DAG, also edges the app has not loaded yet.
+    fireEvent.change(add, { target: { value: "4" } });
 
     expect(await screen.findByRole("alert")).toHaveTextContent("would create a cycle");
-    expect(mocked.addDependency).toHaveBeenCalledWith(1, 2, false);
+    expect(mocked.addDependency).toHaveBeenCalledWith(1, 4, false);
     expect(screen.queryByRole("combobox", { name: "Add dependency to #2" })).not.toBeInTheDocument();
   });
 
