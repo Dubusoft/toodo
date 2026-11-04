@@ -10,7 +10,7 @@ use crate::domain::model::{self, Runner};
 use crate::domain::runtime::{self as domain_runtime, HostRef, OwnerKey, RunRole, RunnerKind};
 use crate::domain::status::TaskStatus;
 use crate::runtime::plain::adapter;
-use crate::runtime::{AgentLaunch, RunCommand, RunLauncher, RuntimeService, StartRun};
+use crate::runtime::{AgentLaunch, AgentResume, RunCommand, RunLauncher, RuntimeService, StartRun};
 use crate::storage::{self, StorageError};
 
 /// How long a plain run may take before it is stopped and fails.
@@ -28,9 +28,12 @@ const MAX_TAIL_BYTES: u32 = 4 * 1024 * 1024;
 /// the task's title, description, and criteria, and with `mcp` it also tells the agent to
 /// call the Toodo MCP `current_task` tool. With `mcp` the agent gets the server's MCP
 /// endpoint and token in its environment only; on an SSH machine it reaches the server
-/// through the machine's MCP tunnel, which must be open. Returns the run as recorded right
-/// after the launch.
+/// through the machine's MCP tunnel, which must be open. With `follow_up_of`, an ended run
+/// of the task, the agent resumes that run's session with `prompt` (required then)
+/// instead of starting a new one, and the new run joins the run's conversation. Returns
+/// the run as recorded right after the launch.
 #[specta::specta]
+#[allow(clippy::too_many_arguments)]
 pub fn start_plain_run(
     storage: State<'_, StorageState>,
     runs: State<'_, PlainRunState>,
@@ -39,8 +42,16 @@ pub fn start_plain_run(
     adapter: AgentAdapter,
     prompt: Option<String>,
     mcp: bool,
+    follow_up_of: Option<RunId>,
 ) -> CommandResult<TaskRun> {
-    Ok((&start(&storage, &runs, &tmux, task_id.into(), adapter, prompt, mcp)?).into())
+    let request = Request {
+        task: task_id.into(),
+        agent: adapter,
+        prompt,
+        mcp,
+        follow_up_of: follow_up_of.map(Into::into),
+    };
+    Ok((&start(&storage, &runs, &tmux, request)?).into())
 }
 
 /// The runs of a task, oldest first.
@@ -212,16 +223,100 @@ pub(crate) fn stop_live_runs_after<T>(
     result
 }
 
+/// What `start_plain_run` was asked to start.
+struct Request {
+    task: model::TaskId,
+    agent: AgentAdapter,
+    prompt: Option<String>,
+    mcp: bool,
+    follow_up_of: Option<domain_runtime::RunId>,
+}
+
+/// The conversation of `previous` that a follow-up run of task `id` with `agent` in
+/// `worktree` on `host` resumes, rejected with the next step unless the run can be
+/// resumed there.
+fn follow_up(
+    previous: &storage::TaskRun,
+    id: model::TaskId,
+    agent: adapter::AgentAdapter,
+    host: &HostRef,
+    worktree: &str,
+) -> CommandResult<AgentResume> {
+    let run = previous.id;
+    if previous.task != id {
+        return Err(CommandError::rejected(format!(
+            "run {run} belongs to task {}, not task {id}; pass a run of task {id} as \
+             follow_up_of (list_task_runs lists them)",
+            previous.task
+        )));
+    }
+    if previous.state.is_active() {
+        return Err(CommandError::rejected(format!(
+            "run {run} is still {}; wait for it to end, or stop it (stop_run), then start the \
+             follow-up",
+            previous.state
+        )));
+    }
+    if previous.adapter_profile.as_deref() != Some(agent.as_wire()) {
+        let ran = previous.adapter_profile.as_deref().unwrap_or("no agent");
+        return Err(CommandError::rejected(format!(
+            "run {run} ran {ran}, and a {} run cannot resume its session; start the follow-up \
+             with adapter {ran}, or leave follow_up_of out to start a new session",
+            agent.as_wire()
+        )));
+    }
+    let (Some(conversation), Some(session)) = (previous.conversation, &previous.session) else {
+        return Err(CommandError::rejected(format!(
+            "run {run} recorded no agent session to resume, since its agent ended before \
+             reporting one; leave follow_up_of out to start a new session"
+        )));
+    };
+    if &previous.host != host || previous.checkout_path.as_deref() != Some(worktree) {
+        return Err(CommandError::rejected(format!(
+            "run {run} ran in {} on {}, but task {id} now works in {worktree} on {host}, \
+             where the agent cannot find the session; leave follow_up_of out to start a new \
+             session",
+            previous.checkout_path.as_deref().unwrap_or("no worktree"),
+            previous.host
+        )));
+    }
+    // The session id goes into the agent's command line.
+    let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':');
+    if session.is_empty() || !session.chars().all(plain) {
+        return Err(CommandError::rejected(format!(
+            "run {run} recorded an agent session id Toodo cannot pass to the agent; leave \
+             follow_up_of out to start a new session"
+        )));
+    }
+    Ok(AgentResume {
+        conversation,
+        session: session.clone(),
+    })
+}
+
 fn start(
     storage: &StorageState,
     runs: &PlainRunState,
     tmux: &TmuxRunState,
-    id: model::TaskId,
-    agent: AgentAdapter,
-    prompt: Option<String>,
-    mcp: bool,
+    request: Request,
 ) -> CommandResult<storage::TaskRun> {
-    let (task, worktree, generation, host, runner) = {
+    let Request {
+        task: id,
+        agent,
+        prompt,
+        mcp,
+        follow_up_of,
+    } = request;
+    let prompt = prompt.filter(|prompt| !prompt.trim().is_empty());
+    if let (Some(run), None) = (follow_up_of, &prompt) {
+        return Err(CommandError::invalid_input(format!(
+            "a follow-up run needs a prompt: what to tell the agent of run {run}, such as \
+             review feedback; pass prompt, or leave follow_up_of out to start a new session \
+             with the task's brief"
+        )));
+    }
+    let agent = adapter::AgentAdapter::from(agent);
+    let (task, worktree, generation, host, runner, resume) = {
         let storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -266,13 +361,21 @@ fn start(
         // The worktree path keeps its style, which tells the runner the host's OS.
         let worktree = worktree.to_string();
         let host = HostRef::from(&workspace.location.machine());
-        (task, worktree, generation, host, workspace.runner)
+        let resume = match follow_up_of {
+            None => None,
+            Some(run) => {
+                let previous = storage
+                    .get_run(run)?
+                    .ok_or(StorageError::RunNotFound(run))?;
+                Some(follow_up(&previous, id, agent, &host, &worktree)?)
+            }
+        };
+        (task, worktree, generation, host, workspace.runner, resume)
     };
-    let brief = match prompt.filter(|prompt| !prompt.trim().is_empty()) {
+    let brief = match prompt {
         Some(prompt) => prompt,
         None => default_brief(&task, &worktree, mcp),
     };
-    let agent = adapter::AgentAdapter::from(agent);
     let (launcher, prefix): (&dyn RunLauncher, _) = match runner {
         Runner::Tmux => (tmux, "tmux"),
         _ => (runs, "plain"),
@@ -292,6 +395,7 @@ fn start(
             brief,
             mcp,
             timeout_secs: RUN_TIMEOUT_SECS,
+            resume,
         }),
     };
     Ok(RuntimeService.start_run(storage, launcher, request)?)
@@ -461,6 +565,25 @@ exec sh -c "$1"
                 AgentAdapter::Claude,
                 prompt.map(str::to_owned),
                 false,
+                None,
+            )
+        }
+
+        fn follow_up(
+            &self,
+            adapter: AgentAdapter,
+            prompt: Option<&str>,
+            of: &TaskRun,
+        ) -> CommandResult<TaskRun> {
+            start_plain_run(
+                State(&self.storage),
+                State(&self.runs),
+                State(&self.tmux),
+                self.task.into(),
+                adapter,
+                prompt.map(str::to_owned),
+                false,
+                Some(of.id),
             )
         }
 
@@ -556,6 +679,93 @@ exec sh -c "$1"
         )
         .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn a_follow_up_run_resumes_the_session_of_an_ended_run_with_a_new_prompt() {
+        let fixture = fixture(
+            Runner::Plain,
+            &format!(
+                "printf 'argv:%s\\n' \"$*\"\nIFS= read -r line\nprintf 'prompt:%s\\n' \"$line\"\n\
+                 printf '%s\\n' '{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"sess-1\"}}'\n\
+                 {RESULT}"
+            ),
+        );
+        fixture.start_task();
+        let first = fixture.run(None).unwrap();
+        assert_eq!(fixture.end(&first), types::RunState::Settled);
+
+        for blank in [None, Some("  ")] {
+            let error = fixture
+                .follow_up(AgentAdapter::Claude, blank, &first)
+                .unwrap_err();
+            assert_eq!(error.kind, CommandErrorKind::InvalidInput, "{error:?}");
+            assert!(error.message.contains("pass prompt"), "{error:?}");
+        }
+        let error = fixture
+            .follow_up(AgentAdapter::Codex, Some("Fix it"), &first)
+            .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("adapter claude"), "{error:?}");
+
+        let follow_up = fixture
+            .follow_up(AgentAdapter::Claude, Some("Address the review"), &first)
+            .unwrap();
+        assert_eq!(follow_up.follow_up_of, Some(first.id));
+        assert_eq!(fixture.end(&follow_up), types::RunState::Settled);
+        let stdout = fixture.log(&follow_up).stdout;
+        assert!(
+            stdout.contains("--permission-mode bypassPermissions --resume sess-1\n"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("prompt:Address the review\n"), "{stdout}");
+        let first_stdout = fixture.log(&first).stdout;
+        assert!(!first_stdout.contains("--resume"), "{first_stdout}");
+
+        let listed = list_task_runs(State(&fixture.storage), fixture.task.into()).unwrap();
+        let links: Vec<_> = listed
+            .iter()
+            .map(|run| (run.id, run.follow_up_of, run.agent_session.as_deref()))
+            .collect();
+        assert_eq!(
+            links,
+            [
+                (first.id, None, Some("sess-1")),
+                (follow_up.id, Some(first.id), Some("sess-1")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_follow_up_is_rejected_with_the_next_step_unless_the_run_can_be_resumed() {
+        let fixture = fixture(
+            Runner::Plain,
+            &format!("test -f started && exec sleep 600\n: > started\n{RESULT}"),
+        );
+        fixture.start_task();
+        let silent = fixture.run(None).unwrap();
+        assert_eq!(fixture.end(&silent), types::RunState::Settled);
+        let error = fixture
+            .follow_up(AgentAdapter::Claude, Some("Fix it"), &silent)
+            .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("no agent session"), "{error:?}");
+
+        let live = fixture.run(None).unwrap();
+        let error = fixture
+            .follow_up(AgentAdapter::Claude, Some("Fix it"), &live)
+            .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("stop_run"), "{error:?}");
+        stop_run(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            live.id,
+        )
+        .unwrap();
+        let runs = list_task_runs(State(&fixture.storage), fixture.task.into()).unwrap();
+        assert_eq!(runs.len(), 2, "a rejected follow-up records no run");
     }
 
     #[test]
@@ -794,6 +1004,7 @@ exec sh -c "$1"
                 checkout_path: None,
                 runtime_workspace: None,
                 adapter_profile: None,
+                conversation: None,
             })
             .unwrap()
             .into_run();

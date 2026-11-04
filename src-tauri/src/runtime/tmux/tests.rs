@@ -151,6 +151,7 @@ impl Fixture {
                 brief: "Implement the task\n".into(),
                 mcp,
                 timeout_secs: 60,
+                resume: None,
             }),
         }
     }
@@ -181,6 +182,7 @@ impl Fixture {
                 checkout_path: Some(self.dir.path().to_string_lossy().into_owned()),
                 runtime_workspace: None,
                 adapter_profile: None,
+                conversation: None,
             })
             .unwrap()
             .into_run()
@@ -457,6 +459,7 @@ fn real_restart_settles_ended_session_and_missing_session() {
             checkout_path: run.checkout_path,
             runtime_workspace: None,
             adapter_profile: None,
+            conversation: None,
         })
         .unwrap()
         .into_run();

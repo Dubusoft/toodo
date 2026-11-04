@@ -6,6 +6,8 @@ import {
   CircleCheck,
   CircleDot,
   Copy,
+  CornerDownRight,
+  MessageSquareReply,
   Play,
   RefreshCw,
   SearchCheck,
@@ -102,6 +104,22 @@ function missingAgents(health: RunnerHealth | undefined): Map<AgentAdapter, stri
 /** The agent CLI a run drove, by name. */
 function adapterName(adapter: string | null): string {
   return adapter === "claude" || adapter === "codex" ? adapterLabels[adapter] : (adapter ?? "Agent");
+}
+
+function isAdapter(adapter: string | null): adapter is AgentAdapter {
+  return adapter === "claude" || adapter === "codex";
+}
+
+/**
+ * Whether a follow-up can resume the agent session of `run`: it ended with a session its agent
+ * reported, and no later run follows up on it yet, so it is the newest run of its conversation.
+ */
+export function canFollowUp(run: TaskRun, runs: readonly TaskRun[]): boolean {
+  return (
+    !activeStates.includes(run.state) &&
+    run.agentSession !== null &&
+    !runs.some((other) => other.followUpOf === run.id)
+  );
 }
 
 /** Names of the events runs record; the event that marks the state a run ended in is named like the state. */
@@ -260,6 +278,9 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
   // The run whose log is open: the newest until one is picked, none once it is closed.
   const [picked, setPicked] = useState<RunId | null | undefined>(undefined);
   const [stopping, setStopping] = useState<RunId | null>(null);
+  // The run whose agent a follow-up is being written for, and what to tell it.
+  const [following, setFollowing] = useState<RunId | null>(null);
+  const [feedback, setFeedback] = useState("");
   // Only a refresh asked for shows as one: while a run is live, the runs also reload on their own.
   const [refreshing, setRefreshing] = useState(false);
   const newestFirst = [...(runs.data ?? [])].reverse();
@@ -285,6 +306,21 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
     if (chosen === null) return;
     // The new run, or the launch that failed, is the newest one now: open it.
     startRun.mutate({ taskId: task.id, adapter: chosen, mcp }, { onSettled: () => setPicked(undefined) });
+  }
+
+  function followUp(event: FormEvent<HTMLFormElement>, run: TaskRun) {
+    event.preventDefault();
+    if (!isAdapter(run.adapter) || feedback.trim() === "") return;
+    startRun.mutate(
+      { taskId: task.id, adapter: run.adapter, mcp, prompt: feedback, followUpOf: run.id },
+      {
+        onSuccess: () => {
+          setFollowing(null);
+          setFeedback("");
+        },
+        onSettled: () => setPicked(undefined),
+      },
+    );
   }
 
   function refresh() {
@@ -409,6 +445,13 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
           {newestFirst.map((run) => {
             const open = run.id === openId;
             const name = `run ${run.generation}`;
+            const original = run.followUpOf === null ? undefined : newestFirst.find((r) => r.id === run.followUpOf);
+            const resumable =
+              inProgress &&
+              holding === undefined &&
+              canFollowUp(run, newestFirst) &&
+              isAdapter(run.adapter) &&
+              !missing.has(run.adapter);
             return (
               <li key={run.id} className="flex min-w-0 flex-col">
                 <div className="flex min-w-0 items-center gap-1 p-1">
@@ -428,6 +471,16 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
                     <ActivityBadge run={run} now={now} />
                     <span className="shrink-0 font-medium">Run {run.generation}</span>
                     <span className="min-w-0 truncate text-muted-foreground">{adapterName(run.adapter)}</span>
+                    {original && (
+                      <span
+                        aria-label={`Follow-up of run ${original.generation}`}
+                        title={`Resumed the agent session of run ${original.generation}`}
+                        className="inline-flex shrink-0 items-center gap-0.5 text-muted-foreground"
+                      >
+                        <CornerDownRight aria-hidden className="size-3" />
+                        Run {original.generation}
+                      </span>
+                    )}
                     {/* A phone has no room for the time beside a Stop button: it goes under the state. */}
                     <When
                       at={run.endedAt ?? run.startedAt ?? run.createdAt}
@@ -446,6 +499,22 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
                     >
                       <SearchCheck />
                       {reconcileRun.isPending && reconcileRun.variables.id === run.id ? "Reconciling..." : "Reconcile"}
+                    </Button>
+                  )}
+                  {resumable && following !== run.id && (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      aria-label={`Follow up ${name} of #${task.id}`}
+                      title="Send more work, such as review feedback, to the agent of this run: it resumes its session"
+                      onClick={() => {
+                        startRun.reset();
+                        setFeedback("");
+                        setFollowing(run.id);
+                      }}
+                    >
+                      <MessageSquareReply />
+                      Follow up
                     </Button>
                   )}
                   {activeStates.includes(run.state) && stopping !== run.id && (
@@ -490,6 +559,42 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
                       Back
                     </Button>
                   </div>
+                )}
+                {resumable && following === run.id && (
+                  <form
+                    aria-label={`Follow up ${name} of #${task.id}`}
+                    className="flex flex-col gap-2 px-2.5 pb-2"
+                    onSubmit={(event) => followUp(event, run)}
+                    onKeyDown={escapeCloses(() => setFollowing(null), startRun.isPending)}
+                  >
+                    <label className="flex flex-col gap-1">
+                      <span className="text-muted-foreground">
+                        What to tell the agent of {name}; it resumes its session, with what it did so far.
+                      </span>
+                      <textarea
+                        autoFocus
+                        rows={3}
+                        value={feedback}
+                        onChange={(event) => setFeedback(event.target.value)}
+                        placeholder="e.g. Address the review: rename the helper and add a test for the empty case."
+                        className="min-h-16 w-full rounded-md border bg-transparent px-2 py-1.5 text-xs outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                      />
+                    </label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        type="submit"
+                        size="xs"
+                        aria-label={`Send follow-up to ${name} of #${task.id}`}
+                        disabled={startRun.isPending || feedback.trim() === ""}
+                      >
+                        <Play />
+                        {startRun.isPending ? "Starting..." : "Send follow-up"}
+                      </Button>
+                      <Button type="button" size="xs" variant="ghost" onClick={() => setFollowing(null)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  </form>
                 )}
                 {open && <RunDetails id={`${id}-run-${run.id}`} run={run} log={log} />}
               </li>

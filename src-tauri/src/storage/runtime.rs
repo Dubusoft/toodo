@@ -11,8 +11,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::domain::model::TaskId;
 use crate::domain::runtime::{
-    HostRef, OperationKind, OperationState, OwnerKey, RunId, RunRole, RunState, RunUsage,
-    RunnerKind, RuntimeWorkspaceId,
+    HostRef, OperationKind, OperationState, OwnerKey, ResumeKind, RunId, RunRole, RunState,
+    RunUsage, RunnerKind, RuntimeWorkspaceId,
 };
 
 use super::{Result, Storage, StorageError, invalid_data};
@@ -32,6 +32,9 @@ pub struct NewRun {
     pub checkout_path: Option<String>,
     pub runtime_workspace: Option<RuntimeWorkspaceId>,
     pub adapter_profile: Option<String>,
+    /// The agent conversation a follow-up run continues; `None` for a run that starts a
+    /// new one.
+    pub conversation: Option<i64>,
 }
 
 /// The run a request key stands for: reserved now, or reserved by an earlier request.
@@ -79,6 +82,12 @@ pub struct TaskRun {
     pub last_activity_at: Option<i64>,
     /// The tokens the agent last reported using, if it reported any.
     pub usage: Option<RunUsage>,
+    /// The run of the same conversation this run follows up on: the latest earlier run
+    /// that shares its conversation.
+    pub follows: Option<RunId>,
+    /// The agent session of the run's conversation, as the agent last reported it: what a
+    /// follow-up run resumes.
+    pub session: Option<String>,
 }
 
 /// Something observed about a run. `sequence` increases from 1 per run.
@@ -127,7 +136,13 @@ pub struct RuntimeWorkspace {
 const RUN_COLUMNS: &str = "id, owner_key, task_id, runtime_workspace_id, conversation_id,
     request_key, generation, runner_kind, role, host_ref, checkout_path, adapter_profile,
     state, provider_run_ref, created_at, started_at, ended_at, last_activity_at, input_tokens,
-    cached_input_tokens, output_tokens";
+    cached_input_tokens, output_tokens,
+    (SELECT p.id FROM task_runs p
+     WHERE p.conversation_id = task_runs.conversation_id
+       AND p.generation < task_runs.generation
+     ORDER BY p.generation DESC LIMIT 1),
+    (SELECT c.resume_ref FROM agent_conversations c
+     WHERE c.id = task_runs.conversation_id)";
 
 /// Reads a run selected with [`RUN_COLUMNS`]. The outer result is the row access, the
 /// inner one the conversion of stored values.
@@ -177,6 +192,8 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Result<TaskRun>> {
             }
             _ => None,
         },
+        follows: row.get::<_, Option<i64>>(21)?.map(RunId),
+        session: row.get(22)?,
     };
     Ok(Ok(run))
 }
@@ -331,8 +348,9 @@ impl Storage {
         tx.execute(
             "INSERT INTO task_runs (owner_key, task_id, runtime_workspace_id, request_key,
                  generation, runner_kind, role, host_ref, checkout_path, adapter_profile, state,
-                 created_at)
-             SELECT ?1, ?2, ?3, ?4, coalesce(max(generation), 0) + 1, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+                 created_at, conversation_id)
+             SELECT ?1, ?2, ?3, ?4, coalesce(max(generation), 0) + 1, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                 ?12
              FROM task_runs WHERE task_id = ?2",
             params![
                 new.owner.as_str(),
@@ -345,7 +363,8 @@ impl Storage {
                 new.checkout_path,
                 new.adapter_profile,
                 RunState::Reserved.as_wire(),
-                at
+                at,
+                new.conversation
             ],
         )?;
         let id = RunId(tx.last_insert_rowid());
@@ -564,6 +583,48 @@ impl Storage {
         Ok(true)
     }
 
+    /// Records `session`, the session id (Claude) or thread id (Codex) the agent of `run`
+    /// reported, as what a follow-up run resumes: in the run's conversation, which is
+    /// created for a run that has none yet.
+    pub fn record_run_session(&mut self, run: RunId, session: &str) -> Result<TaskRun> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let current = existing_run(&tx, run)?;
+        match current.conversation {
+            Some(conversation) => {
+                tx.execute(
+                    "UPDATE agent_conversations SET resume_kind = ?2, resume_ref = ?3
+                     WHERE id = ?1",
+                    params![conversation, ResumeKind::ExactId.as_wire(), session],
+                )?;
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO agent_conversations (owner_key, task_id, agent_kind, host_ref,
+                         cwd, resume_kind, resume_ref, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        current.owner.as_str(),
+                        current.task.0,
+                        current.adapter_profile.as_deref().unwrap_or("unknown"),
+                        current.host.as_wire(),
+                        current.checkout_path,
+                        ResumeKind::ExactId.as_wire(),
+                        session,
+                        at
+                    ],
+                )?;
+                tx.execute(
+                    "UPDATE task_runs SET conversation_id = ?2 WHERE id = ?1",
+                    params![run.0, tx.last_insert_rowid()],
+                )?;
+            }
+        }
+        let recorded = existing_run(&tx, run)?;
+        tx.commit()?;
+        Ok(recorded)
+    }
+
     pub fn get_run(&self, run: RunId) -> Result<Option<TaskRun>> {
         find_run(&self.conn, run)
     }
@@ -762,6 +823,7 @@ mod tests {
             checkout_path: checkout.map(str::to_owned),
             runtime_workspace: None,
             adapter_profile: None,
+            conversation: None,
         }
     }
 
@@ -1072,6 +1134,60 @@ mod tests {
             storage.append_run_event(RunId(99), "result", None),
             Err(StorageError::RunNotFound(RunId(99)))
         ));
+    }
+
+    #[test]
+    fn a_follow_up_run_joins_the_conversation_of_the_run_it_resumes() {
+        let (mut storage, tasks) = storage_with_tasks(1);
+        let first = storage
+            .reserve_run(&writer(tasks[0], "first", None))
+            .unwrap()
+            .into_run();
+        assert_eq!((first.conversation, first.session.clone()), (None, None));
+
+        let first = storage.record_run_session(first.id, "sess-1").unwrap();
+        let conversation = first.conversation.expect("a conversation for the session");
+        assert_eq!(first.session.as_deref(), Some("sess-1"));
+        assert_eq!(first.follows, None);
+        let unrelated = storage
+            .reserve_run(&writer(tasks[0], "unrelated", None))
+            .unwrap()
+            .into_run();
+        storage.finish_run(unrelated.id, RunState::Failed).unwrap();
+        let follow_up = storage
+            .reserve_run(&NewRun {
+                conversation: Some(conversation),
+                ..writer(tasks[0], "follow-up", None)
+            })
+            .unwrap()
+            .into_run();
+        assert_eq!(follow_up.follows, Some(first.id));
+        assert_eq!(follow_up.session.as_deref(), Some("sess-1"));
+
+        // A session the follow-up reports replaces the one the next follow-up resumes,
+        // and no new conversation is made for it.
+        let follow_up = storage.record_run_session(follow_up.id, "sess-2").unwrap();
+        assert_eq!(follow_up.conversation, Some(conversation));
+        let runs = storage.list_task_runs(tasks[0]).unwrap();
+        let summary: Vec<_> = runs
+            .iter()
+            .map(|run| (run.id, run.follows, run.session.as_deref()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (first.id, None, Some("sess-2")),
+                (unrelated.id, None, None),
+                (follow_up.id, Some(first.id), Some("sess-2")),
+            ]
+        );
+        let conversations: i64 = storage
+            .conn
+            .query_row("SELECT count(*) FROM agent_conversations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(conversations, 1);
     }
 
     #[test]

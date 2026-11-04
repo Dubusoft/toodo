@@ -604,14 +604,26 @@ export function useRunLog(runId: RunId | null) {
 
 /**
  * Starts Claude or Codex on the worktree of an `in_progress` task of a plain or tmux workspace,
- * with the task as its prompt. A launch that fails is still recorded as a failed run, so the runs
- * are refetched either way.
+ * with the task as its prompt; with `followUpOf`, an ended run, the agent resumes that run's
+ * session with `prompt` instead. A launch that fails is still recorded as a failed run, so the
+ * runs are refetched either way.
  */
 export function useStartPlainRun() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ taskId, adapter, mcp }: { taskId: TaskId; adapter: AgentAdapter; mcp: boolean }) =>
-      unwrap(commands.startPlainRun(taskId, adapter, null, mcp)),
+    mutationFn: ({
+      taskId,
+      adapter,
+      mcp,
+      prompt = null,
+      followUpOf = null,
+    }: {
+      taskId: TaskId;
+      adapter: AgentAdapter;
+      mcp: boolean;
+      prompt?: string | null;
+      followUpOf?: RunId | null;
+    }) => unwrap(commands.startPlainRun(taskId, adapter, prompt, mcp, followUpOf)),
     onSettled: (_run, _error, { taskId }) => queryClient.invalidateQueries({ queryKey: queryKeys.taskRuns(taskId) }),
   });
 }

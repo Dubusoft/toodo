@@ -318,8 +318,8 @@ commands!(s => {
         herdr::close_task_workspace(State(&s.storage), State(&s.herdr), id)
     );
 
-    "start_plain_run"(task_id: TaskId, adapter: AgentAdapter, prompt: Option<String>, mcp: bool) => sync Reply::result(
-        runs::start_plain_run(State(&s.storage), State(&s.plain), State(&s.tmux), task_id, adapter, prompt, mcp)
+    "start_plain_run"(task_id: TaskId, adapter: AgentAdapter, prompt: Option<String>, mcp: bool, follow_up_of: Option<RunId>) => sync Reply::result(
+        runs::start_plain_run(State(&s.storage), State(&s.plain), State(&s.tmux), task_id, adapter, prompt, mcp, follow_up_of)
     );
     "list_task_runs"(task_id: TaskId) => sync Reply::result(
         runs::list_task_runs(State(s.reader()), task_id)

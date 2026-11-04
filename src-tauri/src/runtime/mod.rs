@@ -191,6 +191,16 @@ pub struct AgentLaunch {
     pub brief: String,
     pub mcp: bool,
     pub timeout_secs: u64,
+    /// The earlier conversation a follow-up run continues; `None` starts a new one.
+    pub resume: Option<AgentResume>,
+}
+
+/// The conversation a follow-up run resumes, and the agent session it resumes it from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentResume {
+    pub conversation: i64,
+    /// The Claude session id or Codex thread id the agent last reported.
+    pub session: String,
 }
 
 /// What a runner needs to launch one run.
@@ -308,6 +318,13 @@ impl RuntimeService {
             checkout_path: request.checkout_path,
             runtime_workspace: request.runtime_workspace,
             adapter_profile: request.adapter_profile,
+            conversation: match &request.command {
+                RunCommand::Agent(AgentLaunch {
+                    resume: Some(resume),
+                    ..
+                }) => Some(resume.conversation),
+                _ => None,
+            },
         };
         let run = lock(storage).reserve_run(&new)?.into_run();
         if run.state != RunState::Reserved {
@@ -527,6 +544,7 @@ mod tests {
                 checkout_path: req.checkout_path.clone(),
                 runtime_workspace: None,
                 adapter_profile: None,
+                conversation: None,
             })
             .unwrap()
             .into_run();

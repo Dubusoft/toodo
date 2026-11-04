@@ -2343,6 +2343,11 @@ pub struct StartAgentRun {
     /// it can call current_task; `true` when omitted.
     #[serde(default)]
     pub mcp: Option<bool>,
+    /// An ended run of the task whose agent session to resume with prompt (required
+    /// then), e.g. to send review feedback to the agent that did the work. Omitted: a new
+    /// session.
+    #[serde(default)]
+    pub follow_up_of: Option<types::RunId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -2577,6 +2582,7 @@ pub fn start_run(
         request.adapter,
         request.prompt,
         request.mcp.unwrap_or(true),
+        request.follow_up_of,
     )
 }
 
@@ -2627,6 +2633,10 @@ fn run_status_of(run: &storage::TaskRun) -> RunStatus {
             "its end was not observed, e.g. after a server restart or an SSH disconnect; call \
              reconcile_run with run_id {id} to settle it from what its host recorded, or \
              stop_run to stop it"
+        ),
+        (_, true) if run.session.is_some() => format!(
+            "it has ended; call run_log with run_id {id} to read its result and output, and \
+             start_run with follow_up_of {id} and a prompt to continue its agent session"
         ),
         (_, true) => {
             format!("it has ended; call run_log with run_id {id} to read its result and output")

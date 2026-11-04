@@ -342,6 +342,14 @@ To run an agent, call `start_plain_run` with the task id, an adapter (`claude` o
 server starts the CLI in the task worktree, with the prompt on stdin, and returns the run.
 Only one run at a time can write to a worktree, and a run stops after 4 hours.
 
+To send more work to the agent of an ended run, such as review feedback, pass
+`followUpOf` with that run's id and the feedback as the prompt (required then). The
+agent resumes the session it reported (Claude session id, Codex thread id) instead of
+starting from zero, and the new run's `followUpOf` links it to the run it continues. A
+run that is still active, reported no session, ran another agent, or ran in another
+worktree cannot be followed up; start a new run instead. In the app, Follow up on the
+newest run of a conversation does the same.
+
 - `list_task_runs` lists the task's runs, oldest first, with their states.
 - `get_run_log` returns a run's state, its events, and the tails of its stdout and
   stderr (64 KiB each unless `tailBytes` says otherwise), with the MCP token redacted.

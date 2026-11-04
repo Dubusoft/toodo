@@ -106,6 +106,7 @@ impl Fixture {
                 brief: "Implement the task".to_owned(),
                 mcp,
                 timeout_secs,
+                resume: None,
             }),
         }
     }
@@ -386,7 +387,7 @@ fn codex_turn_completed_settles() {
         r#"printf '%s\n' '{"type":"thread.started","thread_id":"test"}' '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}' '{"type":"turn.completed"}'"#,
     );
     let run = fixture.start(AgentAdapter::Codex, false, 30);
-    fixture.end(run.id, RunState::Settled, &["result"]);
+    fixture.end(run.id, RunState::Settled, &["agent_session", "result"]);
 }
 
 #[test]
@@ -423,7 +424,7 @@ fn runs_record_their_last_activity_and_reported_usage() {
     );
     lock(&fixture.storage).set_clock(|| 4242);
     let run = fixture.start(AgentAdapter::Codex, false, 30);
-    let ended = fixture.end(run.id, RunState::Settled, &["result"]);
+    let ended = fixture.end(run.id, RunState::Settled, &["agent_session", "result"]);
     assert_eq!(ended.last_activity_at, Some(4242));
     assert_eq!(
         ended.usage,
@@ -495,6 +496,7 @@ fn reserve(fixture: &Fixture, key: &str) -> TaskRun {
             checkout_path: Some(fixture.dir.path().to_str().unwrap().to_owned()),
             runtime_workspace: None,
             adapter_profile: None,
+            conversation: None,
         })
         .unwrap()
         .into_run()
@@ -569,7 +571,7 @@ fn launch_unmanaged(
         format!("claude {}\n", unix_now() + 60),
     )
     .unwrap();
-    let invocation = AgentAdapter::Claude.invocation(&dir, None);
+    let invocation = AgentAdapter::Claude.invocation(&dir, None, None);
     let mut child = process::spawn_local(
         &fixture.runner.claude,
         fixture.dir.path().to_str().unwrap(),
@@ -796,6 +798,7 @@ exec sh -c "$1"
                 checkout_path: Some(self.dir.path().to_str().unwrap().into()),
                 runtime_workspace: None,
                 adapter_profile: None,
+                conversation: None,
             })
             .unwrap()
             .into_run();
@@ -1031,7 +1034,7 @@ fn remote_stop_before_pid_prevents_a_late_wrapper_from_starting_the_agent() {
         fixture.runner.stop(run.id).unwrap().state,
         RunState::Cancelled
     );
-    let invocation = AgentAdapter::Claude.invocation(Path::new("unused"), None);
+    let invocation = AgentAdapter::Claude.invocation(Path::new("unused"), None, None);
     let (child, _, _) = remote
         .spawn(
             run.id,
@@ -1226,7 +1229,7 @@ fn remote_windows_uses_native_staging_launch_stop_and_probe_scripts() {
         url: "http://127.0.0.1:12345/mcp".into(),
         token: TOKEN.into(),
     };
-    let invocation = AgentAdapter::Claude.invocation(Path::new("unused"), Some(&endpoint));
+    let invocation = AgentAdapter::Claude.invocation(Path::new("unused"), Some(&endpoint), None);
     let launch = remote
         .launch_invocation(RunId(42), r"C:\repo", Path::new("claude.exe"), &invocation)
         .unwrap();

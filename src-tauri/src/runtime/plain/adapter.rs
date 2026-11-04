@@ -60,8 +60,15 @@ impl AgentAdapter {
     }
 
     /// The command line, environment, and files for one run in `run_dir`. The prompt is
-    /// fed on stdin, and the bearer token only ever appears in the environment.
-    pub fn invocation(&self, run_dir: &Path, mcp: Option<&McpEndpoint>) -> Invocation {
+    /// fed on stdin, and the bearer token only ever appears in the environment. With
+    /// `resume`, the agent continues that session (Claude) or thread (Codex) with the
+    /// prompt instead of starting a new one.
+    pub fn invocation(
+        &self,
+        run_dir: &Path,
+        mcp: Option<&McpEndpoint>,
+        resume: Option<&str>,
+    ) -> Invocation {
         let mut args: Vec<String> = Vec::new();
         let mut env = Vec::new();
         let mut files = Vec::new();
@@ -84,6 +91,10 @@ impl AgentAdapter {
                     args.push("--strict-mcp-config".to_owned());
                     files.push((MCP_CONFIG_FILE.to_owned(), CLAUDE_MCP_CONFIG.to_owned()));
                 }
+                if let Some(session) = resume {
+                    args.push("--resume".to_owned());
+                    args.push(session.to_owned());
+                }
             }
             Self::Codex => {
                 args.extend(["exec", "--json", "--full-auto"].map(str::to_owned));
@@ -94,6 +105,11 @@ impl AgentAdapter {
                     args.push(format!(
                         "mcp_servers.toodo.bearer_token_env_var=\"{MCP_TOKEN_ENV}\""
                     ));
+                }
+                // Options of `exec` go before its `resume` subcommand.
+                if let Some(thread) = resume {
+                    args.push("resume".to_owned());
+                    args.push(thread.to_owned());
                 }
                 args.push("-".to_owned());
             }
@@ -618,7 +634,7 @@ mod tests {
         let dir = Path::new("/data/runs/7");
         for adapter in AgentAdapter::ALL {
             for mcp in [None, Some(endpoint())] {
-                let inv = adapter.invocation(dir, mcp.as_ref());
+                let inv = adapter.invocation(dir, mcp.as_ref(), None);
                 assert!(inv.args.iter().all(|a| !a.contains(TOKEN)), "{adapter:?}");
                 assert!(inv.files.iter().all(|(_, c)| !c.contains(TOKEN)));
                 assert_eq!(inv.env.is_empty(), mcp.is_none());
@@ -636,7 +652,7 @@ mod tests {
     #[test]
     fn claude_invocation_with_and_without_mcp() {
         let dir = Path::new("/data/runs/7");
-        let plain = AgentAdapter::Claude.invocation(dir, None);
+        let plain = AgentAdapter::Claude.invocation(dir, None, None);
         assert_eq!(plain.program_key, "claude");
         assert_eq!(
             plain.args,
@@ -651,7 +667,7 @@ mod tests {
         );
         assert!(plain.files.is_empty());
 
-        let with = AgentAdapter::Claude.invocation(dir, Some(&endpoint()));
+        let with = AgentAdapter::Claude.invocation(dir, Some(&endpoint()), None);
         assert_eq!(
             with.args[6..],
             [
@@ -670,12 +686,12 @@ mod tests {
     #[test]
     fn codex_invocation_with_and_without_mcp() {
         let dir = Path::new("/data/runs/7");
-        let plain = AgentAdapter::Codex.invocation(dir, None);
+        let plain = AgentAdapter::Codex.invocation(dir, None, None);
         assert_eq!(plain.program_key, "codex");
         assert_eq!(plain.args, ["exec", "--json", "--full-auto", "-"]);
         assert!(plain.files.is_empty());
 
-        let with = AgentAdapter::Codex.invocation(dir, Some(&endpoint()));
+        let with = AgentAdapter::Codex.invocation(dir, Some(&endpoint()), None);
         assert_eq!(
             with.args,
             [
@@ -690,6 +706,27 @@ mod tests {
             ]
         );
         assert!(with.files.is_empty());
+    }
+
+    #[test]
+    fn a_follow_up_resumes_the_session_and_keeps_the_prompt_on_stdin() {
+        let dir = Path::new("/data/runs/7");
+        let claude = AgentAdapter::Claude.invocation(dir, Some(&endpoint()), Some("sess-1"));
+        assert_eq!(
+            claude.args[6..9],
+            [
+                "--mcp-config",
+                "/data/runs/7/mcp.json",
+                "--strict-mcp-config"
+            ]
+        );
+        assert_eq!(claude.args[9..], ["--resume", "sess-1"]);
+
+        let codex = AgentAdapter::Codex.invocation(dir, None, Some("th-1"));
+        assert_eq!(
+            codex.args,
+            ["exec", "--json", "--full-auto", "resume", "th-1", "-"]
+        );
     }
 
     #[test]
