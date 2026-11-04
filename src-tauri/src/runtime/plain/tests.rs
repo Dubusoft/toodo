@@ -570,7 +570,7 @@ fn launch_unmanaged(
         format!("claude {}\n", unix_now() + 60),
     )
     .unwrap();
-    let invocation = AgentAdapter::Claude.invocation(&dir, None);
+    let invocation = AgentAdapter::Claude.invocation(&dir, None, &Default::default());
     let mut child = process::spawn_local(
         &fixture.runner.claude,
         fixture.dir.path().to_str().unwrap(),

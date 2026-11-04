@@ -579,6 +579,22 @@ impl Storage {
         rows.into_iter().collect()
     }
 
+    /// The plain and tmux runs that ended before `cutoff` (Unix seconds) and still have
+    /// their files, i.e. no `kind` event records their removal; oldest first.
+    pub fn runs_ended_before(&self, cutoff: i64, kind: &str) -> Result<Vec<TaskRun>> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {RUN_COLUMNS} FROM task_runs
+             WHERE runner_kind IN ('plain', 'tmux') AND ended_at IS NOT NULL AND ended_at < ?1
+               AND NOT EXISTS (SELECT 1 FROM run_events
+                               WHERE run_events.run_id = task_runs.id AND run_events.kind = ?2)
+             ORDER BY ended_at, id"
+        ))?;
+        let rows = statement
+            .query_map(params![cutoff, kind], run_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter().collect()
+    }
+
     /// The events of `run` in sequence order.
     pub fn run_events(&self, run: RunId) -> Result<Vec<RunEvent>> {
         let mut statement = self.conn.prepare(

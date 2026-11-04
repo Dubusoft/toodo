@@ -277,6 +277,17 @@ if ($process -and $process.StartTime.ToFileTimeUtc().ToString() -eq $record[1]) 
         })
     }
 
+    /// Removes the run directory with everything in it, once its run is long over.
+    pub fn remove_directory(&self, run: RunKey<'_>) -> Invocation {
+        self.script(match self.os() {
+            HostOs::Posix => format!("{}rm -rf -- \"$run\"\n", posix_directory(run)),
+            HostOs::Windows => format!(
+                "{}if (Test-Path -LiteralPath $run) {{ Remove-Item -LiteralPath $run -Recurse -Force }}\n",
+                windows_directory(run)
+            ),
+        })
+    }
+
     /// Checks that a POSIX SSH host has util-linux `setsid --wait`, which the plain
     /// launch needs to give the wrapper its own session. `None` when no check applies.
     pub fn check_launcher(&self) -> Option<Invocation> {
@@ -362,6 +373,26 @@ if ($process -and $process.StartTime.ToFileTimeUtc().ToString() -eq $record[1]) 
             posix_directory(run),
             shell_quote(&bytes.to_string()),
             shell_quote(file)
+        )))
+    }
+
+    /// Reads at most `max` bytes of a POSIX run log from byte `offset`: the size of the
+    /// log on the first line, 0 when there is none, then the bytes.
+    pub fn read_log(
+        &self,
+        run: RunKey<'_>,
+        file: &str,
+        offset: u64,
+        max: usize,
+    ) -> Result<Invocation, &'static str> {
+        if self.os() != HostOs::Posix {
+            return Err("tmux log reads require POSIX; choose runner plain or herdr on Windows");
+        }
+        Ok(self.script(format!(
+            "{}file=\"$run\"/{}\nif [ -f \"$file\" ]; then size=$(wc -c < \"$file\" | tr -d ' '); else size=0; fi\nprintf '%s\\n' \"$size\"\nif [ \"$size\" -gt {offset} ]; then tail -c +{} -- \"$file\" | head -c {max}; fi\n",
+            posix_directory(run),
+            shell_quote(file),
+            offset + 1,
         )))
     }
 }
