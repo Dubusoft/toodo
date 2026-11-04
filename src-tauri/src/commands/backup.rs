@@ -302,14 +302,19 @@ fn run_due_backup(
         let storage = lock(storage);
         (storage.database_path(), storage.now())
     };
-    let result = write_due_backup(storage, database.as_deref(), &backups.dir(), now, &settings);
+    let dir = backups.dir();
+    let result = write_due_backup(storage, database.as_deref(), &dir, now, &settings);
     match &result {
         Ok(Some(_)) => backups.set_status(BackupStatus::default()),
         Ok(None) => {}
         Err(error) => backups.set_status(BackupStatus {
             last_failure: Some(BackupFailure {
                 at: types::Timestamp(now),
-                message: error.to_string(),
+                message: format!(
+                    "could not back up into {}: {error}; make that directory writable for \
+                     the toodo-server user, or choose another one under Settings > Backups",
+                    dir.display()
+                ),
             }),
         }),
     }
@@ -680,7 +685,14 @@ mod tests {
             .last_failure
             .expect("the failure is kept");
         assert_eq!(failure.at, types::Timestamp(lock(&fixture.storage).now()));
-        assert_eq!(failure.message, error.to_string());
+        assert!(
+            failure.message.contains(&error.to_string())
+                && failure
+                    .message
+                    .contains(&file.join("backups").display().to_string()),
+            "{}",
+            failure.message
+        );
         backups.save_settings(settings(true, 1, 7)).unwrap();
         run_due_backup(&fixture.storage, &backups).unwrap().unwrap();
         assert_eq!(get_backup_status(State(&backups)), BackupStatus::default());
