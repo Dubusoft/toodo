@@ -33,6 +33,7 @@ const USAGE: &str = "Usage: toodo init [--port N | --listen HOST:PORT] [--data-d
        toodo service install [--port N | --listen HOST:PORT] [--data-dir DIR]
        toodo update [--channel dev|latest] [--allow-downgrade] [--data-dir DIR]
        toodo --version | --help
+       toodo COMMAND --help
 
 Runs the Toodo server (toodo-server) for the current user and connects coding agents
 to it.
@@ -64,14 +65,100 @@ Options:
   --channel CHANNEL   npm dist-tag update installs: dev (prereleases of the dev branch)
                       or latest (releases); default dev when the installed version is a
                       prerelease, else latest
-  --allow-downgrade   let update install a channel version older than the installed one";
+  --allow-downgrade   let update install a channel version older than the installed one
+
+`toodo COMMAND --help` shows the options of one command.";
+
+const DATA_DIR_OPTION: &str =
+    "  --data-dir DIR      database, access tokens, and logs (default $TOODO_DATA_DIR, else
+                      the directory init recorded in ~/.config/toodo/data-dir, else
+                      ~/.local/share/toodo-server)";
+
+const LISTEN_OPTIONS: &str =
+    "  --port N            port to listen on, keeping the saved host (default 47616)
+  --listen HOST:PORT  address to listen on (default 127.0.0.1:47616), saved in
+                      DIR/cli.json for the other commands. An address other than
+                      loopback lets other machines reach the server; prefer an SSH or
+                      Cloudflare tunnel to it (see docs/server.md)";
+
+/// The help text of one command, named as in [`parse`].
+fn command_help(command: &str) -> String {
+    let (usage, about, options) = match command {
+        "init" => (
+            "toodo init [--port N | --listen HOST:PORT] [--data-dir DIR] [--no-mcp]",
+            "Creates the data directory, its database and access tokens, saves the listen
+address, starts the server, and registers its MCP endpoint with Claude Code and Codex
+where they are on PATH. Running it again keeps the database and tokens.",
+            format!(
+                "{LISTEN_OPTIONS}\n{DATA_DIR_OPTION}\n  --no-mcp            do not register the MCP \
+                 endpoint with coding agents"
+            ),
+        ),
+        "start" => (
+            "toodo start [--data-dir DIR]",
+            "Starts the server in the background: through systemd once toodo service install
+wrote the service, else as a process with server.pid and server.log in DIR.",
+            DATA_DIR_OPTION.to_owned(),
+        ),
+        "stop" => (
+            "toodo stop [--data-dir DIR]",
+            "Stops the server, through systemd once the service is installed.",
+            DATA_DIR_OPTION.to_owned(),
+        ),
+        "status" => (
+            "toodo status [--data-dir DIR]",
+            "Shows whether the server runs, its web app and MCP URLs, and where its data,
+tokens, and log are. Exits 0 when it runs and 3 when it is stopped.",
+            DATA_DIR_OPTION.to_owned(),
+        ),
+        "service install" => (
+            "toodo service install [--port N | --listen HOST:PORT] [--data-dir DIR]",
+            "Runs the server as the systemd user service toodo-server.service: copies
+toodo-server to ~/.local/bin and the web app to ~/.local/share/toodo-server-web, writes
+the unit, enables and restarts it, and turns on lingering. With --port or --listen it
+saves a new listen address first, like init.",
+            format!("{LISTEN_OPTIONS}\n{DATA_DIR_OPTION}"),
+        ),
+        _ => (
+            "toodo update [--channel dev|latest] [--allow-downgrade] [--data-dir DIR]",
+            "Installs the newest @dubusoft/toodo of the channel with npm, restarts the server
+on it, and checks that it answers. A failed install leaves the running server alone.",
+            format!(
+                "  --channel CHANNEL   npm dist-tag to install: dev (prereleases of the dev \
+                 branch)
+                      or latest (releases); default dev when the installed version is a
+                      prerelease, else latest
+  --allow-downgrade   install a channel version older than the installed one
+{DATA_DIR_OPTION}"
+            ),
+        ),
+    };
+    format!(
+        "Usage: {usage}\n\n{about}\n\nOptions:\n{options}\n  -h, --help          show this help"
+    )
+}
+
+/// A warning for a listen address that other machines can reach, `None` for loopback.
+fn exposure_warning(listen: SocketAddr) -> Option<String> {
+    if listen.ip().is_loopback() {
+        return None;
+    }
+    Some(format!(
+        "warning: toodo-server will listen on {listen}, which other machines can reach over \
+         plain HTTP; anyone who reaches it can try the access tokens. To keep it on this \
+         machine, rerun with --listen 127.0.0.1:{port} and reach it through an SSH or \
+         Cloudflare tunnel (see docs/server.md); otherwise firewall the port.",
+        port = listen.port()
+    ))
+}
 
 /// The exit status of `toodo status` while the server is stopped.
 const STOPPED: i32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Command {
-    Help,
+    /// The overview, or the help of the named command.
+    Help(Option<&'static str>),
     Version,
     Init(InitArgs),
     Start(Option<PathBuf>),
@@ -93,7 +180,14 @@ struct InitArgs {
 /// Parses the arguments after the program name.
 fn parse(args: &[String]) -> Result<Command, String> {
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
-        return Ok(Command::Help);
+        let command = match args.first().map(String::as_str) {
+            Some("service") => Some("service install"),
+            Some(name) => ["init", "start", "stop", "status", "update"]
+                .into_iter()
+                .find(|command| *command == name),
+            None => None,
+        };
+        return Ok(Command::Help(command));
     }
     if args.iter().any(|arg| arg == "-V" || arg == "--version") {
         return Ok(Command::Version);
@@ -215,8 +309,12 @@ pub fn main() {
     };
     let var = |name: &str| std::env::var(name).ok();
     let result = match command {
-        Command::Help => {
+        Command::Help(None) => {
             println!("{USAGE}");
+            Ok(0)
+        }
+        Command::Help(Some(command)) => {
+            println!("{}", command_help(command));
             Ok(0)
         }
         Command::Version => {
@@ -262,6 +360,9 @@ fn data_dir(flag: Option<&Path>, var: Var) -> Result<DataDir, String> {
 fn service_install(data: &DataDir, flag: Option<ListenFlag>, var: Var) -> Result<(), String> {
     let saved = settings::saved_listen(data)?;
     let listen = settings::resolve_listen(flag, saved);
+    if let Some(warning) = exposure_warning(listen) {
+        eprintln!("{warning}");
+    }
     if flag.is_some() && saved != Some(listen) {
         server::create_private_dir(data.path()).map_err(|error| {
             format!(
@@ -311,6 +412,9 @@ fn init(args: &InitArgs, var: Var) -> Result<(), String> {
     let saved = settings::saved_listen(&data)?;
     let previous = saved.unwrap_or_else(settings::default_listen);
     let listen = settings::resolve_listen(args.listen, saved);
+    if let Some(warning) = exposure_warning(listen) {
+        eprintln!("{warning}");
+    }
     let manager = manager(&data, var)?;
     let running = is_running(&manager, &data);
     // A busy port stops init before it creates anything.
@@ -607,8 +711,20 @@ mod tests {
 
     #[test]
     fn help_and_version_win_over_everything_else() {
-        assert_eq!(parsed(&["--help"]).unwrap(), Command::Help);
-        assert_eq!(parsed(&["init", "--bogus", "-h"]).unwrap(), Command::Help);
+        assert_eq!(parsed(&["--help"]).unwrap(), Command::Help(None));
+        assert_eq!(
+            parsed(&["init", "--bogus", "-h"]).unwrap(),
+            Command::Help(Some("init"))
+        );
+        assert_eq!(
+            parsed(&["service", "install", "--help"]).unwrap(),
+            Command::Help(Some("service install"))
+        );
+        assert_eq!(
+            parsed(&["update", "--help"]).unwrap(),
+            Command::Help(Some("update"))
+        );
+        assert_eq!(parsed(&["run", "--help"]).unwrap(), Command::Help(None));
         assert_eq!(parsed(&["--version"]).unwrap(), Command::Version);
         assert_eq!(parsed(&["-V"]).unwrap(), Command::Version);
     }
@@ -654,5 +770,19 @@ mod tests {
             "--allow-downgrade is an option of toodo update, not of start"
         );
         assert_eq!(error(&["status", "extra"]), "unknown option \"extra\"");
+    }
+
+    #[test]
+    fn only_addresses_beyond_loopback_get_an_exposure_warning() {
+        let warning = |address: &str| exposure_warning(address.parse().unwrap());
+        assert_eq!(warning("127.0.0.1:47616"), None);
+        assert_eq!(warning("[::1]:47616"), None);
+        assert!(
+            warning("0.0.0.0:47616")
+                .unwrap()
+                .contains("--listen 127.0.0.1:47616")
+        );
+        assert!(warning("[::]:80").is_some());
+        assert!(warning("192.168.1.5:47616").is_some());
     }
 }
