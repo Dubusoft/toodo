@@ -17,8 +17,8 @@ use specta_typescript::{Error, Exporter, FrameworkExporter, Typescript, define};
 
 use crate::commands::events::{self, names};
 use crate::commands::{
-    self, agent_options, backup, completion, freshness, herdr, issues, machines, mcp, review,
-    runners, runs, tasks, workspaces,
+    self, agent_options, backup, completion, freshness, herdr, issues, machines, mcp,
+    pull_request_options, review, runners, runs, tasks, workspaces,
 };
 
 const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
@@ -81,6 +81,8 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         agent_options::set_workspace_agent_options,
         agent_options::get_task_agent_options,
         agent_options::set_task_agent_options,
+        pull_request_options::get_workspace_pull_request_options,
+        pull_request_options::set_workspace_pull_request_options,
         runners::runner_health,
         completion::refresh_commit_records,
         completion::open_pull_request,

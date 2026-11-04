@@ -17,6 +17,7 @@ mod devices;
 mod import;
 mod migrations;
 pub mod oauth;
+mod pull_request_options;
 mod push;
 mod runtime;
 mod search;

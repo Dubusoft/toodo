@@ -2013,3 +2013,33 @@ fn query_tasks_filters_and_pages_back_from_the_newest() {
     let each = [c, d].map(|id| storage.get_task(id).unwrap().unwrap());
     assert_eq!(page, each);
 }
+
+#[test]
+fn workspace_pull_request_options_round_trip() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "app", local_location(r"C:\dev\app"));
+    assert_eq!(
+        storage
+            .workspace_pull_request_options(workspace.id)
+            .unwrap(),
+        crate::domain::model::PullRequestOptions::default()
+    );
+    let options = crate::domain::model::PullRequestOptions {
+        draft: true,
+        reviewers: vec!["octocat".to_owned(), "acme/core".to_owned()],
+        labels: vec!["needs review".to_owned()],
+    };
+    storage
+        .set_workspace_pull_request_options(workspace.id, &options)
+        .unwrap();
+    assert_eq!(
+        storage
+            .workspace_pull_request_options(workspace.id)
+            .unwrap(),
+        options
+    );
+    assert!(matches!(
+        storage.set_workspace_pull_request_options(WorkspaceId(999), &options),
+        Err(StorageError::WorkspaceNotFound(_))
+    ));
+}

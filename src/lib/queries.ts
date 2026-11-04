@@ -19,6 +19,7 @@ import {
   type MachineSettings,
   type NewTask,
   type NewWorkspace,
+  type PullRequestOptions,
   type RunId,
   type RunState,
   type Task,
@@ -85,6 +86,7 @@ export const queryKeys = {
   /** Under "agent-options", so saving a workspace's options refetches the task views that show them. */
   workspaceAgentOptions: (workspace: WorkspaceId) => ["agent-options", "workspace", workspace] as const,
   taskAgentOptions: (taskId: TaskId) => ["agent-options", "task", taskId] as const,
+  workspacePullRequestOptions: (workspace: WorkspaceId) => ["pull-request-options", workspace] as const,
   /** Not under "tasks": agent status changes refetch them, task changes do not. */
   agentStatusTransitions: (taskId: TaskId) => ["agent-status-transitions", taskId] as const,
   /** Not under "tasks": a log can be large, so it is refetched only for its run. */
@@ -666,6 +668,25 @@ export function useSetWorkspaceAgentOptions() {
     mutationFn: ({ workspace, options }: { workspace: WorkspaceId; options: AgentOptions }) =>
       unwrap(commands.setWorkspaceAgentOptions(workspace, options)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agent-options"] }),
+  });
+}
+
+/** Whether a workspace opens pull requests as drafts, and the reviewers and labels they get. */
+export function useWorkspacePullRequestOptions(workspace: WorkspaceId) {
+  return useQuery({
+    queryKey: queryKeys.workspacePullRequestOptions(workspace),
+    queryFn: () => unwrap(commands.getWorkspacePullRequestOptions(workspace)),
+  });
+}
+
+/** Saves the pull request options of a workspace; pull requests opened later use them. */
+export function useSetWorkspacePullRequestOptions() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspace, options }: { workspace: WorkspaceId; options: PullRequestOptions }) =>
+      unwrap(commands.setWorkspacePullRequestOptions(workspace, options)),
+    onSuccess: (saved, { workspace }) =>
+      queryClient.setQueryData(queryKeys.workspacePullRequestOptions(workspace), saved),
   });
 }
 

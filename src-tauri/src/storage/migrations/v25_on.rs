@@ -617,4 +617,12 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
         mcp INTEGER NOT NULL CHECK (mcp IN (0, 1))
     );
     ",
+    // Version 41: how a workspace's pull requests are opened: as drafts or not, and the
+    // reviewers and labels they get, each a JSON array of strings.
+    r"
+    ALTER TABLE workspaces ADD COLUMN pull_request_draft INTEGER NOT NULL DEFAULT 0
+        CHECK (pull_request_draft IN (0, 1));
+    ALTER TABLE workspaces ADD COLUMN pull_request_reviewers TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE workspaces ADD COLUMN pull_request_labels TEXT NOT NULL DEFAULT '[]';
+    ",
 ];

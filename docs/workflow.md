@@ -439,7 +439,10 @@ When the user opens the pull request of an `in_progress` task ("Open PR"), Toodo
    is none or the last one was closed, opens one with
    `gh pr create --repo <repo> --head <branch> --base <baseBranch>`, titled with the task
    title and described with the task description, followed by `Closes #<number>` when
-   the task has an issue. A reused open pull request whose body has no closing reference
+   the task has an issue. The workspace's pull request options add `--draft`, a
+   `--reviewer` per reviewer (a login or `org/team`), and a `--label` per label
+   (`set_workspace_pull_request_options`, or Pull requests in the workspace header of the
+   app; none by default). A reused open pull request whose body has no closing reference
    to the issue (`close`, `fix`, or `resolve` in any form, then `#<number>`) gets one
    appended (`gh pr edit <url> --body`). `gh` always runs on this machine, so SSH
    machines do not need it.
@@ -450,7 +453,11 @@ When the user opens the pull request of an `in_progress` task ("Open PR"), Toodo
 
 If any step fails, the task keeps its status and previous commit records and the error is
 shown; opening it again is safe, because pushing is repeatable and an open pull request
-is reused instead of created twice. The same action on an `in_review` task ("Push to
+is reused instead of created twice. When GitHub refuses to open the pull request, the
+error code says why: `gitHubAuthFailed` (gh is not logged in, or the login may not open
+pull requests in the repository), `pullRequestOptionInvalid` (a reviewer or label of the
+workspace's pull request options, or draft, was refused; change the options and open it
+again), or `pullRequestFailed` (any other refusal, e.g. no commits on GitHub). The same action on an `in_review` task ("Push to
 PR") pushes commits added after review feedback and refreshes the commit records.
 
 Review and merging happen on GitHub; Toodo never merges a pull request itself. Agents
