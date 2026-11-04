@@ -120,8 +120,26 @@ To publish a release:
    `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, and
    `src-tauri/Cargo.lock`. Commit it as `Release X.Y.Z`. `npm run check-version` checks
    that the four files agree; the workflow runs it first.
-2. Open a pull request from `dev` to `main` and merge it.
-3. On every push to `main`, the `Release` workflow (`.github/workflows/release.yml`)
+2. Check that the npm packages install and start, on Linux x64 with Node.js and npm. Build
+   both binaries with the release version and the web app, stage the packages, and run
+   the smoke script on them:
+
+   ```sh
+   npm ci && npm run build
+   (cd src-tauri && TOODO_VERSION=X.Y.Z cargo build --release --bin toodo --bin toodo-server)
+   node scripts/package-npm.mjs --version X.Y.Z --web dist-web --out dist-npm \
+     --binaries linux-x64=src-tauri/target/release
+   node scripts/smoke-npm.mjs dist-npm
+   ```
+
+   `scripts/smoke-npm.mjs` serves the staged packages from a local registry, installs
+   `@dubusoft/toodo` globally into a temporary prefix with npm, runs `toodo init` on a free
+   loopback port with a temporary home and data directory, and checks that the server
+   answers the API and serves the web app. It stops the server and removes the temporary
+   directory afterwards (`--keep` leaves the directory). Fix what it reports before
+   releasing.
+3. Open a pull request from `dev` to `main` and merge it.
+4. On every push to `main`, the `Release` workflow (`.github/workflows/release.yml`)
    releases the version in `package.json` unless it is already published: on Ubuntu it
    builds the web app (`npm run build`) and the x86_64 Linux `toodo-server`, packages
    them with `scripts/package-server.sh`, uploads
