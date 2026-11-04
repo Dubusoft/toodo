@@ -12,9 +12,9 @@ vi.mock("@/web/devices", () => ({
   guessDeviceLabel: () => "Chrome on Linux",
 }));
 
-const phone: Device = { id: 1, label: "Phone", createdAt: 1_791_970_000, lastSeenAt: 1_791_970_205, revokedAt: null, current: false };
-const laptop: Device = { id: 2, label: "Laptop", createdAt: 1_791_960_000, lastSeenAt: 1_791_971_000, revokedAt: null, current: true };
-const tablet: Device = { id: 3, label: "Tablet", createdAt: 1_791_900_000, lastSeenAt: 1_791_900_000, revokedAt: 1_791_950_000, current: false };
+const phone: Device = { id: 1, label: "Phone", createdAt: 1_791_970_000, lastSeenAt: 1_791_970_205, revokedAt: null, expiresAt: null, scope: "full", current: false };
+const laptop: Device = { id: 2, label: "Laptop", createdAt: 1_791_960_000, lastSeenAt: 1_791_971_000, revokedAt: null, expiresAt: null, scope: "full", current: true };
+const tablet: Device = { id: 3, label: "Tablet", createdAt: 1_791_900_000, lastSeenAt: 1_791_900_000, revokedAt: 1_791_950_000, expiresAt: null, scope: "full", current: false };
 
 function renderPanel() {
   render(
