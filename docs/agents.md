@@ -145,7 +145,8 @@ that way. The exact rules are in the shared fragments the agents read:
   herdr workspace.
 - Delete a `planned` task created by mistake with `delete_task` and reopen a done task
   with `reopen_task`: call once without `confirm`, read what the change would do, then
-  call again with `"confirm": true`. Done tasks are deleted in the Toodo app only.
+  call again with `"confirm": true`. Done tasks are deleted in the Toodo app only. A deleted
+  task is archived: it stays in reviews, and only the user restores or purges it in the app.
 - When a call is rejected, read the error: it names the argument or step that succeeds.
 
 ## Example Session

@@ -563,7 +563,9 @@ fn note_completion(storage: &mut Storage, id: TaskId, note: &str) -> CommandResu
     Ok((&storage.set_completion_note(id.into(), note)?).into())
 }
 
-/// Deletes a task with its dependency edges and commit records. A task that still has a worktree
+/// Deletes a task by archiving it: it leaves the task lists and stops holding back the tasks
+/// that depend on it, but keeps its history, commits, and links for reviews until
+/// [`restore_task`] brings it back or [`purge_task`] deletes it for good. A task that still has a worktree
 /// first removes it through herdr, which also closes its herdr workspace; the branch is
 /// kept. Without `force`, a worktree with modified or untracked files is rejected and the
 /// task is kept. A task of a workspace with runner plain or tmux has its worktree removed
@@ -579,6 +581,20 @@ pub fn delete_task(
     force: bool,
 ) -> CommandResult<()> {
     delete(storage.0, git.0, herdr.0, runs.0, tmux.0, id.into(), force)
+}
+
+/// Brings an archived task of a live workspace back with its dependencies; its worktree,
+/// removed when it was deleted, is not recreated.
+#[specta::specta]
+pub fn restore_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<Task> {
+    Ok((&lock(&storage).restore_task(id.into())?).into())
+}
+
+/// Deletes an archived task for good with its history, commit records, and links; a task
+/// that is not archived is rejected.
+#[specta::specta]
+pub fn purge_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<()> {
+    Ok(lock(&storage).purge_task(id.into())?)
 }
 
 /// [`delete_task`] over the adapters themselves.

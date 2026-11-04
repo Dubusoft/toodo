@@ -160,9 +160,12 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
 - Creating a task records its initial status (`planned`). Every later status change
   records one event in the same transaction as the change itself. Dependency changes do
   not change a status, so they record nothing.
-- Events are never edited or deleted on their own; they go away only when their task is
-  deleted. A deleted task no longer appears in reports, so pause rather than delete a
-  task whose work should be reported.
+- Events are never edited or deleted on their own. Deleting a task or its workspace
+  archives it (`archived_at` on `tasks` or `workspaces`): it leaves the task lists and the
+  DAG, but its history, commits, and links stay, and reviews still report its work, marked
+  archived. Settings > Archive restores it (`restore_task`, `restore_workspace`) or
+  deletes it for good (`purge_task`, `purge_workspace`); only that purge removes its
+  events, and it accepts archived items only.
 - The milestones used by the timeline view and reports are derived from the history:
 
   | Milestone | Derived from |
@@ -193,8 +196,11 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   lives; finishing a task can release dependents in other workspaces. Readiness is
   derived from the DAG whenever it is needed and is not a status.
 - A workspace cannot be deleted while a `planned` task of another workspace depends on
-  one of its tasks, since that task would silently become ready. Dependencies of tasks
-  being worked on or done are dropped with the workspace.
+  one of its tasks, since that task would silently become ready, or while a run of one of
+  its tasks is queued or active. An archived task is left out of the DAG: its edges are
+  kept but no longer hold back their dependents, and no new edge can reach it. Restoring
+  it brings its edges back, and is rejected if they would close a cycle with edges added
+  meanwhile.
 - Dependents of a task can be planned at any time but only started (or resumed) once
   ready.
 - Dependencies change while a task is `planned` or `in_progress`. A new prerequisite that
@@ -210,7 +216,7 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   whose decisions a new one builds on, or a follow-up of research that was not adopted.
 - A related link is symmetric, may cross workspaces, and never affects readiness or
   starting a task; only dependencies do. Table `task_relations` stores each link once,
-  from the lower task ID to the higher one, and deleting a task drops its links.
+  from the lower task ID to the higher one, and purging a task drops its links.
 - Related links are set through MCP only (`add_related` / `remove_related`); the app
   does not show them yet.
 
@@ -953,8 +959,8 @@ path deletes journal history.
     its dependencies are done.
   - Every task status change appends a row to the task's status history in the same
     transaction (see [Task Timeline](#task-timeline)).
-  - Deleting a workspace or task also deletes its tasks, dependency edges, commit
-    records, and status history.
+  - Deleting a workspace or task archives it; only purging an archived one deletes its
+    tasks, dependency edges, commit records, and status history.
 
 ## Decisions
 

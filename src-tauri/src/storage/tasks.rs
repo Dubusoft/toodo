@@ -318,9 +318,47 @@ impl TaskRow {
     }
 }
 
-/// Tasks matching `filter`, a condition on the `tasks` table aliased `t` whose
+/// The condition on the `tasks` table aliased `t` that its task is live: neither the task
+/// nor its workspace is archived.
+pub(super) const LIVE_TASK: &str = "(t.archived_at IS NULL AND NOT EXISTS (
+        SELECT 1 FROM workspaces aw WHERE aw.id = t.workspace_id AND aw.archived_at IS NOT NULL))";
+
+/// The condition on `task_dependencies` aliased `d` that its prerequisite is live; an edge
+/// to an archived task is kept for a restore but does not hold its dependent back.
+const LIVE_PREREQUISITE: &str = "NOT EXISTS (
+        SELECT 1 FROM tasks p JOIN workspaces pw ON pw.id = p.workspace_id
+        WHERE p.id = d.depends_on_id AND (p.archived_at IS NOT NULL OR pw.archived_at IS NOT NULL))";
+
+/// Which tasks a query reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// Live tasks with their dependencies on live tasks: what the app and agents work with.
+    Live,
+    /// Every stored task, archived ones included, with all of its dependencies.
+    All,
+}
+
+/// Live tasks matching `filter`, a condition on the `tasks` table aliased `t` whose
 /// placeholders take `parameters` in order, ordered by ID.
 fn query_tasks(conn: &Connection, filter: &str, parameters: &[i64]) -> Result<Vec<Task>> {
+    load_tasks(conn, filter, parameters, Scope::Live)
+}
+
+/// Tasks of `scope` matching `filter` (see [`query_tasks`]), ordered by ID.
+fn load_tasks(
+    conn: &Connection,
+    filter: &str,
+    parameters: &[i64],
+    scope: Scope,
+) -> Result<Vec<Task>> {
+    let (filter, edges) = match scope {
+        Scope::Live => (
+            format!("({filter}) AND {LIVE_TASK}"),
+            format!("AND {LIVE_PREREQUISITE}"),
+        ),
+        Scope::All => (filter.to_owned(), String::new()),
+    };
+    let filter = filter.as_str();
     let mut statement =
         conn.prepare_cached(&format!("{TASK_SELECT} WHERE {filter} ORDER BY t.id"))?;
     let rows = statement
@@ -330,7 +368,7 @@ fn query_tasks(conn: &Connection, filter: &str, parameters: &[i64]) -> Result<Ve
     let mut statement = conn.prepare_cached(&format!(
         "SELECT d.task_id, d.depends_on_id
          FROM task_dependencies d JOIN tasks t ON t.id = d.task_id
-         WHERE {filter}"
+         WHERE {filter} {edges}"
     ))?;
     let mut depends_on: HashMap<i64, BTreeSet<TaskId>> = HashMap::new();
     for edge in statement.query_map(params_from_iter(parameters), |row| {
@@ -491,7 +529,8 @@ fn queried_tasks(conn: &Connection, query: &TaskQuery) -> Result<Vec<Task>> {
     let mut filter = conditions.join(" AND ");
     if let Some(limit) = query.limit {
         let mut statement = conn.prepare(&format!(
-            "SELECT t.id FROM tasks t WHERE {filter} ORDER BY t.id DESC LIMIT {limit}"
+            "SELECT t.id FROM tasks t WHERE {filter} AND {LIVE_TASK}
+             ORDER BY t.id DESC LIMIT {limit}"
         ))?;
         let ids = statement
             .query_map(params_from_iter(&parameters), |row| row.get::<_, i64>(0))?
@@ -536,6 +575,16 @@ fn stored_worktree_path<'a>(
     }
 }
 
+/// Rejects live dependencies that loop, e.g. after a restore brought back edges that close
+/// a cycle with edges added in the meantime.
+pub(super) fn ensure_acyclic(conn: &Connection) -> Result<()> {
+    match dag::topological_order(&all_tasks(conn)?) {
+        Ok(_) => Ok(()),
+        Err(dag::DependencyError::Cycle(path)) => Err(StorageError::RestoreClosesCycle(path)),
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Rejects starting `task` while one of its dependencies, in any workspace, is not done.
 fn ensure_ready(conn: &Connection, task: TaskId) -> Result<()> {
     let blockers = dag::blocking_dependencies(&all_tasks(conn)?, task)?;
@@ -554,7 +603,8 @@ fn insert_task(conn: &Connection, new: &NewTask, at: i64) -> Result<TaskId> {
     let inserted = conn.execute(
         "INSERT INTO tasks (workspace_id, type, title, description, status, estimate_unit,
              estimate_amount, due_date)
-         SELECT id, ?2, ?3, ?4, ?5, ?6, ?7, ?8 FROM workspaces WHERE id = ?1",
+         SELECT id, ?2, ?3, ?4, ?5, ?6, ?7, ?8 FROM workspaces
+         WHERE id = ?1 AND archived_at IS NULL",
         params![
             new.workspace_id.0,
             new.task_type.as_str(),
@@ -1244,7 +1294,93 @@ impl Storage {
         Ok(changed)
     }
 
-    /// Deletes a task with its dependency edges, commit records, and status history.
+    /// Archives a live task: it leaves the task lists and the dependency DAG, so the tasks
+    /// that depend on it no longer wait on it, but keeps its history, commits, and links for
+    /// reviews until [`Self::restore_task`] brings it back or [`Self::purge_task`] deletes it.
+    pub fn archive_task(&mut self, id: TaskId) -> Result<()> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.execute(
+            "UPDATE tasks SET archived_at = ?2 WHERE id = ?1",
+            params![id.0, at],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Brings an archived task of a live workspace back with its dependencies. Rejected
+    /// while its workspace is archived, and when its dependencies would close a cycle with
+    /// edges added while it was archived.
+    pub fn restore_task(&mut self, id: TaskId) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        let row: Option<(Option<i64>, i64, Option<i64>)> = tx
+            .query_row(
+                "SELECT t.archived_at, t.workspace_id, w.archived_at
+                 FROM tasks t JOIN workspaces w ON w.id = t.workspace_id WHERE t.id = ?1",
+                [id.0],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        match row {
+            None => return Err(StorageError::TaskNotFound(id)),
+            Some((_, workspace, Some(_))) => {
+                return Err(StorageError::WorkspaceArchived {
+                    workspace: WorkspaceId(workspace),
+                    task: id,
+                });
+            }
+            Some((None, _, None)) => return Err(StorageError::TaskNotArchived(id)),
+            Some((Some(_), _, None)) => {}
+        }
+        tx.execute("UPDATE tasks SET archived_at = NULL WHERE id = ?1", [id.0])?;
+        ensure_acyclic(&tx)?;
+        let restored = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(restored)
+    }
+
+    /// Deletes an archived task for good, with its dependency edges, commit records, and
+    /// status history; a live task is rejected, so deleting history is always explicit.
+    pub fn purge_task(&mut self, id: TaskId) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        let archived: Option<Option<i64>> = tx
+            .query_row(
+                "SELECT archived_at FROM tasks WHERE id = ?1",
+                [id.0],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match archived {
+            None => return Err(StorageError::TaskNotFound(id)),
+            Some(None) => return Err(StorageError::TaskNotArchived(id)),
+            Some(Some(_)) => {}
+        }
+        tx.execute("DELETE FROM tasks WHERE id = ?1", [id.0])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Archived tasks of live workspaces ordered by ID; the tasks of an archived workspace
+    /// are archived with it.
+    pub fn archived_tasks(&self) -> Result<Vec<Task>> {
+        load_tasks(
+            &self.conn,
+            "t.archived_at IS NOT NULL AND NOT EXISTS (
+                 SELECT 1 FROM workspaces aw
+                 WHERE aw.id = t.workspace_id AND aw.archived_at IS NOT NULL)",
+            &[],
+            Scope::All,
+        )
+    }
+
+    /// Every stored task ordered by ID, archived ones included, for reviews of past work.
+    pub fn review_tasks(&self) -> Result<Vec<Task>> {
+        load_tasks(&self.conn, "1 = 1", &[], Scope::All)
+    }
+
+    /// Deletes a task with its dependency edges, commit records, and status history, live
+    /// or archived; used to undo a task that was only just created.
     pub fn delete_task(&mut self, id: TaskId) -> Result<()> {
         let deleted = self
             .conn

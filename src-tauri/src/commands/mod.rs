@@ -304,6 +304,11 @@ impl From<StorageError> for CommandError {
             StorageError::Transition(_) => CommandErrorCode::InvalidTransition,
             StorageError::DependenciesNotDone { .. } => CommandErrorCode::DependenciesNotDone,
             StorageError::WorkspaceHasDependents { .. }
+            | StorageError::TaskNotArchived(_)
+            | StorageError::WorkspaceNotArchived(_)
+            | StorageError::WorkspaceArchived { .. }
+            | StorageError::WorkspaceHasActiveRun { .. }
+            | StorageError::RestoreClosesCycle(_)
             | StorageError::BaseBranchInReview { .. }
             | StorageError::PrerequisiteOfDoneTask { .. }
             | StorageError::CriteriaOfDoneTask(_)

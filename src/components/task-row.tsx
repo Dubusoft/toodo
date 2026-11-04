@@ -104,14 +104,14 @@ const confirmLabels: Record<Confirmation, string> = {
   "force-delete": "Confirm force delete",
 };
 
-/** What a delete of task `id` removes, as asked before it runs. */
+/** What a delete of task `id` does, as asked before it runs; the task itself is archived. */
 function deleteQuestion(action: Confirmation, id: TaskId, removableWorktree: boolean): string {
   if (action === "force-delete") {
-    return `Force delete #${id}? Its worktree is removed with its modified and untracked files, and its herdr workspace is closed; the branch is kept.`;
+    return `Force delete #${id}? Its worktree is removed with its modified and untracked files, and its herdr workspace is closed; the branch is kept. The task moves to Settings > Archive.`;
   }
   return removableWorktree
-    ? `Delete #${id}? Its worktree and herdr workspace are removed; the branch is kept.`
-    : `Delete #${id} and its history from Toodo?`;
+    ? `Delete #${id}? Its worktree and herdr workspace are removed; the branch is kept. The task moves to Settings > Archive.`
+    : `Delete #${id}? It moves to Settings > Archive with its history, where it can be restored.`;
 }
 
 export function TaskRow({

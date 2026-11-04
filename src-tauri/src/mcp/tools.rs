@@ -1683,9 +1683,9 @@ pub fn resume_task(
     Ok((&task).into())
 }
 
-/// Deletes a `planned` task as the app's Delete does (see [`task_commands::delete_task`]),
-/// but only with `confirm`; without it, nothing changes and the reply says what deleting
-/// would remove. Tasks being worked on and `done` tasks, which reviews are built on, are
+/// Deletes (archives) a `planned` task as the app's Delete does (see
+/// [`task_commands::delete_task`]), but only with `confirm`; without it, nothing changes and
+/// the reply says what deleting would do. Tasks being worked on and `done` tasks, which reviews are built on, are
 /// rejected.
 pub fn delete_task(
     storage: &StorageState,
@@ -1724,14 +1724,14 @@ pub fn delete_task(
     };
     if !request.confirm {
         let mut message = format!(
-            "Nothing changed yet. Deleting task {id} \"{}\" cannot be undone and drops it from the reports: it removes its history, notes, criteria, {} recorded commit(s), and {} dependency and related link(s)",
+            "Nothing changed yet. Deleting task {id} \"{}\" archives it: it leaves the task lists and no longer holds back its dependents, while its history, notes, criteria, {} recorded commit(s), and {} dependency and related link(s) stay for the reports; the user can restore it, or delete it for good, under Settings > Archive in the Toodo app",
             task.title,
             details.commits.len(),
             details.depends_on.len() + details.dependents.len() + details.related.len(),
         );
         if let Some(path) = &task.worktree_path {
             message.push_str(&format!(
-                ", and its worktree at {path} with its herdr workspace and running agents; the branch {} is kept. A worktree with modified or untracked files keeps the task unless force is true",
+                ". It removes its worktree at {path} with its herdr workspace and running agents, which a restore does not bring back; the branch {} is kept. A worktree with modified or untracked files keeps the task unless force is true",
                 task.branch.as_deref().unwrap_or("of the task")
             ));
         }
@@ -1757,7 +1757,10 @@ pub fn delete_task(
         request.id.into(),
         request.force,
     )?;
-    let mut message = format!("task {id} \"{}\" is deleted.", task.title);
+    let mut message = format!(
+        "task {id} \"{}\" is deleted and kept in the archive, where the user can restore it in the Toodo app.",
+        task.title
+    );
     if !dependents.is_empty() {
         message.push_str(&format!(" {dependents} no longer {wait} on it."));
     }

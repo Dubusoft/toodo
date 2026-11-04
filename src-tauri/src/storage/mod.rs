@@ -161,6 +161,24 @@ pub enum StorageError {
         task: TaskId,
     },
     TaskNotFound(TaskId),
+    /// Only an archived task can be restored or purged.
+    TaskNotArchived(TaskId),
+    /// Only an archived workspace can be restored or purged.
+    WorkspaceNotArchived(WorkspaceId),
+    /// A task of an archived workspace comes back with its workspace, not on its own.
+    WorkspaceArchived {
+        workspace: WorkspaceId,
+        task: TaskId,
+    },
+    /// A workspace cannot be archived while `run` of its task `task` is queued or active.
+    WorkspaceHasActiveRun {
+        workspace: WorkspaceId,
+        task: TaskId,
+        run: RunId,
+    },
+    /// Restoring would bring back dependencies that close this loop (see
+    /// [`DependencyError::Cycle`]) with edges added while the tasks were archived.
+    RestoreClosesCycle(Vec<TaskId>),
     Dependency(DependencyError),
     Transition(TransitionError),
     /// A task cannot start while one of its dependencies is not done or was concluded
@@ -258,6 +276,37 @@ impl fmt::Display for StorageError {
                 workspace.0
             ),
             Self::TaskNotFound(id) => write!(f, "task {id} does not exist"),
+            Self::TaskNotArchived(id) => write!(
+                f,
+                "task {id} is not archived; delete it first (deleting archives it), then restore or purge it from the archive"
+            ),
+            Self::WorkspaceNotArchived(id) => write!(
+                f,
+                "workspace {} is not archived; remove it first (removing archives it), then restore or purge it from the archive",
+                id.0
+            ),
+            Self::WorkspaceArchived { workspace, task } => write!(
+                f,
+                "task {task} belongs to archived workspace {}; restore workspace {} instead, which brings its tasks back",
+                workspace.0, workspace.0
+            ),
+            Self::WorkspaceHasActiveRun {
+                workspace,
+                task,
+                run,
+            } => write!(
+                f,
+                "workspace {} cannot be removed while run {run} of its task {task} is queued or active; stop run {run} first (Stop in the task's runs, or stop_run over MCP), then remove the workspace again",
+                workspace.0
+            ),
+            Self::RestoreClosesCycle(path) => {
+                let ids: Vec<String> = path.iter().map(TaskId::to_string).collect();
+                write!(
+                    f,
+                    "restoring would close the dependency cycle {}; remove one of the dependencies along it among the live tasks (remove_dependency), then restore again",
+                    ids.join(" -> ")
+                )
+            }
             Self::Dependency(error) => error.fmt(f),
             Self::Transition(error) => error.fmt(f),
             Self::DependenciesNotDone { task, blockers } => {

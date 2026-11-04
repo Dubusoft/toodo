@@ -625,4 +625,10 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     ALTER TABLE workspaces ADD COLUMN pull_request_reviewers TEXT NOT NULL DEFAULT '[]';
     ALTER TABLE workspaces ADD COLUMN pull_request_labels TEXT NOT NULL DEFAULT '[]';
     ",
+    // Version 42: deleting a workspace or task archives it (NULL while it is live), so its
+    // history stays for reviews until it is purged explicitly.
+    r"
+    ALTER TABLE workspaces ADD COLUMN archived_at INTEGER;
+    ALTER TABLE tasks ADD COLUMN archived_at INTEGER;
+    ",
 ];

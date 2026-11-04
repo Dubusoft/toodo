@@ -1,5 +1,7 @@
 //! Commands for reviewing the work done in a period, such as a week or a year.
 
+use std::collections::HashSet;
+
 use super::State;
 
 use super::types::{BackfillSummary, ReviewEntry, Task, Timestamp};
@@ -12,7 +14,7 @@ use crate::domain::review::{self, Period};
 use crate::storage::{MergedPullRequestTask, Storage};
 
 /// Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
-/// ordered by outcome, then by time. The caller picks the period, such as a week, a
+/// archived ones included, ordered by outcome, then by time. The caller picks the period, such as a week, a
 /// month, or a year in the local time zone.
 #[specta::specta]
 pub fn review_period(
@@ -144,10 +146,12 @@ fn review_entries(
 ) -> CommandResult<Vec<ReviewEntry>> {
     let period = Period::new(start.0, end.0)
         .map_err(|error| CommandError::invalid_input(error.to_string()))?;
-    let mut tasks = Vec::new();
-    for workspace in storage.list_workspaces()? {
-        tasks.extend(storage.list_tasks(workspace.id)?);
-    }
+    let tasks = storage.review_tasks()?;
+    let live: HashSet<_> = storage
+        .list_all_tasks()?
+        .into_iter()
+        .map(|task| task.id)
+        .collect();
     let commits = storage.list_commit_records_in(period)?;
     Ok(review::review(period, &tasks, &commits)
         .into_iter()
@@ -161,6 +165,7 @@ fn review_entries(
                 outcome: reviewed.outcome.into(),
                 at: Timestamp(reviewed.at),
                 commits: reviewed.commits.iter().map(Into::into).collect(),
+                archived: !live.contains(&task.id),
             }
         })
         .collect())
@@ -243,6 +248,21 @@ mod tests {
                 ("Work on toodo", ReviewOutcome::Started),
                 ("Work on herdr", ReviewOutcome::Planned),
             ]
+        );
+
+        // Deleting archives the task; its work still counts and is marked archived.
+        storage.archive_task(committed.id).unwrap();
+        let entries = review_entries(&storage, Timestamp(1000), Timestamp(2000)).unwrap();
+        let summary: Vec<_> = entries
+            .iter()
+            .map(|entry| (entry.task.title.as_str(), entry.archived))
+            .collect();
+        assert_eq!(summary, [("Work on herdr", true)]);
+        storage.purge_task(committed.id).unwrap();
+        assert!(
+            review_entries(&storage, Timestamp(1000), Timestamp(2000))
+                .unwrap()
+                .is_empty()
         );
 
         let error = review_entries(&storage, Timestamp(10), Timestamp(10)).unwrap_err();

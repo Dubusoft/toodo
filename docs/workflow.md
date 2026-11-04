@@ -63,7 +63,8 @@ keeps its branch, worktree, herdr workspace, commit records, and pull request, s
 resuming it continues the same work (see step 3). Agents do the same through MCP:
 `pause_task` pauses a task with a required reason, recorded as a progress note, and
 `resume_task` resumes a paused task as "Resume" does, with an optional note. `done` is a
-final state. A task that is abandoned is deleted (step 8); a paused one stays in the reports.
+final state. A task that is abandoned is deleted (step 8), which archives it; both a
+paused and an archived task stay in the reports.
 
 Agents can start, complete, and conclude tasks through Toodo's MCP server too
 (`start_task`, `complete_task`, `conclude_task`), with the same steps and checks as the
@@ -94,7 +95,8 @@ What the app and MCP can each do with a task:
 | Record progress and blockers | Notes are shown | Yes (`add_progress_note`, `report_blocker`) |
 | Close a paused task's herdr workspace | Yes | No |
 | Open a pull request, link or create an issue | Yes | No (agents use `gh`) |
-| Delete a task | Yes | Only `planned` tasks (`delete_task`, after a confirming call) |
+| Delete (archive) a task | Yes | Only `planned` tasks (`delete_task`, after a confirming call) |
+| Restore or purge an archived workspace or task | Yes (Settings > Archive) | No |
 
 Every state change is recorded with its time in the task's status history, which feeds
 the timeline view and year-end reports (see
@@ -257,8 +259,10 @@ else the checked-out branch. It can be changed later by picking one of the repos
 branches (local and `origin` branches, listed after `git fetch --prune origin`) or by
 creating a new branch from one of them (`git branch --no-track <name> <start>`, then
 `git push --set-upstream origin <name>`); both are rejected while a task of the workspace
-is `in_review`. Deleting a workspace never deletes its repository, and is
-rejected while a not-yet-started task of another workspace depends on one of its tasks.
+is `in_review`. Deleting ("Remove") a workspace archives it with its tasks and never
+deletes its repository; it is rejected while a not-yet-started task of another workspace
+depends on one of its tasks, or while a run of one of its tasks is queued or active (stop
+the run first). Settings > Archive restores it or deletes it for good (step 8).
 
 ### 2. Plan tasks
 
@@ -631,10 +635,21 @@ worktree ("Delete"), Toodo first removes the worktree:
    `herdr worktree open --cwd <repository> --path <worktreePath> --no-focus` and removes
    it through the new workspace. If herdr cannot find the checkout either, it is already
    gone and nothing is removed.
-3. Clears `worktreePath` and `herdrWorkspaceId` on the task, then deletes the task with
-   its dependency edges, commit records, and status history.
+3. Clears `worktreePath` and `herdrWorkspaceId` on the task, then archives the task.
 
 A checkout with modified or untracked files is rejected and kept together with the task;
 the user can then force the delete ("Force delete", `--force`), which discards those
 files. Any other herdr failure keeps the task unchanged. A task without a worktree is
-deleted without running herdr.
+archived without running herdr.
+
+An archived task leaves the task lists and no longer holds back the tasks that depend on
+it, but keeps its history, commit records, notes, and links, and reviews still count its
+work, marked "Archived". Settings > Archive lists archived workspaces and the archived
+tasks of live workspaces:
+
+- "Restore" brings one back with its dependencies; a task of an archived workspace comes
+  back with its workspace. A removed worktree is not recreated. A restore that would close
+  a dependency cycle with edges added meanwhile is rejected and names the cycle.
+- "Delete permanently" asks for confirmation, then deletes the archived workspace or task
+  with its history, commit records, and links for good; it leaves the reviews. Only
+  archived items can be purged.

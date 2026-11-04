@@ -40,8 +40,21 @@ export const commands = {
 	 *  pushes it to `origin`, and makes it the default base branch of the workspace.
 	 */
 	createWorkspaceBaseBranch: (id: WorkspaceId, name: string, from: string) => typedError<Workspace, CommandError>(invoke("create_workspace_base_branch", { id, name, from })),
-	/**  Deletes a workspace together with its tasks, dependencies, and commit records. */
+	/**
+	 *  Removes a workspace from Toodo by archiving it with its tasks: they leave the lists but
+	 *  stay in reviews, and [`restore_workspace`] brings them back. [`purge_workspace`]
+	 *  deletes them for good.
+	 */
 	deleteWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(invoke("delete_workspace", { id })),
+	/**  Brings an archived workspace back with its tasks. */
+	restoreWorkspace: (id: WorkspaceId) => typedError<Workspace, CommandError>(invoke("restore_workspace", { id })),
+	/**
+	 *  Deletes an archived workspace for good with its tasks, their history, and commit
+	 *  records; a workspace that is not archived is rejected.
+	 */
+	purgeWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(invoke("purge_workspace", { id })),
+	/**  The workspaces and tasks deleting archived, to restore or purge. */
+	listArchive: () => typedError<Archive, CommandError>(invoke("list_archive")),
 	getMachineSettings: (machine: Machine) => typedError<MachineSettings, CommandError>(invoke("get_machine_settings", { machine })),
 	saveMachineSettings: (settings: MachineSettings) => typedError<MachineSettings, CommandError>(invoke("save_machine_settings", { settings })),
 	/**  Machines saved in herdr; remote workspaces can only live on these. */
@@ -146,13 +159,25 @@ export const commands = {
 	 */
 	checkCriterion: (taskId: TaskId, criterionId: CriterionId, met: boolean, evidence: string | null) => typedError<Task, CommandError>(invoke("check_criterion", { taskId, criterionId, met, evidence })),
 	/**
-	 *  Deletes a task with its dependency edges and commit records. A task that still has a worktree
+	 *  Deletes a task by archiving it: it leaves the task lists and stops holding back the tasks
+	 *  that depend on it, but keeps its history, commits, and links for reviews until
+	 *  [`restore_task`] brings it back or [`purge_task`] deletes it for good. A task that still has a worktree
 	 *  first removes it through herdr, which also closes its herdr workspace; the branch is
 	 *  kept. Without `force`, a worktree with modified or untracked files is rejected and the
 	 *  task is kept. A task of a workspace with runner plain or tmux has its worktree removed
 	 *  by git, and its plain and tmux runs that are still running are stopped first.
 	 */
 	deleteTask: (id: TaskId, force: boolean) => typedError<null, CommandError>(invoke("delete_task", { id, force })),
+	/**
+	 *  Brings an archived task of a live workspace back with its dependencies; its worktree,
+	 *  removed when it was deleted, is not recreated.
+	 */
+	restoreTask: (id: TaskId) => typedError<Task, CommandError>(invoke("restore_task", { id })),
+	/**
+	 *  Deletes an archived task for good with its history, commit records, and links; a task
+	 *  that is not archived is rejected.
+	 */
+	purgeTask: (id: TaskId) => typedError<null, CommandError>(invoke("purge_task", { id })),
 	/**
 	 *  Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
 	 *  self and cyclic edges and `done` tasks. An `in_progress` task that the new
@@ -364,7 +389,7 @@ export const commands = {
 	revokeConnectedApp: (grantId: OAuthGrantId) => typedError<null, CommandError>(invoke("revoke_connected_app", { grantId })),
 	/**
 	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
-	 *  ordered by outcome, then by time. The caller picks the period, such as a week, a
+	 *  archived ones included, ordered by outcome, then by time. The caller picks the period, such as a week, a
 	 *  month, or a year in the local time zone.
 	 */
 	reviewPeriod: (start: Timestamp, end: Timestamp) => typedError<ReviewEntry[], CommandError>(invoke("review_period", { start, end })),
@@ -485,6 +510,15 @@ export type AgentStatusesChanged = {
 export type AppInfo = {
 	name: string,
 	version: string,
+};
+
+/**
+ *  What deleting moved to the archive: workspaces, archived with their tasks, and tasks of
+ *  live workspaces, each ordered by ID.
+ */
+export type Archive = {
+	workspaces: Workspace[],
+	tasks: Task[],
 };
 
 /**  What importing merged pull requests as done tasks added. */
@@ -1051,6 +1085,11 @@ export type ReviewEntry = {
 	at: Timestamp,
 	/**  Commits of the task made in the period, oldest first. */
 	commits: CommitRecord[],
+	/**
+	 *  Whether the task or its workspace was deleted, which archives it; its work still
+	 *  counts.
+	 */
+	archived: boolean,
 };
 
 /**

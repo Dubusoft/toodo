@@ -209,6 +209,7 @@ pub const READ_COMMANDS: &[&str] = &[
     "list_agent_statuses",
     "list_mcp_tunnels",
     "review_period",
+    "list_archive",
     "get_backup_settings",
     "list_backups",
 ];
@@ -240,6 +241,9 @@ commands!(s => {
         workspaces::create_workspace_base_branch(State(&s.storage), State(&s.git), id, name, from)
     );
     "delete_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::delete_workspace(State(&s.storage), id));
+    "restore_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::restore_workspace(State(&s.storage), id));
+    "purge_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::purge_workspace(State(&s.storage), id));
+    "list_archive"() => sync Reply::result(workspaces::list_archive(State(s.reader())));
     "get_machine_settings"(machine: Machine) => sync Reply::result(
         workspaces::get_machine_settings(State(s.reader()), machine)
     );
@@ -295,6 +299,8 @@ commands!(s => {
     "delete_task"(id: TaskId, force: bool) => sync Reply::result(
         tasks::delete_task(State(&s.storage), State(&s.git), State(&s.herdr), State(&s.plain), State(&s.tmux), id, force)
     );
+    "restore_task"(id: TaskId) => sync Reply::result(tasks::restore_task(State(&s.storage), id));
+    "purge_task"(id: TaskId) => sync Reply::result(tasks::purge_task(State(&s.storage), id));
     "add_dependency"(task_id: TaskId, depends_on: TaskId, confirm_pause: bool) => sync Reply::result(
         tasks::add_dependency(State(&s.storage), State(&s.herdr), task_id, depends_on, confirm_pause)
     );
