@@ -221,8 +221,8 @@ cd src-tauri
 cargo build --release --bin toodo-server
 ```
 
-The binary is `src-tauri/target/release/toodo-server`. It needs `git`, `ssh`, and `gh` on
-`PATH` at runtime, plus `herdr` for runner `herdr` and `claude` or `codex` for runner `plain`.
+The binary is `src-tauri/target/release/toodo-server`. It needs `git` and `ssh` on
+`PATH` at runtime, plus a logged-in `gh` for workspaces with source `github`, `herdr` for runner `herdr` and `claude` or `codex` for runner `plain`.
 
 ## Run
 

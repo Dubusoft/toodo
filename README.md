@@ -44,7 +44,10 @@ into a performance report.
 - Optional: [herdr](https://herdr.dev), installed and running there, for workspaces with runner
   `herdr` and all remote SSH workspaces (Toodo controls it; it is not bundled). Runner `plain`
   needs `claude` or `codex` on the server's `PATH`; runner `none` needs neither
-- Git, OpenSSH, and the GitHub CLI (`gh`) on the server's `PATH`
+- Git and OpenSSH on the server's `PATH`
+- For workspaces with source `github`: the GitHub CLI (`gh`) on the server's `PATH`, logged
+  in with `gh auth login` as the user that runs the server. Workspaces with source `none` or
+  `local_git` do not need it
 - A current browser to use the web app
 - For runner `tmux`: tmux on the host that runs the agent. For runner `plain` on a POSIX
   SSH host: util-linux `setsid` (with `--wait`) there

@@ -447,6 +447,10 @@ impl GhCli {
     pub fn new(runner: Box<dyn Runner>) -> Self {
         Self { runner }
     }
+
+    fn run(&self, invocation: &Invocation) -> Result<String, GitError> {
+        self.runner.run(invocation).map_err(diagnose)
+    }
 }
 
 impl GitHub for GhCli {
@@ -476,7 +480,7 @@ impl GitHub for GhCli {
                 "--limit",
                 &limit.to_string(),
             ]);
-            let output = self.runner.run(&invocation)?;
+            let output = self.run(&invocation)?;
             let unexpected = || unexpected(&invocation, &output);
             let values: Value = serde_json::from_str(&output).map_err(|_| unexpected())?;
             let values = values.as_array().ok_or_else(unexpected)?;
@@ -513,7 +517,7 @@ impl GitHub for GhCli {
             "--body",
             pull_request.body,
         ]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         output
             .lines()
             .map(str::trim)
@@ -524,7 +528,7 @@ impl GitHub for GhCli {
 
     fn pull_request(&self, url: &str) -> Result<ViewedPullRequest, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", VIEWED_PULL_REQUEST_FIELDS]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
             .ok()
             .as_ref()
@@ -534,7 +538,7 @@ impl GitHub for GhCli {
 
     fn pull_request_activity(&self, url: &str) -> Result<PullRequestActivity, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", PULL_REQUEST_ACTIVITY_FIELDS]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
             .ok()
             .as_ref()
@@ -543,14 +547,13 @@ impl GitHub for GhCli {
     }
 
     fn close_pull_request(&self, url: &str, comment: &str) -> Result<(), GitError> {
-        self.runner
-            .run(&invocation(&["pr", "close", url, "--comment", comment]))?;
+        self.run(&invocation(&["pr", "close", url, "--comment", comment]))?;
         Ok(())
     }
 
     fn pull_request_body(&self, url: &str) -> Result<String, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", "body"]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
             .ok()
             .and_then(|value| value.get("body")?.as_str().map(str::to_owned))
@@ -558,8 +561,7 @@ impl GitHub for GhCli {
     }
 
     fn edit_pull_request_body(&self, url: &str, body: &str) -> Result<(), GitError> {
-        self.runner
-            .run(&invocation(&["pr", "edit", url, "--body", body]))?;
+        self.run(&invocation(&["pr", "edit", url, "--body", body]))?;
         Ok(())
     }
 
@@ -575,7 +577,7 @@ impl GitHub for GhCli {
             "--json",
             "number,url",
         ]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
             .ok()
             .and_then(|value| {
@@ -604,7 +606,7 @@ impl GitHub for GhCli {
             "--body",
             body,
         ]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         output
             .lines()
             .map(str::trim)
@@ -621,7 +623,7 @@ impl GitHub for GhCli {
 
     fn merged_pull_request(&self, url: &str) -> Result<MergedPullRequest, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", MERGED_PULL_REQUEST_FIELDS]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
             .ok()
             .as_ref()
@@ -631,7 +633,7 @@ impl GitHub for GhCli {
 
     fn mergeable(&self, url: &str) -> Result<MergeState, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", "mergeable"]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         let value: Option<Value> = serde_json::from_str(&output).ok();
         match value.as_ref().and_then(|value| value["mergeable"].as_str()) {
             Some("MERGEABLE") => Ok(MergeState::Mergeable),
@@ -646,6 +648,34 @@ fn invocation(args: &[&str]) -> Invocation {
     Invocation {
         program: "gh",
         args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+    }
+}
+
+/// The next step when `gh` cannot be started.
+const GH_MISSING: &str = "install the GitHub CLI (https://cli.github.com) on the PATH of the \
+     user that runs toodo-server and run `gh auth login` as that user, then retry; or add the \
+     repository as a workspace with source `local_git`, which does not need gh";
+
+/// The next step when `gh` runs but has no valid login.
+const GH_LOGGED_OUT: &str = "gh is not logged in: run `gh auth login` as the user that runs \
+     toodo-server (or set `GH_TOKEN` in its environment), then retry; or add the repository \
+     as a workspace with source `local_git`, which does not need gh";
+
+/// Adds the next step to an error that shows `gh` is missing or not logged in. `gh`
+/// prints `gh auth login` both when it has no login and when its token is rejected.
+fn diagnose(error: GitError) -> GitError {
+    match error {
+        GitError::Spawn { program, message } => GitError::Spawn {
+            program,
+            message: format!("{message}; {GH_MISSING}"),
+        },
+        GitError::Failed { command, stderr } if stderr.contains("gh auth login") => {
+            GitError::Failed {
+                command,
+                stderr: format!("{stderr}\n{GH_LOGGED_OUT}"),
+            }
+        }
+        error => error,
     }
 }
 
@@ -1267,5 +1297,49 @@ mod tests {
             github.create_pull_request(&new),
             Err(GitError::UnexpectedOutput { .. })
         ));
+    }
+
+    #[test]
+    fn a_missing_gh_names_the_next_step() {
+        let (github, _) = github(vec![Err(GitError::Spawn {
+            program: "gh".to_owned(),
+            message: "No such file or directory (os error 2)".to_owned(),
+        })]);
+        let error = github.pull_request(URL).unwrap_err().to_string();
+        assert!(error.starts_with("failed to run gh: No such file or directory"));
+        assert!(error.contains("install the GitHub CLI"));
+        assert!(error.contains("`local_git`"));
+    }
+
+    #[test]
+    fn a_logged_out_gh_names_the_next_step() {
+        // What gh prints with no login and with a rejected token.
+        for stderr in [
+            "To get started with GitHub CLI, please run:  gh auth login\n\
+             Alternatively, populate the GH_TOKEN environment variable with a GitHub API \
+             authentication token.",
+            "HTTP 401: Bad credentials (https://api.github.com/graphql)\n\
+             Try authenticating with:  gh auth login -h github.com",
+        ] {
+            let (github, _) = github(vec![Err(GitError::Failed {
+                command: format!("gh pr view {URL} --json mergeable"),
+                stderr: stderr.to_owned(),
+            })]);
+            let error = github.mergeable(URL).unwrap_err().to_string();
+            assert!(
+                error.contains("gh is not logged in: run `gh auth login`"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_gh_failures_are_left_as_they_are() {
+        let failed = GitError::Failed {
+            command: format!("gh pr view {URL} --json mergeable"),
+            stderr: "GraphQL: Could not resolve to a PullRequest".to_owned(),
+        };
+        let (github, _) = github(vec![Err(failed.clone())]);
+        assert_eq!(github.mergeable(URL), Err(failed));
     }
 }
