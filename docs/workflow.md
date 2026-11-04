@@ -70,8 +70,11 @@ Agents can start, complete, and conclude tasks through Toodo's MCP server too
 app (steps 3, 7, and 7b) and the same status history, so a task can go from request to
 merge without the user. Two differences: concluding through MCP rejects a task whose
 branch has a pull request still open, recorded or not, instead of closing it, and agents are told never to start,
-complete, or conclude their own task, whose pull request's merge completes it. Deleting
-(step 8) stays in the app. `conclude_task` replies with the dependents the conclusion
+complete, or conclude their own task, whose pull request's merge completes it. Agents
+reopen a done task (`reopen_task`, step 7d) and delete a `planned` task (`delete_task`,
+step 8) in two calls: the first, without `confirm: true`, changes nothing and says what
+the change would do; the second, with it, makes the change. `delete_task` rejects tasks
+that are being worked on or `done`. `conclude_task` replies with the dependents the conclusion
 leaves blocked and how to unblock each.
 
 What the app and MCP can each do with a task:
@@ -85,12 +88,13 @@ What the app and MCP can each do with a task:
 | Check manual criteria | Yes | Yes (`check_criterion`) |
 | Complete | Yes | Yes (`complete_task`) |
 | Complete through another task's pull request | Yes | Yes (`complete_task` with `merged_with`) |
-| Reopen a done task or change its outcome | Yes (step 7d) | No |
+| Reopen a done task | Yes (step 7d) | Yes (`reopen_task`, after a confirming call) |
+| Change the outcome of a done task | Yes (step 7d) | No |
 | Conclude without merging | Yes, closing an open pull request | Yes, rejected while a pull request is open |
 | Record progress and blockers | Notes are shown | Yes (`add_progress_note`, `report_blocker`) |
 | Close a paused task's herdr workspace | Yes | No |
 | Open a pull request, link or create an issue | Yes | No (agents use `gh`) |
-| Delete a task | Yes | No |
+| Delete a task | Yes | Only `planned` tasks (`delete_task`, after a confirming call) |
 
 Every state change is recorded with its time in the task's status history, which feeds
 the timeline view and year-end reports (see
@@ -151,7 +155,7 @@ The transition rule:
 Completing a task ("Complete"/"Confirm completion", `complete_task`) re-checks its
 automatic criteria first and is rejected with the criteria that are not met. Done tasks
 keep their criteria as a record; they cannot change. A done task completed by mistake is
-reopened in the app (step 7d).
+reopened in the app or with `reopen_task` (step 7d).
 
 Work shipped without a pull request can be completed through MCP with
 `complete_task {"id": 1, "without_pull_request": true, "note": "Deployed the configuration directly"}`.

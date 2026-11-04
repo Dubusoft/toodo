@@ -7,8 +7,8 @@ use super::types::{
     TaskActivity, TaskEdit, TaskId, TaskRelation,
 };
 use super::{
-    CommandError, CommandResult, GitState, HerdrState, PlainRunState, StorageState, TmuxRunState,
-    lock,
+    CommandError, CommandResult, Git, GitState, Herdr, HerdrState, PlainRunState, StorageState,
+    TmuxRunState, lock,
 };
 use crate::domain::criteria::{self, CheckKind, CheckedBy, NewCriterion};
 use crate::domain::model;
@@ -410,6 +410,13 @@ pub fn reopen_task(
 }
 
 pub(crate) fn reopen(storage: &mut Storage, id: TaskId, reason: &str) -> CommandResult<Task> {
+    let note = reopen_note(storage, id, reason)?;
+    Ok((&storage.reopen_task(id.into(), &note)?).into())
+}
+
+/// Checks that [`reopen`] would reopen task `id` without changing anything, and returns
+/// the progress note it would record.
+pub(crate) fn reopen_note(storage: &Storage, id: TaskId, reason: &str) -> CommandResult<String> {
     let reason = reason.trim();
     if reason.is_empty() {
         return Err(CommandError::invalid_input(
@@ -459,7 +466,7 @@ pub(crate) fn reopen(storage: &mut Storage, id: TaskId, reason: &str) -> Command
             None => note.push('.'),
         }
     }
-    Ok((&storage.reopen_task(task.id, &note)?).into())
+    Ok(note)
 }
 
 /// Corrects how a `done` task ended without reopening it: `resolution` replaces its
@@ -571,8 +578,20 @@ pub fn delete_task(
     id: TaskId,
     force: bool,
 ) -> CommandResult<()> {
-    let id = id.into();
-    let task = lock(&storage)
+    delete(storage.0, git.0, herdr.0, runs.0, tmux.0, id.into(), force)
+}
+
+/// [`delete_task`] over the adapters themselves.
+pub(crate) fn delete(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    runs: &PlainRunState,
+    tmux: &TmuxRunState,
+    id: model::TaskId,
+    force: bool,
+) -> CommandResult<()> {
+    let task = lock(storage)
         .get_task(id)?
         .ok_or(StorageError::TaskNotFound(id))?;
     // A task in progress or in review keeps its worktree, so deleting it is rejected
@@ -580,9 +599,9 @@ pub fn delete_task(
     let keeps_worktree = task.worktree_path.is_some()
         && matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview);
     if !keeps_worktree {
-        super::runs::stop_live_runs(&storage, &runs, &tmux, id)?;
+        super::runs::stop_live_runs(storage, runs, tmux, id)?;
     }
-    super::herdr::delete(&storage, &git, &herdr, id, force)
+    super::herdr::delete(storage, git, herdr, id, force)
 }
 
 /// Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
