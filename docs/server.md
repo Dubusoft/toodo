@@ -659,6 +659,13 @@ without the network. It never caches or answers `/api` or `/mcp`: everything the
 shows comes from the server. Each build has its own cache, which replaces the previous
 one once no window uses it any more.
 
+Each build names itself in `/version.json` (a hash of its `index.html`). An open window
+asks for it when it starts, when it reconnects to the server (as after `toodo update`
+restarts it), and when it is shown again; when the server serves another build than the
+window runs, a banner offers to reload. *Reload* lets the new build's service worker take
+over and loads the new build; *Later* hides the banner until the server serves yet
+another build.
+
 For reading offline, the app keeps the last loaded workspaces, task list, and what task
 details showed (commits, git activity, runs, related links, agent and pull request
 status) in the browser's IndexedDB, and shows them when it starts without the server.
