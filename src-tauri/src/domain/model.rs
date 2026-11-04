@@ -315,6 +315,81 @@ pub enum AgentMerge {
     AfterChecks,
 }
 
+/// How much the agent of a plain or tmux run may do without asking. The agent CLIs have
+/// no one to ask, so a run that needs more than its mode allows fails or stops early.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PermissionMode {
+    /// Read and plan only: Claude's `plan` mode, Codex's `read-only` sandbox.
+    ReadOnly,
+    /// Edit files in the worktree: Claude's `acceptEdits` mode, Codex's `--full-auto`.
+    Edit,
+    /// Anything, without checks or a sandbox: Claude's `bypassPermissions` mode, Codex's
+    /// `--dangerously-bypass-approvals-and-sandbox`.
+    Bypass,
+}
+
+impl PermissionMode {
+    pub const ALL: [Self; 3] = [Self::ReadOnly, Self::Edit, Self::Bypass];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::Edit => "edit",
+            Self::Bypass => "bypass",
+        }
+    }
+}
+
+/// How long a plain run may take when neither its task nor its workspace sets a limit.
+pub const DEFAULT_RUN_TIME_LIMIT_MINUTES: u32 = 4 * 60;
+/// The longest time limit a task or workspace may set: a week.
+pub const MAX_RUN_TIME_LIMIT_MINUTES: u32 = 7 * 24 * 60;
+
+/// How the agent of a run is launched, as a workspace sets it for its tasks or a task
+/// sets it for itself. `None` leaves a value to the next level: a task's to its
+/// workspace, a workspace's to the agent CLI's own default model, the agent's default
+/// permission mode, and [`DEFAULT_RUN_TIME_LIMIT_MINUTES`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentOptions {
+    /// The model the agent CLI is asked for, e.g. `sonnet` or `gpt-5-codex`.
+    pub model: Option<String>,
+    pub permission_mode: Option<PermissionMode>,
+    /// How long a plain run may take before it is stopped and fails, in minutes.
+    pub time_limit_minutes: Option<u32>,
+}
+
+impl AgentOptions {
+    /// These options with every value they leave unset taken from `base`, e.g. a task's
+    /// options over its workspace's.
+    pub fn over(&self, base: &AgentOptions) -> AgentOptions {
+        AgentOptions {
+            model: self.model.clone().or_else(|| base.model.clone()),
+            permission_mode: self.permission_mode.or(base.permission_mode),
+            time_limit_minutes: self.time_limit_minutes.or(base.time_limit_minutes),
+        }
+    }
+
+    /// The time limit of a run with these options, in seconds.
+    pub fn time_limit_secs(&self) -> u64 {
+        u64::from(
+            self.time_limit_minutes
+                .unwrap_or(DEFAULT_RUN_TIME_LIMIT_MINUTES),
+        ) * 60
+    }
+}
+
+/// How Toodo opens the pull requests of a workspace's tasks. The default opens a ready
+/// pull request without reviewers or labels.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullRequestOptions {
+    /// Open pull requests as drafts.
+    pub draft: bool,
+    /// Users (`login`) or teams (`org/team`) asked to review each pull request.
+    pub reviewers: Vec<String>,
+    /// Labels added to each pull request; they must exist in the repository.
+    pub labels: Vec<String>,
+}
+
 /// Per-machine configuration. `worktree_root` must be set before a task on that
 /// machine can be started.
 #[derive(Debug, Clone, PartialEq, Eq)]

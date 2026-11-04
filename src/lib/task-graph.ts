@@ -6,10 +6,11 @@ import { dueEnd, dueState, estimatedSeconds, type DueState } from "@/lib/plan";
 export type DependencyEdge = { id: string; source: TaskId; target: TaskId };
 
 /**
- * Statuses whose dependencies can change in the app. A new prerequisite that is not done
- * pauses an `in_progress` task and closes its herdr workspace, after the user confirms it.
+ * Statuses whose dependencies can change, the same in the app and over MCP: every status
+ * but `done`. A new prerequisite that is not done pauses an `in_progress` task and closes
+ * its herdr workspace, after the user confirms it; an `in_review` task is not paused.
  */
-export const dependencyEditableStatuses: TaskStatus[] = ["planned", "in_progress"];
+export const dependencyEditableStatuses: TaskStatus[] = ["planned", "in_progress", "in_review"];
 
 /** Whether `task` was concluded without merging, so tasks that depend on it cannot build on it. */
 export function isNotAdopted(task: Task | undefined): boolean {
@@ -117,21 +118,37 @@ export function dependencyEdges(tasks: Task[]): DependencyEdge[] {
 }
 
 /**
- * Whether `target` may gain a dependency on `source`. Cycles are left to the backend,
- * which owns the DAG rules and reports them as a command error.
+ * Whether `target` may gain a dependency on `source`: not on itself, not twice, and not
+ * when `source` already depends on `target`, directly or through other tasks, which would
+ * close a cycle. The backend checks the same rules against tasks this list does not hold.
  */
 export function canAddDependency(tasks: Task[], source: TaskId, target: TaskId): boolean {
   if (source === target) {
     return false;
   }
-  const from = tasks.find((task) => task.id === source);
-  const to = tasks.find((task) => task.id === target);
-  return (
-    from !== undefined &&
-    to !== undefined &&
-    dependencyEditableStatuses.includes(to.status) &&
-    !to.dependsOn.includes(source)
-  );
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const from = byId.get(source);
+  const to = byId.get(target);
+  if (from === undefined || to === undefined || !dependencyEditableStatuses.includes(to.status)) {
+    return false;
+  }
+  if (to.dependsOn.includes(source)) {
+    return false;
+  }
+  const pending = [source];
+  const seen = new Set<TaskId>(pending);
+  for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
+    for (const prerequisite of byId.get(current)?.dependsOn ?? []) {
+      if (prerequisite === target) {
+        return false;
+      }
+      if (!seen.has(prerequisite)) {
+        seen.add(prerequisite);
+        pending.push(prerequisite);
+      }
+    }
+  }
+  return true;
 }
 
 /**

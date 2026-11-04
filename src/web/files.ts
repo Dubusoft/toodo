@@ -36,6 +36,14 @@ export async function downloadBackup(name: string): Promise<string> {
   return name;
 }
 
+/** Downloads the whole stdout or stderr of run `runId`; resolves with the saved file name. */
+export async function downloadRunLog(runId: number, stream: "stdout" | "stderr"): Promise<string> {
+  const response = await request(`/api/runs/${runId}/log/${stream}`);
+  const name = attachmentName(response, `run-${runId}-${stream}.log`);
+  save(name, await response.blob());
+  return name;
+}
+
 /**
  * Replaces all data on the server with the database in `file`. Resolves with the backup
  * of the previous data that the server saved first.

@@ -244,6 +244,14 @@ impl Remote {
         }
     }
 
+    pub fn remove_directory(&self, run: RunId) -> Result<(), RunnerError> {
+        self.output(
+            self.host.remove_directory(self.key(run)),
+            "remove the run directory",
+        )
+        .map(drop)
+    }
+
     pub fn probe(&self, run: RunId) -> Result<Probe, RunnerError> {
         parse_probe(&self.output(self.host.probe(self.key(run)), "probe the agent")?)
             .map_err(|error| RunnerError(error.into()))

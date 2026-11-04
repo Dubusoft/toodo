@@ -92,7 +92,8 @@ const SERVICE_TOOLS: [&str; 8] = [
 ];
 
 /// The unit file. A server that keeps failing to start is restarted at most 5 times in
-/// 5 minutes, then left failed.
+/// 5 minutes, then left failed. Stopping or restarting it ends only the server process:
+/// agents of plain and tmux runs keep running, and the next server reattaches them.
 pub(super) fn render(unit: &Unit) -> String {
     let mut text = format!(
         "# Written by toodo service install; rerun it instead of editing this file.
@@ -119,6 +120,7 @@ Environment=TOODO_DATA_DIR={}
         "Environment=PATH={}
 Restart=on-failure
 RestartSec=5
+KillMode=process
 
 [Install]
 WantedBy=default.target
@@ -370,6 +372,7 @@ Environment=TOODO_WEB_DIR=/home/a/.local/share/toodo-server-web
 Environment=PATH=/home/a/.local/bin:/usr/bin
 Restart=on-failure
 RestartSec=5
+KillMode=process
 
 [Install]
 WantedBy=default.target

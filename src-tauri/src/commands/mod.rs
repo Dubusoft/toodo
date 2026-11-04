@@ -5,6 +5,7 @@
 //! they take by reference, see [`State`]. Each is annotated with `#[specta::specta]` so
 //! that `bindings.rs` can generate the frontend's typed bindings from its signature.
 
+pub mod agent_options;
 pub mod backup;
 pub mod completion;
 pub mod events;
@@ -13,7 +14,10 @@ pub mod herdr;
 pub mod issues;
 pub mod machines;
 pub mod mcp;
+pub mod pull_request_options;
+pub mod report;
 pub mod review;
+pub mod run_logs;
 pub mod runners;
 pub mod runs;
 pub mod tasks;
@@ -137,6 +141,13 @@ pub enum CommandErrorCode {
     GitFailed,
     /// herdr reported an error or is not running.
     HerdrFailed,
+    /// gh has no valid login, or the login may not open pull requests in the repository.
+    GitHubAuthFailed,
+    /// GitHub refused the draft setting, a reviewer, or a label of the workspace's pull
+    /// request options.
+    PullRequestOptionInvalid,
+    /// GitHub refused to open the pull request for another reason.
+    PullRequestFailed,
     /// The server failed.
     Internal,
     /// The database failed or holds data the server cannot read.
@@ -161,8 +172,13 @@ impl CommandErrorCode {
             | Self::DependencyCycle
             | Self::InvalidTransition
             | Self::DependenciesNotDone
-            | Self::NotPermitted => CommandErrorKind::Rejected,
-            Self::External | Self::GitFailed | Self::HerdrFailed => CommandErrorKind::External,
+            | Self::NotPermitted
+            | Self::PullRequestOptionInvalid => CommandErrorKind::Rejected,
+            Self::External
+            | Self::GitFailed
+            | Self::HerdrFailed
+            | Self::GitHubAuthFailed
+            | Self::PullRequestFailed => CommandErrorKind::External,
             Self::Internal | Self::StorageFailed | Self::CommandPanicked => {
                 CommandErrorKind::Internal
             }
@@ -289,8 +305,14 @@ impl From<StorageError> for CommandError {
             StorageError::Transition(_) => CommandErrorCode::InvalidTransition,
             StorageError::DependenciesNotDone { .. } => CommandErrorCode::DependenciesNotDone,
             StorageError::WorkspaceHasDependents { .. }
+            | StorageError::TaskNotArchived(_)
+            | StorageError::WorkspaceNotArchived(_)
+            | StorageError::WorkspaceArchived { .. }
+            | StorageError::WorkspaceHasActiveRun { .. }
+            | StorageError::RestoreClosesCycle(_)
             | StorageError::BaseBranchInReview { .. }
             | StorageError::PrerequisiteOfDoneTask { .. }
+            | StorageError::DependencyOfDoneTask { .. }
             | StorageError::CriteriaOfDoneTask(_)
             | StorageError::AutomaticCriterion { .. }
             | StorageError::CheckoutHasActiveWriter { .. }

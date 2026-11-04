@@ -11,6 +11,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 
 use super::host::{self, Host, HostOs, Probe, RunKey};
+use super::log::{LogBytes, LogStream};
 use super::plain::adapter::{
     self, AgentAdapter, EventTracker, ExitKind, MCP_TOKEN_ENV, MCP_URL_ENV,
 };
@@ -452,6 +453,15 @@ impl TmuxRunner {
                 &receipt(&self.instance, run, &current.host).provider_run_ref,
             )?;
         }
+        // Reconciling again in the background must not repeat the same finding.
+        if current.state == RunState::Unknown
+            && storage
+                .run_events(run)?
+                .last()
+                .is_some_and(|last| last.kind == "observation_lost")
+        {
+            return Ok(current);
+        }
         storage.append_run_event(
             run,
             "observation_lost",
@@ -569,6 +579,63 @@ impl TmuxRunner {
         })
     }
 
+    /// Reads at most `max` bytes of a log of `run` from byte `offset`, as the agent wrote
+    /// it: redact them of [`Self::log_secret`].
+    pub fn read_log(
+        &self,
+        run: RunId,
+        stream: LogStream,
+        offset: u64,
+        max: usize,
+    ) -> Result<LogBytes, RuntimeError> {
+        let current = self.current(run)?;
+        let host = self.host(&current.host, current.checkout_path.as_deref())?;
+        if host == Host::Local {
+            let path = self.runs_dir.join(run.to_string()).join(stream.file_name());
+            return Ok(super::log::read_file(&path, offset, max).map_err(|_| error())?);
+        }
+        let invocation = host
+            .read_log(self.key(run), stream.file_name(), offset, max)
+            .map_err(build_error)?;
+        let output = self.output(&host, run, invocation)?;
+        let Some(line) = output.stdout.iter().position(|&byte| byte == b'\n') else {
+            return Err(error().into());
+        };
+        let size = std::str::from_utf8(&output.stdout[..line])
+            .ok()
+            .and_then(|size| size.trim().parse::<u64>().ok());
+        let (Some(size), true) = (size, output.status.success()) else {
+            return Err(error().into());
+        };
+        let mut bytes = output.stdout[line + 1..].to_vec();
+        bytes.truncate(max);
+        Ok(LogBytes {
+            size: size.max(offset + bytes.len() as u64),
+            bytes,
+        })
+    }
+
+    /// The MCP token staged for `run`, which its logs may hold; empty once it is removed.
+    pub fn log_secret(&self, run: RunId) -> Result<String, RuntimeError> {
+        let current = self.current(run)?;
+        let host = self.host(&current.host, current.checkout_path.as_deref())?;
+        Ok(self.secret(&host, run)?)
+    }
+
+    /// Removes the run directory of an ended run, on the server or on its SSH host.
+    pub fn remove_files(&self, run: &TaskRun) -> Result<(), RuntimeError> {
+        let host = self.host(&run.host, run.checkout_path.as_deref())?;
+        if host == Host::Local {
+            super::log::remove_dir(&self.runs_dir.join(run.id.to_string())).map_err(|_| error())?;
+            return Ok(());
+        }
+        let output = self.output(&host, run.id, host.remove_directory(self.key(run.id)))?;
+        if !output.status.success() {
+            return Err(error().into());
+        }
+        Ok(())
+    }
+
     pub fn attach_command(&self, run: RunId) -> Option<String> {
         let current = self.current(run).ok()?;
         self.host(&current.host, current.checkout_path.as_deref())
@@ -618,7 +685,8 @@ impl TmuxRunner {
     }
 
     /// Local sessions are probed immediately. Remote runs are marked Unknown without
-    /// SSH; callers reconcile them off the server's startup path.
+    /// SSH; the server reconciles them in the background, see
+    /// [`crate::runtime::reconcile_remote_runs`].
     pub fn recover_after_restart(&self, storage: &Mutex<Storage>) -> Result<(), RuntimeError> {
         let runs = {
             let storage = lock(storage);
@@ -667,13 +735,12 @@ fn script_invocation(host: &Host, script: String) -> Invocation {
         },
         Host::Ssh { target, .. } => Invocation {
             program: "ssh",
-            args: vec![
-                "-o".into(),
-                "BatchMode=yes".into(),
-                "--".into(),
-                target.as_str().into(),
-                format!("sh -c {}", shell_quote(&script)),
-            ],
+            args: crate::adapters::git::SSH_OPTIONS
+                .iter()
+                .chain(&["--", target.as_str()])
+                .map(|arg| (*arg).to_owned())
+                .chain([format!("sh -c {}", shell_quote(&script))])
+                .collect(),
         },
     }
 }
@@ -782,9 +849,11 @@ impl RunLauncher for TmuxRunner {
                 })?;
             endpoint.url = format!("http://127.0.0.1:{port}/mcp");
         }
-        let mut invocation = agent
-            .adapter
-            .invocation(Path::new(host::RUN_FILE_PREFIX), endpoint.as_ref());
+        let mut invocation = agent.adapter.invocation(
+            Path::new(host::RUN_FILE_PREFIX),
+            endpoint.as_ref(),
+            &agent.options,
+        );
         // Path::join preserves the {run}/ prefix for host-native resolution.
         if let Some(at) = invocation.args.iter().position(|arg| arg == "--mcp-config") {
             invocation.args[at + 1] =

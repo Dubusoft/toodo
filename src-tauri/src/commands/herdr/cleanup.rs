@@ -10,7 +10,7 @@ use crate::domain::status::TaskStatus;
 use crate::runtime::{RuntimeError, RuntimeService, TaskWorktree};
 use crate::storage::StorageError;
 
-/// Deletes a task; a task that still has a worktree first removes it like
+/// Deletes a task by archiving it; a task that still has a worktree first removes it like
 /// [`remove_worktree`], so a dirty worktree keeps the task unless `force` is set.
 pub(in crate::commands) fn delete(
     storage: &StorageState,
@@ -25,7 +25,7 @@ pub(in crate::commands) fn delete(
     if task.worktree_path.is_some() {
         remove_worktree(storage, git, herdr, id, force)?;
     }
-    Ok(lock(storage).delete_task(id)?)
+    Ok(lock(storage).archive_task(id)?)
 }
 
 /// Removes the worktree of a task that is not in progress or in review (a finished task,

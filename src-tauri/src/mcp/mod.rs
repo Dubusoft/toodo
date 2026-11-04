@@ -494,7 +494,8 @@ impl Access {
             | "list_tasks"
             | "search_tasks"
             | "get_task"
-            | "pull_request_status" => scopes.can_read(),
+            | "pull_request_status"
+            | "review_report" => scopes.can_read(),
             "create_workspace" | "create_task" | "create_plan" | "update_task"
             | "add_dependency" | "remove_dependency" | "add_related" | "remove_related"
             | "add_criterion" | "remove_criterion" | "check_criterion" | "add_progress_note"
@@ -989,7 +990,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Delete a planned task, e.g. one you created by mistake, as Delete in the Toodo app does. Deleting cannot be undone and drops the task from the reports, so it takes two calls: without confirm nothing changes and the reply (confirmed false) says what would be removed (history, commits, links, a worktree and its herdr workspace; the branch is kept); then call again with {\"id\": 5, \"confirm\": true}. force: true also removes a worktree with modified or untracked files. Rejected for an in_progress or in_review task (pause_task it first) and a done task (reopen_task it, or the user deletes it in the app). Returns {confirmed, task, message}; task is the task as it was."
+        description = "Delete a planned task, e.g. one you created by mistake, as Delete in the Toodo app does. Deleting archives the task: it leaves the task lists and stops holding back its dependents, but stays in the reports, and only the user can restore it or delete it for good in the app. It takes two calls: without confirm nothing changes and the reply (confirmed false) says what deleting does (a worktree and its herdr workspace are removed; the branch is kept); then call again with {\"id\": 5, \"confirm\": true}. force: true also removes a worktree with modified or untracked files. Rejected for an in_progress or in_review task (pause_task it first) and a done task (reopen_task it, or the user deletes it in the app). Returns {confirmed, task, message}; task is the task as it was."
     )]
     async fn delete_task(
         &self,
@@ -1104,7 +1105,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Remove the dependency of task_id on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": 3}. A dependency that does not exist is rejected, and then none is removed. Returns {task, paused, message} like add_dependency; message says whether the task is now ready, e.g. a paused task that resume_task can resume."
+        description = "Remove the dependency of task_id on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": 3}. A dependency that does not exist is rejected, and so is a done task_id (reopen_task it first); then none is removed. Returns {task, paused, message} like add_dependency; message says whether the task is now ready, e.g. a paused task that resume_task can resume."
     )]
     fn remove_dependency(
         &self,
@@ -1115,7 +1116,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Start an agent CLI (adapter claude or codex) for an in_progress task of a workspace with runner plain or tmux, as Start run in the Toodo app does, e.g. {\"task_id\": 5, \"adapter\": \"claude\"}: in the task's worktree, on the machine of its workspace, without a terminal. prompt goes to the agent on stdin; omitted or blank, the agent gets the task's title, description, and criteria. With mcp (default true) it gets this server's MCP endpoint and token, so it can call current_task. One writer run at a time per worktree. Returns the run; follow it with run_status and read its output with run_log. For a workspace with runner herdr, start the agent with start_task's agent_command instead. Never start a run for your own task."
+        description = "Start an agent CLI (adapter claude or codex) for an in_progress task of a workspace with runner plain or tmux, as Start run in the Toodo app does, e.g. {\"task_id\": 5, \"adapter\": \"claude\"}: in the task's worktree, on the machine of its workspace, without a terminal. prompt goes to the agent on stdin; omitted or blank, the agent gets the task's title, description, and criteria. With mcp (default true) it gets this server's MCP endpoint and token, so it can call current_task. One writer run at a time per worktree. Returns the run, in state queued (with queuePosition) while the machine runs as many runs as its limit allows; a queued run starts on its own when a slot frees. Follow it with run_status and read its output with run_log. For a workspace with runner herdr, start the agent with start_task's agent_command instead. Never start a run for your own task."
     )]
     async fn start_run(
         &self,
@@ -1130,7 +1131,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Read the state of one run (run_id) or of every run of a task (task_id), oldest first: state (reserved, running, settled, exited, failed, cancelled, or unknown), runnerKind, adapter, and when it was created, started, and ended. active is true while the run may still be running (reserved, running, or unknown), and next says what to do with it. Poll it until active is false to wait for a run; unknown means its end was not observed, so call reconcile_run instead of polling."
+        description = "Read the state of one run (run_id) or of every run of a task (task_id), oldest first: state (queued, reserved, running, settled, exited, failed, cancelled, or unknown), runnerKind, adapter, and when it was created, started, and ended. active is true while the run has not ended (queued, reserved, running, or unknown), and next says what to do with it. Poll it until active is false to wait for a run; unknown means its end was not observed, so call reconcile_run instead of polling."
     )]
     fn run_status(
         &self,
@@ -1152,6 +1153,16 @@ impl ToodoMcp {
             &polled,
             request,
         ))
+    }
+
+    #[tool(
+        description = "Render the review of a period across all workspaces (or one workspace or label) as Markdown (the default) or CSV, the same report the Toodo app's Review exports: a summary of outcomes, commits, durations, plan vs actual, late tasks, a Year in review for a year, and each task under its outcome with its pull request, notes, and commits. period is week (from its Monday, or from from), month, quarter, year, or custom (from and to, both included); date (YYYY-MM-DD) picks the period containing that day, today when omitted. Days and times are in time_zone (IANA, e.g. Europe/Berlin), the server's when omitted. e.g. {\"period\": \"week\"} or {\"period\": \"year\", \"date\": \"2026-01-01\", \"format\": \"csv\"}. Returns {fileName, mediaType, from, to, contents}."
+    )]
+    fn review_report(
+        &self,
+        Parameters(request): Parameters<tools::ReviewReportRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(tools::review_report(&lock(self.backend.reader()), request))
     }
 
     #[tool(
@@ -3257,7 +3268,8 @@ mod tests {
                 "list_tasks",
                 "search_tasks",
                 "get_task",
-                "pull_request_status"
+                "pull_request_status",
+                "review_report"
             ]
             .into_iter()
             .map(str::to_owned)

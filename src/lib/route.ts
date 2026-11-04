@@ -7,14 +7,18 @@ import type { TaskId, WorkspaceId } from "@/lib/bindings";
  *
  * - `?view=review`: the review page.
  * - `?workspace=<id>`: a workspace's task list.
- * - neither: every workspace, on the timeline or, with `view=list`, in the list.
+ * - neither: every workspace, on the timeline or, with `view=list`, in the list, or, with
+ *   `view=plan`, as the work planned per quarter or year.
  *
  * `task=<id>` adds the task selected there, whose details are open.
  */
 export type Route =
   | { page: "review" }
-  | { page: "all"; view: "timeline" | "list"; task: TaskId | null }
+  | { page: "all"; view: AllView; task: TaskId | null }
   | { page: "workspace"; workspace: WorkspaceId; task: TaskId | null };
+
+/** How the tasks of every workspace are shown. */
+export type AllView = "timeline" | "list" | "plan";
 
 function idParam(value: string | null): number | null {
   return value !== null && /^\d+$/.test(value) ? Number(value) : null;
@@ -32,7 +36,7 @@ export function parseRoute(search: string): Route {
   if (workspace !== null) {
     return { page: "workspace", workspace, task };
   }
-  return { page: "all", view: view === "list" ? "list" : "timeline", task };
+  return { page: "all", view: view === "list" || view === "plan" ? view : "timeline", task };
 }
 
 /** The query string of `route`, empty for the timeline without a selected task. */
@@ -42,8 +46,8 @@ export function routeSearch(route: Route): string {
     params.set("view", "review");
   } else if (route.page === "workspace") {
     params.set("workspace", String(route.workspace));
-  } else if (route.view === "list") {
-    params.set("view", "list");
+  } else if (route.view !== "timeline") {
+    params.set("view", route.view);
   }
   if (route.page !== "review" && route.task !== null) {
     params.set("task", String(route.task));

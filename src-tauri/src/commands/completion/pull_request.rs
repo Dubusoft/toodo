@@ -1,7 +1,9 @@
 use super::settle::branch_commits;
 use crate::adapters::git::{Git, GitError};
-use crate::adapters::github::{GitHub, NewPullRequest, PullRequest, PullRequestState};
-use crate::commands::{CommandError, CommandResult, StorageState, lock};
+use crate::adapters::github::{
+    GitHub, NewPullRequest, PullRequest, PullRequestRefusal, PullRequestState,
+};
+use crate::commands::{CommandError, CommandErrorCode, CommandResult, StorageState, lock};
 use crate::domain::issue::{closes_issue, with_closing_reference};
 use crate::domain::model::{self, WorkspaceLocation};
 use crate::domain::remote::GitHubRepository;
@@ -187,16 +189,75 @@ pub(super) fn open(
                 Some(issue) => with_closing_reference(&checkout.task.description, issue.number),
                 None => checkout.task.description.clone(),
             };
-            github.create_pull_request(&NewPullRequest {
-                repository: &repository,
-                head: &checkout.branch,
-                base: &checkout.base,
-                title: &checkout.task.title,
-                body: &body,
-            })?
+            let options =
+                lock(storage).workspace_pull_request_options(checkout.task.workspace_id)?;
+            github
+                .create_pull_request(&NewPullRequest {
+                    repository: &repository,
+                    head: &checkout.branch,
+                    base: &checkout.base,
+                    title: &checkout.task.title,
+                    body: &body,
+                    options: &options,
+                })
+                .map_err(|error| creation_error(error, &repository, &checkout))?
         }
     };
     Ok(lock(storage).open_pull_request(id, &records, &pull_request_url, None)?)
+}
+
+/// The error of a pull request GitHub did not open, with a code for why and the step that
+/// fixes it. GitHub may open the pull request and then refuse a reviewer, so every
+/// retry first looks for one from the branch and records it.
+fn creation_error(
+    error: GitError,
+    repository: &GitHubRepository,
+    checkout: &Checkout,
+) -> CommandError {
+    let Some(refusal) = PullRequestRefusal::of(&error) else {
+        return match error {
+            GitError::Failed { .. } => CommandError::new(
+                CommandErrorCode::PullRequestFailed,
+                format!(
+                    "{error}; check that {repository} accepts pull requests from {} into {}, then open the pull request again",
+                    checkout.branch, checkout.base
+                ),
+            ),
+            error => error.into(),
+        };
+    };
+    let fix_options = "change the workspace's pull request options (Pull requests in the workspace header, or set_workspace_pull_request_options), then open the pull request again";
+    let (code, reason) = match refusal {
+        PullRequestRefusal::NotLoggedIn => (
+            CommandErrorCode::GitHubAuthFailed,
+            "gh is not logged in to GitHub: run `gh auth login` as the user that runs toodo-server, then open the pull request again".to_owned(),
+        ),
+        PullRequestRefusal::PermissionDenied => (
+            CommandErrorCode::GitHubAuthFailed,
+            format!("the gh login may not open pull requests in {repository}: log gh in as a user with write access to it (`gh auth login`), then open the pull request again"),
+        ),
+        PullRequestRefusal::InvalidReviewer => (
+            CommandErrorCode::PullRequestOptionInvalid,
+            format!("GitHub refused a reviewer: every reviewer must be a user or org/team with access to {repository} other than the author; {fix_options}"),
+        ),
+        PullRequestRefusal::UnknownLabel => (
+            CommandErrorCode::PullRequestOptionInvalid,
+            format!("a label does not exist in {repository}: create it on GitHub or remove it; {fix_options}"),
+        ),
+        PullRequestRefusal::DraftUnsupported => (
+            CommandErrorCode::PullRequestOptionInvalid,
+            format!("{repository} does not allow draft pull requests: turn off draft; {fix_options}"),
+        ),
+        PullRequestRefusal::AlreadyExists => (
+            CommandErrorCode::PullRequestFailed,
+            format!("a pull request from {} into {} is already open: open the pull request again to record it", checkout.branch, checkout.base),
+        ),
+        PullRequestRefusal::NoCommits => (
+            CommandErrorCode::PullRequestFailed,
+            format!("GitHub sees no commits on {} that are not on {}: push the branch's commits, then open the pull request again", checkout.branch, checkout.base),
+        ),
+    };
+    CommandError::new(code, format!("{reason} ({error})"))
 }
 
 /// Appends a closing reference to `issue` to the body of the open pull request at `url`

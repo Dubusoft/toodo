@@ -25,9 +25,11 @@ planned -----------------> in_progress ---------> in_review ---------> done (mer
 
 Whether a `planned` task can be started is not a state: it can be started once every
 task it depends on is `done` and merged, none of them `not_adopted` (it is **ready**). Its
-dependencies can change while it is `planned` or `in_progress`, and through MCP also while
-it is `in_review`; a `done` task cannot get new prerequisites (plan a follow-up task that
-depends on them instead). Removing a dependency that does not exist, or a related link
+dependencies can change while it is `planned`, `in_progress`, or `in_review`, the same in
+the app and through MCP; a `done` task keeps the dependencies it finished with: it cannot
+get new prerequisites (plan a follow-up task that depends on them instead) or lose one
+(reopen it first). The app offers only prerequisites that would not close a cycle, and the
+server rejects a cyclic edge from either side. Removing a dependency that does not exist, or a related link
 that does not exist, is rejected. The UI names a `planned` task that was worked on before
 "Paused" and offers "Resume" instead of "Start". MCP's `list_tasks` and `get_task` give
 each task `ready` and `blockedBy`, the tasks it depends on that are not done yet or were
@@ -63,7 +65,8 @@ keeps its branch, worktree, herdr workspace, commit records, and pull request, s
 resuming it continues the same work (see step 3). Agents do the same through MCP:
 `pause_task` pauses a task with a required reason, recorded as a progress note, and
 `resume_task` resumes a paused task as "Resume" does, with an optional note. `done` is a
-final state. A task that is abandoned is deleted (step 8); a paused one stays in the reports.
+final state. A task that is abandoned is deleted (step 8), which archives it; both a
+paused and an archived task stay in the reports.
 
 Agents can start, complete, and conclude tasks through Toodo's MCP server too
 (`start_task`, `complete_task`, `conclude_task`), with the same steps and checks as the
@@ -82,7 +85,8 @@ What the app and MCP can each do with a task:
 | Action | App | MCP |
 | --- | --- | --- |
 | Create and edit tasks | Yes | Yes (`create_task`, `update_task`) |
-| Add and remove dependencies and related links | Yes, while `planned` or `in_progress` | Yes, also while `in_review` |
+| Add and remove dependencies | Yes, while `planned`, `in_progress`, or `in_review` | Yes, while `planned`, `in_progress`, or `in_review` |
+| Add and remove related links | Yes | Yes (`add_related`, `remove_related`) |
 | See whether a task is ready and what blocks it | Status chips and "Waiting on" | `ready` and `blockedBy` |
 | Start, resume, and pause | Yes | Yes (`start_task`, `resume_task`, `pause_task`) |
 | Check manual criteria | Yes | Yes (`check_criterion`) |
@@ -94,7 +98,8 @@ What the app and MCP can each do with a task:
 | Record progress and blockers | Notes are shown | Yes (`add_progress_note`, `report_blocker`) |
 | Close a paused task's herdr workspace | Yes | No |
 | Open a pull request, link or create an issue | Yes | No (agents use `gh`) |
-| Delete a task | Yes | Only `planned` tasks (`delete_task`, after a confirming call) |
+| Delete (archive) a task | Yes | Only `planned` tasks (`delete_task`, after a confirming call) |
+| Restore or purge an archived workspace or task | Yes (Settings > Archive) | No |
 
 Every state change is recorded with its time in the task's status history, which feeds
 the timeline view and year-end reports (see
@@ -178,6 +183,25 @@ criterion (met for tasks done as merged), followed by the `- [ ]` and `- [x]` it
 description itself stays as it was. A task of a workspace without `origin` that was
 created before can switch its merge criterion to `branch_merged_locally` by editing it.
 
+## GitHub Enterprise
+
+Workspaces with source `github` work with GitHub Enterprise Server and GitHub Enterprise
+Cloud (including `<subdomain>.ghe.com` hosts) as well as `github.com`. Toodo takes the
+host from the `origin` remote URL and passes it to every `gh` call as
+`--repo <host>/<owner>/<name>`, so no host setting or `GH_HOST` is needed. Setup:
+
+- Log `gh` in to the host as the user that runs `toodo-server`:
+  `gh auth login --hostname <host>`. Alternatively set `GH_ENTERPRISE_TOKEN` (GitHub
+  Enterprise Server) or `GH_TOKEN` (`*.ghe.com`) in the server's environment.
+- Make sure git on the server (or on the SSH machine of a remote workspace) can push to
+  the host: an SSH key or a credential helper, e.g. `gh auth setup-git --hostname <host>`.
+- Use an `origin` remote in one of the forms `https://<host>/<owner>/<name>(.git)`,
+  `ssh://[user@]<host>[:port]/<owner>/<name>(.git)`, or
+  `[user@]<host>:<owner>/<name>(.git)`. The host part may carry a user and an SSH port.
+  A remote whose path has more than `<owner>/<name>`, such as an instance served under a
+  path prefix (`https://<host>/github/<owner>/<name>`), is not recognized, and opening a
+  pull request is rejected; use a `local_git` workspace for it instead.
+
 ## Workspaces Without a Remote
 
 Every workspace is a git repository, but it does not need an `origin` remote. Without
@@ -225,6 +249,11 @@ git or herdr call. A git source needs one of these repository setups (`init` onl
 
 A remote machine is saved once in herdr: run `herdr machine add <host>` in a terminal on
 the server and answer herdr's setup prompts. Toodo lists the saved machines in the sidebar.
+Before that, the sidebar's Add machine panel tests the host (`test_ssh_machine`): the
+server runs `ssh -o BatchMode=yes <host> git --version` on a new connection, so a wrong
+host name, a refused key, an unknown host key, an unreachable host, or a missing git shows
+up with the step that fixes it, rather than when a workspace is first cloned there.
+`add_ssh_host` runs the same test right after it appends a `Host` block.
 
 Git runs locally as `git` and remotely as `ssh <machine> git ...` (on a Windows host through
 an encoded PowerShell script; see "Windows Hosts" in [server.md](server.md)). The default
@@ -233,8 +262,10 @@ else the checked-out branch. It can be changed later by picking one of the repos
 branches (local and `origin` branches, listed after `git fetch --prune origin`) or by
 creating a new branch from one of them (`git branch --no-track <name> <start>`, then
 `git push --set-upstream origin <name>`); both are rejected while a task of the workspace
-is `in_review`. Deleting a workspace never deletes its repository, and is
-rejected while a not-yet-started task of another workspace depends on one of its tasks.
+is `in_review`. Deleting ("Remove") a workspace archives it with its tasks and never
+deletes its repository; it is rejected while a not-yet-started task of another workspace
+depends on one of its tasks, or while a run of one of its tasks is queued or active (stop
+the run first). Settings > Archive restores it or deletes it for good (step 8).
 
 ### 2. Plan tasks
 
@@ -340,7 +371,22 @@ Starting a task (`start_task`) creates its branch and a git worktree
 To run an agent, call `start_plain_run` with the task id, an adapter (`claude` or
 `codex`), an optional prompt, and whether to give the agent the Toodo MCP server. The
 server starts the CLI in the task worktree, with the prompt on stdin, and returns the run.
-Only one run at a time can write to a worktree, and a run stops after 4 hours.
+Only one run at a time can write to a worktree, and a run stops after its time limit.
+
+The workspace's agent options set the model, permission mode (`read_only`, `edit`, or
+`bypass`), and time limit (in minutes, 4 hours by default) that runs of its tasks start
+with; a task can override each of them (`set_workspace_agent_options`,
+`set_task_agent_options`, or Agents and Runs with in the app). Runs started afterwards
+use the new values.
+
+Each machine (the server, or an SSH host) can limit how many plain and tmux runs it runs
+at once (`set_machine_run_limit`, or Runs at once beside the worktree root in the app; no
+limit by default). A run started while the machine is at its limit, or while earlier runs
+wait there, is returned `queued` with its place in the machine's queue (`queuePosition`).
+Queued runs start oldest first, on their own, within a few seconds of a run there ending;
+`get_machine_runs` shows the limit and how many runs are active and queued. A queued run
+already holds its worktree, `stop_run` takes it out of the queue as `cancelled`, and one
+whose task left `in_progress` meanwhile fails with a `launch_failed` event that says why.
 
 - `list_task_runs` lists the task's runs, oldest first, with their states.
 - `get_run_log` returns a run's state, its events, and the tails of its stdout and
@@ -349,14 +395,21 @@ Only one run at a time can write to a worktree, and a run stops after 4 hours.
   Codex `todo_list`) adds a `todo` event whose payload is
   `{"items":[{"text":"...","status":"pending|in_progress|completed"}]}`, so the latest
   `todo` event is the agent's current plan.
+- The app streams the open run's stdout and stderr as the agent writes them, can show
+  only the lines that hold a text, and downloads a whole log. The server removes the run
+  directory of a run that ended more than `TOODO_RUN_RETENTION_DAYS` days ago (30 by
+  default), which adds a `files_removed` event; its logs read as empty from then on.
 - `stop_run` stops a live run (SIGTERM to its process group, SIGKILL after 5 seconds)
-  and marks it `cancelled`. After a server restart, unfinished runs show as `unknown`;
-  stop them before starting a new run on the same worktree.
+  and marks it `cancelled`. A server restart does not end a local run: the
+  server follows it again, or settles it from its output if it ended meanwhile. Remote
+  runs are reconciled in the background after the restart. A run Toodo can't settle shows
+  as `unknown`; stop it before starting a new run on the same worktree.
 - `reconcile_run` settles an `unknown` run from what is left on its host (exit file,
   process, or tmux session). It never starts the agent again.
 
 The same commands work on SSH workspaces with runner `plain`: the agent runs on the
-workspace's host, and a lost connection leaves the run `unknown` until you reconcile it.
+workspace's host, and a lost connection leaves the run `unknown` until it is reconciled, which the server
+retries in the background after a restart.
 SSH workspaces with runner `herdr` keep running agents in herdr; `start_plain_run`
 rejects them and points to opening the task in herdr.
 
@@ -385,7 +438,8 @@ When the user opens the pull request of an `in_progress` task ("Open PR"), Toodo
    branch is rejected, because there is nothing to open a pull request for, unless its
    pull request is already merged (step 3).
 2. Reads the `origin` remote URL and derives the GitHub repository (`host/owner/name`)
-   from it. A remote that is not a hosted repository URL is rejected.
+   from it; the host may be a GitHub Enterprise host (see GitHub Enterprise). A remote
+   that is not a hosted repository URL is rejected.
 3. Looks up the most recent pull request of the task branch in any state
    (`gh pr list --repo <repo> --head <branch> --state all`), which may have been opened
    outside Toodo, e.g. by an agent in herdr. An open or merged one whose base is not the
@@ -397,7 +451,10 @@ When the user opens the pull request of an `in_progress` task ("Open PR"), Toodo
    is none or the last one was closed, opens one with
    `gh pr create --repo <repo> --head <branch> --base <baseBranch>`, titled with the task
    title and described with the task description, followed by `Closes #<number>` when
-   the task has an issue. A reused open pull request whose body has no closing reference
+   the task has an issue. The workspace's pull request options add `--draft`, a
+   `--reviewer` per reviewer (a login or `org/team`), and a `--label` per label
+   (`set_workspace_pull_request_options`, or Pull requests in the workspace header of the
+   app; none by default). A reused open pull request whose body has no closing reference
    to the issue (`close`, `fix`, or `resolve` in any form, then `#<number>`) gets one
    appended (`gh pr edit <url> --body`). `gh` always runs on this machine, so SSH
    machines do not need it.
@@ -408,7 +465,11 @@ When the user opens the pull request of an `in_progress` task ("Open PR"), Toodo
 
 If any step fails, the task keeps its status and previous commit records and the error is
 shown; opening it again is safe, because pushing is repeatable and an open pull request
-is reused instead of created twice. The same action on an `in_review` task ("Push to
+is reused instead of created twice. When GitHub refuses to open the pull request, the
+error code says why: `gitHubAuthFailed` (gh is not logged in, or the login may not open
+pull requests in the repository), `pullRequestOptionInvalid` (a reviewer or label of the
+workspace's pull request options, or draft, was refused; change the options and open it
+again), or `pullRequestFailed` (any other refusal, e.g. no commits on GitHub). The same action on an `in_review` task ("Push to
 PR") pushes commits added after review feedback and refreshes the commit records.
 
 Review and merging happen on GitHub; Toodo never merges a pull request itself. Agents
@@ -450,7 +511,11 @@ keeps the task `in_review` and is logged once until it changes; the next check t
 again. The task list refreshes when a task is completed this way. The next check starts a
 minute after the previous one finished, so a task whose pull request was just merged can
 still read `in_review` for up to about a minute; the MCP instructions and the toodo skill
-tell agents to read the task again after a minute instead of completing it by hand.
+tell agents to read the task again after a minute instead of completing it by hand. The
+tasks of each machine are checked on their own, so an SSH machine that does not answer
+only delays the checks of its own workspaces. Every git, `ssh`, and `gh` command is
+stopped when it runs too long (two minutes, fifteen for a clone, fetch, or push), and
+`ssh` gives up on a host that does not answer within ten seconds.
 
 In the same check, Toodo also looks up the pull request of the branch of every
 `in_progress` task that has a branch and a worktree (steps 2 and 3 of opening a pull
@@ -573,10 +638,21 @@ worktree ("Delete"), Toodo first removes the worktree:
    `herdr worktree open --cwd <repository> --path <worktreePath> --no-focus` and removes
    it through the new workspace. If herdr cannot find the checkout either, it is already
    gone and nothing is removed.
-3. Clears `worktreePath` and `herdrWorkspaceId` on the task, then deletes the task with
-   its dependency edges, commit records, and status history.
+3. Clears `worktreePath` and `herdrWorkspaceId` on the task, then archives the task.
 
 A checkout with modified or untracked files is rejected and kept together with the task;
 the user can then force the delete ("Force delete", `--force`), which discards those
 files. Any other herdr failure keeps the task unchanged. A task without a worktree is
-deleted without running herdr.
+archived without running herdr.
+
+An archived task leaves the task lists and no longer holds back the tasks that depend on
+it, but keeps its history, commit records, notes, and links, and reviews still count its
+work, marked "Archived". Settings > Archive lists archived workspaces and the archived
+tasks of live workspaces:
+
+- "Restore" brings one back with its dependencies; a task of an archived workspace comes
+  back with its workspace. A removed worktree is not recreated. A restore that would close
+  a dependency cycle with edges added meanwhile is rejected and names the cycle.
+- "Delete permanently" asks for confirmation, then deletes the archived workspace or task
+  with its history, commit records, and links for good; it leaves the reviews. Only
+  archived items can be purged.

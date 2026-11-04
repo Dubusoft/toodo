@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 /** Whether a runner can start agents, named and coloured in the tones of the status glossary. */
 type Readiness = { label: string; tone: Tone };
 
-const agentNames: Record<AgentAdapter, string> = { claude: "Claude", codex: "Codex" };
+export const agentNames: Record<AgentAdapter, string> = { claude: "Claude", codex: "Codex" };
 
 function herdrReadiness(herdr: HerdrHealth): Readiness {
   if (herdr.running) return { label: "Running", tone: "success" };

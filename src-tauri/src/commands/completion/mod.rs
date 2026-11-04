@@ -12,7 +12,9 @@
 //! `in_progress` task and moves the task to `in_review` when one was opened outside
 //! Toodo (e.g. by an agent in herdr), then checks the pull requests of `in_review` tasks
 //! and completes each task whose pull request was merged, as the `complete_task` command
-//! would. For each pull request still open, it keeps the CI and review state and tells
+//! would. Each round reads a pull request at most once and lists the open pull requests
+//! of a repository with several at once, and skips `gh` while GitHub's rate limit backs
+//! off. For each pull request still open, it keeps the CI and review state and tells
 //! the frontend through [`PullRequestStatusesChanged`] when one changes. Before settling,
 //! it also records the git activity (see [`crate::domain::activity`]) of each task being
 //! worked on in a workspace that tracks it: the commits of its branch and what its pull
@@ -23,6 +25,7 @@
 
 mod background;
 mod conclude;
+mod polling;
 mod pull_request;
 mod settle;
 #[cfg(test)]

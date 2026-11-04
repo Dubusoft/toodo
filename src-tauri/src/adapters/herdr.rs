@@ -1173,11 +1173,17 @@ mod tests {
         let invocation = runner.invocations.lock().unwrap()[1].clone();
         assert_eq!(invocation.program, "ssh");
         assert_eq!(
-            invocation.args[..4],
-            ["-o", "BatchMode=yes", "--", "devbox"].map(str::to_owned)
+            invocation.args[..invocation.args.len() - 1],
+            crate::adapters::git::fake::ssh_args("devbox")
         );
-        assert!(invocation.args[4].starts_with("sh -c '"));
-        assert!(invocation.args[4].contains(r#"--session '\''agents'\'' status --json"#));
+        assert!(invocation.args.last().unwrap().starts_with("sh -c '"));
+        assert!(
+            invocation
+                .args
+                .last()
+                .unwrap()
+                .contains(r#"--session '\''agents'\'' status --json"#)
+        );
     }
 
     #[test]
@@ -1201,11 +1207,11 @@ mod tests {
         let invocation = runner.invocations.lock().unwrap()[1].clone();
         assert_eq!(invocation.program, "ssh");
         assert_eq!(
-            invocation.args[..4],
-            ["-o", "BatchMode=yes", "--", "winpc"].map(str::to_owned)
+            invocation.args[..invocation.args.len() - 1],
+            crate::adapters::git::fake::ssh_args("winpc")
         );
-        assert!(invocation.args[4].starts_with("powershell "));
-        let script = decode_powershell(&invocation.args[4]);
+        assert!(invocation.args.last().unwrap().starts_with("powershell "));
+        let script = decode_powershell(invocation.args.last().unwrap());
         assert!(script.contains("Join-Path $herdrHome 'packages\\standalone\\current\\herdr.exe'"));
         assert!(script.contains("$info.FileName = $herdr\n"));
         assert!(

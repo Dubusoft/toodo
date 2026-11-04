@@ -570,10 +570,38 @@ fn create_base_branch(
     Ok(workspace)
 }
 
-/// Deletes a workspace together with its tasks, dependencies, and commit records.
+/// Removes a workspace from Toodo by archiving it with its tasks: they leave the lists but
+/// stay in reviews, and [`restore_workspace`] brings them back. [`purge_workspace`]
+/// deletes them for good.
 #[specta::specta]
 pub fn delete_workspace(storage: State<'_, StorageState>, id: WorkspaceId) -> CommandResult<()> {
-    Ok(lock(&storage).delete_workspace(id.into())?)
+    Ok(lock(&storage).archive_workspace(id.into())?)
+}
+
+/// Brings an archived workspace back with its tasks.
+#[specta::specta]
+pub fn restore_workspace(
+    storage: State<'_, StorageState>,
+    id: WorkspaceId,
+) -> CommandResult<Workspace> {
+    Ok((&lock(&storage).restore_workspace(id.into())?).into())
+}
+
+/// Deletes an archived workspace for good with its tasks, their history, and commit
+/// records; a workspace that is not archived is rejected.
+#[specta::specta]
+pub fn purge_workspace(storage: State<'_, StorageState>, id: WorkspaceId) -> CommandResult<()> {
+    Ok(lock(&storage).purge_workspace(id.into())?)
+}
+
+/// The workspaces and tasks deleting archived, to restore or purge.
+#[specta::specta]
+pub fn list_archive(storage: State<'_, StorageState>) -> CommandResult<types::Archive> {
+    let storage = lock(&storage);
+    Ok(types::Archive {
+        workspaces: types::map_all(&storage.archived_workspaces()?),
+        tasks: types::map_all(&storage.archived_tasks()?),
+    })
 }
 
 #[specta::specta]
@@ -1166,8 +1194,14 @@ mod tests {
         assert_eq!(moved.location, winpc(r"C:\dev\toodo"));
         assert_eq!(moved.path_problem, None);
         assert_eq!(invocations.len(), 1);
-        assert_eq!(invocations[0].args[3], "winpc");
-        assert!(invocations[0].args[4].starts_with("powershell "));
+        assert_eq!(invocations[0].args[invocations[0].args.len() - 2], "winpc");
+        assert!(
+            invocations[0]
+                .args
+                .last()
+                .unwrap()
+                .starts_with("powershell ")
+        );
         assert_eq!(
             herdr_invocations[2].args[..5],
             ["--machine", "m1", "workspace", "create", "--cwd"].map(str::to_owned)

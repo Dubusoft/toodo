@@ -15,8 +15,10 @@ import type { AgentMerge, Workspace } from "@/lib/bindings";
 import {
   machineOf,
   useCreateBaseBranch,
+  useMachineRuns,
   useMachineSettings,
   useSaveMachineSettings,
+  useSetMachineRunLimit,
   useTasks,
   useUpdateWorkspace,
   useWorkspaceBranches,
@@ -246,6 +248,74 @@ export function BaseBranchForm({ workspace }: { workspace: Workspace }) {
       )}
       {error && (
         <p role="alert" className="text-xs text-destructive">
+          {error.message}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/**
+ * How many runs the workspace's machine runs at once, with how many run and wait there now.
+ * Runs started beyond the limit wait in the machine's queue and start as runs end; an empty
+ * limit lets every run start at once.
+ */
+export function RunLimitForm({ workspace }: { workspace: Workspace }) {
+  const machine = machineOf(workspace.location);
+  const runs = useMachineRuns(machine);
+  const setLimit = useSetMachineRunLimit();
+  const [draft, setDraft] = useState<string | null>(null);
+  const saved = runs.data?.maxConcurrentRuns?.toString() ?? "";
+  const value = draft ?? saved;
+  const parsed = value.trim() === "" ? null : Number(value);
+  const valid = parsed === null || (Number.isInteger(parsed) && parsed >= 1);
+  const machineName = machine.kind === "local" ? "the server" : machine.label;
+  const error = runs.error ?? setLimit.error;
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!valid) return;
+    setLimit.mutate({ machine, limit: parsed }, { onSuccess: () => setDraft(null) });
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      aria-label="Run limit"
+      className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground"
+    >
+      <label htmlFor="run-limit" className="shrink-0">
+        Runs at once on {machineName}
+      </label>
+      <input
+        id="run-limit"
+        type="number"
+        min={1}
+        step={1}
+        inputMode="numeric"
+        className={cn(inputClass, "w-20 max-md:min-h-11")}
+        placeholder="No limit"
+        value={value}
+        onChange={(e) => setDraft(e.target.value)}
+        disabled={!runs.isSuccess}
+        aria-invalid={!valid}
+      />
+      <Button type="submit" size="xs" variant="outline" disabled={draft === null || !valid || setLimit.isPending}>
+        Save
+      </Button>
+      {runs.data && (
+        <span role="status" aria-label={`Runs on ${machineName}`}>
+          {runs.data.activeRuns} running
+          {runs.data.maxConcurrentRuns !== null && ` of ${runs.data.maxConcurrentRuns}`}, {runs.data.queuedRuns} queued
+        </span>
+      )}
+      {!valid && (
+        <p role="alert" className="basis-full text-destructive">
+          Enter a whole number of at least 1, or leave it empty for no limit.
+        </p>
+      )}
+      {error && (
+        <p role="alert" className="basis-full text-destructive">
           {error.message}
         </p>
       )}

@@ -555,4 +555,80 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     ALTER TABLE task_runs ADD COLUMN cached_input_tokens INTEGER;
     ALTER TABLE task_runs ADD COLUMN output_tokens INTEGER;
     ",
+    // Version 39: how agents of runs are launched, set by a workspace for its tasks and
+    // overridden by a task; NULL leaves a value to the workspace or the built-in default.
+    r"
+    ALTER TABLE workspaces ADD COLUMN agent_model TEXT;
+    ALTER TABLE workspaces ADD COLUMN agent_permission_mode TEXT
+        CHECK (agent_permission_mode IN ('read_only', 'edit', 'bypass'));
+    ALTER TABLE workspaces ADD COLUMN run_time_limit_minutes INTEGER
+        CHECK (run_time_limit_minutes > 0);
+    ALTER TABLE tasks ADD COLUMN agent_model TEXT;
+    ALTER TABLE tasks ADD COLUMN agent_permission_mode TEXT
+        CHECK (agent_permission_mode IN ('read_only', 'edit', 'bypass'));
+    ALTER TABLE tasks ADD COLUMN run_time_limit_minutes INTEGER
+        CHECK (run_time_limit_minutes > 0);
+    ",
+    // Version 40: how many plain and tmux runs a machine runs at once (NULL for no limit),
+    // and runs that wait in a queue for one of those slots: state `queued`, with what the
+    // run starts with once a slot frees. A queued writer holds its checkout like an
+    // active one, so no second run of the task starts meanwhile.
+    r"
+    ALTER TABLE machine_settings ADD COLUMN max_concurrent_runs INTEGER
+        CHECK (max_concurrent_runs > 0);
+    CREATE TABLE task_runs_new (
+        id INTEGER PRIMARY KEY,
+        owner_key TEXT NOT NULL DEFAULT 'implicit',
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        runtime_workspace_id INTEGER REFERENCES runtime_workspaces (id) ON DELETE SET NULL,
+        conversation_id INTEGER REFERENCES agent_conversations (id) ON DELETE SET NULL,
+        request_key TEXT NOT NULL,
+        generation INTEGER NOT NULL CHECK (generation >= 1),
+        runner_kind TEXT NOT NULL CHECK (runner_kind IN ('herdr', 'plain', 'tmux', 'none')),
+        role TEXT NOT NULL CHECK (role IN ('writer', 'observer')),
+        host_ref TEXT NOT NULL,
+        checkout_path TEXT,
+        adapter_profile TEXT,
+        state TEXT NOT NULL CHECK (state IN
+            ('queued', 'reserved', 'running', 'settled', 'exited', 'failed', 'cancelled',
+             'unknown')),
+        provider_run_ref TEXT,
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        ended_at INTEGER,
+        last_activity_at INTEGER,
+        input_tokens INTEGER,
+        cached_input_tokens INTEGER,
+        output_tokens INTEGER,
+        UNIQUE (owner_key, request_key),
+        UNIQUE (task_id, generation)
+    );
+    INSERT INTO task_runs_new SELECT * FROM task_runs;
+    DROP TABLE task_runs;
+    ALTER TABLE task_runs_new RENAME TO task_runs;
+    CREATE UNIQUE INDEX task_runs_one_active_writer
+        ON task_runs (owner_key, host_ref, checkout_path)
+        WHERE role = 'writer' AND checkout_path IS NOT NULL
+          AND state IN ('queued', 'reserved', 'running', 'unknown');
+    CREATE INDEX task_runs_queued ON task_runs (host_ref, id) WHERE state = 'queued';
+    CREATE TABLE queued_runs (
+        run_id INTEGER PRIMARY KEY REFERENCES task_runs (id) ON DELETE CASCADE,
+        prompt TEXT,
+        mcp INTEGER NOT NULL CHECK (mcp IN (0, 1))
+    );
+    ",
+    // Version 41: how a workspace's pull requests are opened: as drafts or not, and the
+    // reviewers and labels they get, each a JSON array of strings.
+    r"
+    ALTER TABLE workspaces ADD COLUMN pull_request_draft INTEGER NOT NULL DEFAULT 0
+        CHECK (pull_request_draft IN (0, 1));
+    ALTER TABLE workspaces ADD COLUMN pull_request_reviewers TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE workspaces ADD COLUMN pull_request_labels TEXT NOT NULL DEFAULT '[]';
+    ",
+    // Version 42: deleting a workspace or task archives it (NULL while it is live), so its
+    // history stays for reviews until it is purged explicitly.
+    r"
+    ALTER TABLE workspaces ADD COLUMN archived_at INTEGER;
+    ALTER TABLE tasks ADD COLUMN archived_at INTEGER;
+    ",
 ];

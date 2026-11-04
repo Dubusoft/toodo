@@ -155,6 +155,12 @@ The commands of a global install (`toodo COMMAND --help` shows the options of ea
   `launchctl bootstrap` and waits until the server accepts connections.
 - `toodo update [--channel dev|latest] [--allow-downgrade]`: update a global install and
   restart the server on it, see below.
+- `toodo review [--period week|month|quarter|year|custom] [--date DAY] [--from DAY]
+  [--to DAY] [--format markdown|csv] [--workspace ID] [--label LABEL] [--time-zone ZONE]`:
+  print the review of a period as the web app's Review exports it, rendered by the
+  running server with the web access token of the data directory; days and times are in
+  this machine's time zone unless `--time-zone` names another. For example
+  `toodo review --period year --format csv > review.csv`.
 - `toodo --version`, `toodo --help`. `--version` prints the version of the installed npm
   package (`toodo 1.3.2-dev.9 (commit 1c78b7a1a2b3)`). `toodo-server --version` and the
   server's start log line report the same version: the npm workflow builds both binaries
@@ -265,6 +271,7 @@ toodo-server
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
 | `TOODO_PUBLIC_URL` | none | Public HTTPS origin, e.g. `https://toodo.example.com`; turns on OAuth for chat apps (see [Chat Apps over OAuth](#chat-apps-over-oauth)) |
 | `TOODO_PUSH_SUBJECT` | `https://github.com/dev-bokdong/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
+| `TOODO_RUN_RETENTION_DAYS` | `30` | Days after which the directory of an ended plain or tmux run, with its logs, is removed, on the server and on the SSH machine it ran on; `0` keeps them |
 
 On first start the data directory gets two access tokens:
 
@@ -512,7 +519,7 @@ on loopback as before and still see every tool.
 **What a chat app can do.** An app gets one or both scopes:
 
 - `toodo.read`: `read_toodo_skill`, `list_workspaces`, `list_tasks`, `search_tasks`,
-  `get_task`, `pull_request_status`, and the
+  `get_task`, `pull_request_status`, `review_report`, and the
   [task and run resources](#task-and-run-resources).
 - `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `create_plan`,
   `update_task`, `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
@@ -587,11 +594,15 @@ Environment=TOODO_DATA_DIR=/home/me/.local/share/toodo-server
 Environment=PATH=/home/me/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=5
+KillMode=process
 
 [Install]
 WantedBy=default.target
 ```
 
+`KillMode=process` makes a stop or restart end only the server process: agents of plain
+and tmux runs keep running, and the server picks them up again when it starts. Rerun
+`toodo service install` to add it to a unit written by an earlier version.
 `herdr-server.service` is the unit of a headless herdr server, if there is one; without it
 the `Wants=` is ignored. A server that fails to start is restarted every 5 s, at most 5
 times in 5 minutes; then the unit stays failed until
@@ -798,6 +809,16 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
 - `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
   file name `list_backups` reports; `404` for any other name.
+- `GET /api/runs/{id}/log`: the stdout and stderr of a plain or tmux run as server-sent
+  events: the last 64 KiB of each (`?tail=<bytes>` for another amount), then what the
+  agent writes, read every half second (every two seconds on an SSH machine). Each `log`
+  event is `{ stream, offset, next, text }` with byte offsets in the log and complete
+  lines, redacted of the run's MCP token; its id `<stdout next>:<stderr next>` lets a
+  client that reconnects with `Last-Event-ID` resume where it was. An `end` event closes
+  the stream once the run ended and both logs were sent; an `error` event reports a
+  failed read, after which the stream tries again.
+- `GET /api/runs/{id}/log/{stdout|stderr}`: a whole log as a `text/plain` attachment
+  named `run-<id>-<stream>.log`, up to where it was when asked.
 - `POST /api/backups/restore`: replaces all data with the Toodo database sent as the
   request body (`application/octet-stream`, at most 256 MB, else `413`). The current data
   is saved as a pre-restore backup first, which is the JSON result, like `restore_backup`.
