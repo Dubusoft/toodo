@@ -737,7 +737,8 @@ const GH_MISSING: &str = "install the GitHub CLI (https://cli.github.com) on the
 
 /// The next step when `gh` runs but has no valid login.
 const GH_LOGGED_OUT: &str = "gh is not logged in: run `gh auth login` as the user that runs \
-     toodo-server (or set `GH_TOKEN` in its environment), then retry; or add the repository \
+     toodo-server (`gh auth login --hostname <host>` for a GitHub Enterprise host, or set \
+     `GH_TOKEN` or `GH_ENTERPRISE_TOKEN` in its environment), then retry; or add the repository \
      as a workspace with source `local_git`, which does not need gh";
 
 /// Adds the next step to an error that shows `gh` is missing or not logged in. `gh`
@@ -793,6 +794,23 @@ mod tests {
             base: base.to_owned(),
             merged_at: (state == PullRequestState::Merged).then_some(MERGED_AT_SECONDS),
         }
+    }
+
+    #[test]
+    fn github_enterprise_repositories_are_passed_to_gh_with_their_host() {
+        let (github, runner) = github(vec![Ok("[]\n".to_owned())]);
+        let repository =
+            GitHubRepository::from_remote_url("git@ghe.example.com:team/toodo.git").unwrap();
+        assert_eq!(
+            github
+                .find_pull_request(&repository, "feat/x-1", "main")
+                .unwrap(),
+            None
+        );
+        let invocations = runner.invocations.lock().unwrap();
+        let args = &invocations[0].args;
+        let repo = args.iter().position(|arg| arg == "--repo").unwrap() + 1;
+        assert_eq!(args[repo], "ghe.example.com/team/toodo");
     }
 
     #[test]
