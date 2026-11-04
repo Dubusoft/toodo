@@ -41,13 +41,16 @@ Commands:
   init             create the data directory, its database and access tokens, save the
                    listen address, start the server, and register its MCP endpoint with
                    Claude Code and Codex where they are on PATH
-  start            start the server in the background (through systemd once installed)
+  start            start the server in the background (through systemd once installed),
+                   and register its MCP endpoint again with the agents init registered it
+                   with, so they get a replaced token
   stop             stop the server
   status           show whether the server runs and where its files are; exits 0 when
                    it runs and 3 when it is stopped
   service install  run the server as the systemd user service toodo-server.service
   update           install the newest @dubusoft/toodo of the channel with npm, restart
-                   the server on it, and check that it answers; a failed install
+                   the server on it, check that it answers, and register its MCP
+                   endpoint again like start; a failed install
                    leaves the running server alone, and a channel version older than
                    the installed one is not installed
 
@@ -227,9 +230,12 @@ pub fn main() {
             Ok(0)
         }
         Command::Init(args) => init(&args, &var).map(|()| 0),
-        Command::Start(dir) => data_dir(dir.as_deref(), &var)
-            .and_then(|data| start(&data, &var))
-            .map(|()| 0),
+        Command::Start(dir) => data_dir(dir.as_deref(), &var).and_then(|data| {
+            start(&data, &var)?;
+            // The server may have created a new token, see `docs/server.md`.
+            agents::refresh(&data, settings::listen(&data)?, &var);
+            Ok(0)
+        }),
         Command::Stop(dir) => data_dir(dir.as_deref(), &var)
             .and_then(|data| stop(&data, &var))
             .map(|()| 0),

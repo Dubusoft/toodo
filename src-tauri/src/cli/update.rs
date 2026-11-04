@@ -224,6 +224,7 @@ pub(super) fn update(
         println!(
             "Updated {changed}. toodo-server is not running; start it with: toodo start{flag}"
         );
+        super::agents::refresh(data, listen, var);
         return Ok(());
     }
     let restarted = restart(runner, &bundle, data, listen, flag, var).and_then(|()| {
@@ -236,6 +237,7 @@ pub(super) fn update(
                 describe(runner),
                 settings::web_url(listen)
             );
+            super::agents::refresh(data, listen, var);
             Ok(())
         }
         Err(cause) => Err(format!(
