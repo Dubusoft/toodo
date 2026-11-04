@@ -5,7 +5,7 @@ name: Release
 # releases the version in package.json unless that version is already published; run the
 # workflow by hand on main to retry a failed release.
 #
-# A release vX.Y.Z carries the Linux toodo-server with the web app (a tarball + its
+# A release vX.Y.Z carries the Linux toodo-server and toodo CLI with the web app (a tarball + its
 # sha256). It is skipped when both assets are already there, so a re-run completes a
 # half-done release.
 on:
@@ -77,10 +77,11 @@ jobs:
       - name: Build the web app
         run: npm run build
 
-      - name: Build toodo-server
+      - name: Build toodo-server and toodo
         working-directory: src-tauri
         run: >-
-          cargo build --release --locked --bin toodo-server --target x86_64-unknown-linux-gnu
+          cargo build --release --locked --bin toodo-server --bin toodo
+          --target x86_64-unknown-linux-gnu
 
       - name: Package toodo-server
         id: package
