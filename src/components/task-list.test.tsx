@@ -250,6 +250,16 @@ describe("TaskList by workspace source, completion, and runner", () => {
     expect(mocked.getMachineSettings).not.toHaveBeenCalled();
   });
 
+  it("announces when the tasks finish loading and how many a search leaves in one live region", async () => {
+    renderTasks(folder, [task(3, folder, "Write outline"), task(4, folder, "Draft summary")]);
+
+    const status = screen.getByText("Loading tasks...");
+    expect(status).toHaveAttribute("role", "status");
+    await waitFor(() => expect(status).toHaveTextContent("Showing 2 tasks."));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search tasks" }), { target: { value: "outline" } });
+    await waitFor(() => expect(status).toHaveTextContent("Showing 1 of 2 tasks."));
+  });
+
   it("needs herdr to start a GitHub workspace's task and shows its base branch, agent merge, and worktree root", async () => {
     renderTasks(github, [task(1, github, "Ship API")]);
 

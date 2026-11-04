@@ -297,7 +297,14 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
         </p>
       )}
 
-      {review.isPending && <p className="text-sm text-muted-foreground">Loading the review...</p>}
+      {/* Stays mounted so screen readers hear loading start and finish for each period. */}
+      <p role="status" className={cn("text-sm text-muted-foreground", !review.isPending && "sr-only")}>
+        {review.isPending
+          ? "Loading the review..."
+          : review.data
+            ? `Showing ${review.data.length} ${review.data.length === 1 ? "task" : "tasks"} with activity in this ${noun}.`
+            : ""}
+      </p>
       {review.isError && (
         <p role="alert" className="text-sm text-destructive">
           Failed to load the review: {review.error.message}
