@@ -13,6 +13,7 @@ import { WorkspaceList } from "@/components/workspace-list";
 import type { TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
+import { useRoute, type Route } from "@/lib/route";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
 import { listenForOpenTask } from "@/web/push";
@@ -20,10 +21,18 @@ import { listenForOpenTask } from "@/web/push";
 export default function App() {
   const workspaces = useWorkspaces();
   useHerdrEvents();
-  const [selectedId, setSelectedId] = useState<WorkspaceId | "all">("all");
-  const [reviewing, setReviewing] = useState(false);
-  const openPage = (page: "review" | null) => {
-    setReviewing(page === "review");
+  // A task to select on the All workspaces timeline, until the timeline shows it.
+  const [shownTask, setShownTask] = useState<ShownTask | null>(null);
+  // An address opened or returned to brings its task out on the timeline, as a shown task does.
+  const [route, navigate] = useRoute((entered) => {
+    if (entered.page === "all" && entered.view === "timeline" && entered.task !== null) {
+      setShownTask({ id: entered.task });
+    }
+  });
+  const reviewing = route.page === "review";
+  const selectedId: WorkspaceId | "all" = route.page === "workspace" ? route.workspace : "all";
+  const openPage = (next: Route) => {
+    navigate(next);
     setMenuOpen(false);
   };
   // On narrow screens the sidebar is a modal drawer over the content.
@@ -69,11 +78,8 @@ export default function App() {
   const [timelineScale, setTimelineScale] = useState<TimelineScale>("week");
   const [drafts, setDrafts] = useState<ReadonlyMap<WorkspaceId, TaskDraft>>(new Map());
   const setDraft = (id: WorkspaceId, draft: TaskDraft) => setDrafts((current) => new Map(current).set(id, draft));
-  // A task to select on the All workspaces timeline, until the timeline shows it.
-  const [shownTask, setShownTask] = useState<ShownTask | null>(null);
   const showTask = (id: TaskId) => {
-    setSelectedId("all");
-    openPage(null);
+    openPage({ page: "all", view: "timeline", task: id });
     setShownTask({ id });
   };
   // A clicked notification opens its task.
@@ -128,7 +134,7 @@ export default function App() {
             variant={reviewing ? "secondary" : "ghost"}
             className="justify-start"
             aria-pressed={reviewing}
-            onClick={() => openPage("review")}
+            onClick={() => openPage({ page: "review" })}
           >
             <ChartColumn />
             Review
@@ -138,10 +144,7 @@ export default function App() {
             className="justify-start"
             aria-pressed={showingAll}
             disabled={!workspaces.data?.length}
-            onClick={() => {
-              setSelectedId("all");
-              openPage(null);
-            }}
+            onClick={() => openPage({ page: "all", view: "timeline", task: null })}
           >
             <Layers />
             All workspaces
@@ -150,10 +153,7 @@ export default function App() {
         <ErrorBoundary label="the workspace list">
           <WorkspaceList
             selectedId={reviewing || showingAll ? null : (selected?.id ?? null)}
-            onSelect={(id) => {
-              setSelectedId(id);
-              openPage(null);
-            }}
+            onSelect={(id) => openPage({ page: "workspace", workspace: id, task: null })}
           />
         </ErrorBoundary>
         <Button
@@ -190,10 +190,14 @@ export default function App() {
           <ErrorBoundary label="this view" resetKey={reviewing ? "review" : showingAll ? "all" : selected?.id}>
             {reviewing ? (
               <Review onShowTask={showTask} />
-            ) : showingAll && workspaces.data?.length ? (
+            ) : route.page === "all" && workspaces.data?.length ? (
               <TaskList
                 key="all"
                 workspace={null}
+                view={route.view}
+                onViewChange={(view) => navigate({ page: "all", view, task: null })}
+                selectedTask={route.task}
+                onSelectTask={(task) => navigate({ ...route, task })}
                 timelineScale={timelineScale}
                 onTimelineScaleChange={setTimelineScale}
                 shownTask={shownTask}
@@ -203,6 +207,8 @@ export default function App() {
               <TaskList
                 key={selected.id}
                 workspace={selected}
+                selectedTask={route.page === "workspace" ? route.task : null}
+                onSelectTask={(task) => navigate({ page: "workspace", workspace: selected.id, task })}
                 timelineScale={timelineScale}
                 onTimelineScaleChange={setTimelineScale}
                 draft={drafts.get(selected.id)}

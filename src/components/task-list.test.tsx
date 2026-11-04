@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskList, type TaskDraft } from "@/components/task-list";
-import { commands, type Task, type TaskActivity, type Workspace } from "@/lib/bindings";
+import { commands, type Task, type TaskActivity, type TaskId, type Workspace } from "@/lib/bindings";
 import { queryKeys } from "@/lib/queries";
 import { formatWhen } from "@/lib/timeline";
 
@@ -163,9 +163,12 @@ function renderTasks(workspace: Workspace, tasks: Task[]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   function Page() {
     const [draft, setDraft] = useState(newDraft);
+    const [selected, setSelected] = useState<TaskId | null>(null);
     return (
       <TaskList
         workspace={workspace}
+        selectedTask={selected}
+        onSelectTask={setSelected}
         timelineScale="week"
         onTimelineScaleChange={() => {}}
         draft={draft}
