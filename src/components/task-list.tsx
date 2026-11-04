@@ -239,8 +239,18 @@ export function TaskList({
   onDraftChange,
   shownTask = null,
   onTaskShown,
+  view = "list",
+  onViewChange,
+  selectedTask: detailId,
+  onSelectTask: setDetailId,
 }: {
   workspace: Workspace | null;
+  /** The view of every workspace's tasks; a workspace only has the list. */
+  view?: "list" | "timeline";
+  onViewChange?: (view: "list" | "timeline") => void;
+  /** The task whose details are open, owned by the caller so the address keeps it. */
+  selectedTask: TaskId | null;
+  onSelectTask: (id: TaskId | null) => void;
   /** Timeline scale, owned by the caller so it survives switching workspaces and views. */
   timelineScale: TimelineScale;
   onTimelineScaleChange: (scale: TimelineScale) => void;
@@ -254,7 +264,6 @@ export function TaskList({
 }) {
   const allTasks = useTasks();
   const workspaces = useWorkspaces();
-  const [view, setView] = useState<"list" | "timeline">("timeline");
   const [timelineWorkspace, setTimelineWorkspace] = useState<WorkspaceId | null>(null);
   // The filter the user set; until then the timeline leaves finished tasks out and the list shows every status.
   const [chosenFilter, setTaskFilter] = useState<TaskFilter | null>(null);
@@ -264,7 +273,6 @@ export function TaskList({
   const pullRequestStatuses = usePullRequestStatuses();
   // Done tasks are folded away until asked for, or while a search or filter is narrowing the list.
   const [doneShown, setDoneShown] = useState<boolean | null>(null);
-  const [detailId, setDetailId] = useState<TaskId | null>(null);
   const byWorkspace = new Map(workspaces.data?.map((entry) => [entry.id, entry]));
   const context: TaskContext = {
     byId: new Map(allTasks.data?.map((task) => [task.id, task])),
@@ -307,7 +315,6 @@ export function TaskList({
     if (shownTaskData === undefined) {
       return;
     }
-    setView("timeline");
     setTimelineWorkspace((current) => (current === shownTaskData.workspaceId ? current : null));
     setTaskFilter((chosen) => {
       const current = chosen ?? defaultTaskFilter;
@@ -374,7 +381,7 @@ export function TaskList({
                     size="xs"
                     variant={view === option ? "default" : "ghost"}
                     aria-pressed={view === option}
-                    onClick={() => setView(option)}
+                    onClick={() => onViewChange?.(option)}
                   >
                     {option === "list" ? "List" : "Timeline"}
                   </Button>
@@ -520,6 +527,8 @@ export function TaskList({
                   ready={(task) => shownStatus(task, context.byId) === "ready"}
                   scale={timelineScale}
                   onScaleChange={onTimelineScaleChange}
+                  selectedTaskId={detailId}
+                  onSelectedTaskChange={setDetailId}
                   shownTaskId={shownTask?.id ?? null}
                   onTaskShown={() => onTaskShown?.()}
                   renderDetail={(selected, navigation) => (

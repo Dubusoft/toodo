@@ -226,6 +226,15 @@ async function renderWorkspace(name: RegExp = /^toodo/) {
   fireEvent.click(await screen.findByRole("button", { name }, { timeout: 5000 }));
 }
 
+/** Goes one entry back in the browser history and waits for the app to see it. */
+async function goBack() {
+  await act(async () => {
+    const popped = new Promise((resolve) => window.addEventListener("popstate", resolve, { once: true }));
+    window.history.back();
+    await popped;
+  });
+}
+
 /** The row of the task titled `title` in the list. */
 function row(title: string) {
   return screen.getByRole("button", { name: title }).closest("li") as HTMLElement;
@@ -258,6 +267,8 @@ describe("App", () => {
   beforeEach(() => {
     vi.useRealTimers();
     vi.resetAllMocks();
+    // The route lives in the address, which jsdom keeps from one test to the next.
+    window.history.replaceState(null, "", "/");
     // jsdom has no matchMedia; the install banner asks whether the app runs installed.
     vi.stubGlobal("matchMedia", (query: string) => ({
       matches: false,
@@ -3006,7 +3017,7 @@ describe("App", () => {
     await waitFor(() => expect(within(attention).getAllByRole("listitem")).toHaveLength(2));
   });
 
-  it("opens the task a clicked notification asks for and drops it from the address", async () => {
+  it("opens the task a clicked notification asks for and keeps it in the address", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
     const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
@@ -3026,7 +3037,43 @@ describe("App", () => {
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     const details = await within(timeline).findByRole("complementary", { name: "Task details" });
     expect(within(details).getByRole("heading", { name: "Fix redirect" })).toBeInTheDocument();
+    expect(window.location.search).toBe("?task=2");
+  });
+
+  it("keeps the workspace, view, and selected task in the address for back, forward, and reload", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [task(1, 1, "Add storage"), task(2, 1, "Fix redirect")],
+    });
+    const { unmount } = render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <App />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByRole("button", { name: /^toodo/ }, { timeout: 5000 }));
+    expect(window.location.search).toBe("?workspace=1");
+    let details = await openDetails("Fix redirect");
+    expect(window.location.search).toBe("?workspace=1&task=2");
+    fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
+    fireEvent.click(await screen.findByRole("button", { name: "List" }));
+    expect(window.location.search).toBe("?view=list");
+
+    // Back returns to the All workspaces timeline, then to the workspace with its task open.
+    await goBack();
     expect(window.location.search).toBe("");
+    expect(await screen.findByRole("button", { name: "Timeline", pressed: true })).toBeInTheDocument();
+    await goBack();
+    details = await screen.findByRole("complementary", { name: "Task details" });
+    expect(within(details).getByRole("heading", { name: "Fix redirect" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "toodo" })).toBeInTheDocument();
+
+    // A reload, or the copied address opened anew, shows the same workspace and task.
+    unmount();
+    renderApp();
+    details = await screen.findByRole("complementary", { name: "Task details" });
+    expect(within(details).getByRole("heading", { name: "Fix redirect" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "toodo" })).toBeInTheDocument();
   });
 
   it("puts a task whose agent reported a blocker under Needs attention and shows every note in the task details", async () => {

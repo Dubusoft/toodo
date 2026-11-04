@@ -185,6 +185,8 @@ export function TaskGraph({
   ready,
   scale,
   onScaleChange,
+  selectedTaskId,
+  onSelectedTaskChange: setSelectedTaskId,
   shownTaskId = null,
   onTaskShown,
   renderDetail,
@@ -203,6 +205,9 @@ export function TaskGraph({
   ready: (task: Task) => boolean;
   scale: TimelineScale;
   onScaleChange: (scale: TimelineScale) => void;
+  /** The selected task, whose details sheet is open, owned by the caller. */
+  selectedTaskId: TaskId | null;
+  onSelectedTaskChange: (id: TaskId | null) => void;
   /** A task to select and pan to once it is on the timeline; `onTaskShown` is called when it is. */
   shownTaskId?: TaskId | null;
   onTaskShown?: () => void;
@@ -219,7 +224,6 @@ export function TaskGraph({
   const herdr = useHerdrStatus();
   const agentStatuses = useAgentStatuses();
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
-  const [selectedTaskId, setSelectedTaskId] = useState<TaskId | null>(null);
   // A dependency drawn onto a started task that it would pause, waiting for confirmation.
   const [confirmingEdge, setConfirmingEdge] = useState<{ id: TaskId; dependsOn: TaskId } | null>(null);
   const [year, setYear] = useState<number | null>(null);
