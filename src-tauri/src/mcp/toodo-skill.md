@@ -5,41 +5,17 @@ description: Work on a Toodo task from its description to a pull request into th
 
 # Working on a Toodo task
 
-Toodo tracks your task by its completion criteria, the `criteria` of the task: it is
-done once every criterion is met. Toodo checks every kind but `manual` itself about once
-a minute (`pr_merged`, `pr_open_ci_green`, `branch_merged_locally`, `url`, and `command`,
-which runs once every other criterion but the merge criterion is met); you check `manual` ones with
-`check_criterion` and evidence. A pull request from the task branch into the base branch
-moves the task to `in_review`. Once every criterion is met, a task whose criteria are all
-automatic is `done` at once; one with a manual criterion awaits completion (`in_review`)
-until the user confirms it.
+{{completion}}
 
-Never start, complete, or conclude your own task (the one `current_task` finds) with
-`start_task`, `complete_task`, or `conclude_task`: it was started for you, and meeting its
-criteria completes it. Those tools are for other tasks, e.g. starting a ready
-task for another agent session or concluding a duplicate. `conclude_task` never closes a
-pull request; a task with an open one is concluded by the user in the Toodo app.
-When your pull request also fixed other tasks, never conclude them: once it is merged and
-your task is done, complete each of them with `complete_task` and `merged_with` set to
-your task ID (or the pull request URL). A task already concluded as `not_adopted` that way
-can be completed with `merged_with` too.
-For work that shipped without any pull request, call `complete_task` with
-`without_pull_request: true` and a non-empty `note` explaining what shipped, not
-`conclude_task`: concluding means the work was not shipped. This requires no branch
-pull request at all, even closed or unrecorded. A merged PR needs `complete_task`
-without optional arguments; an open or closed one needs a merge, or conclusion if
-the work is abandoned (the user concludes an open PR in the app).
-The no-PR path marks `pr_merged` met with the note as evidence; every other criterion
-must still hold. It records branch commits and the completion note, ends as
-`completed` rather than `merged`, and unblocks dependents. Do not combine
-`without_pull_request` with `merged_with`.
+{{other-tasks}}
+
 Deleting tasks happens in the Toodo app only.
 
 ## 1. Start
 
 1. Call `current_task` with your absolute working directory. Note the task's `id`,
    `workspaceId`, `branch`, `baseBranch`, and `agentMerge` (whether you merge your pull
-   request, see step 4 of "Otherwise: finish with a pull request").
+   request, see "Merging" below).
 2. If no task matches and you were asked to work on a Toodo task, you are not in its
    worktree: tell the user and ask for its id instead of guessing, then read it with
    `get_task`. To plan new work outside a task, pick the workspace with
@@ -147,30 +123,17 @@ its scope (a bug in the base branch, a missing API, a refactor the change depend
    for the branch already exists, push to it instead of opening another. A pull request
    into any other base is ignored by Toodo. Then call `add_progress_note` with the pull
    request URL and what it changes.
-4. Merge it only if the workspace allows it. `current_task` returns `agentMerge`:
-   - `never` (the default): stop there. Do not merge the pull request; the user merges
-     it, and the merge completes the task.
-   - `afterChecks`: wait until every check on the pull request has finished and passed
-     (`gh pr checks <number> --watch`). When one fails, fix it, push, and wait again.
-     Then merge the pull request into `baseBranch` (`gh pr merge <number> --merge`, or
-     the merge method the repository allows); the merge completes the task.
 
-   Toodo checks pull requests every minute, so it moves the task to `in_review` and,
-   after the merge, to `done` within about a minute. Right after you merge, the task can
-   still read `in_review`; that is expected. Do not call `complete_task` on it; read it
-   again with `get_task` after a minute, and only if it is still `in_review` then, call
-   `report_blocker` with what you see.
+### Merging
 
-   Even with `afterChecks`, never merge while a check is failing or pending or when the
-   pull request has no checks, never bypass branch protection (no `--admin`), never
-   merge a pull request into any branch other than `baseBranch`, and never release, tag,
-   or merge `baseBranch` onward (e.g. into `main`).
+{{merge-policy}}
+
+{{review-timing}}
 
 # Writing task descriptions
 
-Every task you create gets a description in GitHub-flavored Markdown with these two
-sections, Toodo renders it and uses it as the GitHub issue body, and completion criteria
-in `criteria`.
+Pick `task_type` by the kind of change (feat, fix, modify, refactor, docs, test, chore,
+rnd) and write a short imperative title. {{task-description}}
 
 ```markdown
 ## Purpose
@@ -191,16 +154,9 @@ tasks and what they decided, links, and constraints the implementer has to respe
 ]
 ```
 
-- Write it for an agent that starts from this description alone, without your session.
-- Make every criterion verifiable, one item each. Use an automatic kind when Toodo can
-  check it (`command` with a short command that exits 0, `url`, `pr_open_ci_green`) and
-  `manual` otherwise. The merge criterion (`pr_merged`, or `branch_merged_locally`
-  without `origin`) is added first unless you pass `merge_criterion: false`, e.g. for
-  research or an errand that ships no code.
-- Use `-` lists, backticks for code, paths, and commands, fenced code blocks, and links;
-  no raw HTML.
-- Pick `task_type` by the kind of change (feat, fix, modify, refactor, docs, test, chore,
-  rnd) and write a short imperative title.
+Write it for an agent that starts from this description alone, without your session.
+Prefer an automatic criterion kind whenever Toodo can check it, e.g. `command` with a
+short command that exits 0.
 
 # Criteria
 

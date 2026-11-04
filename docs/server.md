@@ -408,7 +408,9 @@ Besides the regular task tools, two arguments help an agent wire and start a pla
   (the pane the command ran in), and `paneError` when the panes could not be listed or
   the command did not run; the task is started either way.
 
-`read_toodo_skill` returns the worker skill (`src-tauri/src/mcp/toodo-skill.md`). Toodo has
+`read_toodo_skill` returns the worker skill (`src-tauri/src/mcp/toodo-skill.md`); rules it
+shares with the `initialize` instructions come from `src-tauri/src/mcp/shared/` (see
+[docs/agents.md](agents.md)). Toodo has
 no merge tool: agents follow the workspace's agent merge policy, which never allows merging
 past the base branch.
 
