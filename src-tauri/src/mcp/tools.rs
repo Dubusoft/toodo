@@ -2217,6 +2217,172 @@ pub enum RunStatusReply {
     Runs { runs: Vec<RunStatus> },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct PullRequestStatusRequest {
+    /// The task whose pull request to read; every pull request Toodo watches when
+    /// omitted.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
+}
+
+/// One CI check of a pull request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestCheck {
+    pub name: String,
+    pub state: types::ChecksStatus,
+    /// How it ended as GitHub reports it (e.g. `failure`, `skipped`); `null` while it runs.
+    pub conclusion: Option<String>,
+    /// The page with its details or log.
+    pub url: Option<String>,
+}
+
+/// The latest review of one reviewer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestReview {
+    pub author: Option<String>,
+    /// e.g. `approved`, `changes_requested`, `commented`.
+    pub state: String,
+}
+
+/// The pull request of an `in_review` task as Toodo's last check read it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolledPullRequestStatus {
+    pub task_id: TaskId,
+    pub url: String,
+    /// `open`: Toodo keeps the state of open pull requests only.
+    pub state: &'static str,
+    pub base: String,
+    pub head_sha: Option<String>,
+    /// All checks combined: `failing` if any failed, else `pending` if any runs, else
+    /// `passing`; `null` without checks.
+    pub checks: Option<types::ChecksStatus>,
+    pub review: types::ReviewStatus,
+    pub check_runs: Vec<PullRequestCheck>,
+    pub reviews: Vec<PullRequestReview>,
+    /// When Toodo read it, in seconds since the Unix epoch.
+    pub checked_at: i64,
+    /// What to do next with it.
+    pub next: String,
+}
+
+/// One pull request for `task_id`, or every one Toodo watches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum PullRequestStatusReply {
+    One(Box<PolledPullRequestStatus>),
+    #[serde(rename_all = "camelCase")]
+    All {
+        pull_requests: Vec<PolledPullRequestStatus>,
+    },
+}
+
+/// The pull request state the background check keeps in `polled`, without running `gh`:
+/// the one of `task_id`, or all of them ordered by task ID.
+pub fn pull_request_status(
+    storage: &Storage,
+    polled: &HashMap<model::TaskId, completion::PolledPullRequest>,
+    request: PullRequestStatusRequest,
+) -> CommandResult<PullRequestStatusReply> {
+    let Some(id) = request.task_id else {
+        let mut all: Vec<_> = polled
+            .iter()
+            .map(|(&id, polled)| polled_status(id, polled))
+            .collect();
+        all.sort_by_key(|status| status.task_id.0);
+        return Ok(PullRequestStatusReply::All { pull_requests: all });
+    };
+    let task_id = id.into();
+    if let Some(found) = polled.get(&task_id) {
+        return Ok(PullRequestStatusReply::One(Box::new(polled_status(
+            task_id, found,
+        ))));
+    }
+    let task = storage
+        .get_task(task_id)?
+        .ok_or(StorageError::TaskNotFound(task_id))?;
+    let id = task.id;
+    Err(CommandError::rejected(
+        match (&task.pull_request_url, task.status) {
+            (_, crate::domain::status::TaskStatus::Done) => format!(
+                "task {id} is done, and Toodo keeps the state of open pull requests only; read its \
+             pull request and completion with get_task {{\"task_id\": {id}}}"
+            ),
+            (None, _) => format!(
+                "task {id} has no pull request yet; push its branch and open one into the \
+             workspace base branch (gh pr create --base <baseBranch> --head <branch>), then \
+             call pull_request_status again after a minute, when Toodo has read it"
+            ),
+            (Some(url), status) => format!(
+                "Toodo has not read pull request {url} of task {id} yet: it reads the open pull \
+             requests of in_review tasks every minute, and this task is {status}; call \
+             pull_request_status again after a minute, or get_task {{\"task_id\": {id}}} \
+             for the task's status"
+            ),
+        },
+    ))
+}
+
+fn polled_status(
+    task: model::TaskId,
+    polled: &completion::PolledPullRequest,
+) -> PolledPullRequestStatus {
+    use crate::adapters::github::{ChecksState, PullRequestState, ReviewState};
+    let viewed = &polled.viewed;
+    let status = viewed.status;
+    let next = match (status.checks, status.review) {
+        (Some(ChecksState::Failing), _) => {
+            "a check failed; read the failing checks at their url, fix them, and push; Toodo \
+             reads the pull request again every minute"
+        }
+        (_, ReviewState::ChangesRequested) => "a reviewer requested changes; address them and push",
+        (Some(ChecksState::Pending), _) => {
+            "checks are still running; call pull_request_status again after a minute"
+        }
+        (Some(ChecksState::Passing), _) => {
+            "every check passed; merge only as the workspace's agentMerge allows (current_task \
+             returns it), otherwise wait for the user"
+        }
+        (None, _) => "the pull request has no checks; wait for the user to review and merge it",
+    };
+    PolledPullRequestStatus {
+        task_id: task.into(),
+        url: viewed.pull_request.url.clone(),
+        state: match viewed.pull_request.state {
+            PullRequestState::Open => "open",
+            PullRequestState::Closed => "closed",
+            PullRequestState::Merged => "merged",
+        },
+        base: viewed.pull_request.base.clone(),
+        head_sha: viewed.head_sha.clone(),
+        checks: status.checks.map(Into::into),
+        review: status.review.into(),
+        check_runs: viewed
+            .check_runs
+            .iter()
+            .map(|run| PullRequestCheck {
+                name: run.name.clone(),
+                state: run.state.into(),
+                conclusion: run.conclusion.clone(),
+                url: run.url.clone(),
+            })
+            .collect(),
+        reviews: viewed
+            .reviews
+            .iter()
+            .map(|review| PullRequestReview {
+                author: review.author.clone(),
+                state: review.state.clone(),
+            })
+            .collect(),
+        checked_at: polled.checked_at,
+        next: next.to_owned(),
+    }
+}
+
 /// Starts an agent CLI for an `in_progress` task of a workspace with runner plain or
 /// tmux, as the app's Start run does; `mcp` defaults to `true`.
 pub fn start_run(

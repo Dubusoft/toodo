@@ -96,6 +96,8 @@ that no placeholder is left.
 - `get_task` shows a task's progress and blocker notes, its pull request, its commits,
   and the agent status of each pane (`working`, `idle`, `blocked`, `done`). A blocker
   note means the worker needs someone; answer it or tell the user.
+- `pull_request_status` (without `task_id`) lists the open pull requests of `in_review`
+  tasks with their CI checks and reviews as Toodo last read them, without running `gh`.
 - A worker that finds a missing prerequisite creates the prerequisite tasks and pauses
   its own task with `add_dependency`. Start those prerequisites; once they are done,
   `start_task` on the paused task resumes it.

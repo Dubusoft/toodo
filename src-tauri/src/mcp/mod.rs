@@ -51,6 +51,7 @@ use serde_json::Value;
 use crate::adapters::git::Git;
 use crate::adapters::github::GitHub;
 use crate::adapters::herdr::Herdr;
+use crate::commands::completion::{PullRequestStatusState, lock_statuses};
 use crate::commands::events::Notifier;
 use crate::commands::tasks as task_commands;
 use crate::commands::types::Task;
@@ -186,6 +187,8 @@ pub trait Backend: Notifier + Send + Sync + 'static {
     fn server(&self) -> &ServerStatus;
     /// Marked whenever a change is announced through [`Notifier`].
     fn changes(&self) -> tokio::sync::watch::Receiver<()>;
+    /// The open pull requests of `in_review` tasks as the background check last read them.
+    fn pull_request_statuses(&self) -> &PullRequestStatusState;
 }
 
 /// How agents reach the server, shown in the app; `error` tells why it is not running.
@@ -486,9 +489,12 @@ impl Access {
         };
         let scopes = grant.scopes;
         let allowed = match name {
-            "read_toodo_skill" | "list_workspaces" | "list_tasks" | "search_tasks" | "get_task" => {
-                scopes.can_read()
-            }
+            "read_toodo_skill"
+            | "list_workspaces"
+            | "list_tasks"
+            | "search_tasks"
+            | "get_task"
+            | "pull_request_status" => scopes.can_read(),
             "create_workspace" | "create_task" | "create_plan" | "update_task"
             | "add_dependency" | "remove_dependency" | "add_related" | "remove_related"
             | "add_criterion" | "remove_criterion" | "check_criterion" | "add_progress_note"
@@ -1087,6 +1093,21 @@ impl ToodoMcp {
     }
 
     #[tool(
+        description = "Read the pull request of an in_review task (task_id), or of every in_review task when omitted, as Toodo's background check last read it (every minute), without running gh: url, state, base, headSha, checks (all checks combined: failing, pending, passing, or null without checks), review (approved, changes_requested, or pending), checkRuns (name, state, conclusion, url of each check), reviews (the latest review of each reviewer), checkedAt, and next, what to do now. Use it instead of gh pr checks or gh pr view to follow CI and reviews of your pull request; call it again after a minute for newer state."
+    )]
+    fn pull_request_status(
+        &self,
+        Parameters(request): Parameters<tools::PullRequestStatusRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let polled = lock_statuses(self.backend.pull_request_statuses()).clone();
+        reply(tools::pull_request_status(
+            &lock(self.backend.reader()),
+            &polled,
+            request,
+        ))
+    }
+
+    #[tool(
         description = "Read a plain or tmux run with its events (launch, result, exit, stop) and the end of its stdout and stderr, tail_bytes of each (default 65536, at most 4194304), with the MCP token redacted. For an active tmux run, attach is the shell command that opens its terminal session to watch it."
     )]
     async fn run_log(
@@ -1524,6 +1545,7 @@ mod tests {
         /// Where the runners keep their runs.
         runs_dir: tempfile::TempDir,
         server: ServerStatus,
+        pull_request_statuses: PullRequestStatusState,
         changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
         workspaces_changed: std::sync::Mutex<usize>,
         changes: tokio::sync::watch::Sender<()>,
@@ -1559,6 +1581,7 @@ mod tests {
                     error: None,
                     rejections: Rejections::default(),
                 },
+                pull_request_statuses: PullRequestStatusState::default(),
                 changed: std::sync::Mutex::default(),
                 workspaces_changed: std::sync::Mutex::default(),
                 changes: tokio::sync::watch::Sender::new(()),
@@ -1617,6 +1640,10 @@ mod tests {
 
         fn changes(&self) -> tokio::sync::watch::Receiver<()> {
             self.changes.subscribe()
+        }
+
+        fn pull_request_statuses(&self) -> &PullRequestStatusState {
+            &self.pull_request_statuses
         }
     }
 
@@ -1764,6 +1791,70 @@ mod tests {
         assert!(missing.contains("run_status"), "{missing}");
         let neither = failed(server.run_status(arguments(serde_json::json!({}))));
         assert!(neither.contains("run_id"), "{neither}");
+    }
+
+    #[test]
+    fn pull_request_status_returns_the_polled_state_without_gh() {
+        use crate::adapters::github::{
+            CheckRun, ChecksState, PullRequest, PullRequestState, PullRequestStatus, Review,
+            ReviewState, ViewedPullRequest,
+        };
+        use crate::commands::completion::PolledPullRequest;
+        let (storage, task) = storage_with_task(None);
+        let backend = Arc::new(TestBackend::new(storage));
+        let server = ToodoMcp::new(backend.clone());
+        let id = task.id.0;
+
+        let missing =
+            failed(server.pull_request_status(arguments(serde_json::json!({"task_id": id}))));
+        assert!(missing.contains("gh pr create"), "{missing}");
+
+        let url = "https://github.com/acme/toodo/pull/7";
+        lock_statuses(&backend.pull_request_statuses).insert(
+            task.id,
+            PolledPullRequest {
+                viewed: ViewedPullRequest {
+                    pull_request: PullRequest {
+                        url: url.to_owned(),
+                        state: PullRequestState::Open,
+                        base: "main".to_owned(),
+                        merged_at: None,
+                    },
+                    status: PullRequestStatus {
+                        checks: Some(ChecksState::Failing),
+                        review: ReviewState::ChangesRequested,
+                    },
+                    head_sha: Some("abc1234".to_owned()),
+                    check_runs: vec![CheckRun {
+                        name: "rust".to_owned(),
+                        state: ChecksState::Failing,
+                        conclusion: Some("failure".to_owned()),
+                        url: Some("https://github.com/acme/toodo/actions/runs/1".to_owned()),
+                    }],
+                    reviews: vec![Review {
+                        author: Some("octo".to_owned()),
+                        state: "changes_requested".to_owned(),
+                    }],
+                },
+                checked_at: 1_800_000_000,
+            },
+        );
+        let one =
+            succeeded(server.pull_request_status(arguments(serde_json::json!({"task_id": id}))));
+        assert_eq!(one["taskId"], id, "{one}");
+        assert_eq!(one["url"], url);
+        assert_eq!(one["state"], "open");
+        assert_eq!(one["checks"], "failing");
+        assert_eq!(one["review"], "changes_requested");
+        assert_eq!(one["checkRuns"][0]["name"], "rust");
+        assert_eq!(one["checkRuns"][0]["conclusion"], "failure");
+        assert_eq!(one["reviews"][0]["author"], "octo");
+        assert_eq!(one["checkedAt"], 1_800_000_000);
+        assert!(one["next"].as_str().unwrap().contains("fix"), "{one}");
+
+        let all = succeeded(server.pull_request_status(arguments(serde_json::json!({}))));
+        assert_eq!(all["pullRequests"].as_array().unwrap().len(), 1, "{all}");
+        assert_eq!(all["pullRequests"][0]["url"], url);
     }
 
     /// A database with one local workspace and one planned task, and the machine's
@@ -3117,7 +3208,8 @@ mod tests {
                 "list_workspaces",
                 "list_tasks",
                 "search_tasks",
-                "get_task"
+                "get_task",
+                "pull_request_status"
             ]
             .into_iter()
             .map(str::to_owned)

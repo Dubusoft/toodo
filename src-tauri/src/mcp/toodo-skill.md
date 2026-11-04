@@ -125,6 +125,10 @@ its scope (a bug in the base branch, a missing API, a refactor the change depend
    for the branch already exists, push to it instead of opening another. A pull request
    into any other base is ignored by Toodo. Then call `add_progress_note` with the pull
    request URL and what it changes.
+4. Follow its CI checks and reviews with `pull_request_status` and your task id rather
+   than `gh pr checks` or `gh pr view`: Toodo reads them every minute once the task is
+   `in_review`, and `next` says what to do (fix failing checks, address requested
+   changes, or wait).
 
 ### Merging
 

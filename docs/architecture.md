@@ -801,7 +801,10 @@ path deletes journal history.
     workspaces with runner plain or tmux (`start_run`, the app's Start run;
     `run_status`, one run or every run of a task with whether it may still be running and
     what to do next; `run_log`; `stop_run`; and `reconcile_run`, over the same commands
-    as the app's runs panel), and
+    as the app's runs panel), `pull_request_status` (the open pull request of an
+    `in_review` task, or of all of them, as the background check last read it: state,
+    combined and per-check CI state, review decision and latest reviews, read time, and
+    what to do next; it never runs `gh`), and
     `add_progress_note` / `report_blocker`, which append a
     timestamped Markdown note (`progress` or `blocker`, table `task_notes`) to a task
     without changing its status. They reuse the storage rules, so cycles are rejected. The
