@@ -336,7 +336,7 @@ ones it gets, and sends itself a test notification:
 | Setting | Notifications |
 | --- | --- |
 | Agent finished or needs input | An agent of a task stopped working, or started waiting for input |
-| Pull request checks and reviews | CI of a task's pull request passed or failed; a reviewer approved it or requested changes |
+| Pull request checks and reviews | CI of a task's pull request passed or failed; a reviewer approved it or requested changes. A pull request Toodo first reads with CI already failed or changes already requested notifies too, except in the first check after the server starts |
 | Task awaiting completion | A task moved to awaiting completion |
 
 Notifications report what changed on its own: agents, pull requests, and the server's
@@ -462,7 +462,8 @@ on loopback as before and still see every tool.
 **What a chat app can do.** An app gets one or both scopes:
 
 - `toodo.read`: `read_toodo_skill`, `list_workspaces`, `list_tasks`, `search_tasks`,
-  `get_task`, and the [task and run resources](#task-and-run-resources).
+  `get_task`, `pull_request_status`, and the
+  [task and run resources](#task-and-run-resources).
 - `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `create_plan`,
   `update_task`, `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
   `add_criterion`, `remove_criterion`, `check_criterion`, `add_progress_note`,

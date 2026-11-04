@@ -57,7 +57,6 @@ impl<T> std::ops::Deref for State<'_, T> {
 /// server keeps in memory.
 pub trait Runtime: crate::mcp::Backend {
     fn agent_statuses(&self) -> &events::AgentStatusState;
-    fn pull_request_statuses(&self) -> &completion::PullRequestStatusState;
     fn backups(&self) -> &backup::Backups;
 }
 

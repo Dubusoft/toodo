@@ -7,7 +7,7 @@ use std::time::Duration;
 use super::pull_request::{adopt_pull_request, clear_missing_worktree};
 use super::settle::{Settle, Settled, branch_commits, settle};
 use crate::adapters::git::Git;
-use crate::adapters::github::{ChecksState, GitHub, PullRequestState, PullRequestStatus};
+use crate::adapters::github::{ChecksState, GitHub, PullRequestState, ViewedPullRequest};
 use crate::adapters::herdr::Herdr;
 use crate::commands::Runtime;
 use crate::commands::events::Notifier;
@@ -18,23 +18,31 @@ use crate::domain::model;
 use crate::domain::status::TaskStatus;
 use crate::storage::StorageError;
 
-/// CI and review state of the open pull request of each `in_review` task, as of the last
-/// check.
-pub type PullRequestStatusState = Mutex<HashMap<model::TaskId, PullRequestStatus>>;
+/// The open pull request of an `in_review` task as the last successful check read it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolledPullRequest {
+    pub viewed: ViewedPullRequest,
+    /// When it was read, in seconds since the Unix epoch.
+    pub checked_at: i64,
+}
 
-pub(super) fn lock_statuses(
+/// The open pull request of each `in_review` task with its CI and review state, as of the
+/// last check.
+pub type PullRequestStatusState = Mutex<HashMap<model::TaskId, PolledPullRequest>>;
+
+pub(crate) fn lock_statuses(
     statuses: &PullRequestStatusState,
-) -> MutexGuard<'_, HashMap<model::TaskId, PullRequestStatus>> {
+) -> MutexGuard<'_, HashMap<model::TaskId, PolledPullRequest>> {
     statuses.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The pull request statuses, ordered by task ID.
 pub(super) fn all_statuses(
-    statuses: &HashMap<model::TaskId, PullRequestStatus>,
+    statuses: &HashMap<model::TaskId, PolledPullRequest>,
 ) -> Vec<types::TaskPullRequestStatus> {
     let mut all: Vec<_> = statuses
         .iter()
-        .map(|(&id, &status)| types::TaskPullRequestStatus::new(id, status))
+        .map(|(&id, polled)| types::TaskPullRequestStatus::new(id, polled.viewed.status))
         .collect();
     all.sort_by_key(|status| status.task_id.0);
     all
@@ -51,6 +59,7 @@ pub fn spawn(app: Arc<dyn Runtime>) -> io::Result<()> {
         .spawn(move || {
             let mut failures = HashMap::new();
             let mut activity_failures = HashMap::new();
+            let mut first = true;
             loop {
                 check_pull_requests(
                     app.storage(),
@@ -62,6 +71,14 @@ pub fn spawn(app: Arc<dyn Runtime>) -> io::Result<()> {
                     Some(&mut activity_failures),
                     app.pull_request_statuses(),
                 );
+                if first {
+                    // The first state is announced even when it is empty, so push
+                    // notifications take it as their baseline and alert on the next
+                    // pull request.
+                    first = false;
+                    let statuses = all_statuses(&lock_statuses(app.pull_request_statuses()));
+                    app.pull_request_statuses_changed(&statuses);
+                }
                 thread::sleep(PULL_REQUEST_CHECK_PERIOD);
             }
         })?;
@@ -184,7 +201,8 @@ pub(super) fn check_pull_requests(
                                 if task.status == TaskStatus::InReview
                                     && viewed.pull_request.state == PullRequestState::Open =>
                             {
-                                after.insert(id, viewed.status);
+                                let checked_at = lock(storage).now();
+                                after.insert(id, PolledPullRequest { viewed, checked_at });
                             }
                             _ => {
                                 after.remove(&id);
@@ -201,10 +219,12 @@ pub(super) fn check_pull_requests(
             }
         }
     }
-    if after != before {
-        notifier.pull_request_statuses_changed(&all_statuses(&after));
-        *lock_statuses(statuses) = after;
+    // Only the combined CI and review state is announced; every read is kept.
+    let announced = all_statuses(&after);
+    if announced != all_statuses(&before) {
+        notifier.pull_request_statuses_changed(&announced);
     }
+    *lock_statuses(statuses) = after;
 }
 
 /// Reads and records the git activity of every `in_progress` or `in_review` task with a

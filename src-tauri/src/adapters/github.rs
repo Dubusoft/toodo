@@ -79,6 +79,29 @@ pub struct PullRequestStatus {
     pub review: ReviewState,
 }
 
+/// One CI check of a pull request: a check run (GitHub Actions) or a commit status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckRun {
+    /// The check run's name or the commit status's context; empty when `gh` reports none.
+    pub name: String,
+    pub state: ChecksState,
+    /// How it ended as GitHub reports it, lowercased (e.g. `failure`, `skipped`); `None`
+    /// while a check run has not finished.
+    pub conclusion: Option<String>,
+    /// The page with its details or log.
+    pub url: Option<String>,
+}
+
+/// The latest review of one reviewer of a pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Review {
+    /// The reviewer's login; `None` once their account is deleted.
+    pub author: Option<String>,
+    /// The review state as GitHub reports it, lowercased (e.g. `approved`,
+    /// `changes_requested`, `commented`).
+    pub state: String,
+}
+
 /// A pull request read with [`GitHub::pull_request`], with its CI and review state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewedPullRequest {
@@ -86,6 +109,10 @@ pub struct ViewedPullRequest {
     pub status: PullRequestStatus,
     /// The commit at the head of its branch, which its checks ran on.
     pub head_sha: Option<String>,
+    /// Each check that [`PullRequestStatus::checks`] combines, in the order `gh` lists them.
+    pub check_runs: Vec<CheckRun>,
+    /// The latest review of each reviewer.
+    pub reviews: Vec<Review>,
 }
 
 /// Fields requested with `--json` for a [`ViewedPullRequest`].
@@ -93,17 +120,36 @@ const VIEWED_PULL_REQUEST_FIELDS: &str =
     "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews,headRefOid";
 
 fn parse_viewed_pull_request(value: &Value) -> Option<ViewedPullRequest> {
+    let check_runs = parse_check_runs(value.get("statusCheckRollup")?.as_array()?)?;
     Some(ViewedPullRequest {
         pull_request: parse_pull_request(value)?,
         status: PullRequestStatus {
-            checks: parse_checks(value.get("statusCheckRollup")?.as_array()?)?,
+            checks: combine_checks(&check_runs),
             review: parse_review(value)?,
         },
         head_sha: value
             .get("headRefOid")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        check_runs,
+        reviews: parse_latest_reviews(value.get("latestReviews")?.as_array()?)?,
     })
+}
+
+fn parse_latest_reviews(latest: &[Value]) -> Option<Vec<Review>> {
+    latest
+        .iter()
+        .map(|review| {
+            Some(Review {
+                author: review
+                    .get("author")
+                    .and_then(|author| author.get("login"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                state: review.get("state")?.as_str()?.to_lowercase(),
+            })
+        })
+        .collect()
 }
 
 /// What a pull request shows on the git activity timeline of its task.
@@ -161,34 +207,67 @@ fn parse_pull_request_activity(value: &Value) -> Option<PullRequestActivity> {
     })
 }
 
-/// Combines check runs (GitHub Actions) and commit statuses: any failure fails the
-/// pull request, otherwise any unfinished check keeps it pending.
+/// The combined state of the checks in `rollup`; see [`combine_checks`].
 fn parse_checks(rollup: &[Value]) -> Option<Option<ChecksState>> {
-    let mut combined = None;
+    Some(combine_checks(&parse_check_runs(rollup)?))
+}
+
+/// Reads check runs (GitHub Actions) and commit statuses; other kinds are skipped.
+fn parse_check_runs(rollup: &[Value]) -> Option<Vec<CheckRun>> {
+    let mut runs = Vec::new();
     for check in rollup {
         let field = |name: &str| check.get(name).and_then(Value::as_str);
-        let state = match field("__typename")? {
-            "CheckRun" if field("status")? != "COMPLETED" => ChecksState::Pending,
-            "CheckRun" => match field("conclusion")? {
-                "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => {
-                    ChecksState::Failing
-                }
-                _ => ChecksState::Passing,
-            },
-            "StatusContext" => match field("state")? {
-                "FAILURE" | "ERROR" => ChecksState::Failing,
-                "PENDING" | "EXPECTED" => ChecksState::Pending,
-                _ => ChecksState::Passing,
-            },
+        let text = |name: &str| {
+            field(name)
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+        };
+        let (state, conclusion, name, url) = match field("__typename")? {
+            "CheckRun" if field("status")? != "COMPLETED" => {
+                (ChecksState::Pending, None, "name", "detailsUrl")
+            }
+            "CheckRun" => {
+                let conclusion = field("conclusion")?;
+                let state = match conclusion {
+                    "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED"
+                    | "STARTUP_FAILURE" => ChecksState::Failing,
+                    _ => ChecksState::Passing,
+                };
+                (state, Some(conclusion), "name", "detailsUrl")
+            }
+            "StatusContext" => {
+                let raw = field("state")?;
+                let state = match raw {
+                    "FAILURE" | "ERROR" => ChecksState::Failing,
+                    "PENDING" | "EXPECTED" => ChecksState::Pending,
+                    _ => ChecksState::Passing,
+                };
+                (state, Some(raw), "context", "targetUrl")
+            }
             _ => continue,
         };
-        combined = Some(match (combined, state) {
-            (Some(ChecksState::Failing), _) | (_, ChecksState::Failing) => ChecksState::Failing,
-            (Some(ChecksState::Pending), _) | (_, ChecksState::Pending) => ChecksState::Pending,
-            _ => ChecksState::Passing,
+        runs.push(CheckRun {
+            name: text(name).unwrap_or_default(),
+            state,
+            conclusion: conclusion
+                .filter(|conclusion| !conclusion.is_empty())
+                .map(str::to_lowercase),
+            url: text(url),
         });
     }
-    Some(combined)
+    Some(runs)
+}
+
+/// Any failure fails the pull request, otherwise any unfinished check keeps it pending;
+/// `None` without checks.
+fn combine_checks(runs: &[CheckRun]) -> Option<ChecksState> {
+    runs.iter()
+        .map(|run| run.state)
+        .reduce(|combined, state| match (combined, state) {
+            (ChecksState::Failing, _) | (_, ChecksState::Failing) => ChecksState::Failing,
+            (ChecksState::Pending, _) | (_, ChecksState::Pending) => ChecksState::Pending,
+            _ => ChecksState::Passing,
+        })
 }
 
 /// The review decision GitHub computes from required reviews. Without required reviews
@@ -904,6 +983,8 @@ mod tests {
                         review: ReviewState::Pending,
                     },
                     head_sha: None,
+                    check_runs: Vec::new(),
+                    reviews: Vec::new(),
                 }
             );
         }
@@ -1006,6 +1087,56 @@ mod tests {
                 "case {index}"
             );
         }
+    }
+
+    #[test]
+    fn pull_request_keeps_each_check_and_latest_review() {
+        let view = r#"{"baseRefName":"main","headRefOid":"abc1234","latestReviews":[{"author":{"login":"octo"},"state":"CHANGES_REQUESTED"},{"author":null,"state":"COMMENTED"}],"mergedAt":null,"reviewDecision":"","state":"OPEN","statusCheckRollup":[{"__typename":"CheckRun","name":"rust","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/acme/toodo/actions/runs/1"},{"__typename":"CheckRun","name":"web","status":"IN_PROGRESS","conclusion":"","detailsUrl":""},{"__typename":"StatusContext","context":"deploy","state":"SUCCESS","targetUrl":"https://example.com/deploy"}],"url":"https://github.com/acme/toodo/pull/7"}"#;
+        let (github, _) = github(vec![Ok(view.to_owned())]);
+        let viewed = github.pull_request(URL).unwrap();
+        assert_eq!(
+            viewed.check_runs,
+            [
+                CheckRun {
+                    name: "rust".to_owned(),
+                    state: ChecksState::Failing,
+                    conclusion: Some("failure".to_owned()),
+                    url: Some("https://github.com/acme/toodo/actions/runs/1".to_owned()),
+                },
+                CheckRun {
+                    name: "web".to_owned(),
+                    state: ChecksState::Pending,
+                    conclusion: None,
+                    url: None,
+                },
+                CheckRun {
+                    name: "deploy".to_owned(),
+                    state: ChecksState::Passing,
+                    conclusion: Some("success".to_owned()),
+                    url: Some("https://example.com/deploy".to_owned()),
+                },
+            ]
+        );
+        assert_eq!(
+            viewed.reviews,
+            [
+                Review {
+                    author: Some("octo".to_owned()),
+                    state: "changes_requested".to_owned(),
+                },
+                Review {
+                    author: None,
+                    state: "commented".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(
+            viewed.status,
+            PullRequestStatus {
+                checks: Some(ChecksState::Failing),
+                review: ReviewState::ChangesRequested,
+            }
+        );
     }
 
     #[test]

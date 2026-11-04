@@ -264,15 +264,15 @@ impl Backend for Services {
     fn changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.changes.subscribe()
     }
+
+    fn pull_request_statuses(&self) -> &PullRequestStatusState {
+        &self.pull_request_statuses
+    }
 }
 
 impl Runtime for Services {
     fn agent_statuses(&self) -> &AgentStatusState {
         &self.agent_statuses
-    }
-
-    fn pull_request_statuses(&self) -> &PullRequestStatusState {
-        &self.pull_request_statuses
     }
 
     fn backups(&self) -> &Backups {

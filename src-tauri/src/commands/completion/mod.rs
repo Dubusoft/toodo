@@ -32,12 +32,13 @@ use super::State;
 use super::types::{self, CommitRecord, Task, TaskId};
 use super::{CommandError, CommandResult, GitHubState, GitState, HerdrState, StorageState};
 
-pub use background::{PullRequestStatusState, spawn};
+pub(crate) use background::lock_statuses;
+pub use background::{PolledPullRequest, PullRequestStatusState, spawn};
 pub(crate) use conclude::{MergedWithTarget, OpenPullRequest, complete_merged_with, conclude};
 pub(super) use pull_request::{checkout, clear_missing_worktree, ensure_closing_reference};
 pub(crate) use settle::{complete, complete_without_pull_request};
 
-use background::{all_statuses, lock_statuses};
+use background::all_statuses;
 use pull_request::{open, refresh};
 
 /// Reads the commits of an `in_progress` or `in_review` task's branch that are not on
