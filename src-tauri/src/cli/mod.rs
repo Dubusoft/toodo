@@ -30,7 +30,7 @@ const USAGE: &str = "Usage: toodo init [--port N | --listen HOST:PORT] [--data-d
        toodo start [--data-dir DIR]
        toodo stop [--data-dir DIR]
        toodo status [--data-dir DIR]
-       toodo service install [--data-dir DIR]
+       toodo service install [--port N | --listen HOST:PORT] [--data-dir DIR]
        toodo update [--channel dev|latest] [--allow-downgrade] [--data-dir DIR]
        toodo --version | --help
 
@@ -53,8 +53,8 @@ Commands:
 
 Options:
   --port N            port to listen on, keeping the saved host (default 47616)
-  --listen HOST:PORT  address to listen on (default 127.0.0.1:47616); init saves it in
-                      DIR/cli.json for the other commands
+  --listen HOST:PORT  address to listen on (default 127.0.0.1:47616); init and service
+                      install save it in DIR/cli.json for the other commands
   --data-dir DIR      database, access tokens, and logs (default $TOODO_DATA_DIR, else
                       the directory init recorded in $XDG_CONFIG_HOME/toodo/data-dir
                       (~/.config/toodo/data-dir), else $XDG_DATA_HOME/toodo-server or
@@ -77,7 +77,8 @@ enum Command {
     Start(Option<PathBuf>),
     Stop(Option<PathBuf>),
     Status(Option<PathBuf>),
-    ServiceInstall(Option<PathBuf>),
+    /// The listen address to save and the data directory.
+    ServiceInstall(Option<ListenFlag>, Option<PathBuf>),
     /// The channel, whether a downgrade is allowed, and the data directory.
     Update(Option<Channel>, bool, Option<PathBuf>),
 }
@@ -143,8 +144,13 @@ fn parse(args: &[String]) -> Result<Command, String> {
         } else {
             String::new()
         };
-        let init_only = matches!(name, "--port" | "--listen" | "--no-mcp");
-        if init_only && command != "init" {
+        let sets_listen = matches!(name, "--port" | "--listen");
+        if sets_listen && !matches!(command, "init" | "service install") {
+            return Err(format!(
+                "{name} is an option of toodo init and toodo service install, not of {command}"
+            ));
+        }
+        if name == "--no-mcp" && command != "init" {
             return Err(format!(
                 "{name} is an option of toodo init, not of {command}"
             ));
@@ -194,7 +200,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         "stop" => Command::Stop(data_dir),
         "status" => Command::Status(data_dir),
         "update" => Command::Update(channel, allow_downgrade, data_dir),
-        _ => Command::ServiceInstall(data_dir),
+        _ => Command::ServiceInstall(init.listen, data_dir),
     })
 }
 
@@ -228,10 +234,9 @@ pub fn main() {
             .and_then(|data| stop(&data, &var))
             .map(|()| 0),
         Command::Status(dir) => data_dir(dir.as_deref(), &var).and_then(|data| status(&data, &var)),
-        Command::ServiceInstall(dir) => data_dir(dir.as_deref(), &var).and_then(|data| {
-            let listen = settings::listen(&data)?;
-            service::install(&data, listen, &var).map(|()| 0)
-        }),
+        Command::ServiceInstall(flag, dir) => data_dir(dir.as_deref(), &var)
+            .and_then(|data| service_install(&data, flag, &var))
+            .map(|()| 0),
         Command::Update(channel, allow_downgrade, dir) => {
             data_dir(dir.as_deref(), &var).and_then(|data| {
                 let flag = settings::data_dir_flag(&data, &var);
@@ -250,6 +255,24 @@ pub fn main() {
 
 fn data_dir(flag: Option<&Path>, var: Var) -> Result<DataDir, String> {
     settings::data_dir(flag, var)
+}
+
+/// `toodo service install`: saves the address of `--port` or `--listen` like init, then
+/// writes and restarts the service on the saved address (else the default).
+fn service_install(data: &DataDir, flag: Option<ListenFlag>, var: Var) -> Result<(), String> {
+    let saved = settings::saved_listen(data)?;
+    let listen = settings::resolve_listen(flag, saved);
+    if flag.is_some() && saved != Some(listen) {
+        server::create_private_dir(data.path()).map_err(|error| {
+            format!(
+                "cannot create the data directory {}: {error}; check its permissions or pass \
+                 another --data-dir",
+                data.path().display()
+            )
+        })?;
+        settings::save_listen(data, listen)?;
+    }
+    service::install(data, listen, var)
 }
 
 /// Who runs the server of a data directory.
@@ -552,7 +575,18 @@ mod tests {
         );
         assert_eq!(
             parsed(&["service", "install", "--data-dir", "/d"]).unwrap(),
-            Command::ServiceInstall(dir.clone())
+            Command::ServiceInstall(None, dir.clone())
+        );
+        assert_eq!(
+            parsed(&["service", "install", "--listen", "0.0.0.0:80"]).unwrap(),
+            Command::ServiceInstall(
+                Some(ListenFlag::Address("0.0.0.0:80".parse().unwrap())),
+                None
+            )
+        );
+        assert_eq!(
+            parsed(&["service", "install", "--port=8080"]).unwrap(),
+            Command::ServiceInstall(Some(ListenFlag::Port(8080)), None)
         );
         assert_eq!(
             parsed(&["update"]).unwrap(),
@@ -600,7 +634,11 @@ mod tests {
         );
         assert_eq!(
             error(&["start", "--port", "1"]),
-            "--port is an option of toodo init, not of start"
+            "--port is an option of toodo init and toodo service install, not of start"
+        );
+        assert_eq!(
+            error(&["service", "install", "--no-mcp"]),
+            "--no-mcp is an option of toodo init, not of service install"
         );
         assert_eq!(error(&["init", "--no-mcp=yes"]), "--no-mcp takes no value");
         assert_eq!(

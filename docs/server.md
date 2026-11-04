@@ -125,8 +125,9 @@ npm i -g @dubusoft/toodo
 - `toodo service install`: run the server as the systemd user service
   `toodo-server.service`, in the same layout as `scripts/install-server.sh`
   (`~/.local/bin/toodo-server`, the web app in `~/.local/share/toodo-server-web`, see
-  [systemd](#systemd)). It enables and restarts the service and notes when lingering is
-  off.
+  [systemd](#systemd)). It enables and restarts the service and turns on lingering with
+  `loginctl enable-linger`, noting the `sudo` command when that is not allowed. With
+  `--port N` or `--listen HOST:PORT` it saves a new listen address first, like `init`.
 - `toodo update [--channel dev|latest] [--allow-downgrade]`: update a global install and
   restart the server on it, see below.
 - `toodo --version`, `toodo --help`. `--version` prints the version of the installed npm
@@ -535,16 +536,20 @@ To publish the server through Cloudflare, see
 ### systemd
 
 Run it as the user who runs herdr, if any, so it finds herdr's socket, `~/.ssh/config`, and the
-`gh` login. `scripts/install-server.sh` writes
+`gh` login. `toodo service install` (which `scripts/install-server.sh` runs) writes
 `~/.config/systemd/user/toodo-server.service` like this, with `PATH` taken from where it
-found `herdr` (when installed), `gh`, `git`, and `ssh` (and `TOODO_WEB_DIR` added when it installs the web
-app):
+finds `herdr`, `gh`, `git`, `ssh`, `tmux`, `claude`, `codex`, and `node` on its own
+`PATH` (those that are installed), so plain and tmux runs started by the service find the
+agent CLIs; `TOODO_WEB_DIR` is added when it installs the web app. Install an agent CLI
+or tmux in a new directory later, and rerun it to pick that up.
 
 ```ini
 [Unit]
 Description=Toodo server
 After=network.target herdr-server.service
 Wants=herdr-server.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 ExecStart=/home/me/.local/bin/toodo-server
@@ -560,8 +565,10 @@ WantedBy=default.target
 ```
 
 `herdr-server.service` is the unit of a headless herdr server, if there is one; without it
-the `Wants=` is ignored. To set the service up by hand, run
-`systemctl --user enable --now toodo-server`. Either way, run
+the `Wants=` is ignored. A server that fails to start is restarted every 5 s, at most 5
+times in 5 minutes; then the unit stays failed until
+`systemctl --user reset-failed toodo-server` and `systemctl --user restart toodo-server`.
+To set the service up by hand, run `systemctl --user enable --now toodo-server`, and
 `loginctl enable-linger $USER` to keep it running without a login session.
 
 ## Web App

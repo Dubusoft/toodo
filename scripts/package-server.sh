@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Packages a built toodo-server as the release assets the Release workflow uploads:
 #   OUT_DIR/toodo-server-v<version>-linux-x86_64.tar.gz          the binary, as ./toodo-server,
-#                                                                and the web app, as ./web/
+#                                                                the toodo CLI built beside it,
+#                                                                as ./toodo, and the web app,
+#                                                                as ./web/
 #   OUT_DIR/toodo-server-v<version>-linux-x86_64.tar.gz.sha256   `sha256sum` line for it
 # WEB_DIR is the web build (`npm run build` writes dist-web). The version comes from
 # `toodo-server --version`. Prints the tarball path.
@@ -17,6 +19,8 @@ web_dir=$2
 out_dir=$3
 
 [ -x "$binary" ] || { echo "error: $binary is not an executable" >&2; exit 1; }
+cli=$(dirname "$binary")/toodo
+[ -x "$cli" ] || { echo "error: $cli is not an executable; build it with cargo build --release --bin toodo" >&2; exit 1; }
 [ -f "$web_dir/index.html" ] || { echo "error: $web_dir has no index.html; run npm run build" >&2; exit 1; }
 [ -f "$web_dir/sw.js" ] || { echo "error: $web_dir is not a web build (no sw.js); run npm run build" >&2; exit 1; }
 version_line=$("$binary" --version)
@@ -30,9 +34,10 @@ mkdir -p "$out_dir"
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 install -m 755 "$binary" "$stage/toodo-server"
+install -m 755 "$cli" "$stage/toodo"
 mkdir "$stage/web"
 cp -R "$web_dir/." "$stage/web/"
 chmod -R u=rwX,go=rX "$stage/web"
-tar -C "$stage" -czf "$out_dir/$name.tar.gz" --owner=0 --group=0 --numeric-owner toodo-server web
+tar -C "$stage" -czf "$out_dir/$name.tar.gz" --owner=0 --group=0 --numeric-owner toodo-server toodo web
 (cd "$out_dir" && sha256sum "$name.tar.gz" >"$name.tar.gz.sha256")
 echo "$out_dir/$name.tar.gz"
