@@ -705,7 +705,7 @@ type NewWorkspaceDialogProps = {
  * that an earlier step rules out is disabled with the reason, and changing an earlier step
  * resets a later pick that it rules out to the default.
  */
-function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogProps) {
+export function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogProps) {
   const createWorkspace = useCreateWorkspace();
   const dialog = useRef<HTMLDivElement>(null);
   const titleId = useId();

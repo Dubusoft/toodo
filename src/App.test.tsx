@@ -328,6 +328,40 @@ describe("App", () => {
     expect(await screen.findByText("No workspaces yet.")).toBeInTheDocument();
   });
 
+  it("offers to add the first workspace with what the server needs before it", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    mocked.runnerHealth.mockResolvedValue({
+      status: "ok",
+      data: {
+        ...readyRunners,
+        herdr: { installed: false, running: false, version: null, message: "herdr is not installed" },
+        agents: [
+          { adapter: "claude", installed: false, path: null, message: "Install claude" },
+          { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
+        ],
+      },
+    });
+    renderApp();
+
+    const prerequisites = await screen.findByRole("list", { name: "Prerequisites" });
+    expect(within(prerequisites).getByRole("listitem", { name: "GitHub CLI: not checked" })).toHaveTextContent(
+      "gh auth login",
+    );
+    expect(
+      await within(prerequisites).findByRole("listitem", { name: "Claude or Codex CLI: ready" }),
+    ).toHaveTextContent("Codex found at /usr/local/bin/codex.");
+    expect(within(prerequisites).getByRole("listitem", { name: "herdr (optional): not checked" })).toHaveTextContent(
+      "runner plain works without it",
+    );
+
+    const add = screen.getByRole("button", { name: "Add workspace" });
+    fireEvent.click(add);
+    const dialog = screen.getByRole("dialog", { name: "New workspace on Local" });
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(add).toHaveFocus();
+  });
+
   it("explains how an empty review fills up and imports the pull requests merged in the period", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 9, 14, 10));

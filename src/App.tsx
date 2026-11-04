@@ -25,10 +25,11 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { InstallBanner } from "@/components/install-banner";
 import { NeedsAttention } from "@/components/needs-attention";
+import { PrerequisiteChecklist } from "@/components/prerequisite-checklist";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
 import { SettingsDialog, type SettingsSection } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
-import { WorkspaceList } from "@/components/workspace-list";
+import { NewWorkspaceDialog, WorkspaceList } from "@/components/workspace-list";
 import type { Task, TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { useHerdrEvents, useTasks, useWorkspaces } from "@/lib/queries";
@@ -114,6 +115,9 @@ export default function App() {
   };
   // A clicked notification opens its task.
   useEffect(() => listenForOpenTask(showTask), []);
+  // The first workspace can be added from the empty main view too, on the server itself.
+  const [addingFirst, setAddingFirst] = useState(false);
+  const addFirstButton = useRef<HTMLButtonElement>(null);
   const showingAll = selectedId === "all" && !reviewing;
   const selected =
     workspaces.data?.find((workspace) => workspace.id === selectedId) ?? workspaces.data?.[0];
@@ -353,6 +357,15 @@ export default function App() {
                   icon={<FolderPlus />}
                   title="Create a workspace to start planning tasks."
                   hint={`Clone a repository, open one already cloned, or make a folder a new repository, on the server or a saved herdr machine.`}
+                  action={
+                    <div className="flex flex-col items-center gap-6">
+                      <Button ref={addFirstButton} aria-haspopup="dialog" onClick={() => setAddingFirst(true)}>
+                        <Plus />
+                        Add workspace
+                      </Button>
+                      <PrerequisiteChecklist />
+                    </div>
+                  }
                 />
               )
             )}
@@ -366,6 +379,19 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         returnFocus={() => (settingsFromDrawer.current ? openMenuButton.current : settingsButton.current)}
       />
+      {addingFirst && (
+        <NewWorkspaceDialog
+          machine={null}
+          onCreated={(workspace) => {
+            setAddingFirst(false);
+            openPage({ page: "workspace", workspace: workspace.id, task: null });
+          }}
+          onClose={() => {
+            setAddingFirst(false);
+            addFirstButton.current?.focus();
+          }}
+        />
+      )}
       {paletteOpen && <CommandPalette commands={paletteCommands()} onClose={() => setPaletteOpen(false)} />}
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
     </div>
