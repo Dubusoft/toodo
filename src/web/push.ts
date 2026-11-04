@@ -13,9 +13,17 @@ export interface PushSettings {
   readonly completion: boolean;
 }
 
+/** Why the latest notification did not reach this device; `at` is in Unix seconds. */
+export interface PushFailure {
+  readonly message: string;
+  readonly at: number;
+}
+
 export interface ServerSubscription {
   readonly endpoint: string;
   readonly settings: PushSettings;
+  /** Kept until a notification reaches this device again. */
+  readonly lastFailure: PushFailure | null;
 }
 
 export interface PushState {
