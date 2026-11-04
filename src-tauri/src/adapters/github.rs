@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::git::{GitError, Invocation, LoggedCommit, Runner, describe};
-use crate::domain::model::{LinkedIssue, PullRequestSnapshot};
+use crate::domain::model::{LinkedIssue, PullRequestOptions, PullRequestSnapshot};
 use crate::domain::remote::GitHubRepository;
 
 /// A pull request to open from `head` into `base`.
@@ -23,6 +23,59 @@ pub struct NewPullRequest<'a> {
     pub base: &'a str,
     pub title: &'a str,
     pub body: &'a str,
+    pub options: &'a PullRequestOptions,
+}
+
+/// Why GitHub refused to open a pull request, read from what `gh pr create` printed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestRefusal {
+    /// gh has no login, or GitHub rejected its token.
+    NotLoggedIn,
+    /// The login may not open pull requests in the repository.
+    PermissionDenied,
+    /// A reviewer is not a user or team that can review in the repository, or is the
+    /// author of the pull request.
+    InvalidReviewer,
+    /// A label does not exist in the repository.
+    UnknownLabel,
+    /// The repository does not allow draft pull requests.
+    DraftUnsupported,
+    /// A pull request from the branch into the base is already open.
+    AlreadyExists,
+    /// The branch on GitHub has no commits that are not on the base.
+    NoCommits,
+}
+
+impl PullRequestRefusal {
+    /// The refusal `error` of `gh pr create` reports; `None` for any other failure.
+    pub fn of(error: &GitError) -> Option<Self> {
+        let GitError::Failed { stderr, .. } = error else {
+            return None;
+        };
+        let stderr = stderr.to_ascii_lowercase();
+        let has = |text: &str| stderr.contains(text);
+        Some(if has("could not add label") {
+            Self::UnknownLabel
+        } else if has("could not request reviewer")
+            || has("requestreviews")
+            || has("review cannot be requested")
+        {
+            Self::InvalidReviewer
+        } else if has("draft pull requests are not supported") {
+            Self::DraftUnsupported
+        } else if has("already exists") {
+            Self::AlreadyExists
+        } else if has("no commits between") {
+            Self::NoCommits
+        } else if has("gh auth login") || has("http 401") || has("bad credentials") {
+            Self::NotLoggedIn
+        } else if has("http 403") || has("resource not accessible") || has("must be a collaborator")
+        {
+            Self::PermissionDenied
+        } else {
+            return None;
+        })
+    }
 }
 
 /// Lifecycle state of a pull request as reported by `gh`.
@@ -692,7 +745,8 @@ impl GitHub for GhCli {
 
     fn create_pull_request(&self, pull_request: &NewPullRequest<'_>) -> Result<String, GitError> {
         let repository = pull_request.repository.to_string();
-        let invocation = invocation(&[
+        let options = pull_request.options;
+        let mut args = vec![
             "pr",
             "create",
             "--repo",
@@ -705,7 +759,17 @@ impl GitHub for GhCli {
             pull_request.title,
             "--body",
             pull_request.body,
-        ]);
+        ];
+        if options.draft {
+            args.push("--draft");
+        }
+        for reviewer in &options.reviewers {
+            args.extend(["--reviewer", reviewer]);
+        }
+        for label in &options.labels {
+            args.extend(["--label", label]);
+        }
+        let invocation = invocation(&args);
         let output = self.run(&invocation)?;
         output
             .lines()
@@ -1577,6 +1641,7 @@ mod tests {
             base: "main",
             title: "Add x",
             body: "",
+            options: &PullRequestOptions::default(),
         };
         assert_eq!(
             github.create_pull_request(&new).unwrap(),
@@ -1604,6 +1669,105 @@ mod tests {
             github.create_pull_request(&new),
             Err(GitError::UnexpectedOutput { .. })
         ));
+    }
+
+    #[test]
+    fn create_pull_request_passes_the_workspace_options() {
+        let (github, runner) = github(vec![
+            Ok("https://github.com/acme/toodo/pull/8\n".to_owned()),
+        ]);
+        let repository = repository();
+        let options = PullRequestOptions {
+            draft: true,
+            reviewers: vec!["octocat".to_owned(), "acme/core".to_owned()],
+            labels: vec!["needs review".to_owned()],
+        };
+        github
+            .create_pull_request(&NewPullRequest {
+                repository: &repository,
+                head: "feat/x-1",
+                base: "main",
+                title: "Add x",
+                body: "",
+                options: &options,
+            })
+            .unwrap();
+        assert_eq!(
+            runner.invocations.lock().unwrap()[0].args[12..],
+            [
+                "--draft",
+                "--reviewer",
+                "octocat",
+                "--reviewer",
+                "acme/core",
+                "--label",
+                "needs review",
+            ]
+            .map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn pull_request_refusals_are_read_from_what_gh_printed() {
+        let failed = |stderr: &str| GitError::Failed {
+            command: "gh pr create".to_owned(),
+            stderr: stderr.to_owned(),
+        };
+        for (stderr, refusal) in [
+            (
+                "could not add label: 'needs review' not found",
+                PullRequestRefusal::UnknownLabel,
+            ),
+            (
+                "could not request reviewer: 'nobody' not found",
+                PullRequestRefusal::InvalidReviewer,
+            ),
+            (
+                "GraphQL: Could not resolve to a User with the login of 'nobody'. (requestReviewsByLogin)",
+                PullRequestRefusal::InvalidReviewer,
+            ),
+            (
+                "GraphQL: Review cannot be requested from pull request author. (requestReviews)",
+                PullRequestRefusal::InvalidReviewer,
+            ),
+            (
+                "GraphQL: Draft pull requests are not supported in this repository. (createPullRequest)",
+                PullRequestRefusal::DraftUnsupported,
+            ),
+            (
+                "a pull request for branch \"feat/x-1\" into branch \"main\" already exists:\nhttps://github.com/acme/toodo/pull/8",
+                PullRequestRefusal::AlreadyExists,
+            ),
+            (
+                "pull request create failed: GraphQL: No commits between main and feat/x-1 (createPullRequest)",
+                PullRequestRefusal::NoCommits,
+            ),
+            (
+                "HTTP 401: Bad credentials (https://api.github.com/graphql)\nTry authenticating with:  gh auth login",
+                PullRequestRefusal::NotLoggedIn,
+            ),
+            (
+                "GraphQL: Resource not accessible by integration (createPullRequest)",
+                PullRequestRefusal::PermissionDenied,
+            ),
+        ] {
+            assert_eq!(
+                PullRequestRefusal::of(&failed(stderr)),
+                Some(refusal),
+                "{stderr}"
+            );
+        }
+        assert_eq!(
+            PullRequestRefusal::of(&failed("HTTP 502: Bad Gateway")),
+            None
+        );
+        assert_eq!(
+            PullRequestRefusal::of(&GitError::Spawn {
+                program: "gh".to_owned(),
+                message: "not found".to_owned(),
+            }),
+            None
+        );
     }
 
     #[test]

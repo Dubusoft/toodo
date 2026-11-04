@@ -204,3 +204,41 @@ fn an_in_progress_task_without_a_branch_is_rejected() {
     assert!(error.message.contains("has no branch"));
     assert!(invocations(&git_runner).is_empty());
 }
+
+#[test]
+fn the_workspace_options_reach_gh_and_a_refused_reviewer_is_reported_by_code() {
+    let fixture = local_fixture();
+    lock(&fixture.storage)
+        .set_workspace_pull_request_options(
+            fixture.task.workspace_id,
+            &model::PullRequestOptions {
+                draft: true,
+                reviewers: vec!["nobody".to_owned()],
+                labels: vec!["needs review".to_owned()],
+            },
+        )
+        .unwrap();
+    let git_runner = checkout_runner(vec![
+        log(&[SHA_A]),
+        origin("git@github.com:acme/toodo.git"),
+        Ok(String::new()),
+    ]);
+    let gh_runner = runner(vec![
+        Ok("[]".to_owned()),
+        Err(GitError::Failed {
+            command: "gh pr create".to_owned(),
+            stderr: "could not request reviewer: 'nobody' not found".to_owned(),
+        }),
+    ]);
+    let (git, github) = adapters(&git_runner, &gh_runner);
+
+    let error = open(&fixture.storage, &git, &github, fixture.task.id).unwrap_err();
+
+    assert_eq!(error.code, CommandErrorCode::PullRequestOptionInvalid);
+    assert!(error.message.contains("set_workspace_pull_request_options"));
+    assert_eq!(stored(&fixture, &fixture.task), fixture.task);
+    assert_eq!(
+        invocations(&gh_runner)[1].args[12..],
+        ["--draft", "--reviewer", "nobody", "--label", "needs review"].map(str::to_owned)
+    );
+}

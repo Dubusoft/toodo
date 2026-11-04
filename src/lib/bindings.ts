@@ -270,6 +270,13 @@ export const commands = {
 	 *  Runs started later use them.
 	 */
 	setTaskAgentOptions: (taskId: TaskId, options: AgentOptions) => typedError<TaskAgentOptions, CommandError>(invoke("set_task_agent_options", { taskId, options })),
+	/**  The options pull requests of a workspace's tasks are opened with. */
+	getWorkspacePullRequestOptions: (workspaceId: WorkspaceId) => typedError<PullRequestOptions, CommandError>(invoke("get_workspace_pull_request_options", { workspaceId })),
+	/**
+	 *  Replaces the options pull requests of a workspace's tasks are opened with; blank
+	 *  reviewers and labels are dropped. Pull requests opened later use them.
+	 */
+	setWorkspacePullRequestOptions: (workspaceId: WorkspaceId, options: PullRequestOptions) => typedError<PullRequestOptions, CommandError>(invoke("set_workspace_pull_request_options", { workspaceId, options })),
 	/**
 	 *  Reports whether herdr is installed and running, whether tmux runs, and whether the
 	 *  `claude` and `codex` CLIs of plain and tmux runs are on the server's `PATH`.
@@ -596,6 +603,15 @@ export type CommandErrorCode =
 "gitFailed" | 
 /**  herdr reported an error or is not running. */
 "herdrFailed" | 
+/**  gh has no valid login, or the login may not open pull requests in the repository. */
+"gitHubAuthFailed" | 
+/**
+ *  GitHub refused the draft setting, a reviewer, or a label of the workspace's pull
+ *  request options.
+ */
+"pullRequestOptionInvalid" | 
+/**  GitHub refused to open the pull request for another reason. */
+"pullRequestFailed" | 
 /**  The server failed. */
 "internal" | 
 /**  The database failed or holds data the server cannot read. */
@@ -950,6 +966,16 @@ export type PermissionMode =
  *  bypassPermissions`, Codex `--dangerously-bypass-approvals-and-sandbox`.
  */
 "bypass";
+
+/**  How Toodo opens the pull requests of a workspace's tasks with `gh pr create`. */
+export type PullRequestOptions = {
+	/**  Open pull requests as drafts (`--draft`). */
+	draft: boolean,
+	/**  Users (`login`) or teams (`org/team`) asked to review (`--reviewer`). */
+	reviewers: string[],
+	/**  Labels added (`--label`); each must exist in the repository. */
+	labels: string[],
+};
 
 /**  A merged pull request as GitHub reported it when it completed its task. */
 export type PullRequestSnapshot = {

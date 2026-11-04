@@ -378,6 +378,18 @@ impl AgentOptions {
     }
 }
 
+/// How Toodo opens the pull requests of a workspace's tasks. The default opens a ready
+/// pull request without reviewers or labels.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullRequestOptions {
+    /// Open pull requests as drafts.
+    pub draft: bool,
+    /// Users (`login`) or teams (`org/team`) asked to review each pull request.
+    pub reviewers: Vec<String>,
+    /// Labels added to each pull request; they must exist in the repository.
+    pub labels: Vec<String>,
+}
+
 /// Per-machine configuration. `worktree_root` must be set before a task on that
 /// machine can be started.
 #[derive(Debug, Clone, PartialEq, Eq)]

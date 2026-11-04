@@ -516,6 +516,11 @@ an `in_progress` task of a plain or tmux workspace that has a worktree, local or
   `-c mcp_servers.toodo.url="<url>" -c mcp_servers.toodo.bearer_token_env_var="TOODO_MCP_TOKEN"`
   with MCP, then `-`.
 
+A workspace's pull request options (`set_workspace_pull_request_options`, stored in the
+`pull_request_draft`, `pull_request_reviewers`, and `pull_request_labels` columns of
+`workspaces`, the lists as JSON arrays) set whether the pull requests Toodo opens for its
+tasks are drafts and which reviewers and labels they get; see `docs/workflow.md`.
+
 The model, permission mode, and time limit come from the task's agent options, and each
 value the task leaves unset from its workspace's (`set_task_agent_options`,
 `set_workspace_agent_options`, stored in the `agent_model`, `agent_permission_mode`, and

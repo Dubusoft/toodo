@@ -14,13 +14,13 @@ use serde::de::DeserializeOwned;
 use super::Services;
 use crate::commands::types::{
     AgentAdapter, AgentOptions, BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost,
-    NewTask, NewWorkspace, OAuthGrantId, RunId, TaskEdit, TaskId, TaskListFilter, TaskResolution,
-    Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
+    NewTask, NewWorkspace, OAuthGrantId, PullRequestOptions, RunId, TaskEdit, TaskId,
+    TaskListFilter, TaskResolution, Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
 };
 use crate::commands::{
     CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, agent_options, backup,
-    completion, events, freshness, herdr, issues, machines, mcp, review, runners, runs, tasks,
-    workspaces,
+    completion, events, freshness, herdr, issues, machines, mcp, pull_request_options, review,
+    runners, runs, tasks, workspaces,
 };
 use crate::mcp::Backend as _;
 
@@ -202,6 +202,7 @@ pub const READ_COMMANDS: &[&str] = &[
     "get_run_log",
     "get_workspace_agent_options",
     "get_task_agent_options",
+    "get_workspace_pull_request_options",
     "runner_health",
     "list_pull_request_statuses",
     "branch_freshness",
@@ -342,6 +343,12 @@ commands!(s => {
     );
     "set_task_agent_options"(task_id: TaskId, options: AgentOptions) => sync Reply::result(
         agent_options::set_task_agent_options(State(&s.storage), task_id, options)
+    );
+    "get_workspace_pull_request_options"(workspace_id: WorkspaceId) => sync Reply::result(
+        pull_request_options::get_workspace_pull_request_options(State(s.reader()), workspace_id)
+    );
+    "set_workspace_pull_request_options"(workspace_id: WorkspaceId, options: PullRequestOptions) => sync Reply::result(
+        pull_request_options::set_workspace_pull_request_options(State(&s.storage), workspace_id, options)
     );
     "get_machine_runs"(machine: Machine) => sync Reply::result(
         runs::get_machine_runs(State(s.reader()), machine)

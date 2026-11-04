@@ -35,6 +35,7 @@ import {
 import { TaskRow } from "@/components/task-row";
 import { AgentMergeSetting, BaseBranchForm, RunLimitForm, WorktreeRootForm } from "@/components/workspace-settings";
 import { WorkspaceAgentOptions } from "@/components/agent-options";
+import { WorkspacePullRequestOptions } from "@/components/pull-request-options";
 import { type TaskDraft, emptyDraft, NewTaskForm } from "@/components/new-task-form";
 
 // The timeline pulls in React Flow, so it loads only when it is first shown.
@@ -196,6 +197,7 @@ export function TaskList({
           <>
             <BaseBranchForm workspace={workspace} />
             {workspaceCapabilities(workspace).merge && <AgentMergeSetting workspace={workspace} />}
+            {workspaceCapabilities(workspace).pullRequests && <WorkspacePullRequestOptions workspace={workspace} />}
             {(workspace.runner === "plain" || workspace.runner === "tmux") && <WorkspaceAgentOptions workspace={workspace} />}
           </>
         ) : (
