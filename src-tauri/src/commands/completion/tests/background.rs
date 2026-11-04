@@ -168,15 +168,11 @@ fn background_checks_record_git_activity_once_and_only_for_tracked_workspaces() 
     // Given an in-review task whose pull request passed CI and was merged.
     let fixture = in_review_fixture();
     let git_runner = checkout_runner(vec![log(&[SHA_A])]);
-    let activity_view = format!(
-        r#"{{"createdAt":"2026-10-08T10:00:00Z","headRefOid":"{SHA_B}","mergedAt":"{}","number":12,"state":"MERGED","statusCheckRollup":[{{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2026-10-09T12:00:00Z"}}],"title":"Add login","url":"{PR}"}}"#,
-        MERGED_AT.0
-    );
-    let gh_runner = runner(vec![
-        Ok(activity_view),
-        viewed("MERGED", "main"),
-        merged_details(&[SHA_A, SHA_B]),
-    ]);
+    let passed = r#"[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","completedAt":"2026-10-09T12:00:00Z"}]"#;
+    let mut view: serde_json::Value =
+        serde_json::from_str(&viewed_with("MERGED", "main", passed, "\"\"").unwrap()).unwrap();
+    view["headRefOid"] = serde_json::json!(SHA_B);
+    let gh_runner = runner(vec![Ok(view.to_string()), merged_details(&[SHA_A, SHA_B])]);
     let (git, github) = adapters(&git_runner, &gh_runner);
     let (herdr, _) = closing_herdr();
     let recorder = Recorder::default();
@@ -254,11 +250,175 @@ fn background_checks_record_git_activity_once_and_only_for_tracked_workspaces() 
         ["worktree", "log"],
         "branch commits are read once, before settling"
     );
-    assert_eq!(
-        invocations(&gh_runner)[0].args[4],
-        "number,title,url,createdAt,state,mergedAt,headRefOid,statusCheckRollup"
-    );
+    // The activity and the merge come from one read of the pull request.
+    let calls = invocations(&gh_runner);
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].args[..3], ["pr", "view", PR].map(str::to_owned));
     assert!(recorder.0.lock().unwrap().contains(&done.workspace_id));
+}
+
+/// Starts another task of the fixture's workspace on `branch` and records `url` as its
+/// open pull request.
+fn another_in_review_task(fixture: &Fixture, branch: &str, url: &str) -> model::Task {
+    let mut storage = lock(&fixture.storage);
+    let task = storage
+        .create_task(&NewTask {
+            workspace_id: fixture.task.workspace_id,
+            task_type: TaskType::Feat,
+            title: "Add logout".to_owned(),
+            description: String::new(),
+            estimate: None,
+            due_date: None,
+            criteria: vec![NewCriterion::merge(true)],
+        })
+        .unwrap();
+    let checkout = TaskCheckout {
+        path: HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-logout-3").unwrap()),
+        branch: branch.to_owned(),
+    };
+    storage.start_task(task.id, &checkout, "w28").unwrap();
+    storage.open_pull_request(task.id, &[], url, None).unwrap()
+}
+
+/// `git worktree list` output with the worktrees of both in-review tasks.
+fn both_worktrees() -> Result<String, GitError> {
+    Ok(concat!(
+        "worktree D:/wt/toodo/feat-add-login-1\0HEAD abc\0\0",
+        "worktree D:/wt/toodo/feat-add-logout-3\0HEAD abc\0\0"
+    )
+    .to_owned())
+}
+
+#[test]
+fn one_call_lists_the_open_pull_requests_of_a_repository_with_several_in_review() {
+    // Given two in-review tasks whose pull requests are open in the same repository.
+    let fixture = in_review_fixture();
+    let other_url = PR.replace("/pull/12", "/pull/13");
+    let other = another_in_review_task(&fixture, "feat/add-logout-3", &other_url);
+    let running = r#"[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""}]"#;
+    let open = |url: &str, checks: &str| {
+        let mut view: serde_json::Value =
+            serde_json::from_str(&viewed_with("OPEN", "main", checks, "\"\"").unwrap()).unwrap();
+        view["url"] = serde_json::json!(url);
+        view
+    };
+    let gh_runner = runner(vec![Ok(serde_json::json!([
+        open(PR, running),
+        open(&other_url, "[]")
+    ])
+    .to_string())]);
+    let github = GhCli::new(Box::new(gh_runner.clone()));
+    let worktrees = runner(vec![both_worktrees(), both_worktrees()]);
+    let mut failures = HashMap::new();
+    let statuses = PullRequestStatusState::default();
+
+    // When the background check runs.
+    check_pull_requests(
+        &fixture.storage,
+        &Git::new(Box::new(worktrees)),
+        &github,
+        &no_herdr(),
+        &Recorder::default(),
+        &mut failures,
+        None,
+        &statuses,
+    );
+
+    // Then one `gh pr list` read both pull requests, and nothing else ran.
+    assert!(failures.is_empty(), "{failures:?}");
+    let calls = invocations(&gh_runner);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(
+        calls[0].args[..6],
+        [
+            "pr",
+            "list",
+            "--repo",
+            "github.com/acme/toodo",
+            "--state",
+            "open"
+        ]
+        .map(str::to_owned)
+    );
+    let checks: Vec<_> = list(&statuses)
+        .into_iter()
+        .map(|status| (status.task_id, status.checks))
+        .collect();
+    let id = |task: &model::Task| -> types::TaskId { task.id.into() };
+    assert_eq!(
+        checks,
+        [
+            (id(&fixture.task), Some(types::ChecksStatus::Pending)),
+            (id(&other), None),
+        ]
+    );
+}
+
+#[test]
+fn a_pull_request_missing_from_the_open_list_is_read_on_its_own() {
+    let fixture = in_review_fixture();
+    let other_url = PR.replace("/pull/12", "/pull/13");
+    another_in_review_task(&fixture, "feat/add-logout-3", &other_url);
+    let mut open: serde_json::Value =
+        serde_json::from_str(&viewed("OPEN", "main").unwrap()).unwrap();
+    open["url"] = serde_json::json!(other_url);
+    let gh_runner = runner(vec![
+        Ok(serde_json::json!([open]).to_string()),
+        viewed("MERGED", "main"),
+        merged_details(&[]),
+    ]);
+    let github = GhCli::new(Box::new(gh_runner.clone()));
+    let (herdr, _) = closing_herdr();
+    let mut failures = HashMap::new();
+
+    check_pull_requests(
+        &fixture.storage,
+        &Git::new(Box::new(runner(vec![both_worktrees(), both_worktrees()]))),
+        &github,
+        &herdr,
+        &Recorder::default(),
+        &mut failures,
+        None,
+        &PullRequestStatusState::default(),
+    );
+
+    assert!(failures.is_empty(), "{failures:?}");
+    assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::Done);
+    let calls = invocations(&gh_runner);
+    assert_eq!(calls[1].args[..3], ["pr", "view", PR].map(str::to_owned));
+    assert_eq!(calls.len(), 3);
+}
+
+#[test]
+fn a_rate_limited_gh_is_not_called_again_until_the_limit_backs_off() {
+    let fixture = in_review_fixture();
+    let gh_runner = runner(vec![Err(GitError::Failed {
+        command: "gh pr view".to_owned(),
+        stderr: "GraphQL: API rate limit exceeded for user ID 1.".to_owned(),
+    })]);
+    let github = GhCli::new(Box::new(gh_runner.clone()));
+    let mut failures = HashMap::new();
+    let statuses = PullRequestStatusState::default();
+
+    for _ in 0..3 {
+        check_pull_requests(
+            &fixture.storage,
+            &worktree_git(),
+            &github,
+            &no_herdr(),
+            &Recorder::default(),
+            &mut failures,
+            None,
+            &statuses,
+        );
+    }
+
+    assert_eq!(invocations(&gh_runner).len(), 1);
+    assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::InReview);
+    assert!(
+        failures[&fixture.task.id].contains("gh api rate_limit"),
+        "{failures:?}"
+    );
 }
 
 #[test]
