@@ -10,10 +10,13 @@
 //! follow, read the logs of, stop, and reconcile plain and tmux runs; deleting tasks stays
 //! in the app. The `toodo` skill, the
 //! workflow for working on a task, is served by the `read_toodo_skill` tool rather than
-//! as a resource, since not every client can read resources. Agents on SSH machines reach
-//! the server through the reverse tunnels of [`tunnels`].
+//! as a resource, since not every client can read resources. Tasks and their runs are
+//! resources too, which clients of protocol 2026-07-28 can watch through
+//! `subscriptions/listen` (see [`resources`]). Agents on SSH machines reach the server
+//! through the reverse tunnels of [`tunnels`].
 
 pub(crate) mod attempts;
+mod resources;
 mod tools;
 pub mod tunnels;
 
@@ -33,10 +36,12 @@ use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    InitializeRequestParams, InitializeResult, JsonObject, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerConfig,
+    InitializeRequestParams, InitializeResult, JsonObject, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams,
+    ReadResourceResponse, ReadResourceResult, ResourceContents, ServerCapabilities, ServerConfig,
+    SubscriptionFilter,
 };
-use rmcp::service::RequestContext;
+use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router};
@@ -179,6 +184,8 @@ pub trait Backend: Notifier + Send + Sync + 'static {
     fn tmux(&self) -> &TmuxRunState;
     /// How agents reach this server.
     fn server(&self) -> &ServerStatus;
+    /// Marked whenever a change is announced through [`Notifier`].
+    fn changes(&self) -> tokio::sync::watch::Receiver<()>;
 }
 
 /// How agents reach the server, shown in the app; `error` tells why it is not running.
@@ -619,6 +626,9 @@ pub(crate) fn same_secret(presented: &str, token: &str) -> bool {
 struct ToodoMcp {
     backend: Arc<dyn Backend>,
     tool_router: ToolRouter<Self>,
+    /// The watch of the `subscriptions/listen` request this instance serves, from its
+    /// acceptance until `listen` takes it; each HTTP request gets its own instance.
+    watch: Arc<Mutex<Option<resources::Watch>>>,
 }
 
 #[tool_router]
@@ -627,6 +637,7 @@ impl ToodoMcp {
         Self {
             backend,
             tool_router: Self::tool_router(),
+            watch: Arc::default(),
         }
     }
 
@@ -1107,6 +1118,13 @@ impl ServerHandler for ToodoMcp {
     ) -> Result<InitializeResult, ErrorData> {
         context.peer.set_peer_info(request.clone());
         let mut result = self.negotiate_initialize(&request)?;
+        // Clients that initialize speak a protocol before 2026-07-28, whose notifications
+        // need a session; this server keeps none, so they can read resources but not
+        // subscribe to them.
+        if let Some(resources) = result.capabilities.resources.as_mut() {
+            resources.subscribe = None;
+            resources.list_changed = None;
+        }
         if matches!(Access::of(&context), Some(Access::OAuth(_))) {
             result.instructions = Some(CHAT_INSTRUCTIONS.clone());
         }
@@ -1131,8 +1149,112 @@ impl ServerHandler for ToodoMcp {
         })
     }
 
+    async fn list_resources(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        check_read(&context)?;
+        let resources = resources::list(&lock(self.backend.reader())).map_err(internal)?;
+        Ok(ListResourcesResult::with_all_items(resources))
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        check_read(&context)?;
+        Ok(ListResourceTemplatesResult::with_all_items(
+            resources::templates(),
+        ))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        check_read(&context)?;
+        let not_found = || ErrorData::resource_not_found(resources::unknown(&request.uri), None);
+        let uri = resources::Uri::parse(&request.uri).ok_or_else(not_found)?;
+        match resources::read(&lock(self.backend.reader()), uri) {
+            Ok(text) => Ok(ReadResourceResult::new(vec![
+                ResourceContents::text(text, request.uri.clone())
+                    .with_mime_type("application/json"),
+            ])
+            .into()),
+            Err(error) if error.code == CommandErrorCode::TaskNotFound => Err(not_found()),
+            Err(error) => Err(internal(error)),
+        }
+    }
+
+    fn accepted_subscription_filter(
+        &self,
+        requested: &SubscriptionFilter,
+    ) -> Option<SubscriptionFilter> {
+        let uris = requested
+            .resource_subscriptions
+            .iter()
+            .flatten()
+            .filter(|uri| resources::Uri::parse(uri).is_some());
+        let mut accepted = SubscriptionFilter::builder().resource_subscriptions(uris);
+        if requested.resources_list_changed == Some(true) {
+            accepted = accepted.resources_list_changed();
+        }
+        let accepted = accepted.build();
+        // The SDK acknowledges the subscription before it calls `listen`; what the stream
+        // compares against is read now, so no change after the acknowledgment is missed.
+        *self.watch.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(resources::Watch::start(self.backend.as_ref(), &accepted));
+        Some(accepted)
+    }
+
+    /// Reads the watched resources again on every announced change and every
+    /// [`resources::POLL`], and reports what changed until the client closes the stream.
+    async fn listen(&self, context: SubscriptionContext) -> Result<(), ErrorData> {
+        check_read(context.request_context())?;
+        let started = self
+            .watch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        let mut watch = started
+            .unwrap_or_else(|| resources::Watch::start(self.backend.as_ref(), context.accepted()));
+        loop {
+            tokio::select! {
+                () = context.cancelled() => return Ok(()),
+                changed = watch.changes.changed() => {
+                    if changed.is_err() {
+                        return Ok(());
+                    }
+                }
+                () = tokio::time::sleep(resources::POLL) => {}
+            }
+            let (updated, list_changed) = watch.next(self.backend.as_ref());
+            let sink = context.sink();
+            let mut sent = Ok(());
+            for uri in updated {
+                sent = sent.and(sink.notify_resource_updated(uri).await);
+            }
+            if list_changed {
+                sent = sent.and(sink.notify_resource_list_changed().await);
+            }
+            if sent.is_err() {
+                // The client closed the stream.
+                return Ok(());
+            }
+        }
+    }
+
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        let capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .enable_resources_subscribe()
+            .enable_resources_list_changed()
+            .build();
+        ServerConfig::new(capabilities)
             .with_server_info(
                 Implementation::new(env!("CARGO_PKG_NAME"), env!("TOODO_VERSION")).with_title(
                     format!("Toodo (server instance {})", self.backend.server().instance),
@@ -1291,6 +1413,20 @@ fn number(name: &str, text: &str) -> Result<Value, String> {
     ))
 }
 
+/// Rejects a chat app connected over OAuth that may not read tasks.
+fn check_read(context: &RequestContext<RoleServer>) -> Result<(), ErrorData> {
+    match Access::of(context) {
+        Some(access) => access
+            .check_tool("get_task")
+            .map_err(|message| ErrorData::invalid_request(message, None)),
+        None => Ok(()),
+    }
+}
+
+fn internal(error: CommandError) -> ErrorData {
+    ErrorData::internal_error(error.message, None)
+}
+
 /// Tool failures are tool-level errors, so the agent sees the reason, e.g. a cycle.
 fn reply<T: Serialize>(result: CommandResult<T>) -> Result<CallToolResult, ErrorData> {
     match result {
@@ -1367,6 +1503,7 @@ mod tests {
         server: ServerStatus,
         changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
         workspaces_changed: std::sync::Mutex<usize>,
+        changes: tokio::sync::watch::Sender<()>,
     }
 
     type Scripted = Vec<Result<String, crate::adapters::git::GitError>>;
@@ -1401,6 +1538,7 @@ mod tests {
                 },
                 changed: std::sync::Mutex::default(),
                 workspaces_changed: std::sync::Mutex::default(),
+                changes: tokio::sync::watch::Sender::new(()),
             }
         }
     }
@@ -1408,6 +1546,7 @@ mod tests {
     impl Notifier for TestBackend {
         fn tasks_changed(&self, workspace: model::WorkspaceId) {
             self.changed.lock().unwrap().push(workspace);
+            self.changes.send_replace(());
         }
         fn workspaces_changed(&self) {
             *self.workspaces_changed.lock().unwrap() += 1;
@@ -1451,6 +1590,10 @@ mod tests {
 
         fn server(&self) -> &ServerStatus {
             &self.server
+        }
+
+        fn changes(&self) -> tokio::sync::watch::Receiver<()> {
+            self.changes.subscribe()
         }
     }
 
@@ -2689,6 +2832,193 @@ mod tests {
         let parsed: Value = serde_json::from_str(body).unwrap();
         assert!(parsed.get("error").is_none(), "{parsed}");
         parsed["result"].clone()
+    }
+
+    /// The task of [`storage_with_task`] and a task that depends on it, served over HTTP.
+    fn endpoint_with_dependent() -> (Arc<TestBackend>, SocketAddr, model::Task, model::Task) {
+        let (mut storage, task) = storage_with_task(None);
+        let dependent = storage
+            .create_task(&crate::storage::NewTask {
+                workspace_id: task.workspace_id,
+                task_type: model::TaskType::Feat,
+                title: "Add logout".to_owned(),
+                description: String::new(),
+                estimate: None,
+                due_date: None,
+                criteria: Vec::new(),
+            })
+            .unwrap();
+        storage.add_dependency(dependent.id, task.id).unwrap();
+        let backend = Arc::new(TestBackend::new(storage));
+        let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 50000));
+        let address = test_endpoint(backend.clone(), Some(peer));
+        (backend, address, task, dependent)
+    }
+
+    #[test]
+    fn tasks_and_their_runs_are_resources() {
+        let (backend, address, task, dependent) = endpoint_with_dependent();
+        let task_uri = format!("toodo://tasks/{}", task.id.0);
+        let dependent_uri = format!("toodo://tasks/{}", dependent.id.0);
+
+        let listed = rpc_result(address, "secret", "resources/list", serde_json::json!({}));
+        let uris: Vec<&str> = listed["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|resource| resource["uri"].as_str().unwrap())
+            .collect();
+        assert_eq!(uris, [task_uri.as_str(), dependent_uri.as_str()]);
+        let templates = rpc_result(
+            address,
+            "secret",
+            "resources/templates/list",
+            serde_json::json!({}),
+        );
+        let templates: Vec<&str> = templates["resourceTemplates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|template| template["uriTemplate"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            templates,
+            ["toodo://tasks/{task_id}", "toodo://tasks/{task_id}/runs"]
+        );
+
+        let read = |uri: &str| -> Value {
+            let result = rpc_result(
+                address,
+                "secret",
+                "resources/read",
+                serde_json::json!({ "uri": uri }),
+            );
+            assert_eq!(result["contents"][0]["uri"], uri);
+            serde_json::from_str(result["contents"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        let expected = tools::task_details(
+            &lock(backend.storage()),
+            tools::GetTask {
+                id: dependent.id.into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            read(&dependent_uri),
+            serde_json::to_value(expected).unwrap()
+        );
+        assert_eq!(
+            read(&format!("{dependent_uri}/runs")),
+            serde_json::json!([])
+        );
+
+        let body = r#"{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"toodo://tasks/999"}}"#;
+        let response = post(address, "Authorization: Bearer secret\r\n", body);
+        let error: Value =
+            serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(error["error"]["code"], -32002, "{error}");
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("search_tasks"),
+            "{error}"
+        );
+    }
+
+    /// Clients that initialize use a protocol whose notifications need a session.
+    #[test]
+    fn initialize_does_not_offer_resource_subscriptions() {
+        let (_, address, _, _) = endpoint_with_dependent();
+        let response = post_initialize(address, "Authorization: Bearer secret\r\n");
+        let body: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(
+            body["result"]["capabilities"]["resources"],
+            serde_json::json!({}),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn a_listen_stream_reports_a_completed_dependency() {
+        use std::io::{BufRead, BufReader, Write};
+        let (backend, address, task, dependent) = endpoint_with_dependent();
+        let dependent_uri = format!("toodo://tasks/{}", dependent.id.0);
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": 7, "method": "subscriptions/listen",
+            "params": {
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientInfo": { "name": "test", "version": "1" },
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                },
+                "notifications": {
+                    "resourceSubscriptions": [dependent_uri, "https://example.com/elsewhere"],
+                    "resourcesListChanged": true,
+                },
+            },
+        })
+        .to_string();
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        write!(
+            stream,
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+             Accept: application/json, text/event-stream\r\nMCP-Protocol-Version: 2026-07-28\r\n\
+             Mcp-Method: subscriptions/listen\r\nAuthorization: Bearer secret\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut lines = BufReader::new(stream).lines();
+        let mut next_message = || loop {
+            let line = lines
+                .next()
+                .expect("the stream stays open")
+                .expect("a message within the read timeout");
+            if let Some(data) = line.strip_prefix("data:")
+                && !data.trim().is_empty()
+            {
+                return serde_json::from_str::<Value>(data.trim()).unwrap();
+            }
+        };
+        let acknowledged = next_message();
+        assert_eq!(
+            acknowledged["method"], "notifications/subscriptions/acknowledged",
+            "{acknowledged}"
+        );
+        assert_eq!(
+            acknowledged["params"]["notifications"],
+            serde_json::json!({
+                "resourceSubscriptions": [dependent_uri],
+                "resourcesListChanged": true,
+            })
+        );
+
+        {
+            let mut storage = lock(backend.storage());
+            storage
+                .set_task_status(task.id, crate::domain::status::TaskStatus::InProgress)
+                .unwrap();
+            storage
+                .complete_task_without_pull_request(task.id, "Shipped", &[])
+                .unwrap();
+        }
+        backend.tasks_changed(task.workspace_id);
+
+        let updated = next_message();
+        assert_eq!(updated["method"], "notifications/resources/updated");
+        assert_eq!(updated["params"]["uri"], dependent_uri);
+        assert_eq!(
+            updated["params"]["_meta"]["io.modelcontextprotocol/subscriptionId"],
+            7
+        );
+        let list_changed = next_message();
+        assert_eq!(
+            list_changed["method"],
+            "notifications/resources/list_changed"
+        );
     }
 
     #[test]

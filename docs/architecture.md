@@ -780,6 +780,11 @@ path deletes journal history.
   - Every request needs `Authorization: Bearer <token>`. The token is 32 random bytes,
     hex encoded, created once in `mcp-token` in the server's data directory. rmcp also
     rejects non-loopback `Host` headers against DNS rebinding.
+  - Resources (`mcp/resources.rs`): `toodo://tasks/{id}` and `toodo://tasks/{id}/runs`.
+    A `subscriptions/listen` stream (protocol `2026-07-28`) keeps a snapshot of the
+    resources it watches and reads them again whenever a `Notifier` event marks the
+    server's change signal, and at least every 5 seconds, reporting each one whose
+    content changed; see `docs/server.md` (Task and Run Resources).
   - Tools: `list_workspaces`, `list_tasks` (narrowed by `status`, `ready`, and `limit`,
     the newest matching tasks, paged back with `before_id`), `current_task` (the task whose worktree
     contains a given directory, after resolving `.` and `..`; an optional `machine`
