@@ -224,6 +224,12 @@ function taskRef(id: TaskId, of: WorkspaceId, { byId, workspaceName }: TaskConte
   return other === undefined || other.workspaceId === of ? `#${id}` : `${workspaceName(other.workspaceId)} #${id}`;
 }
 
+/** What the task list tells screen readers once tasks are loaded: how many it shows out of how many. */
+function shownTasksMessage(shown: number, total: number): string {
+  const count = (n: number) => `${n} ${n === 1 ? "task" : "tasks"}`;
+  return shown === total ? `Showing ${count(total)}.` : `Showing ${shown} of ${count(total)}.`;
+}
+
 /**
  * Tasks of `workspace`, or of every workspace when it is null. The dependency DAG spans
  * workspaces, so a task may wait on a task of another workspace. The timeline is only
@@ -376,7 +382,14 @@ export function TaskList({
 
       {workspace && onDraftChange && <NewTaskForm workspace={workspace} draft={draft} onChange={onDraftChange} />}
 
-      {allTasks.isPending && <p className="text-sm text-muted-foreground">Loading tasks...</p>}
+      {/* Stays mounted so screen readers hear loading start and finish, and how many tasks a search leaves. */}
+      <p role="status" className={cn("text-sm text-muted-foreground", !allTasks.isPending && "sr-only")}>
+        {allTasks.isPending
+          ? "Loading tasks..."
+          : tasks && filtered
+            ? shownTasksMessage(filtered.length + (numbered ? 1 : 0), tasks.length)
+            : ""}
+      </p>
       {allTasks.isError && (
         <p role="alert" className="text-sm text-destructive">
           Failed to load tasks: {allTasks.error.message}
@@ -536,7 +549,7 @@ export function TaskList({
             </>
           ) : (
             <ErrorBoundary label="the timeline">
-              <Suspense fallback={<p className="text-sm text-muted-foreground">Loading timeline...</p>}>
+              <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">Loading timeline...</p>}>
                 <TaskGraph
                   tasks={[...timelineTasks, ...prerequisites]}
                   allTasks={allTasks.data}
@@ -2880,7 +2893,7 @@ function BaseBranchForm({ workspace }: { workspace: Workspace }) {
           ))}
           <option value={NEW_BRANCH}>New branch...</option>
         </select>
-        {branches.isFetching && <span className="text-xs">Loading branches...</span>}
+        {branches.isFetching && <span role="status" className="text-xs">Loading branches...</span>}
       </div>
       {draft === NEW_BRANCH && (
         <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
