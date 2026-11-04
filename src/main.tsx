@@ -4,7 +4,9 @@ import ReactDOM from "react-dom/client";
 import App from "@/App";
 import { ErrorBoundary } from "@/components/error-boundary";
 import "@/index.css";
+import { UpdateBanner } from "@/components/update-banner";
 import { initTheme } from "@/lib/theme";
+import { checkForNewBuild, watchBuild } from "@/web/build";
 import { onReachable, watchConnection } from "@/web/connection";
 import { watchInstallOffer } from "@/web/install";
 import { indexedDbStore, pauseQueriesWhileUnreachable, restoreQueries, saveQueries } from "@/web/query-cache";
@@ -21,6 +23,8 @@ function render(app: ReactNode) {
   root.render(
     <React.StrictMode>
       <QueryClientProvider client={queryClient}>
+        {/* Outside the boundary: an earlier build that fails against a newer server still offers the reload. */}
+        <UpdateBanner />
         <ErrorBoundary label="Toodo" className="m-4">
           {app}
         </ErrorBoundary>
@@ -34,6 +38,7 @@ function render(app: ReactNode) {
 watchInstallOffer();
 watchConnection();
 pauseQueriesWhileUnreachable();
+watchBuild();
 void Promise.all([
   import("@/components/server-access"),
   import("@/components/offline-screen"),
@@ -43,6 +48,9 @@ void Promise.all([
   ([{ ServerAccess }, { ConnectionGate }, { onReconnect }]) => {
     // Events sent while the stream was down are lost; refetch what they would have changed.
     onReconnect(() => void queryClient.invalidateQueries());
+    // A reconnect or recovery often means the server restarted, perhaps into a new build.
+    onReconnect(() => void checkForNewBuild());
+    onReachable(() => void checkForNewBuild());
     // What failed while the server was unreachable shows its data again.
     onReachable(() => void queryClient.invalidateQueries());
     saveQueries(queryClient, savedQueries);
