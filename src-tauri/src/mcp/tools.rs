@@ -419,6 +419,46 @@ pub struct ResumeTask {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct DeleteTask {
+    /// The planned task to delete, e.g. one you created by mistake.
+    pub id: TaskId,
+    /// true deletes the task. Without it nothing changes and the reply says what deleting
+    /// would remove; read it before you confirm.
+    #[serde(default)]
+    pub confirm: bool,
+    /// true removes a worktree with modified or untracked files too, discarding them.
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ReopenTask {
+    /// The done task to reopen, e.g. one completed or concluded by mistake.
+    pub id: TaskId,
+    /// Why the task is reopened, in GitHub-flavored Markdown; recorded as a progress note
+    /// with the earlier outcome.
+    pub reason: String,
+    /// true reopens the task. Without it nothing changes and the reply says what reopening
+    /// would do; read it before you confirm.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// The reply of a tool that changes nothing until it is called again with `confirm: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Confirmation {
+    /// Whether the change was made; false for a call without `confirm: true`.
+    pub confirmed: bool,
+    /// The task as it is now, or as it was before it was deleted.
+    pub task: Task,
+    /// What the change does, or did, and what to do next.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct StartTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
@@ -1362,7 +1402,7 @@ pub fn update_task(
     // A done task is part of the record reviews are built on; agents add to it instead.
     if current.status == types::TaskStatus::Done {
         return Err(CommandError::rejected(format!(
-            "task {} is done, so update_task leaves its record as it was finished; record a correction with add_progress_note task_id {}, or ask the user to reopen it in the Toodo app",
+            "task {} is done, so update_task leaves its record as it was finished; record a correction with add_progress_note task_id {}, or call reopen_task to work on it again",
             request.id.0, request.id.0
         )));
     }
@@ -1641,6 +1681,144 @@ pub fn resume_task(
     };
     let task = lock(storage).add_task_note(id, NoteKind::Progress, &format!("Resumed: {note}"))?;
     Ok((&task).into())
+}
+
+/// Deletes a `planned` task as the app's Delete does (see [`task_commands::delete_task`]),
+/// but only with `confirm`; without it, nothing changes and the reply says what deleting
+/// would remove. Tasks being worked on and `done` tasks, which reviews are built on, are
+/// rejected.
+pub fn delete_task(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    plain: &PlainRunState,
+    tmux: &TmuxRunState,
+    request: DeleteTask,
+) -> CommandResult<Confirmation> {
+    let details = task_details(&lock(storage), GetTask { id: request.id })?;
+    let task = details.task;
+    let id = task.id.0;
+    match task.status {
+        TaskStatus::Planned => {}
+        TaskStatus::InProgress | TaskStatus::InReview => {
+            let status = if task.status == TaskStatus::InProgress {
+                "in_progress"
+            } else {
+                "in_review"
+            };
+            return Err(CommandError::rejected(format!(
+                "task {id} is {status}, so it is being worked on; call pause_task {{\"id\": {id}, \"reason\": \"...\"}} first if the work should stop, then delete_task"
+            )));
+        }
+        TaskStatus::Done => {
+            return Err(CommandError::rejected(format!(
+                "task {id} is done and part of the record reviews are built on, so delete_task keeps it; call reopen_task to work on it again, or ask the user to delete it in the Toodo app"
+            )));
+        }
+    }
+    let dependents = describe_links(&details.dependents);
+    let wait = if details.dependents.len() == 1 {
+        "waits"
+    } else {
+        "wait"
+    };
+    if !request.confirm {
+        let mut message = format!(
+            "Nothing changed yet. Deleting task {id} \"{}\" cannot be undone and drops it from the reports: it removes its history, notes, criteria, {} recorded commit(s), and {} dependency and related link(s)",
+            task.title,
+            details.commits.len(),
+            details.depends_on.len() + details.dependents.len() + details.related.len(),
+        );
+        if let Some(path) = &task.worktree_path {
+            message.push_str(&format!(
+                ", and its worktree at {path} with its herdr workspace and running agents; the branch {} is kept. A worktree with modified or untracked files keeps the task unless force is true",
+                task.branch.as_deref().unwrap_or("of the task")
+            ));
+        }
+        message.push('.');
+        if !dependents.is_empty() {
+            message.push_str(&format!(" {dependents} no longer {wait} on it."));
+        }
+        message.push_str(&format!(
+            " To delete it, call delete_task {{\"id\": {id}, \"confirm\": true}}."
+        ));
+        return Ok(Confirmation {
+            confirmed: false,
+            task,
+            message,
+        });
+    }
+    task_commands::delete(
+        storage,
+        git,
+        herdr,
+        plain,
+        tmux,
+        request.id.into(),
+        request.force,
+    )?;
+    let mut message = format!("task {id} \"{}\" is deleted.", task.title);
+    if !dependents.is_empty() {
+        message.push_str(&format!(" {dependents} no longer {wait} on it."));
+    }
+    Ok(Confirmation {
+        confirmed: true,
+        task,
+        message,
+    })
+}
+
+/// Reopens a `done` task as the app's Reopen does (see [`task_commands::reopen`]), but only
+/// with `confirm`; without it, the reopening is checked and the reply says what it would
+/// do, and nothing changes.
+pub fn reopen_task(storage: &mut Storage, request: ReopenTask) -> CommandResult<Confirmation> {
+    let note = task_commands::reopen_note(storage, request.id, &request.reason)?;
+    let id = request.id.0;
+    if !request.confirm {
+        let details = task_details(storage, GetTask { id: request.id })?;
+        let task = details.task;
+        let paused = if task.branch.is_some() {
+            " (paused on its branch, since it was started)"
+        } else {
+            ""
+        };
+        let mut message = format!(
+            "Nothing changed yet. Reopening task {id} \"{}\" makes it planned again{paused}, clears its resolution and completion note, and records this progress note: {note}",
+            task.title
+        );
+        let dependents = describe_links(&details.dependents);
+        if !dependents.is_empty() {
+            let wait = if details.dependents.len() == 1 {
+                "waits"
+            } else {
+                "wait"
+            };
+            message.push_str(&format!(
+                "\n{dependents} {wait} on it again until it is done."
+            ));
+        }
+        message.push_str(&format!(
+            "\nTo reopen it, call reopen_task again with the same reason and \"confirm\": true, e.g. {}.",
+            serde_json::json!({"id": id, "reason": request.reason.trim(), "confirm": true})
+        ));
+        return Ok(Confirmation {
+            confirmed: false,
+            task,
+            message,
+        });
+    }
+    let task = task_commands::reopen(storage, request.id, &request.reason)?;
+    let next = if task.branch.is_some() {
+        "call resume_task to continue it on its branch"
+    } else {
+        "call start_task to start it"
+    };
+    let message = format!("task {id} is reopened and planned; {next} once it is ready.");
+    Ok(Confirmation {
+        confirmed: true,
+        task,
+        message,
+    })
 }
 
 /// Starts or resumes a ready `planned` task as the app's Start does, then runs
@@ -2351,6 +2529,7 @@ mod tests {
     use crate::commands::CommandErrorKind;
     use crate::domain::model::{self, HostPath, WorkspaceLocation};
     use crate::domain::path::{PosixPath, WindowsPath};
+    use crate::domain::status::TaskStatus as DomainStatus;
     use crate::storage::NewWorkspace;
 
     fn storage_with_workspace() -> (Storage, WorkspaceId) {
@@ -3057,6 +3236,114 @@ mod tests {
 
     fn plan(tasks: serde_json::Value) -> CreatePlan {
         serde_json::from_value(serde_json::json!({ "tasks": tasks })).unwrap()
+    }
+
+    #[test]
+    fn delete_task_deletes_a_planned_task_only_when_confirmed() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Add login", vec![]).unwrap();
+        let dependent = create(&mut storage, workspace, "Use login", vec![task.id]).unwrap();
+        let done = create(&mut storage, workspace, "Ship login", vec![]).unwrap();
+        storage
+            .set_task_status(done.id.into(), DomainStatus::InProgress)
+            .unwrap();
+        storage
+            .conclude_task(done.id.into(), "Not needed", &[], None)
+            .unwrap();
+        let storage = std::sync::Arc::new(StorageState::new(storage));
+        let runs = tempfile::tempdir().unwrap();
+        let plain = PlainRunState::new(storage.clone(), runs.path(), "0123456789ab");
+        let tmux = TmuxRunState::new(storage.clone(), runs.path(), "0123456789ab");
+        let (git, _) = fake(Git::new, vec![]);
+        let (herdr, _) = fake(Herdr::new, vec![]);
+        let delete = |id: TaskId, confirm: bool| {
+            delete_task(
+                &storage,
+                &git,
+                &herdr,
+                &plain,
+                &tmux,
+                DeleteTask {
+                    id,
+                    confirm,
+                    force: false,
+                },
+            )
+        };
+
+        let preview = delete(task.id, false).unwrap();
+        assert!(!preview.confirmed);
+        assert!(
+            preview.message.contains("\"confirm\": true"),
+            "{}",
+            preview.message
+        );
+        assert!(
+            preview.message.contains("#2 (planned)"),
+            "{}",
+            preview.message
+        );
+        assert!(lock(&storage).get_task(task.id.into()).unwrap().is_some());
+
+        let deleted = delete(task.id, true).unwrap();
+        assert!(deleted.confirmed);
+        assert_eq!(deleted.task.id, task.id);
+        let storage_now = lock(&storage);
+        assert!(storage_now.get_task(task.id.into()).unwrap().is_none());
+        let dependent = storage_now.get_task(dependent.id.into()).unwrap().unwrap();
+        assert!(dependent.depends_on.is_empty());
+        drop(storage_now);
+
+        let error = delete(done.id, true).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("reopen_task"), "{}", error.message);
+        assert!(lock(&storage).get_task(done.id.into()).unwrap().is_some());
+    }
+
+    #[test]
+    fn reopen_task_reopens_a_done_task_only_when_confirmed() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Add login", vec![]).unwrap();
+        storage
+            .set_task_status(task.id.into(), DomainStatus::InProgress)
+            .unwrap();
+        storage
+            .conclude_task(task.id.into(), "Too slow", &[], None)
+            .unwrap();
+        let reopen = |storage: &mut Storage, reason: &str, confirm: bool| {
+            reopen_task(
+                storage,
+                ReopenTask {
+                    id: task.id,
+                    reason: reason.to_owned(),
+                    confirm,
+                },
+            )
+        };
+
+        let error = reopen(&mut storage, " ", false).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        let preview = reopen(&mut storage, "Faster now", false).unwrap();
+        assert!(!preview.confirmed);
+        assert_eq!(preview.task.status, TaskStatus::Done);
+        assert!(
+            preview.message.contains("Reopened: Faster now"),
+            "{}",
+            preview.message
+        );
+        assert!(
+            preview.message.contains("\"confirm\":true"),
+            "{}",
+            preview.message
+        );
+        let stored = storage.get_task(task.id.into()).unwrap().unwrap();
+        assert_eq!(stored.status, DomainStatus::Done);
+
+        let reopened = reopen(&mut storage, "Faster now", true).unwrap();
+        assert!(reopened.confirmed);
+        assert_eq!(reopened.task.status, TaskStatus::Planned);
+        assert_eq!(reopened.task.resolution, None);
+        assert!(reopen(&mut storage, "Faster now", false).is_err());
     }
 
     #[test]

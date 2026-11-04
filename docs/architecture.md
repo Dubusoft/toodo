@@ -842,7 +842,10 @@ path deletes journal history.
     agent from finishing its own task; the server instructions, tool descriptions, and
     the `toodo` skill tell agents never to start, complete, or conclude the task
     `current_task` finds for them, since its pull request's merge completes it.
-  - Deleting tasks is not exposed: it cannot be undone and stays in the app.
+  - `delete_task` and `reopen_task` change nothing unless called with `confirm: true`;
+    without it the reply says what the change would do. `delete_task` deletes only
+    `planned` tasks, through the app's Delete; `reopen_task` runs the app's Reopen with
+    the same checks. Both are local-only.
   - Agent access in Settings copies an MCP client config with the URL and token
     (`mcp_server_info`), tests that the server accepts that token, and shows the server
     instance and the last request `/mcp` turned away with its reason. `401` bodies at

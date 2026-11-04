@@ -7,8 +7,8 @@
 //! and read their history, create and edit tasks, connect dependencies and related
 //! links, leave progress and blocker notes in a task's history, and start, complete, or
 //! conclude tasks and restore a lost worktree through the app's own commands, and start,
-//! follow, read the logs of, stop, and reconcile plain and tmux runs; deleting tasks stays
-//! in the app. The `toodo` skill, the
+//! follow, read the logs of, stop, and reconcile plain and tmux runs; deleting a planned
+//! task and reopening a done one take a second call with `confirm`. The `toodo` skill, the
 //! workflow for working on a task, is served by the `read_toodo_skill` tool rather than
 //! as a resource, since not every client can read resources. Tasks and their runs are
 //! resources too, which clients of protocol 2026-07-28 can watch through
@@ -673,6 +673,20 @@ impl ToodoMcp {
         self.announce_with(result, |task| task)
     }
 
+    /// Announces the task of a confirmed change; a call without `confirm` changed nothing.
+    fn announce_confirmed(
+        &self,
+        result: CommandResult<tools::Confirmation>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Ok(change) = &result
+            && change.confirmed
+        {
+            self.backend
+                .tasks_changed(model::WorkspaceId(change.task.workspace_id.0));
+        }
+        reply(result)
+    }
+
     /// [`Self::announce`] for a reply that carries the changed task, which `task` picks.
     fn announce_with<T: Serialize>(
         &self,
@@ -966,6 +980,39 @@ impl ToodoMcp {
             })
             .await?;
         self.announce(result)
+    }
+
+    #[tool(
+        description = "Delete a planned task, e.g. one you created by mistake, as Delete in the Toodo app does. Deleting cannot be undone and drops the task from the reports, so it takes two calls: without confirm nothing changes and the reply (confirmed false) says what would be removed (history, commits, links, a worktree and its herdr workspace; the branch is kept); then call again with {\"id\": 5, \"confirm\": true}. force: true also removes a worktree with modified or untracked files. Rejected for an in_progress or in_review task (pause_task it first) and a done task (reopen_task it, or the user deletes it in the app). Returns {confirmed, task, message}; task is the task as it was."
+    )]
+    async fn delete_task(
+        &self,
+        Parameters(request): Parameters<tools::DeleteTask>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| {
+                tools::delete_task(
+                    backend.storage(),
+                    backend.git(),
+                    backend.herdr(),
+                    backend.plain(),
+                    backend.tmux(),
+                    request,
+                )
+            })
+            .await?;
+        self.announce_confirmed(result)
+    }
+
+    #[tool(
+        description = "Reopen a done task that was completed or concluded by mistake, as Reopen in the Toodo app does, with a required non-empty reason. It takes two calls: without confirm nothing changes and the reply (confirmed false) says what reopening would do; then call again with the same reason and confirm: true, e.g. {\"id\": 5, \"reason\": \"The fix missed a case\", \"confirm\": true}. The task becomes planned again, paused if it was started, so resume_task continues it on its branch; its resolution and completion note are cleared and kept with the reason as a progress note. Rejected while a task that depends on it has started; remove_dependency those first or create a follow-up task. Returns {confirmed, task, message}."
+    )]
+    fn reopen_task(
+        &self,
+        Parameters(request): Parameters<tools::ReopenTask>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = tools::reopen_task(&mut lock(self.backend.storage()), request);
+        self.announce_confirmed(result)
     }
 
     #[tool(
@@ -2660,11 +2707,12 @@ mod tests {
             "get_task",
             "add_related",
             "remove_related",
+            "delete_task",
+            "reopen_task",
         ] {
             assert!(server.tool_router.has_route(tool), "{tool}");
         }
         for tool in [
-            "delete_task",
             "reply_in_chat",
             "ack_chat",
             "mark_chat_handled",
@@ -3169,6 +3217,8 @@ mod tests {
             "update_workspace",
             "complete_task",
             "conclude_task",
+            "delete_task",
+            "reopen_task",
         ] {
             assert!(!write.contains(name), "{name}");
             assert!(all.contains(name), "{name}");

@@ -141,7 +141,9 @@ that way. The exact rules are in the shared fragments the agents read:
 - Add a prerequisite to an `in_progress` task last, with all prerequisites in one
   `add_dependency` call: it pauses the task, and the user is asked whether to close its
   herdr workspace.
-- Deleting tasks happens in the Toodo app only.
+- Delete a `planned` task created by mistake with `delete_task` and reopen a done task
+  with `reopen_task`: call once without `confirm`, read what the change would do, then
+  call again with `"confirm": true`. Done tasks are deleted in the Toodo app only.
 - When a call is rejected, read the error: it names the argument or step that succeeds.
 
 ## Example Session
