@@ -12,11 +12,13 @@ into a performance report.
 - **Workspaces**: use a local directory or a remote directory on a saved herdr SSH
   machine as a workspace.
 - **Planning**: create tasks per workspace; express ordering as dependencies (a DAG).
-- **Worktree preparation**: before a task is implemented, create a dedicated
-  `git worktree` in a separate directory via the herdr API.
-- **Implementation in herdr**: the work itself happens in herdr panes and agents
-  attached to the task's worktree. Workspaces with runner `plain` run `claude` or
-  `codex` as child processes in the worktree instead, without herdr.
+- **Worktree preparation**: starting a task creates its branch and a dedicated
+  `git worktree` in a separate directory: with `herdr worktree create` for runner
+  `herdr`, with `git worktree add` for runners `plain` and `tmux`. Runner `none` creates
+  neither.
+- **Implementation**: agents work in the task's worktree: in herdr panes (runner
+  `herdr`), as `claude` or `codex` child processes (runner `plain`), or in a detached
+  tmux session (runner `tmux`); see [docs/runners.md](docs/runners.md).
 - **Commit tracking**: record the commits (SHA, message, author, time) made for a task.
 - **Completion and PR**: a task's branch is pushed and a pull request opened for it;
   once that pull request is merged on GitHub, Toodo completes the task automatically.
@@ -28,6 +30,48 @@ into a performance report.
   sessions, watch them, and close out what shipped; see [docs/agents.md](docs/agents.md).
 - **Timeline**: every status change is timestamped; the dependency graph is drawn on a
   time axis showing when each task was planned, started, reviewed, and completed.
+- **Review**: a report of what was planned, started, and completed in a period, built
+  from that history; see [Review](#review).
+
+![Tasks of two workspaces on the timeline, with their dependencies](docs/images/timeline.png)
+
+## Getting Started
+
+[docs/quickstart.md](docs/quickstart.md) goes from installing the server to a first task
+whose pull request is merged. [docs/runners.md](docs/runners.md) helps you pick the runner
+of a workspace, and [docs/troubleshooting.md](docs/troubleshooting.md) covers the errors
+new setups run into most.
+
+## Plan
+
+**Plan** in the "All workspaces" view sums the estimates of tasks per quarter or year of
+their due dates. Set a capacity per quarter and every period that holds more work than
+it is highlighted as over capacity; tasks without an estimate or due date are listed so
+you can fill them in. [docs/architecture.md](docs/architecture.md#plan-view) has the
+rules.
+
+## Review
+
+**Review** in the sidebar reports the work recorded in a week, month, quarter, year, or a
+custom range, across all workspaces or narrowed to one workspace or label. It is built only
+from recorded facts: status changes, commits, pull request snapshots, and the completion
+notes you write.
+
+- A summary counts the tasks completed, awaiting completion, started, and planned, and the
+  commits; it gives the median lead, cycle, active, and review times and what was
+  completed by type and by workspace.
+- "Plan vs actual" compares estimates with active time and due dates with completion
+  dates, when tasks have them; a year adds a "Year in review" section.
+- Each task is listed once, under the most advanced milestone it reached in the period,
+  with its pull request and completion note.
+- Export copies the review as Markdown, saves it as Markdown or CSV, or prints it.
+- An empty period offers to import the pull requests you merged in it on GitHub as done
+  tasks, for work from before Toodo recorded it.
+
+The review is the source for status updates and a year-end report.
+[docs/architecture.md](docs/architecture.md#review) defines each number.
+
+![The week review](docs/images/review.png)
 
 ## Keyboard Shortcuts
 
@@ -45,6 +89,9 @@ The web app lists these with `?`. Letter shortcuts do nothing while you type in 
 
 ## Documentation
 
+- [docs/quickstart.md](docs/quickstart.md): from install to a first merged task.
+- [docs/runners.md](docs/runners.md): the four runners compared, and how to pick one.
+- [docs/troubleshooting.md](docs/troubleshooting.md): common errors and what to do.
 - [AGENTS.md](AGENTS.md): contributor and AI-agent guidelines, including the language policy.
 - [docs/architecture.md](docs/architecture.md): domain model and system components.
 - [docs/workflow.md](docs/workflow.md): task lifecycle from planning to pull request.
@@ -57,13 +104,16 @@ The web app lists these with `?`. Letter shortcuts do nothing while you type in 
 
 ## Requirements
 
-- A Linux machine (x86_64 for release builds) for `toodo-server`
+- A Linux machine for `toodo-server`: x64 or arm64 with glibc for the npm packages,
+  x86_64 for the release archive
 - Optional: [herdr](https://herdr.dev), installed and running there, for workspaces with runner
   `herdr` and all remote SSH workspaces (Toodo controls it; it is not bundled). Runner `plain`
   needs `claude` or `codex` on the server's `PATH`; runner `none` needs neither
 - Git and OpenSSH on the server's `PATH`
 - For workspaces with source `github`: the GitHub CLI (`gh`) on the server's `PATH`, logged
-  in with `gh auth login` as the user that runs the server. Workspaces with source `none` or
+  in with `gh auth login` as the user that runs the server. GitHub Enterprise hosts work
+  too: log in with `gh auth login --hostname <host>` (see "GitHub Enterprise" in
+  [docs/workflow.md](docs/workflow.md#github-enterprise)). Workspaces with source `none` or
   `local_git` do not need it
 - A current browser to use the web app
 - For runner `tmux`: tmux on the host that runs the agent. For runner `plain` on a POSIX
@@ -79,7 +129,8 @@ toodo service install
 
 `toodo update` installs the newest version later and restarts the server on it. See
 [Install with npm](docs/server.md#install-with-npm), and [docs/server.md](docs/server.md)
-for installing without Node.js or from a checkout.
+for installing without Node.js or from a checkout. Continue with
+[docs/quickstart.md](docs/quickstart.md) to sign in and ship a first task.
 
 ## End-to-End Tests
 
@@ -158,10 +209,6 @@ The `Release` workflow also starts the `npm` workflow on `main` with dist-tag `l
 publish the release to npm. If that publish fails or is skipped, run the `npm` workflow by
 hand on `main` with dist-tag `latest`. Every push to `dev` publishes an `X.Y.Z-dev.N`
 prerelease under `dev`; see [npm Packages](docs/server.md#npm-packages).
-
-## Status
-
-Early bootstrap. Setup instructions will be added with the project scaffold.
 
 ## Language Policy
 

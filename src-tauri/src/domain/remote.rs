@@ -95,10 +95,35 @@ mod tests {
                 "{url}"
             );
         }
+    }
+
+    #[test]
+    fn github_enterprise_remote_urls_keep_their_host() {
+        let cases = [
+            "https://ghe.example.com/team/toodo.git",
+            "https://user@GHE.Example.com/team/toodo",
+            "ssh://git@ghe.example.com/team/toodo.git",
+            "ssh://git@ghe.example.com:2222/team/toodo.git",
+            "git@ghe.example.com:team/toodo.git",
+        ];
+        for url in cases {
+            assert_eq!(
+                parse(url).as_deref(),
+                Some("ghe.example.com/team/toodo"),
+                "{url}"
+            );
+        }
         assert_eq!(
             parse("git@ghe.example.com:team/my_repo.v2.git").as_deref(),
             Some("ghe.example.com/team/my_repo.v2")
         );
+        // GitHub Enterprise Cloud with data residency: `<subdomain>.ghe.com`.
+        assert_eq!(
+            parse("git@acme.ghe.com:team/toodo.git").as_deref(),
+            Some("acme.ghe.com/team/toodo")
+        );
+        // A path prefix before owner/name is not a GitHub repository path.
+        assert_eq!(parse("https://example.com/github/team/toodo.git"), None);
     }
 
     #[test]

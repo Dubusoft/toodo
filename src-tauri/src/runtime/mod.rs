@@ -11,6 +11,7 @@
 pub mod events;
 mod herdr;
 pub mod host;
+pub mod log;
 pub mod plain;
 pub mod tmux;
 mod workspace;
@@ -19,13 +20,72 @@ use std::fmt;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::adapters::herdr::HerdrError;
-use crate::domain::model::TaskId;
+use crate::domain::model::{TaskId, WorkspaceId};
 use crate::domain::runtime::{
     HostRef, OwnerKey, RunId, RunRole, RunState, RunnerKind, RuntimeWorkspaceId,
 };
 use crate::storage::{NewRun, Storage, StorageError, TaskRun};
 
 pub use workspace::{OpenFor, OpenWorktree, TaskWorktree, end_runs};
+
+/// What one [`reconcile_remote_runs`] pass left.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RemotePass {
+    /// The workspaces with a run that the pass settled or observed again.
+    pub changed: std::collections::BTreeSet<WorkspaceId>,
+    /// Whether a run is still unknown: its host could not be reached, or its agent runs
+    /// on without a stream to observe.
+    pub pending: bool,
+}
+
+/// Reconciles every remote plain or tmux run whose observation was lost, as
+/// `reconcile_run` does. The server runs it in the background after startup, so remote
+/// runs settle on their own after a restart.
+pub fn reconcile_remote_runs(
+    storage: &Mutex<Storage>,
+    plain: &plain::PlainRunner,
+    tmux: &tmux::TmuxRunner,
+) -> Result<RemotePass, RuntimeError> {
+    let runs = {
+        let storage = lock(storage);
+        let mut runs = Vec::new();
+        for workspace in storage.list_workspaces()? {
+            for task in storage.list_tasks(workspace.id)? {
+                for run in storage.list_task_runs(task.id)? {
+                    if run.state == RunState::Unknown
+                        && matches!(run.host, HostRef::Ssh(_))
+                        && matches!(run.runner_kind, RunnerKind::Plain | RunnerKind::Tmux)
+                    {
+                        runs.push((workspace.id, run));
+                    }
+                }
+            }
+        }
+        runs
+    };
+    let mut pass = RemotePass::default();
+    for (workspace, run) in runs {
+        let reconciled = match run.runner_kind {
+            RunnerKind::Tmux => tmux.reconcile(run.id),
+            _ => plain.reconcile(run.id),
+        };
+        match reconciled {
+            Ok(now) if now.state == RunState::Unknown => pass.pending = true,
+            Ok(_) => {
+                pass.changed.insert(workspace);
+            }
+            Err(error) => {
+                eprintln!(
+                    "toodo-server: could not reconcile run {} ({error}); the server tries \
+                     again later, or reconcile it with reconcile_run",
+                    run.id
+                );
+                pass.pending = true;
+            }
+        }
+    }
+    Ok(pass)
+}
 
 /// A runner failure, with a message that names what to do next.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +191,8 @@ pub struct AgentLaunch {
     pub adapter: plain::adapter::AgentAdapter,
     pub brief: String,
     pub mcp: bool,
+    /// The model and permission mode the agent is launched with.
+    pub options: plain::adapter::LaunchOptions,
     pub timeout_secs: u64,
 }
 

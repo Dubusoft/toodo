@@ -1,11 +1,13 @@
 //! Managed agent processes: pipe readers, process-group termination, and persisted outcomes.
 
 use std::collections::VecDeque;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,37 +24,166 @@ pub(super) enum Signal {
     Stop,
     RemoteStop(mpsc::Sender<Result<(), RunnerError>>),
     Exit(std::io::Result<ExitStatus>),
+    /// The agent of a reattached run ended without recording its exit code.
+    Interrupted,
     Stdout(std::io::Result<EventTracker>),
     Stderr(std::io::Result<String>),
 }
 
-pub(super) fn spawn(
+/// Files of a local run directory that outlive the server process: the agent's raw output,
+/// the wrapper's PID and start time, its exit code, and the launch parameters.
+pub(super) const RAW_STDOUT: &str = "stdout.raw";
+pub(super) const RAW_STDERR: &str = "stderr.raw";
+const PID_FILE: &str = "pid";
+const EXIT_FILE: &str = "exit";
+
+/// How often a reader at the end of a raw output file looks for more output, and a
+/// reattached run's watcher for its exit.
+const FOLLOW_INTERVAL: Duration = Duration::from_millis(100);
+const EXIT_INTERVAL: Duration = Duration::from_millis(250);
+
+/// Runs the agent in its own session-independent process group, ignoring the hangup of a
+/// server that goes away. Its PID, start time, and exit code go to the run directory in
+/// `$1`, so a later server process can tell whether it still runs and how it ended.
+const LOCAL_WRAPPER: &str = r#"run=$1
+shift
+trap '' HUP
+(umask 077; printf '%s %s\n' "$$" "$(LC_ALL=C ps -o lstart= -p $$)" > "$run/pid")
+"$@"
+code=$?
+(umask 077; printf '%s\n' "$code" > "$run/exit")
+exit "$code"
+"#;
+
+fn launch_error(program: &Path, key: &str, error: impl std::fmt::Display) -> RunnerError {
+    RunnerError(format!(
+        "could not launch {}: {error}; install {key} on the server's PATH or start the run with the other adapter",
+        program.display()
+    ))
+}
+
+/// Finds an executable `program` as a shell would: a path with a slash as it is, a bare
+/// name on `PATH`.
+fn resolve(program: &Path) -> Option<PathBuf> {
+    let executable = |path: &Path| {
+        fs::metadata(path)
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    };
+    if program.components().count() > 1 || program.is_absolute() {
+        return executable(program).then(|| program.to_owned());
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(program))
+        .find(|path| executable(path))
+}
+
+/// Starts the agent under [`LOCAL_WRAPPER`] with the brief on stdin and its output going
+/// straight to the raw output files, so it neither needs nor notices this server process.
+pub(super) fn spawn_local(
     program: &Path,
     cwd: &str,
+    dir: &Path,
     brief: File,
+    stdout: File,
+    stderr: File,
     invocation: &Invocation,
-) -> Result<(Child, mpsc::Sender<Signal>, mpsc::Receiver<Signal>), RunnerError> {
-    let child = Command::new(program)
+) -> Result<Child, RunnerError> {
+    let resolved = resolve(program)
+        .ok_or_else(|| launch_error(program, invocation.program_key, "not found"))?;
+    Command::new("/bin/sh")
+        .arg("-c")
+        .arg(LOCAL_WRAPPER)
+        .arg("sh")
+        .arg(dir)
+        .arg(resolved)
         .args(&invocation.args)
         .env_remove(MCP_URL_ENV)
         .env_remove(MCP_TOKEN_ENV)
         .envs(invocation.env.iter().cloned())
         .current_dir(cwd)
         .stdin(brief)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(stdout)
+        .stderr(stderr)
         .process_group(0)
         .spawn()
-        .map_err(|error| RunnerError(format!(
-            "could not launch {}: {error}; install {} on the server's PATH or start the run with the other adapter",
-            program.display(), invocation.program_key
-        )))?;
-    let (sender, receiver) = mpsc::channel();
-    Ok((child, sender, receiver))
+        .map_err(|error| launch_error(program, invocation.program_key, error))
+}
+
+/// The recorded exit code of a local run, once its wrapper wrote it completely.
+fn recorded_exit(dir: &Path) -> Option<i32> {
+    fs::read_to_string(dir.join(EXIT_FILE))
+        .ok()?
+        .strip_suffix('\n')?
+        .parse()
+        .ok()
+}
+
+fn start_identity(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let identity = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (output.status.success() && !identity.is_empty()).then_some(identity)
+}
+
+/// What an earlier server process left of a local run's wrapper: `None` without a PID
+/// file, `Some(None)` when the recorded process is gone (or its PID was reused), and
+/// `Some(Some(pid))` while it still runs.
+pub(super) fn recorded_wrapper(dir: &Path) -> Option<Option<u32>> {
+    let record = fs::read_to_string(dir.join(PID_FILE)).ok()?;
+    let (pid, identity) = record.trim_end().split_once(' ')?;
+    let pid: u32 = pid.parse().ok()?;
+    Some((start_identity(pid).as_deref() == Some(identity.trim())).then_some(pid))
+}
+
+/// Reads a raw output file that another process is still writing: at its end it waits for
+/// more until `done` is set, then reads what is left and reports the end.
+struct Follow {
+    file: File,
+    done: Arc<AtomicBool>,
+}
+
+impl Read for Follow {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            let finished = self.done.load(Ordering::Acquire);
+            let count = self.file.read(buffer)?;
+            if count > 0 || finished {
+                return Ok(count);
+            }
+            thread::sleep(FOLLOW_INTERVAL);
+        }
+    }
+}
+
+/// How the server learns a run's output and exit.
+pub(super) enum Watch {
+    /// Remote runs: the `ssh` child streams the output on its pipes.
+    Pipes(Child),
+    /// Local runs this server started: the wrapper is its child, the output in raw files.
+    Files {
+        child: Child,
+        dir: PathBuf,
+        stdout: File,
+        stderr: File,
+    },
+    /// Local runs an earlier server process started. `pid` is the wrapper while it runs;
+    /// the first `replayed` stdout lines were already recorded before the restart.
+    Reattached {
+        pid: Option<u32>,
+        dir: PathBuf,
+        stdout: File,
+        stderr: File,
+        replayed: usize,
+    },
 }
 
 pub(super) struct ManagedRun {
-    pub child: Child,
+    pub watch: Watch,
     pub sender: mpsc::Sender<Signal>,
     pub receiver: mpsc::Receiver<Signal>,
     pub stdout: File,
@@ -208,10 +339,100 @@ impl ActivityRecorder {
     }
 }
 
-pub(super) fn manage(mut managed: ManagedRun) {
-    let pid = managed.child.id();
-    let stdout = managed.child.stdout.take().unwrap();
-    let stderr = managed.child.stderr.take().unwrap();
+/// Sends the exit of a reattached run's wrapper, which is not this process's child: its
+/// recorded exit code, or [`Signal::Interrupted`] once it is gone without one.
+fn watch_reattached(
+    pid: Option<u32>,
+    dir: PathBuf,
+    done: Arc<AtomicBool>,
+    sender: mpsc::Sender<Signal>,
+) {
+    loop {
+        let alive = pid.is_some_and(|pid| signal_group(pid, 0));
+        if let Some(code) = recorded_exit(&dir) {
+            done.store(true, Ordering::Release);
+            let _ = sender.send(Signal::Exit(Ok(ExitStatus::from_raw((code & 0xff) << 8))));
+            return;
+        }
+        if !alive {
+            done.store(true, Ordering::Release);
+            let _ = sender.send(Signal::Interrupted);
+            return;
+        }
+        thread::sleep(EXIT_INTERVAL);
+    }
+}
+
+/// A stream of the agent's output.
+type Output = Box<dyn Read + Send>;
+/// Waits for the agent's exit and sends it.
+type Waiter = Box<dyn FnOnce(mpsc::Sender<Signal>) + Send>;
+
+pub(super) fn manage(managed: ManagedRun) {
+    let done = Arc::new(AtomicBool::new(false));
+    let follow = |file| -> Output {
+        Box::new(Follow {
+            file,
+            done: done.clone(),
+        })
+    };
+    let (pid, stdout, stderr, replayed, raw, waiter): (
+        Option<u32>,
+        Output,
+        Output,
+        usize,
+        Option<PathBuf>,
+        Waiter,
+    ) = match managed.watch {
+        Watch::Pipes(mut child) => (
+            Some(child.id()),
+            Box::new(child.stdout.take().unwrap()),
+            Box::new(child.stderr.take().unwrap()),
+            0,
+            None,
+            Box::new(move |sender| {
+                let _ = sender.send(Signal::Exit(child.wait()));
+            }),
+        ),
+        Watch::Files {
+            mut child,
+            dir,
+            stdout,
+            stderr,
+        } => {
+            let done = done.clone();
+            (
+                Some(child.id()),
+                follow(stdout),
+                follow(stderr),
+                0,
+                Some(dir),
+                Box::new(move |sender| {
+                    let status = child.wait();
+                    done.store(true, Ordering::Release);
+                    let _ = sender.send(Signal::Exit(status));
+                }),
+            )
+        }
+        Watch::Reattached {
+            pid,
+            dir,
+            stdout,
+            stderr,
+            replayed,
+        } => {
+            let done = done.clone();
+            (
+                pid,
+                follow(stdout),
+                follow(stderr),
+                replayed,
+                Some(dir.clone()),
+                Box::new(move |sender| watch_reattached(pid, dir, done, sender)),
+            )
+        }
+    };
+    let signal = move |signal| pid.is_some_and(|pid| signal_group(pid, signal));
     let sender = managed.sender.clone();
     let secret = managed.secret.clone();
     let adapter = managed.adapter;
@@ -220,13 +441,20 @@ pub(super) fn manage(mut managed: ManagedRun) {
     thread::spawn(move || {
         let mut tracker = EventTracker::new(adapter);
         let mut activity = ActivityRecorder::new();
+        let mut lines = 0;
         let result = read_output(stdout, managed.stdout, &secret, true, |line| {
+            lines += 1;
+            // Replayed lines rebuild the tracker; their events were recorded before.
+            let replay = lines <= replayed;
             if !line.truncated
                 && let Some(payload) = tracker.feed(&line.text)
+                && !replay
             {
                 record_todo(&storage, run, &adapter::redact(&payload, &secret));
             }
-            activity.line(&storage, run, tracker.usage());
+            if !replay {
+                activity.line(&storage, run, tracker.usage());
+            }
         });
         activity.flush(&storage, run);
         let result = result.map(|_| tracker);
@@ -239,9 +467,7 @@ pub(super) fn manage(mut managed: ManagedRun) {
         let _ = sender.send(Signal::Stderr(result));
     });
     let sender = managed.sender;
-    thread::spawn(move || {
-        let _ = sender.send(Signal::Exit(managed.child.wait()));
-    });
+    thread::spawn(move || waiter(sender));
     thread::spawn(move || {
         let mut deadline = Instant::now() + managed.timeout;
         let mut termination = None;
@@ -250,10 +476,11 @@ pub(super) fn manage(mut managed: ManagedRun) {
         let mut tracker = None;
         let mut stderr = None;
         let mut observation_lost = false;
+        let mut interrupted = false;
         while exit.is_none()
             || tracker.is_none()
             || stderr.is_none()
-            || (termination.is_some() && !killed && signal_group(pid, 0))
+            || (termination.is_some() && !killed && signal(0))
         {
             match managed
                 .receiver
@@ -261,7 +488,7 @@ pub(super) fn manage(mut managed: ManagedRun) {
             {
                 Ok(Signal::Stop) if termination.is_none() => {
                     termination = Some(ExitKind::Stopped);
-                    signal_group(pid, libc::SIGTERM);
+                    signal(libc::SIGTERM);
                     deadline = Instant::now() + Duration::from_secs(5);
                 }
                 Ok(Signal::Stop) => {}
@@ -269,7 +496,7 @@ pub(super) fn manage(mut managed: ManagedRun) {
                     let mut result = managed.remote.as_ref().unwrap().stop(managed.run);
                     if result.is_ok() {
                         termination = Some(ExitKind::Stopped);
-                        signal_group(pid, libc::SIGTERM);
+                        signal(libc::SIGTERM);
                         deadline = Instant::now() + Duration::from_secs(5);
                     } else if let Err(error) =
                         lock(&managed.storage).append_run_event(managed.run, "stop_requested", None)
@@ -281,6 +508,10 @@ pub(super) fn manage(mut managed: ManagedRun) {
                     let _ = reply.send(result);
                 }
                 Ok(Signal::Exit(status)) => exit = Some(status),
+                Ok(Signal::Interrupted) => {
+                    interrupted = true;
+                    exit = Some(Ok(ExitStatus::from_raw(0)));
+                }
                 Ok(Signal::Stdout(result)) => tracker = Some(result),
                 Ok(Signal::Stderr(result)) => stderr = Some(result),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -291,10 +522,10 @@ pub(super) fn manage(mut managed: ManagedRun) {
                             observation_lost = true;
                         }
                         termination = Some(ExitKind::TimedOut);
-                        signal_group(pid, libc::SIGTERM);
+                        signal(libc::SIGTERM);
                         deadline = Instant::now() + Duration::from_secs(5);
                     } else if !killed {
-                        signal_group(pid, libc::SIGKILL);
+                        signal(libc::SIGKILL);
                         killed = true;
                         // After SIGKILL, wait for the exact pipe EOF and waitpid signals.
                         deadline = Instant::now() + Duration::from_secs(86400);
@@ -327,6 +558,15 @@ pub(super) fn manage(mut managed: ManagedRun) {
                 }
             }
             let mut outcome = adapter::classify(&tracker, exit, &stderr);
+            if interrupted && termination.is_none() {
+                outcome.state = RunState::Failed;
+                outcome.events = vec![(
+                    "interrupted",
+                    "the agent ended while the server was down and recorded no exit code; read \
+                     the run log and start a new run"
+                        .into(),
+                )];
+            }
             if observation_lost {
                 outcome.state = RunState::Unknown;
                 outcome.events = vec![(
@@ -358,6 +598,14 @@ pub(super) fn manage(mut managed: ManagedRun) {
             && !run.state.is_active()
         {
             remote.remove_credentials(&managed.storage, run.id);
+        }
+        // The raw output is not redacted; the redacted logs replace it once the run ended.
+        if let (Some(dir), Ok(run)) = (&raw, &result)
+            && !run.state.is_active()
+        {
+            for name in [RAW_STDOUT, RAW_STDERR] {
+                let _ = fs::remove_file(dir.join(name));
+            }
         }
         *managed.end.result.lock().unwrap() = Some(result);
         managed.end.changed.notify_all();

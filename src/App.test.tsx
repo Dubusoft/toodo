@@ -33,6 +33,7 @@ vi.mock("@/lib/bindings", () => ({
     listWorkspaceBranches: vi.fn(),
     createWorkspaceBaseBranch: vi.fn(),
     deleteWorkspace: vi.fn(),
+    listArchive: vi.fn(),
     listTasks: vi.fn(),
     createTask: vi.fn(),
     updateTask: vi.fn(),
@@ -80,6 +81,8 @@ vi.mock("@/lib/bindings", () => ({
     saveBackupSettings: vi.fn(),
     restoreBackup: vi.fn(),
     reviewPeriod: vi.fn(),
+    backfillPullRequests: vi.fn(),
+    reviewReport: vi.fn(),
   },
   events: {
     tasksChanged: { listen: vi.fn() },
@@ -307,6 +310,7 @@ describe("App", () => {
     mocked.listAgentStatuses.mockResolvedValue([]);
     mocked.listPullRequestStatuses.mockResolvedValue([]);
     mocked.listBackups.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listArchive.mockResolvedValue({ status: "ok", data: { workspaces: [], tasks: [] } });
     mocked.mcpServerInfo.mockResolvedValue({
       url: "http://127.0.0.1:47615/mcp",
       token: "secret",
@@ -330,6 +334,88 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Toodo" })).toBeInTheDocument();
     expect(await screen.findByText("v1.2.3")).toBeInTheDocument();
     expect(await screen.findByText("No workspaces yet.")).toBeInTheDocument();
+  });
+
+  it("offers to add the first workspace with what the server needs before it", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    mocked.runnerHealth.mockResolvedValue({
+      status: "ok",
+      data: {
+        ...readyRunners,
+        herdr: { installed: false, running: false, version: null, message: "herdr is not installed" },
+        agents: [
+          { adapter: "claude", installed: false, path: null, message: "Install claude" },
+          { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
+        ],
+      },
+    });
+    renderApp();
+
+    const prerequisites = await screen.findByRole("list", { name: "Prerequisites" });
+    expect(within(prerequisites).getByRole("listitem", { name: "GitHub CLI: not checked" })).toHaveTextContent(
+      "gh auth login",
+    );
+    expect(
+      await within(prerequisites).findByRole("listitem", { name: "Claude or Codex CLI: ready" }),
+    ).toHaveTextContent("Codex found at /usr/local/bin/codex.");
+    expect(within(prerequisites).getByRole("listitem", { name: "herdr (optional): not checked" })).toHaveTextContent(
+      "runner plain works without it",
+    );
+
+    const add = screen.getByRole("button", { name: "Add workspace" });
+    fireEvent.click(add);
+    const dialog = screen.getByRole("dialog", { name: "New workspace on Local" });
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(add).toHaveFocus();
+  });
+
+  it("explains how an empty review fills up and imports the pull requests merged in the period", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 14, 10));
+    const at = new Date(2026, 9, 13, 15).getTime() / 1000;
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    let imported = false;
+    mocked.reviewPeriod.mockImplementation(async () => ({
+      status: "ok",
+      data: imported
+        ? [
+            {
+              task: task(5, 1, "Add storage", { status: "done", pullRequestUrl: "https://github.com/acme/toodo/pull/7" }),
+              outcome: "completed",
+              at,
+              commits: [],
+              archived: false,
+            },
+          ]
+        : [],
+    }));
+    mocked.backfillPullRequests.mockImplementation(async () => {
+      imported = true;
+      return {
+        status: "ok",
+        data: { imported: 1, skipped: 2, failures: ["Workspace herdr: gh is not signed in; run gh auth login"] },
+      };
+    });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+
+    expect(await screen.findByText("No recorded activity in this week.")).toBeInTheDocument();
+    expect(screen.getByText(/so reviews fill up as you work/)).toHaveTextContent(
+      "import the pull requests you merged in this week to add it.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Import merged pull requests" }));
+
+    const { start, end } = weekPeriod("2026-10-12");
+    await waitFor(() => expect(mocked.backfillPullRequests).toHaveBeenCalledWith(start, end));
+    expect(await screen.findByText("Imported 1 merged pull request as done tasks. Left out 2 pull requests a task already records.")).toBeInTheDocument();
+    expect(screen.getByRole("alert", { name: "Pull requests not imported" })).toHaveTextContent(
+      "Workspace herdr: gh is not signed in; run gh auth login",
+    );
+    const completed = await screen.findByRole("region", { name: "Completed" });
+    expect(within(completed).getByText("Add storage")).toBeInTheDocument();
   });
 
   it("flags a workspace whose path the server cannot use in the sidebar and its header", async () => {
@@ -379,6 +465,43 @@ describe("App", () => {
     expect(await screen.findByText("Fix ssh")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "herdr" })).toBeInTheDocument();
     expect(screen.queryByText("Add storage")).not.toBeInTheDocument();
+  });
+
+  it("names reviewed tasks without a plan and adds an estimate from the review", async () => {
+    const at = Date.now() / 1000 - 60;
+    const unplanned = task(1, 1, "Add storage", { status: "done" });
+    const estimated = { ...unplanned, estimate: { unit: "hours" as const, amount: 2 } };
+    let reviewed = unplanned;
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.reviewPeriod.mockImplementation(async () => ({
+      status: "ok",
+      data: [{ task: reviewed, outcome: "completed", at, commits: [], archived: false }],
+    }));
+    mocked.updateTask.mockImplementation(async () => {
+      reviewed = estimated;
+      return { status: "ok", data: estimated };
+    });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+    const plan = await screen.findByRole("region", { name: "Plan vs actual" });
+    expect(plan).toHaveTextContent("No reviewed task has an estimate or a due date");
+    expect(within(plan).getByText("Missing plan").nextSibling).toHaveTextContent(
+      "1 task without an estimate, 1 task without a due date; add them from the marks on the tasks below",
+    );
+    const completed = screen.getByRole("region", { name: "Completed" });
+    fireEvent.click(within(completed).getByRole("button", { name: "Edit plan of #1: no estimate or due date" }));
+    const form = within(completed).getByRole("form", { name: "Edit task #1" });
+    expect(within(form).getByLabelText("Estimate of #1")).toHaveFocus();
+    fireEvent.change(within(form).getByLabelText("Estimate of #1"), { target: { value: "2" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    expect(await within(completed).findByRole("button", { name: "Edit plan of #1: no due date" })).toBeInTheDocument();
+    expect(within(completed).queryByRole("form", { name: "Edit task #1" })).not.toBeInTheDocument();
+    expect(mocked.updateTask).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 1, estimate: { unit: "hours", amount: 2 }, dueDate: null, criteria: null }),
+    );
   });
 
   it("plans dependencies across workspaces and lists every workspace together", async () => {
@@ -447,11 +570,26 @@ describe("App", () => {
                 outcome: "completed",
                 at,
                 commits: [{ ...commit(1, "0123456789", "Add the storage schema\n\nBody"), committedAt: at }],
+                archived: false,
               },
-              { task: task(3, 2, "Fix ssh", { labels: ["infra"] }), outcome: "worked_on", at, commits: [] },
+              { task: task(3, 2, "Fix ssh", { labels: ["infra"] }), outcome: "worked_on", at, commits: [], archived: false },
             ]
           : [],
     }));
+    mocked.reviewReport.mockImplementation(async ({ format }) => ({
+      status: "ok",
+      data:
+        format === "csv"
+          ? { fileName: "toodo-review-2026.csv", mediaType: "text/csv", from: "2026-01-01", to: "2026-12-31", contents: "\uFEFFTask\r\n1,toodo\r\n" }
+          : {
+              fileName: "toodo-review-2026-10-12-to-2026-10-18.md",
+              mediaType: "text/markdown",
+              from: "2026-10-12",
+              to: "2026-10-18",
+              contents: "# Week review: 2026-10-12 to 2026-10-18\n",
+            },
+    }));
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Review" }));
@@ -493,11 +631,17 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Export" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy as Markdown" }));
     expect(await screen.findByText("Copied as Markdown.")).toBeInTheDocument();
-    expect(writeText).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "## Completed (1)\n\n- [feat] Add storage (toodo, 2026-10-13, https://github.com/acme/toodo/pull/7)",
-      ),
-    );
+    expect(writeText).toHaveBeenCalledWith("# Week review: 2026-10-12 to 2026-10-18\n");
+    expect(mocked.reviewReport).toHaveBeenLastCalledWith({
+      period: "week",
+      date: null,
+      from: "2026-10-12",
+      to: null,
+      format: "markdown",
+      timeZone,
+      workspaceId: null,
+      label: null,
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Previous week" }));
     expect(await screen.findByText("No recorded activity in this week.")).toBeInTheDocument();
@@ -518,7 +662,11 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Save as CSV" }));
     expect(await screen.findByText("Downloaded toodo-review-2026.csv")).toBeInTheDocument();
     expect(downloads).toEqual(["toodo-review-2026.csv"]);
-    expect(await createObjectURL.mock.calls[0][0].text()).toContain(",toodo,feat,Add storage,Completed,");
+    const saved = [...new Uint8Array(await createObjectURL.mock.calls[0][0].arrayBuffer())];
+    expect(saved).toEqual([...new TextEncoder().encode("\uFEFFTask\r\n1,toodo\r\n")]);
+    expect(mocked.reviewReport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ period: "year", from: "2026-01-01", to: null, format: "csv" }),
+    );
     click.mockRestore();
 
     fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
@@ -2417,7 +2565,7 @@ describe("App", () => {
         done(1, "Add login", { pullRequest: pullRequest(11, 40, 2) }),
         done(2, "Rewrite storage", { pullRequest: pullRequest(12, 400, 0) }),
         done(3, "Try a cache", { taskType: "rnd", resolution: "not_adopted", completionNote: "Twice as slow" }),
-      ].map((task) => ({ task, outcome: "completed" as const, at, commits: [] })),
+      ].map((task) => ({ task, outcome: "completed" as const, at, commits: [], archived: false })),
     });
     renderApp();
 
@@ -2617,25 +2765,32 @@ describe("App", () => {
     expect(mocked.removeDependency).toHaveBeenCalledWith(2, 1);
   });
 
-  it("shows why a dependency was rejected", async () => {
+  it("does not offer a dependency that would close a cycle and shows why one was rejected", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({
       status: "ok",
-      data: [task(1, 1, "Add storage"), task(2, 1, "Add UI", { status: "planned", dependsOn: [1] })],
+      data: [
+        task(1, 1, "Add storage"),
+        task(2, 1, "Add UI", { status: "planned", dependsOn: [1] }),
+        task(3, 1, "Add docs", { status: "planned", dependsOn: [2] }),
+        task(4, 1, "Add search"),
+      ],
     });
     mocked.addDependency.mockResolvedValue({
       status: "error",
-      error: { kind: "rejected", code: "rejected", message: "dependency would create a cycle: #1 -> #2 -> #1" },
+      error: { kind: "rejected", code: "rejected", message: "dependency would create a cycle: #1 -> #4 -> #1" },
     });
     await renderWorkspace();
 
     const details = await openDetails("Add storage");
-    fireEvent.change(within(details).getByRole("combobox", { name: "Add dependency to #1" }), {
-      target: { value: "2" },
-    });
+    const add = within(details).getByRole("combobox", { name: "Add dependency to #1" });
+    expect(within(add).queryByRole("option", { name: "#2 Add UI" })).not.toBeInTheDocument();
+    expect(within(add).queryByRole("option", { name: "#3 Add docs" })).not.toBeInTheDocument();
+    // The server checks the whole DAG, also edges the app has not loaded yet.
+    fireEvent.change(add, { target: { value: "4" } });
 
     expect(await screen.findByRole("alert")).toHaveTextContent("would create a cycle");
-    expect(mocked.addDependency).toHaveBeenCalledWith(1, 2, false);
+    expect(mocked.addDependency).toHaveBeenCalledWith(1, 4, false);
     expect(screen.queryByRole("combobox", { name: "Add dependency to #2" })).not.toBeInTheDocument();
   });
 
@@ -2678,6 +2833,32 @@ describe("App", () => {
       criteria: null,
       mergeCriterion: false,
     });
+  });
+
+  it("marks tasks missing an estimate or due date and opens the edit form at the missing field", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add login", { dueDate: "2026-11-01" }),
+        task(2, 1, "Add search", { estimate: { unit: "days", amount: 2 } }),
+        task(3, 1, "Add export", { estimate: { unit: "hours", amount: 3 }, dueDate: "2026-11-01" }),
+      ],
+    });
+    await renderWorkspace();
+
+    const noEstimate = await screen.findByRole("button", { name: "Edit plan of #1: no estimate" });
+    expect(noEstimate).toHaveTextContent("No estimate");
+    expect(screen.getByRole("button", { name: "Edit plan of #2: no due date" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Edit plan of #3/ })).not.toBeInTheDocument();
+
+    fireEvent.click(noEstimate);
+    const form = screen.getByRole("form", { name: "Edit task #1" });
+    expect(within(form).getByLabelText("Estimate of #1")).toHaveFocus();
+    fireEvent.click(within(form).getByRole("button", { name: "Discard" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit plan of #2: no due date" }));
+    expect(within(screen.getByRole("form", { name: "Edit task #2" })).getByLabelText("Due date of #2")).toHaveFocus();
   });
 
   it("puts the merge criterion back on a task without one and removes it again", async () => {

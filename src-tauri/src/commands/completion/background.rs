@@ -1,9 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use super::polling::PollingGitHub;
 use super::pull_request::{adopt_pull_request, clear_missing_worktree};
 use super::settle::{Settle, Settled, branch_commits, settle};
 use crate::adapters::git::Git;
@@ -51,17 +52,86 @@ pub(super) fn all_statuses(
 /// How often the pull requests of `in_progress` and `in_review` tasks are checked.
 const PULL_REQUEST_CHECK_PERIOD: Duration = Duration::from_secs(60);
 
-/// Starts the background thread that moves `in_progress` tasks whose branch has a pull
-/// request to `in_review` and completes `in_review` tasks whose pull request was merged.
+/// Starts the background threads that move `in_progress` tasks whose branch has a pull
+/// request to `in_review` and complete `in_review` tasks whose pull request was merged:
+/// one per machine that hosts a workspace, so a machine that is slow to answer only
+/// delays the checks of its own workspaces.
 pub fn spawn(app: Arc<dyn Runtime>) -> io::Result<()> {
     thread::Builder::new()
         .name("pull-request-checks".to_owned())
         .spawn(move || {
-            let mut failures = HashMap::new();
-            let mut activity_failures = HashMap::new();
+            let running = Arc::new(Mutex::new(HashSet::new()));
             let mut first = true;
             loop {
-                check_pull_requests(
+                let (first_rounds, finished) = mpsc::channel();
+                for machine in workspace_machines(app.storage()) {
+                    if !lock_machines(&running).insert(machine.clone()) {
+                        continue;
+                    }
+                    let first_round = first.then(|| first_rounds.clone());
+                    if let Err(error) =
+                        spawn_machine_checks(app.clone(), &machine, running.clone(), first_round)
+                    {
+                        eprintln!(
+                            "toodo: failed to start the pull request checks of {machine}: {error}"
+                        );
+                        lock_machines(&running).remove(&machine);
+                    }
+                }
+                if first {
+                    // The first state is announced even when it is empty, once every
+                    // machine was checked, so push notifications take it as their baseline
+                    // and alert on the next pull request.
+                    first = false;
+                    drop(first_rounds);
+                    for () in finished {}
+                    let statuses = all_statuses(&lock_statuses(app.pull_request_statuses()));
+                    app.pull_request_statuses_changed(&statuses);
+                }
+                thread::sleep(PULL_REQUEST_CHECK_PERIOD);
+            }
+        })?;
+    Ok(())
+}
+
+fn lock_machines(
+    machines: &Mutex<HashSet<model::Machine>>,
+) -> MutexGuard<'_, HashSet<model::Machine>> {
+    machines.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The machines that host a workspace.
+fn workspace_machines(storage: &StorageState) -> HashSet<model::Machine> {
+    match lock(storage).list_workspaces() {
+        Ok(workspaces) => workspaces
+            .iter()
+            .map(|workspace| workspace.location.machine())
+            .collect(),
+        Err(error) => {
+            eprintln!("toodo: failed to list workspaces: {error}");
+            HashSet::new()
+        }
+    }
+}
+
+/// Starts the thread that checks the tasks of the workspaces on `machine` every
+/// [`PULL_REQUEST_CHECK_PERIOD`] for as long as a workspace is on it, then leaves
+/// `running`. `first_round` hears when the first check is done.
+fn spawn_machine_checks(
+    app: Arc<dyn Runtime>,
+    machine: &model::Machine,
+    running: Arc<Mutex<HashSet<model::Machine>>>,
+    mut first_round: Option<mpsc::Sender<()>>,
+) -> io::Result<()> {
+    let machine = machine.clone();
+    thread::Builder::new()
+        .name(format!("pull-request-checks-{machine}"))
+        .spawn(move || {
+            let mut failures = HashMap::new();
+            let mut activity_failures = HashMap::new();
+            while workspace_machines(app.storage()).contains(&machine) {
+                check_pull_requests_on(
+                    Some(&machine),
                     app.storage(),
                     app.git(),
                     app.github(),
@@ -71,16 +141,12 @@ pub fn spawn(app: Arc<dyn Runtime>) -> io::Result<()> {
                     Some(&mut activity_failures),
                     app.pull_request_statuses(),
                 );
-                if first {
-                    // The first state is announced even when it is empty, so push
-                    // notifications take it as their baseline and alert on the next
-                    // pull request.
-                    first = false;
-                    let statuses = all_statuses(&lock_statuses(app.pull_request_statuses()));
-                    app.pull_request_statuses_changed(&statuses);
+                if let Some(first_round) = first_round.take() {
+                    let _ = first_round.send(());
                 }
                 thread::sleep(PULL_REQUEST_CHECK_PERIOD);
             }
+            lock_machines(&running).remove(&machine);
         })?;
     Ok(())
 }
@@ -95,8 +161,36 @@ pub fn spawn(app: Arc<dyn Runtime>) -> io::Result<()> {
 /// so a merge is recorded before it completes the task; `None` skips that step.
 /// `statuses` gets the CI and review state of each pull request of an `in_review` task
 /// still open; a failed check keeps the last one known.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn check_pull_requests(
+    storage: &StorageState,
+    git: &Git,
+    github: &dyn GitHub,
+    herdr: &Herdr,
+    notifier: &dyn Notifier,
+    failures: &mut HashMap<model::TaskId, String>,
+    activity_failures: Option<&mut HashMap<model::TaskId, String>>,
+    statuses: &PullRequestStatusState,
+) {
+    check_pull_requests_on(
+        None,
+        storage,
+        git,
+        github,
+        herdr,
+        notifier,
+        failures,
+        activity_failures,
+        statuses,
+    );
+}
+
+/// Like [`check_pull_requests`], for the tasks of the workspaces on `machine` only, or all
+/// tasks when it is `None`. `statuses` of tasks on other machines stay as they are.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn check_pull_requests_on(
+    machine: Option<&model::Machine>,
     storage: &StorageState,
     git: &Git,
     github: &dyn GitHub,
@@ -113,6 +207,18 @@ pub(super) fn check_pull_requests(
             return;
         }
     };
+    let tasks: Vec<_> = tasks
+        .into_iter()
+        .filter(|task| on_machine(storage, machine, task))
+        .collect();
+    let github = PollingGitHub::new(
+        github,
+        tasks
+            .iter()
+            .filter(|task| matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview))
+            .filter_map(|task| task.pull_request_url.as_deref()),
+    );
+    let github = &github;
     for task in &tasks {
         if task.worktree_path.is_none() {
             continue;
@@ -157,23 +263,32 @@ pub(super) fn check_pull_requests(
         }
     }
     if let Some(activity_failures) = activity_failures {
-        poll_activity(storage, git, github, notifier, activity_failures);
+        poll_activity(machine, storage, git, github, notifier, activity_failures);
     }
+    // Tasks on other machines, whose statuses this check leaves alone.
+    let mut elsewhere = HashSet::new();
     let active = match lock(storage).list_all_tasks() {
-        Ok(tasks) => tasks
-            .into_iter()
-            .filter(needs_settling)
-            .map(|task| (task.id, task.status == TaskStatus::InReview))
-            .collect::<Vec<_>>(),
+        Ok(tasks) => tasks,
         Err(error) => {
             eprintln!("toodo: failed to list tasks: {error}");
             return;
         }
     };
+    let active = active
+        .into_iter()
+        .filter(|task| {
+            let here = on_machine(storage, machine, task);
+            if !here {
+                elsewhere.insert(task.id);
+            }
+            here
+        })
+        .filter(needs_settling)
+        .map(|task| (task.id, task.status == TaskStatus::InReview))
+        .collect::<Vec<_>>();
     failures
         .retain(|id, _| adoptable.contains(id) || active.iter().any(|(active, _)| active == id));
-    let before = lock_statuses(statuses).clone();
-    let mut after = before.clone();
+    let mut after = lock_statuses(statuses).clone();
     after.retain(|id, _| {
         active
             .iter()
@@ -219,12 +334,32 @@ pub(super) fn check_pull_requests(
             }
         }
     }
+    // Checks of other machines may have changed their statuses meanwhile; they stay. The
+    // lock is held while announcing, so announcements follow the order of the changes.
+    let mut current = lock_statuses(statuses);
+    let before = all_statuses(&current);
+    current.retain(|id, _| elsewhere.contains(id));
+    current.extend(after);
     // Only the combined CI and review state is announced; every read is kept.
-    let announced = all_statuses(&after);
-    if announced != all_statuses(&before) {
+    let announced = all_statuses(&current);
+    if announced != before {
         notifier.pull_request_statuses_changed(&announced);
     }
-    *lock_statuses(statuses) = after;
+}
+
+/// Whether `task` is in a workspace on `machine`; every task is when `machine` is `None`.
+fn on_machine(
+    storage: &StorageState,
+    machine: Option<&model::Machine>,
+    task: &model::Task,
+) -> bool {
+    let Some(machine) = machine else {
+        return true;
+    };
+    matches!(
+        lock(storage).get_workspace(task.workspace_id),
+        Ok(Some(workspace)) if workspace.location.machine() == *machine
+    )
 }
 
 /// Reads and records the git activity of every `in_progress` or `in_review` task with a
@@ -232,6 +367,7 @@ pub(super) fn check_pull_requests(
 /// runs for the other workspaces. `failures` holds the last failure of each task, so a
 /// failure that repeats on every check is logged once.
 fn poll_activity(
+    machine: Option<&model::Machine>,
     storage: &StorageState,
     git: &Git,
     github: &dyn GitHub,
@@ -256,7 +392,9 @@ fn poll_activity(
             Ok(Some(workspace)) => workspace,
             _ => continue,
         };
-        if !activity::tracks(workspace.source, workspace.completion) {
+        if machine.is_some_and(|machine| workspace.location.machine() != *machine)
+            || !activity::tracks(workspace.source, workspace.completion)
+        {
             continue;
         }
         polled.push(task.id);

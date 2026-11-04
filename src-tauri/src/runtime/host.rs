@@ -107,16 +107,16 @@ impl Host {
         let Self::Ssh { target, .. } = self else {
             unreachable!("only SSH command encoding calls remote")
         };
-        // Keep the same transport flags and target boundary as git::ssh_invocation.
+        // The transport flags and target boundary of git::ssh_invocation. Runs keep their
+        // own connection: one shared with short commands would end with its master.
         Invocation {
             program: "ssh",
-            args: vec![
-                "-o".into(),
-                "BatchMode=yes".into(),
-                "--".into(),
-                target.as_str().into(),
-                command,
-            ],
+            args: crate::adapters::git::SSH_OPTIONS
+                .iter()
+                .chain(&["--", target.as_str()])
+                .map(|arg| (*arg).to_owned())
+                .chain([command])
+                .collect(),
         }
     }
 
@@ -277,6 +277,17 @@ if ($process -and $process.StartTime.ToFileTimeUtc().ToString() -eq $record[1]) 
         })
     }
 
+    /// Removes the run directory with everything in it, once its run is long over.
+    pub fn remove_directory(&self, run: RunKey<'_>) -> Invocation {
+        self.script(match self.os() {
+            HostOs::Posix => format!("{}rm -rf -- \"$run\"\n", posix_directory(run)),
+            HostOs::Windows => format!(
+                "{}if (Test-Path -LiteralPath $run) {{ Remove-Item -LiteralPath $run -Recurse -Force }}\n",
+                windows_directory(run)
+            ),
+        })
+    }
+
     /// Checks that a POSIX SSH host has util-linux `setsid --wait`, which the plain
     /// launch needs to give the wrapper its own session. `None` when no check applies.
     pub fn check_launcher(&self) -> Option<Invocation> {
@@ -362,6 +373,26 @@ if ($process -and $process.StartTime.ToFileTimeUtc().ToString() -eq $record[1]) 
             posix_directory(run),
             shell_quote(&bytes.to_string()),
             shell_quote(file)
+        )))
+    }
+
+    /// Reads at most `max` bytes of a POSIX run log from byte `offset`: the size of the
+    /// log on the first line, 0 when there is none, then the bytes.
+    pub fn read_log(
+        &self,
+        run: RunKey<'_>,
+        file: &str,
+        offset: u64,
+        max: usize,
+    ) -> Result<Invocation, &'static str> {
+        if self.os() != HostOs::Posix {
+            return Err("tmux log reads require POSIX; choose runner plain or herdr on Windows");
+        }
+        Ok(self.script(format!(
+            "{}file=\"$run\"/{}\nif [ -f \"$file\" ]; then size=$(wc -c < \"$file\" | tr -d ' '); else size=0; fi\nprintf '%s\\n' \"$size\"\nif [ \"$size\" -gt {offset} ]; then tail -c +{} -- \"$file\" | head -c {max}; fi\n",
+            posix_directory(run),
+            shell_quote(file),
+            offset + 1,
         )))
     }
 }
@@ -563,7 +594,13 @@ mod tests {
             run_directory(HostOs::Posix, first),
             run_directory(HostOs::Posix, second)
         );
-        let script = decode_powershell(&ssh(HostOs::Windows).create_directory(first).args[4]);
+        let script = decode_powershell(
+            ssh(HostOs::Windows)
+                .create_directory(first)
+                .args
+                .last()
+                .unwrap(),
+        );
         assert!(script.contains(r".toodo\runs\0123456789ab\7"));
         assert!(script.contains("New-Item -ItemType Directory -Path $run -ErrorAction Stop"));
         assert!(!script.contains("-Force"));
@@ -860,8 +897,11 @@ mod tests {
                 &[("TOODO_MCP_URL", "http://127.0.0.1:123/mcp")],
             )
             .unwrap();
-        assert_eq!(&launch.args[..4], ["-o", "BatchMode=yes", "--", "devbox"]);
-        let script = decode_powershell(&launch.args[4]);
+        assert_eq!(
+            launch.args[..launch.args.len() - 1],
+            crate::adapters::git::fake::run_ssh_args("devbox")
+        );
+        let script = decode_powershell(launch.args.last().unwrap());
         assert!(script.contains(&format!(
             "$info.WorkingDirectory = {}",
             powershell_quote(cwd)
@@ -896,14 +936,14 @@ mod tests {
             host.stop(run),
             host.probe(run),
         ] {
-            let decoded = decode_powershell(&invocation.args[4]);
+            let decoded = decode_powershell(invocation.args.last().unwrap());
             assert!(!decoded.contains("secret-token-not-in-command"));
             assert!(!decoded.contains("sh -c"));
         }
-        let stage = decode_powershell(&host.stage(run, "a'b`$()\n").args[4]);
+        let stage = decode_powershell(host.stage(run, "a'b`$()\n").args.last().unwrap());
         assert!(stage.contains(&powershell_quote("a'b`$()\n")));
         assert!(stage.contains("[Console]::OpenStandardInput().CopyTo($file)"));
-        let stop = decode_powershell(&host.stop(run).args[4]);
+        let stop = decode_powershell(host.stop(run).args.last().unwrap());
         assert!(stop.contains("taskkill /PID $process.Id /T /F"));
         assert!(stop.contains("StartTime.ToFileTimeUtc()"));
         assert!(host.tmux_wait_for(run).is_err());
@@ -953,7 +993,7 @@ mod tests {
         );
         let remote = host.tmux_new_session(run, cwd, &wrapper).unwrap();
         assert_eq!(
-            remote.args[4],
+            *remote.args.last().unwrap(),
             format!(
                 "tmux {}",
                 local
@@ -979,7 +1019,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                remote.args[4],
+                *remote.args.last().unwrap(),
                 format!(
                     "tmux {}",
                     local
@@ -992,7 +1032,7 @@ mod tests {
             );
         }
         let tail = host.tail(run, "stdout.log' $()\n", 4096).unwrap();
-        assert!(tail.args[4].contains(&shell_quote(&format!(
+        assert!(tail.args.last().unwrap().contains(&shell_quote(&format!(
             "{}tail -c '4096' -- \"$run\"/{}\n",
             posix_directory(run),
             shell_quote("stdout.log' $()\n")
@@ -1006,7 +1046,16 @@ mod tests {
                 &[],
             )
             .unwrap();
-        assert_eq!(&launch.args[..4], ["-o", "BatchMode=yes", "--", "devbox"]);
-        assert!(launch.args[4].starts_with("exec setsid --wait sh -c '"));
+        assert_eq!(
+            launch.args[..launch.args.len() - 1],
+            crate::adapters::git::fake::run_ssh_args("devbox")
+        );
+        assert!(
+            launch
+                .args
+                .last()
+                .unwrap()
+                .starts_with("exec setsid --wait sh -c '")
+        );
     }
 }

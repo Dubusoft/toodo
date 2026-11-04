@@ -70,11 +70,9 @@ fn a_pull_request_opened_by_an_agent_gets_a_closing_reference_in_the_same_check(
     ]);
     let gh_runner = runner(vec![
         listed("OPEN", "main"),
-        viewed("OPEN", "main"),
-        body("Work by an agent"),
+        viewed_with_body("Work by an agent"),
         Ok(String::new()),
-        viewed("OPEN", "main"),
-        body("Work by an agent\n\nCloses #12"),
+        viewed_with_body("Work by an agent\n\nCloses #12"),
     ]);
     let (git, github) = adapters(&git_runner, &gh_runner);
     let recorder = Recorder::default();
@@ -97,10 +95,11 @@ fn a_pull_request_opened_by_an_agent_gets_a_closing_reference_in_the_same_check(
     assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::InReview);
     assert!(failures.is_empty());
     let calls = invocations(&gh_runner);
+    // The body is read with the rest of the pull request.
     assert_eq!(
-        calls[3].args,
+        calls[2].args,
         ["pr", "edit", PR, "--body", "Work by an agent\n\nCloses #12"].map(str::to_owned)
     );
     // The second check finds the reference and edits nothing.
-    assert_eq!(calls.len(), 6);
+    assert_eq!(calls.len(), 4);
 }

@@ -9,6 +9,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use crate::domain::model::PermissionMode;
 use crate::domain::runtime::{RunState, RunUsage, UnknownWireValue};
 
 /// The longest line, in bytes, that is parsed; a longer line is cut to this length.
@@ -59,14 +60,36 @@ impl AgentAdapter {
         }
     }
 
+    /// The permission mode of a run whose task and workspace set none, as runs had before
+    /// it could be set: Claude bypasses its permission checks, Codex runs `--full-auto`.
+    pub fn default_permission_mode(self) -> PermissionMode {
+        match self {
+            Self::Claude => PermissionMode::Bypass,
+            Self::Codex => PermissionMode::Edit,
+        }
+    }
+
     /// The command line, environment, and files for one run in `run_dir`. The prompt is
     /// fed on stdin, and the bearer token only ever appears in the environment.
-    pub fn invocation(&self, run_dir: &Path, mcp: Option<&McpEndpoint>) -> Invocation {
+    pub fn invocation(
+        &self,
+        run_dir: &Path,
+        mcp: Option<&McpEndpoint>,
+        options: &LaunchOptions,
+    ) -> Invocation {
         let mut args: Vec<String> = Vec::new();
         let mut env = Vec::new();
         let mut files = Vec::new();
+        let permission_mode = options
+            .permission_mode
+            .unwrap_or_else(|| self.default_permission_mode());
         match self {
             Self::Claude => {
+                let mode = match permission_mode {
+                    PermissionMode::ReadOnly => "plan",
+                    PermissionMode::Edit => "acceptEdits",
+                    PermissionMode::Bypass => "bypassPermissions",
+                };
                 args.extend(
                     [
                         "-p",
@@ -74,10 +97,14 @@ impl AgentAdapter {
                         "stream-json",
                         "--verbose",
                         "--permission-mode",
-                        "bypassPermissions",
+                        mode,
                     ]
                     .map(str::to_owned),
                 );
+                if let Some(model) = &options.model {
+                    args.push("--model".to_owned());
+                    args.push(model.clone());
+                }
                 if mcp.is_some() {
                     args.push("--mcp-config".to_owned());
                     args.push(run_dir.join(MCP_CONFIG_FILE).to_string_lossy().into_owned());
@@ -86,7 +113,20 @@ impl AgentAdapter {
                 }
             }
             Self::Codex => {
-                args.extend(["exec", "--json", "--full-auto"].map(str::to_owned));
+                args.extend(["exec", "--json"].map(str::to_owned));
+                match permission_mode {
+                    PermissionMode::ReadOnly => {
+                        args.extend(["--sandbox", "read-only"].map(str::to_owned));
+                    }
+                    PermissionMode::Edit => args.push("--full-auto".to_owned()),
+                    PermissionMode::Bypass => {
+                        args.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
+                    }
+                }
+                if let Some(model) = &options.model {
+                    args.push("--model".to_owned());
+                    args.push(model.clone());
+                }
                 if let Some(mcp) = mcp {
                     args.push("-c".to_owned());
                     args.push(format!("mcp_servers.toodo.url=\"{}\"", mcp.url));
@@ -109,6 +149,14 @@ impl AgentAdapter {
             files,
         }
     }
+}
+
+/// The model and permission mode an agent is launched with; `None` keeps the agent CLI's
+/// default model and the adapter's [`AgentAdapter::default_permission_mode`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LaunchOptions {
+    pub model: Option<String>,
+    pub permission_mode: Option<PermissionMode>,
 }
 
 /// The server's MCP endpoint handed to an agent process.
@@ -522,7 +570,9 @@ pub fn classify(tracker: &EventTracker, exit: ExitKind, stderr_tail: &str) -> Ou
                 RunState::Failed,
                 vec![(
                     "timed_out",
-                    "the run exceeded its timeout; start a new run with a larger timeout_secs"
+                    "the run exceeded its time limit; raise the time limit of the task or its \
+                     workspace (set_task_agent_options or set_workspace_agent_options), then \
+                     start a new run"
                         .to_owned(),
                 )],
             );
@@ -618,7 +668,7 @@ mod tests {
         let dir = Path::new("/data/runs/7");
         for adapter in AgentAdapter::ALL {
             for mcp in [None, Some(endpoint())] {
-                let inv = adapter.invocation(dir, mcp.as_ref());
+                let inv = adapter.invocation(dir, mcp.as_ref(), &LaunchOptions::default());
                 assert!(inv.args.iter().all(|a| !a.contains(TOKEN)), "{adapter:?}");
                 assert!(inv.files.iter().all(|(_, c)| !c.contains(TOKEN)));
                 assert_eq!(inv.env.is_empty(), mcp.is_none());
@@ -636,7 +686,7 @@ mod tests {
     #[test]
     fn claude_invocation_with_and_without_mcp() {
         let dir = Path::new("/data/runs/7");
-        let plain = AgentAdapter::Claude.invocation(dir, None);
+        let plain = AgentAdapter::Claude.invocation(dir, None, &LaunchOptions::default());
         assert_eq!(plain.program_key, "claude");
         assert_eq!(
             plain.args,
@@ -651,7 +701,8 @@ mod tests {
         );
         assert!(plain.files.is_empty());
 
-        let with = AgentAdapter::Claude.invocation(dir, Some(&endpoint()));
+        let with =
+            AgentAdapter::Claude.invocation(dir, Some(&endpoint()), &LaunchOptions::default());
         assert_eq!(
             with.args[6..],
             [
@@ -670,12 +721,13 @@ mod tests {
     #[test]
     fn codex_invocation_with_and_without_mcp() {
         let dir = Path::new("/data/runs/7");
-        let plain = AgentAdapter::Codex.invocation(dir, None);
+        let plain = AgentAdapter::Codex.invocation(dir, None, &LaunchOptions::default());
         assert_eq!(plain.program_key, "codex");
         assert_eq!(plain.args, ["exec", "--json", "--full-auto", "-"]);
         assert!(plain.files.is_empty());
 
-        let with = AgentAdapter::Codex.invocation(dir, Some(&endpoint()));
+        let with =
+            AgentAdapter::Codex.invocation(dir, Some(&endpoint()), &LaunchOptions::default());
         assert_eq!(
             with.args,
             [
@@ -690,6 +742,66 @@ mod tests {
             ]
         );
         assert!(with.files.is_empty());
+    }
+
+    #[test]
+    fn launch_options_set_the_model_and_permission_mode() {
+        let dir = Path::new("/data/runs/7");
+        let options = |mode| LaunchOptions {
+            model: Some("opus".to_owned()),
+            permission_mode: Some(mode),
+        };
+        let claude = |mode| {
+            AgentAdapter::Claude
+                .invocation(dir, None, &options(mode))
+                .args
+                .split_off(4)
+        };
+        assert_eq!(
+            claude(PermissionMode::ReadOnly),
+            ["--permission-mode", "plan", "--model", "opus"]
+        );
+        assert_eq!(
+            claude(PermissionMode::Edit),
+            ["--permission-mode", "acceptEdits", "--model", "opus"]
+        );
+        assert_eq!(
+            claude(PermissionMode::Bypass),
+            ["--permission-mode", "bypassPermissions", "--model", "opus"]
+        );
+
+        let codex = |mode| {
+            AgentAdapter::Codex
+                .invocation(dir, None, &options(mode))
+                .args
+        };
+        assert_eq!(
+            codex(PermissionMode::ReadOnly),
+            [
+                "exec",
+                "--json",
+                "--sandbox",
+                "read-only",
+                "--model",
+                "opus",
+                "-"
+            ]
+        );
+        assert_eq!(
+            codex(PermissionMode::Edit),
+            ["exec", "--json", "--full-auto", "--model", "opus", "-"]
+        );
+        assert_eq!(
+            codex(PermissionMode::Bypass),
+            [
+                "exec",
+                "--json",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--model",
+                "opus",
+                "-"
+            ]
+        );
     }
 
     #[test]

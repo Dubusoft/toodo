@@ -125,6 +125,7 @@ pub(super) const SKIPPED: &[&str] = &[
     "task_runs",
     "run_events",
     "run_operations",
+    "queued_runs",
     "runtime_host_events",
     "runtime_hosts",
 ];
@@ -315,6 +316,12 @@ mod tests {
                  ALTER TABLE workspaces DROP COLUMN completion;
                  ALTER TABLE workspaces DROP COLUMN runner;
                  ALTER TABLE workspaces DROP COLUMN axes_detected;
+                 ALTER TABLE workspaces DROP COLUMN agent_model;
+                 ALTER TABLE workspaces DROP COLUMN agent_permission_mode;
+                 ALTER TABLE workspaces DROP COLUMN run_time_limit_minutes;
+                 ALTER TABLE tasks DROP COLUMN agent_model;
+                 ALTER TABLE tasks DROP COLUMN agent_permission_mode;
+                 ALTER TABLE tasks DROP COLUMN run_time_limit_minutes;
                  DROP TABLE task_activity;
                  DROP TABLE task_labels;
                  DROP TABLE agent_status_transitions;
@@ -322,6 +329,8 @@ mod tests {
                  ALTER TABLE devices DROP COLUMN scope;
                  ALTER TABLE tasks ADD COLUMN herdr_workspace_id TEXT;
                  UPDATE tasks SET herdr_workspace_id = 'w1' WHERE title = 'Add storage';
+                 ALTER TABLE machine_settings DROP COLUMN max_concurrent_runs;
+                 DROP TABLE queued_runs;
                  DROP TABLE run_operations;
                  DROP TABLE run_events;
                  DROP TABLE task_runs;
@@ -334,6 +343,8 @@ mod tests {
                  DROP TABLE oauth_clients;
                  ALTER TABLE push_subscriptions DROP COLUMN last_failure;
                  ALTER TABLE push_subscriptions DROP COLUMN last_failure_at;
+                 ALTER TABLE workspaces DROP COLUMN archived_at;
+                 ALTER TABLE tasks DROP COLUMN archived_at;
                  PRAGMA user_version = 25;",
             )
             .unwrap();

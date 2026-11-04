@@ -29,7 +29,7 @@ pub const RESTORE_LIMIT: u64 = 256 * 1024 * 1024;
 const SQLITE: &str = "application/vnd.sqlite3";
 
 /// Runs `run`, which blocks on the database or the disk, off the async threads.
-async fn blocking<T: Send + 'static>(
+pub(super) async fn blocking<T: Send + 'static>(
     run: impl FnOnce() -> CommandResult<T> + Send + 'static,
 ) -> CommandResult<T> {
     tokio::task::spawn_blocking(run)
@@ -37,7 +37,7 @@ async fn blocking<T: Send + 'static>(
         .unwrap_or_else(|error| Err(CommandError::internal(format!("panicked: {error}"))))
 }
 
-fn failed(error: CommandError) -> Response {
+pub(super) fn failed(error: CommandError) -> Response {
     Reply::Failed(error).into_response()
 }
 

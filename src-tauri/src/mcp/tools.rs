@@ -555,6 +555,30 @@ pub struct SearchTasks {
     pub limit: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ReviewReportRequest {
+    /// week (seven days from a Monday, or from `from`), month, quarter, year, or custom
+    /// (`from` to `to`).
+    pub period: types::ReviewPeriodKind,
+    /// A day inside the period as `YYYY-MM-DD`, for any period but custom; today when
+    /// neither date nor from is given.
+    pub date: Option<String>,
+    /// The first day as `YYYY-MM-DD`: required for custom, any first day of a week.
+    pub from: Option<String>,
+    /// The last day of a custom period as `YYYY-MM-DD`, included.
+    pub to: Option<String>,
+    /// markdown when omitted, or csv.
+    pub format: Option<types::ReportFormat>,
+    /// An IANA time zone such as `Europe/Berlin` for the days and times; the server's
+    /// when omitted.
+    pub time_zone: Option<String>,
+    /// Only tasks of this workspace; all workspaces when omitted.
+    pub workspace_id: Option<WorkspaceId>,
+    /// Only tasks with this label; any label when omitted.
+    pub label: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RestoreWorktree {
@@ -660,6 +684,26 @@ pub fn set_worktree_root(
         types::MachineSettings {
             machine,
             worktree_root: request.worktree_root,
+        },
+    )
+}
+
+/// Renders the review of a period as the app's Review exports it.
+pub fn review_report(
+    storage: &Storage,
+    request: ReviewReportRequest,
+) -> CommandResult<types::ReviewReport> {
+    crate::commands::review::render_report(
+        storage,
+        types::ReviewReportRequest {
+            period: request.period,
+            date: request.date,
+            from: request.from,
+            to: request.to,
+            format: request.format.unwrap_or(types::ReportFormat::Markdown),
+            time_zone: request.time_zone,
+            workspace_id: request.workspace_id,
+            label: request.label,
         },
     )
 }
@@ -1683,9 +1727,9 @@ pub fn resume_task(
     Ok((&task).into())
 }
 
-/// Deletes a `planned` task as the app's Delete does (see [`task_commands::delete_task`]),
-/// but only with `confirm`; without it, nothing changes and the reply says what deleting
-/// would remove. Tasks being worked on and `done` tasks, which reviews are built on, are
+/// Deletes (archives) a `planned` task as the app's Delete does (see
+/// [`task_commands::delete_task`]), but only with `confirm`; without it, nothing changes and
+/// the reply says what deleting would do. Tasks being worked on and `done` tasks, which reviews are built on, are
 /// rejected.
 pub fn delete_task(
     storage: &StorageState,
@@ -1724,14 +1768,14 @@ pub fn delete_task(
     };
     if !request.confirm {
         let mut message = format!(
-            "Nothing changed yet. Deleting task {id} \"{}\" cannot be undone and drops it from the reports: it removes its history, notes, criteria, {} recorded commit(s), and {} dependency and related link(s)",
+            "Nothing changed yet. Deleting task {id} \"{}\" archives it: it leaves the task lists and no longer holds back its dependents, while its history, notes, criteria, {} recorded commit(s), and {} dependency and related link(s) stay for the reports; the user can restore it, or delete it for good, under Settings > Archive in the Toodo app",
             task.title,
             details.commits.len(),
             details.depends_on.len() + details.dependents.len() + details.related.len(),
         );
         if let Some(path) = &task.worktree_path {
             message.push_str(&format!(
-                ", and its worktree at {path} with its herdr workspace and running agents; the branch {} is kept. A worktree with modified or untracked files keeps the task unless force is true",
+                ". It removes its worktree at {path} with its herdr workspace and running agents, which a restore does not bring back; the branch {} is kept. A worktree with modified or untracked files keeps the task unless force is true",
                 task.branch.as_deref().unwrap_or("of the task")
             ));
         }
@@ -1757,7 +1801,10 @@ pub fn delete_task(
         request.id.into(),
         request.force,
     )?;
-    let mut message = format!("task {id} \"{}\" is deleted.", task.title);
+    let mut message = format!(
+        "task {id} \"{}\" is deleted and kept in the archive, where the user can restore it in the Toodo app.",
+        task.title
+    );
     if !dependents.is_empty() {
         message.push_str(&format!(" {dependents} no longer {wait} on it."));
     }
@@ -2610,6 +2657,11 @@ fn run_status_of(run: &storage::TaskRun) -> RunStatus {
     let id = run.id;
     let managed = matches!(run.runner_kind, RunnerKind::Plain | RunnerKind::Tmux);
     let next = match (run.state, managed) {
+        (RunState::Queued, true) => format!(
+            "it waits in the queue of its machine, which runs no more runs at once than its \
+             limit; it starts on its own when a run there ends, so call run_status again \
+             later, or stop_run with run_id {id} to leave the queue"
+        ),
         (RunState::Reserved | RunState::Running, true) => format!(
             "it is running; call run_status again later, run_log with run_id {id} for its \
              output so far, or stop_run to stop it"
@@ -2640,7 +2692,7 @@ fn run_status_of(run: &storage::TaskRun) -> RunStatus {
     };
     RunStatus {
         run: run.into(),
-        active: run.state.is_active(),
+        active: run.state.is_open(),
         next,
     }
 }

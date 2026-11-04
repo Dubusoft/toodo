@@ -8,6 +8,7 @@
 //! line with the dependencies after every change.
 
 mod activity;
+mod agent_options;
 mod agent_status;
 mod backup;
 mod commits;
@@ -16,6 +17,7 @@ mod devices;
 mod import;
 mod migrations;
 pub mod oauth;
+mod pull_request_options;
 mod push;
 mod runtime;
 mod search;
@@ -48,11 +50,13 @@ pub use devices::DeviceAuth;
 pub use import::ImportSummary;
 pub use push::NewPushSubscription;
 pub use runtime::{
-    HostCursor, NewRun, Reservation, RunEvent, RunOperation, RuntimeWorkspace, TaskRun,
+    HostCursor, NewRun, QueuedRun, QueuedStart, Reservation, RunEvent, RunOperation,
+    RuntimeWorkspace, TaskRun,
 };
 pub use search::TaskSearch;
 pub use tasks::{
-    AddedDependencies, DependencyChange, NewPlanTask, NewTask, PauseRule, PlanLink, TaskQuery,
+    AddedDependencies, DependencyChange, MergedPullRequestTask, NewPlanTask, NewTask, PauseRule,
+    PlanLink, TaskQuery,
 };
 pub use workspaces::NewWorkspace;
 
@@ -157,6 +161,24 @@ pub enum StorageError {
         task: TaskId,
     },
     TaskNotFound(TaskId),
+    /// Only an archived task can be restored or purged.
+    TaskNotArchived(TaskId),
+    /// Only an archived workspace can be restored or purged.
+    WorkspaceNotArchived(WorkspaceId),
+    /// A task of an archived workspace comes back with its workspace, not on its own.
+    WorkspaceArchived {
+        workspace: WorkspaceId,
+        task: TaskId,
+    },
+    /// A workspace cannot be archived while `run` of its task `task` is queued or active.
+    WorkspaceHasActiveRun {
+        workspace: WorkspaceId,
+        task: TaskId,
+        run: RunId,
+    },
+    /// Restoring would bring back dependencies that close this loop (see
+    /// [`DependencyError::Cycle`]) with edges added while the tasks were archived.
+    RestoreClosesCycle(Vec<TaskId>),
     Dependency(DependencyError),
     Transition(TransitionError),
     /// A task cannot start while one of its dependencies is not done or was concluded
@@ -169,6 +191,11 @@ pub enum StorageError {
     PrerequisiteOfDoneTask {
         task: TaskId,
         depends_on: Vec<TaskId>,
+    },
+    /// The dependencies of a `done` task are kept as they were when it finished.
+    DependencyOfDoneTask {
+        task: TaskId,
+        depends_on: TaskId,
     },
     /// The dependency to remove does not exist.
     DependencyNotFound {
@@ -254,6 +281,37 @@ impl fmt::Display for StorageError {
                 workspace.0
             ),
             Self::TaskNotFound(id) => write!(f, "task {id} does not exist"),
+            Self::TaskNotArchived(id) => write!(
+                f,
+                "task {id} is not archived; delete it first (deleting archives it), then restore or purge it from the archive"
+            ),
+            Self::WorkspaceNotArchived(id) => write!(
+                f,
+                "workspace {} is not archived; remove it first (removing archives it), then restore or purge it from the archive",
+                id.0
+            ),
+            Self::WorkspaceArchived { workspace, task } => write!(
+                f,
+                "task {task} belongs to archived workspace {}; restore workspace {} instead, which brings its tasks back",
+                workspace.0, workspace.0
+            ),
+            Self::WorkspaceHasActiveRun {
+                workspace,
+                task,
+                run,
+            } => write!(
+                f,
+                "workspace {} cannot be removed while run {run} of its task {task} is queued or active; stop run {run} first (Stop in the task's runs, or stop_run over MCP), then remove the workspace again",
+                workspace.0
+            ),
+            Self::RestoreClosesCycle(path) => {
+                let ids: Vec<String> = path.iter().map(TaskId::to_string).collect();
+                write!(
+                    f,
+                    "restoring would close the dependency cycle {}; remove one of the dependencies along it among the live tasks (remove_dependency), then restore again",
+                    ids.join(" -> ")
+                )
+            }
             Self::Dependency(error) => error.fmt(f),
             Self::Transition(error) => error.fmt(f),
             Self::DependenciesNotDone { task, blockers } => {
@@ -279,6 +337,10 @@ impl fmt::Display for StorageError {
                     ids.join(", ")
                 )
             }
+            Self::DependencyOfDoneTask { task, depends_on } => write!(
+                f,
+                "task {task} is done, so its dependency on {depends_on} is kept; to change its dependencies, reopen it with reopen_task {task} first, then call remove_dependency again"
+            ),
             Self::DependencyNotFound { task, depends_on } => write!(
                 f,
                 "task {task} does not depend on {depends_on}; get_task {task} lists the tasks it depends on (dependsOn), and task_id is the task that waits"

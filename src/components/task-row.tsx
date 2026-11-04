@@ -53,6 +53,7 @@ import {
 import { pullRequestStats } from "@/lib/review";
 import {
   dependenciesDone,
+  canAddDependency,
   dependencyEditableStatuses,
   freshnessWarning,
   isNotAdopted,
@@ -61,6 +62,7 @@ import {
 } from "@/lib/task-graph";
 import { openBlocker } from "@/lib/attention";
 import { reachedMilestones } from "@/lib/timeline";
+import type { MissingPlanField } from "@/lib/plan";
 import { When } from "@/components/when";
 import { firstParagraph } from "@/lib/markdown";
 import { normalizePath, shortPath } from "@/lib/paths";
@@ -74,6 +76,7 @@ import {
   taskRef,
   DueDate,
   DetailField,
+  MissingPlanMark,
   useServerDown,
   Markdown,
 } from "@/components/task-common";
@@ -104,14 +107,14 @@ const confirmLabels: Record<Confirmation, string> = {
   "force-delete": "Confirm force delete",
 };
 
-/** What a delete of task `id` removes, as asked before it runs. */
+/** What a delete of task `id` does, as asked before it runs; the task itself is archived. */
 function deleteQuestion(action: Confirmation, id: TaskId, removableWorktree: boolean): string {
   if (action === "force-delete") {
-    return `Force delete #${id}? Its worktree is removed with its modified and untracked files, and its herdr workspace is closed; the branch is kept.`;
+    return `Force delete #${id}? Its worktree is removed with its modified and untracked files, and its herdr workspace is closed; the branch is kept. The task moves to Settings > Archive.`;
   }
   return removableWorktree
-    ? `Delete #${id}? Its worktree and herdr workspace are removed; the branch is kept.`
-    : `Delete #${id} and its history from Toodo?`;
+    ? `Delete #${id}? Its worktree and herdr workspace are removed; the branch is kept. The task moves to Settings > Archive.`
+    : `Delete #${id}? It moves to Settings > Archive with its history, where it can be restored.`;
 }
 
 export function TaskRow({
@@ -151,6 +154,8 @@ export function TaskRow({
   const restoreWorktree = useRestoreTaskWorktree();
   const closeWorkspace = useCloseTaskWorkspace();
   const [editing, setEditing] = useState(false);
+  // The plan field the edit form focuses when the user opened it to add that field.
+  const [focusPlan, setFocusPlan] = useState<MissingPlanField | undefined>(undefined);
   // The user chose to keep the herdr workspace of this paused task open for now.
   const [keepingWorkspace, setKeepingWorkspace] = useState(false);
   const [concluding, setConcluding] = useState(false);
@@ -207,9 +212,8 @@ export function TaskRow({
     closeWorkspace.error ??
     addDependency.error ??
     removeDependency.error;
-  const candidates = tasks.filter(
-    (other) => other.id !== task.id && !task.dependsOn.includes(other.id),
-  );
+  // Tasks that would close a cycle are not offered.
+  const candidates = tasks.filter((other) => canAddDependency(tasks, other.id, task.id));
   // Candidates grouped by workspace, the task's own workspace first.
   const candidateGroups = [...new Set([task.workspaceId, ...candidates.map((other) => other.workspaceId)])]
     .map((workspaceId) => ({
@@ -368,7 +372,18 @@ export function TaskRow({
           onSelect: () => setLinkingIssue(true),
         }
       : null,
-    !final ? { key: "edit", label: "Edit", ariaLabel: `Edit #${task.id}`, icon: <Pencil />, onSelect: () => setEditing(true) } : null,
+    !final
+      ? {
+          key: "edit",
+          label: "Edit",
+          ariaLabel: `Edit #${task.id}`,
+          icon: <Pencil />,
+          onSelect: () => {
+            setFocusPlan(undefined);
+            setEditing(true);
+          },
+        }
+      : null,
     active
       ? {
           key: "pause", changesData: true,
@@ -493,7 +508,12 @@ export function TaskRow({
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
             <span className="text-xs text-muted-foreground">Editing</span>
           </div>
-          <TaskEditForm task={task} capabilities={capabilities} onDone={() => setEditing(false)} />
+          <TaskEditForm
+            task={task}
+            capabilities={capabilities}
+            focusPlan={focusPlan}
+            onDone={() => setEditing(false)}
+          />
         </div>
       ) : (
         <div className={cn("flex min-w-0 flex-col", detailed ? "gap-1.5" : "gap-0.5")}>
@@ -553,6 +573,13 @@ export function TaskRow({
                 </span>
               )}
               {task.dueDate !== null && <DueDate task={task} />}
+              <MissingPlanMark
+                task={task}
+                onEdit={(field) => {
+                  setFocusPlan(field);
+                  setEditing(true);
+                }}
+              />
               {hasWorktree && <FreshnessWarning taskId={task.id} />}
               {!final && task.criteria.length > 0 && (
                 <span>

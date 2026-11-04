@@ -40,6 +40,8 @@ getrandom = { version = "0.3", features = ["std"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "ws", "query", "form"] }
 schemars = "1"
 semver = "1"
+# Calendar days and local times of review reports in the reader's IANA time zone.
+jiff = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bell, Bot, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, Plug, SlidersHorizontal, SquareTerminal, X } from "lucide-react";
+import { Archive, Bell, Bot, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, Plug, SlidersHorizontal, SquareTerminal, X } from "lucide-react";
 import { AgentAccessPanel, AgentAccessStatus } from "@/components/agent-access-panel";
+import { ArchivePanel } from "@/components/archive-panel";
 import { BackupPanel, BackupStatusLabel } from "@/components/backup-panel";
 import { ConnectedAppsPanel } from "@/components/connected-apps-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
@@ -15,7 +16,15 @@ import { keepFocusIn } from "@/lib/focus-trap";
 import { useNarrow } from "@/lib/narrow";
 import { cn } from "@/lib/utils";
 
-export type SettingsSection = "general" | "agents" | "runners" | "apps" | "devices" | "notifications" | "backups";
+export type SettingsSection =
+  | "general"
+  | "agents"
+  | "runners"
+  | "apps"
+  | "devices"
+  | "notifications"
+  | "backups"
+  | "archive";
 
 type Section = {
   id: SettingsSection;
@@ -32,6 +41,7 @@ const sections: Section[] = [
   { id: "devices", label: "Devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
   { id: "notifications", label: "Notifications", icon: <Bell />, status: <NotificationsStatus /> },
   { id: "backups", label: "Backups", icon: <DatabaseBackup />, status: <BackupStatusLabel /> },
+  { id: "archive", label: "Archive", icon: <Archive /> },
 ];
 
 function GeneralSettings() {
@@ -247,8 +257,10 @@ export function SettingsDialog({
                     <DevicesPanel />
                   ) : item.id === "notifications" ? (
                     <NotificationsPanel />
-                  ) : (
+                  ) : item.id === "backups" ? (
                     <BackupPanel />
+                  ) : (
+                    <ArchivePanel />
                   )}
                 </ErrorBoundary>
               </div>
