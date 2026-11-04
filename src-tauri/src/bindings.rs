@@ -106,6 +106,7 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         mcp::revoke_connected_app,
         review::review_period,
         review::backfill_pull_requests,
+        review::review_report,
         backup::get_backup_settings,
         backup::get_backup_status,
         backup::save_backup_settings,

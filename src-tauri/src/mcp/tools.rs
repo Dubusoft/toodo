@@ -555,6 +555,30 @@ pub struct SearchTasks {
     pub limit: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ReviewReportRequest {
+    /// week (seven days from a Monday, or from `from`), month, quarter, year, or custom
+    /// (`from` to `to`).
+    pub period: types::ReviewPeriodKind,
+    /// A day inside the period as `YYYY-MM-DD`, for any period but custom; today when
+    /// neither date nor from is given.
+    pub date: Option<String>,
+    /// The first day as `YYYY-MM-DD`: required for custom, any first day of a week.
+    pub from: Option<String>,
+    /// The last day of a custom period as `YYYY-MM-DD`, included.
+    pub to: Option<String>,
+    /// markdown when omitted, or csv.
+    pub format: Option<types::ReportFormat>,
+    /// An IANA time zone such as `Europe/Berlin` for the days and times; the server's
+    /// when omitted.
+    pub time_zone: Option<String>,
+    /// Only tasks of this workspace; all workspaces when omitted.
+    pub workspace_id: Option<WorkspaceId>,
+    /// Only tasks with this label; any label when omitted.
+    pub label: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RestoreWorktree {
@@ -660,6 +684,26 @@ pub fn set_worktree_root(
         types::MachineSettings {
             machine,
             worktree_root: request.worktree_root,
+        },
+    )
+}
+
+/// Renders the review of a period as the app's Review exports it.
+pub fn review_report(
+    storage: &Storage,
+    request: ReviewReportRequest,
+) -> CommandResult<types::ReviewReport> {
+    crate::commands::review::render_report(
+        storage,
+        types::ReviewReportRequest {
+            period: request.period,
+            date: request.date,
+            from: request.from,
+            to: request.to,
+            format: request.format.unwrap_or(types::ReportFormat::Markdown),
+            time_zone: request.time_zone,
+            workspace_id: request.workspace_id,
+            label: request.label,
         },
     )
 }

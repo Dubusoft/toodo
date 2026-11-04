@@ -1,17 +1,23 @@
 //! Commands for reviewing the work done in a period, such as a week or a year.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+use jiff::civil::Date;
+use jiff::tz::TimeZone;
 
 use super::State;
 
-use super::types::{BackfillSummary, ReviewEntry, Task, Timestamp};
+use super::report::{Report, ReportPeriod};
+use super::types::{
+    BackfillSummary, ReportFormat, ReviewEntry, ReviewReport, ReviewReportRequest, Task, Timestamp,
+};
 use super::{CommandError, CommandResult, GitHubState, GitState, StorageState, lock};
 use crate::adapters::git::Git;
 use crate::adapters::github::{GitHub, ListedPullRequest};
 use crate::domain::model::{Source, TaskType, Workspace, WorkspaceLocation};
 use crate::domain::remote::GitHubRepository;
 use crate::domain::review::{self, Period};
-use crate::storage::{MergedPullRequestTask, Storage};
+use crate::storage::{MergedPullRequestTask, Storage, StorageError};
 
 /// Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
 /// archived ones included, ordered by outcome, then by time. The caller picks the period, such as a week, a
@@ -137,6 +143,101 @@ fn inferred_type(branch: &str, title: &str) -> TaskType {
             _ => None,
         })
         .unwrap_or(TaskType::Modify)
+}
+
+/// The review of a period rendered as Markdown or CSV, as the web app, the MCP tool
+/// `review_report`, and `toodo review` show it; see [`ReviewReportRequest`].
+#[specta::specta]
+pub fn review_report(
+    storage: State<'_, StorageState>,
+    request: ReviewReportRequest,
+) -> CommandResult<ReviewReport> {
+    render_report(&lock(&storage), request)
+}
+
+pub(crate) fn render_report(
+    storage: &Storage,
+    request: ReviewReportRequest,
+) -> CommandResult<ReviewReport> {
+    let time_zone = match request.time_zone.as_deref().map(str::trim) {
+        None | Some("") => TimeZone::system(),
+        Some(name) => TimeZone::get(name).map_err(|_| {
+            CommandError::invalid_input(format!(
+                "unknown time zone {name:?}; pass an IANA time zone name such as \
+                 Europe/Berlin or America/New_York, or leave it out to use the server's"
+            ))
+        })?,
+    };
+    let day = |field: &str, value: Option<String>| -> CommandResult<Option<Date>> {
+        value
+            .map(|value| {
+                value.trim().parse::<Date>().map_err(|_| {
+                    CommandError::invalid_input(format!(
+                        "{field} {value:?} is not a day; pass it as YYYY-MM-DD, e.g. 2026-10-12"
+                    ))
+                })
+            })
+            .transpose()
+    };
+    let now = storage.now();
+    let today = jiff::Timestamp::from_second(now)
+        .map_err(|error| CommandError::internal(format!("the server clock is off: {error}")))?
+        .to_zoned(time_zone.clone())
+        .date();
+    let period = ReportPeriod::resolve(
+        request.period,
+        day("date", request.date)?,
+        day("from", request.from)?,
+        day("to", request.to)?,
+        today,
+        &time_zone,
+    )
+    .map_err(CommandError::invalid_input)?;
+    // Reviews keep the work of deleted workspaces, so they are named and filtered too.
+    let mut workspaces = storage.list_workspaces()?;
+    workspaces.extend(storage.archived_workspaces()?);
+    if let Some(id) = request.workspace_id
+        && !workspaces.iter().any(|workspace| workspace.id == id.into())
+    {
+        return Err(StorageError::WorkspaceNotFound(id.into()).into());
+    }
+    let label = request
+        .label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty());
+    let entries: Vec<ReviewEntry> =
+        review_entries(storage, Timestamp(period.start), Timestamp(period.end))?
+            .into_iter()
+            .filter(|entry| {
+                request
+                    .workspace_id
+                    .is_none_or(|id| entry.task.workspace_id == id)
+                    && label.is_none_or(|label| entry.task.labels.iter().any(|l| l == label))
+            })
+            .collect();
+    let workspace_names: HashMap<i64, String> = workspaces
+        .into_iter()
+        .map(|workspace| (workspace.id.0, workspace.name))
+        .collect();
+    let report = Report {
+        period: &period,
+        entries: &entries,
+        workspace_names: &workspace_names,
+        time_zone: &time_zone,
+        now,
+    };
+    let (media_type, contents) = match request.format {
+        ReportFormat::Markdown => ("text/markdown", report.markdown()),
+        ReportFormat::Csv => ("text/csv", report.csv()),
+    };
+    Ok(ReviewReport {
+        file_name: period.file_name(request.format),
+        media_type: media_type.to_owned(),
+        from: period.from.to_string(),
+        to: period.to.to_string(),
+        contents,
+    })
 }
 
 fn review_entries(

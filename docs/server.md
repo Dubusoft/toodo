@@ -141,6 +141,12 @@ The commands of a global install (`toodo COMMAND --help` shows the options of ea
   `--port N` or `--listen HOST:PORT` it saves a new listen address first, like `init`.
 - `toodo update [--channel dev|latest] [--allow-downgrade]`: update a global install and
   restart the server on it, see below.
+- `toodo review [--period week|month|quarter|year|custom] [--date DAY] [--from DAY]
+  [--to DAY] [--format markdown|csv] [--workspace ID] [--label LABEL] [--time-zone ZONE]`:
+  print the review of a period as the web app's Review exports it, rendered by the
+  running server with the web access token of the data directory; days and times are in
+  this machine's time zone unless `--time-zone` names another. For example
+  `toodo review --period year --format csv > review.csv`.
 - `toodo --version`, `toodo --help`. `--version` prints the version of the installed npm
   package (`toodo 1.3.2-dev.9 (commit 1c78b7a1a2b3)`). `toodo-server --version` and the
   server's start log line report the same version: the npm workflow builds both binaries
@@ -497,7 +503,7 @@ on loopback as before and still see every tool.
 **What a chat app can do.** An app gets one or both scopes:
 
 - `toodo.read`: `read_toodo_skill`, `list_workspaces`, `list_tasks`, `search_tasks`,
-  `get_task`, `pull_request_status`, and the
+  `get_task`, `pull_request_status`, `review_report`, and the
   [task and run resources](#task-and-run-resources).
 - `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `create_plan`,
   `update_task`, `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
