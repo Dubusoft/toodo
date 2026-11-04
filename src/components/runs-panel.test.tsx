@@ -2,6 +2,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RunsPanel } from "@/components/runs-panel";
+import { downloadRunLog } from "@/web/files";
+import { followRunLog, type RunLogHandlers, type RunLogName } from "@/web/run-log";
 import {
   commands,
   type AgentAdapter,
@@ -26,7 +28,18 @@ vi.mock("@/lib/bindings", () => ({
   },
 }));
 
+vi.mock("@/web/run-log", () => ({ followRunLog: vi.fn() }));
+vi.mock("@/web/files", () => ({ downloadRunLog: vi.fn() }));
+
 const mocked = vi.mocked(commands);
+
+/** The handlers of the log stream of each run the panel follows. */
+const followed = new Map<number, RunLogHandlers>();
+
+/** Sends `text` as the next output of the log `name` of run `runId`, from byte `offset` of it, as the server does. */
+function emit(runId: number, name: RunLogName, text: string, offset = 0) {
+  act(() => followed.get(runId)!.onChunk({ stream: name, offset, next: offset + text.length, text }));
+}
 
 function ok<T>(data: T) {
   return { status: "ok" as const, data };
@@ -142,6 +155,11 @@ describe("RunsPanel", () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     mocked.runnerHealth.mockResolvedValue(ok(health()));
     mocked.getTaskAgentOptions.mockResolvedValue(ok({ task: unset, workspace: unset }));
+    followed.clear();
+    vi.mocked(followRunLog).mockImplementation((runId, handlers) => {
+      followed.set(runId, handlers);
+      return () => followed.delete(runId);
+    });
   });
 
   afterEach(() => {
@@ -254,6 +272,8 @@ describe("RunsPanel", () => {
     expect(last).toHaveTextContent("Agent error");
     expect(last).toHaveTextContent("stream disconnected: rate limit reached");
     expect(within(screen.getByRole("list", { name: "Events of run 2" })).getAllByRole("listitem")).toHaveLength(4);
+    emit(42, "stdout", '{"type":"thread.started","thread_id":"th_1"}\n');
+    emit(42, "stderr", "warning: retrying (1/3)\n");
     expect(screen.getByLabelText("stdout of run 2")).toHaveTextContent('{"type":"thread.started","thread_id":"th_1"}');
     expect(screen.getByLabelText("stderr of run 2")).toHaveTextContent("warning: retrying (1/3)");
     expect(mocked.getRunLog).toHaveBeenCalledWith(42, null);
@@ -473,17 +493,41 @@ describe("RunsPanel", () => {
   it("reloads the runs and the open log on Refresh", async () => {
     const running = run(1, "running");
     mocked.listTaskRuns.mockResolvedValue(ok([running]));
-    mocked.getRunLog
-      .mockResolvedValueOnce(ok(log(running, launched(running), "first line\n")))
-      .mockResolvedValue(ok(log(running, launched(running), "first line\nsecond line\n")));
+    mocked.getRunLog.mockResolvedValue(ok(log(running, launched(running))));
     renderPanel();
 
-    expect(await screen.findByLabelText("stdout of run 1")).toHaveTextContent("first line");
+    await screen.findByRole("list", { name: "Events of run 1" });
     fireEvent.click(screen.getByRole("button", { name: "Refresh runs of #7" }));
 
-    await waitFor(() => expect(screen.getByLabelText("stdout of run 1")).toHaveTextContent("second line"));
+    await waitFor(() => expect(mocked.getRunLog).toHaveBeenCalledTimes(2));
     expect(mocked.listTaskRuns).toHaveBeenCalledTimes(2);
-    expect(mocked.getRunLog).toHaveBeenCalledTimes(2);
+  });
+
+  it("streams the output of the open run, shows only the lines that hold a text, and downloads a whole log", async () => {
+    const running = run(1, "running");
+    mocked.listTaskRuns.mockResolvedValue(ok([running]));
+    mocked.getRunLog.mockResolvedValue(ok(log(running, launched(running))));
+    vi.mocked(downloadRunLog).mockResolvedValue("run-41-stdout.log");
+    renderPanel();
+
+    await screen.findByRole("list", { name: "Events of run 1" });
+    expect(followRunLog).toHaveBeenCalledWith(41, expect.anything());
+    expect(screen.getByRole("region", { name: "Logs of run 1" })).toHaveTextContent("No output.");
+    // The stream starts with the end of a long log, then goes on as the agent writes.
+    emit(41, "stdout", "reading src/export.rs\n", 70_000);
+    emit(41, "stdout", "error: cannot find crate\nwriting src/cli.rs\n", 70_022);
+    const stdout = screen.getByLabelText("stdout of run 1");
+    expect(stdout).toHaveTextContent("reading src/export.rs error: cannot find crate writing src/cli.rs");
+    expect(screen.getByText("Earlier output is in the download.")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Find in the logs of run 1"), { target: { value: "ERROR" } });
+    expect(screen.getByLabelText("stdout of run 1").textContent).toBe("error: cannot find crate");
+    expect(screen.getByText("1 matching line")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Find in the logs of run 1"), { target: { value: "warning" } });
+    expect(screen.getByText('No line holds "warning".')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Download the stdout of run 1" }));
+    await waitFor(() => expect(downloadRunLog).toHaveBeenCalledWith(41, "stdout"));
   });
 
   it("lists the runs of a task in review without offering a new one", async () => {
@@ -500,18 +544,18 @@ describe("RunsPanel", () => {
     const running = run(1, "running");
     const settled = run(1, "settled");
     let listed = [running];
-    let logged = log(running, launched(running), "first line\n");
+    let logged = log(running, launched(running));
     mocked.listTaskRuns.mockImplementation(async () => ok(listed));
     mocked.getRunLog.mockImplementation(async () => ok(logged));
     renderPanel();
 
-    expect(await screen.findByLabelText("stdout of run 1")).toHaveTextContent("first line");
+    await screen.findByRole("list", { name: "Events of run 1" });
     expect(mocked.listTaskRuns).toHaveBeenCalledTimes(1);
     expect(mocked.getRunLog).toHaveBeenCalledTimes(1);
 
-    logged = log(running, launched(running), "first line\nsecond line\n");
+    logged = log(running, [...launched(running), event(3, "todo", "{not json")]);
     await act(() => vi.advanceTimersByTimeAsync(3000));
-    await waitFor(() => expect(screen.getByLabelText("stdout of run 1")).toHaveTextContent("second line"));
+    await waitFor(() => expect(screen.getByRole("list", { name: "Events of run 1" })).toHaveTextContent("{not json"));
     expect(mocked.listTaskRuns).toHaveBeenCalledTimes(2);
     expect(mocked.getRunLog).toHaveBeenCalledTimes(2);
 

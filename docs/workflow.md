@@ -355,6 +355,10 @@ use the new values.
   Codex `todo_list`) adds a `todo` event whose payload is
   `{"items":[{"text":"...","status":"pending|in_progress|completed"}]}`, so the latest
   `todo` event is the agent's current plan.
+- The app streams the open run's stdout and stderr as the agent writes them, can show
+  only the lines that hold a text, and downloads a whole log. The server removes the run
+  directory of a run that ended more than `TOODO_RUN_RETENTION_DAYS` days ago (30 by
+  default), which adds a `files_removed` event; its logs read as empty from then on.
 - `stop_run` stops a live run (SIGTERM to its process group, SIGKILL after 5 seconds)
   and marks it `cancelled`. A server restart does not end a local run: the
   server follows it again, or settles it from its output if it ended meanwhile. Remote

@@ -11,6 +11,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 
 use super::host::{self, Host, HostOs, Probe, RunKey};
+use super::log::{LogBytes, LogStream};
 use super::plain::adapter::{
     self, AgentAdapter, EventTracker, ExitKind, MCP_TOKEN_ENV, MCP_URL_ENV,
 };
@@ -576,6 +577,63 @@ impl TmuxRunner {
             stdout: adapter::redact(&self.tail(&host, run, "stdout.log", tail_bytes)?, &secret),
             stderr: adapter::redact(&self.tail(&host, run, "stderr.log", tail_bytes)?, &secret),
         })
+    }
+
+    /// Reads at most `max` bytes of a log of `run` from byte `offset`, as the agent wrote
+    /// it: redact them of [`Self::log_secret`].
+    pub fn read_log(
+        &self,
+        run: RunId,
+        stream: LogStream,
+        offset: u64,
+        max: usize,
+    ) -> Result<LogBytes, RuntimeError> {
+        let current = self.current(run)?;
+        let host = self.host(&current.host, current.checkout_path.as_deref())?;
+        if host == Host::Local {
+            let path = self.runs_dir.join(run.to_string()).join(stream.file_name());
+            return Ok(super::log::read_file(&path, offset, max).map_err(|_| error())?);
+        }
+        let invocation = host
+            .read_log(self.key(run), stream.file_name(), offset, max)
+            .map_err(build_error)?;
+        let output = self.output(&host, run, invocation)?;
+        let Some(line) = output.stdout.iter().position(|&byte| byte == b'\n') else {
+            return Err(error().into());
+        };
+        let size = std::str::from_utf8(&output.stdout[..line])
+            .ok()
+            .and_then(|size| size.trim().parse::<u64>().ok());
+        let (Some(size), true) = (size, output.status.success()) else {
+            return Err(error().into());
+        };
+        let mut bytes = output.stdout[line + 1..].to_vec();
+        bytes.truncate(max);
+        Ok(LogBytes {
+            size: size.max(offset + bytes.len() as u64),
+            bytes,
+        })
+    }
+
+    /// The MCP token staged for `run`, which its logs may hold; empty once it is removed.
+    pub fn log_secret(&self, run: RunId) -> Result<String, RuntimeError> {
+        let current = self.current(run)?;
+        let host = self.host(&current.host, current.checkout_path.as_deref())?;
+        Ok(self.secret(&host, run)?)
+    }
+
+    /// Removes the run directory of an ended run, on the server or on its SSH host.
+    pub fn remove_files(&self, run: &TaskRun) -> Result<(), RuntimeError> {
+        let host = self.host(&run.host, run.checkout_path.as_deref())?;
+        if host == Host::Local {
+            super::log::remove_dir(&self.runs_dir.join(run.id.to_string())).map_err(|_| error())?;
+            return Ok(());
+        }
+        let output = self.output(&host, run.id, host.remove_directory(self.key(run.id)))?;
+        if !output.status.success() {
+            return Err(error().into());
+        }
+        Ok(())
     }
 
     pub fn attach_command(&self, run: RunId) -> Option<String> {

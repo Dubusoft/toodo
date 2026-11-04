@@ -57,7 +57,7 @@ pub fn list_task_runs(
 }
 
 /// The run `id`, rejected with the next step unless it is a plain or tmux run.
-fn managed_run(
+pub(super) fn managed_run(
     storage: &StorageState,
     id: domain_runtime::RunId,
     command: &str,
@@ -100,9 +100,20 @@ pub fn get_run_log(
         let run = storage.get_run(id)?.ok_or(StorageError::RunNotFound(id))?;
         (run.runner_kind, storage.run_events(id)?)
     };
-    let log = match kind {
-        RunnerKind::Tmux => tmux.log(id, tail as usize)?,
-        _ => runs.log(id, tail as usize)?,
+    // A tmux run's host may be gone by the time its files are removed.
+    let log = if events
+        .iter()
+        .any(|event| event.kind == super::run_logs::FILES_REMOVED)
+    {
+        crate::runtime::plain::RunLog {
+            stdout: String::new(),
+            stderr: String::new(),
+        }
+    } else {
+        match kind {
+            RunnerKind::Tmux => tmux.log(id, tail as usize)?,
+            _ => runs.log(id, tail as usize)?,
+        }
     };
     // Read after the log, so the state is at least as new as the output.
     let run = lock(&storage)
@@ -636,6 +647,130 @@ exec sh -c "$1"
         )
         .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+    }
+
+    /// Reads the whole stdout of an ended run in pieces of at most `max` bytes.
+    fn read_stdout(fixture: &Fixture, run: &TaskRun, max: usize) -> Vec<String> {
+        use crate::runtime::log::LogStream;
+        let source =
+            super::super::run_logs::log_source(&fixture.storage, &fixture.tmux, run.id.into())
+                .unwrap();
+        let (mut pieces, mut offset) = (Vec::new(), 0);
+        loop {
+            let piece = source
+                .read(
+                    &fixture.runs,
+                    &fixture.tmux,
+                    LogStream::Stdout,
+                    offset,
+                    max,
+                    true,
+                )
+                .unwrap();
+            pieces.push(piece.text);
+            if piece.at_end {
+                return pieces;
+            }
+            offset = piece.next;
+        }
+    }
+
+    /// Moves the clock of the storage `days` days past the end of `run`.
+    fn after(fixture: &Fixture, run: &TaskRun, days: i64) {
+        let ended = lock(&fixture.storage)
+            .get_run(run.id.into())
+            .unwrap()
+            .unwrap()
+            .ended_at
+            .unwrap();
+        lock(&fixture.storage).set_clock(move || ended + days * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn a_plain_log_reads_in_whole_lines_and_its_directories_go_after_the_retention_period() {
+        use super::super::run_logs::{FILES_REMOVED, remove_old_run_files};
+        for ssh in [false, true] {
+            let fixture = fixture_at(
+                Runner::Plain,
+                &format!("printf 'one\\ntwo\\n'\n{RESULT}"),
+                ssh,
+            );
+            fixture.start_task();
+            let run = fixture.run(None).unwrap();
+            assert_eq!(fixture.end(&run), types::RunState::Settled);
+
+            let pieces = read_stdout(&fixture, &run, 6);
+            assert_eq!(pieces[..2], ["one\n", "two\n"], "ssh {ssh}");
+            assert_eq!(pieces.concat(), fixture.log(&run).stdout);
+
+            let local = fixture._dir.path().join("runs").join(run.id.0.to_string());
+            let remote = fixture
+                ._dir
+                .path()
+                .join(format!(".toodo/runs/0123456789ab/{}", run.id.0));
+            assert!(local.exists());
+            assert_eq!(remote.exists(), ssh);
+            after(&fixture, &run, 29);
+            let removed =
+                remove_old_run_files(&fixture.storage, &fixture.runs, &fixture.tmux, 30).unwrap();
+            assert_eq!(removed, 0);
+            after(&fixture, &run, 31);
+            let removed =
+                remove_old_run_files(&fixture.storage, &fixture.runs, &fixture.tmux, 30).unwrap();
+            assert_eq!(removed, 1);
+            assert!(!local.exists() && !remote.exists(), "ssh {ssh}");
+
+            let log = fixture.log(&run);
+            assert_eq!(log.events.last().unwrap().kind, FILES_REMOVED);
+            assert_eq!((log.stdout.as_str(), log.stderr.as_str()), ("", ""));
+            let removed =
+                remove_old_run_files(&fixture.storage, &fixture.runs, &fixture.tmux, 30).unwrap();
+            assert_eq!(removed, 0, "a run loses its files once");
+        }
+    }
+
+    #[test]
+    fn a_tmux_log_on_an_ssh_machine_reads_from_an_offset_and_goes_after_the_retention_period() {
+        use super::super::run_logs::remove_old_run_files;
+        use crate::runtime::log::LogStream;
+        let fixture = fixture_at(
+            Runner::Tmux,
+            &format!("printf 'first line\\nsecond line\\n'\n{RESULT}"),
+            true,
+        );
+        if !fixture.has_tmux() {
+            return;
+        }
+        fixture.start_task();
+        let run = fixture.run(None).unwrap();
+        assert_eq!(fixture.end(&run), types::RunState::Settled);
+
+        let pieces = read_stdout(&fixture, &run, 16);
+        assert_eq!(pieces[..2], ["first line\n", "second line\n"]);
+        let source =
+            super::super::run_logs::log_source(&fixture.storage, &fixture.tmux, run.id.into())
+                .unwrap();
+        let size = pieces.concat().len() as u64;
+        let start = source
+            .tail_start(&fixture.runs, &fixture.tmux, LogStream::Stdout, size - 3)
+            .unwrap();
+        assert_eq!(
+            start,
+            "first line\n".len() as u64,
+            "the tail starts at a whole line"
+        );
+
+        let remote = fixture
+            ._dir
+            .path()
+            .join(format!(".toodo/runs/0123456789ab/{}", run.id.0));
+        assert!(remote.exists());
+        after(&fixture, &run, 31);
+        let removed =
+            remove_old_run_files(&fixture.storage, &fixture.runs, &fixture.tmux, 30).unwrap();
+        assert_eq!(removed, 1);
+        assert!(!remote.exists());
+        assert_eq!(fixture.log(&run).stdout, "");
     }
 
     #[test]
