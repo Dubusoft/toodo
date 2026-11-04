@@ -125,6 +125,7 @@ pub(super) const SKIPPED: &[&str] = &[
     "task_runs",
     "run_events",
     "run_operations",
+    "queued_runs",
     "runtime_host_events",
     "runtime_hosts",
 ];
@@ -328,6 +329,8 @@ mod tests {
                  ALTER TABLE devices DROP COLUMN scope;
                  ALTER TABLE tasks ADD COLUMN herdr_workspace_id TEXT;
                  UPDATE tasks SET herdr_workspace_id = 'w1' WHERE title = 'Add storage';
+                 ALTER TABLE machine_settings DROP COLUMN max_concurrent_runs;
+                 DROP TABLE queued_runs;
                  DROP TABLE run_operations;
                  DROP TABLE run_events;
                  DROP TABLE task_runs;

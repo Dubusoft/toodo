@@ -1115,7 +1115,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Start an agent CLI (adapter claude or codex) for an in_progress task of a workspace with runner plain or tmux, as Start run in the Toodo app does, e.g. {\"task_id\": 5, \"adapter\": \"claude\"}: in the task's worktree, on the machine of its workspace, without a terminal. prompt goes to the agent on stdin; omitted or blank, the agent gets the task's title, description, and criteria. With mcp (default true) it gets this server's MCP endpoint and token, so it can call current_task. One writer run at a time per worktree. Returns the run; follow it with run_status and read its output with run_log. For a workspace with runner herdr, start the agent with start_task's agent_command instead. Never start a run for your own task."
+        description = "Start an agent CLI (adapter claude or codex) for an in_progress task of a workspace with runner plain or tmux, as Start run in the Toodo app does, e.g. {\"task_id\": 5, \"adapter\": \"claude\"}: in the task's worktree, on the machine of its workspace, without a terminal. prompt goes to the agent on stdin; omitted or blank, the agent gets the task's title, description, and criteria. With mcp (default true) it gets this server's MCP endpoint and token, so it can call current_task. One writer run at a time per worktree. Returns the run, in state queued (with queuePosition) while the machine runs as many runs as its limit allows; a queued run starts on its own when a slot frees. Follow it with run_status and read its output with run_log. For a workspace with runner herdr, start the agent with start_task's agent_command instead. Never start a run for your own task."
     )]
     async fn start_run(
         &self,
@@ -1130,7 +1130,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Read the state of one run (run_id) or of every run of a task (task_id), oldest first: state (reserved, running, settled, exited, failed, cancelled, or unknown), runnerKind, adapter, and when it was created, started, and ended. active is true while the run may still be running (reserved, running, or unknown), and next says what to do with it. Poll it until active is false to wait for a run; unknown means its end was not observed, so call reconcile_run instead of polling."
+        description = "Read the state of one run (run_id) or of every run of a task (task_id), oldest first: state (queued, reserved, running, settled, exited, failed, cancelled, or unknown), runnerKind, adapter, and when it was created, started, and ended. active is true while the run has not ended (queued, reserved, running, or unknown), and next says what to do with it. Poll it until active is false to wait for a run; unknown means its end was not observed, so call reconcile_run instead of polling."
     )]
     fn run_status(
         &self,

@@ -348,6 +348,15 @@ with; a task can override each of them (`set_workspace_agent_options`,
 `set_task_agent_options`, or Agents and Runs with in the app). Runs started afterwards
 use the new values.
 
+Each machine (the server, or an SSH host) can limit how many plain and tmux runs it runs
+at once (`set_machine_run_limit`, or Runs at once beside the worktree root in the app; no
+limit by default). A run started while the machine is at its limit, or while earlier runs
+wait there, is returned `queued` with its place in the machine's queue (`queuePosition`).
+Queued runs start oldest first, on their own, within a few seconds of a run there ending;
+`get_machine_runs` shows the limit and how many runs are active and queued. A queued run
+already holds its worktree, `stop_run` takes it out of the queue as `cancelled`, and one
+whose task left `in_progress` meanwhile fails with a `launch_failed` event that says why.
+
 - `list_task_runs` lists the task's runs, oldest first, with their states.
 - `get_run_log` returns a run's state, its events, and the tails of its stdout and
   stderr (64 KiB each unless `tailBytes` says otherwise), with the MCP token redacted.

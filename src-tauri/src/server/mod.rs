@@ -499,6 +499,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(days) = config.run_retention_days {
         spawn_run_retention(services.clone(), days)?;
     }
+    spawn_run_queue(services.clone())?;
 
     let fetcher = oauth::HttpClientMetadataFetcher::new().map_err(|error| {
         format!(
@@ -612,6 +613,38 @@ fn spawn_run_retention(services: Arc<Services>, days: u32) -> std::io::Result<()
                     ),
                 }
                 std::thread::sleep(RUN_RETENTION_PASS);
+            }
+        })
+        .map(drop)
+}
+
+/// The longest wait between passes over the run queue. Runs that end on their own wake no
+/// pass, so a queued run starts at most this long after a run slot frees.
+const RUN_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Starts queued runs as run slots of their machines free, for as long as the server runs.
+fn spawn_run_queue(services: Arc<Services>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("run-queue".to_owned())
+        .spawn(move || {
+            loop {
+                match crate::commands::runs::start_queued_runs(
+                    &services.storage,
+                    &services.plain,
+                    &services.tmux,
+                ) {
+                    Ok(changed) => {
+                        for workspace in changed {
+                            services.tasks_changed(workspace);
+                        }
+                    }
+                    Err(error) => eprintln!(
+                        "toodo-server: could not start queued runs ({}); the server tries \
+                         again shortly, or stop them with stop_run",
+                        error.message
+                    ),
+                }
+                crate::commands::runs::wait_for_queue_change(RUN_QUEUE_WAIT);
             }
         })
         .map(drop)

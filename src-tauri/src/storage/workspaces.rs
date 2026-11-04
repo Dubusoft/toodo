@@ -7,6 +7,7 @@ use crate::domain::model::{
     AgentMerge, CompletionMode, HostPath, Machine, MachineLabel, MachineSettings, Runner, Source,
     TaskId, Workspace, WorkspaceId, WorkspaceLocation,
 };
+use crate::domain::runtime::HostRef;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewWorkspace {
@@ -390,6 +391,36 @@ impl Storage {
             .iter()
             .map(|label| MachineLabel::parse(label).map_err(invalid_data))
             .collect()
+    }
+
+    /// How many plain and tmux runs `host` runs at once; `None` for no limit.
+    pub fn host_run_limit(&self, host: &HostRef) -> Result<Option<u32>> {
+        let (kind, label) = match host {
+            HostRef::Local => ("local", ""),
+            HostRef::Ssh(target) => ("ssh", target.as_str()),
+        };
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT max_concurrent_runs FROM machine_settings WHERE kind = ?1 AND label = ?2",
+                [kind, label],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Sets how many plain and tmux runs `machine` runs at once (`None` for no limit),
+    /// keeping its worktree root.
+    pub fn set_machine_run_limit(&mut self, machine: &Machine, limit: Option<u32>) -> Result<()> {
+        let (kind, label) = machine_key(machine);
+        self.conn.execute(
+            "INSERT INTO machine_settings (kind, label, max_concurrent_runs) VALUES (?1, ?2, ?3)
+             ON CONFLICT (kind, label) DO UPDATE
+             SET max_concurrent_runs = excluded.max_concurrent_runs",
+            params![kind, label, limit],
+        )?;
+        Ok(())
     }
 
     pub fn save_machine_settings(&mut self, settings: &MachineSettings) -> Result<()> {

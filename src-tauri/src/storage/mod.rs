@@ -49,7 +49,8 @@ pub use devices::DeviceAuth;
 pub use import::ImportSummary;
 pub use push::NewPushSubscription;
 pub use runtime::{
-    HostCursor, NewRun, Reservation, RunEvent, RunOperation, RuntimeWorkspace, TaskRun,
+    HostCursor, NewRun, QueuedRun, QueuedStart, Reservation, RunEvent, RunOperation,
+    RuntimeWorkspace, TaskRun,
 };
 pub use search::TaskSearch;
 pub use tasks::{

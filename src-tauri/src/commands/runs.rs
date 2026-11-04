@@ -1,10 +1,17 @@
 //! Commands for the runs of tasks: starting an agent CLI for a task of a workspace with
 //! runner plain or tmux, listing the runs of a task, reading the log of a run, settling a
 //! run whose observation was lost, and stopping one.
+//!
+//! A machine may limit how many plain and tmux runs it runs at once. A run started while
+//! its machine is at the limit, or while earlier runs wait for it, is queued; queued runs
+//! start oldest first as runs end ([`start_queued_runs`]).
 
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Write;
+use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 
-use super::types::{self, AgentAdapter, RunId, RunLog, TaskId, TaskRun};
+use super::types::{self, AgentAdapter, MachineRuns, RunId, RunLog, TaskId, TaskRun};
 use super::{CommandError, CommandResult, PlainRunState, State, StorageState, TmuxRunState, lock};
 use crate::domain::model::{self, Runner};
 use crate::domain::runtime::{self as domain_runtime, HostRef, OwnerKey, RunRole, RunnerKind};
@@ -18,6 +25,43 @@ const DEFAULT_TAIL_BYTES: u32 = 64 * 1024;
 /// The most of the end of each log one `get_run_log` returns.
 const MAX_TAIL_BYTES: u32 = 4 * 1024 * 1024;
 
+/// Held while deciding whether a run starts or queues, and while queued runs start, so a
+/// machine never runs more runs than its limit.
+static ADMISSION: Mutex<()> = Mutex::new(());
+
+/// Set when a queued run may be able to start, e.g. after a run stopped or a limit was
+/// raised; [`wait_for_queue_change`] waits for it.
+static QUEUE_CHANGED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+
+fn admission() -> MutexGuard<'static, ()> {
+    ADMISSION.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Wakes [`wait_for_queue_change`].
+pub(crate) fn queue_changed() {
+    let (changed, wake) = &QUEUE_CHANGED;
+    *changed.lock().unwrap_or_else(PoisonError::into_inner) = true;
+    wake.notify_all();
+}
+
+/// Waits until [`queue_changed`] is called or `timeout` passes. Runs that end on their own
+/// do not call it, so the caller starts queued runs again after each wait.
+pub(crate) fn wait_for_queue_change(timeout: Duration) {
+    let (changed, wake) = &QUEUE_CHANGED;
+    let guard = changed.lock().unwrap_or_else(PoisonError::into_inner);
+    let (mut guard, _) = wake
+        .wait_timeout_while(guard, timeout, |changed| !*changed)
+        .unwrap_or_else(PoisonError::into_inner);
+    *guard = false;
+}
+
+/// `run` as the frontend sees it, with its place in its host's queue.
+fn task_run(storage: &storage::Storage, run: &storage::TaskRun) -> CommandResult<TaskRun> {
+    let mut wire = TaskRun::from(run);
+    wire.queue_position = storage.queue_position(run)?;
+    Ok(wire)
+}
+
 /// Starts `adapter` (Claude or Codex) as a writer run in the worktree of an `in_progress`
 /// task of a workspace with runner plain or tmux, on the server or on the workspace's SSH
 /// machine. Runner plain runs the agent as a child process (over `ssh` for an SSH
@@ -28,7 +72,10 @@ const MAX_TAIL_BYTES: u32 = 4 * 1024 * 1024;
 /// endpoint and token in its environment only; on an SSH machine it reaches the server
 /// through the machine's MCP tunnel, which must be open. Returns the run as recorded right
 /// after the launch. The agent runs with the model, permission mode, and time limit the
-/// task sets, or else its workspace (see `get_task_agent_options`).
+/// task sets, or else its workspace (see `get_task_agent_options`). While the machine runs
+/// as many runs as its limit allows (see `set_machine_run_limit`), or earlier runs wait
+/// for it, the run is returned `queued` with its place in the queue, and starts on its
+/// own once a run slot frees.
 #[specta::specta]
 pub fn start_plain_run(
     storage: State<'_, StorageState>,
@@ -39,7 +86,52 @@ pub fn start_plain_run(
     prompt: Option<String>,
     mcp: bool,
 ) -> CommandResult<TaskRun> {
-    Ok((&start(&storage, &runs, &tmux, task_id.into(), adapter, prompt, mcp)?).into())
+    let run = start(&storage, &runs, &tmux, task_id.into(), adapter, prompt, mcp)?;
+    task_run(&lock(&storage), &run)
+}
+
+/// How many plain and tmux runs `machine` runs at once, and how many run or wait there.
+#[specta::specta]
+pub fn get_machine_runs(
+    storage: State<'_, StorageState>,
+    machine: types::Machine,
+) -> CommandResult<MachineRuns> {
+    machine_runs(&lock(&storage), machine)
+}
+
+/// Sets how many plain and tmux runs `machine` runs at once; `None` (null) for no limit.
+/// Further runs wait in the machine's queue. Raising or removing the limit starts queued
+/// runs right away; lowering it stops no run.
+#[specta::specta]
+pub fn set_machine_run_limit(
+    storage: State<'_, StorageState>,
+    machine: types::Machine,
+    max_concurrent_runs: Option<u32>,
+) -> CommandResult<MachineRuns> {
+    if max_concurrent_runs == Some(0) {
+        return Err(CommandError::invalid_input(
+            "max_concurrent_runs must be at least 1; pass null for no limit",
+        ));
+    }
+    let model: model::Machine = machine.clone().try_into()?;
+    let runs = {
+        let mut storage = lock(&storage);
+        storage.set_machine_run_limit(&model, max_concurrent_runs)?;
+        machine_runs(&storage, machine)?
+    };
+    queue_changed();
+    Ok(runs)
+}
+
+fn machine_runs(storage: &storage::Storage, machine: types::Machine) -> CommandResult<MachineRuns> {
+    let model: model::Machine = machine.clone().try_into()?;
+    let host = HostRef::from(&model);
+    Ok(MachineRuns {
+        machine,
+        max_concurrent_runs: storage.host_run_limit(&host)?,
+        active_runs: storage.active_runs_on_host(&host)?,
+        queued_runs: storage.queued_runs_on_host(&host)?,
+    })
 }
 
 /// The runs of a task, oldest first.
@@ -53,7 +145,11 @@ pub fn list_task_runs(
     storage
         .get_task(id)?
         .ok_or(StorageError::TaskNotFound(id))?;
-    Ok(types::map_all(&storage.list_task_runs(id)?))
+    storage
+        .list_task_runs(id)?
+        .iter()
+        .map(|run| task_run(&storage, run))
+        .collect()
 }
 
 /// The run `id`, rejected with the next step unless it is a plain or tmux run.
@@ -116,16 +212,19 @@ pub fn get_run_log(
         }
     };
     // Read after the log, so the state is at least as new as the output.
-    let run = lock(&storage)
-        .get_run(id)?
-        .ok_or(StorageError::RunNotFound(id))?;
+    let (run, wire) = {
+        let storage = lock(&storage);
+        let run = storage.get_run(id)?.ok_or(StorageError::RunNotFound(id))?;
+        let wire = task_run(&storage, &run)?;
+        (run, wire)
+    };
     let attach = if kind == RunnerKind::Tmux && run.state.is_active() {
         tmux.attach_command(id)
     } else {
         None
     };
     Ok(RunLog {
-        run: (&run).into(),
+        run: wire,
         events: types::map_all(&events),
         stdout: log.stdout,
         stderr: log.stderr,
@@ -134,8 +233,9 @@ pub fn get_run_log(
 }
 
 /// Stops a plain or tmux run: a plain run's process group is terminated (killed after a
-/// grace period), a tmux run's session is killed, and the run ends as `cancelled`. A run
-/// that already ended is returned as it is.
+/// grace period), a tmux run's session is killed, and the run ends as `cancelled`. A
+/// queued run leaves its queue as `cancelled` without starting. A run that already ended
+/// is returned as it is.
 #[specta::specta]
 pub fn stop_run(
     storage: State<'_, StorageState>,
@@ -145,7 +245,7 @@ pub fn stop_run(
 ) -> CommandResult<TaskRun> {
     let id = run_id.into();
     let run = managed_run(&storage, id, "stop_run")?;
-    Ok((&stop(&runs, &tmux, &run)?).into())
+    Ok((&stop(&storage, &runs, &tmux, &run)?).into())
 }
 
 /// Settles a plain or tmux run whose observation was lost (state `unknown`, e.g. after a
@@ -169,18 +269,36 @@ pub fn reconcile_run(
 }
 
 fn stop(
+    storage: &StorageState,
     runs: &PlainRunState,
     tmux: &TmuxRunState,
     run: &storage::TaskRun,
 ) -> CommandResult<storage::TaskRun> {
-    Ok(match run.runner_kind {
+    if run.state == domain_runtime::RunState::Queued {
+        // Held so the run cannot start between the check and the cancel.
+        let _admission = admission();
+        let mut storage = lock(storage);
+        let current = storage
+            .get_run(run.id)?
+            .ok_or(StorageError::RunNotFound(run.id))?;
+        if current.state == domain_runtime::RunState::Queued {
+            storage.append_run_event(run.id, "stop_requested", None)?;
+            let cancelled = storage.finish_run(run.id, domain_runtime::RunState::Cancelled)?;
+            drop(storage);
+            queue_changed();
+            return Ok(cancelled);
+        }
+    }
+    let stopped = match run.runner_kind {
         RunnerKind::Tmux => tmux.stop(run.id)?,
         _ => runs.stop(run.id)?,
-    })
+    };
+    queue_changed();
+    Ok(stopped)
 }
 
-/// Stops the plain and tmux runs of `task` that may still have a process, before the task
-/// is deleted or completed.
+/// Stops the plain and tmux runs of `task` that may still have a process, and cancels its
+/// queued ones, before the task is deleted or completed.
 pub(crate) fn stop_live_runs(
     storage: &StorageState,
     runs: &PlainRunState,
@@ -194,12 +312,14 @@ pub(crate) fn stop_live_runs(
             matches!(run.runner_kind, RunnerKind::Plain | RunnerKind::Tmux)
                 && matches!(
                     run.state,
-                    domain_runtime::RunState::Reserved | domain_runtime::RunState::Running
+                    domain_runtime::RunState::Queued
+                        | domain_runtime::RunState::Reserved
+                        | domain_runtime::RunState::Running
                 )
         })
         .collect();
     for run in live {
-        stop(runs, tmux, &run)?;
+        stop(storage, runs, tmux, &run)?;
     }
     Ok(())
 }
@@ -222,6 +342,78 @@ pub(crate) fn stop_live_runs_after<T>(
     result
 }
 
+/// What a run of a task starts with, read and checked under one storage lock.
+struct Prepared {
+    task: model::Task,
+    worktree: String,
+    host: HostRef,
+    runner: Runner,
+    options: model::AgentOptions,
+}
+
+impl Prepared {
+    fn runner_kind(&self) -> RunnerKind {
+        match self.runner {
+            Runner::Tmux => RunnerKind::Tmux,
+            _ => RunnerKind::Plain,
+        }
+    }
+}
+
+/// Checks that task `id` can start a plain or tmux run, and reads what the run starts
+/// with.
+fn prepare(storage: &storage::Storage, id: model::TaskId) -> CommandResult<Prepared> {
+    let task = storage
+        .get_task(id)?
+        .ok_or(StorageError::TaskNotFound(id))?;
+    let workspace = storage
+        .get_workspace(task.workspace_id)?
+        .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
+    match workspace.runner {
+        Runner::Plain | Runner::Tmux => {}
+        Runner::Herdr => {
+            return Err(CommandError::rejected(format!(
+                "task {id} belongs to workspace {:?} with runner herdr; start the task's \
+                 agent in herdr (open_task_in_herdr) instead of a plain run",
+                workspace.name
+            )));
+        }
+        Runner::None => {
+            return Err(CommandError::rejected(format!(
+                "task {id} belongs to workspace {:?} with runner none, which runs no \
+                 agents; work on it by hand, or plan it in a workspace with runner plain \
+                 or tmux",
+                workspace.name
+            )));
+        }
+    }
+    if task.status != TaskStatus::InProgress {
+        return Err(CommandError::rejected(format!(
+            "task {id} is {}; start the task first (start_task), then start a plain run",
+            task.status
+        )));
+    }
+    let worktree = task.worktree_path.as_ref().ok_or_else(|| {
+        CommandError::rejected(format!(
+            "task {id} has no worktree; pause the task and start it again (start_task) to \
+             add its worktree, then start a plain run"
+        ))
+    })?;
+    // The worktree path keeps its style, which tells the runner the host's OS.
+    let worktree = worktree.to_string();
+    let host = HostRef::from(&workspace.location.machine());
+    let options = storage
+        .task_agent_options(id)?
+        .over(&storage.workspace_agent_options(workspace.id)?);
+    Ok(Prepared {
+        task,
+        worktree,
+        host,
+        runner: workspace.runner,
+        options,
+    })
+}
+
 fn start(
     storage: &StorageState,
     runs: &PlainRunState,
@@ -231,87 +423,231 @@ fn start(
     prompt: Option<String>,
     mcp: bool,
 ) -> CommandResult<storage::TaskRun> {
-    let (task, worktree, generation, host, runner, options) = {
+    let agent = adapter::AgentAdapter::from(agent);
+    let admission = admission();
+    let (prepared, request_key, limited, queue) = {
         let storage = lock(storage);
-        let task = storage
-            .get_task(id)?
-            .ok_or(StorageError::TaskNotFound(id))?;
-        let workspace = storage
-            .get_workspace(task.workspace_id)?
-            .ok_or(StorageError::WorkspaceNotFound(task.workspace_id))?;
-        match workspace.runner {
-            Runner::Plain | Runner::Tmux => {}
-            Runner::Herdr => {
-                return Err(CommandError::rejected(format!(
-                    "task {id} belongs to workspace {:?} with runner herdr; start the task's \
-                     agent in herdr (open_task_in_herdr) instead of a plain run",
-                    workspace.name
-                )));
-            }
-            Runner::None => {
-                return Err(CommandError::rejected(format!(
-                    "task {id} belongs to workspace {:?} with runner none, which runs no \
-                     agents; work on it by hand, or plan it in a workspace with runner plain \
-                     or tmux",
-                    workspace.name
-                )));
-            }
-        }
-        if task.status != TaskStatus::InProgress {
-            return Err(CommandError::rejected(format!(
-                "task {id} is {}; start the task first (start_task), then start a plain run",
-                task.status
-            )));
-        }
-        let worktree = task.worktree_path.as_ref().ok_or_else(|| {
-            CommandError::rejected(format!(
-                "task {id} has no worktree; pause the task and start it again (start_task) to \
-                 add its worktree, then start a plain run"
-            ))
-        })?;
+        let prepared = prepare(&storage, id)?;
         let generation = storage
             .list_task_runs(id)?
             .last()
             .map_or(1, |run| run.generation + 1);
-        // The worktree path keeps its style, which tells the runner the host's OS.
-        let worktree = worktree.to_string();
-        let host = HostRef::from(&workspace.location.machine());
-        let options = storage
-            .task_agent_options(id)?
-            .over(&storage.workspace_agent_options(workspace.id)?);
-        (task, worktree, generation, host, workspace.runner, options)
+        let prefix = match prepared.runner_kind() {
+            RunnerKind::Tmux => "tmux",
+            _ => "plain",
+        };
+        // Unique per task: the generation grows with every run of the task.
+        let request_key = format!("{prefix}-{id}-{generation}");
+        let limit = storage.host_run_limit(&prepared.host)?;
+        let queue = match limit {
+            None => false,
+            Some(limit) => {
+                storage.active_runs_on_host(&prepared.host)? >= limit
+                    || storage.queued_runs_on_host(&prepared.host)? > 0
+            }
+        };
+        (prepared, request_key, limit.is_some(), queue)
     };
+    if queue {
+        let new = new_run(&prepared, request_key, agent);
+        let start = storage::QueuedStart { prompt, mcp };
+        let run = lock(storage).queue_run(&new, &start)?.into_run();
+        drop(admission);
+        queue_changed();
+        return Ok(run);
+    }
+    // Only a run that counts against a limit keeps others from starting while it launches.
+    let admission = limited.then_some(admission);
+    let launched = launch(
+        storage,
+        runs,
+        tmux,
+        prepared,
+        request_key,
+        agent,
+        prompt,
+        mcp,
+    );
+    drop(admission);
+    launched
+}
+
+/// The record of a writer run of `prepared` for `request_key`.
+fn new_run(
+    prepared: &Prepared,
+    request_key: String,
+    agent: adapter::AgentAdapter,
+) -> storage::NewRun {
+    storage::NewRun {
+        owner: OwnerKey::implicit(),
+        task: prepared.task.id,
+        request_key,
+        runner_kind: prepared.runner_kind(),
+        role: RunRole::Writer,
+        host: prepared.host.clone(),
+        checkout_path: Some(prepared.worktree.clone()),
+        runtime_workspace: None,
+        adapter_profile: Some(agent.as_wire().to_owned()),
+    }
+}
+
+/// Launches the run of `prepared` for `request_key`, or adopts the run already reserved
+/// for it.
+#[allow(clippy::too_many_arguments)]
+fn launch(
+    storage: &StorageState,
+    runs: &PlainRunState,
+    tmux: &TmuxRunState,
+    prepared: Prepared,
+    request_key: String,
+    agent: adapter::AgentAdapter,
+    prompt: Option<String>,
+    mcp: bool,
+) -> CommandResult<storage::TaskRun> {
     let brief = match prompt.filter(|prompt| !prompt.trim().is_empty()) {
         Some(prompt) => prompt,
-        None => default_brief(&task, &worktree, mcp),
+        None => default_brief(&prepared.task, &prepared.worktree, mcp),
     };
-    let agent = adapter::AgentAdapter::from(agent);
-    let (launcher, prefix): (&dyn RunLauncher, _) = match runner {
-        Runner::Tmux => (tmux, "tmux"),
-        _ => (runs, "plain"),
+    let launcher: &dyn RunLauncher = match prepared.runner {
+        Runner::Tmux => tmux,
+        _ => runs,
     };
     let request = StartRun {
         owner: OwnerKey::implicit(),
-        task: id,
-        // Unique per task: the generation grows with every run of the task.
-        request_key: format!("{prefix}-{id}-{generation}"),
+        task: prepared.task.id,
+        request_key,
         role: RunRole::Writer,
-        host,
-        checkout_path: Some(worktree),
+        host: prepared.host,
+        checkout_path: Some(prepared.worktree),
         runtime_workspace: None,
         adapter_profile: Some(agent.as_wire().to_owned()),
         command: RunCommand::Agent(AgentLaunch {
             adapter: agent,
             brief,
             mcp,
-            timeout_secs: options.time_limit_secs(),
+            timeout_secs: prepared.options.time_limit_secs(),
             options: adapter::LaunchOptions {
-                model: options.model,
-                permission_mode: options.permission_mode,
+                model: prepared.options.model,
+                permission_mode: prepared.options.permission_mode,
             },
         }),
     };
     Ok(RuntimeService.start_run(storage, launcher, request)?)
+}
+
+/// Starts queued runs, oldest first, while their machines run fewer runs than their
+/// limits; a machine without a limit starts all of its queued runs. A queued run that can
+/// no longer start, e.g. because its task was paused, fails with a `launch_failed` event
+/// that says why. Returns the workspaces whose runs changed.
+pub(crate) fn start_queued_runs(
+    storage: &StorageState,
+    runs: &PlainRunState,
+    tmux: &TmuxRunState,
+) -> CommandResult<BTreeSet<model::WorkspaceId>> {
+    let _admission = admission();
+    let queued = lock(storage).queued_runs()?;
+    // The run slots left on each host seen so far; `None` for a host without a limit.
+    let mut free: HashMap<HostRef, Option<u32>> = HashMap::new();
+    let mut changed = BTreeSet::new();
+    for queued in queued {
+        let host = queued.run.host.clone();
+        if !free.contains_key(&host) {
+            let storage = lock(storage);
+            let limit = storage.host_run_limit(&host)?;
+            let active = storage.active_runs_on_host(&host)?;
+            free.insert(
+                host.clone(),
+                limit.map(|limit| limit.saturating_sub(active)),
+            );
+        }
+        let Some(slots) = free.get_mut(&host) else {
+            continue;
+        };
+        if *slots == Some(0) {
+            continue;
+        }
+        let started = match start_queued(storage, runs, tmux, &queued) {
+            Ok(run) => run.state.is_active(),
+            Err(error) => {
+                give_up(storage, queued.run.id, &error.message);
+                false
+            }
+        };
+        if started && let Some(slots) = slots {
+            *slots -= 1;
+        }
+        if let Some(task) = lock(storage).get_task(queued.run.task)? {
+            changed.insert(task.workspace_id);
+        }
+    }
+    Ok(changed)
+}
+
+/// Takes `queued` out of its queue and launches it as it was asked for.
+fn start_queued(
+    storage: &StorageState,
+    runs: &PlainRunState,
+    tmux: &TmuxRunState,
+    queued: &storage::QueuedRun,
+) -> CommandResult<storage::TaskRun> {
+    let run = &queued.run;
+    let agent = run
+        .adapter_profile
+        .as_deref()
+        .and_then(|agent| adapter::AgentAdapter::parse(agent).ok())
+        .ok_or_else(|| {
+            CommandError::rejected(format!(
+                "queued run {} names no agent Toodo knows; start a new run (start_plain_run) \
+                 with adapter claude or codex",
+                run.id
+            ))
+        })?;
+    let prepared = {
+        let mut storage = lock(storage);
+        let prepared = prepare(&storage, run.task)?;
+        if prepared.runner_kind() != run.runner_kind
+            || prepared.host != run.host
+            || run.checkout_path.as_deref() != Some(prepared.worktree.as_str())
+        {
+            return Err(CommandError::rejected(format!(
+                "the runner or worktree of task {} changed while run {} was queued; start a \
+                 new run (start_plain_run)",
+                run.task, run.id
+            )));
+        }
+        storage.dequeue_run(run.id)?;
+        prepared
+    };
+    launch(
+        storage,
+        runs,
+        tmux,
+        prepared,
+        run.request_key.clone(),
+        agent,
+        queued.start.prompt.clone(),
+        queued.start.mcp,
+    )
+}
+
+/// Fails a queued run that could not start, with a `launch_failed` event saying why. A run
+/// whose launch already failed keeps its own record of it.
+fn give_up(storage: &StorageState, run: domain_runtime::RunId, reason: &str) {
+    let mut storage = lock(storage);
+    let queued = storage
+        .get_run(run)
+        .ok()
+        .flatten()
+        .is_some_and(|run| run.state == domain_runtime::RunState::Queued);
+    if !queued {
+        return;
+    }
+    let failed = storage
+        .append_run_event(run, "launch_failed", Some(reason))
+        .and_then(|_| storage.finish_run(run, domain_runtime::RunState::Failed));
+    if let Err(error) = failed {
+        eprintln!("toodo-server: could not fail queued run {run} ({error}); stop it with stop_run");
+    }
 }
 
 /// The prompt of a run started without one: the task's title, description, and criteria,
@@ -992,6 +1328,208 @@ exec sh -c "$1"
             list_task_runs(State(&fixture.storage), fixture.task.into())
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    /// A second in-progress task of the fixture's workspace, in its own worktree.
+    fn second_task(fixture: &Fixture) -> model::TaskId {
+        let worktree = fixture._dir.path().join("worktree-2");
+        fs::create_dir(&worktree).unwrap();
+        let mut storage = lock(&fixture.storage);
+        let workspace = storage
+            .get_task(fixture.task)
+            .unwrap()
+            .unwrap()
+            .workspace_id;
+        let task = storage
+            .create_task(&NewTask {
+                workspace_id: workspace,
+                task_type: TaskType::Feat,
+                title: "Add logout".to_owned(),
+                description: String::new(),
+                estimate: None,
+                due_date: None,
+                criteria: Vec::new(),
+            })
+            .unwrap()
+            .id;
+        storage
+            .start_task_plain(
+                task,
+                &TaskCheckout {
+                    path: PosixPath::parse(worktree.to_str().unwrap()).unwrap().into(),
+                    branch: "feat/add-logout-2".to_owned(),
+                },
+            )
+            .unwrap();
+        task
+    }
+
+    fn run_of(fixture: &Fixture, task: model::TaskId) -> TaskRun {
+        start_plain_run(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            task.into(),
+            AgentAdapter::Claude,
+            None,
+            false,
+        )
+        .unwrap()
+    }
+
+    fn state_of(fixture: &Fixture, run: &TaskRun) -> domain_runtime::RunState {
+        lock(&fixture.storage)
+            .get_run(run.id.into())
+            .unwrap()
+            .unwrap()
+            .state
+    }
+
+    #[test]
+    fn runs_beyond_the_machine_limit_queue_and_start_when_a_slot_frees() {
+        let fixture = fixture(Runner::Plain, "exec sleep 600");
+        fixture.start_task();
+        let other = second_task(&fixture);
+        let limited =
+            set_machine_run_limit(State(&fixture.storage), types::Machine::Local, Some(1)).unwrap();
+        assert_eq!(limited.max_concurrent_runs, Some(1));
+
+        let first = run_of(&fixture, fixture.task);
+        assert_eq!(first.state, types::RunState::Running);
+        let queued = run_of(&fixture, other);
+        assert_eq!(queued.state, types::RunState::Queued);
+        assert_eq!(queued.queue_position, Some(1));
+        assert!(
+            !fixture
+                ._dir
+                .path()
+                .join("runs")
+                .join(queued.id.0.to_string())
+                .exists()
+        );
+        let runs = get_machine_runs(State(&fixture.storage), types::Machine::Local).unwrap();
+        assert_eq!((runs.active_runs, runs.queued_runs), (1, 1));
+
+        // The machine is full, so a pass over the queue starts nothing.
+        start_queued_runs(&fixture.storage, &fixture.runs, &fixture.tmux).unwrap();
+        assert_eq!(
+            state_of(&fixture, &queued),
+            domain_runtime::RunState::Queued
+        );
+
+        stop_run(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            first.id,
+        )
+        .unwrap();
+        let changed = start_queued_runs(&fixture.storage, &fixture.runs, &fixture.tmux).unwrap();
+        assert_eq!(changed.len(), 1);
+        assert_eq!(
+            state_of(&fixture, &queued),
+            domain_runtime::RunState::Running
+        );
+        let kinds: Vec<_> = fixture
+            .log(&queued)
+            .events
+            .into_iter()
+            .map(|event| event.kind)
+            .collect();
+        assert_eq!(kinds, ["queued", "reserved", "launched"]);
+
+        let stopped = stop_run(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            queued.id,
+        )
+        .unwrap();
+        assert_eq!(stopped.state, types::RunState::Cancelled);
+    }
+
+    #[test]
+    fn a_stopped_queued_run_never_starts_and_a_zero_limit_is_rejected() {
+        let fixture = fixture(Runner::Plain, "exec sleep 600");
+        fixture.start_task();
+        let other = second_task(&fixture);
+        let error = set_machine_run_limit(State(&fixture.storage), types::Machine::Local, Some(0))
+            .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        assert!(error.message.contains("null for no limit"), "{error:?}");
+        set_machine_run_limit(State(&fixture.storage), types::Machine::Local, Some(1)).unwrap();
+
+        let first = run_of(&fixture, fixture.task);
+        let queued = run_of(&fixture, other);
+        let cancelled = stop_run(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            queued.id,
+        )
+        .unwrap();
+        assert_eq!(cancelled.state, types::RunState::Cancelled);
+        stop_run(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            first.id,
+        )
+        .unwrap();
+        start_queued_runs(&fixture.storage, &fixture.runs, &fixture.tmux).unwrap();
+        assert_eq!(
+            state_of(&fixture, &queued),
+            domain_runtime::RunState::Cancelled
+        );
+        assert!(
+            !fixture
+                ._dir
+                .path()
+                .join("runs")
+                .join(queued.id.0.to_string())
+                .exists()
+        );
+
+        // Without a limit, runs start at once again.
+        set_machine_run_limit(State(&fixture.storage), types::Machine::Local, None).unwrap();
+        let unlimited = run_of(&fixture, other);
+        assert_eq!(unlimited.state, types::RunState::Running);
+        stop_live_runs(&fixture.storage, &fixture.runs, &fixture.tmux, other).unwrap();
+    }
+
+    #[test]
+    fn a_queued_run_of_a_paused_task_fails_with_the_reason() {
+        let fixture = fixture(Runner::Plain, "exec sleep 600");
+        fixture.start_task();
+        let other = second_task(&fixture);
+        set_machine_run_limit(State(&fixture.storage), types::Machine::Local, Some(1)).unwrap();
+        let first = run_of(&fixture, fixture.task);
+        let queued = run_of(&fixture, other);
+        lock(&fixture.storage)
+            .set_task_status(other, TaskStatus::Planned)
+            .unwrap();
+        stop_run(
+            State(&fixture.storage),
+            State(&fixture.runs),
+            State(&fixture.tmux),
+            first.id,
+        )
+        .unwrap();
+        start_queued_runs(&fixture.storage, &fixture.runs, &fixture.tmux).unwrap();
+        assert_eq!(
+            state_of(&fixture, &queued),
+            domain_runtime::RunState::Failed
+        );
+        let log = fixture.log(&queued);
+        let failure = log
+            .events
+            .iter()
+            .find(|event| event.kind == "launch_failed")
+            .expect("a launch_failed event");
+        assert!(
+            failure.payload.as_deref().unwrap().contains("start_task"),
+            "{failure:?}"
         );
     }
 

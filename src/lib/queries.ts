@@ -75,6 +75,8 @@ export const queryKeys = {
   agentStatuses: ["agent-statuses"] as const,
   pullRequestStatuses: ["pull-request-statuses"] as const,
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
+  /** Under "tasks", so a tasks-changed event, e.g. a run that started or ended, refetches it. */
+  machineRuns: (machine: Machine) => ["tasks", "machine-runs", machine] as const,
   branches: (workspace: WorkspaceId) => ["branches", workspace] as const,
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
   taskActivity: (taskId: TaskId) => ["tasks", taskId, "activity"] as const,
@@ -518,6 +520,27 @@ export function useSaveMachineSettings() {
   });
 }
 
+/** How many runs the machine runs at once, and how many run or wait there now. */
+export function useMachineRuns(machine: Machine) {
+  return useQuery({
+    queryKey: queryKeys.machineRuns(machine),
+    queryFn: () => unwrap(commands.getMachineRuns(machine)),
+    // Runs end without an event, so the counts reload while any run is there.
+    refetchInterval: (query) =>
+      query.state.data && query.state.data.activeRuns + query.state.data.queuedRuns > 0 ? liveRunInterval : false,
+  });
+}
+
+export function useSetMachineRunLimit() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ machine, limit }: { machine: Machine; limit: number | null }) =>
+      unwrap(commands.setMachineRunLimit(machine, limit)),
+    // Queued runs that a raised limit starts show on their own: runs reload while queued.
+    onSuccess: (runs) => queryClient.setQueryData(queryKeys.machineRuns(runs.machine), runs),
+  });
+}
+
 export function useStartTask() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -574,9 +597,9 @@ export function useAgentStatusTransitions(taskId: TaskId, enabled: boolean) {
 /** How often the runs of a task and the log of a run reload while a run is starting or running. */
 const liveRunInterval = 3_000;
 
-/** Whether a run in `state` still changes on its own: its agent is starting or working. */
+/** Whether a run in `state` still changes on its own: it waits for a run slot, or its agent is starting or working. */
 function isLive(state: RunState): boolean {
-  return state === "reserved" || state === "running";
+  return state === "queued" || state === "reserved" || state === "running";
 }
 
 /**

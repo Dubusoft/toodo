@@ -30,6 +30,7 @@ import { followRunLog, type RunLogChunk, type RunLogName } from "@/web/run-log";
 
 /** How each run state is named and coloured, in the tones of the status glossary. */
 const runStates: Record<RunState, { label: string; tone: Tone }> = {
+  queued: { label: "Queued", tone: "neutral" },
   reserved: { label: "Starting", tone: "info" },
   running: { label: "Running", tone: "info" },
   settled: { label: "Succeeded", tone: "success" },
@@ -83,7 +84,7 @@ function ActivityBadge({ run, now }: { run: TaskRun; now: number }) {
 }
 
 /** A run in these states holds the task's worktree: it can be stopped, and no other run starts before it ends. */
-const activeStates: readonly RunState[] = ["reserved", "running", "unknown"];
+const activeStates: readonly RunState[] = ["queued", "reserved", "running", "unknown"];
 
 const adapters: readonly AgentAdapter[] = ["claude", "codex"];
 
@@ -110,6 +111,7 @@ function adapterName(adapter: string | null): string {
 
 /** Names of the events runs record; the event that marks the state a run ended in is named like the state. */
 const eventLabels = new Map<string, string>([
+  ["queued", "Queued"],
   ["reserved", "Reserved"],
   ["launched", "Launched"],
   ["todo", "Todo list"],
@@ -366,9 +368,11 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
           </div>
           {holding && (
             <p role="note" aria-label={`Why no run of #${task.id} starts`} className="text-muted-foreground">
-              {holding.state === "unknown"
-                ? `Run ${holding.generation} may still hold the worktree, since its end was not seen; reconcile it to check, or stop it, to start another run.`
-                : `Run ${holding.generation} is still running; stop it, or wait until it ends, to start another run.`}
+              {holding.state === "queued"
+                ? `Run ${holding.generation} waits for a free run slot on its machine${holding.queuePosition === null ? "" : ` (number ${holding.queuePosition} in the queue)`}; it starts on its own when a run there ends. Stop it to leave the queue.`
+                : holding.state === "unknown"
+                  ? `Run ${holding.generation} may still hold the worktree, since its end was not seen; reconcile it to check, or stop it, to start another run.`
+                  : `Run ${holding.generation} is still running; stop it, or wait until it ends, to start another run.`}
             </p>
           )}
           {!holding && chosen === null && (
@@ -431,6 +435,15 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
                       className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
                     />
                     <RunStateBadge state={run.state} />
+                    {run.queuePosition !== null && (
+                      <span
+                        aria-label={`Run ${run.generation} is number ${run.queuePosition} in the queue`}
+                        title="Where this run is in the queue of its machine; number 1 starts next"
+                        className="shrink-0 text-muted-foreground"
+                      >
+                        #{run.queuePosition} in queue
+                      </span>
+                    )}
                     <ActivityBadge run={run} now={now} />
                     <span className="shrink-0 font-medium">Run {run.generation}</span>
                     <span className="min-w-0 truncate text-muted-foreground">{adapterName(run.adapter)}</span>
@@ -478,7 +491,9 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
                     onKeyDown={escapeCloses(() => setStopping(null), stopRun.isPending)}
                   >
                     <span className="min-w-0 flex-1 basis-48">
-                      Stop {name}? Its agent is stopped if it still runs; the changes it made stay in the worktree.
+                      {run.state === "queued"
+                        ? `Stop ${name}? It leaves the queue without starting.`
+                        : `Stop ${name}? Its agent is stopped if it still runs; the changes it made stay in the worktree.`}
                     </span>
                     <Button
                       size="xs"
@@ -518,7 +533,7 @@ function RunDetails({ id, run, log }: { id: string; run: TaskRun; log: ReturnTyp
     if (log.data !== undefined && log.data.run.state !== listed) void log.refetch();
     // Only a change of the listed state asks for the log again.
   }, [listed]);
-  const ended = listed !== "reserved" && listed !== "running";
+  const ended = listed !== "queued" && listed !== "reserved" && listed !== "running";
   const last = log.data && ended ? lastEvent(run, log.data.events) : undefined;
   // Each todo event holds the whole list, so the last one is where the agent is.
   const lastTodo = log.data?.events.filter((event) => event.kind === "todo").at(-1);

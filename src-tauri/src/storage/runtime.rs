@@ -34,6 +34,21 @@ pub struct NewRun {
     pub adapter_profile: Option<String>,
 }
 
+/// What a queued run starts with once a run slot of its host frees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedStart {
+    /// The prompt asked for, or `None` for the task's default brief.
+    pub prompt: Option<String>,
+    pub mcp: bool,
+}
+
+/// A run waiting in its host's queue, with what it starts with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedRun {
+    pub run: TaskRun,
+    pub start: QueuedStart,
+}
+
 /// The run a request key stands for: reserved now, or reserved by an earlier request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reservation {
@@ -266,6 +281,30 @@ fn find_launch_operation(conn: &Connection, run: RunId) -> Result<Option<RunOper
     .transpose()
 }
 
+/// Adds the pending launch operation of a run about to be launched.
+fn insert_launch_operation(
+    conn: &Connection,
+    owner: &OwnerKey,
+    run: RunId,
+    request_key: &str,
+    at: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO run_operations (owner_key, run_id, request_key, kind, state,
+             created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![
+            owner.as_str(),
+            run.0,
+            request_key,
+            OperationKind::Launch.as_wire(),
+            OperationState::Pending.as_wire(),
+            at
+        ],
+    )?;
+    Ok(())
+}
+
 /// Settles the launch operation of `run` as `state` with `receipt`.
 fn settle_launch(
     conn: &Connection,
@@ -294,6 +333,22 @@ impl Storage {
     /// reserved for the key is returned as it is. A writer is rejected while another
     /// writer is active on the same checkout.
     pub fn reserve_run(&mut self, new: &NewRun) -> Result<Reservation> {
+        self.insert_run(new, None)
+    }
+
+    /// Queues a run for `new.request_key` like [`Self::reserve_run`] reserves one, but in
+    /// state `queued`, with no launch operation yet and `start` kept for its launch. A
+    /// queued writer holds its checkout as an active one does.
+    pub fn queue_run(&mut self, new: &NewRun, start: &QueuedStart) -> Result<Reservation> {
+        self.insert_run(new, Some(start))
+    }
+
+    fn insert_run(&mut self, new: &NewRun, queued: Option<&QueuedStart>) -> Result<Reservation> {
+        let state = if queued.is_some() {
+            RunState::Queued
+        } else {
+            RunState::Reserved
+        };
         let at = self.now();
         let tx = self.conn.transaction()?;
         if let Some(run) = find_run_by_key(&tx, &new.owner, &new.request_key)? {
@@ -313,7 +368,8 @@ impl Storage {
                 .query_row(
                     "SELECT id, task_id FROM task_runs
                      WHERE owner_key = ?1 AND host_ref = ?2 AND checkout_path = ?3
-                       AND role = 'writer' AND state IN ('reserved', 'running', 'unknown')
+                       AND role = 'writer'
+                       AND state IN ('queued', 'reserved', 'running', 'unknown')
                      ORDER BY id
                      LIMIT 1",
                     params![new.owner.as_str(), host, checkout],
@@ -344,28 +400,110 @@ impl Storage {
                 host,
                 new.checkout_path,
                 new.adapter_profile,
-                RunState::Reserved.as_wire(),
+                state.as_wire(),
                 at
             ],
         )?;
         let id = RunId(tx.last_insert_rowid());
-        tx.execute(
-            "INSERT INTO run_operations (owner_key, run_id, request_key, kind, state,
-                 created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-            params![
-                new.owner.as_str(),
-                id.0,
-                new.request_key,
-                OperationKind::Launch.as_wire(),
-                OperationState::Pending.as_wire(),
-                at
-            ],
-        )?;
+        match queued {
+            None => insert_launch_operation(&tx, &new.owner, id, &new.request_key, at)?,
+            Some(start) => {
+                tx.execute(
+                    "INSERT INTO queued_runs (run_id, prompt, mcp) VALUES (?1, ?2, ?3)",
+                    params![id.0, start.prompt, start.mcp],
+                )?;
+            }
+        }
         let run = existing_run(&tx, id)?;
-        append_event(&tx, &run, RunState::Reserved.as_wire(), None, at)?;
+        append_event(&tx, &run, state.as_wire(), None, at)?;
         tx.commit()?;
         Ok(Reservation::New(run))
+    }
+
+    /// Takes a queued run out of its queue to launch it: the run becomes `reserved` with a
+    /// pending launch operation and a `reserved` event, in one transaction, so
+    /// [`Self::reserve_run`] with its request key finds it reserved.
+    pub fn dequeue_run(&mut self, run: RunId) -> Result<TaskRun> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let current = existing_run(&tx, run)?;
+        if current.state != RunState::Queued {
+            return Err(StorageError::RunTransition {
+                run,
+                from: current.state,
+                to: RunState::Reserved,
+            });
+        }
+        tx.execute("DELETE FROM queued_runs WHERE run_id = ?1", [run.0])?;
+        tx.execute(
+            "UPDATE task_runs SET state = ?2 WHERE id = ?1",
+            params![run.0, RunState::Reserved.as_wire()],
+        )?;
+        insert_launch_operation(&tx, &current.owner, run, &current.request_key, at)?;
+        append_event(&tx, &current, RunState::Reserved.as_wire(), None, at)?;
+        let reserved = existing_run(&tx, run)?;
+        tx.commit()?;
+        Ok(reserved)
+    }
+
+    /// Every queued run, oldest first, with what it starts with.
+    pub fn queued_runs(&self) -> Result<Vec<QueuedRun>> {
+        let columns = RUN_COLUMNS
+            .split(',')
+            .map(|column| format!("r.{}", column.trim()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {columns}, q.prompt, q.mcp FROM task_runs r
+             JOIN queued_runs q ON q.run_id = r.id
+             WHERE r.state = 'queued' ORDER BY r.id"
+        ))?;
+        let rows = statement
+            .query_map([], |row| {
+                let run = run_from_row(row)?;
+                let start = QueuedStart {
+                    prompt: row.get(21)?,
+                    mcp: row.get(22)?,
+                };
+                Ok(run.map(|run| QueuedRun { run, start }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter().collect()
+    }
+
+    /// How many plain and tmux runs on `host` may be running: reserved, running, or
+    /// unknown. These are what a host's run limit counts.
+    pub fn active_runs_on_host(&self, host: &HostRef) -> Result<u32> {
+        Ok(self.conn.query_row(
+            "SELECT count(*) FROM task_runs
+             WHERE host_ref = ?1 AND runner_kind IN ('plain', 'tmux')
+               AND state IN ('reserved', 'running', 'unknown')",
+            [host.as_wire()],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// How many runs on `host` are queued.
+    pub fn queued_runs_on_host(&self, host: &HostRef) -> Result<u32> {
+        Ok(self.conn.query_row(
+            "SELECT count(*) FROM task_runs WHERE host_ref = ?1 AND state = 'queued'",
+            [host.as_wire()],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Where a queued run is in its host's queue, from 1 for the next to start; `None`
+    /// for a run that is not queued.
+    pub fn queue_position(&self, run: &TaskRun) -> Result<Option<u32>> {
+        if run.state != RunState::Queued {
+            return Ok(None);
+        }
+        Ok(Some(self.conn.query_row(
+            "SELECT count(*) FROM task_runs
+             WHERE host_ref = ?1 AND state = 'queued' AND id <= ?2",
+            params![run.host.as_wire(), run.id.0],
+            |row| row.get(0),
+        )?))
     }
 
     /// Records that the runner launched a reserved run as `provider_run_ref`: the launch
@@ -475,13 +613,19 @@ impl Storage {
         if current.state == state && !matches!(state, RunState::Reserved | RunState::Running) {
             return Ok(current);
         }
-        if matches!(state, RunState::Reserved | RunState::Running) || !current.state.is_active() {
+        if matches!(
+            state,
+            RunState::Reserved | RunState::Running | RunState::Queued
+        ) || !current.state.is_open()
+            || (current.state == RunState::Queued && state == RunState::Unknown)
+        {
             return Err(StorageError::RunTransition {
                 run,
                 from: current.state,
                 to: state,
             });
         }
+        tx.execute("DELETE FROM queued_runs WHERE run_id = ?1", [run.0])?;
         let ended_at = (state != RunState::Unknown).then_some(at);
         tx.execute(
             "UPDATE task_runs SET state = ?2, ended_at = ?3 WHERE id = ?1",
