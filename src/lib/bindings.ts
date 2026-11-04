@@ -48,8 +48,18 @@ export const commands = {
 	listHerdrMachines: () => typedError<HerdrMachine[], CommandError>(invoke("list_herdr_machines")),
 	/**  Host aliases from `~/.ssh/config`, re-read on every call. */
 	listSshHosts: () => typedError<string[], CommandError>(invoke("list_ssh_hosts")),
-	/**  Appends a `Host` block to `~/.ssh/config` and returns the updated host aliases. */
-	addSshHost: (host: NewSshHost) => typedError<string[], CommandError>(invoke("add_ssh_host", { host })),
+	/**
+	 *  Appends a `Host` block to `~/.ssh/config`, then tests the connection to the new host,
+	 *  so that a wrong setup shows up now rather than when a workspace is cloned there. The
+	 *  block stays when the test fails, so the user can fix what it reports and test again.
+	 */
+	addSshHost: (host: NewSshHost) => typedError<AddedSshHost, CommandError>(invoke("add_ssh_host", { host })),
+	/**
+	 *  Tests that Toodo reaches the SSH host `machine` without a prompt and that git runs
+	 *  there, before `herdr machine add` saves it or a workspace is cloned on it. A failed test
+	 *  is a result with the next step that fixes it, not an error.
+	 */
+	testSshMachine: (machine: string) => typedError<SshMachineCheck, CommandError>(invoke("test_ssh_machine", { machine })),
 	/**
 	 *  Subdirectories of `path` on `machine`, or of the login directory when `path` is
 	 *  absent; `path` is a POSIX path, or a Windows path on a Windows host. ssh runs on a
@@ -383,6 +393,13 @@ export type ActivityKind = "commit" | "pr_opened" | "checks_passed" | "checks_fa
 
 /**  Where an activity event was first learned from. */
 export type ActivitySource = "git_poll" | "github_poll";
+
+/**  A host appended to the SSH config, and the connection test run on it right after. */
+export type AddedSshHost = {
+	/**  Host aliases of the updated config. */
+	hosts: string[],
+	check: SshMachineCheck,
+};
 
 /**  The agent CLI a plain run drives. */
 export type AgentAdapter = 
@@ -1075,6 +1092,17 @@ export type Source =
 "local_git" | 
 /**  A git repository whose `origin` remote is on GitHub; tasks ship as pull requests. */
 "github";
+
+/**
+ *  What testing the connection to an SSH machine found: Toodo connects without a prompt and
+ *  git runs there, or a problem.
+ */
+export type SshMachineCheck = {
+	/**  `git --version` on the machine, e.g. `git version 2.43.0`; `None` when the test failed. */
+	gitVersion: string | null,
+	/**  What failed and the next step that fixes it; `None` when the test passed. */
+	problem: string | null,
+};
 
 export type Task = {
 	id: TaskId,

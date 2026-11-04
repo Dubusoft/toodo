@@ -5,9 +5,11 @@ use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use super::git::{
-    GitError, Runner, powershell_command, powershell_quote, shell_quote, ssh_invocation,
+    GitError, Invocation, Runner, SSH_OPTIONS, powershell_command, powershell_quote, shell_quote,
+    ssh_invocation,
 };
 use crate::domain::model::{HostPath, MachineLabel};
 use crate::domain::path::{PosixPath, WindowsPath};
@@ -97,6 +99,18 @@ pub struct RemoteDirectory {
     pub directories: Vec<String>,
 }
 
+/// What testing the connection to an SSH machine found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MachineCheck {
+    /// Toodo connected without a prompt and found git; holds the `git --version` line.
+    Ready { git_version: String },
+    /// The test failed; says what failed and the next step that fixes it.
+    Problem(String),
+}
+
+/// How long a connection test may take; `ssh` itself gives up connecting after 10 seconds.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+
 pub struct Ssh {
     runner: Box<dyn Runner>,
 }
@@ -104,6 +118,39 @@ pub struct Ssh {
 impl Ssh {
     pub fn new(runner: Box<dyn Runner>) -> Self {
         Self { runner }
+    }
+
+    /// Tests that Toodo reaches `machine` the way it runs git there: `ssh` without prompts
+    /// runs `git --version`, which works in `sh`, `cmd`, and PowerShell alike. The test
+    /// opens its own connection, so a shared one left from before a config change does not
+    /// hide what changed.
+    pub fn check_machine(&self, machine: &MachineLabel) -> MachineCheck {
+        let invocation = Invocation {
+            program: "ssh",
+            args: SSH_OPTIONS
+                .iter()
+                .chain(&["--", machine.as_str(), "git --version"])
+                .map(|arg| (*arg).to_owned())
+                .collect(),
+        };
+        match self.runner.run_within(&invocation, CHECK_TIMEOUT) {
+            Ok(output) => match output
+                .lines()
+                .map(str::trim)
+                .find(|line| line.starts_with("git version"))
+            {
+                Some(version) => MachineCheck::Ready {
+                    git_version: version.to_owned(),
+                },
+                None => MachineCheck::Problem(format!(
+                    "Connected to {machine}, but `git --version` printed {:?} instead of a git \
+                     version. Run `ssh {machine} git --version` in a terminal on the server, make \
+                     it print `git version ...`, then test again.",
+                    output.trim()
+                )),
+            },
+            Err(error) => MachineCheck::Problem(check_problem(machine, &error)),
+        }
     }
 
     /// Lists the subdirectories of `path` on `machine`, or of the login directory when
@@ -175,6 +222,73 @@ $stdout.Flush()
         listing(machine, &output, |line| {
             WindowsPath::parse(line).ok().map(HostPath::Windows)
         })
+    }
+}
+
+/// Why `ssh <machine> git --version` failed, and the next step that fixes it, told by what
+/// `ssh` or the remote shell printed.
+fn check_problem(machine: &MachineLabel, error: &GitError) -> String {
+    let output = match error {
+        GitError::Spawn { message, .. } => {
+            return format!(
+                "Could not run ssh on the server ({message}). Install OpenSSH so that `ssh` is \
+                 on the PATH of toodo-server, then test again."
+            );
+        }
+        GitError::Failed { stderr, .. } => stderr,
+        GitError::UnexpectedOutput { output, .. } => output,
+    };
+    let said = output.to_lowercase();
+    let has = |needle: &str| said.contains(needle);
+    let problem = if has("could not resolve hostname") {
+        format!(
+            "The host name of {machine} could not be resolved. Check the HostName of \
+             `Host {machine}` in ~/.ssh/config on the server, or add that Host block, then \
+             test again."
+        )
+    } else if has("host key verification failed") || has("remote host identification has changed") {
+        format!(
+            "The server does not know the host key of {machine}, or it changed. Run \
+             `ssh {machine}` once in a terminal on the server to check and accept the key, \
+             then test again."
+        )
+    } else if has("permission denied") {
+        format!(
+            "{machine} refused the server's SSH key, and Toodo never asks for a password. Add \
+             the server's public key to ~/.ssh/authorized_keys on {machine} (for example with \
+             `ssh-copy-id {machine}`) or set the IdentityFile of `Host {machine}` in \
+             ~/.ssh/config, then test again."
+        )
+    } else if has("connection refused") {
+        format!(
+            "Nothing accepts SSH connections on {machine}. Check that the SSH server runs there \
+             and that the Port of `Host {machine}` in ~/.ssh/config is right, then test again."
+        )
+    } else if has("timed out")
+        || has("no route to host")
+        || has("network is unreachable")
+        || has("stopped after")
+    {
+        format!(
+            "{machine} did not answer. Check that it is on and reachable from the server \
+             (network, VPN, firewall) and that its HostName in ~/.ssh/config is right, then \
+             test again."
+        )
+    } else if has("git") && (has("not found") || has("not recognized")) {
+        format!(
+            "Connected to {machine}, but git is not installed there or not on the PATH of SSH \
+             commands. Install git on {machine} (for example `sudo apt install git`, or Git \
+             for Windows), then test again."
+        )
+    } else {
+        format!(
+            "Connecting to {machine} failed. Run `ssh {machine} git --version` in a terminal \
+             on the server to see why, fix what it reports, then test again."
+        )
+    };
+    match output.lines().map(str::trim).rfind(|line| !line.is_empty()) {
+        Some(detail) => format!("{problem} ssh said: {detail}"),
+        None => problem,
     }
 }
 
@@ -349,6 +463,81 @@ mod tests {
             given.contains(r"Set-Location -LiteralPath 'D:\dev\it''s'"),
             "{given}"
         );
+    }
+
+    #[test]
+    fn check_machine_runs_git_on_its_own_connection() {
+        let runner = Arc::new(FakeRunner::new([Ok("git version 2.43.0\n".to_owned())]));
+        let ssh = Ssh::new(Box::new(runner.clone()));
+        assert_eq!(
+            ssh.check_machine(&devbox()),
+            MachineCheck::Ready {
+                git_version: "git version 2.43.0".to_owned()
+            }
+        );
+        let invocation = runner.invocations.lock().unwrap()[0].clone();
+        assert_eq!(invocation.program, "ssh");
+        let mut expected = crate::adapters::git::fake::run_ssh_args("devbox");
+        expected.push("git --version".to_owned());
+        assert_eq!(invocation.args, expected);
+    }
+
+    #[test]
+    fn check_machine_names_the_next_step_of_each_failure() {
+        let failed = |stderr: &str| {
+            Err(GitError::Failed {
+                command: "ssh devbox git --version".to_owned(),
+                stderr: stderr.to_owned(),
+            })
+        };
+        let cases = [
+            (
+                failed("ssh: Could not resolve hostname devbox: Name or service not known\n"),
+                "HostName of `Host devbox` in ~/.ssh/config",
+            ),
+            (
+                failed("No ED25519 host key is known for devbox.\nHost key verification failed.\n"),
+                "Run `ssh devbox` once in a terminal",
+            ),
+            (
+                failed("me@devbox: Permission denied (publickey).\n"),
+                "`ssh-copy-id devbox`",
+            ),
+            (
+                failed("ssh: connect to host 10.0.0.5 port 22: Connection refused\n"),
+                "Port of `Host devbox`",
+            ),
+            (
+                failed("ssh: connect to host 10.0.0.5 port 22: Connection timed out\n"),
+                "reachable from the server",
+            ),
+            (failed("sh: 1: git: not found\n"), "Install git on devbox"),
+            (
+                failed("'git' is not recognized as an internal or external command,\r\n"),
+                "Install git on devbox",
+            ),
+            (
+                failed("kex_exchange_identification: read: Connection reset\n"),
+                "Run `ssh devbox git --version`",
+            ),
+            (
+                Err(GitError::Spawn {
+                    program: "ssh".to_owned(),
+                    message: "No such file or directory (os error 2)".to_owned(),
+                }),
+                "Install OpenSSH",
+            ),
+            (Ok("Welcome!\n".to_owned()), "instead of a git version"),
+        ];
+        for (result, next_step) in cases {
+            let ssh = Ssh::new(Box::new(Arc::new(FakeRunner::new([result]))));
+            match ssh.check_machine(&devbox()) {
+                MachineCheck::Problem(problem) => {
+                    assert!(problem.contains(next_step), "{problem}")
+                }
+                ready => panic!("expected a problem with {next_step:?}, got {ready:?}"),
+            }
+        }
     }
 
     #[test]

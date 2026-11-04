@@ -195,6 +195,11 @@ export function useHerdrMachines() {
   });
 }
 
+/** Tests that the server reaches an SSH host without a prompt and that git runs there. */
+export function useTestSshMachine() {
+  return useMutation({ mutationFn: (machine: string) => unwrap(commands.testSshMachine(machine)) });
+}
+
 /**
  * Subdirectories of `path` on `machine` (the server for `local`); nothing is listed
  * while `path` is `null`.
