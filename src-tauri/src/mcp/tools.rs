@@ -70,6 +70,35 @@ pub struct CreateWorkspace {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct UpdateWorkspace {
+    /// The workspace, as in list_workspaces.
+    pub id: WorkspaceId,
+    /// Name shown in Toodo; kept when omitted.
+    pub name: Option<String>,
+    /// New absolute path of the repository on the workspace's machine, e.g. after the
+    /// repository moved or when list_workspaces reports a `pathProblem`. It must be inside
+    /// a git repository that no other workspace uses, whose root becomes the workspace
+    /// path (any directory for source `none`); the tasks stay with the workspace. Kept
+    /// when omitted.
+    pub path: Option<String>,
+    /// The branch task pull requests go into, e.g. `main`; it must exist in the
+    /// repository, locally or as `origin/<branch>`. Cannot change while a task is in
+    /// review. Kept when omitted.
+    pub default_base_branch: Option<String>,
+    /// Whether agents merge their own task pull request: `never` or `afterChecks`. Kept
+    /// when omitted.
+    pub agent_merge: Option<types::AgentMerge>,
+    /// How its tasks get done: `pr_merge` (github), `local_merge` (local_git), or
+    /// `manual` (any source). Kept when omitted.
+    pub completion: Option<types::CompletionMode>,
+    /// What runs started tasks: `herdr`, `plain`, `tmux` (git sources), or `none` (only
+    /// with completion `manual`). Cannot change while a task is in progress or in review.
+    /// Kept when omitted.
+    pub runner: Option<types::Runner>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CurrentTask {
     /// Absolute path of the agent's working directory, e.g. the worktree of its task.
     pub cwd: String,
@@ -544,6 +573,45 @@ pub fn create_workspace(
     }
     .try_into()?;
     Ok((&workspaces::create(storage, git, herdr, setup)?).into())
+}
+
+/// Changes the settings of a workspace and, with `path`, moves it to another directory on
+/// its machine, through the app's own checks; omitted settings are kept.
+pub fn update_workspace(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    request: UpdateWorkspace,
+) -> CommandResult<Workspace> {
+    let id = request.id.into();
+    let stored = lock(storage)
+        .get_workspace(id)?
+        .ok_or(StorageError::WorkspaceNotFound(id))?;
+    let location = match request.path {
+        Some(path) => Some(
+            match &stored.location {
+                model::WorkspaceLocation::Local { .. } => types::WorkspaceLocation::Local { path },
+                model::WorkspaceLocation::Ssh { machine, .. } => types::WorkspaceLocation::Ssh {
+                    machine: machine.as_str().to_owned(),
+                    path,
+                },
+            }
+            .try_into()?,
+        ),
+        None => None,
+    };
+    let current = Workspace::from(&stored);
+    let workspace = Workspace {
+        name: request.name.unwrap_or(current.name),
+        default_base_branch: request
+            .default_base_branch
+            .unwrap_or(current.default_base_branch),
+        agent_merge: request.agent_merge.unwrap_or(current.agent_merge),
+        completion: request.completion.unwrap_or(current.completion),
+        runner: request.runner.unwrap_or(current.runner),
+        ..current
+    };
+    Ok((&workspaces::update(storage, git, herdr, workspace, location)?).into())
 }
 
 /// A task as list_tasks returns it, with whether it can start now.

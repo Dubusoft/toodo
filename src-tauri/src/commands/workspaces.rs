@@ -286,9 +286,9 @@ fn setup_failed(
     }
 }
 
-/// Saves the name, default base branch, and agent merge policy of an existing workspace.
-/// Its location is kept, [`move_workspace`] changes it; its source, completion, and
-/// runner are kept as created.
+/// Saves the name, default base branch, agent merge policy, completion, and runner of an
+/// existing workspace. Its location is kept, [`move_workspace`] changes it; its source is
+/// kept as created. The runner cannot change while a task is being worked on.
 #[specta::specta]
 pub fn update_workspace(
     storage: State<'_, StorageState>,
@@ -300,8 +300,148 @@ pub fn update_workspace(
         .get_workspace(id)?
         .ok_or(StorageError::WorkspaceNotFound(id))?;
     let workspace = workspace.into_model(&stored)?;
+    ensure_runner_can_change(&storage, &stored, workspace.runner)?;
     storage.update_workspace(&workspace)?;
     Ok((&workspace).into())
+}
+
+/// Saves every setting of an existing workspace as [`update_workspace`] does and, with
+/// `location`, moves it there first as [`move_workspace`] does; for callers already off
+/// the async runtime, such as the MCP tools. Everything is checked before herdr opens the
+/// repository or anything is saved: the new location must hold a repository no other
+/// workspace uses, and a new base branch, or the base branch at a new location, must
+/// exist there. The repository is opened in herdr when the workspace moves or switches to
+/// runner herdr.
+pub(crate) fn update(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    workspace: Workspace,
+    location: Option<model::WorkspaceLocation>,
+) -> CommandResult<model::Workspace> {
+    let id = workspace.id.into();
+    let (stored, others) = with_others(&lock(storage), id)?;
+    let target = match location {
+        Some(target) => model::Workspace {
+            location: locate(git, stored.source, workspace.runner.into(), &others, target)?,
+            ..stored.clone()
+        },
+        None => stored.clone(),
+    };
+    let updated = workspace.into_model(&target)?;
+    ensure_runner_can_change(&lock(storage), &stored, updated.runner)?;
+    let moved = updated.location != stored.location;
+    if updated.source != model::Source::None
+        && (moved || updated.default_base_branch != stored.default_base_branch)
+    {
+        ensure_base_branch(git, &updated)?;
+    }
+    if updated.runner == model::Runner::Herdr && (moved || stored.runner != model::Runner::Herdr) {
+        RuntimeService.open_repository(
+            herdr,
+            &updated.location.machine(),
+            location_path(&updated.location),
+            &updated.name,
+        )?;
+    }
+    let mut storage = lock(storage);
+    let (_, others) = with_others(&storage, id)?;
+    ensure_unused(&others, &updated.location)?;
+    ensure_runner_can_change(&storage, &stored, updated.runner)?;
+    if moved {
+        RuntimeService.move_workspace(&mut storage, &updated)?;
+    } else {
+        storage.update_workspace(&updated)?;
+    }
+    Ok(updated)
+}
+
+/// Workspace `id` and every other workspace.
+fn with_others(
+    storage: &storage::Storage,
+    id: model::WorkspaceId,
+) -> CommandResult<(model::Workspace, Vec<model::Workspace>)> {
+    let workspace = storage
+        .get_workspace(id)?
+        .ok_or(StorageError::WorkspaceNotFound(id))?;
+    let others = storage
+        .list_workspaces()?
+        .into_iter()
+        .filter(|other| other.id != id)
+        .collect();
+    Ok((workspace, others))
+}
+
+/// Rejects switching `stored` to `runner` while one of its tasks is in progress or in
+/// review or still has an open runtime workspace: its worktree and agents belong to the
+/// current runner.
+fn ensure_runner_can_change(
+    storage: &storage::Storage,
+    stored: &model::Workspace,
+    runner: model::Runner,
+) -> CommandResult<()> {
+    if runner == stored.runner {
+        return Ok(());
+    }
+    for task in storage.list_tasks(stored.id)? {
+        let active = matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview);
+        if active || storage.open_runtime_workspace(task.id)?.is_some() {
+            return Err(CommandError::rejected(format!(
+                "the runner of workspace {} cannot change from {} to {runner} while task {} \
+                 is being worked on with it; complete or conclude that task first, or keep \
+                 runner {} and change the other settings",
+                stored.id.0, stored.runner, task.id.0, stored.runner
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Rejects a default base branch that the repository of `workspace` has neither as a
+/// local branch nor as an `origin` remote-tracking branch.
+fn ensure_base_branch(git: &Git, workspace: &model::Workspace) -> CommandResult<()> {
+    let branch = &workspace.default_base_branch;
+    if git.branch_source(&workspace.location, branch)?.is_some() {
+        return Ok(());
+    }
+    Err(CommandError::invalid_input(format!(
+        "branch {branch} does not exist in the repository at {}, neither locally nor as \
+         origin/{branch}; set default_base_branch to a branch that exists there, such as the \
+         repository's default branch, or push {branch} first",
+        location_path(&workspace.location)
+    )))
+}
+
+/// The repository root at `target` for a workspace with `source` and `runner`, or
+/// `target` itself for source none. Rejected when one of `others` uses it, when the
+/// runner cannot run there, or when `target` is not inside a git repository.
+fn locate(
+    git: &Git,
+    source: model::Source,
+    runner: model::Runner,
+    others: &[model::Workspace],
+    target: model::WorkspaceLocation,
+) -> CommandResult<model::WorkspaceLocation> {
+    ensure_unused(others, &target)?;
+    model::check_runner_location(runner, &target)
+        .map_err(|error| CommandError::invalid_input(error.0))?;
+    if source == model::Source::None {
+        return Ok(target);
+    }
+    let root = git.repository_root(&target).map_err(|error| {
+        setup_failed(
+            error,
+            || {
+                format!(
+                    "could not open a git repository at {}",
+                    location_path(&target)
+                )
+            },
+            "choose the directory of the workspace's repository clone",
+        )
+    })?;
+    ensure_unused(others, &root)?;
+    Ok(root)
 }
 
 /// Moves a workspace to the repository at `location`, e.g. one kept with a Windows path
@@ -320,31 +460,13 @@ pub async fn move_workspace(
 ) -> CommandResult<Workspace> {
     let id = id.into();
     let target: model::WorkspaceLocation = location.try_into()?;
-    let (workspace, others) = {
-        let storage = lock(&storage);
-        let workspace = storage
-            .get_workspace(id)?
-            .ok_or(StorageError::WorkspaceNotFound(id))?;
-        let others: Vec<_> = storage
-            .list_workspaces()?
-            .into_iter()
-            .filter(|other| other.id != id)
-            .collect();
-        (workspace, others)
-    };
-    ensure_unused(&others, &target)?;
-    model::check_runner_location(workspace.runner, &target)
-        .map_err(|error| CommandError::invalid_input(error.0))?;
+    let (workspace, others) = with_others(&lock(&storage), id)?;
     let git = GitState::clone(&git);
     let herdr = HerdrState::clone(&herdr);
     let name = workspace.name.clone();
     let (source, runner) = (workspace.source, workspace.runner);
     let location = tokio::task::spawn_blocking(move || -> CommandResult<_> {
-        if source == model::Source::None {
-            return Ok(target);
-        }
-        let root = git.repository_root(&target)?;
-        ensure_unused(&others, &root)?;
+        let root = locate(&git, source, runner, &others, target)?;
         if runner == model::Runner::Herdr {
             RuntimeService.open_repository(
                 &*herdr,
@@ -362,14 +484,7 @@ pub async fn move_workspace(
         ..workspace
     };
     let mut storage = lock(&storage);
-    ensure_unused(
-        &storage
-            .list_workspaces()?
-            .into_iter()
-            .filter(|other| other.id != id)
-            .collect::<Vec<_>>(),
-        &moved.location,
-    )?;
+    ensure_unused(&with_others(&storage, id)?.1, &moved.location)?;
     RuntimeService.move_workspace(&mut storage, &moved)?;
     Ok((&moved).into())
 }

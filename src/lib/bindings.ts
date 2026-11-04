@@ -15,9 +15,9 @@ export const commands = {
 	 */
 	createWorkspace: (workspace: NewWorkspace) => typedError<Workspace, CommandError>(invoke("create_workspace", { workspace })),
 	/**
-	 *  Saves the name, default base branch, and agent merge policy of an existing workspace.
-	 *  Its location is kept, [`move_workspace`] changes it; its source, completion, and
-	 *  runner are kept as created.
+	 *  Saves the name, default base branch, agent merge policy, completion, and runner of an
+	 *  existing workspace. Its location is kept, [`move_workspace`] changes it; its source is
+	 *  kept as created. The runner cannot change while a task is being worked on.
 	 */
 	updateWorkspace: (workspace: Workspace) => typedError<Workspace, CommandError>(invoke("update_workspace", { workspace })),
 	/**
@@ -1141,9 +1141,9 @@ export type Workspace = {
 	pathProblem: PathProblem | null,
 	/**  What the location holds; set at creation and ignored when the workspace is saved. */
 	source: Source,
-	/**  How its tasks get done; set at creation and ignored when the workspace is saved. */
+	/**  How its tasks get done. */
 	completion: CompletionMode,
-	/**  What runs started tasks; set at creation and ignored when the workspace is saved. */
+	/**  What runs started tasks. */
 	runner: Runner,
 };
 

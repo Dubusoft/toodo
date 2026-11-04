@@ -72,7 +72,8 @@ user and ask for its id, then read it with get_task; to plan new work outside a 
 pick the workspace with list_workspaces. If its worktree directory is gone \
 (worktreeMissing true), call restore_worktree with the task id. Add a \
 workspace with create_workspace only when the user asks for a repository that \
-list_workspaces does not have yet.
+list_workspaces does not have yet; fix the settings of one that exists, or its path \
+after the repository moved (pathProblem), with update_workspace.
 2. Before you plan work or call create_task, call search_tasks with a few distinctive \
 words of the work (all workspaces unless the work clearly belongs to one) to find \
 earlier tasks about it, and get_task on the relevant ones to read what was decided \
@@ -693,6 +694,24 @@ impl ToodoMcp {
         let result = self
             .blocking(move |backend| {
                 tools::create_workspace(backend.storage(), backend.git(), backend.herdr(), request)
+            })
+            .await?;
+        if result.is_ok() {
+            self.backend.workspaces_changed();
+        }
+        reply(result)
+    }
+
+    #[tool(
+        description = "Change an existing workspace, as its settings and Move in the Toodo app do: name, default_base_branch, agent_merge (never or afterChecks), completion, runner, and path, the new absolute path of its repository on the same machine, e.g. after the repository moved or when list_workspaces reports a pathProblem. Omitted fields are kept. A base branch must exist in the repository (locally or as origin/<branch>) and cannot change while a task is in review; a path must be inside a git repository no other workspace uses (any directory for source none), whose root becomes the workspace path, and the tasks stay with the workspace; the runner cannot change while a task is in progress or in review; completion and runner must work with the source, as in create_workspace. The repository is opened in herdr when the workspace moves or switches to runner herdr. Returns the updated workspace."
+    )]
+    async fn update_workspace(
+        &self,
+        Parameters(request): Parameters<tools::UpdateWorkspace>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| {
+                tools::update_workspace(backend.storage(), backend.git(), backend.herdr(), request)
             })
             .await?;
         if result.is_ok() {
@@ -1768,6 +1787,180 @@ mod tests {
         assert_eq!(*backend.workspaces_changed.lock().unwrap(), 0);
     }
 
+    fn update_workspace(server: &ToodoMcp, arguments: serde_json::Value) -> serde_json::Value {
+        let request = serde_json::from_value(arguments).unwrap();
+        let result = runtime()
+            .block_on(server.update_workspace(Parameters(request)))
+            .unwrap();
+        serde_json::to_value(result).unwrap()
+    }
+
+    fn listed_workspaces(server: &ToodoMcp) -> serde_json::Value {
+        created_workspace(&serde_json::to_value(server.list_workspaces().unwrap()).unwrap())
+    }
+
+    #[test]
+    fn updating_a_workspace_saves_every_setting_and_list_workspaces_shows_them() {
+        let (storage, task) = storage_with_task(None);
+        // `git rev-parse --verify` finds the new base branch locally.
+        let backend = Arc::new(TestBackend::scripted(
+            storage,
+            vec![Ok("abc\n".to_owned())],
+            Vec::new(),
+        ));
+        let server = ToodoMcp::new(backend.clone());
+
+        let result = update_workspace(
+            &server,
+            serde_json::json!({
+                "id": task.workspace_id.0,
+                "name": "toodo-app",
+                "default_base_branch": "release",
+                "agent_merge": "afterChecks",
+                "completion": "manual",
+                "runner": "plain",
+            }),
+        );
+
+        let updated = created_workspace(&result);
+        assert_eq!(updated["name"], "toodo-app");
+        assert_eq!(updated["defaultBaseBranch"], "release");
+        assert_eq!(updated["agentMerge"], "afterChecks");
+        assert_eq!(updated["completion"], "manual");
+        assert_eq!(updated["runner"], "plain");
+        assert_eq!(updated["source"], "github");
+        assert_eq!(updated["location"]["path"], r"C:\dev\toodo");
+        assert_eq!(listed_workspaces(&server), serde_json::json!([updated]));
+        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn updating_a_workspace_rejects_a_missing_base_branch_a_path_outside_a_repository_and_axes_that_do_not_work()
+     {
+        let (storage, task) = storage_with_task(None);
+        let backend = Arc::new(TestBackend::scripted(
+            storage,
+            vec![
+                // Neither refs/heads/gone nor refs/remotes/origin/gone exists.
+                Err(crate::adapters::git::fake::failed()),
+                Err(crate::adapters::git::fake::failed()),
+                Err(crate::adapters::git::GitError::Failed {
+                    command: format!("git -C {} rev-parse --show-toplevel", host("/dev/notes")),
+                    stderr: "fatal: not a git repository (or any of the parent directories): .git"
+                        .to_owned(),
+                }),
+            ],
+            Vec::new(),
+        ));
+        let server = ToodoMcp::new(backend.clone());
+        let before = listed_workspaces(&server);
+        let id = task.workspace_id.0;
+
+        let branch = update_workspace(
+            &server,
+            serde_json::json!({"id": id, "default_base_branch": "gone"}),
+        );
+        assert_eq!(
+            error_text(&branch),
+            r"InvalidInput: branch gone does not exist in the repository at C:\dev\toodo, neither locally nor as origin/gone; set default_base_branch to a branch that exists there, such as the repository's default branch, or push gone first"
+        );
+
+        let outside = update_workspace(
+            &server,
+            serde_json::json!({"id": id, "path": host("/dev/notes")}),
+        );
+        let message = error_text(&outside);
+        assert!(
+            message.starts_with(
+                "External: could not open a git repository at /dev/notes; choose the directory \
+                 of the workspace's repository clone. git said: "
+            ),
+            "{message}"
+        );
+        assert!(message.contains("not a git repository"), "{message}");
+
+        let axes = update_workspace(
+            &server,
+            serde_json::json!({"id": id, "completion": "local_merge"}),
+        );
+        assert!(
+            error_text(&axes).starts_with("InvalidInput: source github completes tasks"),
+            "{axes}"
+        );
+
+        assert_eq!(listed_workspaces(&server), before);
+        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn moving_a_workspace_with_a_path_problem_to_its_repository_clears_the_problem() {
+        let (storage, task) = storage_with_task(None);
+        // An existing directory on this machine, standing in for the moved repository.
+        let path = env!("CARGO_MANIFEST_DIR");
+        let backend = Arc::new(TestBackend::scripted(
+            storage,
+            // The repository root, then the base branch main found there.
+            vec![toplevel(path), Ok("abc\n".to_owned())],
+            // `herdr workspace list` without the repository, then `herdr workspace create`.
+            herdr_opens_a_new_workspace().split_off(1),
+        ));
+        let server = ToodoMcp::new(backend.clone());
+        assert_eq!(listed_workspaces(&server)[0]["pathProblem"], "foreign");
+
+        let result = update_workspace(
+            &server,
+            serde_json::json!({"id": task.workspace_id.0, "path": path}),
+        );
+
+        let moved = created_workspace(&result);
+        assert_eq!(
+            moved["location"],
+            serde_json::json!({"kind": "local", "path": path})
+        );
+        assert_eq!(moved["pathProblem"], serde_json::Value::Null);
+        assert_eq!(listed_workspaces(&server), serde_json::json!([moved]));
+        let tasks = lock(&backend.storage)
+            .list_tasks(task.workspace_id)
+            .unwrap();
+        assert_eq!(tasks, [task]);
+    }
+
+    #[test]
+    fn the_runner_of_a_workspace_cannot_change_while_a_task_is_in_progress() {
+        let (storage, task) = storage_with_task(Some(r"D:\wt"));
+        let created =
+            r#"{"id":"cli:worktree:create","result":{"workspace":{"workspace_id":"w27"}}}"#;
+        let backend = Arc::new(TestBackend::scripted(
+            storage,
+            vec![
+                Ok("abc\n".to_owned()),
+                Ok(String::new()),
+                Err(crate::adapters::git::fake::failed()),
+                Ok(String::new()),
+            ],
+            vec![
+                Ok(created.to_owned()),
+                Ok(r#"{"id":"cli:pane:list","result":{"panes":[]}}"#.to_owned()),
+            ],
+        ));
+        let server = ToodoMcp::new(backend.clone());
+        assert_ne!(start(&server, task.id)["isError"], true);
+        let before = listed_workspaces(&server);
+
+        let result = update_workspace(
+            &server,
+            serde_json::json!({"id": task.workspace_id.0, "runner": "plain"}),
+        );
+
+        assert_eq!(
+            error_text(&result),
+            "Rejected: the runner of workspace 1 cannot change from herdr to plain while task 1 \
+             is being worked on with it; complete or conclude that task first, or keep runner \
+             herdr and change the other settings"
+        );
+        assert_eq!(listed_workspaces(&server), before);
+    }
+
     /// Adds the workspace "site" on the SSH machine devbox with one planned task.
     fn add_devbox_task(storage: &mut crate::storage::Storage) -> model::Task {
         use crate::domain::model::{MachineLabel, TaskType, WorkspaceLocation};
@@ -2345,6 +2538,7 @@ mod tests {
             "restore_worktree",
             "set_worktree_root",
             "list_machine_settings",
+            "update_workspace",
             "complete_task",
             "conclude_task",
         ] {

@@ -45,6 +45,8 @@ be moved to the PC it lives on: save the PC as a herdr machine, then use **Move*
 workspace header, pick the machine, and enter the same repository path. Toodo checks that
 the path holds a git repository and opens it in herdr; the tasks stay with the workspace.
 A move cannot change the kind of path while a task has a worktree of the other kind.
+Agents can do the same on the workspace's own machine with the MCP tool
+`update_workspace` and its `path`, which also changes the other workspace settings.
 
 ### Agent Runs on SSH Hosts
 

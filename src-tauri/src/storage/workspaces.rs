@@ -234,8 +234,8 @@ impl Storage {
         rows.into_iter().map(WorkspaceRow::into_workspace).collect()
     }
 
-    /// Saves the workspace; its source, completion, and runner are kept as created. Its
-    /// base branch cannot change while one of its tasks is in
+    /// Saves the workspace with its completion and runner; its source is kept as created.
+    /// Its base branch cannot change while one of its tasks is in
     /// review: the open pull request targets the current branch. A new location keeps the
     /// tasks; it is rejected while a task has a worktree path of another kind (Windows or
     /// POSIX) than the new repository path, and on another machine the tasks forget their
@@ -293,7 +293,7 @@ impl Storage {
         let changed = tx.execute(
             "UPDATE workspaces
              SET name = ?2, kind = ?3, path = ?4, herdr_machine = ?5, default_base_branch = ?6,
-                 agent_merge = ?7
+                 agent_merge = ?7, completion = ?8, runner = ?9
              WHERE id = ?1",
             params![
                 workspace.id.0,
@@ -302,7 +302,9 @@ impl Storage {
                 path,
                 herdr_machine,
                 workspace.default_base_branch,
-                agent_merge_column(workspace.agent_merge)
+                agent_merge_column(workspace.agent_merge),
+                workspace.completion.as_str(),
+                workspace.runner.as_str()
             ],
         )?;
         if changed == 0 {
