@@ -1110,6 +1110,58 @@ fn commit_records_in_a_period_span_every_task_oldest_first() {
     );
 }
 
+#[test]
+fn commits_in_a_period_include_activity_commits_not_recorded_yet() {
+    use crate::domain::activity::{ActivityKind::*, ActivitySource::*};
+    let mut storage = Storage::open_in_memory().unwrap();
+    let toodo = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let recorded = add_task(&mut storage, &toodo, "Recorded");
+    let polled = add_task(&mut storage, &toodo, "Polled");
+    storage
+        .replace_commit_records(recorded.id, &[commit(recorded.id, "rec", 120)])
+        .unwrap();
+    storage
+        .record_activity(
+            recorded.id,
+            &[activity(
+                recorded.id,
+                Commit,
+                GitPoll,
+                "rec",
+                "Polled title",
+                120,
+            )],
+            300,
+        )
+        .unwrap();
+    storage
+        .record_activity(
+            polled.id,
+            &[
+                activity(polled.id, Commit, GitPoll, "new", "Fix login", 150),
+                activity(polled.id, Commit, GitPoll, "old", "Before", 50),
+                activity(polled.id, PullRequestOpened, GitHubPoll, "pr", "PR", 160),
+            ],
+            300,
+        )
+        .unwrap();
+
+    let period = crate::domain::review::Period::new(100, 200).unwrap();
+    assert_eq!(
+        storage.list_commit_records_in(period).unwrap(),
+        [
+            commit(recorded.id, "rec", 120),
+            CommitRecord {
+                task_id: polled.id,
+                sha: "new".to_owned(),
+                message: "Fix login".to_owned(),
+                author: "Fix login author".to_owned(),
+                committed_at: 150,
+            },
+        ]
+    );
+}
+
 /// Storage whose clock reads `now`, so status changes get known timestamps.
 fn clocked_storage(start: i64) -> (Storage, std::sync::Arc<std::sync::atomic::AtomicI64>) {
     let mut storage = Storage::open_in_memory().unwrap();
