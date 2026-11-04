@@ -1,4 +1,5 @@
-//! Opens GitHub pull requests and reads their state with the `gh` CLI, reusing its authentication. `gh` always
+//! Opens GitHub pull requests and reads their state behind the [`GitHub`] trait. Its
+//! backend [`GhCli`] runs the `gh` CLI, reusing its authentication. `gh` always
 //! runs on this machine and names the repository with `--repo`, so it does not need a
 //! local checkout and works for workspaces on SSH machines too.
 //!
@@ -388,18 +389,68 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-pub struct GitHub {
+/// Pull requests and issues on GitHub. [`GhCli`] implements it with the `gh` CLI;
+/// callers depend on the trait so other backends can be added.
+pub trait GitHub: Send + Sync {
+    /// The pull request from `head` into `base`, preferring merged over open over
+    /// closed, then newest first. Read every result, including beyond the first page.
+    fn find_pull_request(
+        &self,
+        repository: &GitHubRepository,
+        head: &str,
+        base: &str,
+    ) -> Result<Option<PullRequest>, GitError>;
+
+    /// Opens a pull request and returns its URL.
+    fn create_pull_request(&self, pull_request: &NewPullRequest<'_>) -> Result<String, GitError>;
+
+    /// The pull request at `url`, with its CI and review state.
+    fn pull_request(&self, url: &str) -> Result<ViewedPullRequest, GitError>;
+
+    /// The pull request at `url` as its task's git activity timeline shows it.
+    fn pull_request_activity(&self, url: &str) -> Result<PullRequestActivity, GitError>;
+
+    /// Closes the pull request at `url` without merging it, leaving `comment` on it. The
+    /// branch is kept.
+    fn close_pull_request(&self, url: &str, comment: &str) -> Result<(), GitError>;
+
+    /// The body of the pull request at `url`.
+    fn pull_request_body(&self, url: &str) -> Result<String, GitError>;
+
+    /// Replaces the body of the pull request at `url`.
+    fn edit_pull_request_body(&self, url: &str, body: &str) -> Result<(), GitError>;
+
+    /// Issue `number` of `repository`; fails when it does not exist.
+    fn issue(&self, repository: &GitHubRepository, number: i64) -> Result<LinkedIssue, GitError>;
+
+    /// Opens an issue in `repository` and returns it.
+    fn create_issue(
+        &self,
+        repository: &GitHubRepository,
+        title: &str,
+        body: &str,
+    ) -> Result<LinkedIssue, GitError>;
+
+    /// The size, reviews, and commits of the merged pull request at `url`.
+    fn merged_pull_request(&self, url: &str) -> Result<MergedPullRequest, GitError>;
+
+    /// Whether the pull request at `url` merges into its base without conflicts.
+    fn mergeable(&self, url: &str) -> Result<MergeState, GitError>;
+}
+
+/// [`GitHub`] through the `gh` CLI.
+pub struct GhCli {
     runner: Box<dyn Runner>,
 }
 
-impl GitHub {
+impl GhCli {
     pub fn new(runner: Box<dyn Runner>) -> Self {
         Self { runner }
     }
+}
 
-    /// The pull request from `head` into `base`, preferring merged over open over
-    /// closed, then newest first. Read every result, including beyond the first page.
-    pub fn find_pull_request(
+impl GitHub for GhCli {
+    fn find_pull_request(
         &self,
         repository: &GitHubRepository,
         head: &str,
@@ -446,11 +497,7 @@ impl GitHub {
         }
     }
 
-    /// Opens a pull request and returns its URL.
-    pub fn create_pull_request(
-        &self,
-        pull_request: &NewPullRequest<'_>,
-    ) -> Result<String, GitError> {
+    fn create_pull_request(&self, pull_request: &NewPullRequest<'_>) -> Result<String, GitError> {
         let repository = pull_request.repository.to_string();
         let invocation = invocation(&[
             "pr",
@@ -475,8 +522,7 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// The pull request at `url`, with its CI and review state.
-    pub fn pull_request(&self, url: &str) -> Result<ViewedPullRequest, GitError> {
+    fn pull_request(&self, url: &str) -> Result<ViewedPullRequest, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", VIEWED_PULL_REQUEST_FIELDS]);
         let output = self.runner.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
@@ -486,8 +532,7 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// The pull request at `url` as its task's git activity timeline shows it.
-    pub fn pull_request_activity(&self, url: &str) -> Result<PullRequestActivity, GitError> {
+    fn pull_request_activity(&self, url: &str) -> Result<PullRequestActivity, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", PULL_REQUEST_ACTIVITY_FIELDS]);
         let output = self.runner.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
@@ -497,16 +542,13 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// Closes the pull request at `url` without merging it, leaving `comment` on it. The
-    /// branch is kept.
-    pub fn close_pull_request(&self, url: &str, comment: &str) -> Result<(), GitError> {
+    fn close_pull_request(&self, url: &str, comment: &str) -> Result<(), GitError> {
         self.runner
             .run(&invocation(&["pr", "close", url, "--comment", comment]))?;
         Ok(())
     }
 
-    /// The body of the pull request at `url`.
-    pub fn pull_request_body(&self, url: &str) -> Result<String, GitError> {
+    fn pull_request_body(&self, url: &str) -> Result<String, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", "body"]);
         let output = self.runner.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
@@ -515,19 +557,13 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// Replaces the body of the pull request at `url`.
-    pub fn edit_pull_request_body(&self, url: &str, body: &str) -> Result<(), GitError> {
+    fn edit_pull_request_body(&self, url: &str, body: &str) -> Result<(), GitError> {
         self.runner
             .run(&invocation(&["pr", "edit", url, "--body", body]))?;
         Ok(())
     }
 
-    /// Issue `number` of `repository`; fails when it does not exist.
-    pub fn issue(
-        &self,
-        repository: &GitHubRepository,
-        number: i64,
-    ) -> Result<LinkedIssue, GitError> {
+    fn issue(&self, repository: &GitHubRepository, number: i64) -> Result<LinkedIssue, GitError> {
         let repository = repository.to_string();
         let number = number.to_string();
         let invocation = invocation(&[
@@ -551,8 +587,7 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// Opens an issue in `repository` and returns it.
-    pub fn create_issue(
+    fn create_issue(
         &self,
         repository: &GitHubRepository,
         title: &str,
@@ -584,8 +619,7 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// The size, reviews, and commits of the merged pull request at `url`.
-    pub fn merged_pull_request(&self, url: &str) -> Result<MergedPullRequest, GitError> {
+    fn merged_pull_request(&self, url: &str) -> Result<MergedPullRequest, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", MERGED_PULL_REQUEST_FIELDS]);
         let output = self.runner.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
@@ -594,11 +628,8 @@ impl GitHub {
             .and_then(parse_merged_pull_request)
             .ok_or_else(|| unexpected(&invocation, &output))
     }
-}
 
-impl GitHub {
-    /// Whether the pull request at `url` merges into its base without conflicts.
-    pub fn mergeable(&self, url: &str) -> Result<MergeState, GitError> {
+    fn mergeable(&self, url: &str) -> Result<MergeState, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", "mergeable"]);
         let output = self.runner.run(&invocation)?;
         let value: Option<Value> = serde_json::from_str(&output).ok();
@@ -632,9 +663,9 @@ mod tests {
     use super::*;
     use crate::adapters::git::fake::FakeRunner;
 
-    fn github(results: Vec<Result<String, GitError>>) -> (GitHub, Arc<FakeRunner>) {
+    fn github(results: Vec<Result<String, GitError>>) -> (GhCli, Arc<FakeRunner>) {
         let runner = Arc::new(FakeRunner::new(results));
-        (GitHub::new(Box::new(runner.clone())), runner)
+        (GhCli::new(Box::new(runner.clone())), runner)
     }
 
     fn repository() -> GitHubRepository {

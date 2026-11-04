@@ -67,7 +67,7 @@ pub type GitState = Arc<Git>;
 
 pub type HerdrState = Arc<Herdr>;
 
-pub type GitHubState = Arc<GitHub>;
+pub type GitHubState = Arc<dyn GitHub>;
 
 pub type SshState = Arc<Ssh>;
 

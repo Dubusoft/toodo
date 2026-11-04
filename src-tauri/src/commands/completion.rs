@@ -70,7 +70,7 @@ pub fn open_pull_request(
     github: State<'_, GitHubState>,
     id: TaskId,
 ) -> CommandResult<Task> {
-    Ok((&open(&storage, &git, &github, id.into())?).into())
+    Ok((&open(&storage, &git, &**github, id.into())?).into())
 }
 
 /// Moves an `in_progress` or `in_review` task to `done` once its completion criteria are
@@ -86,7 +86,7 @@ pub fn complete_task(
     herdr: State<'_, HerdrState>,
     id: TaskId,
 ) -> CommandResult<Task> {
-    Ok((&complete(&storage, &git, &github, &herdr, id.into())?).into())
+    Ok((&complete(&storage, &git, &**github, &herdr, id.into())?).into())
 }
 
 /// Concludes an `in_progress` or `in_review` task without merging, e.g. research whose
@@ -107,7 +107,7 @@ pub fn conclude_task(
     Ok((&conclude(
         &storage,
         &git,
-        &github,
+        &**github,
         &herdr,
         id.into(),
         &note,
@@ -141,7 +141,7 @@ pub fn complete_task_merged_with(
             ));
         }
     };
-    Ok((&complete_merged_with(&storage, &git, &github, &herdr, id.into(), target)?).into())
+    Ok((&complete_merged_with(&storage, &git, &**github, &herdr, id.into(), target)?).into())
 }
 
 /// What concluding does with a pull request of the task that is still open.
@@ -268,7 +268,7 @@ fn refresh(
 fn open(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
     let checkout = checkout(storage, git, id)?;
@@ -348,7 +348,7 @@ fn open(
 /// Appends a closing reference to `issue` to the body of the open pull request at `url`
 /// unless the body already has one, so merging the pull request closes the issue.
 pub(super) fn ensure_closing_reference(
-    github: &GitHub,
+    github: &dyn GitHub,
     url: &str,
     issue: &model::LinkedIssue,
 ) -> CommandResult<()> {
@@ -378,7 +378,7 @@ fn check_base(pull_request: &PullRequest, base: &str) -> CommandResult<()> {
 pub(crate) fn complete(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     herdr: &Herdr,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
@@ -395,7 +395,7 @@ pub(crate) fn complete(
 pub(crate) fn complete_without_pull_request(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     herdr: &Herdr,
     id: model::TaskId,
     note: &str,
@@ -535,7 +535,7 @@ enum Settled {
 fn settle(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     herdr: &Herdr,
     id: model::TaskId,
     settle: Settle<'_>,
@@ -985,7 +985,7 @@ fn clip(text: &str) -> String {
 fn finish_task(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     herdr: &Herdr,
     task: &model::Task,
     workspace: &model::Workspace,
@@ -1060,7 +1060,7 @@ fn branch_commits(
 pub(crate) fn conclude(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     herdr: &Herdr,
     id: model::TaskId,
     note: &str,
@@ -1150,7 +1150,7 @@ pub(crate) enum MergedWithTarget {
 pub(crate) fn complete_merged_with(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     herdr: &Herdr,
     id: model::TaskId,
     target: MergedWithTarget,
@@ -1336,7 +1336,7 @@ fn shipped_by(
 /// A repository without a GitHub origin has none.
 fn branch_pull_request(
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     workspace: &model::Workspace,
     branch: &str,
 ) -> CommandResult<Option<PullRequest>> {
@@ -1362,7 +1362,7 @@ fn branch_pull_request(
 fn adopt_pull_request(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     id: model::TaskId,
 ) -> CommandResult<Option<model::Task>> {
     let (task, workspace) = {
@@ -1488,7 +1488,7 @@ pub fn spawn(app: Arc<dyn Runtime>) -> io::Result<()> {
 fn check_pull_requests(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     herdr: &Herdr,
     notifier: &dyn Notifier,
     failures: &mut HashMap<model::TaskId, String>,
@@ -1620,7 +1620,7 @@ fn check_pull_requests(
 fn poll_activity(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     notifier: &dyn Notifier,
     failures: &mut HashMap<model::TaskId, String>,
 ) {
@@ -1669,7 +1669,7 @@ fn poll_activity(
 fn read_activity(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     task: &model::Task,
     workspace: &model::Workspace,
 ) -> CommandResult<Vec<ActivityEvent>> {
@@ -1810,6 +1810,7 @@ mod tests {
     use super::*;
     use crate::adapters::git::fake::{FakeRunner, failed};
     use crate::adapters::git::{GitError, Invocation};
+    use crate::adapters::github::GhCli;
     use crate::commands::CommandErrorKind;
     use crate::domain::criteria::NewCriterion;
     use crate::domain::model::{HostPath, MachineLabel, TaskType};
@@ -2016,7 +2017,7 @@ mod tests {
     fn background_checks_forget_missing_worktrees_even_without_automatic_criteria() {
         let (fixture, _dir) = deleted_worktree_fixture(Vec::new());
         let git = Git::new(Box::new(runner(vec![Ok(String::new())])));
-        let github = GitHub::new(Box::new(runner(Vec::new())));
+        let github = GhCli::new(Box::new(runner(Vec::new())));
         let recorder = Recorder::default();
 
         check_pull_requests(
@@ -2045,7 +2046,7 @@ mod tests {
             .complete_task_without_pull_request(fixture.task.id, "Shipped elsewhere", &[])
             .unwrap();
         let git = Git::new(Box::new(runner(vec![Ok(String::new())])));
-        let github = GitHub::new(Box::new(runner(Vec::new())));
+        let github = GhCli::new(Box::new(runner(Vec::new())));
 
         check_pull_requests(
             &fixture.storage,
@@ -2084,10 +2085,10 @@ mod tests {
         Git::new(Box::new(checkout_runner(Vec::new())))
     }
 
-    fn adapters(git: &Arc<FakeRunner>, gh: &Arc<FakeRunner>) -> (Git, GitHub) {
+    fn adapters(git: &Arc<FakeRunner>, gh: &Arc<FakeRunner>) -> (Git, GhCli) {
         (
             Git::new(Box::new(git.clone())),
-            GitHub::new(Box::new(gh.clone())),
+            GhCli::new(Box::new(gh.clone())),
         )
     }
 
@@ -2743,7 +2744,7 @@ mod tests {
     #[test]
     fn a_pull_request_into_another_base_is_rejected_when_completing() {
         let fixture = in_review_fixture();
-        let github = GitHub::new(Box::new(runner(vec![viewed("MERGED", "develop")])));
+        let github = GhCli::new(Box::new(runner(vec![viewed("MERGED", "develop")])));
 
         let error = complete(
             &fixture.storage,
@@ -2779,7 +2780,7 @@ mod tests {
             viewed("MERGED", "main"),
             merged_details(&[SHA_A, SHA_B]),
         ]);
-        let github = GitHub::new(Box::new(gh_runner.clone()));
+        let github = GhCli::new(Box::new(gh_runner.clone()));
         let (herdr, herdr_runner) = closing_herdr();
 
         let completed = complete(
@@ -2841,7 +2842,7 @@ mod tests {
     #[test]
     fn a_failure_to_read_the_merged_pull_request_keeps_the_task_in_review() {
         let fixture = in_review_fixture();
-        let github = GitHub::new(Box::new(runner(vec![
+        let github = GhCli::new(Box::new(runner(vec![
             viewed("MERGED", "main"),
             Err(failed()),
         ])));
@@ -2867,7 +2868,7 @@ mod tests {
     #[test]
     fn a_pull_request_that_is_not_merged_keeps_the_task_in_review() {
         let fixture = in_review_fixture();
-        let github = GitHub::new(Box::new(runner(vec![
+        let github = GhCli::new(Box::new(runner(vec![
             viewed("OPEN", "main"),
             viewed("CLOSED", "main"),
         ])));
@@ -2895,7 +2896,7 @@ mod tests {
     fn only_an_in_review_task_can_be_completed() {
         let fixture = local_fixture();
         let gh_runner = runner(Vec::new());
-        let github = GitHub::new(Box::new(gh_runner.clone()));
+        let github = GhCli::new(Box::new(gh_runner.clone()));
 
         let error = complete(
             &fixture.storage,
@@ -2927,7 +2928,7 @@ mod tests {
     #[test]
     fn a_herdr_workspace_that_is_already_closed_does_not_block_completion() {
         let fixture = in_review_fixture();
-        let github = GitHub::new(Box::new(runner(vec![
+        let github = GhCli::new(Box::new(runner(vec![
             viewed("MERGED", "main"),
             merged_details(&[]),
         ])));
@@ -3125,7 +3126,7 @@ mod tests {
         let error = conclude(
             &fixture.storage,
             &no_git(),
-            &GitHub::new(Box::new(runner(Vec::new()))),
+            &GhCli::new(Box::new(runner(Vec::new()))),
             &no_herdr(),
             fixture.task.id,
             " \n",
@@ -3137,7 +3138,7 @@ mod tests {
         let error = conclude(
             &fixture.storage,
             &no_git(),
-            &GitHub::new(Box::new(runner(Vec::new()))),
+            &GhCli::new(Box::new(runner(Vec::new()))),
             &no_herdr(),
             fixture.dependent.id,
             "Not needed",
@@ -3376,7 +3377,7 @@ mod tests {
             viewed("MERGED", "main"),
             merged_details(&[]),
         ]);
-        let github = GitHub::new(Box::new(gh_runner.clone()));
+        let github = GhCli::new(Box::new(gh_runner.clone()));
         let (herdr, herdr_runner) = closing_herdr();
         let recorder = Recorder::default();
         let mut failures = HashMap::new();
@@ -3444,7 +3445,7 @@ mod tests {
         let mut view: serde_json::Value =
             serde_json::from_str(&viewed_with("OPEN", "main", passing, "\"\"").unwrap()).unwrap();
         view["headRefOid"] = serde_json::json!(SHA_A);
-        let github = GitHub::new(Box::new(runner(vec![Ok(view.to_string())])));
+        let github = GhCli::new(Box::new(runner(vec![Ok(view.to_string())])));
         let git = Git::new(Box::new(checkout_runner(vec![
             Err(failed()),
             log(&[SHA_A]),
@@ -3473,7 +3474,7 @@ mod tests {
         let fixture = in_review_fixture();
         let running = r#"[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":""}]"#;
         let failing = r#"[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]"#;
-        let github = GitHub::new(Box::new(runner(vec![
+        let github = GhCli::new(Box::new(runner(vec![
             viewed_with("OPEN", "main", running, "\"\""),
             viewed_with("OPEN", "main", running, "\"\""),
             viewed_with("OPEN", "main", failing, "\"CHANGES_REQUESTED\""),
@@ -3667,7 +3668,7 @@ mod tests {
     #[test]
     fn a_failed_check_keeps_the_task_in_review_and_remembers_the_failure() {
         let fixture = in_review_fixture();
-        let github = GitHub::new(Box::new(runner(vec![
+        let github = GhCli::new(Box::new(runner(vec![
             Err(failed()),
             viewed("OPEN", "main"),
         ])));
@@ -3998,7 +3999,7 @@ mod tests {
     #[test]
     fn a_herdr_failure_keeps_the_task_in_review() {
         let fixture = in_review_fixture();
-        let github = GitHub::new(Box::new(runner(vec![
+        let github = GhCli::new(Box::new(runner(vec![
             viewed("MERGED", "main"),
             merged_details(&[SHA_A]),
         ])));
@@ -4090,7 +4091,7 @@ mod tests {
             let error = complete_without_pull_request(
                 &fixture.storage,
                 &no_git(),
-                &GitHub::new(Box::new(runner(vec![]))),
+                &GhCli::new(Box::new(runner(vec![]))),
                 &no_herdr(),
                 fixture.task.id,
                 note,
@@ -4298,7 +4299,7 @@ mod tests {
                 .set_task_status(task.id, TaskStatus::InProgress)
                 .unwrap()
         };
-        let github = GitHub::new(Box::new(runner(vec![])));
+        let github = GhCli::new(Box::new(runner(vec![])));
 
         let done = complete(&fixture.storage, &no_git(), &github, &no_herdr(), task.id).unwrap();
 
@@ -4476,7 +4477,7 @@ mod tests {
     fn confirming_is_rejected_while_a_manual_criterion_is_not_met() {
         let fixture = local_criteria_fixture(vec![manual("Docs reviewed")]);
         let gh_runner = runner(Vec::new());
-        let github = GitHub::new(Box::new(gh_runner.clone()));
+        let github = GhCli::new(Box::new(gh_runner.clone()));
 
         let error = complete(
             &fixture.storage,
@@ -4507,7 +4508,7 @@ mod tests {
         let git_runner = runner(vec![Ok(String::new()), Err(failed()), Ok(String::new())]);
         let git = Git::new(Box::new(git_runner.clone()));
         let gh_runner = runner(Vec::new());
-        let github = GitHub::new(Box::new(gh_runner.clone()));
+        let github = GhCli::new(Box::new(gh_runner.clone()));
         let (herdr, _) = closing_herdr();
 
         // The background check never completes it on its own.
@@ -4536,7 +4537,7 @@ mod tests {
             NewCriterion::parse("Tests pass", CheckKind::Command, Some("npm test")).unwrap();
         let fixture = local_criteria_fixture(vec![manual("Docs reviewed"), command]);
         let gh_runner = runner(Vec::new());
-        let github = GitHub::new(Box::new(gh_runner.clone()));
+        let github = GhCli::new(Box::new(gh_runner.clone()));
         let mut failures = HashMap::new();
         let check = |git: &Git, failures: &mut HashMap<model::TaskId, String>| {
             check_pull_requests(

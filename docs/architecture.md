@@ -743,7 +743,9 @@ path deletes journal history.
   authentication (`src-tauri/src/adapters/github.rs`). `gh` runs on this machine and
   names the repository with `--repo <host>/<owner>/<name>`, derived from the `origin`
   remote URL, so it needs no local checkout. The task branch is pushed by the workspace
-  adapter, on the machine that holds the worktree.
+  adapter, on the machine that holds the worktree. Callers use the `GitHub` trait;
+  `GhCli` is its `gh` backend, so another backend (such as the REST API) can be added
+  without changing them.
 - **MCP server** (`src-tauri/src/mcp/`): lets coding agents plan in Toodo while the server
   runs, so an agent can split its work into follow-up tasks and connect them, and start
   and finish other tasks without the user clicking through the app.
