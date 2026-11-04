@@ -5,8 +5,11 @@
 //!
 //! - `POST /api/rpc/<command>` runs a command (see [`rpc`]).
 //! - `GET /api/events` streams `tasks-changed`, `agent-statuses-changed`, and
-//!   `pull-request-statuses-changed` events with JSON data.
+//!   `pull-request-statuses-changed` events with JSON data, each with an id; a client that
+//!   reconnects with `Last-Event-ID` gets the events it missed (see [`event_log`]).
 //! - `/api/backups/...` moves database files in and out (see [`files`]).
+//! - `GET /api/runs/{id}/log...` streams the logs of a plain or tmux run, or sends one
+//!   whole (see [`run_logs`]).
 //! - `/api/devices...` registers, lists, and revokes devices (see [`devices`]).
 //! - `/api/push...` subscribes the asking device to Web Push notifications and sets which
 //!   ones it gets (see [`push`]).
@@ -21,10 +24,12 @@
 //! first start.
 
 mod devices;
+mod event_log;
 mod files;
 mod panes;
 mod push;
 mod rpc;
+mod run_logs;
 
 use std::convert::Infallible;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -37,12 +42,11 @@ use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{any, get, post, put};
-use futures_util::Stream;
-use tokio::sync::broadcast;
+use futures_util::{Stream, StreamExt};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::adapters::git::{Git, ProcessRunner};
-use crate::adapters::github::GitHub;
+use crate::adapters::github::{GhCli, GitHub};
 use crate::adapters::herdr::Herdr;
 use crate::adapters::ssh::{Ssh, SshConfigFile};
 use crate::adapters::ssh_tunnel::SshForwarder;
@@ -55,25 +59,29 @@ use crate::commands::events::{
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::workspaces;
 use crate::commands::{
-    GitHubState, GitState, HerdrState, Runtime, SshConfigState, SshState, StorageState,
+    GitHubState, GitState, HerdrState, PlainRunState, Runtime, SshConfigState, SshState,
+    StorageState, TmuxRunState,
 };
 use crate::domain::model;
 use crate::mcp::tunnels::{self, Tunnels, TunnelsState};
 use crate::mcp::{self, Backend, ServerStatus};
 use crate::oauth::{self, PublicUrl};
+use crate::runtime::plain::adapter::McpEndpoint;
+use crate::runtime::plain::{McpProvider, PlainRunner};
+use crate::runtime::tmux::TmuxRunner;
 use crate::storage::Storage;
 
 pub(crate) const DATABASE_FILE: &str = "toodo.sqlite3";
 
 pub(crate) const WEB_TOKEN_FILE: &str = "web-token";
 
+/// The directory in the data directory with one private directory per plain or local
+/// tmux run.
+const RUNS_DIR: &str = "runs";
+
 /// The default port. The server forwards it to its SSH machines too, so agents there reach
 /// the MCP endpoint on the same port.
 pub const DEFAULT_PORT: u16 = 47616;
-
-/// Events kept for subscribers that read slower than they arrive; a subscriber that falls
-/// further behind skips the oldest.
-const EVENT_BUFFER: usize = 64;
 
 const USAGE: &str = "Usage: toodo-server [--version]
        toodo-server import FILE
@@ -96,7 +104,13 @@ Environment:
                   enables OAuth for remote MCP apps (unset by default)
   TOODO_PUSH_SUBJECT
                   contact for push services in notifications, a mailto: or https: URL
-                  (default https://github.com/dev-bokdong/toodo)";
+                  (default https://github.com/dev-bokdong/toodo)
+  TOODO_RUN_RETENTION_DAYS
+                  days after which the directory of an ended plain or tmux run, with
+                  its logs, is removed; 0 keeps them (default 30)";
+
+/// How long the directory of an ended run is kept by default, in days.
+const DEFAULT_RUN_RETENTION_DAYS: u32 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -106,6 +120,8 @@ pub struct Config {
     pub public_url: Option<PublicUrl>,
     /// The contact push services see in the VAPID token of every notification.
     pub push_subject: String,
+    /// Days after which the directory of an ended run is removed; `None` keeps them.
+    pub run_retention_days: Option<u32>,
 }
 
 impl Config {
@@ -140,38 +156,52 @@ impl Config {
             }
             None => push::DEFAULT_SUBJECT.to_owned(),
         };
+        let run_retention_days = match var("TOODO_RUN_RETENTION_DAYS") {
+            Some(days) => match days.trim().parse::<u32>() {
+                Ok(0) => None,
+                Ok(days) => Some(days),
+                Err(_) => {
+                    return Err(format!(
+                        "TOODO_RUN_RETENTION_DAYS {days:?} is not a number of days; set it to \
+                         a whole number such as 30, or to 0 to keep the files of runs"
+                    ));
+                }
+            },
+            None => Some(DEFAULT_RUN_RETENTION_DAYS),
+        };
         Ok(Self {
             listen,
             data_dir,
             web_dir,
             public_url,
             push_subject,
+            run_retention_days,
         })
     }
-}
-
-/// An event for the frontend: its name and JSON data.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ServerEvent {
-    name: &'static str,
-    data: String,
 }
 
 /// Everything the commands, the MCP server, and the background threads use.
 pub struct Services {
     storage: Arc<StorageState>,
+    /// A read-only connection to the database file for commands that only read, so they
+    /// do not wait for writes; `None` where the database is in memory.
+    reader: Option<StorageState>,
     public_url: Option<PublicUrl>,
     git: GitState,
     github: GitHubState,
     ssh: SshState,
     ssh_config: SshConfigState,
     herdr: HerdrState,
+    plain: PlainRunState,
+    tmux: TmuxRunState,
     agent_statuses: AgentStatusState,
     pull_request_statuses: PullRequestStatusState,
     backups: Backups,
     mcp: ServerStatus,
     tunnels: TunnelsState,
-    events: broadcast::Sender<ServerEvent>,
+    events: Arc<event_log::EventLog>,
+    /// Marked on every announced change, for MCP resource subscriptions.
+    changes: tokio::sync::watch::Sender<()>,
     /// The largest database file `POST /api/backups/restore` accepts, in bytes.
     restore_limit: u64,
     panes: panes::Panes,
@@ -182,9 +212,10 @@ impl Services {
     fn emit(&self, name: &'static str, payload: &impl serde::Serialize) {
         match serde_json::to_string(payload) {
             // No subscriber is the usual case while no browser is open.
-            Ok(data) => drop(self.events.send(ServerEvent { name, data })),
+            Ok(data) => self.events.send(name, data),
             Err(error) => eprintln!("toodo: failed to encode {name}: {error}"),
         }
+        self.changes.send_replace(());
     }
 }
 
@@ -227,30 +258,46 @@ impl Backend for Services {
         &self.storage
     }
 
+    fn reader(&self) -> &StorageState {
+        self.reader.as_ref().unwrap_or(&self.storage)
+    }
+
     fn git(&self) -> &Git {
         &self.git
     }
 
-    fn github(&self) -> &GitHub {
-        &self.github
+    fn github(&self) -> &dyn GitHub {
+        &*self.github
     }
 
     fn herdr(&self) -> &Herdr {
         &self.herdr
     }
 
+    fn plain(&self) -> &PlainRunState {
+        &self.plain
+    }
+
+    fn tmux(&self) -> &TmuxRunState {
+        &self.tmux
+    }
+
     fn server(&self) -> &ServerStatus {
         &self.mcp
+    }
+
+    fn changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changes.subscribe()
+    }
+
+    fn pull_request_statuses(&self) -> &PullRequestStatusState {
+        &self.pull_request_statuses
     }
 }
 
 impl Runtime for Services {
     fn agent_statuses(&self) -> &AgentStatusState {
         &self.agent_statuses
-    }
-
-    fn pull_request_statuses(&self) -> &PullRequestStatusState {
-        &self.pull_request_statuses
     }
 
     fn backups(&self) -> &Backups {
@@ -323,8 +370,11 @@ pub fn main() {
 /// [`backup::import_file`].
 fn import(config: &Config, source: &Path) -> Result<(), Box<dyn std::error::Error>> {
     create_private_dir(&config.data_dir)?;
-    let storage = Mutex::new(Storage::open(&config.data_dir.join(DATABASE_FILE))?);
     let backups = Backups::load(&config.data_dir);
+    let storage = Mutex::new(open_storage(
+        &config.data_dir.join(DATABASE_FILE),
+        &backups,
+    )?);
     let (safety, summary) = backup::import_file(&storage, &backups, source)?;
     println!(
         "Saved the data before the import as {}",
@@ -345,9 +395,24 @@ fn import(config: &Config, source: &Path) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// Opens the database, see [`backup::open_storage`], and logs the pre-migration backup.
+pub(crate) fn open_storage(database: &Path, backups: &Backups) -> Result<Storage, String> {
+    let (storage, saved) = backup::open_storage(database, backups)?;
+    if let Some(saved) = saved {
+        println!(
+            "toodo-server: saved the data before migrating it as {}",
+            saved.path.display()
+        );
+    }
+    Ok(storage)
+}
+
 fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     create_private_dir(&config.data_dir)?;
-    let storage = Storage::open(&config.data_dir.join(DATABASE_FILE))?;
+    let database = config.data_dir.join(DATABASE_FILE);
+    let backups = Backups::load(&config.data_dir);
+    let storage = Arc::new(Mutex::new(open_storage(&database, &backups)?));
+    let reader = Mutex::new(Storage::open_reader(&database)?);
     let mcp_token_path = config.data_dir.join(mcp::TOKEN_FILE);
     let mcp_token = mcp::load_token(&mcp_token_path)?;
     let web_token_path = config.data_dir.join(WEB_TOKEN_FILE);
@@ -356,28 +421,61 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let listener = mcp::bind(config.listen)?;
     let port = listener.local_addr()?.port();
     let herdr = Arc::new(Herdr::new(Box::new(ProcessRunner)));
+    let mcp_url = mcp::url(port);
+    let endpoint: McpProvider = Arc::new({
+        let (url, token) = (mcp_url.clone(), mcp_token.clone());
+        move || {
+            Some(McpEndpoint {
+                url: url.clone(),
+                token: token.clone(),
+            })
+        }
+    });
+    let tunnels: TunnelsState = Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), port)));
+    let instance = load_instance_id(&config.data_dir.join("instance-id"))?;
+    let plain = PlainRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR), &instance)
+        .with_mcp_provider(endpoint.clone())
+        .with_tunnel_open_provider(tunnels::open_provider(&tunnels));
+    // Local plain agents outlive the server: follow the live ones again and settle the
+    // ended ones from their output. Remote ones become unknown without SSH, see below.
+    plain.recover_after_restart()?;
+    let tmux = TmuxRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR), &instance)
+        .with_mcp_provider(endpoint)
+        .with_tunnel_open_provider(tunnels::open_provider(&tunnels));
+    // Local tmux sessions outlive the server: observe the live ones again and settle the
+    // ended ones. Remote ones become unknown without SSH, see below.
+    if let Err(error) = tmux.recover_after_restart(&storage) {
+        eprintln!(
+            "toodo-server: could not recover tmux runs ({error}); settle them with \
+             reconcile_run once tmux works"
+        );
+    }
     let services = Arc::new(Services {
-        storage: Arc::new(Mutex::new(storage)),
+        storage,
+        reader: Some(reader),
         public_url: config.public_url.clone(),
         git: Arc::new(Git::new(Box::new(ProcessRunner))),
-        github: Arc::new(GitHub::new(Box::new(ProcessRunner))),
+        github: Arc::new(GhCli::new(Box::new(ProcessRunner))),
         ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
         ssh_config: SshConfigFile::in_home(),
         panes: panes::Panes::new(Arc::new(panes::HerdrSockets(herdr.clone()))),
         herdr,
+        plain,
+        tmux,
         agent_statuses: Mutex::default(),
         pull_request_statuses: Mutex::default(),
-        backups: Backups::load(&config.data_dir),
+        backups,
         mcp: ServerStatus {
-            url: mcp::url(port),
+            url: mcp_url,
             token: Some(mcp_token.clone()),
             token_file: Some(mcp_token_path.clone()),
             instance: mcp::new_instance()?,
             error: None,
             rejections: mcp::Rejections::default(),
         },
-        tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), port))),
-        events: broadcast::channel(EVENT_BUFFER).0,
+        tunnels,
+        events: Arc::new(event_log::EventLog::new()?),
+        changes: tokio::sync::watch::Sender::new(()),
         restore_limit: files::RESTORE_LIMIT,
         push,
     });
@@ -397,6 +495,11 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             }
         })?;
     tunnels::spawn(services.clone(), services.tunnels.clone())?;
+    spawn_remote_reconcile(services.clone())?;
+    if let Some(days) = config.run_retention_days {
+        spawn_run_retention(services.clone(), days)?;
+    }
+    spawn_run_queue(services.clone())?;
 
     let fetcher = oauth::HttpClientMetadataFetcher::new().map_err(|error| {
         format!(
@@ -442,6 +545,144 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     Ok(served?)
 }
 
+/// The first wait between background reconcile passes, doubled after each pass that
+/// leaves a remote run unknown, up to [`REMOTE_RECONCILE_MAX_WAIT`].
+const REMOTE_RECONCILE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+const REMOTE_RECONCILE_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Reconciles the remote runs a restart left unknown over SSH, off the startup path, until
+/// none is left.
+fn spawn_remote_reconcile(services: Arc<Services>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("remote-runs".to_owned())
+        .spawn(move || {
+            let mut wait = REMOTE_RECONCILE_WAIT;
+            loop {
+                let pass = match crate::runtime::reconcile_remote_runs(
+                    &services.storage,
+                    &services.plain,
+                    &services.tmux,
+                ) {
+                    Ok(pass) => pass,
+                    Err(error) => {
+                        eprintln!(
+                            "toodo-server: could not list remote runs to reconcile ({error}); \
+                             reconcile them with reconcile_run"
+                        );
+                        return;
+                    }
+                };
+                for workspace in pass.changed {
+                    services.tasks_changed(workspace);
+                }
+                if !pass.pending {
+                    return;
+                }
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(REMOTE_RECONCILE_MAX_WAIT);
+            }
+        })
+        .map(drop)
+}
+
+/// How often the directories of runs that ended before the retention period are removed.
+const RUN_RETENTION_PASS: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
+
+/// Removes the directories of runs that ended more than `days` days ago, at startup and then
+/// every few hours, so old run logs do not fill the disk.
+fn spawn_run_retention(services: Arc<Services>, days: u32) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("run-retention".to_owned())
+        .spawn(move || {
+            loop {
+                match crate::commands::run_logs::remove_old_run_files(
+                    &services.storage,
+                    &services.plain,
+                    &services.tmux,
+                    days,
+                ) {
+                    Ok(0) => {}
+                    Ok(removed) => println!(
+                        "toodo-server: removed the directories of {removed} runs that ended \
+                         more than {days} days ago"
+                    ),
+                    Err(error) => eprintln!(
+                        "toodo-server: could not remove the directories of old runs ({}); \
+                         the next pass tries again, or set TOODO_RUN_RETENTION_DAYS=0 to keep them",
+                        error.message
+                    ),
+                }
+                std::thread::sleep(RUN_RETENTION_PASS);
+            }
+        })
+        .map(drop)
+}
+
+/// The longest wait between passes over the run queue. Runs that end on their own wake no
+/// pass, so a queued run starts at most this long after a run slot frees.
+const RUN_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Starts queued runs as run slots of their machines free, for as long as the server runs.
+fn spawn_run_queue(services: Arc<Services>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("run-queue".to_owned())
+        .spawn(move || {
+            loop {
+                match crate::commands::runs::start_queued_runs(
+                    &services.storage,
+                    &services.plain,
+                    &services.tmux,
+                ) {
+                    Ok(changed) => {
+                        for workspace in changed {
+                            services.tasks_changed(workspace);
+                        }
+                    }
+                    Err(error) => eprintln!(
+                        "toodo-server: could not start queued runs ({}); the server tries \
+                         again shortly, or stop them with stop_run",
+                        error.message
+                    ),
+                }
+                crate::commands::runs::wait_for_queue_change(RUN_QUEUE_WAIT);
+            }
+        })
+        .map(drop)
+}
+
+/// The runner namespace belongs to this data directory, not to a database backup.
+/// Never replace even an invalid existing id: that could orphan live runs.
+fn load_instance_id(path: &Path) -> std::io::Result<String> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    match options.open(path) {
+        Ok(mut file) => {
+            let id = mcp::new_instance()?;
+            file.write_all(id.as_bytes())?;
+            file.sync_all()?;
+            Ok(id)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let id = std::fs::read_to_string(path)?;
+            if id.len() != 12
+                || !id
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+            {
+                return Err(std::io::Error::other(format!(
+                    "invalid server instance id in {}; restore the original instance-id file before starting the server",
+                    path.display()
+                )));
+            }
+            Ok(id)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Creates the data directory, which holds the access tokens, so that on Unix only the
 /// owner can enter it; an existing one is tightened.
 pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
@@ -481,6 +722,8 @@ fn router(
             post(files::restore).layer(DefaultBodyLimit::disable()),
         )
         .route("/api/backups/{name}", get(files::download))
+        .route("/api/runs/{id}/log", get(run_logs::stream))
+        .route("/api/runs/{id}/log/{stream}", get(run_logs::download))
         .route("/api/devices", get(devices::list).post(devices::register))
         .route("/api/devices/{id}/revoke", post(devices::revoke))
         .route("/api/push", get(push::state))
@@ -497,6 +740,7 @@ fn router(
                 services: services.clone(),
                 shared_token: Arc::new(web_token.clone()),
                 mcp_token: Arc::new(mcp_token.clone()),
+                attempts: mcp::attempts::FailedAttempts::default(),
             },
             devices::require_access,
         ))
@@ -534,28 +778,19 @@ fn router(
 
 async fn event_stream(
     axum::extract::State(services): axum::extract::State<Arc<Services>>,
+    headers: axum::http::HeaderMap,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    Sse::new(sent_events(services.events.subscribe())).keep_alive(KeepAlive::default())
-}
-
-/// The events of `events` as server-sent events. A subscriber that fell behind and missed
-/// some gets its stream ended instead, so the client reconnects and refetches everything.
-fn sent_events(
-    events: broadcast::Receiver<ServerEvent>,
-) -> impl Stream<Item = Result<Event, Infallible>> {
-    futures_util::stream::unfold(events, |mut events| async {
-        match events.recv().await {
-            Ok(event) => {
-                let sent = Event::default().event(event.name).data(event.data);
-                Some((Ok(sent), events))
-            }
-            Err(broadcast::error::RecvError::Lagged(missed)) => {
-                eprintln!("toodo-server: an event stream missed {missed} events; ending it");
-                None
-            }
-            Err(broadcast::error::RecvError::Closed) => None,
-        }
-    })
+    // An id that is not text is no id of ours, so the stream resyncs.
+    let last_event_id = headers
+        .get("last-event-id")
+        .map(|value| value.to_str().unwrap_or(""));
+    let events = services.events.stream(last_event_id).map(|event| {
+        Ok(Event::default()
+            .id(event.id)
+            .event(event.name)
+            .data(event.data))
+    });
+    Sse::new(events).keep_alive(KeepAlive::default())
 }
 
 async fn interrupted() {
@@ -589,6 +824,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn runner_instance_is_persisted_and_never_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("instance-id");
+        let id = load_instance_id(&path).unwrap();
+        assert_eq!(id.len(), 12);
+        assert!(
+            id.bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        );
+        assert_eq!(load_instance_id(&path).unwrap(), id);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::write(&path, "invalid").unwrap();
+        assert!(
+            load_instance_id(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("restore the original instance-id")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "invalid");
+    }
+
+    #[test]
     fn the_default_config_listens_on_loopback_and_keeps_data_in_home() {
         let config =
             Config::from_env(|name| (name == "HOME").then(|| "/home/me".to_owned())).unwrap();
@@ -601,6 +865,25 @@ mod tests {
             PathBuf::from("/home/me/.local/share/toodo-server")
         );
         assert_eq!(config.public_url, None);
+        assert_eq!(config.run_retention_days, Some(30));
+    }
+
+    #[test]
+    fn run_retention_is_a_number_of_days_and_zero_keeps_runs() {
+        let config = |days: &str| {
+            Config::from_env(|name| match name {
+                "HOME" => Some("/home/me".to_owned()),
+                "TOODO_RUN_RETENTION_DAYS" => Some(days.to_owned()),
+                _ => None,
+            })
+        };
+        assert_eq!(config("7").unwrap().run_retention_days, Some(7));
+        assert_eq!(config("0").unwrap().run_retention_days, None);
+        assert!(
+            config("a week")
+                .unwrap_err()
+                .contains("TOODO_RUN_RETENTION_DAYS")
+        );
     }
 
     #[test]
@@ -753,11 +1036,15 @@ mod tests {
         herdr: HerdrState,
         access: Arc<dyn panes::PaneAccess>,
     ) -> Arc<Services> {
+        let storage = Arc::new(Mutex::new(Storage::open_in_memory().unwrap()));
         Arc::new(Services {
-            storage: Arc::new(Mutex::new(Storage::open_in_memory().unwrap())),
+            plain: PlainRunner::new(storage.clone(), data_dir.join(RUNS_DIR), "0123456789ab"),
+            tmux: TmuxRunner::new(storage.clone(), data_dir.join(RUNS_DIR), "0123456789ab"),
+            storage,
+            reader: None,
             public_url: None,
             git: Arc::new(Git::new(Box::new(ProcessRunner))),
-            github: Arc::new(GitHub::new(Box::new(ProcessRunner))),
+            github: Arc::new(GhCli::new(Box::new(ProcessRunner))),
             ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
             ssh_config: SshConfigFile::in_home(),
             panes: panes::Panes::new(access),
@@ -774,7 +1061,8 @@ mod tests {
                 rejections: mcp::Rejections::default(),
             },
             tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), 0))),
-            events: broadcast::channel(EVENT_BUFFER).0,
+            events: Arc::new(event_log::EventLog::new().unwrap()),
+            changes: tokio::sync::watch::Sender::new(()),
             restore_limit: TEST_RESTORE_LIMIT,
             push: push::tests::push(data_dir, push::tests::FakeTransport::default()),
         })
@@ -1152,6 +1440,128 @@ mod tests {
         );
     }
 
+    #[test]
+    fn device_tokens_expire_and_read_only_ones_only_read() {
+        let (address, _temp, services) = serve_services(None);
+        let rpc = |command: &str, token: &str| {
+            post_json(
+                address,
+                &format!("/api/rpc/{command}"),
+                token,
+                &serde_json::json!({}),
+            )
+        };
+
+        let (_, laptop) = post_json(
+            address,
+            "/api/devices",
+            "web",
+            &serde_json::json!({ "label": "Laptop" }),
+        );
+        let device = &laptop["device"];
+        assert_eq!(device["scope"], "full");
+        assert_eq!(
+            device["expiresAt"].as_i64().unwrap() - device["createdAt"].as_i64().unwrap(),
+            90 * 86_400
+        );
+        let laptop_token = laptop["token"].as_str().unwrap().to_owned();
+        let (created, phone) = post_json(
+            address,
+            "/api/devices",
+            "web",
+            &serde_json::json!({ "label": "Phone", "scope": "read", "expiresInDays": null }),
+        );
+        assert!(created.contains(" 201 "), "{created}");
+        assert_eq!(phone["device"]["scope"], "read");
+        assert!(phone["device"]["expiresAt"].is_null());
+        let phone_token = phone["token"].as_str().unwrap().to_owned();
+        for days in [0, 3651] {
+            let (refused, error) = post_json(
+                address,
+                "/api/devices",
+                "web",
+                &serde_json::json!({ "label": "Tablet", "expiresInDays": days }),
+            );
+            assert!(refused.contains(" 422 "), "{refused}");
+            assert!(error["message"].as_str().unwrap().contains("send null"));
+        }
+
+        assert!(rpc("list_tasks", &phone_token).0.contains(" 200 "));
+        assert!(devices_seen_by(address, &phone_token).is_array());
+        for command in ["create_workspace", "mcp_server_info"] {
+            let (refused, error) = rpc(command, &phone_token);
+            assert!(refused.contains(" 403 "), "{command}: {refused}");
+            assert!(
+                error["message"].as_str().unwrap().contains("read-only"),
+                "{error}"
+            );
+        }
+        assert!(rpc("mcp_server_info", &laptop_token).0.contains(" 200 "));
+        let laptop_id = laptop["device"]["id"].as_i64().unwrap();
+        let phone_id = phone["device"]["id"].as_i64().unwrap();
+        let revoke = |id: i64| {
+            post_json(
+                address,
+                &format!("/api/devices/{id}/revoke"),
+                &phone_token,
+                &serde_json::json!({}),
+            )
+            .0
+        };
+        assert!(revoke(laptop_id).contains(" 403 "));
+        assert!(revoke(phone_id).contains(" 200 "));
+        assert!(rpc("list_tasks", &phone_token).0.contains(" 401 "));
+
+        // Once the laptop's 90 days are over, its token stops working and says why.
+        let later = device["expiresAt"].as_i64().unwrap();
+        for storage in [&*services.storage, services.reader()] {
+            crate::commands::lock(storage).set_clock(move || later);
+        }
+        let (status, _, body) = get(address, "/api/devices", Some(&laptop_token));
+        assert!(status.contains(" 401 "), "{status}");
+        assert!(
+            String::from_utf8(body)
+                .unwrap()
+                .contains("token has expired")
+        );
+        assert!(rpc("list_tasks", "web").0.contains(" 200 "));
+    }
+
+    #[test]
+    fn too_many_wrong_tokens_lock_an_address_out_of_that_surface() {
+        let (address, _temp) = serve_router(None);
+        let max = mcp::attempts::MAX_FAILURES;
+        let api = |token: &str| status(address, "POST", "/api/rpc/app_info", Some(token));
+        for _ in 0..max {
+            assert!(api("nope").contains(" 401 "));
+        }
+        // Now nothing gets through, not even the right token.
+        let (locked, headers, body) = get(address, "/api/devices", Some("web"));
+        assert!(locked.contains(" 429 "), "{locked}");
+        let wait: u64 = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("retry-after: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((1..=60).contains(&wait), "{wait}");
+        assert!(
+            String::from_utf8(body)
+                .unwrap()
+                .contains("too many requests")
+        );
+
+        // `/mcp` keeps its own count, and the other surface's token does not add to it.
+        let mcp = |token: &str| status(address, "POST", "/mcp", Some(token));
+        assert!(!mcp("agent").contains(" 429 "));
+        for _ in 0..max - 1 {
+            assert!(mcp("web").contains(" 401 "));
+            assert!(mcp("nope").contains(" 401 "));
+        }
+        assert!(mcp("nope").contains(" 401 "));
+        assert!(mcp("agent").contains(" 429 "));
+    }
+
     fn send_json(
         address: SocketAddr,
         method: &str,
@@ -1177,6 +1587,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let transport = push::tests::FakeTransport::default();
         let requests = transport.requests.clone();
+        let statuses = transport.statuses.clone();
         let services = services(temp.path());
         let services = Arc::new(Services {
             push: push::tests::push(temp.path(), transport),
@@ -1237,7 +1648,8 @@ mod tests {
             saved,
             serde_json::json!({
                 "endpoint": "https://push.example/send/1",
-                "settings": { "agent": true, "pullRequests": true, "completion": true }
+                "settings": { "agent": true, "pullRequests": true, "completion": true },
+                "lastFailure": null
             })
         );
         let quiet = serde_json::json!({ "agent": true, "pullRequests": false, "completion": true });
@@ -1266,6 +1678,37 @@ mod tests {
                 .ends_with(&format!(", k={public_key}"))
         );
 
+        // A refused test notification shows on the device until one gets through.
+        statuses.lock().unwrap().push(403);
+        let (status, _) = send_json(
+            address,
+            "POST",
+            "/api/push/test",
+            &token,
+            &serde_json::json!({}),
+        );
+        assert!(!status.contains(" 200 "), "{status}");
+        let state = send_json(address, "GET", "/api/push", &token, &serde_json::json!({})).1;
+        let failure = &state["subscription"]["lastFailure"];
+        assert_eq!(
+            failure["message"],
+            "the push service refused the notification (403): nope"
+        );
+        assert!(failure["at"].as_i64().unwrap() > 0);
+        let (status, _) = send_json(
+            address,
+            "POST",
+            "/api/push/test",
+            &token,
+            &serde_json::json!({}),
+        );
+        assert!(status.contains(" 200 "), "{status}");
+        let state = send_json(address, "GET", "/api/push", &token, &serde_json::json!({})).1;
+        assert_eq!(
+            state["subscription"]["lastFailure"],
+            serde_json::Value::Null
+        );
+
         let (status, _) = send_json(
             address,
             "DELETE",
@@ -1289,26 +1732,6 @@ mod tests {
             let status = status(address, "POST", &format!("/api/rpc/{command}"), Some("web"));
             assert!(status.contains(" 404 "), "{command}: {status}");
         }
-    }
-
-    #[test]
-    fn an_event_stream_that_fell_behind_ends() {
-        use futures_util::StreamExt;
-        let (sender, receiver) = broadcast::channel(2);
-        let event = |data: &str| ServerEvent {
-            name: names::TASKS_CHANGED,
-            data: data.to_owned(),
-        };
-        drop(sender.send(event("1")));
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let mut stream = Box::pin(sent_events(receiver));
-        assert!(runtime.block_on(stream.next()).is_some());
-        for data in ["2", "3", "4"] {
-            drop(sender.send(event(data)));
-        }
-        assert!(runtime.block_on(stream.next()).is_none());
     }
 
     #[cfg(unix)]

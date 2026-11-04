@@ -24,7 +24,7 @@ const POLL: Duration = Duration::from_millis(100);
 const LOG_TAIL: usize = 20;
 
 /// The executable `name` in a directory of `PATH`.
-pub(super) fn find_on_path(name: &str, var: Var) -> Option<PathBuf> {
+pub(crate) fn find_on_path(name: &str, var: Var) -> Option<PathBuf> {
     let path = var("PATH")?;
     std::env::split_paths(&path)
         .filter(|dir| !dir.as_os_str().is_empty())
@@ -114,14 +114,22 @@ pub(super) fn wait_until_up(
     }
 }
 
-/// Whether a command line (`/proc/<pid>/cmdline`) is that of `toodo-server`.
+/// Whether a command line (`/proc/<pid>/cmdline`, or the program `ps -o comm=` prints) is
+/// that of `toodo-server`.
 pub(super) fn is_server_cmdline(cmdline: &[u8]) -> bool {
     let program = cmdline.split(|byte| *byte == 0).next().unwrap_or_default();
-    Path::new(OsStr::from_bytes(program)).file_name() == Some(OsStr::new("toodo-server"))
+    Path::new(OsStr::from_bytes(program.trim_ascii_end())).file_name()
+        == Some(OsStr::new("toodo-server"))
 }
 
+/// Whether `pid` runs `toodo-server`. macOS has no `/proc`, so there `ps` tells.
 fn is_server(pid: u32) -> bool {
-    fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| is_server_cmdline(&cmdline))
+    if cfg!(target_os = "linux") {
+        fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| is_server_cmdline(&cmdline))
+    } else {
+        output("ps", &["-p", &pid.to_string(), "-o", "comm="])
+            .is_ok_and(|output| output.status.success() && is_server_cmdline(&output.stdout))
+    }
 }
 
 /// The pid of the server started by `toodo start`, when it is still running.
@@ -248,6 +256,8 @@ mod tests {
         assert!(!is_server_cmdline(b"/usr/bin/sleep\0toodo-server\0"));
         assert!(!is_server_cmdline(b"/opt/toodo-server-old\0"));
         assert!(!is_server_cmdline(b""));
+        assert!(is_server_cmdline(b"/Users/a/.local/bin/toodo-server\n"));
+        assert!(!is_server_cmdline(b"/usr/bin/sleep\n"));
     }
 
     #[test]

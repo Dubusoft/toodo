@@ -1,7 +1,7 @@
 # Linux Server
 
-`toodo-server` is Toodo: it runs headless on a Linux machine next to the herdr server
-there, for one user, and is used from a browser. It serves:
+`toodo-server` is Toodo: it runs headless on a Linux machine, next to the herdr server
+there if it has one, for one user, and is used from a browser. It serves:
 
 - the commands of the app as an HTTP API with a server-sent event stream (see [API](#api)),
 - the frontend, an installable web app (PWA) that uses them (see [Web App](#web-app)),
@@ -45,6 +45,17 @@ be moved to the PC it lives on: save the PC as a herdr machine, then use **Move*
 workspace header, pick the machine, and enter the same repository path. Toodo checks that
 the path holds a git repository and opens it in herdr; the tasks stay with the workspace.
 A move cannot change the kind of path while a task has a worktree of the other kind.
+Agents can do the same on the workspace's own machine with the MCP tool
+`update_workspace` and its `path`, which also changes the other workspace settings.
+
+### Agent Runs on SSH Hosts
+
+Runner `plain` and runner `tmux` run agents on an SSH workspace's host without herdr, so
+that host needs `claude` or `codex` on its `PATH`. A POSIX host also needs util-linux
+`setsid` with `--wait` for plain runs (macOS lacks it; use runner `herdr` there), and
+tmux for runner `tmux`. Windows hosts take plain runs only. Run files live in
+`~/.toodo/runs/<instance>/<run id>` on the host. See Remote Plain Runs and tmux Runs in
+[architecture.md](architecture.md).
 
 ## Versions and Releases
 
@@ -58,8 +69,12 @@ The server prints the same line when it starts. See "Releases and Updates" in th
 ### npm Packages
 
 The same version is published to npm as `@dubusoft/toodo` (the `toodo` launcher) with
-one platform package per target, `@dubusoft/toodo-linux-x64` and
-`@dubusoft/toodo-linux-arm64`, each carrying `toodo`, `toodo-server`, and the web app.
+one platform package per target, each carrying `toodo`, `toodo-server`, and the web app:
+`@dubusoft/toodo-linux-x64` and `@dubusoft/toodo-linux-arm64` (glibc),
+`@dubusoft/toodo-linux-x64-musl` and `@dubusoft/toodo-linux-arm64-musl` (statically linked
+against musl, for Alpine and other musl distributions), and `@dubusoft/toodo-darwin-x64`
+and `@dubusoft/toodo-darwin-arm64` (macOS). npm installs the package whose `os`, `cpu`,
+and `libc` match the machine, and the launcher runs it.
 The `npm` workflow (`.github/workflows/npm.yml`) publishes them:
 
 - On every push to `dev`, a prerelease `X.Y.Z-dev.N` (the next patch version of
@@ -71,26 +86,47 @@ The `npm` workflow (`.github/workflows/npm.yml`) publishes them:
 
 It publishes with the `NPM_TOKEN` secret when that is set, else through npm trusted
 publishing (OIDC). With neither set up it skips publishing with a notice instead of
-failing. Packages are staged with `scripts/package-npm.mjs`.
+failing. Under trusted publishing the musl and macOS packages are published only once
+trusted publishing is configured for them on npmjs.com, which npm allows only for a
+package that exists: publish the first version of a new platform package by hand, then
+configure it. Until then the workflow leaves that package out with a notice, and
+`@dubusoft/toodo` does not list it. Packages are staged with `scripts/package-npm.mjs`.
 
 ## Install with npm
 
-On Linux x64 or arm64 with glibc (Node.js 18 or later), as the user who runs herdr:
+This is the recommended way to install and update Toodo. On Linux x64 or arm64 (glibc or
+musl) or macOS x64 or arm64 (Node.js 18 or later), as the user who runs herdr (if any):
 
 ```sh
-npx @dubusoft/toodo init
+npm i -g @dubusoft/toodo
+toodo init
+toodo service install
 ```
+
+`toodo update` updates it later. To try Toodo without a global install, run
+`npx @dubusoft/toodo init`. The other ways, [from a release without npm](#install-and-update)
+and [from a checkout](#from-a-checkout), are for machines without Node.js and for
+development.
 
 `init` creates the data directory with its database and access tokens, saves the listen
 address in `cli.json` there, and starts `toodo-server` in the background. It prints the web
 app URL and the file that holds the web access token (`cat` it to sign in), and the MCP
 URL with its token file. Where `claude` is on `PATH` it registers the MCP endpoint with
-`claude mcp add`; where `codex` is on `PATH` it writes the endpoint to
-`$CODEX_HOME/config.toml` (else `~/.codex/config.toml`). Running it again keeps the database
-and tokens. herdr is not needed to start the server; workspaces need it.
+`claude mcp add-json` in the user scope, with a `headersHelper` that reads `mcp-token`
+each time Claude Code connects; where `codex` is on `PATH` it writes the endpoint and the
+token to `$CODEX_HOME/config.toml` (else `~/.codex/config.toml`), readable by the owner
+only. The token never appears on a command line. `toodo start` and `toodo update`
+register the endpoint again with the agents that have it registered already, so they
+pick up a replaced token. Running `init` again keeps the database and tokens. herdr is
+not needed to start the server; only workspaces with runner `herdr` (and remote SSH
+workspaces) need it. Runner `plain` runs `claude` or `codex` from the server's `PATH`,
+and runner `none` needs neither.
 
 - `--port N`: port to listen on, keeping the saved host (default `47616`).
-- `--listen HOST:PORT`: address to listen on (default `127.0.0.1:47616`).
+- `--listen HOST:PORT`: address to listen on (default `127.0.0.1:47616`). On an address
+  other than loopback (such as `0.0.0.0`), other machines can reach the server over plain
+  HTTP, and `init` and `service install` print a warning; keep it on loopback and reach it
+  through a tunnel instead (see [Off the Machine](#off-the-machine-cloudflare-tunnel-and-access)).
 - `--data-dir DIR`: data directory (default `$TOODO_DATA_DIR`, else the directory `init`
   recorded, else `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server`). `init`
   records the absolute path in `$XDG_CONFIG_HOME/toodo/data-dir` (`~/.config/toodo/data-dir`),
@@ -98,24 +134,55 @@ and tokens. herdr is not needed to start the server; workspaces need it.
   option beats `$TOODO_DATA_DIR`, which beats the record.
 - `--no-mcp`: register the MCP endpoint with no agent.
 
-To have the `toodo` command at hand, install it globally:
+The commands of a global install (`toodo COMMAND --help` shows the options of each):
 
-```sh
-npm i -g @dubusoft/toodo
-```
-
-- `toodo start`, `toodo stop`: start or stop the server, through systemd once the service
-  is installed, else as a background process with `server.pid` and `server.log` in the
-  data directory.
+- `toodo start`, `toodo stop`: start or stop the server, through systemd or launchd once
+  the service is installed, else as a background process with `server.pid` and
+  `server.log` in the data directory. On macOS `toodo stop` unloads the launchd job; it
+  loads again at the next login or `toodo start`.
+- `toodo restart`: stop the server and start it again the same way, then register its MCP
+  endpoint again like `toodo start`.
 - `toodo status`: whether the server runs and where its files are; exits `0` when it runs
   and `3` when it is stopped.
+- `toodo doctor`: the versions of `toodo` and of the running server (asked with the web
+  access token of the data directory), whether the server runs and answers, the database
+  and tokens in the data directory, and git, gh, ssh, herdr, tmux, and the agent CLIs as
+  `toodo init` checks them. Each problem is printed with the command that fixes it; it
+  exits `0` when it finds none and `1` when it does. herdr, tmux, and the agent CLIs only
+  some runners need are shown but not counted as problems.
+- `toodo logs [--lines N] [--follow]`: print the last 50 (or `N`) lines of the server log,
+  and with `--follow` new lines until interrupted: through `journalctl --user -u
+  toodo-server` for the systemd service, else with `tail` of
+  `~/Library/Logs/toodo-server.log` for the launchd agent or of `server.log` in the data
+  directory.
+- `toodo uninstall [--delete-data]`: stop the server and remove what `toodo` set up for
+  it: the systemd service (disabled, its unit removed) or the launchd agent, the copies
+  of the server and web app they run, the MCP registrations of the server's URL with
+  Claude Code and Codex (a registration of another server stays), and the record of the
+  data directory in `~/.config/toodo/data-dir` when it names this one. The data directory
+  stays unless `--delete-data`, which deletes it only when it holds a Toodo database. The
+  `toodo` command itself stays; `npm rm -g @dubusoft/toodo` removes it.
 - `toodo service install`: run the server as the systemd user service
   `toodo-server.service`, in the same layout as `scripts/install-server.sh`
   (`~/.local/bin/toodo-server`, the web app in `~/.local/share/toodo-server-web`, see
-  [systemd](#systemd)). It enables and restarts the service and notes when lingering is
-  off.
-- `toodo update [--channel dev|latest] [--allow-downgrade]`: update a global install and
-  restart the server on it, see below.
+  [systemd](#systemd)). It enables and restarts the service and turns on lingering with
+  `loginctl enable-linger`, noting the `sudo` command when that is not allowed. With
+  `--port N` or `--listen HOST:PORT` it saves a new listen address first, like `init`.
+  On macOS it installs the same files and writes the launchd agent
+  `~/Library/LaunchAgents/toodo-server.plist` instead, which runs the server in the
+  logged-in user's session (`gui/<uid>`), starts it at login, restarts it after a crash,
+  and logs to `~/Library/Logs/toodo-server.log`; it loads the job with
+  `launchctl bootstrap` and waits until the server accepts connections.
+- `toodo update [--channel dev|latest] [--allow-downgrade | --check]`: update a global
+  install and restart the server on it, see below. With `--check` it only prints whether
+  the channel has a newer version than the installed one, and changes nothing.
+- `toodo review [--period week|month|quarter|year|custom] [--date DAY] [--from DAY]
+  [--to DAY] [--format markdown|csv] [--workspace ID] [--label LABEL] [--time-zone ZONE]`:
+  print the review of a period as the web app's Review exports it, rendered by the
+  running server with the web access token of the data directory; days and times are in
+  the server's review time zone (see the Review section of
+  [architecture.md](architecture.md)) unless `--time-zone` names another. For example
+  `toodo review --period year --format csv > review.csv`.
 - `toodo --version`, `toodo --help`. `--version` prints the version of the installed npm
   package (`toodo 1.3.2-dev.9 (commit 1c78b7a1a2b3)`). `toodo-server --version` and the
   server's start log line report the same version: the npm workflow builds both binaries
@@ -141,24 +208,34 @@ To update a global install, run `toodo update`. It:
    the new version, the way it runs: for the systemd user service `toodo-server.service`
    it copies the new `toodo-server` and web app over `~/.local/bin/toodo-server` and
    `~/.local/share/toodo-server-web` and runs `systemctl --user restart`; a server started
-   by `toodo start` is stopped and started again; on macOS a launchd job `toodo-server`
-   (`~/Library/LaunchAgents/toodo-server.plist`) is restarted with `launchctl kickstart -k`.
-   A server that is not running is left stopped; for the systemd service the new server and
-   web app are still copied, so the next `toodo start` runs the new version.
+   by `toodo start` is stopped and started again; on macOS the launchd agent `toodo-server`
+   (`~/Library/LaunchAgents/toodo-server.plist`) gets the same copies and is restarted with
+   `launchctl kickstart -k`. A server that is not running is left stopped; for the systemd
+   service and the launchd agent the new server and web app are still copied, so the next
+   `toodo start` runs the new version.
 4. Checks that the server answers (`POST /api/rpc/list_tasks` without a token is `401`).
 5. Prints the old and new version and the result.
 
 When npm fails, nothing is restarted and the running server keeps its version. When the
-server does not answer after the restart, `toodo update` exits `1` with the cause and the
-commands to find out why, restart it, or go back to the previous version.
+server does not answer after the restart, `toodo update` goes back by itself: it installs
+the previous version with `npm i -g @dubusoft/toodo@<previous> --include=optional`,
+restarts the server on it the same way, and checks that it answers. It then exits `1` with
+the cause and `toodo logs` to find out why; when going back fails too, it prints the
+commands to restart the server or go back by hand.
+
+The web app shows a newer version too: Settings > General names it under the version of
+the server. The server asks the npm registry for the dist-tags of `@dubusoft/toodo` (the
+`check_update` command), from `https://registry.npmjs.org` unless `TOODO_NPM_REGISTRY`
+names another registry, and compares the version on its own channel.
 
 Without `toodo update`, run `npm i -g @dubusoft/toodo` again, then `toodo service install`
 or `toodo stop` and `toodo start`.
 
 ## Install and Update
 
-On a server, install and update from releases. As the user who runs herdr (git, gh
-logged in, ssh, curl, and a running herdr installed; no Rust toolchain needed):
+Without Node.js, install and update from releases instead of npm. As the user who runs
+herdr, if any (git, gh
+logged in, ssh, and curl installed; herdr only for runner `herdr`; no Rust toolchain needed):
 
 ```sh
 scripts/install-server.sh --release latest
@@ -208,8 +285,8 @@ cd src-tauri
 cargo build --release --bin toodo-server
 ```
 
-The binary is `src-tauri/target/release/toodo-server`. It needs `git`, `ssh`, `gh`, and
-`herdr` on `PATH` at runtime.
+The binary is `src-tauri/target/release/toodo-server`. It needs `git` and `ssh` on
+`PATH` at runtime, plus a logged-in `gh` for workspaces with source `github`, `herdr` for runner `herdr` and `claude` or `codex` for runner `plain`.
 
 ## Run
 
@@ -224,6 +301,7 @@ toodo-server
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
 | `TOODO_PUBLIC_URL` | none | Public HTTPS origin, e.g. `https://toodo.example.com`; turns on OAuth for chat apps (see [Chat Apps over OAuth](#chat-apps-over-oauth)) |
 | `TOODO_PUSH_SUBJECT` | `https://github.com/dev-bokdong/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
+| `TOODO_RUN_RETENTION_DAYS` | `30` | Days after which the directory of an ended plain or tmux run, with its logs, is removed, on the server and on the SSH machine it ran on; `0` keeps them |
 
 On first start the data directory gets two access tokens:
 
@@ -234,8 +312,9 @@ On first start the data directory gets two access tokens:
 
 The data directory is created readable by its owner only (`0700`) and the token files
 `0600`; the server tightens an existing directory and token files on start. To replace a
-token, delete its file and restart the server. Replacing `web-token` does not sign out
-registered devices; revoke them one by one. The server logs every token file it creates,
+token, delete its file and restart the server; for `mcp-token`, restart it with
+`toodo stop` and `toodo start`, which give the new token to the agents `init`
+registered. Replacing `web-token` does not sign out registered devices; revoke them one by one. The server logs every token file it creates,
 and its start line names both token files and the server's instance id.
 
 A request without a valid token gets `401` with `WWW-Authenticate: Bearer` and a
@@ -244,6 +323,35 @@ header, a header that is not `Bearer <token>` (the scheme is case-insensitive), 
 the server does not accept, or the other surface's token (`web-token` at `/mcp`, the MCP
 token at `/api`). At `/mcp` the body also names the server instance, which tells a reply
 from another Toodo server, e.g. one an old config or a tunnel reached, apart from this one.
+An expired device token gets `401` that says it expired.
+
+Wrong tokens are rate limited per client address and per surface: after 20 wrong tokens
+within a minute, every request from that address to that surface (`/api` or `/mcp`) gets
+`429` with `Retry-After` until the minute since the first of them is over, even with the
+right token. Missing headers and the other surface's token do not count. Behind a reverse
+proxy every client shares the proxy's address, so one client that keeps sending an old
+token locks out the others for that minute; stop it, or replace its token.
+
+### Backups
+
+The server writes backups of the database into its backup directory, `<data>/backups/`
+unless *Settings > Backups* names another absolute path, such as a directory on another
+disk (saved as `directory` in `<data>/backup-settings.json`). Backups already in the old
+directory stay there and are no longer listed. There are three kinds:
+
+- `toodo-auto-<time>.sqlite3`: on the automatic schedule (every 24 hours by default,
+  the newest 7 kept).
+- `toodo-pre-restore-<time>.sqlite3`: right before a restore or an import replaces or
+  adds data.
+- `toodo-pre-migration-<time>.sqlite3`: on start, right before a newer version migrates
+  the database to its schema. If this backup cannot be written, the server does not start
+  and leaves the database unchanged; its error names the directory to fix.
+
+Each backup is a `VACUUM INTO` snapshot that must pass `PRAGMA integrity_check` before it
+takes its name; a damaged one is deleted. Automatic backups and exports read the
+database through a connection of their own, so requests keep being served while they
+run. When an automatic backup fails, the Settings button and *Settings > Backups* say so,
+with the reason, until one succeeds again.
 
 ### Import
 
@@ -269,15 +377,27 @@ service first (`systemctl --user stop toodo-server`) and start it again afterwar
 
 Each device has its own access token, so a lost phone is revoked alone instead of
 rotating the token of every client. The database keeps a device's name, when it was
-registered and last seen (to within a minute), and when it was revoked, but only a
-SHA-256 hash of its token; the token itself is shown to the device once, when it
-registers. Revoking is final: the token never works again, and the device signs in anew
-with the shared token. Only the shared token registers devices, so a device token cannot
-mint more tokens. A device keeps its id after it is revoked, so data kept per device can
-refer to it.
+registered and last seen, when its token expires, what it may do, and when it was
+revoked, but only a SHA-256 hash of its token; the token itself is shown to the device
+once, when it registers. Revoking is final: the token never works again, and the device
+signs in anew with the shared token. Only the shared token registers devices, so a device
+token cannot mint more tokens. A device keeps its id after it is revoked, so data kept per
+device can refer to it.
 
-The web app lists the devices under **Devices** in Settings, marks the current one,
-and revokes them. Devices live in the database, so restoring a backup also restores the
+A device token expires 90 days after it is registered unless the registration picks
+another lifetime (30 days, a year, or never in the web app); the device then signs in
+again with the shared token. Tokens registered before expiry existed expire 90 days after
+the upgrade that added it. A device registered read-only may read everything the app
+shows, keep its own notifications, and revoke itself; every other request gets `403`.
+Read-only devices cannot see the MCP token, which can change data, nor open pane streams,
+which can type into a pane.
+
+The last-seen time is checked on the database's read-only connection and written at most
+once a minute per device, so requests do not wait for the database's writer.
+
+The web app asks for the access and lifetime when it signs in with the shared token,
+lists the devices under **Devices** in Settings with their expiry and whether they are
+read-only, marks the current one, and revokes them. Devices live in the database, so restoring a backup also restores the
 devices of that backup: devices registered after it sign in again.
 
 **Treat `web-token` like a password to the server account.** It opens every command of
@@ -303,7 +423,7 @@ ones it gets, and sends itself a test notification:
 | Setting | Notifications |
 | --- | --- |
 | Agent finished or needs input | An agent of a task stopped working, or started waiting for input |
-| Pull request checks and reviews | CI of a task's pull request passed or failed; a reviewer approved it or requested changes |
+| Pull request checks and reviews | CI of a task's pull request passed or failed; a reviewer approved it or requested changes. A pull request Toodo first reads with CI already failed or changes already requested notifies too, except in the first check after the server starts |
 | Task awaiting completion | A task moved to awaiting completion |
 
 Notifications report what changed on its own: agents, pull requests, and the server's
@@ -314,6 +434,12 @@ notifications of its own on that device, so nothing arrives twice.
 Subscriptions belong to devices: a browser signed in with the shared `web-token` signs
 in again to get a device token first. Revoking a device ends its subscription, and a
 subscription the push service reports gone is dropped.
+
+A notification the push service cannot take for a while (it cannot be reached, or it
+answers 429 or 5xx) is tried again after 1, 2, and 4 seconds; while a device's push
+service stays unreachable, its other notifications of the same change are skipped. Any
+other refusal is not retried. The settings show the last notification that did not
+reach the device and why, until a notification (such as a test one) reaches it again.
 
 The server signs its requests to push services with a P-256 key (VAPID) that it creates
 in `push-key` in the data directory on first start (`0600`, like the tokens). Browsers
@@ -342,6 +468,10 @@ contents of `mcp-token`):
 Agents on the server's SSH machines reach the same URL through the reverse tunnels the
 server keeps open to them.
 
+Remote plain and tmux runs use that tunnel too. The server stages the token in a private
+file in the run directory on the host, and the run's wrapper reads it into
+`TOODO_MCP_TOKEN`, so it never shows up in a process list.
+
 Settings > Agent access in the web app copies this config or the MCP token alone
 ("Copy MCP token for agents"; it is not the web sign-in token), checks with **Test
 connection** that the server accepts the token it shows, and shows the server instance
@@ -355,6 +485,12 @@ Besides the regular task tools, two arguments help an agent wire and start a pla
 
 - **Create.** `create_task` takes `depends_on` and `related`, so a plan is wired in one
   call; an unknown task in either rejects the call and creates nothing.
+- **Plan.** `create_plan` creates several tasks in one call and one transaction. Each
+  task takes the fields of `create_task` and a `key` unique in the plan; it links to other
+  tasks of the plan by key in `depends_on_keys` and `related_keys`, and to existing tasks
+  by ID in `depends_on` and `related`. An unknown key or task, a repeated key, keys whose
+  dependencies form a cycle, or a failure in any one task rejects the call and creates no
+  task. The reply lists the created tasks with their keys, in the order given.
 - **Start.** `start_task` takes `agent_command`, which Toodo runs in the shell pane of
   the task's new herdr workspace once the task is started (for the coding agent; only
   for workspaces on the server's machine). The command runs after
@@ -365,9 +501,31 @@ Besides the regular task tools, two arguments help an agent wire and start a pla
   (the pane the command ran in), and `paneError` when the panes could not be listed or
   the command did not run; the task is started either way.
 
-`read_toodo_skill` returns the worker skill (`src-tauri/src/mcp/toodo-skill.md`). Toodo has
+`read_toodo_skill` returns the worker skill (`src-tauri/src/mcp/toodo-skill.md`); rules it
+shares with the `initialize` instructions come from `src-tauri/src/mcp/shared/` (see
+[docs/agents.md](agents.md)). Toodo has
 no merge tool: agents follow the workspace's agent merge policy, which never allows merging
 past the base branch.
+
+### Task and Run Resources
+
+Tasks and their runs are MCP resources, so an agent can wait for a change instead of
+calling `get_task` again and again:
+
+- `toodo://tasks/{task_id}`: the task as `get_task` returns it, including `ready` and
+  `blockedBy`, so a task's resource changes when a task it depends on is done.
+- `toodo://tasks/{task_id}/runs`: the task's runs, oldest first.
+
+`resources/list` lists the tasks that are not done, and `resources/templates/list` the
+two URI templates. The endpoint is stateless, so notifications need a client of protocol
+`2026-07-28`, which opens a `subscriptions/listen` stream with `resourceSubscriptions` (and
+optionally `resourcesListChanged`). The stream gets `notifications/resources/updated` for
+each watched resource whose content changed, and `notifications/resources/list_changed`
+when a task is added, is done, or comes back. The server reads the watched resources again
+after every change the app announces, and at least every 5 seconds for runs, which change
+without one. Clients of earlier protocols, which start with `initialize`, can read the
+resources, but the server does not offer them `resources/subscribe`: their notifications
+would need a session.
 
 ### Chat Apps over OAuth
 
@@ -391,18 +549,20 @@ on loopback as before and still see every tool.
 **What a chat app can do.** An app gets one or both scopes:
 
 - `toodo.read`: `read_toodo_skill`, `list_workspaces`, `list_tasks`, `search_tasks`,
-  `get_task`.
-- `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `update_task`,
-  `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
+  `get_task`, `pull_request_status`, `review_report`, and the
+  [task and run resources](#task-and-run-resources).
+- `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `create_plan`,
+  `update_task`, `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
   `add_criterion`, `remove_criterion`, `check_criterion`, `add_progress_note`,
   `report_blocker`, and `pause_task`.
 
 None of these runs git, herdr, gh, or ssh. `create_workspace` accepts only
 `source: "none"` from an app; git workspaces are added in the Toodo app or by a local
 agent. The tools that run things stay local: `current_task`, `start_task`, `resume_task`,
-`restore_worktree`, `set_worktree_root`, `list_machine_settings`, `complete_task`, and
-`conclude_task` never appear in an app's tool list, and calling one is refused even with
-`toodo.write`. `check_criterion` checks a stored manual criterion and never runs a
+`restore_worktree`, `set_worktree_root`, `list_machine_settings`, `complete_task`,
+`conclude_task`, `delete_task`, `reopen_task`, and the run tools (`start_run`, `run_status`, `run_log`, `stop_run`,
+`reconcile_run`) never appear in an app's tool list, and calling one is refused even with
+`toodo.write`; so do `update_workspace` and `archive_workspace`. `check_criterion` checks a stored manual criterion and never runs a
 criterion's command; `pause_task` keeps the worktree and herdr workspace. An app's
 `initialize` reply and `read_toodo_skill` carry planning instructions for a chat, not the
 worktree and pull request workflow.
@@ -440,17 +600,21 @@ To publish the server through Cloudflare, see
 
 ### systemd
 
-Run it as the user who runs herdr, so it finds herdr's socket, `~/.ssh/config`, and the
-`gh` login. `scripts/install-server.sh` writes
+Run it as the user who runs herdr, if any, so it finds herdr's socket, `~/.ssh/config`, and the
+`gh` login. `toodo service install` (which `scripts/install-server.sh` runs) writes
 `~/.config/systemd/user/toodo-server.service` like this, with `PATH` taken from where it
-found `herdr`, `gh`, `git`, and `ssh` (and `TOODO_WEB_DIR` added when it installs the web
-app):
+finds `herdr`, `gh`, `git`, `ssh`, `tmux`, `claude`, `codex`, and `node` on its own
+`PATH` (those that are installed), so plain and tmux runs started by the service find the
+agent CLIs; `TOODO_WEB_DIR` is added when it installs the web app. Install an agent CLI
+or tmux in a new directory later, and rerun it to pick that up.
 
 ```ini
 [Unit]
 Description=Toodo server
 After=network.target herdr-server.service
 Wants=herdr-server.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 ExecStart=/home/me/.local/bin/toodo-server
@@ -460,14 +624,20 @@ Environment=TOODO_DATA_DIR=/home/me/.local/share/toodo-server
 Environment=PATH=/home/me/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=5
+KillMode=process
 
 [Install]
 WantedBy=default.target
 ```
 
+`KillMode=process` makes a stop or restart end only the server process: agents of plain
+and tmux runs keep running, and the server picks them up again when it starts. Rerun
+`toodo service install` to add it to a unit written by an earlier version.
 `herdr-server.service` is the unit of a headless herdr server, if there is one; without it
-the `Wants=` is ignored. To set the service up by hand, run
-`systemctl --user enable --now toodo-server`. Either way, run
+the `Wants=` is ignored. A server that fails to start is restarted every 5 s, at most 5
+times in 5 minutes; then the unit stays failed until
+`systemctl --user reset-failed toodo-server` and `systemctl --user restart toodo-server`.
+To set the service up by hand, run `systemctl --user enable --now toodo-server`, and
 `loginctl enable-linger $USER` to keep it running without a login session.
 
 ## Web App
@@ -489,10 +659,25 @@ without the network. It never caches or answers `/api` or `/mcp`: everything the
 shows comes from the server. Each build has its own cache, which replaces the previous
 one once no window uses it any more.
 
+Each build names itself in `/version.json` (a hash of its `index.html`). An open window
+asks for it when it starts, when it reconnects to the server (as after `toodo update`
+restarts it), and when it is shown again; when the server serves another build than the
+window runs, a banner offers to reload. *Reload* lets the new build's service worker take
+over and loads the new build; *Later* hides the banner until the server serves yet
+another build.
+
+For reading offline, the app keeps the last loaded workspaces, task list, and what task
+details showed (commits, git activity, runs, related links, agent and pull request
+status) in the browser's IndexedDB, and shows them when it starts without the server.
+They are kept for the build that saved them and forgotten when the browser's access token
+is (sign-in again or a revoked device).
+
 When the server does not answer (it is down, the device is offline, or a proxy in front of
-it answers with its own 502-504 or 520-530 error page), the app shows an offline screen
+it answers with its own 502-504 or 520-530 error page), the app shows an offline banner
 over itself instead of a broken page, and the service worker starts the cached app instead
-of showing such an error page. The app checks again after 2 s, doubling up to 30 s, at
+of showing such an error page. What was loaded stays readable: the banner tells when the
+tasks shown were loaded, and buttons that change data are disabled until the server
+answers. The app checks again after 2 s, doubling up to 30 s, at
 once when the device comes back online or the app is shown again, and on *Try again*;
 once the server answers, the screen goes away and everything is loaded again.
 
@@ -507,7 +692,9 @@ whole server account. To open it from a phone, see
 
 The event stream (`/api/events`) is a long-lived server-sent event response with a
 keep-alive comment every 15 seconds; a proxy in front must not buffer it. When the stream
-drops, the web app reconnects and refetches everything. The pane view's WebSocket
+drops, the web app reconnects with the id of the last event it got and the server replays
+what it missed; when those events are no longer kept, the web app refetches everything.
+The pane view's WebSocket
 (`/api/panes/stream`) needs the proxy to pass WebSocket upgrades through, with the
 browser's `Host` (or `X-Forwarded-Host`), since the server only accepts upgrades whose
 `Origin` matches it.
@@ -640,16 +827,35 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
 
 - `POST /api/rpc/<command>`: runs a command by its name in `src/lib/bindings.ts` (e.g. `list_tasks`) with
   its arguments as a JSON object with camelCase keys. A result is `200` with the JSON
-  result; a command error is `{ "kind", "message" }` with `422` (invalidInput), `404`
-  (notFound), `409` (rejected), `502` (external), or `500` (internal). An unknown command
-  is `404` and malformed arguments `400`, both with a text body.
+  result; a command error is `{ "kind", "code", "message" }` with `422` (invalidInput),
+  `404` (notFound), `409` (rejected), `502` (external), or `500` (internal). `code` is one
+  of `CommandErrorCode` in `src/lib/bindings.ts`, e.g. `taskNotFound` or
+  `dependencyCycle`, shared with the MCP tools. An unknown command is `404` with code
+  `unknownCommand` and malformed arguments `400` with code `invalidArguments`. A command
+  that panics is `500` with code `commandPanicked`; the panic text goes only to the
+  server log.
 - `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
   `agent-statuses-changed`, and `pull-request-statuses-changed` with the payloads of the
-  events in `src/lib/bindings.ts`.
+  events in `src/lib/bindings.ts`. Every event has an id `<epoch>-<sequence>`; `epoch`
+  changes with each server start. A request without `Last-Event-ID` starts with a
+  `ready` event carrying the current id. With `Last-Event-ID`, the stream first replays
+  the events after it (the server keeps the last 256); when some are gone, the id is of
+  another server start, or a reader falls behind, the stream sends a `resync` event
+  instead, after which the client refetches everything.
 - `GET /api/backups/export`: a consistent snapshot of the database, as an
   `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
 - `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
   file name `list_backups` reports; `404` for any other name.
+- `GET /api/runs/{id}/log`: the stdout and stderr of a plain or tmux run as server-sent
+  events: the last 64 KiB of each (`?tail=<bytes>` for another amount), then what the
+  agent writes, read every half second (every two seconds on an SSH machine). Each `log`
+  event is `{ stream, offset, next, text }` with byte offsets in the log and complete
+  lines, redacted of the run's MCP token; its id `<stdout next>:<stderr next>` lets a
+  client that reconnects with `Last-Event-ID` resume where it was. An `end` event closes
+  the stream once the run ended and both logs were sent; an `error` event reports a
+  failed read, after which the stream tries again.
+- `GET /api/runs/{id}/log/{stdout|stderr}`: a whole log as a `text/plain` attachment
+  named `run-<id>-<stream>.log`, up to where it was when asked.
 - `POST /api/backups/restore`: replaces all data with the Toodo database sent as the
   request body (`application/octet-stream`, at most 256 MB, else `413`). The current data
   is saved as a pre-restore backup first, which is the JSON result, like `restore_backup`.

@@ -60,7 +60,7 @@ import {
 import { useThemePreference } from "@/lib/theme";
 import { formatDuration } from "@/lib/review";
 import { When } from "@/components/when";
-import { activeSeconds, reachedMilestones } from "@/lib/timeline";
+import { activeSeconds, reachedMilestones, waitingSeconds } from "@/lib/timeline";
 import { dueState as dueStateOf, dueStateLabels, formatEstimate } from "@/lib/plan";
 import {
   barStyles,
@@ -73,6 +73,7 @@ import {
   toneText,
   type Tone,
 } from "@/lib/status-styles";
+import { singleKeyShortcut } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 
 type BarNode = Node<
@@ -147,6 +148,9 @@ const rowKeys: Record<string, "previous" | "next" | "first" | "last"> = {
   End: "last",
 };
 
+/** The letter shortcuts that move the selection, also when the focus is not on a bar. */
+const letterKeys: Record<string, "previous" | "next"> = { j: "next", k: "previous" };
+
 const scaleLabels: Record<TimelineScale, string> = { hour: "Hour", day: "Day", week: "Week", month: "Month" };
 
 const phaseStyles: Record<TimelinePhase, string> = {
@@ -185,6 +189,8 @@ export function TaskGraph({
   ready,
   scale,
   onScaleChange,
+  selectedTaskId,
+  onSelectedTaskChange: setSelectedTaskId,
   shownTaskId = null,
   onTaskShown,
   renderDetail,
@@ -203,6 +209,9 @@ export function TaskGraph({
   ready: (task: Task) => boolean;
   scale: TimelineScale;
   onScaleChange: (scale: TimelineScale) => void;
+  /** The selected task, whose details sheet is open, owned by the caller. */
+  selectedTaskId: TaskId | null;
+  onSelectedTaskChange: (id: TaskId | null) => void;
   /** A task to select and pan to once it is on the timeline; `onTaskShown` is called when it is. */
   shownTaskId?: TaskId | null;
   onTaskShown?: () => void;
@@ -219,7 +228,6 @@ export function TaskGraph({
   const herdr = useHerdrStatus();
   const agentStatuses = useAgentStatuses();
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
-  const [selectedTaskId, setSelectedTaskId] = useState<TaskId | null>(null);
   // A dependency drawn onto a started task that it would pause, waiting for confirmation.
   const [confirmingEdge, setConfirmingEdge] = useState<{ id: TaskId; dependsOn: TaskId } | null>(null);
   const [year, setYear] = useState<number | null>(null);
@@ -509,8 +517,29 @@ export function TaskGraph({
     if (move === undefined || !container.current?.contains(target) || (node === null && selectedTask === undefined)) {
       return;
     }
+    if (moveRow(move, node?.dataset.id ?? String(selectedTask?.id))) {
+      event.preventDefault();
+    }
+  }
+
+  // j and k move the selection from anywhere on the page, starting at the first row.
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      const move = letterKeys[event.key];
+      const focused = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(".react-flow__node") : null;
+      const from = focused?.dataset.id ?? (selectedTask && String(selectedTask.id));
+      if (move !== undefined && singleKeyShortcut(event) && moveRow(move, from)) {
+        event.preventDefault();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  });
+
+  /** Selects and focuses the bar `move` leads to from the bar of task `from`; false when there is none. */
+  function moveRow(move: "previous" | "next" | "first" | "last", from: string | undefined): boolean {
     const rows = [...layout.bars].sort((a, b) => a.row - b.row);
-    const current = rows.findIndex((bar) => String(bar.task.id) === (node?.dataset.id ?? String(selectedTask?.id)));
+    const current = rows.findIndex((bar) => String(bar.task.id) === from);
     const index = {
       previous: current <= 0 ? 0 : current - 1,
       next: current === -1 ? 0 : Math.min(current + 1, rows.length - 1),
@@ -519,14 +548,14 @@ export function TaskGraph({
     }[move];
     const id = rows[index]?.task.id;
     if (id === undefined) {
-      return;
+      return false;
     }
-    event.preventDefault();
     container.current
-      .querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)
+      ?.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)
       ?.focus({ preventScroll: true });
     focusSheet.current = false;
     changeSelection(id);
+    return true;
   }
 
   function changeNodes(changes: NodeChange<BarNode>[]) {
@@ -961,6 +990,7 @@ function TimelineTooltip({
 }) {
   const milestones = reachedMilestones(task.milestones);
   const active = activeSeconds(task.timeline, now);
+  const waiting = waitingSeconds(task.timeline, now);
   const dueState = dueStateOf(task, now);
   // A bar may start far off screen; the card starts where the visible part of the bar does.
   const left = Math.max(
@@ -1003,6 +1033,12 @@ function TimelineTooltip({
             <>
               <dt className="text-muted-foreground">Active</dt>
               <dd className="tabular-nums">{formatDuration(active)}</dd>
+            </>
+          )}
+          {waiting !== null && waiting > 0 && (
+            <>
+              <dt className="text-muted-foreground">Waiting</dt>
+              <dd className="tabular-nums">{formatDuration(waiting)}</dd>
             </>
           )}
         </dl>

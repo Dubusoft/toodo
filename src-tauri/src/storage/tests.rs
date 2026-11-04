@@ -198,7 +198,7 @@ fn machines_without_saved_settings_have_no_worktree_root() {
 }
 
 #[test]
-fn workspace_updates_and_cascading_deletes() {
+fn workspace_updates_archive_restore_and_purge() {
     let mut storage = Storage::open_in_memory().unwrap();
     let mut workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
     let kept = add_workspace(&mut storage, "Kept", local_location(r"C:\src\kept"));
@@ -222,15 +222,40 @@ fn workspace_updates_and_cascading_deletes() {
         Some(workspace.clone())
     );
 
-    storage.delete_workspace(workspace.id).unwrap();
+    assert!(matches!(
+        storage.purge_workspace(workspace.id),
+        Err(StorageError::WorkspaceNotArchived(id)) if id == workspace.id
+    ));
+    storage.archive_workspace(workspace.id).unwrap();
     assert_eq!(storage.get_workspace(workspace.id).unwrap(), None);
+    assert_eq!(
+        storage.list_workspaces().unwrap(),
+        std::slice::from_ref(&kept)
+    );
+    assert_eq!(storage.archived_workspaces().unwrap(), [workspace.clone()]);
     assert_eq!(storage.get_task(a.id).unwrap(), None);
-    assert_eq!(row_count(&storage, "task_dependencies"), 0);
-    assert_eq!(row_count(&storage, "commit_records"), 0);
-    assert_eq!(storage.list_tasks(kept.id).unwrap(), [kept_task]);
+    assert_eq!(
+        storage.list_all_tasks().unwrap(),
+        std::slice::from_ref(&kept_task)
+    );
+    // The tasks of an archived workspace are archived with it, not on their own.
+    assert_eq!(storage.archived_tasks().unwrap(), []);
+    let reviewed: Vec<_> = storage
+        .review_tasks()
+        .unwrap()
+        .into_iter()
+        .map(|task| task.id)
+        .collect();
+    assert_eq!(reviewed, [a.id, b.id, kept_task.id]);
+    assert_eq!(row_count(&storage, "task_dependencies"), 1);
+    assert_eq!(row_count(&storage, "commit_records"), 1);
+    assert!(matches!(
+        storage.restore_task(a.id),
+        Err(StorageError::WorkspaceArchived { workspace: id, task }) if id == workspace.id && task == a.id
+    ));
 
     assert!(matches!(
-        storage.delete_workspace(workspace.id),
+        storage.archive_workspace(workspace.id),
         Err(StorageError::WorkspaceNotFound(id)) if id == workspace.id
     ));
     assert!(matches!(
@@ -249,6 +274,101 @@ fn workspace_updates_and_cascading_deletes() {
         }),
         Err(StorageError::WorkspaceNotFound(_))
     ));
+
+    assert_eq!(
+        storage.restore_workspace(workspace.id).unwrap(),
+        workspace.clone()
+    );
+    assert_eq!(
+        storage.get_task(b.id).unwrap().unwrap().depends_on,
+        [a.id].into()
+    );
+    storage.archive_workspace(workspace.id).unwrap();
+    storage.purge_workspace(workspace.id).unwrap();
+    assert_eq!(
+        storage.review_tasks().unwrap(),
+        std::slice::from_ref(&kept_task)
+    );
+    assert_eq!(row_count(&storage, "task_dependencies"), 0);
+    assert_eq!(row_count(&storage, "commit_records"), 0);
+    assert_eq!(storage.list_tasks(kept.id).unwrap(), [kept_task]);
+    assert!(matches!(
+        storage.purge_workspace(workspace.id),
+        Err(StorageError::WorkspaceNotFound(id)) if id == workspace.id
+    ));
+}
+
+#[test]
+fn archived_tasks_leave_the_dag_until_restored_and_purge_explicitly() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+    storage.add_dependency(b.id, a.id).unwrap();
+    assert!(!ready(&storage, &b));
+
+    assert!(matches!(
+        storage.purge_task(a.id),
+        Err(StorageError::TaskNotArchived(id)) if id == a.id
+    ));
+    storage.archive_task(a.id).unwrap();
+    assert_eq!(storage.get_task(a.id).unwrap(), None);
+    assert!(
+        storage
+            .get_task(b.id)
+            .unwrap()
+            .unwrap()
+            .depends_on
+            .is_empty()
+    );
+    assert!(ready(&storage, &b));
+    let archived: Vec<_> = storage
+        .archived_tasks()
+        .unwrap()
+        .into_iter()
+        .map(|task| task.id)
+        .collect();
+    assert_eq!(archived, [a.id]);
+    assert!(matches!(
+        storage.add_dependency(b.id, a.id),
+        Err(StorageError::Dependency(DependencyError::UnknownTask(id))) if id == a.id
+    ));
+
+    // An edge added while A was archived would close a loop once A is back.
+    let c = add_task(&mut storage, &workspace, "C");
+    storage.add_dependency(c.id, b.id).unwrap();
+    storage
+        .conn
+        .execute(
+            "INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+            [a.id.0, c.id.0],
+        )
+        .unwrap();
+    assert!(matches!(
+        storage.restore_task(a.id),
+        Err(StorageError::RestoreClosesCycle(_))
+    ));
+    assert_eq!(storage.get_task(a.id).unwrap(), None);
+    storage.remove_dependency(c.id, b.id).unwrap();
+
+    let restored = storage.restore_task(a.id).unwrap();
+    assert_eq!(restored.id, a.id);
+    assert_eq!(
+        storage.get_task(b.id).unwrap().unwrap().depends_on,
+        [a.id].into()
+    );
+    assert!(matches!(
+        storage.restore_task(a.id),
+        Err(StorageError::TaskNotArchived(id)) if id == a.id
+    ));
+
+    storage.archive_task(a.id).unwrap();
+    storage.purge_task(a.id).unwrap();
+    assert!(matches!(
+        storage.purge_task(a.id),
+        Err(StorageError::TaskNotFound(id)) if id == a.id
+    ));
+    assert_eq!(row_count(&storage, "task_dependencies"), 0);
 }
 
 #[test]
@@ -312,7 +432,7 @@ fn dependencies_across_workspaces_share_one_dag() {
     // The library workspace cannot go while the app task still waits on it.
     let tasks_before = storage.list_all_tasks().unwrap();
     assert!(matches!(
-        storage.delete_workspace(library.id),
+        storage.archive_workspace(library.id),
         Err(StorageError::WorkspaceHasDependents { workspace, task, depends_on })
             if workspace == library.id && task == ui.id && depends_on == api.id
     ));
@@ -334,7 +454,7 @@ fn dependencies_across_workspaces_share_one_dag() {
 
     // Once the dependent has started, removing the library drops the edge only.
     storage.set_task_status(ui.id, InProgress).unwrap();
-    storage.delete_workspace(library.id).unwrap();
+    storage.archive_workspace(library.id).unwrap();
     assert_eq!(storage.get_task(api.id).unwrap(), None);
     let ui = storage.get_task(ui.id).unwrap().unwrap();
     assert_eq!(ui.status, InProgress);
@@ -483,6 +603,14 @@ fn a_prerequisite_that_is_not_done_pauses_a_task_in_progress() {
         timeline(&storage, &a),
         [(Planned, 100), (InProgress, 200), (Planned, 300)]
     );
+    // The pause event records what the task waits on.
+    assert_eq!(
+        added.task.timeline.last().unwrap().reason,
+        Some(format!(
+            "Waiting on #{} Fix (planned), #{} Docs (planned)",
+            fix.id, docs.id
+        ))
+    );
     let cleared = storage.clear_task_herdr_workspace(a.id).unwrap();
     assert_eq!(cleared.herdr_workspace_id, None);
     assert_eq!(cleared.branch.as_deref(), Some("feat/a-1"));
@@ -533,22 +661,26 @@ fn a_done_task_cannot_wait_on_new_prerequisites() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
     let a = add_task(&mut storage, &workspace, "A");
+    let base = add_task(&mut storage, &workspace, "Base");
     let fix = add_task(&mut storage, &workspace, "Fix");
-    for status in [InProgress, InReview, Done] {
+    for status in [InProgress, InReview] {
         storage.set_task_status(a.id, status).unwrap();
     }
+    // A task in review still gets prerequisites, as in the app.
+    storage.add_dependency(a.id, base.id).unwrap();
+    storage.set_task_status(a.id, Done).unwrap();
 
     assert!(matches!(
         storage.add_dependency(a.id, fix.id),
         Err(StorageError::PrerequisiteOfDoneTask { task, .. }) if task == a.id
     ));
-    assert!(
-        storage
-            .get_task(a.id)
-            .unwrap()
-            .unwrap()
-            .depends_on
-            .is_empty()
+    assert!(matches!(
+        storage.remove_dependency(a.id, base.id),
+        Err(StorageError::DependencyOfDoneTask { task, depends_on }) if task == a.id && depends_on == base.id
+    ));
+    assert_eq!(
+        storage.get_task(a.id).unwrap().unwrap().depends_on,
+        std::collections::BTreeSet::from([base.id])
     );
 }
 
@@ -878,6 +1010,30 @@ fn start_task_records_the_worktree_and_moves_to_in_progress() {
 }
 
 #[test]
+fn start_task_plain_records_the_worktree_without_a_herdr_workspace() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = add_task(&mut storage, &workspace, "Add login");
+    let path = HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap());
+
+    let started = storage
+        .start_task_plain(task.id, &checkout(path.clone(), "feat/add-login-1"))
+        .unwrap();
+
+    assert_eq!(started.status, InProgress);
+    assert_eq!(started.branch.as_deref(), Some("feat/add-login-1"));
+    assert_eq!(started.worktree_path, Some(path.clone()));
+    assert_eq!(started.herdr_workspace_id, None);
+    assert_eq!(storage.open_runtime_workspace(task.id).unwrap(), None);
+    assert_eq!(storage.get_task(task.id).unwrap().unwrap(), started);
+    assert!(
+        storage
+            .start_task_plain(task.id, &checkout(path, "feat/add-login-1"))
+            .is_err()
+    );
+}
+
+#[test]
 fn clear_task_worktree_keeps_the_branch_and_status() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
@@ -1083,6 +1239,58 @@ fn commit_records_in_a_period_span_every_task_oldest_first() {
     assert_eq!(
         storage.list_commit_records_in(period).unwrap(),
         [commit(b.id, "b-start", 100), commit(a.id, "a-in", 150)]
+    );
+}
+
+#[test]
+fn commits_in_a_period_include_activity_commits_not_recorded_yet() {
+    use crate::domain::activity::{ActivityKind::*, ActivitySource::*};
+    let mut storage = Storage::open_in_memory().unwrap();
+    let toodo = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let recorded = add_task(&mut storage, &toodo, "Recorded");
+    let polled = add_task(&mut storage, &toodo, "Polled");
+    storage
+        .replace_commit_records(recorded.id, &[commit(recorded.id, "rec", 120)])
+        .unwrap();
+    storage
+        .record_activity(
+            recorded.id,
+            &[activity(
+                recorded.id,
+                Commit,
+                GitPoll,
+                "rec",
+                "Polled title",
+                120,
+            )],
+            300,
+        )
+        .unwrap();
+    storage
+        .record_activity(
+            polled.id,
+            &[
+                activity(polled.id, Commit, GitPoll, "new", "Fix login", 150),
+                activity(polled.id, Commit, GitPoll, "old", "Before", 50),
+                activity(polled.id, PullRequestOpened, GitHubPoll, "pr", "PR", 160),
+            ],
+            300,
+        )
+        .unwrap();
+
+    let period = crate::domain::review::Period::new(100, 200).unwrap();
+    assert_eq!(
+        storage.list_commit_records_in(period).unwrap(),
+        [
+            commit(recorded.id, "rec", 120),
+            CommitRecord {
+                task_id: polled.id,
+                sha: "new".to_owned(),
+                message: "Fix login".to_owned(),
+                author: "Fix login author".to_owned(),
+                committed_at: 150,
+            },
+        ]
     );
 }
 
@@ -1326,6 +1534,37 @@ fn notes_are_kept_in_order_with_their_time_and_deleted_with_their_task() {
     assert_eq!(row_count(&storage, "task_notes"), 0);
 }
 
+#[test]
+fn labels_are_replaced_per_task_and_deleted_with_their_task() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = add_task(&mut storage, &workspace, "Login");
+    let other = add_task(&mut storage, &workspace, "Logout");
+
+    let labels = ["auth".to_owned(), "q4".to_owned()];
+    assert_eq!(
+        storage.set_task_labels(task.id, &labels).unwrap().labels,
+        labels
+    );
+    storage.set_task_labels(other.id, &labels[..1]).unwrap();
+    let replaced = storage.set_task_labels(task.id, &labels[1..]).unwrap();
+    assert_eq!(replaced.labels, ["q4"]);
+    let all: Vec<_> = storage
+        .list_all_tasks()
+        .unwrap()
+        .into_iter()
+        .map(|task| task.labels)
+        .collect();
+    assert_eq!(all, [vec!["q4".to_owned()], vec!["auth".to_owned()]]);
+    assert!(matches!(
+        storage.set_task_labels(TaskId(99), &labels),
+        Err(StorageError::TaskNotFound(TaskId(99)))
+    ));
+
+    storage.delete_task(task.id).unwrap();
+    assert_eq!(row_count(&storage, "task_labels"), 1);
+}
+
 fn search(storage: &Storage, query: &str) -> Vec<TaskId> {
     storage
         .search_tasks(&TaskSearch {
@@ -1516,6 +1755,10 @@ fn related_links_go_both_ways_across_workspaces_and_never_block() {
     storage.remove_related(later.id, earlier.id).unwrap();
     assert!(storage.list_relations().unwrap().is_empty());
     storage.add_related(later.id, earlier.id).unwrap();
+    storage.archive_task(earlier.id).unwrap();
+    assert!(storage.list_relations().unwrap().is_empty());
+    storage.restore_task(earlier.id).unwrap();
+    assert_eq!(storage.list_relations().unwrap(), [(earlier.id, later.id)]);
     storage.delete_task(earlier.id).unwrap();
     assert!(storage.list_relations().unwrap().is_empty());
 }
@@ -1807,7 +2050,13 @@ fn herdr_workspaces_of_tasks_are_recorded_in_runtime_workspaces() {
     // Complete, then reopen with a new handle.
     storage.complete_task(task.id, Some(1), None, &[]).unwrap();
     assert_eq!(open_runtime(&storage, &task), None);
-    storage.reopen_task(task.id, "Needs more work").unwrap();
+    let reopened = storage
+        .reopen_task(task.id, "Missed a case", "Needs more work")
+        .unwrap();
+    assert_eq!(
+        reopened.timeline.last().unwrap().reason.as_deref(),
+        Some("Missed a case")
+    );
     storage.set_task_herdr_workspace(task.id, "w10").unwrap();
     assert_eq!(
         open_runtime(&storage, &task),
@@ -1849,4 +2098,205 @@ fn herdr_workspaces_of_tasks_are_recorded_in_runtime_workspaces() {
     // A deleted task takes its runtime workspaces along.
     storage.delete_task(task.id).unwrap();
     assert_eq!(row_count(&storage, "runtime_workspaces"), 0);
+}
+
+#[test]
+fn the_database_file_uses_write_ahead_logging_and_a_busy_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(&dir.path().join("toodo.sqlite3")).unwrap();
+
+    let mode: String = storage
+        .conn
+        .pragma_query_value(None, "journal_mode", |row| row.get(0))
+        .unwrap();
+    let timeout: u128 = storage
+        .conn
+        .pragma_query_value(None, "busy_timeout", |row| row.get::<_, i64>(0))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(mode, "wal");
+    assert_eq!(timeout, BUSY_TIMEOUT.as_millis());
+}
+
+#[test]
+fn the_reader_reads_committed_data_while_a_write_is_in_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("toodo.sqlite3");
+    let mut storage = Storage::open(&path).unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let reader = Storage::open_reader(&path).unwrap();
+    // Without write-ahead logging the exclusive lock below would make the read fail at
+    // once with SQLITE_BUSY.
+    reader.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+
+    storage
+        .conn
+        .execute_batch("BEGIN EXCLUSIVE; UPDATE workspaces SET name = 'Renamed'")
+        .unwrap();
+    assert_eq!(
+        reader.list_workspaces().unwrap(),
+        std::slice::from_ref(&workspace)
+    );
+    storage.conn.execute_batch("COMMIT").unwrap();
+
+    let renamed = reader.get_workspace(workspace.id).unwrap().unwrap();
+    assert_eq!(renamed.name, "Renamed");
+    assert!(reader.conn.execute("DELETE FROM workspaces", []).is_err());
+}
+
+#[test]
+fn query_tasks_filters_and_pages_back_from_the_newest() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let local = add_workspace(&mut storage, "local", local_location(r"C:\dev\local"));
+    let remote = add_workspace(&mut storage, "remote", ssh_location("box", "/srv/remote"));
+    let [a, b, c, d, e] = ["A", "B", "C", "D", "E"].map(|title| {
+        let workspace = if title == "B" || title == "D" {
+            &remote
+        } else {
+            &local
+        };
+        add_task(&mut storage, workspace, title).id
+    });
+    for done in [a, b, c] {
+        storage
+            .conn
+            .execute(
+                "UPDATE tasks SET status = 'done', resolution = 'completed' WHERE id = ?1",
+                [done.0],
+            )
+            .unwrap();
+    }
+    let ids = |query: TaskQuery| -> Vec<TaskId> {
+        storage
+            .query_tasks(&query)
+            .unwrap()
+            .into_iter()
+            .map(|task| task.id)
+            .collect()
+    };
+    assert_eq!(ids(TaskQuery::default()), [a, b, c, d, e]);
+    let done = |before| TaskQuery {
+        statuses: vec![Done],
+        before,
+        limit: Some(2),
+        ..TaskQuery::default()
+    };
+    assert_eq!(ids(done(None)), [b, c]);
+    assert_eq!(ids(done(Some(b))), [a]);
+    let local_planned = TaskQuery {
+        workspace: Some(local.id),
+        statuses: vec![Planned, InProgress],
+        ..TaskQuery::default()
+    };
+    assert_eq!(ids(local_planned), [e]);
+    let listed = |list: Vec<TaskId>| TaskQuery {
+        ids: Some(list),
+        ..TaskQuery::default()
+    };
+    assert_eq!(ids(listed(vec![d, a])), [a, d]);
+    assert_eq!(ids(listed(Vec::new())), Vec::<TaskId>::new());
+    // A limited page loads the same details as reading each task.
+    let page = storage
+        .query_tasks(&TaskQuery {
+            before: Some(e),
+            limit: Some(2),
+            ..TaskQuery::default()
+        })
+        .unwrap();
+    let each = [c, d].map(|id| storage.get_task(id).unwrap().unwrap());
+    assert_eq!(page, each);
+}
+
+#[test]
+fn workspace_pull_request_options_round_trip() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "app", local_location(r"C:\dev\app"));
+    assert_eq!(
+        storage
+            .workspace_pull_request_options(workspace.id)
+            .unwrap(),
+        crate::domain::model::PullRequestOptions::default()
+    );
+    let options = crate::domain::model::PullRequestOptions {
+        draft: true,
+        reviewers: vec!["octocat".to_owned(), "acme/core".to_owned()],
+        labels: vec!["needs review".to_owned()],
+    };
+    storage
+        .set_workspace_pull_request_options(workspace.id, &options)
+        .unwrap();
+    assert_eq!(
+        storage
+            .workspace_pull_request_options(workspace.id)
+            .unwrap(),
+        options
+    );
+    assert!(matches!(
+        storage.set_workspace_pull_request_options(WorkspaceId(999), &options),
+        Err(StorageError::WorkspaceNotFound(_))
+    ));
+}
+
+#[test]
+fn a_merged_pull_request_is_recorded_once_as_a_done_task_with_its_history() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "toodo", local_location(r"C:\dev\toodo"));
+    let task = add_task(&mut storage, &workspace, "Add login");
+    let path = HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap());
+    storage
+        .start_task(task.id, &checkout(path, "feat/add-login-1"), "w7")
+        .unwrap();
+    let merged = |branch: &str, number: i64| MergedPullRequestTask {
+        workspace_id: workspace.id,
+        task_type: TaskType::Fix,
+        title: format!("Change {number}"),
+        description: String::new(),
+        branch: branch.to_owned(),
+        pull_request_url: format!("https://github.com/acme/toodo/pull/{number}"),
+        opened_at: 100,
+        merged_at: 200,
+    };
+
+    // The started task has the branch: its pull request is adopted there.
+    assert_eq!(
+        storage
+            .record_merged_pull_request(&merged("feat/add-login-1", 1))
+            .unwrap(),
+        None
+    );
+    let recorded = storage
+        .record_merged_pull_request(&merged("fix/crash", 2))
+        .unwrap()
+        .unwrap();
+    assert_eq!(recorded.status, Done);
+    assert_eq!(
+        recorded.resolution,
+        Some(crate::domain::model::TaskResolution::Merged)
+    );
+    assert_eq!(recorded.task_type, TaskType::Fix);
+    assert_eq!(recorded.branch.as_deref(), Some("fix/crash"));
+    assert_eq!(recorded.pull_request_merged_at, Some(200));
+    let history: Vec<_> = recorded
+        .timeline
+        .iter()
+        .map(|event| (event.status, event.at))
+        .collect();
+    assert_eq!(
+        history,
+        [
+            (Planned, 100),
+            (InProgress, 100),
+            (InReview, 100),
+            (Done, 200)
+        ]
+    );
+    // Importing the same pull request again adds nothing.
+    assert_eq!(
+        storage
+            .record_merged_pull_request(&merged("fix/crash", 2))
+            .unwrap(),
+        None
+    );
+    assert_eq!(row_count(&storage, "tasks"), 2);
 }

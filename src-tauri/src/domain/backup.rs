@@ -2,6 +2,7 @@
 //! the next automatic backup is due, and the automatic backup settings.
 
 use std::fmt;
+use std::path::PathBuf;
 
 /// Why Toodo wrote a backup into its backup directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -10,6 +11,12 @@ pub enum BackupKind {
     Automatic,
     /// Written right before a restore replaced the data.
     PreRestore,
+    /// Written right before a newer Toodo migrated the database to its schema.
+    PreMigration,
+}
+
+impl BackupKind {
+    pub const ALL: [Self; 3] = [Self::Automatic, Self::PreRestore, Self::PreMigration];
 }
 
 impl BackupKind {
@@ -17,6 +24,7 @@ impl BackupKind {
         match self {
             Self::Automatic => "auto",
             Self::PreRestore => "pre-restore",
+            Self::PreMigration => "pre-migration",
         }
     }
 }
@@ -51,12 +59,10 @@ pub fn export_file_name(at: i64) -> String {
 /// Kind and time of a backup named by [`file_name`]; `None` for any other file.
 pub fn parse_file_name(name: &str) -> Option<(BackupKind, i64)> {
     let rest = name.strip_prefix(PREFIX)?.strip_suffix(EXTENSION)?;
-    let (kind, stamp) = [BackupKind::Automatic, BackupKind::PreRestore]
-        .into_iter()
-        .find_map(|kind| {
-            let stamp = rest.strip_prefix(kind.tag())?.strip_prefix('-')?;
-            Some((kind, stamp))
-        })?;
+    let (kind, stamp) = BackupKind::ALL.into_iter().find_map(|kind| {
+        let stamp = rest.strip_prefix(kind.tag())?.strip_prefix('-')?;
+        Some((kind, stamp))
+    })?;
     let (date, time) = stamp.split_once('-')?;
     if date.len() != 8
         || time.len() != 6
@@ -86,13 +92,16 @@ pub fn is_due(latest: Option<i64>, now: i64, interval_hours: u32) -> bool {
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackupSettings {
     pub enabled: bool,
     /// Hours between automatic backups.
     pub interval_hours: u32,
     /// Number of automatic backups kept; older ones are deleted.
     pub keep: u32,
+    /// Absolute path of the directory backups are written to, e.g. on another disk;
+    /// `None` keeps them in the data directory.
+    pub directory: Option<PathBuf>,
 }
 
 impl BackupSettings {
@@ -106,6 +115,11 @@ impl BackupSettings {
         if !(1..=Self::MAX_KEEP).contains(&self.keep) {
             return Err(BackupSettingsError::Keep(self.keep));
         }
+        if let Some(directory) = &self.directory
+            && !directory.is_absolute()
+        {
+            return Err(BackupSettingsError::Directory(directory.clone()));
+        }
         Ok(self)
     }
 }
@@ -116,6 +130,7 @@ impl Default for BackupSettings {
             enabled: true,
             interval_hours: 24,
             keep: 7,
+            directory: None,
         }
     }
 }
@@ -124,6 +139,8 @@ impl Default for BackupSettings {
 pub enum BackupSettingsError {
     Interval(u32),
     Keep(u32),
+    /// The backup directory is not an absolute path.
+    Directory(PathBuf),
 }
 
 impl fmt::Display for BackupSettingsError {
@@ -139,6 +156,12 @@ impl fmt::Display for BackupSettingsError {
                 "number of kept backups must be between 1 and {}, not {count}",
                 BackupSettings::MAX_KEEP
             ),
+            Self::Directory(directory) => write!(
+                f,
+                "backup directory {} is not an absolute path; enter a full path such as \
+                 /mnt/backup/toodo, or leave it empty to keep backups in the data directory",
+                directory.display()
+            ),
         }
     }
 }
@@ -146,7 +169,7 @@ impl fmt::Display for BackupSettingsError {
 impl std::error::Error for BackupSettingsError {}
 
 /// Proleptic Gregorian date of a day counted from 1970-01-01 (Howard Hinnant's algorithm).
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
@@ -195,11 +218,15 @@ mod tests {
             file_name(BackupKind::Automatic, 951_782_400),
             "toodo-auto-20000229-000000.sqlite3"
         );
+        assert_eq!(
+            file_name(BackupKind::PreMigration, 0),
+            "toodo-pre-migration-19700101-000000.sqlite3"
+        );
     }
 
     #[test]
     fn file_names_parse_back() {
-        for kind in [BackupKind::Automatic, BackupKind::PreRestore] {
+        for kind in BackupKind::ALL {
             for at in [0, 951_782_400, 1_791_970_205, 4_102_444_799] {
                 assert_eq!(parse_file_name(&file_name(kind, at)), Some((kind, at)));
             }
@@ -243,6 +270,7 @@ mod tests {
             enabled: true,
             interval_hours,
             keep,
+            directory: None,
         };
         assert_eq!(
             settings(0, 7).validate(),
@@ -261,5 +289,14 @@ mod tests {
             Err(BackupSettingsError::Keep(101))
         );
         assert!(settings(720, 100).validate().is_ok());
+        let in_directory = |directory: &str| BackupSettings {
+            directory: Some(PathBuf::from(directory)),
+            ..BackupSettings::default()
+        };
+        assert_eq!(
+            in_directory("backups").validate(),
+            Err(BackupSettingsError::Directory(PathBuf::from("backups")))
+        );
+        assert!(in_directory("/mnt/backup/toodo").validate().is_ok());
     }
 }

@@ -24,7 +24,7 @@ pub fn branch_freshness(
     github: State<'_, GitHubState>,
     id: TaskId,
 ) -> CommandResult<Option<BranchFreshness>> {
-    freshness(&storage, &git, &github, id.into())
+    freshness(&storage, &git, &**github, id.into())
 }
 
 /// The freshness [`branch_freshness`] reports; also `None` for a task without a branch of a
@@ -32,7 +32,7 @@ pub fn branch_freshness(
 fn freshness(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     id: model::TaskId,
 ) -> CommandResult<Option<BranchFreshness>> {
     {
@@ -80,6 +80,7 @@ mod tests {
     use super::*;
     use crate::adapters::git::GitError;
     use crate::adapters::git::fake::{FakeRunner, failed};
+    use crate::adapters::github::GhCli;
     use crate::commands::lock;
     use crate::commands::types::MergeState;
     use crate::domain::model::{HostPath, TaskType, WorkspaceLocation};
@@ -126,7 +127,7 @@ mod tests {
     fn adapters(
         git: Vec<Result<String, GitError>>,
         gh: Vec<Result<String, GitError>>,
-    ) -> (Git, GitHub, Arc<FakeRunner>) {
+    ) -> (Git, GhCli, Arc<FakeRunner>) {
         let gh = Arc::new(FakeRunner::new(gh));
         (
             Git::new(Box::new(Arc::new(FakeRunner::new(
@@ -135,7 +136,7 @@ mod tests {
                 ))
                 .chain(git),
             )))),
-            GitHub::new(Box::new(gh.clone())),
+            GhCli::new(Box::new(gh.clone())),
             gh,
         )
     }
@@ -156,7 +157,7 @@ mod tests {
             std::iter::once(Ok(String::new())).chain(behind_by(3)),
         ));
         let git = Git::new(Box::new(runner.clone()));
-        let github = GitHub::new(Box::new(Arc::new(FakeRunner::default())));
+        let github = GhCli::new(Box::new(Arc::new(FakeRunner::default())));
 
         let result = freshness(&storage, &git, &github, id).unwrap().unwrap();
 

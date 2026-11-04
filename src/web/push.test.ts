@@ -202,7 +202,7 @@ describe("push on this device", () => {
     const { created } = installServiceWorker(null);
     serve({
       "PUT /api/push/subscription": () =>
-        json({ kind: "rejected", message: "sign in with a device token to get notifications" }, 403),
+        json({ kind: "rejected", code: "rejected", message: "sign in with a device token to get notifications" }, 403),
     });
     const push = await freshPush();
 
@@ -271,17 +271,6 @@ describe("push on this device", () => {
 describe("listenForOpenTask", () => {
   afterEach(() => {
     Reflect.deleteProperty(navigator, "serviceWorker");
-    history.replaceState(null, "", "/");
-  });
-
-  it("opens the task of the address and drops it from there", () => {
-    history.replaceState(null, "", "/?task=12&view=all");
-    const open = vi.fn();
-
-    listenForOpenTask(open)();
-
-    expect(open.mock.calls).toEqual([[12]]);
-    expect(location.search).toBe("?view=all");
   });
 
   it("opens the task the service worker asks for and ignores other messages", () => {

@@ -179,15 +179,21 @@ pub enum Runner {
     None,
     /// Agents in a herdr workspace on a task worktree and branch.
     Herdr,
+    /// Agent CLIs that Toodo runs itself on a task worktree and branch, without herdr.
+    Plain,
+    /// Agent CLIs in a tmux session on a POSIX host.
+    Tmux,
 }
 
 impl Runner {
-    pub const ALL: [Self; 2] = [Self::None, Self::Herdr];
+    pub const ALL: [Self; 4] = [Self::None, Self::Herdr, Self::Plain, Self::Tmux];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Herdr => "herdr",
+            Self::Plain => "plain",
+            Self::Tmux => "tmux",
         }
     }
 }
@@ -246,18 +252,35 @@ pub fn check_axes(
         }
         _ => {}
     }
-    if source == Source::None && runner == Runner::Herdr {
-        return invalid(
-            "runner herdr needs a git repository for task worktrees; choose runner none for \
-             source none, or source local_git or github for runner herdr"
-                .to_owned(),
-        );
+    if source == Source::None && runner != Runner::None {
+        return invalid(format!(
+            "runner {runner} needs a git repository for task worktrees; choose runner none \
+             for source none, or source local_git or github for runner {runner}"
+        ));
     }
     if runner == Runner::None && completion != CompletionMode::Manual {
         return invalid(format!(
             "completion {completion} merges the task branch that only a runner creates; \
              choose runner herdr for completion {completion}, or completion manual for \
              runner none"
+        ));
+    }
+    Ok(())
+}
+
+/// Checks the host requirements of a runner. Plain supports either remote OS; tmux
+/// requires a POSIX host.
+pub fn check_runner_location(
+    runner: Runner,
+    location: &WorkspaceLocation,
+) -> Result<(), InvalidAxes> {
+    if runner == Runner::Tmux
+        && matches!(location, WorkspaceLocation::Ssh { path, .. } if path.is_windows())
+    {
+        return Err(InvalidAxes(
+            "runner tmux needs a POSIX host; choose runner plain or herdr for a Windows \
+             SSH workspace, or choose a POSIX path for runner tmux"
+                .to_owned(),
         ));
     }
     Ok(())
@@ -290,6 +313,81 @@ pub enum AgentMerge {
     /// Agents merge their pull request into the workspace base branch once its checks
     /// pass.
     AfterChecks,
+}
+
+/// How much the agent of a plain or tmux run may do without asking. The agent CLIs have
+/// no one to ask, so a run that needs more than its mode allows fails or stops early.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PermissionMode {
+    /// Read and plan only: Claude's `plan` mode, Codex's `read-only` sandbox.
+    ReadOnly,
+    /// Edit files in the worktree: Claude's `acceptEdits` mode, Codex's `--full-auto`.
+    Edit,
+    /// Anything, without checks or a sandbox: Claude's `bypassPermissions` mode, Codex's
+    /// `--dangerously-bypass-approvals-and-sandbox`.
+    Bypass,
+}
+
+impl PermissionMode {
+    pub const ALL: [Self; 3] = [Self::ReadOnly, Self::Edit, Self::Bypass];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read_only",
+            Self::Edit => "edit",
+            Self::Bypass => "bypass",
+        }
+    }
+}
+
+/// How long a plain run may take when neither its task nor its workspace sets a limit.
+pub const DEFAULT_RUN_TIME_LIMIT_MINUTES: u32 = 4 * 60;
+/// The longest time limit a task or workspace may set: a week.
+pub const MAX_RUN_TIME_LIMIT_MINUTES: u32 = 7 * 24 * 60;
+
+/// How the agent of a run is launched, as a workspace sets it for its tasks or a task
+/// sets it for itself. `None` leaves a value to the next level: a task's to its
+/// workspace, a workspace's to the agent CLI's own default model, the agent's default
+/// permission mode, and [`DEFAULT_RUN_TIME_LIMIT_MINUTES`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentOptions {
+    /// The model the agent CLI is asked for, e.g. `sonnet` or `gpt-5-codex`.
+    pub model: Option<String>,
+    pub permission_mode: Option<PermissionMode>,
+    /// How long a plain run may take before it is stopped and fails, in minutes.
+    pub time_limit_minutes: Option<u32>,
+}
+
+impl AgentOptions {
+    /// These options with every value they leave unset taken from `base`, e.g. a task's
+    /// options over its workspace's.
+    pub fn over(&self, base: &AgentOptions) -> AgentOptions {
+        AgentOptions {
+            model: self.model.clone().or_else(|| base.model.clone()),
+            permission_mode: self.permission_mode.or(base.permission_mode),
+            time_limit_minutes: self.time_limit_minutes.or(base.time_limit_minutes),
+        }
+    }
+
+    /// The time limit of a run with these options, in seconds.
+    pub fn time_limit_secs(&self) -> u64 {
+        u64::from(
+            self.time_limit_minutes
+                .unwrap_or(DEFAULT_RUN_TIME_LIMIT_MINUTES),
+        ) * 60
+    }
+}
+
+/// How Toodo opens the pull requests of a workspace's tasks. The default opens a ready
+/// pull request without reviewers or labels.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PullRequestOptions {
+    /// Open pull requests as drafts.
+    pub draft: bool,
+    /// Users (`login`) or teams (`org/team`) asked to review each pull request.
+    pub reviewers: Vec<String>,
+    /// Labels added to each pull request; they must exist in the repository.
+    pub labels: Vec<String>,
 }
 
 /// Per-machine configuration. `worktree_root` must be set before a task on that
@@ -509,6 +607,9 @@ pub struct Task {
     pub estimate: Option<Estimate>,
     /// The day the task should be done by, if it has one.
     pub due_date: Option<DueDate>,
+    /// Labels such as a project or goal, sorted and unique (see
+    /// [`crate::domain::plan::labels`]).
+    pub labels: Vec<String>,
     /// Merge time of the pull request reported by GitHub, in seconds since the Unix
     /// epoch.
     pub pull_request_merged_at: Option<i64>,
@@ -579,6 +680,14 @@ mod tests {
             (Source::GitHub, Manual, Runner::None),
             (Source::GitHub, Manual, Runner::Herdr),
             (Source::GitHub, PullRequestMerge, Runner::Herdr),
+            (Source::LocalGit, Manual, Runner::Plain),
+            (Source::LocalGit, LocalMerge, Runner::Plain),
+            (Source::GitHub, Manual, Runner::Plain),
+            (Source::GitHub, PullRequestMerge, Runner::Plain),
+            (Source::LocalGit, Manual, Runner::Tmux),
+            (Source::LocalGit, LocalMerge, Runner::Tmux),
+            (Source::GitHub, Manual, Runner::Tmux),
+            (Source::GitHub, PullRequestMerge, Runner::Tmux),
         ];
         let mut checked = 0;
         for source in Source::ALL {
@@ -598,7 +707,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 18);
+        assert_eq!(checked, 36);
     }
 
     #[test]
@@ -614,6 +723,11 @@ mod tests {
             message(Source::None, CompletionMode::Manual, Runner::Herdr),
             "runner herdr needs a git repository for task worktrees; choose runner none for \
              source none, or source local_git or github for runner herdr"
+        );
+        assert_eq!(
+            message(Source::None, CompletionMode::Manual, Runner::Plain),
+            "runner plain needs a git repository for task worktrees; choose runner none for \
+             source none, or source local_git or github for runner plain"
         );
         assert_eq!(
             message(
@@ -638,6 +752,33 @@ mod tests {
             "completion pr_merge merges the task branch that only a runner creates; choose \
              runner herdr for completion pr_merge, or completion manual for runner none"
         );
+    }
+
+    #[test]
+    fn only_tmux_rejects_a_windows_ssh_path() {
+        let local = WorkspaceLocation::Local {
+            path: crate::domain::path::PosixPath::parse("/srv/repo")
+                .unwrap()
+                .into(),
+        };
+        let ssh = WorkspaceLocation::Ssh {
+            machine: MachineLabel::parse("devbox").unwrap(),
+            path: crate::domain::path::PosixPath::parse("/srv/repo")
+                .unwrap()
+                .into(),
+        };
+        for runner in Runner::ALL {
+            check_runner_location(runner, &local).unwrap();
+            check_runner_location(runner, &ssh).unwrap();
+            let windows = WorkspaceLocation::Ssh {
+                machine: MachineLabel::parse("devbox").unwrap(),
+                path: WindowsPath::parse(r"C:\repo").unwrap().into(),
+            };
+            assert_eq!(
+                check_runner_location(runner, &windows).is_err(),
+                runner == Runner::Tmux
+            );
+        }
     }
 
     #[test]
@@ -671,6 +812,9 @@ mod tests {
             CompletionMode::ALL.map(CompletionMode::as_str),
             ["manual", "local_merge", "pr_merge"]
         );
-        assert_eq!(Runner::ALL.map(Runner::as_str), ["none", "herdr"]);
+        assert_eq!(
+            Runner::ALL.map(Runner::as_str),
+            ["none", "herdr", "plain", "tmux"]
+        );
     }
 }

@@ -13,9 +13,17 @@ export interface PushSettings {
   readonly completion: boolean;
 }
 
+/** Why the latest notification did not reach this device; `at` is in Unix seconds. */
+export interface PushFailure {
+  readonly message: string;
+  readonly at: number;
+}
+
 export interface ServerSubscription {
   readonly endpoint: string;
   readonly settings: PushSettings;
+  /** Kept until a notification reaches this device again. */
+  readonly lastFailure: PushFailure | null;
 }
 
 export interface PushState {
@@ -189,21 +197,11 @@ export async function sendTest(): Promise<void> {
 const openTaskMessage = "toodo-open-task";
 
 /**
- * Calls `open` for each task a clicked notification asks for: from the `task` parameter of
- * the page the service worker opened, dropped from the address afterwards, and from the
- * service worker's messages to a page that was open already. Returns the function that stops
- * listening.
+ * Calls `open` for each task a clicked notification asks for in the service worker's messages
+ * to a page that was open already. A page the service worker opens gets the task in its
+ * address, which the app's route reads. Returns the function that stops listening.
  */
 export function listenForOpenTask(open: (id: TaskId) => void): () => void {
-  const url = new URL(location.href);
-  const requested = url.searchParams.get("task");
-  if (requested !== null) {
-    url.searchParams.delete("task");
-    history.replaceState(history.state, "", url);
-    if (/^\d+$/.test(requested)) {
-      open(Number(requested));
-    }
-  }
   // Pages outside a secure context have no service workers.
   if (!("serviceWorker" in navigator)) {
     return () => {};

@@ -10,19 +10,82 @@
 
 pub mod events;
 mod herdr;
+pub mod host;
+pub mod log;
+pub mod plain;
+pub mod tmux;
 mod workspace;
 
 use std::fmt;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::adapters::herdr::HerdrError;
-use crate::domain::model::TaskId;
+use crate::domain::model::{TaskId, WorkspaceId};
 use crate::domain::runtime::{
     HostRef, OwnerKey, RunId, RunRole, RunState, RunnerKind, RuntimeWorkspaceId,
 };
 use crate::storage::{NewRun, Storage, StorageError, TaskRun};
 
 pub use workspace::{OpenFor, OpenWorktree, TaskWorktree, end_runs};
+
+/// What one [`reconcile_remote_runs`] pass left.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct RemotePass {
+    /// The workspaces with a run that the pass settled or observed again.
+    pub changed: std::collections::BTreeSet<WorkspaceId>,
+    /// Whether a run is still unknown: its host could not be reached, or its agent runs
+    /// on without a stream to observe.
+    pub pending: bool,
+}
+
+/// Reconciles every remote plain or tmux run whose observation was lost, as
+/// `reconcile_run` does. The server runs it in the background after startup, so remote
+/// runs settle on their own after a restart.
+pub fn reconcile_remote_runs(
+    storage: &Mutex<Storage>,
+    plain: &plain::PlainRunner,
+    tmux: &tmux::TmuxRunner,
+) -> Result<RemotePass, RuntimeError> {
+    let runs = {
+        let storage = lock(storage);
+        let mut runs = Vec::new();
+        for workspace in storage.list_workspaces()? {
+            for task in storage.list_tasks(workspace.id)? {
+                for run in storage.list_task_runs(task.id)? {
+                    if run.state == RunState::Unknown
+                        && matches!(run.host, HostRef::Ssh(_))
+                        && matches!(run.runner_kind, RunnerKind::Plain | RunnerKind::Tmux)
+                    {
+                        runs.push((workspace.id, run));
+                    }
+                }
+            }
+        }
+        runs
+    };
+    let mut pass = RemotePass::default();
+    for (workspace, run) in runs {
+        let reconciled = match run.runner_kind {
+            RunnerKind::Tmux => tmux.reconcile(run.id),
+            _ => plain.reconcile(run.id),
+        };
+        match reconciled {
+            Ok(now) if now.state == RunState::Unknown => pass.pending = true,
+            Ok(_) => {
+                pass.changed.insert(workspace);
+            }
+            Err(error) => {
+                eprintln!(
+                    "toodo-server: could not reconcile run {} ({error}); the server tries \
+                     again later, or reconcile it with reconcile_run",
+                    run.id
+                );
+                pass.pending = true;
+            }
+        }
+    }
+    Ok(pass)
+}
 
 /// A runner failure, with a message that names what to do next.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +170,8 @@ impl From<HerdrError> for RuntimeError {
 /// What a run executes, and where in its runtime workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunCommand {
+    /// An agent CLI launched as a managed child of the plain runner.
+    Agent(AgentLaunch),
     /// An argument vector, never a shell string, run in a new tab of the runtime
     /// workspace that is labelled after the request key, so a retry can find it again.
     // No command launches runs in new tabs yet, so nothing outside tests builds this.
@@ -118,6 +183,27 @@ pub enum RunCommand {
     InPane { pane: String, line: String },
     /// Nothing to run: the work is done by hand, as in a workspace with runner none.
     ByHand,
+}
+
+/// The agent and input of a plain run. The brief is fed on stdin, never in argv.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentLaunch {
+    pub adapter: plain::adapter::AgentAdapter,
+    pub brief: String,
+    pub mcp: bool,
+    /// The model and permission mode the agent is launched with.
+    pub options: plain::adapter::LaunchOptions,
+    pub timeout_secs: u64,
+    /// The earlier conversation a follow-up run continues; `None` starts a new one.
+    pub resume: Option<AgentResume>,
+}
+
+/// The conversation a follow-up run resumes, and the agent session it resumes it from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentResume {
+    pub conversation: i64,
+    /// The Claude session id or Codex thread id the agent last reported.
+    pub session: String,
 }
 
 /// What a runner needs to launch one run.
@@ -165,6 +251,11 @@ impl RunLauncher for NoRunner {
     }
 
     fn launch(&self, spec: &LaunchSpec) -> Result<LaunchReceipt, RunnerError> {
+        if matches!(spec.command, RunCommand::Agent(_)) {
+            return Err(RunnerError(
+                "start an agent run with runner plain instead of runner none".to_owned(),
+            ));
+        }
         Ok(LaunchReceipt {
             provider_run_ref: spec.request_key.clone(),
         })
@@ -230,6 +321,13 @@ impl RuntimeService {
             checkout_path: request.checkout_path,
             runtime_workspace: request.runtime_workspace,
             adapter_profile: request.adapter_profile,
+            conversation: match &request.command {
+                RunCommand::Agent(AgentLaunch {
+                    resume: Some(resume),
+                    ..
+                }) => Some(resume.conversation),
+                _ => None,
+            },
         };
         let run = lock(storage).reserve_run(&new)?.into_run();
         if run.state != RunState::Reserved {
@@ -449,6 +547,7 @@ mod tests {
                 checkout_path: req.checkout_path.clone(),
                 runtime_workspace: None,
                 adapter_profile: None,
+                conversation: None,
             })
             .unwrap()
             .into_run();

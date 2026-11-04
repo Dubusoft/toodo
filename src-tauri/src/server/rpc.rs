@@ -13,14 +13,17 @@ use serde::de::DeserializeOwned;
 
 use super::Services;
 use crate::commands::types::{
-    BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost, NewTask, NewWorkspace,
-    OAuthGrantId, TaskEdit, TaskId, TaskResolution, Timestamp, Workspace, WorkspaceId,
-    WorkspaceLocation,
+    AgentAdapter, AgentOptions, BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost,
+    NewTask, NewWorkspace, OAuthGrantId, PullRequestOptions, ReviewReportRequest, ReviewSnapshotId,
+    RunId, SaveReviewSnapshotRequest, TaskEdit, TaskId, TaskListFilter, TaskResolution, Workspace,
+    WorkspaceId, WorkspaceLocation,
 };
 use crate::commands::{
-    CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
-    herdr, issues, machines, mcp, review, tasks, workspaces,
+    CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, agent_options, backup,
+    completion, events, freshness, herdr, issues, machines, mcp, pull_request_options, review,
+    runners, runs, tasks, workspaces,
 };
+use crate::mcp::Backend as _;
 
 /// What running a command gave.
 #[derive(Debug)]
@@ -67,12 +70,24 @@ impl IntoResponse for Reply {
                 };
                 json(status, &error)
             }
-            Self::UnknownCommand => (StatusCode::NOT_FOUND, "unknown command").into_response(),
-            Self::BadArguments(message) => (
+            Self::UnknownCommand => json(
+                StatusCode::NOT_FOUND,
+                &CommandError::new(
+                    CommandErrorCode::UnknownCommand,
+                    "unknown command; reload the web app so that it matches the server's \
+                     version",
+                ),
+            ),
+            Self::BadArguments(message) => json(
                 StatusCode::BAD_REQUEST,
-                format!("invalid arguments: {message}"),
-            )
-                .into_response(),
+                &CommandError::new(
+                    CommandErrorCode::InvalidArguments,
+                    format!(
+                        "invalid arguments: {message}; reload the web app so that it matches \
+                         the server's version"
+                    ),
+                ),
+            ),
         }
     }
 }
@@ -116,9 +131,7 @@ fn parse<T: DeserializeOwned>(args: serde_json::Value) -> Result<T, Reply> {
 async fn blocking(run: impl FnOnce() -> Reply + Send + 'static) -> Reply {
     tokio::task::spawn_blocking(run)
         .await
-        .unwrap_or_else(|error| {
-            Reply::Failed(CommandError::internal(format!("command panicked: {error}")))
-        })
+        .unwrap_or_else(|error| Reply::Failed(CommandError::panicked(error)))
 }
 
 /// Declares the commands: each has a name, its parameters (the JSON arguments), and how it
@@ -164,17 +177,61 @@ macro_rules! commands {
     }};
 }
 
+/// The commands a read-only device may run: they only read. `mcp_server_info` is left out
+/// because it shows the MCP token, which can change data.
+pub const READ_COMMANDS: &[&str] = &[
+    "app_info",
+    "check_update",
+    "list_connected_apps",
+    "list_workspaces",
+    "get_workspace",
+    "list_workspace_branches",
+    "get_machine_settings",
+    "list_herdr_machines",
+    "list_ssh_hosts",
+    "test_ssh_machine",
+    "list_remote_directories",
+    "list_directories",
+    "list_tasks",
+    "list_task_relations",
+    "get_task",
+    "list_commit_records",
+    "list_task_activity",
+    "list_agent_status_transitions",
+    "herdr_status",
+    "list_task_runs",
+    "get_machine_runs",
+    "get_run_log",
+    "get_workspace_agent_options",
+    "get_task_agent_options",
+    "get_workspace_pull_request_options",
+    "runner_health",
+    "list_pull_request_statuses",
+    "branch_freshness",
+    "list_agent_statuses",
+    "list_mcp_tunnels",
+    "review_period",
+    "list_archive",
+    "review_report",
+    "get_review_time_zone",
+    "list_review_snapshots",
+    "get_review_snapshot",
+    "get_backup_settings",
+    "list_backups",
+];
+
 commands!(s => {
     "app_info"() => sync Reply::value(crate::commands::app_info());
+    "check_update"() => async Reply::value(crate::commands::updates::check_update().await);
     "list_connected_apps"() => sync Reply::result(
-        mcp::list_connected_apps(State(&s.storage), State(&s.public_url))
+        mcp::list_connected_apps(State(s.reader()), State(&s.public_url))
     );
     "revoke_connected_app"(grant_id: OAuthGrantId) => sync Reply::result(
         mcp::revoke_connected_app(State(&s.storage), grant_id)
     );
 
-    "list_workspaces"() => sync Reply::result(workspaces::list_workspaces(State(&s.storage)));
-    "get_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::get_workspace(State(&s.storage), id));
+    "list_workspaces"() => sync Reply::result(workspaces::list_workspaces(State(s.reader())));
+    "get_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::get_workspace(State(s.reader()), id));
     "create_workspace"(workspace: NewWorkspace) => async Reply::result(
         workspaces::create_workspace(State(&s.storage), State(&s.git), State(&s.herdr), workspace).await
     );
@@ -191,8 +248,11 @@ commands!(s => {
         workspaces::create_workspace_base_branch(State(&s.storage), State(&s.git), id, name, from)
     );
     "delete_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::delete_workspace(State(&s.storage), id));
+    "restore_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::restore_workspace(State(&s.storage), id));
+    "purge_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::purge_workspace(State(&s.storage), id));
+    "list_archive"() => sync Reply::result(workspaces::list_archive(State(s.reader())));
     "get_machine_settings"(machine: Machine) => sync Reply::result(
-        workspaces::get_machine_settings(State(&s.storage), machine)
+        workspaces::get_machine_settings(State(s.reader()), machine)
     );
     "save_machine_settings"(settings: MachineSettings) => sync Reply::result(
         workspaces::save_machine_settings(State(&s.storage), settings)
@@ -200,7 +260,12 @@ commands!(s => {
 
     "list_herdr_machines"() => sync Reply::result(machines::list_herdr_machines(State(&s.herdr)));
     "list_ssh_hosts"() => sync Reply::result(machines::list_ssh_hosts(State(&s.ssh_config)));
-    "add_ssh_host"(host: NewSshHost) => sync Reply::result(machines::add_ssh_host(State(&s.ssh_config), host));
+    "add_ssh_host"(host: NewSshHost) => async Reply::result(
+        machines::add_ssh_host(State(&s.ssh_config), State(&s.ssh), host).await
+    );
+    "test_ssh_machine"(machine: String) => async Reply::result(
+        machines::test_ssh_machine(State(&s.ssh), machine).await
+    );
     "list_remote_directories"(machine: String, path: Option<String>) => async Reply::result(
         machines::list_remote_directories(State(&s.ssh), machine, path).await
     );
@@ -208,15 +273,17 @@ commands!(s => {
         machines::list_directories(State(&s.ssh), machine, path).await
     );
 
-    "list_tasks"() => sync Reply::result(tasks::list_tasks(State(&s.storage)));
-    "list_task_relations"() => sync Reply::result(tasks::list_task_relations(State(&s.storage)));
+    "list_tasks"(filter: Option<TaskListFilter>) => sync Reply::result(
+        tasks::list_tasks(State(s.reader()), filter)
+    );
+    "list_task_relations"() => sync Reply::result(tasks::list_task_relations(State(s.reader())));
     "add_task_relation"(task_id: TaskId, related_id: TaskId) => sync Reply::result(
         tasks::add_task_relation(State(&s.storage), task_id, related_id)
     );
     "remove_task_relation"(task_id: TaskId, related_id: TaskId) => sync Reply::result(
         tasks::remove_task_relation(State(&s.storage), task_id, related_id)
     );
-    "get_task"(id: TaskId) => sync Reply::result(tasks::get_task(State(&s.storage), id));
+    "get_task"(id: TaskId) => sync Reply::result(tasks::get_task(State(s.reader()), id));
     "create_task"(task: NewTask) => sync Reply::result(
         tasks::create_task(State(&s.storage), task)
     );
@@ -237,8 +304,10 @@ commands!(s => {
         tasks::set_task_outcome(State(&s.storage), id, resolution, note)
     );
     "delete_task"(id: TaskId, force: bool) => sync Reply::result(
-        tasks::delete_task(State(&s.storage), State(&s.herdr), id, force)
+        tasks::delete_task(State(&s.storage), State(&s.git), State(&s.herdr), State(&s.plain), State(&s.tmux), id, force)
     );
+    "restore_task"(id: TaskId) => sync Reply::result(tasks::restore_task(State(&s.storage), id));
+    "purge_task"(id: TaskId) => sync Reply::result(tasks::purge_task(State(&s.storage), id));
     "add_dependency"(task_id: TaskId, depends_on: TaskId, confirm_pause: bool) => sync Reply::result(
         tasks::add_dependency(State(&s.storage), State(&s.herdr), task_id, depends_on, confirm_pause)
     );
@@ -246,10 +315,13 @@ commands!(s => {
         tasks::remove_dependency(State(&s.storage), task_id, depends_on)
     );
     "list_commit_records"(task_id: TaskId) => sync Reply::result(
-        tasks::list_commit_records(State(&s.storage), task_id)
+        tasks::list_commit_records(State(s.reader()), task_id)
     );
     "list_task_activity"(task_id: TaskId) => sync Reply::result(
-        tasks::list_task_activity(State(&s.storage), task_id)
+        tasks::list_task_activity(State(s.reader()), task_id)
+    );
+    "list_agent_status_transitions"(task_id: TaskId) => sync Reply::result(
+        tasks::list_agent_status_transitions(State(s.reader()), task_id)
     );
 
     "herdr_status"() => sync Reply::result(herdr::herdr_status(State(&s.herdr)));
@@ -270,21 +342,80 @@ commands!(s => {
         herdr::close_task_workspace(State(&s.storage), State(&s.herdr), id)
     );
 
+    "start_plain_run"(task_id: TaskId, adapter: AgentAdapter, prompt: Option<String>, mcp: bool, follow_up_of: Option<RunId>) => sync Reply::result(
+        runs::start_plain_run(State(&s.storage), State(&s.plain), State(&s.tmux), task_id, adapter, prompt, mcp, follow_up_of)
+    );
+    "get_workspace_agent_options"(workspace_id: WorkspaceId) => sync Reply::result(
+        agent_options::get_workspace_agent_options(State(s.reader()), workspace_id)
+    );
+    "set_workspace_agent_options"(workspace_id: WorkspaceId, options: AgentOptions) => sync Reply::result(
+        agent_options::set_workspace_agent_options(State(&s.storage), workspace_id, options)
+    );
+    "get_task_agent_options"(task_id: TaskId) => sync Reply::result(
+        agent_options::get_task_agent_options(State(s.reader()), task_id)
+    );
+    "set_task_agent_options"(task_id: TaskId, options: AgentOptions) => sync Reply::result(
+        agent_options::set_task_agent_options(State(&s.storage), task_id, options)
+    );
+    "get_workspace_pull_request_options"(workspace_id: WorkspaceId) => sync Reply::result(
+        pull_request_options::get_workspace_pull_request_options(State(s.reader()), workspace_id)
+    );
+    "set_workspace_pull_request_options"(workspace_id: WorkspaceId, options: PullRequestOptions) => sync Reply::result(
+        pull_request_options::set_workspace_pull_request_options(State(&s.storage), workspace_id, options)
+    );
+    "get_machine_runs"(machine: Machine) => sync Reply::result(
+        runs::get_machine_runs(State(s.reader()), machine)
+    );
+    "set_machine_run_limit"(machine: Machine, max_concurrent_runs: Option<u32>) => sync Reply::result(
+        runs::set_machine_run_limit(State(&s.storage), machine, max_concurrent_runs)
+    );
+    "list_task_runs"(task_id: TaskId) => sync Reply::result(
+        runs::list_task_runs(State(s.reader()), task_id)
+    );
+    "get_run_log"(run_id: RunId, tail_bytes: Option<u32>) => sync Reply::result(
+        runs::get_run_log(State(&s.storage), State(&s.plain), State(&s.tmux), run_id, tail_bytes)
+    );
+    "stop_run"(run_id: RunId) => sync Reply::result(
+        runs::stop_run(State(&s.storage), State(&s.plain), State(&s.tmux), run_id)
+    );
+    "reconcile_run"(run_id: RunId) => sync Reply::result(
+        runs::reconcile_run(State(&s.storage), State(&s.plain), State(&s.tmux), run_id)
+    );
+    "runner_health"() => sync Reply::result(runners::runner_health(State(&s.herdr)));
+
     "refresh_commit_records"(task_id: TaskId) => sync Reply::result(
         completion::refresh_commit_records(State(&s.storage), State(&s.git), task_id)
     );
     "open_pull_request"(id: TaskId) => sync Reply::result(
         completion::open_pull_request(State(&s.storage), State(&s.git), State(&s.github), id)
     );
-    "complete_task"(id: TaskId) => sync Reply::result(
-        completion::complete_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id)
-    );
-    "conclude_task"(id: TaskId, note: String) => sync Reply::result(
-        completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note)
-    );
-    "complete_task_merged_with"(id: TaskId, merged_with_task: Option<TaskId>, pull_request_url: Option<String>) => sync Reply::result(
-        completion::complete_task_merged_with(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, merged_with_task, pull_request_url)
-    );
+    "complete_task"(id: TaskId) => sync {
+        Reply::result(runs::stop_live_runs_after(
+            completion::complete_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id),
+            &s.storage,
+            &s.plain,
+            &s.tmux,
+            id.into(),
+        ))
+    };
+    "conclude_task"(id: TaskId, note: String) => sync {
+        Reply::result(runs::stop_live_runs_after(
+            completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note),
+            &s.storage,
+            &s.plain,
+            &s.tmux,
+            id.into(),
+        ))
+    };
+    "complete_task_merged_with"(id: TaskId, merged_with_task: Option<TaskId>, pull_request_url: Option<String>) => sync {
+        Reply::result(runs::stop_live_runs_after(
+            completion::complete_task_merged_with(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, merged_with_task, pull_request_url),
+            &s.storage,
+            &s.plain,
+            &s.tmux,
+            id.into(),
+        ))
+    };
     "list_pull_request_statuses"() => sync Reply::value(
         completion::list_pull_request_statuses(State(&s.pull_request_statuses))
     );
@@ -302,11 +433,32 @@ commands!(s => {
     "mcp_server_info"() => sync Reply::value(mcp::mcp_server_info(State(&s.mcp)));
     "list_mcp_tunnels"() => sync Reply::value(mcp::list_mcp_tunnels(State(&s.tunnels)));
 
-    "review_period"(start: Timestamp, end: Timestamp) => sync Reply::result(
-        review::review_period(State(&s.storage), start, end)
+    "review_period"(from: String, to: String) => sync Reply::result(
+        review::review_period(State(s.reader()), from, to)
+    );
+    "backfill_pull_requests"(from: String, to: String) => sync Reply::result(
+        review::backfill_pull_requests(State(&s.storage), State(&s.git), State(&s.github), from, to)
+    );
+    "review_report"(request: ReviewReportRequest) => sync Reply::result(
+        review::review_report(State(s.reader()), request)
+    );
+    "get_review_time_zone"() => sync Reply::result(review::get_review_time_zone(State(s.reader())));
+    "set_review_time_zone"(time_zone: Option<String>) => sync Reply::result(
+        review::set_review_time_zone(State(&s.storage), time_zone)
+    );
+    "save_review_snapshot"(request: SaveReviewSnapshotRequest) => sync Reply::result(
+        review::save_review_snapshot(State(&s.storage), request)
+    );
+    "list_review_snapshots"() => sync Reply::result(review::list_review_snapshots(State(s.reader())));
+    "get_review_snapshot"(id: ReviewSnapshotId) => sync Reply::result(
+        review::get_review_snapshot(State(s.reader()), id)
+    );
+    "delete_review_snapshot"(id: ReviewSnapshotId) => sync Reply::result(
+        review::delete_review_snapshot(State(&s.storage), id)
     );
 
     "get_backup_settings"() => sync Reply::value(backup::get_backup_settings(State(&s.backups)));
+    "get_backup_status"() => sync Reply::value(backup::get_backup_status(State(&s.backups)));
     "save_backup_settings"(settings: BackupSettings) => sync Reply::result(
         backup::save_backup_settings(State(&s.storage), State(&s.backups), settings)
     );
@@ -334,6 +486,14 @@ mod tests {
         );
         let served: BTreeSet<String> = COMMANDS.iter().map(|name| (*name).to_owned()).collect();
         assert_eq!(served, bound);
+    }
+
+    #[test]
+    fn read_commands_are_served_and_leave_out_the_mcp_token() {
+        for command in READ_COMMANDS {
+            assert!(COMMANDS.contains(command), "{command}");
+        }
+        assert!(!READ_COMMANDS.contains(&"mcp_server_info"));
     }
 
     #[test]

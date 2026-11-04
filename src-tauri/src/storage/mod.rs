@@ -8,6 +8,8 @@
 //! line with the dependencies after every change.
 
 mod activity;
+mod agent_options;
+mod agent_status;
 mod backup;
 mod commits;
 mod criteria;
@@ -15,7 +17,9 @@ mod devices;
 mod import;
 mod migrations;
 pub mod oauth;
+mod pull_request_options;
 mod push;
+mod reviews;
 mod runtime;
 mod search;
 mod tasks;
@@ -26,9 +30,9 @@ mod tests;
 
 use std::fmt;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 
 use crate::domain::criteria::{CheckKind, CriterionId};
 use crate::domain::dag::{BlockingDependency, DependencyError};
@@ -37,18 +41,32 @@ use crate::domain::model::{TaskId, TaskResolution, WorkspaceId};
 use crate::domain::runtime::{RunId, RunState};
 use crate::domain::status::TransitionError;
 
-pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
+pub use agent_status::AgentStatusTransition;
+pub use backup::{
+    BackupFile, StagedBackup, backup_before_migration, backup_database, export_database,
+    list_backups, prune_backups, stage_backup,
+};
 pub use criteria::{CriterionCheck, CriterionEdit};
+pub use devices::DeviceAuth;
 pub use import::ImportSummary;
 pub use push::NewPushSubscription;
+pub use reviews::{ReviewSnapshot, ReviewSnapshotInfo};
 pub use runtime::{
-    HostCursor, NewRun, Reservation, RunEvent, RunOperation, RuntimeWorkspace, TaskRun,
+    HostCursor, NewRun, QueuedRun, QueuedStart, Reservation, RunEvent, RunOperation,
+    RuntimeWorkspace, TaskRun,
 };
 pub use search::TaskSearch;
-pub use tasks::{AddedDependencies, DependencyChange, NewTask, PauseRule};
+pub use tasks::{
+    AddedDependencies, DependencyChange, MergedPullRequestTask, NewPlanTask, NewTask, PauseRule,
+    PlanLink, TaskQuery,
+};
 pub use workspaces::NewWorkspace;
 
 pub type Result<T> = std::result::Result<T, StorageError>;
+
+/// The schema of the first version, for tests that open a database of an older Toodo.
+#[cfg(test)]
+pub(crate) const FIRST_MIGRATION: &str = migrations::MIGRATIONS[0];
 
 /// Handle to the Toodo database. Readers take `&self`; writers take `&mut self` and run
 /// in a transaction.
@@ -59,7 +77,11 @@ pub struct Storage {
     clock: Box<dyn Fn() -> i64 + Send>,
 }
 
-fn system_clock() -> i64 {
+/// How long a statement waits for a lock another connection or process holds before it
+/// fails with `SQLITE_BUSY`.
+pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+pub(crate) fn system_clock() -> i64 {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the system clock is set after the Unix epoch");
@@ -70,7 +92,27 @@ impl Storage {
     /// Opens (or creates) the database file at `path` and migrates it to the latest
     /// schema.
     pub fn open(path: &Path) -> Result<Self> {
-        Self::init(Connection::open(path)?)
+        let conn = Connection::open(path)?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        // Write-ahead logging lets readers (the connection of `open_reader`, backups, an
+        // external sqlite3) read the last committed data while a write is in progress.
+        conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
+        Self::init(conn)
+    }
+
+    /// Opens a read-only connection to the database file at `path`, which [`Self::open`]
+    /// has created and migrated. Its reads do not wait for writes of other connections;
+    /// writes through it fail.
+    pub fn open_reader(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        Ok(Self {
+            conn,
+            clock: Box::new(system_clock),
+        })
     }
 
     /// Opens a private in-memory database with the latest schema.
@@ -121,6 +163,24 @@ pub enum StorageError {
         task: TaskId,
     },
     TaskNotFound(TaskId),
+    /// Only an archived task can be restored or purged.
+    TaskNotArchived(TaskId),
+    /// Only an archived workspace can be restored or purged.
+    WorkspaceNotArchived(WorkspaceId),
+    /// A task of an archived workspace comes back with its workspace, not on its own.
+    WorkspaceArchived {
+        workspace: WorkspaceId,
+        task: TaskId,
+    },
+    /// A workspace cannot be archived while `run` of its task `task` is queued or active.
+    WorkspaceHasActiveRun {
+        workspace: WorkspaceId,
+        task: TaskId,
+        run: RunId,
+    },
+    /// Restoring would bring back dependencies that close this loop (see
+    /// [`DependencyError::Cycle`]) with edges added while the tasks were archived.
+    RestoreClosesCycle(Vec<TaskId>),
     Dependency(DependencyError),
     Transition(TransitionError),
     /// A task cannot start while one of its dependencies is not done or was concluded
@@ -133,6 +193,11 @@ pub enum StorageError {
     PrerequisiteOfDoneTask {
         task: TaskId,
         depends_on: Vec<TaskId>,
+    },
+    /// The dependencies of a `done` task are kept as they were when it finished.
+    DependencyOfDoneTask {
+        task: TaskId,
+        depends_on: TaskId,
     },
     /// The dependency to remove does not exist.
     DependencyNotFound {
@@ -189,6 +254,8 @@ pub enum StorageError {
     InvalidData(String),
     /// A file to restore from is not a readable Toodo database.
     InvalidBackup(String),
+    /// A backup Toodo just wrote failed `PRAGMA integrity_check`; it was deleted.
+    BackupCheckFailed(String),
     Io(std::io::Error),
 }
 
@@ -207,7 +274,7 @@ impl fmt::Display for StorageError {
                 depends_on,
             } => write!(
                 f,
-                "workspace {} cannot be removed: task {task} of another workspace depends on its task {depends_on}",
+                "workspace {} cannot be removed: task {task} of another workspace depends on its task {depends_on}; remove that dependency first (in task {task}'s dependencies, or remove_dependency over MCP), then remove the workspace again",
                 workspace.0
             ),
             Self::BaseBranchInReview { workspace, task } => write!(
@@ -216,6 +283,37 @@ impl fmt::Display for StorageError {
                 workspace.0
             ),
             Self::TaskNotFound(id) => write!(f, "task {id} does not exist"),
+            Self::TaskNotArchived(id) => write!(
+                f,
+                "task {id} is not archived; delete it first (deleting archives it), then restore or purge it from the archive"
+            ),
+            Self::WorkspaceNotArchived(id) => write!(
+                f,
+                "workspace {} is not archived; remove it first (removing archives it), then restore or purge it from the archive",
+                id.0
+            ),
+            Self::WorkspaceArchived { workspace, task } => write!(
+                f,
+                "task {task} belongs to archived workspace {}; restore workspace {} instead, which brings its tasks back",
+                workspace.0, workspace.0
+            ),
+            Self::WorkspaceHasActiveRun {
+                workspace,
+                task,
+                run,
+            } => write!(
+                f,
+                "workspace {} cannot be removed while run {run} of its task {task} is queued or active; stop run {run} first (Stop in the task's runs, or stop_run over MCP), then remove the workspace again",
+                workspace.0
+            ),
+            Self::RestoreClosesCycle(path) => {
+                let ids: Vec<String> = path.iter().map(TaskId::to_string).collect();
+                write!(
+                    f,
+                    "restoring would close the dependency cycle {}; remove one of the dependencies along it among the live tasks (remove_dependency), then restore again",
+                    ids.join(" -> ")
+                )
+            }
             Self::Dependency(error) => error.fmt(f),
             Self::Transition(error) => error.fmt(f),
             Self::DependenciesNotDone { task, blockers } => {
@@ -241,6 +339,10 @@ impl fmt::Display for StorageError {
                     ids.join(", ")
                 )
             }
+            Self::DependencyOfDoneTask { task, depends_on } => write!(
+                f,
+                "task {task} is done, so its dependency on {depends_on} is kept; to change its dependencies, reopen it with reopen_task {task} first, then call remove_dependency again"
+            ),
             Self::DependencyNotFound { task, depends_on } => write!(
                 f,
                 "task {task} does not depend on {depends_on}; get_task {task} lists the tasks it depends on (dependsOn), and task_id is the task that waits"
@@ -285,7 +387,8 @@ impl fmt::Display for StorageError {
             ),
             Self::RunNotFound(id) => write!(
                 f,
-                "run {id} does not exist; list the runs of its task to find the run to use"
+                "run {id} does not exist; list the runs of its task (run_status with its \
+                 task_id over MCP, or the task's runs in the Toodo app) to find the run to use"
             ),
             Self::CheckoutHasActiveWriter {
                 checkout,
@@ -301,6 +404,10 @@ impl fmt::Display for StorageError {
             ),
             Self::InvalidData(message) => write!(f, "stored data is invalid: {message}"),
             Self::InvalidBackup(message) => write!(f, "invalid backup {message}"),
+            Self::BackupCheckFailed(message) => write!(
+                f,
+                "the backup failed its integrity check and was deleted ({message}); check the disk of the backup directory and back up again"
+            ),
             Self::Io(error) => write!(f, "file error: {error}"),
         }
     }

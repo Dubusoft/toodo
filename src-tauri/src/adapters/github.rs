@@ -1,14 +1,19 @@
-//! Opens GitHub pull requests and reads their state with the `gh` CLI, reusing its authentication. `gh` always
+//! Opens GitHub pull requests and reads their state behind the [`GitHub`] trait. Its
+//! backend [`GhCli`] runs the `gh` CLI, reusing its authentication. `gh` always
 //! runs on this machine and names the repository with `--repo`, so it does not need a
 //! local checkout and works for workspaces on SSH machines too.
 //!
 //! Processes are started through the [`Runner`] of the git adapter, so tests can fake
 //! them the same way.
 
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
 use serde_json::Value;
 
 use super::git::{GitError, Invocation, LoggedCommit, Runner, describe};
-use crate::domain::model::{LinkedIssue, PullRequestSnapshot};
+use crate::domain::backup::civil_from_days;
+use crate::domain::model::{LinkedIssue, PullRequestOptions, PullRequestSnapshot};
 use crate::domain::remote::GitHubRepository;
 
 /// A pull request to open from `head` into `base`.
@@ -19,6 +24,59 @@ pub struct NewPullRequest<'a> {
     pub base: &'a str,
     pub title: &'a str,
     pub body: &'a str,
+    pub options: &'a PullRequestOptions,
+}
+
+/// Why GitHub refused to open a pull request, read from what `gh pr create` printed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PullRequestRefusal {
+    /// gh has no login, or GitHub rejected its token.
+    NotLoggedIn,
+    /// The login may not open pull requests in the repository.
+    PermissionDenied,
+    /// A reviewer is not a user or team that can review in the repository, or is the
+    /// author of the pull request.
+    InvalidReviewer,
+    /// A label does not exist in the repository.
+    UnknownLabel,
+    /// The repository does not allow draft pull requests.
+    DraftUnsupported,
+    /// A pull request from the branch into the base is already open.
+    AlreadyExists,
+    /// The branch on GitHub has no commits that are not on the base.
+    NoCommits,
+}
+
+impl PullRequestRefusal {
+    /// The refusal `error` of `gh pr create` reports; `None` for any other failure.
+    pub fn of(error: &GitError) -> Option<Self> {
+        let GitError::Failed { stderr, .. } = error else {
+            return None;
+        };
+        let stderr = stderr.to_ascii_lowercase();
+        let has = |text: &str| stderr.contains(text);
+        Some(if has("could not add label") {
+            Self::UnknownLabel
+        } else if has("could not request reviewer")
+            || has("requestreviews")
+            || has("review cannot be requested")
+        {
+            Self::InvalidReviewer
+        } else if has("draft pull requests are not supported") {
+            Self::DraftUnsupported
+        } else if has("already exists") {
+            Self::AlreadyExists
+        } else if has("no commits between") {
+            Self::NoCommits
+        } else if has("gh auth login") || has("http 401") || has("bad credentials") {
+            Self::NotLoggedIn
+        } else if has("http 403") || has("resource not accessible") || has("must be a collaborator")
+        {
+            Self::PermissionDenied
+        } else {
+            return None;
+        })
+    }
 }
 
 /// Lifecycle state of a pull request as reported by `gh`.
@@ -78,6 +136,29 @@ pub struct PullRequestStatus {
     pub review: ReviewState,
 }
 
+/// One CI check of a pull request: a check run (GitHub Actions) or a commit status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckRun {
+    /// The check run's name or the commit status's context; empty when `gh` reports none.
+    pub name: String,
+    pub state: ChecksState,
+    /// How it ended as GitHub reports it, lowercased (e.g. `failure`, `skipped`); `None`
+    /// while a check run has not finished.
+    pub conclusion: Option<String>,
+    /// The page with its details or log.
+    pub url: Option<String>,
+}
+
+/// The latest review of one reviewer of a pull request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Review {
+    /// The reviewer's login; `None` once their account is deleted.
+    pub author: Option<String>,
+    /// The review state as GitHub reports it, lowercased (e.g. `approved`,
+    /// `changes_requested`, `commented`).
+    pub state: String,
+}
+
 /// A pull request read with [`GitHub::pull_request`], with its CI and review state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewedPullRequest {
@@ -85,6 +166,10 @@ pub struct ViewedPullRequest {
     pub status: PullRequestStatus,
     /// The commit at the head of its branch, which its checks ran on.
     pub head_sha: Option<String>,
+    /// Each check that [`PullRequestStatus::checks`] combines, in the order `gh` lists them.
+    pub check_runs: Vec<CheckRun>,
+    /// The latest review of each reviewer.
+    pub reviews: Vec<Review>,
 }
 
 /// Fields requested with `--json` for a [`ViewedPullRequest`].
@@ -92,17 +177,36 @@ const VIEWED_PULL_REQUEST_FIELDS: &str =
     "url,state,baseRefName,mergedAt,statusCheckRollup,reviewDecision,latestReviews,headRefOid";
 
 fn parse_viewed_pull_request(value: &Value) -> Option<ViewedPullRequest> {
+    let check_runs = parse_check_runs(value.get("statusCheckRollup")?.as_array()?)?;
     Some(ViewedPullRequest {
         pull_request: parse_pull_request(value)?,
         status: PullRequestStatus {
-            checks: parse_checks(value.get("statusCheckRollup")?.as_array()?)?,
+            checks: combine_checks(&check_runs),
             review: parse_review(value)?,
         },
         head_sha: value
             .get("headRefOid")
             .and_then(Value::as_str)
             .map(str::to_owned),
+        check_runs,
+        reviews: parse_latest_reviews(value.get("latestReviews")?.as_array()?)?,
     })
+}
+
+fn parse_latest_reviews(latest: &[Value]) -> Option<Vec<Review>> {
+    latest
+        .iter()
+        .map(|review| {
+            Some(Review {
+                author: review
+                    .get("author")
+                    .and_then(|author| author.get("login"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                state: review.get("state")?.as_str()?.to_lowercase(),
+            })
+        })
+        .collect()
 }
 
 /// What a pull request shows on the git activity timeline of its task.
@@ -160,34 +264,95 @@ fn parse_pull_request_activity(value: &Value) -> Option<PullRequestActivity> {
     })
 }
 
-/// Combines check runs (GitHub Actions) and commit statuses: any failure fails the
-/// pull request, otherwise any unfinished check keeps it pending.
+/// A pull request as [`GitHub::pull_request`], [`GitHub::pull_request_activity`], and
+/// [`GitHub::pull_request_body`] read it, from a single `gh` call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestDetails {
+    pub viewed: ViewedPullRequest,
+    pub activity: PullRequestActivity,
+    pub body: String,
+}
+
+/// Fields requested with `--json` for [`PullRequestDetails`]: those of a
+/// [`ViewedPullRequest`] and a [`PullRequestActivity`], and the body.
+const PULL_REQUEST_DETAILS_FIELDS: &str = "url,state,baseRefName,mergedAt,statusCheckRollup,\
+     reviewDecision,latestReviews,headRefOid,number,title,createdAt,body";
+
+fn parse_pull_request_details(value: &Value) -> Option<PullRequestDetails> {
+    Some(PullRequestDetails {
+        viewed: parse_viewed_pull_request(value)?,
+        activity: parse_pull_request_activity(value)?,
+        body: value.get("body")?.as_str()?.to_owned(),
+    })
+}
+
+/// The repository of the pull request at `url` (`https://<host>/<owner>/<name>/pull/<n>`).
+pub fn pull_request_repository(url: &str) -> Option<GitHubRepository> {
+    let (repository, _) = url.split_once("/pull/")?;
+    GitHubRepository::from_remote_url(repository)
+}
+
+/// The combined state of the checks in `rollup`; see [`combine_checks`].
 fn parse_checks(rollup: &[Value]) -> Option<Option<ChecksState>> {
-    let mut combined = None;
+    Some(combine_checks(&parse_check_runs(rollup)?))
+}
+
+/// Reads check runs (GitHub Actions) and commit statuses; other kinds are skipped.
+fn parse_check_runs(rollup: &[Value]) -> Option<Vec<CheckRun>> {
+    let mut runs = Vec::new();
     for check in rollup {
         let field = |name: &str| check.get(name).and_then(Value::as_str);
-        let state = match field("__typename")? {
-            "CheckRun" if field("status")? != "COMPLETED" => ChecksState::Pending,
-            "CheckRun" => match field("conclusion")? {
-                "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => {
-                    ChecksState::Failing
-                }
-                _ => ChecksState::Passing,
-            },
-            "StatusContext" => match field("state")? {
-                "FAILURE" | "ERROR" => ChecksState::Failing,
-                "PENDING" | "EXPECTED" => ChecksState::Pending,
-                _ => ChecksState::Passing,
-            },
+        let text = |name: &str| {
+            field(name)
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned)
+        };
+        let (state, conclusion, name, url) = match field("__typename")? {
+            "CheckRun" if field("status")? != "COMPLETED" => {
+                (ChecksState::Pending, None, "name", "detailsUrl")
+            }
+            "CheckRun" => {
+                let conclusion = field("conclusion")?;
+                let state = match conclusion {
+                    "FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED"
+                    | "STARTUP_FAILURE" => ChecksState::Failing,
+                    _ => ChecksState::Passing,
+                };
+                (state, Some(conclusion), "name", "detailsUrl")
+            }
+            "StatusContext" => {
+                let raw = field("state")?;
+                let state = match raw {
+                    "FAILURE" | "ERROR" => ChecksState::Failing,
+                    "PENDING" | "EXPECTED" => ChecksState::Pending,
+                    _ => ChecksState::Passing,
+                };
+                (state, Some(raw), "context", "targetUrl")
+            }
             _ => continue,
         };
-        combined = Some(match (combined, state) {
-            (Some(ChecksState::Failing), _) | (_, ChecksState::Failing) => ChecksState::Failing,
-            (Some(ChecksState::Pending), _) | (_, ChecksState::Pending) => ChecksState::Pending,
-            _ => ChecksState::Passing,
+        runs.push(CheckRun {
+            name: text(name).unwrap_or_default(),
+            state,
+            conclusion: conclusion
+                .filter(|conclusion| !conclusion.is_empty())
+                .map(str::to_lowercase),
+            url: text(url),
         });
     }
-    Some(combined)
+    Some(runs)
+}
+
+/// Any failure fails the pull request, otherwise any unfinished check keeps it pending;
+/// `None` without checks.
+fn combine_checks(runs: &[CheckRun]) -> Option<ChecksState> {
+    runs.iter()
+        .map(|run| run.state)
+        .reduce(|combined, state| match (combined, state) {
+            (ChecksState::Failing, _) | (_, ChecksState::Failing) => ChecksState::Failing,
+            (ChecksState::Pending, _) | (_, ChecksState::Pending) => ChecksState::Pending,
+            _ => ChecksState::Passing,
+        })
 }
 
 /// The review decision GitHub computes from required reviews. Without required reviews
@@ -235,6 +400,40 @@ fn parse_pull_request(value: &Value) -> Option<PullRequest> {
         base: field("baseRefName")?.to_owned(),
         merged_at,
     })
+}
+
+/// A merged pull request as [`GitHub::merged_pull_requests`] lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedPullRequest {
+    pub url: String,
+    pub number: i64,
+    pub title: String,
+    /// Branch the pull request was opened from.
+    pub head: String,
+    pub created_at: i64,
+    pub merged_at: i64,
+}
+
+/// Fields requested with `--json` for a [`ListedPullRequest`].
+const LISTED_PULL_REQUEST_FIELDS: &str = "url,number,title,headRefName,createdAt,mergedAt";
+
+fn parse_listed_pull_request(value: &Value) -> Option<ListedPullRequest> {
+    let field = |name: &str| value.get(name).and_then(Value::as_str);
+    Some(ListedPullRequest {
+        url: field("url")?.to_owned(),
+        number: value.get("number")?.as_i64()?,
+        title: field("title")?.to_owned(),
+        head: field("headRefName")?.to_owned(),
+        created_at: parse_utc_timestamp(field("createdAt")?)?,
+        merged_at: parse_utc_timestamp(field("mergedAt")?)?,
+    })
+}
+
+/// The UTC day of `seconds` since the Unix epoch as `YYYY-MM-DD`, as GitHub's search
+/// qualifiers take it.
+fn utc_date(seconds: i64) -> String {
+    let (year, month, day) = civil_from_days(seconds.div_euclid(86_400));
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// What a merged pull request contained, read when it completes its task.
@@ -388,71 +587,212 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-pub struct GitHub {
-    runner: Box<dyn Runner>,
-}
-
-impl GitHub {
-    pub fn new(runner: Box<dyn Runner>) -> Self {
-        Self { runner }
-    }
-
+/// Pull requests and issues on GitHub. [`GhCli`] implements it with the `gh` CLI;
+/// callers depend on the trait so other backends can be added.
+pub trait GitHub: Send + Sync {
     /// The pull request from `head` into `base`, preferring merged over open over
     /// closed, then newest first. Read every result, including beyond the first page.
-    pub fn find_pull_request(
+    fn find_pull_request(
+        &self,
+        repository: &GitHubRepository,
+        head: &str,
+        base: &str,
+    ) -> Result<Option<PullRequest>, GitError>;
+
+    /// Opens a pull request and returns its URL.
+    fn create_pull_request(&self, pull_request: &NewPullRequest<'_>) -> Result<String, GitError>;
+
+    /// The pull request at `url`, with its CI and review state.
+    fn pull_request(&self, url: &str) -> Result<ViewedPullRequest, GitError>;
+
+    /// The pull request at `url` as its task's git activity timeline shows it.
+    fn pull_request_activity(&self, url: &str) -> Result<PullRequestActivity, GitError>;
+
+    /// Closes the pull request at `url` without merging it, leaving `comment` on it. The
+    /// branch is kept.
+    fn close_pull_request(&self, url: &str, comment: &str) -> Result<(), GitError>;
+
+    /// The body of the pull request at `url`.
+    fn pull_request_body(&self, url: &str) -> Result<String, GitError>;
+
+    /// Replaces the body of the pull request at `url`.
+    fn edit_pull_request_body(&self, url: &str, body: &str) -> Result<(), GitError>;
+
+    /// Issue `number` of `repository`; fails when it does not exist.
+    fn issue(&self, repository: &GitHubRepository, number: i64) -> Result<LinkedIssue, GitError>;
+
+    /// Opens an issue in `repository` and returns it.
+    fn create_issue(
+        &self,
+        repository: &GitHubRepository,
+        title: &str,
+        body: &str,
+    ) -> Result<LinkedIssue, GitError>;
+
+    /// The size, reviews, and commits of the merged pull request at `url`.
+    fn merged_pull_request(&self, url: &str) -> Result<MergedPullRequest, GitError>;
+
+    /// Whether the pull request at `url` merges into its base without conflicts.
+    fn mergeable(&self, url: &str) -> Result<MergeState, GitError>;
+
+    /// The pull request at `url` with everything [`PullRequestDetails`] holds, in one call.
+    fn pull_request_details(&self, url: &str) -> Result<PullRequestDetails, GitError>;
+
+    /// Every open pull request of `repository` with its details, read in one call for up
+    /// to 100 of them. Read every result, including beyond the first page.
+    fn open_pull_requests(
+        &self,
+        repository: &GitHubRepository,
+    ) -> Result<Vec<PullRequestDetails>, GitError>;
+
+    /// The pull requests the signed-in `gh` user opened in `repository` and merged into
+    /// `base` in `[since, until)` (seconds since the Unix epoch), oldest merge first.
+    /// Read every result, including beyond the first page.
+    fn merged_pull_requests(
+        &self,
+        repository: &GitHubRepository,
+        base: &str,
+        since: i64,
+        until: i64,
+    ) -> Result<Vec<ListedPullRequest>, GitError>;
+
+    /// How much longer callers that poll GitHub should wait because GitHub refused a call
+    /// for its API rate limit; `None` when no limit is in effect.
+    fn rate_limit_backoff(&self) -> Option<Duration>;
+}
+
+/// The first wait after GitHub refuses a call for its rate limit; each refusal in a row
+/// doubles it up to [`MAX_RATE_LIMIT_BACKOFF`].
+const FIRST_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(5 * 60);
+
+/// GitHub resets its primary rate limit every hour.
+const MAX_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(60 * 60);
+
+/// Whether GitHub refused a call for its rate limit: its primary limit (`API rate limit
+/// exceeded`), a secondary limit, or `429 Too Many Requests`.
+fn is_rate_limited(error: &GitError) -> bool {
+    match error {
+        GitError::Failed { stderr, .. } => {
+            stderr.to_ascii_lowercase().contains("rate limit") || stderr.contains("HTTP 429")
+        }
+        _ => false,
+    }
+}
+
+/// Since when and for how long GitHub calls back off after a rate limit refusal.
+#[derive(Debug, Default)]
+struct RateLimit {
+    until: Option<Instant>,
+    backoff: Duration,
+}
+
+impl RateLimit {
+    /// Records the result of a call that ended at `now`: a rate limit refusal backs off
+    /// for twice as long as the last one, any other failure changes nothing, and a
+    /// success ends the backoff.
+    fn record(&mut self, now: Instant, result: &Result<String, GitError>) {
+        match result {
+            Ok(_) => *self = Self::default(),
+            Err(error) if is_rate_limited(error) => {
+                self.backoff = if self.backoff.is_zero() {
+                    FIRST_RATE_LIMIT_BACKOFF
+                } else {
+                    (self.backoff * 2).min(MAX_RATE_LIMIT_BACKOFF)
+                };
+                self.until = Some(now + self.backoff);
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// How long the backoff still lasts at `now`.
+    fn remaining(&self, now: Instant) -> Option<Duration> {
+        self.until
+            .map(|until| until.saturating_duration_since(now))
+            .filter(|remaining| !remaining.is_zero())
+    }
+}
+
+/// [`GitHub`] through the `gh` CLI.
+pub struct GhCli {
+    runner: Box<dyn Runner>,
+    rate_limit: Mutex<RateLimit>,
+}
+
+impl GhCli {
+    pub fn new(runner: Box<dyn Runner>) -> Self {
+        Self {
+            runner,
+            rate_limit: Mutex::default(),
+        }
+    }
+
+    fn run(&self, invocation: &Invocation) -> Result<String, GitError> {
+        let result = self.runner.run(invocation);
+        self.rate_limit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .record(Instant::now(), &result);
+        result.map_err(diagnose)
+    }
+
+    /// Reads `fields` of every pull request `gh pr list` finds with `filters`, raising
+    /// the limit until a page is not full, as `gh pr list` has no unlimited flag.
+    fn list_pull_requests(
+        &self,
+        repository: &GitHubRepository,
+        filters: &[&str],
+        fields: &str,
+    ) -> Result<(Invocation, String, Vec<Value>), GitError> {
+        let repository = repository.to_string();
+        let mut limit = 100_usize;
+        loop {
+            let limit_text = limit.to_string();
+            let mut args = vec!["pr", "list", "--repo", &repository];
+            args.extend(filters);
+            args.extend(["--json", fields, "--limit", &limit_text]);
+            let invocation = invocation(&args);
+            let output = self.run(&invocation)?;
+            let unexpected = || unexpected(&invocation, &output);
+            let values: Value = serde_json::from_str(&output).map_err(|_| unexpected())?;
+            let values = values.as_array().ok_or_else(unexpected)?.clone();
+            if values.len() < limit {
+                return Ok((invocation, output, values));
+            }
+            limit = limit.checked_mul(2).ok_or_else(unexpected)?;
+        }
+    }
+}
+
+impl GitHub for GhCli {
+    fn find_pull_request(
         &self,
         repository: &GitHubRepository,
         head: &str,
         base: &str,
     ) -> Result<Option<PullRequest>, GitError> {
-        let repository = repository.to_string();
-        let mut limit = 100_usize;
-        loop {
-            // `gh pr list` paginates up to its limit, but has no unlimited flag.
-            let invocation = invocation(&[
-                "pr",
-                "list",
-                "--repo",
-                &repository,
-                "--head",
-                head,
-                "--base",
-                base,
-                "--state",
-                "all",
-                "--json",
-                PULL_REQUEST_FIELDS,
-                "--limit",
-                &limit.to_string(),
-            ]);
-            let output = self.runner.run(&invocation)?;
-            let unexpected = || unexpected(&invocation, &output);
-            let values: Value = serde_json::from_str(&output).map_err(|_| unexpected())?;
-            let values = values.as_array().ok_or_else(unexpected)?;
-            let pull_requests = values
-                .iter()
-                .map(|value| parse_pull_request(value).ok_or_else(unexpected))
-                .collect::<Result<Vec<_>, _>>()?;
-            if values.len() < limit {
-                return Ok(pull_requests
-                    .into_iter()
-                    .min_by_key(|pull_request| match pull_request.state {
-                        PullRequestState::Merged => 0,
-                        PullRequestState::Open => 1,
-                        PullRequestState::Closed => 2,
-                    }));
-            }
-            limit = limit.checked_mul(2).ok_or_else(unexpected)?;
-        }
+        let (invocation, output, values) = self.list_pull_requests(
+            repository,
+            &["--head", head, "--base", base, "--state", "all"],
+            PULL_REQUEST_FIELDS,
+        )?;
+        let pull_requests = values
+            .iter()
+            .map(|value| parse_pull_request(value).ok_or_else(|| unexpected(&invocation, &output)))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(pull_requests
+            .into_iter()
+            .min_by_key(|pull_request| match pull_request.state {
+                PullRequestState::Merged => 0,
+                PullRequestState::Open => 1,
+                PullRequestState::Closed => 2,
+            }))
     }
 
-    /// Opens a pull request and returns its URL.
-    pub fn create_pull_request(
-        &self,
-        pull_request: &NewPullRequest<'_>,
-    ) -> Result<String, GitError> {
+    fn create_pull_request(&self, pull_request: &NewPullRequest<'_>) -> Result<String, GitError> {
         let repository = pull_request.repository.to_string();
-        let invocation = invocation(&[
+        let options = pull_request.options;
+        let mut args = vec![
             "pr",
             "create",
             "--repo",
@@ -465,8 +805,18 @@ impl GitHub {
             pull_request.title,
             "--body",
             pull_request.body,
-        ]);
-        let output = self.runner.run(&invocation)?;
+        ];
+        if options.draft {
+            args.push("--draft");
+        }
+        for reviewer in &options.reviewers {
+            args.extend(["--reviewer", reviewer]);
+        }
+        for label in &options.labels {
+            args.extend(["--label", label]);
+        }
+        let invocation = invocation(&args);
+        let output = self.run(&invocation)?;
         output
             .lines()
             .map(str::trim)
@@ -475,10 +825,9 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// The pull request at `url`, with its CI and review state.
-    pub fn pull_request(&self, url: &str) -> Result<ViewedPullRequest, GitError> {
+    fn pull_request(&self, url: &str) -> Result<ViewedPullRequest, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", VIEWED_PULL_REQUEST_FIELDS]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
             .ok()
             .as_ref()
@@ -486,10 +835,9 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// The pull request at `url` as its task's git activity timeline shows it.
-    pub fn pull_request_activity(&self, url: &str) -> Result<PullRequestActivity, GitError> {
+    fn pull_request_activity(&self, url: &str) -> Result<PullRequestActivity, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", PULL_REQUEST_ACTIVITY_FIELDS]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
             .ok()
             .as_ref()
@@ -497,37 +845,26 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// Closes the pull request at `url` without merging it, leaving `comment` on it. The
-    /// branch is kept.
-    pub fn close_pull_request(&self, url: &str, comment: &str) -> Result<(), GitError> {
-        self.runner
-            .run(&invocation(&["pr", "close", url, "--comment", comment]))?;
+    fn close_pull_request(&self, url: &str, comment: &str) -> Result<(), GitError> {
+        self.run(&invocation(&["pr", "close", url, "--comment", comment]))?;
         Ok(())
     }
 
-    /// The body of the pull request at `url`.
-    pub fn pull_request_body(&self, url: &str) -> Result<String, GitError> {
+    fn pull_request_body(&self, url: &str) -> Result<String, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", "body"]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
             .ok()
             .and_then(|value| value.get("body")?.as_str().map(str::to_owned))
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// Replaces the body of the pull request at `url`.
-    pub fn edit_pull_request_body(&self, url: &str, body: &str) -> Result<(), GitError> {
-        self.runner
-            .run(&invocation(&["pr", "edit", url, "--body", body]))?;
+    fn edit_pull_request_body(&self, url: &str, body: &str) -> Result<(), GitError> {
+        self.run(&invocation(&["pr", "edit", url, "--body", body]))?;
         Ok(())
     }
 
-    /// Issue `number` of `repository`; fails when it does not exist.
-    pub fn issue(
-        &self,
-        repository: &GitHubRepository,
-        number: i64,
-    ) -> Result<LinkedIssue, GitError> {
+    fn issue(&self, repository: &GitHubRepository, number: i64) -> Result<LinkedIssue, GitError> {
         let repository = repository.to_string();
         let number = number.to_string();
         let invocation = invocation(&[
@@ -539,7 +876,7 @@ impl GitHub {
             "--json",
             "number,url",
         ]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
             .ok()
             .and_then(|value| {
@@ -551,8 +888,7 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// Opens an issue in `repository` and returns it.
-    pub fn create_issue(
+    fn create_issue(
         &self,
         repository: &GitHubRepository,
         title: &str,
@@ -569,7 +905,7 @@ impl GitHub {
             "--body",
             body,
         ]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         output
             .lines()
             .map(str::trim)
@@ -584,23 +920,19 @@ impl GitHub {
             .ok_or_else(|| unexpected(&invocation, &output))
     }
 
-    /// The size, reviews, and commits of the merged pull request at `url`.
-    pub fn merged_pull_request(&self, url: &str) -> Result<MergedPullRequest, GitError> {
+    fn merged_pull_request(&self, url: &str) -> Result<MergedPullRequest, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", MERGED_PULL_REQUEST_FIELDS]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         serde_json::from_str::<Value>(&output)
             .ok()
             .as_ref()
             .and_then(parse_merged_pull_request)
             .ok_or_else(|| unexpected(&invocation, &output))
     }
-}
 
-impl GitHub {
-    /// Whether the pull request at `url` merges into its base without conflicts.
-    pub fn mergeable(&self, url: &str) -> Result<MergeState, GitError> {
+    fn mergeable(&self, url: &str) -> Result<MergeState, GitError> {
         let invocation = invocation(&["pr", "view", url, "--json", "mergeable"]);
-        let output = self.runner.run(&invocation)?;
+        let output = self.run(&invocation)?;
         let value: Option<Value> = serde_json::from_str(&output).ok();
         match value.as_ref().and_then(|value| value["mergeable"].as_str()) {
             Some("MERGEABLE") => Ok(MergeState::Mergeable),
@@ -609,12 +941,119 @@ impl GitHub {
             _ => Err(unexpected(&invocation, &output)),
         }
     }
+
+    fn pull_request_details(&self, url: &str) -> Result<PullRequestDetails, GitError> {
+        let invocation = invocation(&["pr", "view", url, "--json", PULL_REQUEST_DETAILS_FIELDS]);
+        let output = self.run(&invocation)?;
+        serde_json::from_str::<Value>(&output)
+            .ok()
+            .as_ref()
+            .and_then(parse_pull_request_details)
+            .ok_or_else(|| unexpected(&invocation, &output))
+    }
+
+    fn open_pull_requests(
+        &self,
+        repository: &GitHubRepository,
+    ) -> Result<Vec<PullRequestDetails>, GitError> {
+        let (invocation, output, values) = self.list_pull_requests(
+            repository,
+            &["--state", "open"],
+            PULL_REQUEST_DETAILS_FIELDS,
+        )?;
+        values
+            .iter()
+            .map(|value| {
+                parse_pull_request_details(value).ok_or_else(|| unexpected(&invocation, &output))
+            })
+            .collect()
+    }
+
+    fn merged_pull_requests(
+        &self,
+        repository: &GitHubRepository,
+        base: &str,
+        since: i64,
+        until: i64,
+    ) -> Result<Vec<ListedPullRequest>, GitError> {
+        if until <= since {
+            return Ok(Vec::new());
+        }
+        // Search takes whole UTC days; the times are checked below.
+        let search = format!("merged:{}..{}", utc_date(since), utc_date(until - 1));
+        let (invocation, output, values) = self.list_pull_requests(
+            repository,
+            &[
+                "--state", "merged", "--base", base, "--author", "@me", "--search", &search,
+            ],
+            LISTED_PULL_REQUEST_FIELDS,
+        )?;
+        let mut merged = values
+            .iter()
+            .map(|value| {
+                parse_listed_pull_request(value).ok_or_else(|| unexpected(&invocation, &output))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        merged.retain(|pull_request| (since..until).contains(&pull_request.merged_at));
+        merged.sort_by_key(|pull_request| (pull_request.merged_at, pull_request.number));
+        Ok(merged)
+    }
+
+    fn rate_limit_backoff(&self) -> Option<Duration> {
+        self.rate_limit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remaining(Instant::now())
+    }
 }
 
 fn invocation(args: &[&str]) -> Invocation {
     Invocation {
         program: "gh",
         args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+    }
+}
+
+/// The next step when `gh` cannot be started.
+pub(crate) const GH_MISSING: &str = "install the GitHub CLI (https://cli.github.com) on the PATH of the \
+     user that runs toodo-server and run `gh auth login` as that user, then retry; or add the \
+     repository as a workspace with source `local_git`, which does not need gh";
+
+/// The next step when `gh` runs but has no valid login.
+pub(crate) const GH_LOGGED_OUT: &str = "gh is not logged in: run `gh auth login` as the user that runs \
+     toodo-server (`gh auth login --hostname <host>` for a GitHub Enterprise host, or set \
+     `GH_TOKEN` or `GH_ENTERPRISE_TOKEN` in its environment), then retry; or add the repository \
+     as a workspace with source `local_git`, which does not need gh";
+
+/// The next step when GitHub refuses a call for its API rate limit.
+const GH_RATE_LIMITED: &str = "GitHub refused the call for its API rate limit: Toodo's \
+     background pull request checks pause and resume on their own once it resets; run `gh api \
+     rate_limit` as the user that runs toodo-server to see when it resets, then retry";
+
+/// Adds the next step to an error that shows `gh` is missing, not logged in, or rate
+/// limited. `gh` prints `gh auth login` both when it has no login and when its token is
+/// rejected.
+fn diagnose(error: GitError) -> GitError {
+    if is_rate_limited(&error)
+        && let GitError::Failed { command, stderr } = error
+    {
+        return GitError::Failed {
+            command,
+            stderr: format!("{stderr}\n{GH_RATE_LIMITED}"),
+        };
+    }
+    match error {
+        GitError::Spawn { program, message } => GitError::Spawn {
+            program,
+            message: format!("{message}; {GH_MISSING}"),
+        },
+        GitError::Failed { command, stderr } if stderr.contains("gh auth login") => {
+            GitError::Failed {
+                command,
+                stderr: format!("{stderr}\n{GH_LOGGED_OUT}"),
+            }
+        }
+        error => error,
     }
 }
 
@@ -632,9 +1071,9 @@ mod tests {
     use super::*;
     use crate::adapters::git::fake::FakeRunner;
 
-    fn github(results: Vec<Result<String, GitError>>) -> (GitHub, Arc<FakeRunner>) {
+    fn github(results: Vec<Result<String, GitError>>) -> (GhCli, Arc<FakeRunner>) {
         let runner = Arc::new(FakeRunner::new(results));
-        (GitHub::new(Box::new(runner.clone())), runner)
+        (GhCli::new(Box::new(runner.clone())), runner)
     }
 
     fn repository() -> GitHubRepository {
@@ -653,6 +1092,23 @@ mod tests {
             base: base.to_owned(),
             merged_at: (state == PullRequestState::Merged).then_some(MERGED_AT_SECONDS),
         }
+    }
+
+    #[test]
+    fn github_enterprise_repositories_are_passed_to_gh_with_their_host() {
+        let (github, runner) = github(vec![Ok("[]\n".to_owned())]);
+        let repository =
+            GitHubRepository::from_remote_url("git@ghe.example.com:team/toodo.git").unwrap();
+        assert_eq!(
+            github
+                .find_pull_request(&repository, "feat/x-1", "main")
+                .unwrap(),
+            None
+        );
+        let invocations = runner.invocations.lock().unwrap();
+        let args = &invocations[0].args;
+        let repo = args.iter().position(|arg| arg == "--repo").unwrap() + 1;
+        assert_eq!(args[repo], "ghe.example.com/team/toodo");
     }
 
     #[test]
@@ -843,6 +1299,8 @@ mod tests {
                         review: ReviewState::Pending,
                     },
                     head_sha: None,
+                    check_runs: Vec::new(),
+                    reviews: Vec::new(),
                 }
             );
         }
@@ -945,6 +1403,56 @@ mod tests {
                 "case {index}"
             );
         }
+    }
+
+    #[test]
+    fn pull_request_keeps_each_check_and_latest_review() {
+        let view = r#"{"baseRefName":"main","headRefOid":"abc1234","latestReviews":[{"author":{"login":"octo"},"state":"CHANGES_REQUESTED"},{"author":null,"state":"COMMENTED"}],"mergedAt":null,"reviewDecision":"","state":"OPEN","statusCheckRollup":[{"__typename":"CheckRun","name":"rust","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"https://github.com/acme/toodo/actions/runs/1"},{"__typename":"CheckRun","name":"web","status":"IN_PROGRESS","conclusion":"","detailsUrl":""},{"__typename":"StatusContext","context":"deploy","state":"SUCCESS","targetUrl":"https://example.com/deploy"}],"url":"https://github.com/acme/toodo/pull/7"}"#;
+        let (github, _) = github(vec![Ok(view.to_owned())]);
+        let viewed = github.pull_request(URL).unwrap();
+        assert_eq!(
+            viewed.check_runs,
+            [
+                CheckRun {
+                    name: "rust".to_owned(),
+                    state: ChecksState::Failing,
+                    conclusion: Some("failure".to_owned()),
+                    url: Some("https://github.com/acme/toodo/actions/runs/1".to_owned()),
+                },
+                CheckRun {
+                    name: "web".to_owned(),
+                    state: ChecksState::Pending,
+                    conclusion: None,
+                    url: None,
+                },
+                CheckRun {
+                    name: "deploy".to_owned(),
+                    state: ChecksState::Passing,
+                    conclusion: Some("success".to_owned()),
+                    url: Some("https://example.com/deploy".to_owned()),
+                },
+            ]
+        );
+        assert_eq!(
+            viewed.reviews,
+            [
+                Review {
+                    author: Some("octo".to_owned()),
+                    state: "changes_requested".to_owned(),
+                },
+                Review {
+                    author: None,
+                    state: "commented".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(
+            viewed.status,
+            PullRequestStatus {
+                checks: Some(ChecksState::Failing),
+                review: ReviewState::ChangesRequested,
+            }
+        );
     }
 
     #[test]
@@ -1209,6 +1717,7 @@ mod tests {
             base: "main",
             title: "Add x",
             body: "",
+            options: &PullRequestOptions::default(),
         };
         assert_eq!(
             github.create_pull_request(&new).unwrap(),
@@ -1236,5 +1745,343 @@ mod tests {
             github.create_pull_request(&new),
             Err(GitError::UnexpectedOutput { .. })
         ));
+    }
+
+    #[test]
+    fn create_pull_request_passes_the_workspace_options() {
+        let (github, runner) = github(vec![
+            Ok("https://github.com/acme/toodo/pull/8\n".to_owned()),
+        ]);
+        let repository = repository();
+        let options = PullRequestOptions {
+            draft: true,
+            reviewers: vec!["octocat".to_owned(), "acme/core".to_owned()],
+            labels: vec!["needs review".to_owned()],
+        };
+        github
+            .create_pull_request(&NewPullRequest {
+                repository: &repository,
+                head: "feat/x-1",
+                base: "main",
+                title: "Add x",
+                body: "",
+                options: &options,
+            })
+            .unwrap();
+        assert_eq!(
+            runner.invocations.lock().unwrap()[0].args[12..],
+            [
+                "--draft",
+                "--reviewer",
+                "octocat",
+                "--reviewer",
+                "acme/core",
+                "--label",
+                "needs review",
+            ]
+            .map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn pull_request_refusals_are_read_from_what_gh_printed() {
+        let failed = |stderr: &str| GitError::Failed {
+            command: "gh pr create".to_owned(),
+            stderr: stderr.to_owned(),
+        };
+        for (stderr, refusal) in [
+            (
+                "could not add label: 'needs review' not found",
+                PullRequestRefusal::UnknownLabel,
+            ),
+            (
+                "could not request reviewer: 'nobody' not found",
+                PullRequestRefusal::InvalidReviewer,
+            ),
+            (
+                "GraphQL: Could not resolve to a User with the login of 'nobody'. (requestReviewsByLogin)",
+                PullRequestRefusal::InvalidReviewer,
+            ),
+            (
+                "GraphQL: Review cannot be requested from pull request author. (requestReviews)",
+                PullRequestRefusal::InvalidReviewer,
+            ),
+            (
+                "GraphQL: Draft pull requests are not supported in this repository. (createPullRequest)",
+                PullRequestRefusal::DraftUnsupported,
+            ),
+            (
+                "a pull request for branch \"feat/x-1\" into branch \"main\" already exists:\nhttps://github.com/acme/toodo/pull/8",
+                PullRequestRefusal::AlreadyExists,
+            ),
+            (
+                "pull request create failed: GraphQL: No commits between main and feat/x-1 (createPullRequest)",
+                PullRequestRefusal::NoCommits,
+            ),
+            (
+                "HTTP 401: Bad credentials (https://api.github.com/graphql)\nTry authenticating with:  gh auth login",
+                PullRequestRefusal::NotLoggedIn,
+            ),
+            (
+                "GraphQL: Resource not accessible by integration (createPullRequest)",
+                PullRequestRefusal::PermissionDenied,
+            ),
+        ] {
+            assert_eq!(
+                PullRequestRefusal::of(&failed(stderr)),
+                Some(refusal),
+                "{stderr}"
+            );
+        }
+        assert_eq!(
+            PullRequestRefusal::of(&failed("HTTP 502: Bad Gateway")),
+            None
+        );
+        assert_eq!(
+            PullRequestRefusal::of(&GitError::Spawn {
+                program: "gh".to_owned(),
+                message: "not found".to_owned(),
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn a_missing_gh_names_the_next_step() {
+        let (github, _) = github(vec![Err(GitError::Spawn {
+            program: "gh".to_owned(),
+            message: "No such file or directory (os error 2)".to_owned(),
+        })]);
+        let error = github.pull_request(URL).unwrap_err().to_string();
+        assert!(error.starts_with("failed to run gh: No such file or directory"));
+        assert!(error.contains("install the GitHub CLI"));
+        assert!(error.contains("`local_git`"));
+    }
+
+    #[test]
+    fn a_logged_out_gh_names_the_next_step() {
+        // What gh prints with no login and with a rejected token.
+        for stderr in [
+            "To get started with GitHub CLI, please run:  gh auth login\n\
+             Alternatively, populate the GH_TOKEN environment variable with a GitHub API \
+             authentication token.",
+            "HTTP 401: Bad credentials (https://api.github.com/graphql)\n\
+             Try authenticating with:  gh auth login -h github.com",
+        ] {
+            let (github, _) = github(vec![Err(GitError::Failed {
+                command: format!("gh pr view {URL} --json mergeable"),
+                stderr: stderr.to_owned(),
+            })]);
+            let error = github.mergeable(URL).unwrap_err().to_string();
+            assert!(
+                error.contains("gh is not logged in: run `gh auth login`"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_gh_failures_are_left_as_they_are() {
+        let failed = GitError::Failed {
+            command: format!("gh pr view {URL} --json mergeable"),
+            stderr: "GraphQL: Could not resolve to a PullRequest".to_owned(),
+        };
+        let (github, _) = github(vec![Err(failed.clone())]);
+        assert_eq!(github.mergeable(URL), Err(failed));
+    }
+
+    fn rate_limited() -> GitError {
+        GitError::Failed {
+            command: "gh pr view".to_owned(),
+            stderr: "GraphQL: API rate limit exceeded for user ID 1.".to_owned(),
+        }
+    }
+
+    #[test]
+    fn rate_limit_refusals_back_off_longer_each_time_until_a_call_succeeds() {
+        let start = Instant::now();
+        let minutes = |count: u64| Duration::from_secs(count * 60);
+        let mut limit = RateLimit::default();
+        assert_eq!(limit.remaining(start), None);
+
+        limit.record(start, &Err(rate_limited()));
+        assert_eq!(limit.remaining(start), Some(minutes(5)));
+        assert_eq!(limit.remaining(start + minutes(5)), None);
+
+        let later = start + minutes(5);
+        limit.record(later, &Err(rate_limited()));
+        assert_eq!(limit.remaining(later), Some(minutes(10)));
+        for _ in 0..5 {
+            limit.record(later, &Err(rate_limited()));
+        }
+        assert_eq!(limit.remaining(later), Some(minutes(60)));
+
+        // Other failures leave the backoff as it is; a success ends it.
+        limit.record(
+            later,
+            &Err(GitError::Failed {
+                command: "gh pr view".to_owned(),
+                stderr: "HTTP 502: Bad Gateway".to_owned(),
+            }),
+        );
+        assert_eq!(limit.remaining(later), Some(minutes(60)));
+        limit.record(later, &Ok(String::new()));
+        assert_eq!(limit.remaining(later), None);
+        limit.record(later, &Err(rate_limited()));
+        assert_eq!(limit.remaining(later), Some(minutes(5)));
+    }
+
+    #[test]
+    fn a_rate_limited_gh_reports_the_backoff_and_the_next_step() {
+        let (github, _) = github(vec![
+            Err(rate_limited()),
+            Err(GitError::Failed {
+                command: "gh pr view".to_owned(),
+                stderr: "HTTP 429: Too Many Requests".to_owned(),
+            }),
+            Ok(r#"{"mergeable":"MERGEABLE"}"#.to_owned()),
+        ]);
+        assert_eq!(github.rate_limit_backoff(), None);
+
+        let error = github.mergeable(URL).unwrap_err().to_string();
+        assert!(error.contains("gh api rate_limit"), "{error}");
+        let first = github.rate_limit_backoff().unwrap();
+        assert!(first > Duration::from_secs(4 * 60), "{first:?}");
+
+        github.mergeable(URL).unwrap_err();
+        assert!(github.rate_limit_backoff().unwrap() > first);
+
+        github.mergeable(URL).unwrap();
+        assert_eq!(github.rate_limit_backoff(), None);
+    }
+
+    #[test]
+    fn open_pull_requests_read_every_open_pull_request_with_its_details() {
+        let details = |number: i64| {
+            serde_json::json!({
+                "url": format!("https://github.com/acme/toodo/pull/{number}"),
+                "state": "OPEN",
+                "baseRefName": "main",
+                "mergedAt": null,
+                "statusCheckRollup": [],
+                "reviewDecision": "APPROVED",
+                "latestReviews": [],
+                "headRefOid": "abc",
+                "number": number,
+                "title": format!("Change {number}"),
+                "createdAt": MERGED_AT,
+                "body": "Closes #1",
+            })
+        };
+        let full: Vec<_> = (1..=100).map(details).collect();
+        let (github, runner) = github(vec![
+            Ok(Value::Array(full).to_string()),
+            Ok(Value::Array((1..=101).map(details).collect()).to_string()),
+        ]);
+
+        let open = github.open_pull_requests(&repository()).unwrap();
+
+        assert_eq!(open.len(), 101);
+        let last = &open[100];
+        assert_eq!(
+            last.viewed.pull_request.url,
+            "https://github.com/acme/toodo/pull/101"
+        );
+        assert_eq!(last.viewed.status.review, ReviewState::Approved);
+        assert_eq!(last.activity.title, "Change 101");
+        assert_eq!(last.body, "Closes #1");
+        let invocations = runner.invocations.lock().unwrap();
+        assert_eq!(
+            invocations[0].args,
+            [
+                "pr",
+                "list",
+                "--repo",
+                "github.com/acme/toodo",
+                "--state",
+                "open",
+                "--json",
+                PULL_REQUEST_DETAILS_FIELDS,
+                "--limit",
+                "100"
+            ]
+            .map(str::to_owned)
+        );
+        assert_eq!(invocations[1].args.last().unwrap(), "200");
+    }
+
+    #[test]
+    fn merged_pull_requests_search_the_days_of_the_period_and_keep_its_merges() {
+        let listed = |number: i64, merged_at: &str| {
+            serde_json::json!({
+                "url": format!("https://github.com/acme/toodo/pull/{number}"),
+                "number": number,
+                "title": format!("Change {number}"),
+                "headRefName": format!("feat/change-{number}"),
+                "createdAt": "2026-10-08T09:00:00Z",
+                "mergedAt": merged_at,
+            })
+        };
+        let (github, runner) = github(vec![Ok(serde_json::json!([
+            listed(3, "2026-10-10T08:00:00Z"),
+            listed(2, MERGED_AT),
+            // Merged on the last searched day, after the period.
+            listed(4, "2026-10-11T20:00:00Z"),
+        ])
+        .to_string())]);
+        let since = MERGED_AT_SECONDS - 3_600;
+        let until = since + 2 * 86_400;
+
+        let merged = github
+            .merged_pull_requests(&repository(), "main", since, until)
+            .unwrap();
+
+        let numbers: Vec<_> = merged
+            .iter()
+            .map(|pull_request| pull_request.number)
+            .collect();
+        assert_eq!(numbers, [2, 3]);
+        assert_eq!(merged[0].head, "feat/change-2");
+        assert_eq!(merged[0].merged_at, MERGED_AT_SECONDS);
+        let invocations = runner.invocations.lock().unwrap();
+        assert_eq!(
+            invocations[0].args,
+            [
+                "pr",
+                "list",
+                "--repo",
+                "github.com/acme/toodo",
+                "--state",
+                "merged",
+                "--base",
+                "main",
+                "--author",
+                "@me",
+                "--search",
+                "merged:2026-10-09..2026-10-11",
+                "--json",
+                LISTED_PULL_REQUEST_FIELDS,
+                "--limit",
+                "100"
+            ]
+            .map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn pull_request_urls_name_their_repository() {
+        assert_eq!(
+            pull_request_repository(URL).map(|repository| repository.to_string()),
+            Some("github.com/acme/toodo".to_owned())
+        );
+        assert_eq!(
+            pull_request_repository("https://ghe.example.com/team/toodo/pull/3")
+                .map(|repository| repository.to_string()),
+            Some("ghe.example.com/team/toodo".to_owned())
+        );
+        assert_eq!(
+            pull_request_repository("https://github.com/acme/toodo"),
+            None
+        );
     }
 }

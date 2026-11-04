@@ -67,12 +67,21 @@ function DeviceRow({ device }: { device: Device }) {
           {device.label}
         </span>
         {device.current && <span className="text-muted-foreground">(this device)</span>}
+        {device.scope === "read" && <span className="text-muted-foreground">read-only</span>}
       </span>
       <span className="text-muted-foreground">
         {device.revokedAt !== null ? (
           <When at={device.revokedAt} prefix="Revoked " />
         ) : (
-          <When at={device.lastSeenAt} prefix="Last seen " />
+          <>
+            <When at={device.lastSeenAt} prefix="Last seen " />
+            {" \u00b7 "}
+            {device.expiresAt === null ? (
+              "never expires"
+            ) : (
+              <When at={device.expiresAt} prefix={device.expiresAt * 1000 <= Date.now() ? "expired " : "expires "} />
+            )}
+          </>
         )}
       </span>
       {!revoked &&
@@ -115,7 +124,9 @@ function DeviceRow({ device }: { device: Device }) {
 export function DevicesStatus() {
   const devices = useQuery({ queryKey: devicesKey, queryFn: listDevices });
   if (!devices.data) return null;
-  return <>{devices.data.filter((device) => device.revokedAt === null).length} signed in</>;
+  const now = Date.now() / 1000;
+  const signedIn = devices.data.filter((device) => device.revokedAt === null && (device.expiresAt === null || device.expiresAt > now));
+  return <>{signedIn.length} signed in</>;
 }
 
 export function DevicesPanel() {
@@ -124,7 +135,7 @@ export function DevicesPanel() {
   return (
     <section aria-label="Devices" className="flex flex-col gap-2 text-sm">
       <p className="text-muted-foreground">
-        Each browser signs in with the shared token once and then keeps its own token. Revoke a lost device here.
+        Each browser signs in with the shared token once and then keeps its own token until it expires. Revoke a lost device here.
       </p>
       {devices.error && (
         <p role="alert" className="break-words text-destructive">

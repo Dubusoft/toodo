@@ -1,8 +1,17 @@
 import { useEffect } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+  type QueryClient,
+} from "@tanstack/react-query";
 import {
   commands,
   events,
+  type AgentAdapter,
+  type AgentOptions,
   type BackupSettings,
   type CommandError,
   type CriterionId,
@@ -10,17 +19,25 @@ import {
   type MachineSettings,
   type NewTask,
   type NewWorkspace,
+  type PullRequestOptions,
+  type ReviewSnapshotId,
+  type RunId,
+  type SaveReviewSnapshotRequest,
+  type RunState,
   type Task,
   type TaskEdit,
   type TaskId,
+  type TaskListFilter,
   type TaskResolution,
+  type TaskStatus,
   type TaskAgentStatus,
   type TaskPullRequestStatus,
-  type Timestamp,
+  type TaskRun,
   type Workspace,
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
+import { commandErrorMessage } from "@/lib/error-messages";
 import { downloadBackup, downloadExport, uploadRestore } from "@/web/files";
 import { agentAlerts, notify, pullRequestAlerts, taskStatusAlerts, type AgentAlert } from "@/lib/agent-alerts";
 
@@ -28,11 +45,13 @@ type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: Co
 
 export class CommandFailure extends Error {
   readonly kind: CommandError["kind"];
+  readonly code: CommandError["code"];
 
   constructor(error: CommandError) {
-    super(error.message);
+    super(commandErrorMessage(error));
     this.name = "CommandFailure";
     this.kind = error.kind;
+    this.code = error.code;
   }
 }
 
@@ -46,24 +65,47 @@ export async function unwrap<T>(result: Promise<CommandResult<T>>): Promise<T> {
 
 export const queryKeys = {
   workspaces: ["workspaces"] as const,
-  /** Tasks of every workspace: dependencies cross workspaces, so they are loaded together. */
-  tasks: ["task-list"] as const,
+  /**
+   * Tasks of every workspace, loaded in pages (see `useTasks`): dependencies cross workspaces,
+   * so they are loaded together. Not `["task-list"]` alone, which held one plain list before.
+   */
+  tasks: ["task-list", "pages"] as const,
   /** Related links between tasks; under "tasks", so a tasks-changed event refetches them. */
   taskRelations: ["tasks", "relations"] as const,
+  /** Deleted workspaces and tasks; under "tasks", so a tasks-changed event refetches them. */
+  archive: ["tasks", "archive"] as const,
   herdrStatus: ["herdr-status"] as const,
+  runnerHealth: ["runner-health"] as const,
   agentStatuses: ["agent-statuses"] as const,
   pullRequestStatuses: ["pull-request-statuses"] as const,
   machineSettings: (machine: Machine) => ["machine-settings", machine] as const,
+  /** Under "tasks", so a tasks-changed event, e.g. a run that started or ended, refetches it. */
+  machineRuns: (machine: Machine) => ["tasks", "machine-runs", machine] as const,
   branches: (workspace: WorkspaceId) => ["branches", workspace] as const,
   commitRecords: (taskId: TaskId) => ["tasks", taskId, "commit-records"] as const,
   taskActivity: (taskId: TaskId) => ["tasks", taskId, "activity"] as const,
   branchFreshness: (taskId: TaskId) => ["tasks", taskId, "branch-freshness"] as const,
+  taskRuns: (taskId: TaskId) => ["tasks", taskId, "runs"] as const,
+  /** Under "agent-options", so saving a workspace's options refetches the task views that show them. */
+  workspaceAgentOptions: (workspace: WorkspaceId) => ["agent-options", "workspace", workspace] as const,
+  taskAgentOptions: (taskId: TaskId) => ["agent-options", "task", taskId] as const,
+  workspacePullRequestOptions: (workspace: WorkspaceId) => ["pull-request-options", workspace] as const,
+  /** Not under "tasks": agent status changes refetch them, task changes do not. */
+  agentStatusTransitions: (taskId: TaskId) => ["agent-status-transitions", taskId] as const,
+  /** Not under "tasks": a log can be large, so it is refetched only for its run. */
+  runLog: (runId: RunId | null) => ["run-log", runId] as const,
   herdrMachines: ["herdr-machines"] as const,
   backups: ["backups"] as const,
   backupSettings: ["backup-settings"] as const,
+  backupStatus: ["backup-status"] as const,
   mcpServerInfo: ["mcp-server-info"] as const,
   mcpTunnels: ["mcp-tunnels"] as const,
-  review: (start: Timestamp, end: Timestamp) => ["review", start, end] as const,
+  review: (from: string, to: string) => ["review", from, to] as const,
+  /** Under "review", so changing it refetches every review. */
+  reviewTimeZone: ["review", "time-zone"] as const,
+  /** Not under "review": saved reviews never change with the tasks. */
+  reviewSnapshots: ["review-snapshots"] as const,
+  reviewSnapshot: (id: ReviewSnapshotId) => ["review-snapshots", id] as const,
   directories: (machine: Machine, path: string | null) => ["directories", machine, path] as const,
 };
 
@@ -100,14 +142,29 @@ export function useBackupSettings() {
   });
 }
 
-/** Saving may write an automatic backup right away, so the backup list is refetched. */
+/**
+ * Whether the latest automatic backup failed. The server checks for a due backup every ten
+ * minutes, so this is refetched every minute.
+ */
+export function useBackupStatus() {
+  return useQuery({
+    queryKey: queryKeys.backupStatus,
+    queryFn: () => commands.getBackupStatus(),
+    refetchInterval: 60_000,
+  });
+}
+
+/** Saving may write an automatic backup right away, so the backup list and status are refetched. */
 export function useSaveBackupSettings() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (settings: BackupSettings) => unwrap(commands.saveBackupSettings(settings)),
     onSuccess: (settings) => {
       queryClient.setQueryData(queryKeys.backupSettings, settings);
-      return queryClient.invalidateQueries({ queryKey: queryKeys.backups });
+      return Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.backups }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.backupStatus }),
+      ]);
     },
   });
 }
@@ -146,6 +203,11 @@ export function useHerdrMachines() {
     queryKey: queryKeys.herdrMachines,
     queryFn: () => unwrap(commands.listHerdrMachines()),
   });
+}
+
+/** Tests that the server reaches an SSH host without a prompt and that git runs there. */
+export function useTestSshMachine() {
+  return useMutation({ mutationFn: (machine: string) => unwrap(commands.testSshMachine(machine)) });
 }
 
 /**
@@ -258,32 +320,205 @@ export function useCreateBaseBranch() {
   });
 }
 
-/** Removes a workspace from Toodo with its tasks; the repository and herdr stay untouched. */
+/** Archives a workspace with its tasks; the repository and herdr stay untouched. */
 export function useDeleteWorkspace() {
+  return useArchiveMutation((id: WorkspaceId) => unwrap(commands.deleteWorkspace(id)));
+}
+
+/** The workspaces and tasks deleting archived, to restore or purge. */
+export function useArchive() {
+  return useQuery({ queryKey: queryKeys.archive, queryFn: () => unwrap(commands.listArchive()) });
+}
+
+/**
+ * Commands that move workspaces or tasks into or out of the archive, which changes the
+ * workspaces, the tasks, the archive, and what reviews show.
+ */
+function useArchiveMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: WorkspaceId) => unwrap(commands.deleteWorkspace(id)),
+    mutationFn,
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.archive }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
       ]),
   });
 }
 
-/** Tasks of every workspace; a status change may release dependents in other workspaces. */
-export function useTasks() {
-  return useQuery({
+export function useRestoreWorkspace() {
+  return useArchiveMutation((id: WorkspaceId) => unwrap(commands.restoreWorkspace(id)));
+}
+
+/** Deletes an archived workspace for good with its tasks and their history. */
+export function usePurgeWorkspace() {
+  return useArchiveMutation((id: WorkspaceId) => unwrap(commands.purgeWorkspace(id)));
+}
+
+export function useRestoreTask() {
+  return useArchiveMutation((id: TaskId) => unwrap(commands.restoreTask(id)));
+}
+
+/** Deletes an archived task for good with its history. */
+export function usePurgeTask() {
+  return useArchiveMutation((id: TaskId) => unwrap(commands.purgeTask(id)));
+}
+
+/** How many finished tasks a page of the task list loads, newest first. */
+export const finishedTasksPage = 100;
+
+const openStatuses: TaskStatus[] = ["planned", "in_progress", "in_review"];
+
+/** Loaded tasks, and the ID to load older finished tasks below; null when there are none. */
+export type TasksPage = { tasks: Task[]; olderBefore: TaskId | null };
+
+function listTasks(filter: TaskListFilter): Promise<Task[]> {
+  return unwrap(commands.listTasks(filter));
+}
+
+/**
+ * A page of the task list. The first holds every open task, the newest finished ones, and the
+ * finished tasks the open ones depend on; each later page the next older finished tasks. So the
+ * first screen loads a bounded number of tasks however long the history grows.
+ */
+async function loadTasksPage(before: TaskId | null): Promise<TasksPage> {
+  const finished = listTasks({ statuses: ["done"], before, limit: finishedTasksPage });
+  const olderBefore = (tasks: Task[]) =>
+    tasks.length < finishedTasksPage ? null : Math.min(...tasks.map((task) => task.id));
+  if (before !== null) {
+    const older = await finished;
+    return { tasks: older, olderBefore: olderBefore(older) };
+  }
+  const [open, newest] = await Promise.all([listTasks({ statuses: openStatuses }), finished]);
+  const loaded = new Set([...open, ...newest].map((task) => task.id));
+  const missing = [...new Set(open.flatMap((task) => task.dependsOn))].filter((id) => !loaded.has(id));
+  const chunks: TaskId[][] = [];
+  for (let start = 0; start < missing.length; start += finishedTasksPage) {
+    chunks.push(missing.slice(start, start + finishedTasksPage));
+  }
+  const prerequisites = await Promise.all(chunks.map((ids) => listTasks({ ids })));
+  return { tasks: [...open, ...newest, ...prerequisites.flat()], olderBefore: olderBefore(newest) };
+}
+
+/** Every task the pages loaded, once each, ordered by ID: a page may repeat a task another holds. */
+export function loadedTasks(data: InfiniteData<TasksPage, TaskId | null>): Task[] {
+  const byId = new Map<TaskId, Task>();
+  for (const page of data.pages) {
+    for (const task of page.tasks) byId.set(task.id, task);
+  }
+  return [...byId.values()].sort((a, b) => a.id - b.id);
+}
+
+/** The loaded tasks in the cache of `queryClient`, without loading them. */
+export function cachedTasks(queryClient: QueryClient): Task[] | undefined {
+  const data = queryClient.getQueryData<InfiniteData<TasksPage, TaskId | null>>(queryKeys.tasks);
+  return data === undefined ? undefined : loadedTasks(data);
+}
+
+/**
+ * Tasks of every workspace, as loaded so far: open ones and the newest finished ones first,
+ * older finished ones on `fetchNextPage`. A status change may release dependents in other
+ * workspaces, so they load together. The tasks `wanted` names (one a link or a search points at)
+ * are loaded too when the pages do not hold them yet.
+ */
+export function useTasks(wanted: readonly (TaskId | null | undefined)[] = []) {
+  const pages = useInfiniteQuery({
     queryKey: queryKeys.tasks,
-    queryFn: () => unwrap(commands.listTasks()),
+    queryFn: ({ pageParam }) => loadTasksPage(pageParam),
+    initialPageParam: null as TaskId | null,
+    getNextPageParam: (page) => page.olderBefore,
+    select: loadedTasks,
+  });
+  const paged = pages.data;
+  const pagedIds = new Set(paged?.map((task) => task.id));
+  const missing = [
+    ...new Set(wanted.filter((id): id is TaskId => id !== null && id !== undefined && !pagedIds.has(id))),
+  ].sort((a, b) => a - b);
+  // Under the pages' key, so whatever refreshes the pages refreshes these too.
+  const extra = useQuery({
+    queryKey: [...queryKeys.tasks, "by-id", missing],
+    queryFn: () => listTasks({ ids: missing }),
+    enabled: paged !== undefined && missing.length > 0,
+  });
+  const extraTasks = missing.length === 0 ? [] : (extra.data ?? []);
+  if (paged === undefined || extraTasks.length === 0) return pages;
+  return { ...pages, data: [...paged, ...extraTasks].sort((a, b) => a.id - b.id) };
+}
+
+/**
+ * Tasks of every workspace with a milestone or commit in the days `from` to `to`, judged in the
+ * review time zone of the server, with the period it judged them by.
+ */
+export function useReview(from: string, to: string) {
+  return useQuery({
+    queryKey: queryKeys.review(from, to),
+    queryFn: () => unwrap(commands.reviewPeriod(from, to)),
   });
 }
 
-/** Tasks of every workspace with a milestone or commit in `[start, end)`. */
-export function useReview(start: Timestamp, end: Timestamp) {
+/** The time zone the server judges reviewed periods in. */
+export function useReviewTimeZone() {
   return useQuery({
-    queryKey: queryKeys.review(start, end),
-    queryFn: () => unwrap(commands.reviewPeriod(start, end)),
+    queryKey: queryKeys.reviewTimeZone,
+    queryFn: () => unwrap(commands.getReviewTimeZone()),
+  });
+}
+
+/** Sets the review time zone (`null` for the server's own); every review is refetched. */
+export function useSetReviewTimeZone() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (timeZone: string | null) => unwrap(commands.setReviewTimeZone(timeZone)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["review"] }),
+  });
+}
+
+/** The saved reviews, the most recently saved first. */
+export function useReviewSnapshots() {
+  return useQuery({
+    queryKey: queryKeys.reviewSnapshots,
+    queryFn: () => unwrap(commands.listReviewSnapshots()),
+  });
+}
+
+/** A saved review as it was saved; nothing is loaded while `id` is null. */
+export function useReviewSnapshot(id: ReviewSnapshotId | null) {
+  return useQuery({
+    queryKey: queryKeys.reviewSnapshot(id ?? 0),
+    queryFn: () => unwrap(commands.getReviewSnapshot(id ?? 0)),
+    enabled: id !== null,
+    staleTime: Infinity,
+  });
+}
+
+export function useSaveReviewSnapshot() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (request: SaveReviewSnapshotRequest) => unwrap(commands.saveReviewSnapshot(request)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.reviewSnapshots }),
+  });
+}
+
+export function useDeleteReviewSnapshot() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: ReviewSnapshotId) => unwrap(commands.deleteReviewSnapshot(id)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.reviewSnapshots }),
+  });
+}
+
+/** Records the pull requests the user merged in the days `from` to `to` as done tasks, for reviews of that time. */
+export function useBackfillPullRequests() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ from, to }: { from: string; to: string }) => unwrap(commands.backfillPullRequests(from, to)),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
   });
 }
 
@@ -291,6 +526,19 @@ export function useHerdrStatus() {
   return useQuery({
     queryKey: queryKeys.herdrStatus,
     queryFn: () => unwrap(commands.herdrStatus()),
+  });
+}
+
+/**
+ * Whether herdr runs on the server and which agent CLIs of plain runs are on its `PATH`.
+ * Installing or starting a tool sends no event, so it is checked again every minute, when the
+ * window regains focus, and on request.
+ */
+export function useRunnerHealth() {
+  return useQuery({
+    queryKey: queryKeys.runnerHealth,
+    queryFn: () => unwrap(commands.runnerHealth()),
+    refetchInterval: 60_000,
   });
 }
 
@@ -329,7 +577,7 @@ export function useHerdrEvents() {
       if (previous === undefined || document.hasFocus()) {
         return;
       }
-      const tasks = queryClient.getQueryData<Task[]>(queryKeys.tasks) ?? [];
+      const tasks = cachedTasks(queryClient) ?? [];
       notify(alerts(previous, next, tasks)).catch((error: unknown) =>
         console.error("toodo: failed to show notifications", error),
       );
@@ -337,7 +585,7 @@ export function useHerdrEvents() {
 
     const subscriptions = [
       events.tasksChanged.listen(async () => {
-        const previous = queryClient.getQueryData<Task[]>(queryKeys.tasks);
+        const previous = cachedTasks(queryClient);
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
           // A task completed in the background got the commits of its pull request.
@@ -346,7 +594,7 @@ export function useHerdrEvents() {
         if (previous === undefined || document.hasFocus()) {
           return;
         }
-        const next = queryClient.getQueryData<Task[]>(queryKeys.tasks) ?? [];
+        const next = cachedTasks(queryClient) ?? [];
         notify(taskStatusAlerts(previous, next)).catch((error: unknown) =>
           console.error("toodo: failed to show status notifications", error),
         );
@@ -354,9 +602,11 @@ export function useHerdrEvents() {
       events.workspacesChanged.listen(() =>
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
       ),
-      events.agentStatusesChanged.listen(({ payload }) =>
-        update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts),
-      ),
+      events.agentStatusesChanged.listen(({ payload }) => {
+        update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts);
+        // The server stored the transitions before it sent the change.
+        void queryClient.invalidateQueries({ queryKey: ["agent-status-transitions"] });
+      }),
       events.pullRequestStatusesChanged.listen(({ payload }) =>
         update<TaskPullRequestStatus>(queryKeys.pullRequestStatuses, payload.statuses, pullRequestAlerts),
       ),
@@ -382,6 +632,27 @@ export function useSaveMachineSettings() {
     mutationFn: (settings: MachineSettings) => unwrap(commands.saveMachineSettings(settings)),
     onSuccess: (settings) =>
       queryClient.setQueryData(queryKeys.machineSettings(settings.machine), settings),
+  });
+}
+
+/** How many runs the machine runs at once, and how many run or wait there now. */
+export function useMachineRuns(machine: Machine) {
+  return useQuery({
+    queryKey: queryKeys.machineRuns(machine),
+    queryFn: () => unwrap(commands.getMachineRuns(machine)),
+    // Runs end without an event, so the counts reload while any run is there.
+    refetchInterval: (query) =>
+      query.state.data && query.state.data.activeRuns + query.state.data.queuedRuns > 0 ? liveRunInterval : false,
+  });
+}
+
+export function useSetMachineRunLimit() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ machine, limit }: { machine: Machine; limit: number | null }) =>
+      unwrap(commands.setMachineRunLimit(machine, limit)),
+    // Queued runs that a raised limit starts show on their own: runs reload while queued.
+    onSuccess: (runs) => queryClient.setQueryData(queryKeys.machineRuns(runs.machine), runs),
   });
 }
 
@@ -423,6 +694,163 @@ export function useTaskActivity(taskId: TaskId, enabled: boolean) {
     queryKey: queryKeys.taskActivity(taskId),
     queryFn: () => unwrap(commands.listTaskActivity(taskId)),
     enabled,
+  });
+}
+
+/**
+ * When the agent in a task's herdr workspace changed what it was doing, oldest first; agent
+ * status changes refetch it.
+ */
+export function useAgentStatusTransitions(taskId: TaskId, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.agentStatusTransitions(taskId),
+    queryFn: () => unwrap(commands.listAgentStatusTransitions(taskId)),
+    enabled,
+  });
+}
+
+/** How often the runs of a task and the log of a run reload while a run is starting or running. */
+const liveRunInterval = 3_000;
+
+/** Whether a run in `state` still changes on its own: it waits for a run slot, or its agent is starting or working. */
+function isLive(state: RunState): boolean {
+  return state === "queued" || state === "reserved" || state === "running";
+}
+
+/**
+ * The runs of a task, oldest first. Runs send no events, so they are refetched on request,
+ * when the window regains focus, when the tasks change, and every few seconds while one of
+ * them is starting or running.
+ */
+export function useTaskRuns(taskId: TaskId) {
+  return useQuery({
+    queryKey: queryKeys.taskRuns(taskId),
+    queryFn: () => unwrap(commands.listTaskRuns(taskId)),
+    refetchInterval: (query) => (query.state.data?.some((run) => isLive(run.state)) ? liveRunInterval : false),
+  });
+}
+
+/**
+ * A run with its events and the ends of its stdout and stderr; nothing is loaded while `runId`
+ * is `null`. While the run is starting or running, it reloads every few seconds, so the output
+ * shows as the agent writes it; the log of a run that ended no longer changes.
+ */
+export function useRunLog(runId: RunId | null) {
+  return useQuery({
+    queryKey: queryKeys.runLog(runId),
+    queryFn: () => unwrap(commands.getRunLog(runId!, null)),
+    enabled: runId !== null,
+    refetchInterval: (query) => (query.state.data && isLive(query.state.data.run.state) ? liveRunInterval : false),
+  });
+}
+
+/**
+ * Starts Claude or Codex on the worktree of an `in_progress` task of a plain or tmux workspace,
+ * with the task as its prompt; with `followUpOf`, an ended run, the agent resumes that run's
+ * session with `prompt` instead. A launch that fails is still recorded as a failed run, so the
+ * runs are refetched either way.
+ */
+export function useStartPlainRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      taskId,
+      adapter,
+      mcp,
+      prompt = null,
+      followUpOf = null,
+    }: {
+      taskId: TaskId;
+      adapter: AgentAdapter;
+      mcp: boolean;
+      prompt?: string | null;
+      followUpOf?: RunId | null;
+    }) => unwrap(commands.startPlainRun(taskId, adapter, prompt, mcp, followUpOf)),
+    onSettled: (_run, _error, { taskId }) => queryClient.invalidateQueries({ queryKey: queryKeys.taskRuns(taskId) }),
+  });
+}
+
+/** The model, permission mode, and time limit a workspace sets for the runs of its tasks. */
+export function useWorkspaceAgentOptions(workspace: WorkspaceId) {
+  return useQuery({
+    queryKey: queryKeys.workspaceAgentOptions(workspace),
+    queryFn: () => unwrap(commands.getWorkspaceAgentOptions(workspace)),
+  });
+}
+
+/** The launch options a task overrides, and the ones its workspace sets for the rest. */
+export function useTaskAgentOptions(taskId: TaskId) {
+  return useQuery({
+    queryKey: queryKeys.taskAgentOptions(taskId),
+    queryFn: () => unwrap(commands.getTaskAgentOptions(taskId)),
+  });
+}
+
+/** Saves the launch options of a workspace; runs started later use them. */
+export function useSetWorkspaceAgentOptions() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspace, options }: { workspace: WorkspaceId; options: AgentOptions }) =>
+      unwrap(commands.setWorkspaceAgentOptions(workspace, options)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["agent-options"] }),
+  });
+}
+
+/** Whether a workspace opens pull requests as drafts, and the reviewers and labels they get. */
+export function useWorkspacePullRequestOptions(workspace: WorkspaceId) {
+  return useQuery({
+    queryKey: queryKeys.workspacePullRequestOptions(workspace),
+    queryFn: () => unwrap(commands.getWorkspacePullRequestOptions(workspace)),
+  });
+}
+
+/** Saves the pull request options of a workspace; pull requests opened later use them. */
+export function useSetWorkspacePullRequestOptions() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspace, options }: { workspace: WorkspaceId; options: PullRequestOptions }) =>
+      unwrap(commands.setWorkspacePullRequestOptions(workspace, options)),
+    onSuccess: (saved, { workspace }) =>
+      queryClient.setQueryData(queryKeys.workspacePullRequestOptions(workspace), saved),
+  });
+}
+
+/** Saves the launch options a task overrides; runs started later use them. */
+export function useSetTaskAgentOptions() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ taskId, options }: { taskId: TaskId; options: AgentOptions }) =>
+      unwrap(commands.setTaskAgentOptions(taskId, options)),
+    onSuccess: (saved, { taskId }) => queryClient.setQueryData(queryKeys.taskAgentOptions(taskId), saved),
+  });
+}
+
+/** Stops a plain or tmux run: it ends as cancelled; a run that already ended stays as it is. */
+export function useStopRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (run: TaskRun) => unwrap(commands.stopRun(run.id)),
+    onSettled: (_stopped, _error, run) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.taskRuns(run.taskId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.runLog(run.id) }),
+      ]),
+  });
+}
+
+/**
+ * Settles a run whose end was not seen (`unknown`, e.g. after a server restart or a lost SSH
+ * connection) from what its host recorded; it never starts the agent again.
+ */
+export function useReconcileRun() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (run: TaskRun) => unwrap(commands.reconcileRun(run.id)),
+    onSettled: (_reconciled, _error, run) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.taskRuns(run.taskId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.runLog(run.id) }),
+      ]),
   });
 }
 
@@ -566,7 +994,12 @@ export function useUpdateTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (task: TaskEdit) => unwrap(commands.updateTask(task)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+    // Reviews compare a task's estimate and due date with what happened.
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
   });
 }
 
@@ -601,9 +1034,11 @@ export function useCheckCriterion() {
   );
 }
 
-/** Deletes a task, first removing its worktree through herdr; `force` discards local changes. */
+/**
+ * Archives a task, first removing its worktree through herdr; `force` discards local changes.
+ */
 export function useDeleteTask() {
-  return useTasksMutation(({ id, force }: { id: TaskId; force: boolean }) =>
+  return useArchiveMutation(({ id, force }: { id: TaskId; force: boolean }) =>
     unwrap(commands.deleteTask(id, force)),
   );
 }

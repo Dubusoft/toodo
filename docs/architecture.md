@@ -32,7 +32,7 @@ directory. See [workflow.md](workflow.md#1-register-a-workspace).
 | `agentMerge` | Whether agents merge their own task PR: `never` (default; they stop once the PR is open) or `afterChecks` (they merge it into `defaultBaseBranch` once every check on it passed, never into another branch). Editable from the workspace header; agents read it from the MCP `current_task` tool. Toodo itself never merges. |
 | `source` | Where the work lives: `none` (a plain directory, no git), `local_git` (a git repository used locally only), or `github` (a git repository with an `origin` remote on GitHub). |
 | `completion` | How a task is completed: `manual` (by its manual, `url`, or `command` criteria, with no merge criterion), `local_merge` (the task branch is merged into the base branch locally), or `pr_merge` (its pull request is merged). |
-| `runner` | What runs the work: `herdr` (a task start creates a branch, a worktree, and a herdr workspace) or `none` (a task start only changes its status). |
+| `runner` | What runs the work: `herdr` (a task start creates a branch, a worktree, and a herdr workspace), `plain` (a task start creates a branch and a git worktree, and agent runs are child processes of the server, without herdr), `tmux` (like `plain`, but each agent run is a detached tmux session on the workspace's host), or `none` (a task start only changes its status). |
 
 The three axes are chosen at creation and are read-only afterwards. One domain rule
 (`check_axes`) checks every combination, from the app and from MCP alike:
@@ -41,7 +41,18 @@ The three axes are chosen at creation and are read-only afterwards. One domain r
 - Source `local_git` allows completion `manual` or `local_merge`.
 - Source `github` allows completion `manual` or `pr_merge`.
 - Runner `none` allows only completion `manual`, since a merge needs the task branch that
-  only a runner creates. Runner `herdr` needs a git source.
+  only a runner creates. Runners `herdr`, `plain`, and `tmux` need a git source and allow
+  the same completions.
+- Runner `plain` accepts local and SSH workspaces on POSIX or Windows hosts.
+- Runner `tmux` accepts local and POSIX SSH workspaces. A Windows SSH path is rejected,
+  with runner `plain` or `herdr` named as the choice that works there.
+
+No default picks `plain`; a workspace uses it only when created with it explicitly.
+Migration 33 widens the `runner` check of `workspaces` to allow it.
+
+Migration 34 widens the `runner` checks of `workspaces` and `runtime_workspaces` to allow
+`tmux`, and adds a check on `task_runs.runner_kind` (`herdr`, `plain`, `tmux`, `none`).
+SSH workspaces with runner `herdr` and their saved herdr machines work as before.
 
 An omitted axis gets its default from the source: `none` gives `manual` + `none`,
 `local_git` gives `local_merge` + `herdr`, and `github` gives `pr_merge` + `herdr`. An
@@ -145,13 +156,17 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
 | `taskId` | Task the event belongs to. |
 | `status` | Status the task moved to. |
 | `at` | Time of the change, in seconds since the Unix epoch (UTC), from the clock of the machine running Toodo. Shown in the local time zone. |
+| `reason` | Why the work stopped, on a move back to `planned`: the reason given to `pause_task`, the prerequisites a task paused by a new dependency waits on, or why it was reopened. `null` for other changes and for the app's Pause, which asks for no reason. |
 
 - Creating a task records its initial status (`planned`). Every later status change
   records one event in the same transaction as the change itself. Dependency changes do
   not change a status, so they record nothing.
-- Events are never edited or deleted on their own; they go away only when their task is
-  deleted. A deleted task no longer appears in reports, so pause rather than delete a
-  task whose work should be reported.
+- Events are never edited or deleted on their own. Deleting a task or its workspace
+  archives it (`archived_at` on `tasks` or `workspaces`): it leaves the task lists and the
+  DAG, but its history, commits, and links stay, and reviews still report its work, marked
+  archived. Settings > Archive restores it (`restore_task`, `restore_workspace`) or
+  deletes it for good (`purge_task`, `purge_workspace`); only that purge removes its
+  events, and it accepts archived items only.
 - The milestones used by the timeline view and reports are derived from the history:
 
   | Milestone | Derived from |
@@ -182,8 +197,11 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   lives; finishing a task can release dependents in other workspaces. Readiness is
   derived from the DAG whenever it is needed and is not a status.
 - A workspace cannot be deleted while a `planned` task of another workspace depends on
-  one of its tasks, since that task would silently become ready. Dependencies of tasks
-  being worked on or done are dropped with the workspace.
+  one of its tasks, since that task would silently become ready, or while a run of one of
+  its tasks is queued or active. An archived task is left out of the DAG: its edges are
+  kept but no longer hold back their dependents, and no new edge can reach it. Restoring
+  it brings its edges back, and is rejected if they would close a cycle with edges added
+  meanwhile.
 - Dependents of a task can be planned at any time but only started (or resumed) once
   ready.
 - Dependencies change while a task is `planned` or `in_progress`. A new prerequisite that
@@ -199,7 +217,7 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   whose decisions a new one builds on, or a follow-up of research that was not adopted.
 - A related link is symmetric, may cross workspaces, and never affects readiness or
   starting a task; only dependencies do. Table `task_relations` stores each link once,
-  from the lower task ID to the higher one, and deleting a task drops its links.
+  from the lower task ID to the higher one, and purging a task drops its links.
 - Related links are set through MCP only (`add_related` / `remove_related`); the app
   does not show them yet.
 
@@ -264,6 +282,11 @@ a task list): it draws the tasks of every workspace together, each bar labeled w
 workspace, and can be narrowed to one workspace. Narrowed, prerequisites from other
 workspaces are still drawn, dimmed and labeled with their workspace.
 
+The app loads tasks in pages so its first screen stays quick however long the history
+grows: every open task, the 100 newest done tasks, and the done tasks open ones depend
+on. Where done tasks are shown (the timeline with a status filter that includes them, or
+the task list's Done group), "Load older finished tasks" loads the next 100.
+
 - It reads like a Gantt chart: a time axis header (coarse dates above fine dates or
   hours) stays at the top while the rows scroll, and a cursor marks the current time,
   refreshed every 30 seconds.
@@ -303,6 +326,26 @@ workspaces are still drawn, dimmed and labeled with their workspace.
   row and behind its label, and the axis reaches far enough to show it. A task done after that day, or still open past it, is
   outlined in red, and so is its marker.
 
+## Plan View
+
+"Plan" in the "All workspaces" view (`?view=plan`) shows whether a quarter or a year of
+planned work fits, before it slips. Like the timeline it can be narrowed to one
+workspace, and the search, status, and type filters apply.
+
+- Each task counts in the calendar quarter or year of its due date, with its estimate
+  converted to seconds as everywhere else (a day is 24 hours, a week 7 days, a month 30
+  days). Done tasks count, since their work filled the period; tasks that were not
+  adopted do not.
+- Periods run without gaps from the earliest due date to the latest, and always include
+  the current one. Each lists its tasks, the summed estimate, the part of it already done,
+  and how many of its tasks have no estimate and so are left out of the sum.
+- Tasks without a due date are listed apart under "No due date", with their summed
+  estimate.
+- The capacity is an amount of work per quarter in an estimate unit; a year holds four
+  quarters. A period whose summed estimate is more than its capacity is highlighted as
+  over capacity, with the excess. The capacity is saved in the browser (`localStorage`),
+  like the theme; without one, no period is highlighted.
+
 ## Review
 
 A report of the work recorded in a period, across all workspaces, for status updates and
@@ -311,9 +354,25 @@ records, pull request snapshots) and the completion notes the user wrote; nothin
 generated or guessed by an agent.
 
 - The user picks a week (from any first day, by default the Monday of the current week),
-  a calendar month, quarter, or year, or a custom range of days. The period runs from
-  local midnight of its first day to local midnight after its last day, as the half-open
-  period `[start, end)` passed to the `review_period` command.
+  a calendar month, quarter, or year, or a custom range of days. The `review_period`
+  command takes the first and last day, and the server turns them into the half-open
+  period `[start, end)` from midnight of the first day to midnight after the last day in
+  its review time zone, so the same days give the same numbers on every device.
+- The review time zone is a server setting (`settings` table), changed from the Review
+  page (Change time zone) or with `set_review_time_zone`; until one is set, it is the
+  server's own time zone (UTC when that has no IANA name). The review's monthly counts are
+  in it too.
+- A review can be saved as a snapshot (Export > Save as snapshot, or
+  `save_review_snapshot`): the server stores its reviewed tasks as JSON, the names of
+  their workspaces, the time zone, and the Markdown and CSV reports in
+  `review_snapshots`. Reopening it from Saved reviews shows and exports exactly what was
+  saved, with durations and due dates judged at the time it was saved, however the tasks
+  change later (for example when a task is reopened). Snapshots are kept until deleted and
+  are not merged by `toodo-server import`.
+- The review can be narrowed to one workspace and to one label. Labels (such as a
+  project or goal) are free text set on a task in the app or through MCP
+  (`create_task`, `update_task`); each is trimmed, at most 40 characters, without commas,
+  and a task has at most 20. The summary, plan, and exports cover the narrowed tasks.
 - A task is in the review when it reached a milestone or got a commit in the period.
   Its outcome is the most advanced milestone reached in the period, in this order:
 
@@ -327,8 +386,25 @@ generated or guessed by an agent.
 
 - Each task is listed once, under its outcome, with its workspace, the time of the
   outcome, its pull request (with its size and review count once merged), its completion
-  note, and the commits it got in the period.
+  note, and the commits it got in the period. A started task also shows its active time
+  (`in_progress` or `in_review`) against its waiting time (back in `planned` after its
+  first start: paused, blocked by a prerequisite, or reopened, until it was started
+  again), and each wait in the period with the `reason` its event recorded; time still
+  under way counts until now. The CSV export has both as `Active hours` and
+  `Waiting hours`.
 - Tasks without status history appear only through their commits.
+- The commits of a task are its commit records (recorded when its branch is refreshed,
+  its pull request opens, and it completes) and the commits its git activity recorded
+  since, so a task in progress without a pull request shows its commits within a minute
+  of the background check reading its branch.
+- Work merged before Toodo tracked it can be imported from GitHub: "Import merged pull
+  requests" on an empty review (`backfill_pull_requests`) records each pull request the
+  signed-in `gh` user merged into the base branch of a GitHub workspace in the period as a
+  task done as merged, planned, started, and in review when the pull request was opened
+  and completed when it was merged. Its type comes from the branch prefix (`fix/...`) or a
+  conventional title (`docs: ...`), else `modify`. A pull request a task already records,
+  or whose branch a task of the workspace has, is skipped, so importing again adds nothing
+  twice.
 - A summary leads the review: the count of tasks per outcome, the commits made in the
   period, completed tasks by task type and by workspace, the summed size of their merged
   pull requests, and the median durations of the tasks completed in the period:
@@ -363,8 +439,13 @@ generated or guessed by an agent.
   active hours so far, its estimate and unit, its due date and whether it was met (`On
   time`, `Late`, `Overdue`, or `Not due yet`), the size and review count of its pull request, and its completion
   note; UTF-8 with a byte
-  order mark). The frontend
-  builds the file, since it knows the local time zone, and the browser downloads it.
+  order mark). The server renders both reports with the `review_report` command, in the
+  review time zone unless the caller names another IANA time zone (the web app and
+  `toodo review` name none unless asked), and the browser downloads the file.
+  Agents get the same report from the MCP tool `review_report`, and the CLI prints it
+  with `toodo review` (see [server.md](server.md)).
+- Printing the review (Export > Print or save as PDF, or the browser's print command)
+  leaves out the sidebar, the controls, and banners, and uses the light theme.
 
 ## Runtime Context
 
@@ -390,7 +471,17 @@ SQLite keeps a record of what runs where in seven tables (migrations 29 and 32):
   optional `runtime_workspace_id`. A run with no checkout has no runtime workspace.
   Starting a task of a workspace with runner none records a `writer` run with
   `runner_kind` `none`, no checkout, and no runtime workspace, and ends the task's earlier
-  runs as `exited`.
+  runs as `exited`. `last_activity_at` is when the agent last wrote output: a plain run
+  stores it at most every 5 s while its stdout flows, a tmux run once its end is seen.
+  `input_tokens` (cached ones included), `cached_input_tokens`, and `output_tokens` hold
+  what the agent reported: Claude's `result.usage` (cache reads and writes count as
+  input) or the sum of Codex's `turn.completed.usage`. The run view shows a running run
+  as working while its last output is at most 2 minutes old, else as idle since then.
+- `agent_status_transitions`: when the agent in a task's herdr workspace changed what it
+  was doing (`idle`, `working`, `blocked`, `done`, or NULL once no agent was seen), with
+  the time. A status is stored only when it differs from the last one stored for the
+  task, so the first pane list after a restart adds nothing unless the agent changed
+  while the server was down. Imports keep them with their tasks.
 - `run_events`: the ordered history of a run, keyed by `run_id` and `sequence`.
 - `run_operations`: the ledger of `launch`, `input`, and `stop` requests against a run,
   each `pending`, `applied`, or `failed`, with a `receipt`.
@@ -460,6 +551,224 @@ per call: a `TaskWorkspaceRuntime` for runtime workspaces and a `RunLauncher` fo
 - The MCP `start_task` tool runs `agent_command` through `start_run` as an `InPane` writer
   run in the first pane of the task's open runtime workspace, with request key
   `mcp-agent-<task>-<n>`.
+- The plain `RunLauncher` (`PlainRunner`, `src-tauri/src/runtime/plain/`) runs a
+  `RunCommand::Agent`; see Plain Runs below.
+
+### Plain Runs
+
+A task of a workspace with runner `plain` starts without herdr: Toodo creates the task
+branch, runs `git worktree add` at the task's checkout path (reusing a worktree already
+registered there), and records the task `in_progress` with no runtime workspace. Earlier
+active runs of the task end as `exited`. Deleting such a task removes its worktree with
+`git worktree remove` and keeps the branch. Starting a task launches no agent; runs are
+started separately through `start_plain_run` (`src-tauri/src/commands/runs.rs`), only for
+an `in_progress` task of a plain or tmux workspace that has a worktree, local or SSH.
+
+`PlainRunner` lives in server state for the server's lifetime. Each run launches the
+`claude` or `codex` CLI from the server's `PATH`:
+
+- Claude: `claude -p --output-format stream-json --verbose --permission-mode <mode>`,
+  plus `--model <model>` when one is set, plus
+  `--mcp-config <run dir>/mcp.json --strict-mcp-config` with MCP.
+- Codex: `codex exec --json <permission flags>`, plus `--model <model>` when one is set,
+  plus
+  `-c mcp_servers.toodo.url="<url>" -c mcp_servers.toodo.bearer_token_env_var="TOODO_MCP_TOKEN"`
+  with MCP, then `-`.
+
+The session id (Claude) or thread id (Codex) a run's agent reports is kept in an
+`agent_conversations` row (`resume_kind` `exact_id`) that the run links to through
+`conversation_id`; a follow-up run (`start_plain_run` with `follow_up_of`) joins the same
+conversation and resumes its latest session with `--resume <id>` (Claude) or
+`resume <id>` before `-` (Codex). A run's `followUpOf` is the latest earlier run of its
+conversation.
+
+A workspace's pull request options (`set_workspace_pull_request_options`, stored in the
+`pull_request_draft`, `pull_request_reviewers`, and `pull_request_labels` columns of
+`workspaces`, the lists as JSON arrays) set whether the pull requests Toodo opens for its
+tasks are drafts and which reviewers and labels they get; see `docs/workflow.md`.
+
+The model, permission mode, and time limit come from the task's agent options, and each
+value the task leaves unset from its workspace's (`set_task_agent_options`,
+`set_workspace_agent_options`, stored in the `agent_model`, `agent_permission_mode`, and
+`run_time_limit_minutes` columns of `tasks` and `workspaces`). Without either, the agent
+CLI's default model is used, Claude runs `bypassPermissions` and Codex `--full-auto`, and
+the time limit is 4 hours. The permission modes map to the CLIs as follows; tmux runs use
+the same flags but have no time limit.
+
+| Mode | Claude `--permission-mode` | Codex |
+| --- | --- | --- |
+| `read_only` | `plan` | `--sandbox read-only` |
+| `edit` | `acceptEdits` | `--full-auto` |
+| `bypass` | `bypassPermissions` | `--dangerously-bypass-approvals-and-sandbox` |
+
+The child runs in its own process group with the task worktree as its working
+directory, and its PID is the receipt (`pid:<pid>`). Every run gets a private directory
+`<data dir>/runs/<run id>/` (mode 0700) holding `brief.md` (the prompt), `stdout.log`,
+`stderr.log`, and for Claude with MCP `mcp.json`, all mode 0600. The prompt reaches the
+child on stdin from `brief.md`, never in its arguments. Without a prompt, the brief is the
+task title, description, and criteria, plus an instruction to call the MCP `current_task`
+tool when MCP is on.
+
+With MCP on, the child environment gets `TOODO_MCP_URL` and `TOODO_MCP_TOKEN` (the
+server's MCP bearer). The token is only there: `mcp.json` refers to it as
+`${TOODO_MCP_TOKEN}`, and every occurrence in both logs and in run event payloads is
+replaced with `[redacted]`. With MCP off, both variables are removed from the child
+environment and no MCP flags are passed.
+
+Stdout is read as NDJSON lines, including a last line without a newline. Lines that
+aren't JSON or aren't known events are logged and ignored, and a line over 1 MiB is
+logged truncated and not parsed.
+
+While the run is active, each change of the agent's todo list is appended as a `todo`
+run event: a Claude `assistant` message with a `TodoWrite` tool use (`input.todos`), or a
+Codex `item.started`, `item.updated`, or `item.completed` event of a `todo_list` item.
+The payload is compact JSON `{"items":[{"text":"...","status":"pending"}]}` in the
+agent's order, with status `pending`, `in_progress`, or `completed` (an unknown Claude
+status becomes `pending`; a Codex item is `completed` or `pending`), at most 50 items of
+at most 500 bytes of text each, and redacted like every payload. A list identical to the
+last recorded one records nothing, and a failure to record it is logged without stopping
+the run.
+
+When the process ends, its outcome settles the run:
+
+| Outcome | Run state | Events |
+| --- | --- | --- |
+| Success result, exit 0 | `settled` | `result` (summary, up to 4 KiB) |
+| Error result (Claude `is_error`, Codex `turn.failed` or `error`) | `failed` | `result_error` |
+| No result, exit 0 | `failed` | `no_result` |
+| No result, non-zero exit or signal | `failed` | `stderr` (last 4 KiB, redacted), `exit` |
+| Success result, then non-zero exit or signal | `exited` | `exit_after_result` |
+| Time limit (4 hours unless set) | `failed` | `timed_out` |
+| `stop_run` | `cancelled` | `stop_requested` |
+
+A timeout or stop sends SIGTERM to the process group and SIGKILL 5 seconds later if it
+is still alive. `stop_run` on a run with no live process marks it `cancelled` directly.
+A missing CLI fails the launch with a message to install it on the server's `PATH` or use
+the other adapter. Deleting a task through the app stops its live plain runs first;
+completing or concluding it stops them once the completion succeeded.
+
+A local agent runs under a small `sh` wrapper in its own process group that ignores
+SIGHUP, records its PID and start time in `pid` and its exit code in `exit`, and writes the
+agent's stdout and stderr to `stdout.raw` and `stderr.raw` in the run directory. The
+server follows those files, so the agent neither needs nor notices the server process; the
+redacted `stdout.log` and `stderr.log` replace the raw files once the run ended. `launch`
+keeps the adapter and the timeout deadline.
+
+When the server starts, it appends `server_restarted` to plain runs still `reserved` or
+`running` from the previous process. A local run whose wrapper recorded its PID is
+reattached (event `reattached`): while the agent with the recorded start time runs, the
+server follows its output again (lines recorded before the restart are replayed without
+new events) and its timeout keeps the original deadline; once it exits, the run settles
+from its output and exit code with the outcome table above. An agent that is gone without
+an exit code becomes `failed` with `interrupted`. Any other run becomes `unknown`. Since
+`unknown` still counts as an active writer, `stop_run` on such a run (which cancels it)
+frees the checkout for a new run.
+
+The systemd unit from `toodo service install` sets `KillMode=process`, so stopping or
+restarting the service ends only the server process, not the agents of its runs.
+
+A machine's run limit is `machine_settings.max_concurrent_runs` (NULL for no limit). It
+counts the plain and tmux runs on the host that are `reserved`, `running`, or `unknown`.
+`start_plain_run` decides under a process-wide admission lock: when the host is at its
+limit or already has queued runs, the run is recorded in state `queued` (event `queued`),
+with its prompt and MCP choice in `queued_runs`, and nothing launches. The server's
+`run-queue` thread starts queued runs oldest first per host while slots are free, after a
+stop or a limit change and at least every 3 seconds: it checks the task again, moves the
+run to `reserved` with a pending launch operation, and launches it through the same
+request key, with the agent options current at that moment. A queued writer is in the
+active writer index, so its task starts no second run; `stop_run` cancels it without
+launching. Queued runs survive a restart and are picked up by the thread.
+
+A second launch is guarded three ways: the request key (`plain-<task>-<n>`) makes
+`start_run` idempotent, `PlainRunner` returns the receipt of a live launch with the same
+key instead of spawning again, and the one-active-writer index rejects another writer on
+the worktree. A process that ends before its launch is recorded still settles: the settle
+path records the launch first.
+
+### Remote Plain Runs
+
+On an SSH workspace, `PlainRunner` runs the agent on the workspace's host over `ssh`.
+`src-tauri/src/runtime/host.rs` builds every host command; the host's OS comes from the
+workspace path style (`HostPath::is_windows`), and a Windows host is never treated as
+POSIX. POSIX hosts get `sh` scripts. Windows hosts get PowerShell sent as
+`powershell -EncodedCommand`, with native Windows quoting.
+
+The server creates a persistent 12-character lowercase hex identity in
+`<data dir>/instance-id` (mode 0600 on POSIX), independently of database backups.
+Keep this file when restarting or restoring a database; do not share it between servers.
+The first stage exclusively creates each run directory. If it already exists, remove the
+leftover directory on the named host, then start a new run; no existing files are overwritten.
+
+Each run stages a private run directory on the host, `~/.toodo/runs/<instance>/<run id>` (under
+`%USERPROFILE%` on Windows; mode 0700 with 0600 files on POSIX). `brief.md`, the MCP
+token file, and Claude's `mcp.json` reach it on the stdin of `ssh`, never in arguments.
+A wrapper script in that directory starts the agent, records its PID and start time, and
+writes its exit code to a file. On POSIX the wrapper runs under util-linux
+`setsid --wait`, so it owns its own process group and its real exit code comes back; a
+host without it fails the launch with a message to install util-linux `setsid` or use
+runner `herdr`. The receipt is `ssh:<target>:<run id>`. Stdout and stderr stream back
+through the same redaction, parsing, and outcome table as a local run.
+
+`stop_run` first runs a stop script on the host. It checks that the recorded PID still
+has the recorded start time, then sends SIGTERM and SIGKILL to the whole process group
+(POSIX) or runs `taskkill /T /F` (Windows). If the host can't be reached, the run keeps
+`stop_requested` and stays active, and the error says to restore the connection and
+reconcile.
+
+A lost connection is never taken as the agent exiting. When `ssh` fails without durable
+exit evidence on the host, the run becomes `unknown` with `observation_lost` and keeps the
+checkout; nothing is relaunched. After a server restart, remote plain runs become
+`unknown` with `server_restarted` without contacting the host; once the server serves, a
+background pass reconciles every remote plain and tmux run that is `unknown`, the way
+`reconcile_run` does, and repeats for the runs it leaves `unknown` after 30 seconds,
+doubling the wait up to 30 minutes, until none is left. A repeated finding adds no event.
+`reconcile_run` settles such a run from the host's files: a recorded exit 0 becomes `exited`, another exit code
+`failed`, a live agent stays `unknown` with `remote_still_running`, a vanished agent
+becomes `failed` with `interrupted`, and a missing run directory stays `unknown` with
+`remote_missing`. An unreachable host leaves the run as it was.
+
+Once a remote run ends, its `token` and `mcp.json` are removed from the host; the brief,
+logs, PID, and exit files stay. A failed cleanup appends `credential_cleanup_failed` and
+doesn't change the outcome.
+
+### MCP for Remote Runs
+
+A remote agent reaches MCP through the reverse tunnel the server already keeps to every
+machine with an SSH workspace (`src-tauri/src/mcp/tunnels.rs`), at
+`http://127.0.0.1:<server port>/mcp` on that host. No new tunnel is opened per run. A run
+with MCP on starts only while that machine's tunnel is open; otherwise the error says to
+wait for the tunnel or start the run with MCP off. The bearer token is written to the run
+directory's private `token` file and read by the wrapper into `TOODO_MCP_TOKEN`; it never
+appears in argv (remote argv is visible in `ps`), logs, run events, or the database.
+
+### tmux Runs
+
+A workspace with runner `tmux` prepares tasks like runner `plain` (a git worktree, locally
+or over `ssh`, without herdr), and `start_plain_run` starts its agent runs through
+`TmuxRunner` (`src-tauri/src/runtime/tmux/`). It works on the server and on POSIX SSH
+hosts, and tmux must be installed on the host that runs the agent; a missing tmux fails
+the launch with a message to install it there.
+
+Only a session whose request marker matches the launch request key and generation can be
+adopted after a lost launch response. Each run is a detached session
+`toodo-<instance>-run-<run id>` with the worktree as its working directory and receipt
+`tmux:<local|ssh:host>:toodo-<instance>-run-<run id>`. Files are staged the same way as plain
+runs, in `<data dir>/runs/<run id>` locally or `~/.toodo/runs/<instance>/<run id>` on the host,
+and MCP uses the same token file and tunnel rules. The wrapper copies stdout and
+stderr into `stdout.log` and `stderr.log`, kept apart from what the terminal shows, with
+the token redacted. It writes the exit code, then signals `tmux wait-for`, which a monitor
+in the server waits on to settle the run with the plain outcome table.
+
+While a run is active, `get_run_log` returns an `attach` command (`tmux attach -t ...`,
+or `ssh -t <host> ...` for a remote one) to watch the session in a terminal. It's a view
+only; Toodo never drives the agent through it. `stop_run` kills the session and marks the
+run `cancelled`.
+
+Sessions outlive the server. On start, `TmuxRunner::recover_after_restart` checks local
+runs: a live session is observed again (the run goes back to `running` with `recovered`),
+an ended one settles from its exit file. Remote runs become `unknown` with
+`observation_lost` without contacting the host, and the background pass described under
+Remote Plain Runs settles them the same way, as `reconcile_run` does. A lost connection leaves the run `unknown` rather than ending it.
 
 `commands/events.rs` translates herdr observations into neutral `RuntimeEvent` values
 and applies them through `RuntimeService`. Events carry the existing `OwnerKey`
@@ -505,7 +814,21 @@ path deletes journal history.
 - **Workspace adapter**: runs `git` for local workspaces and `ssh <machine> git ...`
   for remote ones. Uses the server user's `~/.ssh/config` and ssh-agent, the same
   configuration herdr uses.
-- **herdr adapter**: wraps herdr, which is a required, preinstalled dependency.
+- **herdr adapter**: wraps herdr, an optional preinstalled dependency needed only for
+  workspaces with runner `herdr` (runs of SSH workspaces with runner `plain` or `tmux` do not use it).
+  - Runner health: the `runner_health` command reports whether `herdr` is on `PATH`, whether
+    it is running, and its version, whether `tmux -V` runs and its version, and whether
+    `claude` and `codex` are each on the server's `PATH`, together with the other tools the
+    server runs: whether `git --version` and `ssh -V` run, and whether `gh --version` runs and
+    `gh auth status` succeeds (each check stops after 10 seconds). Every tool that is not
+    ready carries its next step. The web app shows it in a Runners section of Settings and
+    in a banner that names each tool a workspace needs and that is not ready (git for local
+    repositories, gh for GitHub workspaces, ssh for SSH workspaces, tmux and an agent CLI
+    for local tmux or plain workspaces, herdr for herdr workspaces); `toodo init` prints the
+    same checks as this shell sees them; the new-workspace runner step prefers `plain` when herdr is missing,
+    and the runs panel disables an agent whose CLI is missing (for local workspaces only: an
+    SSH workspace runs the agent CLIs of its host) and refreshes the open run while it is active. The server itself defaults
+    an omitted runner of a local git workspace to `plain` when herdr is not running.
   - Startup health check: `herdr` on `PATH` and `herdr status --json` reports
     `server.running`. herdr 0.9.3 has no `ping` command.
   - Commands for SSH workspaces run against the remote herdr server with
@@ -520,8 +843,12 @@ path deletes journal history.
   - Events use the socket API (`src-tauri/src/adapters/herdr_events.rs`,
     `src-tauri/src/commands/events.rs`): newline-delimited JSON over the server socket
     that `herdr status --json` reports as `server.socket`, a Unix domain socket.
-    - The herdr server of an SSH machine is reached with `ssh -o BatchMode=yes -W
-      <socket path> -- <host>`, which forwards ssh's standard input and output to the
+    - The herdr server of an SSH machine is reached with `ssh -o BatchMode=yes -o
+      ConnectTimeout=10 -W <socket path> -- <host>` (with the other options of
+      `git::SSH_OPTIONS`), so an unreachable machine fails within seconds and is
+      recorded offline. Short `ssh` commands to a machine (git, directory listings,
+      remote herdr) share one connection through OpenSSH multiplexing
+      (`git::SSH_SHARED_CONNECTION`). The command forwards ssh's standard input and output to the
       remote socket. The socket path comes from running the remote herdr over SSH
       (`herdr --session <saved session> status --json`, looked up on `PATH`, then in
       `~/.local/bin`, Homebrew, `/usr/local/bin`, and the Nix profile), because
@@ -549,7 +876,9 @@ path deletes journal history.
       instead of being patched from the event, as herdr recommends. The status of a task
       is the most urgent one among the panes of its herdr workspace (blocked, working,
       done, idle) and reaches the frontend through `list_agent_statuses` and the
-      `AgentStatusesChanged` event.
+      `AgentStatusesChanged` event. Each change is stored in `agent_status_transitions`
+      before the event goes out; `list_agent_status_transitions` reads a task's history,
+      which the task details show as its agent activity with the time worked.
     - When the subscription ends (herdr stopped, `events_lost`, `pane_not_found`), agent
       statuses are cleared and the thread subscribes again after 1 s, doubling up to
       30 s while the server stays unreachable.
@@ -564,7 +893,9 @@ path deletes journal history.
   authentication (`src-tauri/src/adapters/github.rs`). `gh` runs on this machine and
   names the repository with `--repo <host>/<owner>/<name>`, derived from the `origin`
   remote URL, so it needs no local checkout. The task branch is pushed by the workspace
-  adapter, on the machine that holds the worktree.
+  adapter, on the machine that holds the worktree. Callers use the `GitHub` trait;
+  `GhCli` is its `gh` backend, so another backend (such as the REST API) can be added
+  without changing them.
 - **MCP server** (`src-tauri/src/mcp/`): lets coding agents plan in Toodo while the server
   runs, so an agent can split its work into follow-up tasks and connect them, and start
   and finish other tasks without the user clicking through the app.
@@ -576,16 +907,31 @@ path deletes journal history.
   - Every request needs `Authorization: Bearer <token>`. The token is 32 random bytes,
     hex encoded, created once in `mcp-token` in the server's data directory. rmcp also
     rejects non-loopback `Host` headers against DNS rebinding.
-  - Tools: `list_workspaces`, `list_tasks`, `current_task` (the task whose worktree
+  - Resources (`mcp/resources.rs`): `toodo://tasks/{id}` and `toodo://tasks/{id}/runs`.
+    A `subscriptions/listen` stream (protocol `2026-07-28`) keeps a snapshot of the
+    resources it watches and reads them again whenever a `Notifier` event marks the
+    server's change signal, and at least every 5 seconds, reporting each one whose
+    content changed; see `docs/server.md` (Task and Run Resources).
+  - Tools: `list_workspaces`, `list_tasks` (narrowed by `status`, `ready`, and `limit`,
+    the newest matching tasks, paged back with `before_id`), `current_task` (the task whose worktree
     contains a given directory, after resolving `.` and `..`; an optional `machine`
     scopes it to one machine, and a path inside worktrees on several machines is
     rejected without it), `restore_worktree` (the app's Restore worktree for an active
     task whose worktree directory is gone), `create_task` (with optional `depends_on`; unknown
-    prerequisites create nothing), `update_task`, `add_dependency` (several
+    prerequisites create nothing), `create_plan` (several tasks linked to each other by
+    key and to existing tasks by ID, in one transaction; any failure creates nothing),
+    `update_task`, `add_dependency` (several
     prerequisites in one call; it pauses an `in_progress` task they block but leaves its
     herdr workspace open, and the app asks the user whether to close it),
     `remove_dependency`, `pause_task` / `resume_task` (the app's Pause and Resume; the
-    pause reason and an optional resume note become progress notes), and
+    pause reason and an optional resume note become progress notes), the run tools for
+    workspaces with runner plain or tmux (`start_run`, the app's Start run;
+    `run_status`, one run or every run of a task with whether it may still be running and
+    what to do next; `run_log`; `stop_run`; and `reconcile_run`, over the same commands
+    as the app's runs panel), `pull_request_status` (the open pull request of an
+    `in_review` task, or of all of them, as the background check last read it: state,
+    combined and per-check CI state, review decision and latest reviews, read time, and
+    what to do next; it never runs `gh`), and
     `add_progress_note` / `report_blocker`, which append a
     timestamped Markdown note (`progress` or `blocker`, table `task_notes`) to a task
     without changing its status. They reuse the storage rules, so cycles are rejected. The
@@ -593,8 +939,9 @@ path deletes journal history.
     prerequisite of their task, added last, and to note decisions and blockers as they
     work; Toodo never prompts agents itself. Notes show in the task list (latest) and the
     task details (all), and period reviews list the notes left during the period. Tool
-    failures come back as tool errors whose text the agent sees; arguments a tool does
-    not know are rejected, naming the ones it accepts.
+    failures come back as tool errors whose text the agent sees, with the error's kind,
+    code, and message (the codes of `POST /api/rpc`) as structured content
+    `{ "error": { "kind", "code", "message" } }`; arguments a tool does not know are rejected, naming the ones it accepts.
   - `search_tasks` finds earlier tasks of all workspaces (or one, or one status) by words
     in their title, description, completion note and notes, branch, and pull request
     title and URL; every word must appear, and results come best match first with
@@ -625,7 +972,14 @@ path deletes journal history.
     agent from finishing its own task; the server instructions, tool descriptions, and
     the `toodo` skill tell agents never to start, complete, or conclude the task
     `current_task` finds for them, since its pull request's merge completes it.
-  - Deleting tasks is not exposed: it cannot be undone and stays in the app.
+  - `delete_task` and `reopen_task` change nothing unless called with `confirm: true`;
+    without it the reply says what the change would do. `delete_task` deletes only
+    `planned` tasks, through the app's Delete; `reopen_task` runs the app's Reopen with
+    the same checks. Both are local-only.
+  - `archive_workspace` works the same way: without `confirm: true` it only describes
+    the change, and with it archives the workspace through the app's Remove. It is
+    rejected while a task of the workspace is `in_progress` or `in_review`, and it is
+    local-only.
   - Agent access in Settings copies an MCP client config with the URL and token
     (`mcp_server_info`), tests that the server accepts that token, and shows the server
     instance and the last request `/mcp` turned away with its reason. `401` bodies at
@@ -667,13 +1021,14 @@ path deletes journal history.
     its dependencies are done.
   - Every task status change appends a row to the task's status history in the same
     transaction (see [Task Timeline](#task-timeline)).
-  - Deleting a workspace or task also deletes its tasks, dependency edges, commit
-    records, and status history.
+  - Deleting a workspace or task archives it; only purging an archived one deletes its
+    tasks, dependency edges, commit records, and status history.
 
 ## Decisions
 
 - Target: `toodo-server` on Linux, used through the web app (PWA) in a browser.
-- herdr is a prerequisite; Toodo only checks that it is running and never installs it.
+- herdr is optional, needed only for runner `herdr`; Toodo checks that it is running and never
+  installs it.
 - Backend in Rust (tokio); frontend in React + TypeScript with React Flow for the DAG.
 - External tools are invoked as processes (`herdr`, `git`, `ssh`, `gh`) rather than
   reimplemented through libraries.

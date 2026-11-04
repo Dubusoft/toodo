@@ -5,6 +5,7 @@
 //! they take by reference, see [`State`]. Each is annotated with `#[specta::specta]` so
 //! that `bindings.rs` can generate the frontend's typed bindings from its signature.
 
+pub mod agent_options;
 pub mod backup;
 pub mod completion;
 pub mod events;
@@ -13,9 +14,15 @@ pub mod herdr;
 pub mod issues;
 pub mod machines;
 pub mod mcp;
+pub mod pull_request_options;
+pub mod report;
 pub mod review;
+pub mod run_logs;
+pub mod runners;
+pub mod runs;
 pub mod tasks;
 pub mod types;
+pub mod updates;
 pub mod workspaces;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -55,7 +62,6 @@ impl<T> std::ops::Deref for State<'_, T> {
 /// server keeps in memory.
 pub trait Runtime: crate::mcp::Backend {
     fn agent_statuses(&self) -> &events::AgentStatusState;
-    fn pull_request_statuses(&self) -> &completion::PullRequestStatusState;
     fn backups(&self) -> &backup::Backups;
 }
 
@@ -65,9 +71,16 @@ pub type GitState = Arc<Git>;
 
 pub type HerdrState = Arc<Herdr>;
 
-pub type GitHubState = Arc<GitHub>;
+pub type GitHubState = Arc<dyn GitHub>;
 
 pub type SshState = Arc<Ssh>;
+
+/// The plain runner, which runs agent CLIs for tasks of workspaces with runner plain.
+pub type PlainRunState = crate::runtime::plain::PlainRunner;
+
+/// The tmux runner, which runs agent CLIs in detached tmux sessions for tasks of
+/// workspaces with runner tmux.
+pub type TmuxRunState = crate::runtime::tmux::TmuxRunner;
 
 /// `None` when the home directory, and so the SSH config, cannot be found.
 pub type SshConfigState = Option<SshConfigFile>;
@@ -91,149 +104,232 @@ pub enum CommandErrorKind {
     Internal,
 }
 
+/// What went wrong, as a stable machine-readable code. The RPC endpoint and the MCP tools
+/// return the same codes, so the web app and agents can react to a code instead of the
+/// message text. Each code belongs to one [`CommandErrorKind`]; the generic codes named
+/// after a kind cover failures without a more specific code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub enum CommandErrorCode {
+    /// An argument is malformed.
+    InvalidInput,
+    /// The request body does not match the command's parameters, e.g. after the server
+    /// was updated and the web app was not reloaded.
+    InvalidArguments,
+    /// A referenced object does not exist.
+    NotFound,
+    /// No command or tool has this name.
+    UnknownCommand,
+    WorkspaceNotFound,
+    TaskNotFound,
+    CriterionNotFound,
+    DependencyNotFound,
+    RelationNotFound,
+    RunNotFound,
+    /// The request breaks a rule.
+    Rejected,
+    /// The dependency would make the task DAG cyclic or make a task depend on itself.
+    DependencyCycle,
+    /// The task cannot move to the requested status from its current one.
+    InvalidTransition,
+    /// A prerequisite of the task is not done yet.
+    DependenciesNotDone,
+    /// The caller may not use this tool, e.g. a chat app connected over OAuth.
+    NotPermitted,
+    /// An external tool failed.
+    External,
+    /// git reported an error.
+    GitFailed,
+    /// herdr reported an error or is not running.
+    HerdrFailed,
+    /// gh has no valid login, or the login may not open pull requests in the repository.
+    GitHubAuthFailed,
+    /// GitHub refused the draft setting, a reviewer, or a label of the workspace's pull
+    /// request options.
+    PullRequestOptionInvalid,
+    /// GitHub refused to open the pull request for another reason.
+    PullRequestFailed,
+    /// The server failed.
+    Internal,
+    /// The database failed or holds data the server cannot read.
+    StorageFailed,
+    /// The command stopped unexpectedly on the server; the details are in the server log.
+    CommandPanicked,
+}
+
+impl CommandErrorCode {
+    pub fn kind(self) -> CommandErrorKind {
+        match self {
+            Self::InvalidInput | Self::InvalidArguments => CommandErrorKind::InvalidInput,
+            Self::NotFound
+            | Self::UnknownCommand
+            | Self::WorkspaceNotFound
+            | Self::TaskNotFound
+            | Self::CriterionNotFound
+            | Self::DependencyNotFound
+            | Self::RelationNotFound
+            | Self::RunNotFound => CommandErrorKind::NotFound,
+            Self::Rejected
+            | Self::DependencyCycle
+            | Self::InvalidTransition
+            | Self::DependenciesNotDone
+            | Self::NotPermitted
+            | Self::PullRequestOptionInvalid => CommandErrorKind::Rejected,
+            Self::External
+            | Self::GitFailed
+            | Self::HerdrFailed
+            | Self::GitHubAuthFailed
+            | Self::PullRequestFailed => CommandErrorKind::External,
+            Self::Internal | Self::StorageFailed | Self::CommandPanicked => {
+                CommandErrorKind::Internal
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 pub struct CommandError {
     pub kind: CommandErrorKind,
+    pub code: CommandErrorCode,
     pub message: String,
 }
 
 impl CommandError {
-    pub fn invalid_input(message: impl Into<String>) -> Self {
+    pub fn new(code: CommandErrorCode, message: impl Into<String>) -> Self {
         Self {
-            kind: CommandErrorKind::InvalidInput,
+            kind: code.kind(),
+            code,
             message: message.into(),
         }
+    }
+
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self::new(CommandErrorCode::InvalidInput, message)
     }
 
     pub fn not_found(message: impl Into<String>) -> Self {
-        Self {
-            kind: CommandErrorKind::NotFound,
-            message: message.into(),
-        }
+        Self::new(CommandErrorCode::NotFound, message)
     }
 
     pub fn rejected(message: impl Into<String>) -> Self {
-        Self {
-            kind: CommandErrorKind::Rejected,
-            message: message.into(),
-        }
+        Self::new(CommandErrorCode::Rejected, message)
     }
 
     pub fn internal(message: impl Into<String>) -> Self {
-        Self {
-            kind: CommandErrorKind::Internal,
-            message: message.into(),
-        }
+        Self::new(CommandErrorCode::Internal, message)
     }
 
     pub fn external(message: impl Into<String>) -> Self {
-        Self {
-            kind: CommandErrorKind::External,
-            message: message.into(),
-        }
+        Self::new(CommandErrorCode::External, message)
+    }
+
+    /// A command that panicked. The panic text stays in the server log: it describes the
+    /// server's internals, not what the caller can do about it.
+    pub fn panicked(error: impl std::fmt::Display) -> Self {
+        eprintln!("toodo-server: a command panicked: {error}");
+        Self::new(
+            CommandErrorCode::CommandPanicked,
+            "the command stopped unexpectedly on the server; retry it, and if it fails \
+             again, look for \"a command panicked\" in the toodo-server log",
+        )
     }
 }
 
 impl From<GitError> for CommandError {
     fn from(error: GitError) -> Self {
-        let kind = match &error {
-            GitError::Failed { .. } => CommandErrorKind::External,
+        let code = match &error {
+            GitError::Failed { .. } => CommandErrorCode::GitFailed,
             GitError::Spawn { .. } | GitError::UnexpectedOutput { .. } => {
-                CommandErrorKind::Internal
+                CommandErrorCode::Internal
             }
         };
-        Self {
-            kind,
-            message: error.to_string(),
-        }
+        Self::new(code, error.to_string())
     }
 }
 
 impl From<HerdrError> for CommandError {
     fn from(error: HerdrError) -> Self {
-        let kind = match &error {
+        let code = match &error {
             HerdrError::Spawn { .. }
             | HerdrError::Failed { .. }
             | HerdrError::MachineNotSaved { .. }
-            | HerdrError::MachineDisabled { .. } => CommandErrorKind::External,
-            HerdrError::UnexpectedOutput { .. } => CommandErrorKind::Internal,
+            | HerdrError::MachineDisabled { .. } => CommandErrorCode::HerdrFailed,
+            HerdrError::UnexpectedOutput { .. } => CommandErrorCode::Internal,
         };
-        Self {
-            kind,
-            message: error.to_string(),
-        }
+        Self::new(code, error.to_string())
     }
 }
 
 impl From<SshConfigError> for CommandError {
     fn from(error: SshConfigError) -> Self {
-        let kind = match &error {
-            SshConfigError::Io { .. } => CommandErrorKind::External,
-            SshConfigError::Host(SshHostError::AlreadyExists(_)) => CommandErrorKind::Rejected,
-            SshConfigError::Host(_) => CommandErrorKind::InvalidInput,
+        let code = match &error {
+            SshConfigError::Io { .. } => CommandErrorCode::External,
+            SshConfigError::Host(SshHostError::AlreadyExists(_)) => CommandErrorCode::Rejected,
+            SshConfigError::Host(_) => CommandErrorCode::InvalidInput,
         };
-        Self {
-            kind,
-            message: error.to_string(),
-        }
+        Self::new(code, error.to_string())
     }
 }
 
 impl From<NamingError> for CommandError {
     fn from(error: NamingError) -> Self {
-        let kind = match &error {
+        let code = match &error {
             NamingError::WorktreeRootNotSet(_) | NamingError::PathKindMismatch(_) => {
-                CommandErrorKind::InvalidInput
+                CommandErrorCode::InvalidInput
             }
             NamingError::TaskNotInWorkspace | NamingError::MachineMismatch { .. } => {
-                CommandErrorKind::Internal
+                CommandErrorCode::Internal
             }
         };
-        Self {
-            kind,
-            message: error.to_string(),
-        }
+        Self::new(code, error.to_string())
     }
 }
 
 impl From<StorageError> for CommandError {
     fn from(error: StorageError) -> Self {
-        let kind = match &error {
-            StorageError::WorkspaceNotFound(_)
-            | StorageError::TaskNotFound(_)
-            | StorageError::CriterionNotFound { .. }
-            | StorageError::DeviceNotFound(_)
-            | StorageError::PushSubscriptionNotFound(_)
-            | StorageError::DependencyNotFound { .. }
-            | StorageError::RelationNotFound { .. }
-            | StorageError::RunNotFound(_)
+        let code = match &error {
+            StorageError::WorkspaceNotFound(_) => CommandErrorCode::WorkspaceNotFound,
+            StorageError::TaskNotFound(_)
             | StorageError::Dependency(DependencyError::UnknownTask(_)) => {
-                CommandErrorKind::NotFound
+                CommandErrorCode::TaskNotFound
             }
-            StorageError::Dependency(_)
-            | StorageError::WorkspaceHasDependents { .. }
+            StorageError::CriterionNotFound { .. } => CommandErrorCode::CriterionNotFound,
+            StorageError::DependencyNotFound { .. } => CommandErrorCode::DependencyNotFound,
+            StorageError::RelationNotFound { .. } => CommandErrorCode::RelationNotFound,
+            StorageError::RunNotFound(_) => CommandErrorCode::RunNotFound,
+            StorageError::DeviceNotFound(_) | StorageError::PushSubscriptionNotFound(_) => {
+                CommandErrorCode::NotFound
+            }
+            StorageError::Dependency(
+                DependencyError::Cycle(_) | DependencyError::SelfDependency(_),
+            ) => CommandErrorCode::DependencyCycle,
+            StorageError::Transition(_) => CommandErrorCode::InvalidTransition,
+            StorageError::DependenciesNotDone { .. } => CommandErrorCode::DependenciesNotDone,
+            StorageError::WorkspaceHasDependents { .. }
+            | StorageError::TaskNotArchived(_)
+            | StorageError::WorkspaceNotArchived(_)
+            | StorageError::WorkspaceArchived { .. }
+            | StorageError::WorkspaceHasActiveRun { .. }
+            | StorageError::RestoreClosesCycle(_)
             | StorageError::BaseBranchInReview { .. }
-            | StorageError::Transition(_)
-            | StorageError::DependenciesNotDone { .. }
             | StorageError::PrerequisiteOfDoneTask { .. }
+            | StorageError::DependencyOfDoneTask { .. }
             | StorageError::CriteriaOfDoneTask(_)
             | StorageError::AutomaticCriterion { .. }
             | StorageError::CheckoutHasActiveWriter { .. }
-            | StorageError::RunTransition { .. } => CommandErrorKind::Rejected,
+            | StorageError::RunTransition { .. } => CommandErrorCode::Rejected,
             StorageError::WorktreePathMismatch(_)
             | StorageError::SelfRelation(_)
             | StorageError::CommitTaskMismatch { .. }
             | StorageError::ActivityTaskMismatch { .. }
-            | StorageError::InvalidBackup(_) => CommandErrorKind::InvalidInput,
-            StorageError::Io(_) => CommandErrorKind::External,
+            | StorageError::InvalidBackup(_) => CommandErrorCode::InvalidInput,
+            StorageError::Io(_) => CommandErrorCode::External,
             StorageError::Sqlite(_)
+            | StorageError::BackupCheckFailed(_)
             | StorageError::UnsupportedSchemaVersion { .. }
-            | StorageError::InvalidData(_) => CommandErrorKind::Internal,
+            | StorageError::InvalidData(_) => CommandErrorCode::StorageFailed,
         };
-        Self {
-            kind,
-            message: error.to_string(),
-        }
+        Self::new(code, error.to_string())
     }
 }
 
@@ -273,19 +369,22 @@ mod tests {
     }
 
     #[test]
-    fn storage_errors_map_to_error_kinds() {
+    fn storage_errors_map_to_error_codes() {
         let cases = [
             (
                 StorageError::TaskNotFound(TaskId(1)),
                 CommandErrorKind::NotFound,
+                CommandErrorCode::TaskNotFound,
             ),
             (
                 StorageError::Dependency(DependencyError::UnknownTask(TaskId(1))),
                 CommandErrorKind::NotFound,
+                CommandErrorCode::TaskNotFound,
             ),
             (
                 StorageError::Dependency(DependencyError::Cycle(vec![TaskId(1), TaskId(1)])),
                 CommandErrorKind::Rejected,
+                CommandErrorCode::DependencyCycle,
             ),
             (
                 StorageError::Transition(TransitionError {
@@ -293,19 +392,37 @@ mod tests {
                     to: TaskStatus::InProgress,
                 }),
                 CommandErrorKind::Rejected,
+                CommandErrorCode::InvalidTransition,
             ),
             (
                 StorageError::WorktreePathMismatch(TaskId(1)),
                 CommandErrorKind::InvalidInput,
+                CommandErrorCode::InvalidInput,
             ),
             (
                 StorageError::InvalidData("bad".to_owned()),
                 CommandErrorKind::Internal,
+                CommandErrorCode::StorageFailed,
             ),
         ];
-        for (error, kind) in cases {
+        for (error, kind, code) in cases {
             let message = error.to_string();
-            assert_eq!(CommandError::from(error), CommandError { kind, message });
+            assert_eq!(
+                CommandError::from(error),
+                CommandError {
+                    kind,
+                    code,
+                    message
+                }
+            );
         }
+    }
+
+    #[test]
+    fn a_panic_does_not_reach_the_caller() {
+        let error = CommandError::panicked("index out of bounds: the len is 0");
+        assert_eq!(error.code, CommandErrorCode::CommandPanicked);
+        assert_eq!(error.kind, CommandErrorKind::Internal);
+        assert!(!error.message.contains("index out of bounds"), "{error:?}");
     }
 }

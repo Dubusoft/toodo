@@ -141,6 +141,10 @@ fn prepare_workspace(
     existing: &[model::Workspace],
 ) -> CommandResult<storage::NewWorkspace> {
     ensure_unused(existing, &setup.location)?;
+    if let Some(runner) = setup.runner {
+        model::check_runner_location(runner, &setup.location)
+            .map_err(|error| CommandError::invalid_input(error.0))?;
+    }
     let Some(repository) = setup.repository else {
         let (source, completion, runner) =
             resolve_axes(model::Source::None, setup.completion, setup.runner)?;
@@ -224,7 +228,17 @@ fn prepare_workspace(
         None if has_origin(origin)? => model::Source::GitHub,
         None => model::Source::LocalGit,
     };
-    let (source, completion, runner) = resolve_axes(source, setup.completion, setup.runner)?;
+    // An omitted runner of a local git workspace falls back to plain when herdr cannot
+    // run, so a server without herdr still creates workspaces.
+    let (source, completion, mut runner) = resolve_axes(source, setup.completion, setup.runner)?;
+    if setup.runner.is_none()
+        && matches!(location, model::WorkspaceLocation::Local { .. })
+        && !herdr.server_status().is_ok_and(|status| status.running)
+    {
+        runner = model::Runner::Plain;
+        model::check_axes(source, completion, runner)
+            .map_err(|error| CommandError::invalid_input(error.0))?;
+    }
     if runner == model::Runner::Herdr {
         RuntimeService.open_repository(
             herdr,
@@ -266,15 +280,15 @@ fn setup_failed(
     next_step: &str,
 ) -> CommandError {
     let error = CommandError::from(error);
-    CommandError {
-        kind: error.kind,
-        message: format!("{}; {next_step}. git said: {}", attempted(), error.message),
-    }
+    CommandError::new(
+        error.code,
+        format!("{}; {next_step}. git said: {}", attempted(), error.message),
+    )
 }
 
-/// Saves the name, default base branch, and agent merge policy of an existing workspace.
-/// Its location is kept, [`move_workspace`] changes it; its source, completion, and
-/// runner are kept as created.
+/// Saves the name, default base branch, agent merge policy, completion, and runner of an
+/// existing workspace. Its location is kept, [`move_workspace`] changes it; its source is
+/// kept as created. The runner cannot change while a task is being worked on.
 #[specta::specta]
 pub fn update_workspace(
     storage: State<'_, StorageState>,
@@ -286,8 +300,148 @@ pub fn update_workspace(
         .get_workspace(id)?
         .ok_or(StorageError::WorkspaceNotFound(id))?;
     let workspace = workspace.into_model(&stored)?;
+    ensure_runner_can_change(&storage, &stored, workspace.runner)?;
     storage.update_workspace(&workspace)?;
     Ok((&workspace).into())
+}
+
+/// Saves every setting of an existing workspace as [`update_workspace`] does and, with
+/// `location`, moves it there first as [`move_workspace`] does; for callers already off
+/// the async runtime, such as the MCP tools. Everything is checked before herdr opens the
+/// repository or anything is saved: the new location must hold a repository no other
+/// workspace uses, and a new base branch, or the base branch at a new location, must
+/// exist there. The repository is opened in herdr when the workspace moves or switches to
+/// runner herdr.
+pub(crate) fn update(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    workspace: Workspace,
+    location: Option<model::WorkspaceLocation>,
+) -> CommandResult<model::Workspace> {
+    let id = workspace.id.into();
+    let (stored, others) = with_others(&lock(storage), id)?;
+    let target = match location {
+        Some(target) => model::Workspace {
+            location: locate(git, stored.source, workspace.runner.into(), &others, target)?,
+            ..stored.clone()
+        },
+        None => stored.clone(),
+    };
+    let updated = workspace.into_model(&target)?;
+    ensure_runner_can_change(&lock(storage), &stored, updated.runner)?;
+    let moved = updated.location != stored.location;
+    if updated.source != model::Source::None
+        && (moved || updated.default_base_branch != stored.default_base_branch)
+    {
+        ensure_base_branch(git, &updated)?;
+    }
+    if updated.runner == model::Runner::Herdr && (moved || stored.runner != model::Runner::Herdr) {
+        RuntimeService.open_repository(
+            herdr,
+            &updated.location.machine(),
+            location_path(&updated.location),
+            &updated.name,
+        )?;
+    }
+    let mut storage = lock(storage);
+    let (_, others) = with_others(&storage, id)?;
+    ensure_unused(&others, &updated.location)?;
+    ensure_runner_can_change(&storage, &stored, updated.runner)?;
+    if moved {
+        RuntimeService.move_workspace(&mut storage, &updated)?;
+    } else {
+        storage.update_workspace(&updated)?;
+    }
+    Ok(updated)
+}
+
+/// Workspace `id` and every other workspace.
+fn with_others(
+    storage: &storage::Storage,
+    id: model::WorkspaceId,
+) -> CommandResult<(model::Workspace, Vec<model::Workspace>)> {
+    let workspace = storage
+        .get_workspace(id)?
+        .ok_or(StorageError::WorkspaceNotFound(id))?;
+    let others = storage
+        .list_workspaces()?
+        .into_iter()
+        .filter(|other| other.id != id)
+        .collect();
+    Ok((workspace, others))
+}
+
+/// Rejects switching `stored` to `runner` while one of its tasks is in progress or in
+/// review or still has an open runtime workspace: its worktree and agents belong to the
+/// current runner.
+fn ensure_runner_can_change(
+    storage: &storage::Storage,
+    stored: &model::Workspace,
+    runner: model::Runner,
+) -> CommandResult<()> {
+    if runner == stored.runner {
+        return Ok(());
+    }
+    for task in storage.list_tasks(stored.id)? {
+        let active = matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview);
+        if active || storage.open_runtime_workspace(task.id)?.is_some() {
+            return Err(CommandError::rejected(format!(
+                "the runner of workspace {} cannot change from {} to {runner} while task {} \
+                 is being worked on with it; complete or conclude that task first, or keep \
+                 runner {} and change the other settings",
+                stored.id.0, stored.runner, task.id.0, stored.runner
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Rejects a default base branch that the repository of `workspace` has neither as a
+/// local branch nor as an `origin` remote-tracking branch.
+fn ensure_base_branch(git: &Git, workspace: &model::Workspace) -> CommandResult<()> {
+    let branch = &workspace.default_base_branch;
+    if git.branch_source(&workspace.location, branch)?.is_some() {
+        return Ok(());
+    }
+    Err(CommandError::invalid_input(format!(
+        "branch {branch} does not exist in the repository at {}, neither locally nor as \
+         origin/{branch}; set default_base_branch to a branch that exists there, such as the \
+         repository's default branch, or push {branch} first",
+        location_path(&workspace.location)
+    )))
+}
+
+/// The repository root at `target` for a workspace with `source` and `runner`, or
+/// `target` itself for source none. Rejected when one of `others` uses it, when the
+/// runner cannot run there, or when `target` is not inside a git repository.
+fn locate(
+    git: &Git,
+    source: model::Source,
+    runner: model::Runner,
+    others: &[model::Workspace],
+    target: model::WorkspaceLocation,
+) -> CommandResult<model::WorkspaceLocation> {
+    ensure_unused(others, &target)?;
+    model::check_runner_location(runner, &target)
+        .map_err(|error| CommandError::invalid_input(error.0))?;
+    if source == model::Source::None {
+        return Ok(target);
+    }
+    let root = git.repository_root(&target).map_err(|error| {
+        setup_failed(
+            error,
+            || {
+                format!(
+                    "could not open a git repository at {}",
+                    location_path(&target)
+                )
+            },
+            "choose the directory of the workspace's repository clone",
+        )
+    })?;
+    ensure_unused(others, &root)?;
+    Ok(root)
 }
 
 /// Moves a workspace to the repository at `location`, e.g. one kept with a Windows path
@@ -306,29 +460,13 @@ pub async fn move_workspace(
 ) -> CommandResult<Workspace> {
     let id = id.into();
     let target: model::WorkspaceLocation = location.try_into()?;
-    let (workspace, others) = {
-        let storage = lock(&storage);
-        let workspace = storage
-            .get_workspace(id)?
-            .ok_or(StorageError::WorkspaceNotFound(id))?;
-        let others: Vec<_> = storage
-            .list_workspaces()?
-            .into_iter()
-            .filter(|other| other.id != id)
-            .collect();
-        (workspace, others)
-    };
-    ensure_unused(&others, &target)?;
+    let (workspace, others) = with_others(&lock(&storage), id)?;
     let git = GitState::clone(&git);
     let herdr = HerdrState::clone(&herdr);
     let name = workspace.name.clone();
     let (source, runner) = (workspace.source, workspace.runner);
     let location = tokio::task::spawn_blocking(move || -> CommandResult<_> {
-        if source == model::Source::None {
-            return Ok(target);
-        }
-        let root = git.repository_root(&target)?;
-        ensure_unused(&others, &root)?;
+        let root = locate(&git, source, runner, &others, target)?;
         if runner == model::Runner::Herdr {
             RuntimeService.open_repository(
                 &*herdr,
@@ -346,14 +484,7 @@ pub async fn move_workspace(
         ..workspace
     };
     let mut storage = lock(&storage);
-    ensure_unused(
-        &storage
-            .list_workspaces()?
-            .into_iter()
-            .filter(|other| other.id != id)
-            .collect::<Vec<_>>(),
-        &moved.location,
-    )?;
+    ensure_unused(&with_others(&storage, id)?.1, &moved.location)?;
     RuntimeService.move_workspace(&mut storage, &moved)?;
     Ok((&moved).into())
 }
@@ -439,10 +570,38 @@ fn create_base_branch(
     Ok(workspace)
 }
 
-/// Deletes a workspace together with its tasks, dependencies, and commit records.
+/// Removes a workspace from Toodo by archiving it with its tasks: they leave the lists but
+/// stay in reviews, and [`restore_workspace`] brings them back. [`purge_workspace`]
+/// deletes them for good.
 #[specta::specta]
 pub fn delete_workspace(storage: State<'_, StorageState>, id: WorkspaceId) -> CommandResult<()> {
-    Ok(lock(&storage).delete_workspace(id.into())?)
+    Ok(lock(&storage).archive_workspace(id.into())?)
+}
+
+/// Brings an archived workspace back with its tasks.
+#[specta::specta]
+pub fn restore_workspace(
+    storage: State<'_, StorageState>,
+    id: WorkspaceId,
+) -> CommandResult<Workspace> {
+    Ok((&lock(&storage).restore_workspace(id.into())?).into())
+}
+
+/// Deletes an archived workspace for good with its tasks, their history, and commit
+/// records; a workspace that is not archived is rejected.
+#[specta::specta]
+pub fn purge_workspace(storage: State<'_, StorageState>, id: WorkspaceId) -> CommandResult<()> {
+    Ok(lock(&storage).purge_workspace(id.into())?)
+}
+
+/// The workspaces and tasks deleting archived, to restore or purge.
+#[specta::specta]
+pub fn list_archive(storage: State<'_, StorageState>) -> CommandResult<types::Archive> {
+    let storage = lock(&storage);
+    Ok(types::Archive {
+        workspaces: types::map_all(&storage.archived_workspaces()?),
+        tasks: types::map_all(&storage.archived_tasks()?),
+    })
 }
 
 #[specta::specta]
@@ -570,6 +729,14 @@ mod tests {
         ]
     }
 
+    /// `herdr status --json` of a running server, which a local workspace with an omitted
+    /// runner asks for, then the replies of [`herdr_opens_a_new_workspace`].
+    fn herdr_runs_and_opens_a_new_workspace() -> Vec<Result<String, GitError>> {
+        std::iter::once(Ok(r#"{"server":{"running":true}}"#.to_owned()))
+            .chain(herdr_opens_a_new_workspace())
+            .collect()
+    }
+
     struct Prepared {
         result: CommandResult<storage::NewWorkspace>,
         invocations: Vec<Invocation>,
@@ -605,7 +772,7 @@ mod tests {
                 Ok("origin/main\n".to_owned()),
                 Ok("origin\n".to_owned()),
             ],
-            herdr_opens_a_new_workspace(),
+            herdr_runs_and_opens_a_new_workspace(),
         );
         let new = prepared.result.unwrap();
         assert_eq!(new.location, local(r"C:\dev\toodo"));
@@ -624,7 +791,7 @@ mod tests {
         );
         assert_eq!(prepared.invocations[1].args[..2], ["-C", r"C:\dev\toodo"]);
         assert_eq!(
-            prepared.herdr_invocations[1].args,
+            prepared.herdr_invocations[2].args,
             [
                 "workspace",
                 "create",
@@ -636,6 +803,98 @@ mod tests {
             ]
             .map(str::to_owned)
         );
+    }
+
+    #[test]
+    fn a_windows_ssh_workspace_with_runner_tmux_is_rejected_before_git_or_herdr_runs() {
+        let prepared = prepare(
+            WorkspaceSetup {
+                location: model::WorkspaceLocation::Ssh {
+                    machine: model::MachineLabel::parse("devbox").unwrap(),
+                    path: crate::domain::path::WindowsPath::parse(r"C:\toodo")
+                        .unwrap()
+                        .into(),
+                },
+                runner: Some(model::Runner::Tmux),
+                ..setup(RepositorySetup::Open, None)
+            },
+            Vec::new(),
+            Vec::new(),
+        );
+
+        let error = prepared.result.unwrap_err();
+        assert!(
+            error.message.contains("choose runner plain or herdr"),
+            "{error:?}"
+        );
+        assert!(prepared.invocations.is_empty());
+        assert!(prepared.herdr_invocations.is_empty());
+    }
+
+    #[test]
+    fn a_local_workspace_with_runner_plain_is_not_opened_in_herdr() {
+        let prepared = prepare(
+            WorkspaceSetup {
+                runner: Some(model::Runner::Plain),
+                ..setup(RepositorySetup::Open, None)
+            },
+            vec![
+                Ok("C:/dev/toodo\n".to_owned()),
+                Ok("origin/main\n".to_owned()),
+                Ok("origin\n".to_owned()),
+            ],
+            Vec::new(),
+        );
+
+        let new = prepared.result.unwrap();
+        assert_eq!(
+            (new.source, new.completion, new.runner),
+            (
+                model::Source::GitHub,
+                model::CompletionMode::PullRequestMerge,
+                model::Runner::Plain
+            )
+        );
+        assert!(prepared.herdr_invocations.is_empty());
+    }
+
+    #[test]
+    fn an_omitted_runner_defaults_to_plain_when_herdr_cannot_be_run() {
+        let prepared = prepare(
+            setup(RepositorySetup::Open, None),
+            vec![
+                Ok("C:/dev/toodo\n".to_owned()),
+                Ok("origin/main\n".to_owned()),
+                Ok("origin\n".to_owned()),
+            ],
+            vec![Err(GitError::Spawn {
+                program: "herdr".to_owned(),
+                message: "No such file or directory (os error 2)".to_owned(),
+            })],
+        );
+
+        assert_eq!(prepared.result.unwrap().runner, model::Runner::Plain);
+        assert_eq!(prepared.herdr_invocations.len(), 1);
+        assert_eq!(
+            prepared.herdr_invocations[0].args,
+            ["status", "--json"].map(str::to_owned)
+        );
+    }
+
+    #[test]
+    fn an_omitted_runner_defaults_to_herdr_when_herdr_is_running() {
+        let prepared = prepare(
+            setup(RepositorySetup::Open, None),
+            vec![
+                Ok("C:/dev/toodo\n".to_owned()),
+                Ok("origin/main\n".to_owned()),
+                Ok("origin\n".to_owned()),
+            ],
+            herdr_runs_and_opens_a_new_workspace(),
+        );
+
+        assert_eq!(prepared.result.unwrap().runner, model::Runner::Herdr);
+        assert_eq!(prepared.herdr_invocations.len(), 3);
     }
 
     fn storage_with_workspace() -> (StorageState, model::WorkspaceId) {
@@ -829,14 +1088,14 @@ mod tests {
         let prepared = prepare(
             setup(source, Some("develop")),
             vec![Ok(String::new())],
-            herdr_opens_a_new_workspace(),
+            herdr_runs_and_opens_a_new_workspace(),
         );
         let new = prepared.result.unwrap();
         assert_eq!(new.location, local(r"C:\dev\toodo\src"));
         assert_eq!(new.default_base_branch, "develop");
         assert_eq!(prepared.invocations[0].args[0], "clone");
         assert_eq!(prepared.invocations.len(), 1);
-        assert_eq!(prepared.herdr_invocations[1].args[3], r"C:\dev\toodo\src");
+        assert_eq!(prepared.herdr_invocations[2].args[3], r"C:\dev\toodo\src");
     }
 
     #[test]
@@ -844,10 +1103,13 @@ mod tests {
         let prepared = prepare(
             setup(RepositorySetup::Open, Some("main")),
             vec![Ok("C:/dev/toodo\n".to_owned()), Ok("origin\n".to_owned())],
-            vec![Err(GitError::Spawn {
-                program: "herdr".to_owned(),
-                message: "program not found".to_owned(),
-            })],
+            vec![
+                Ok(r#"{"server":{"running":true}}"#.to_owned()),
+                Err(GitError::Spawn {
+                    program: "herdr".to_owned(),
+                    message: "program not found".to_owned(),
+                }),
+            ],
         );
         assert_eq!(
             prepared.result.unwrap_err().kind,
@@ -932,8 +1194,14 @@ mod tests {
         assert_eq!(moved.location, winpc(r"C:\dev\toodo"));
         assert_eq!(moved.path_problem, None);
         assert_eq!(invocations.len(), 1);
-        assert_eq!(invocations[0].args[3], "winpc");
-        assert!(invocations[0].args[4].starts_with("powershell "));
+        assert_eq!(invocations[0].args[invocations[0].args.len() - 2], "winpc");
+        assert!(
+            invocations[0]
+                .args
+                .last()
+                .unwrap()
+                .starts_with("powershell ")
+        );
         assert_eq!(
             herdr_invocations[2].args[..5],
             ["--machine", "m1", "workspace", "create", "--cwd"].map(str::to_owned)
@@ -1057,7 +1325,7 @@ mod tests {
         let prepared = prepare(
             setup(RepositorySetup::Open, Some("main")),
             vec![Ok("C:/dev/toodo\n".to_owned()), Ok("upstream\n".to_owned())],
-            herdr_opens_a_new_workspace(),
+            herdr_runs_and_opens_a_new_workspace(),
         );
         let new = prepared.result.unwrap();
         assert_eq!(

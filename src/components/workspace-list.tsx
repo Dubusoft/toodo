@@ -22,8 +22,11 @@ import {
   useHerdrMachines,
   useHomeDirectory,
   useMoveWorkspace,
+  useRunnerHealth,
+  useTestSshMachine,
   useWorkspaces,
 } from "@/lib/queries";
+import { toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 import {
   choiceOf,
@@ -34,6 +37,7 @@ import {
   repositoryLabels,
   repositoryProblem,
   runnerLabels,
+  runnerLocationProblem,
   runnerProblem,
   runners,
   sourceLabels,
@@ -164,6 +168,8 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
   const reach = useSyncExternalStore(subscribeReachability, reachability);
   const serverDown = reach === "unreachable" || reach === "retrying";
   const herdrMachines = useHerdrMachines();
+  // Without herdr on the server there are no SSH machines, so failing to list them is no error.
+  const herdrMissing = useRunnerHealth().data?.herdr.installed === false;
   const [adding, setAdding] = useState<{ machine: MachineKey } | null>(null);
   // The new workspace dialog gives the focus back to the button that opened it.
   const opener = useRef<HTMLElement | null>(null);
@@ -194,12 +200,18 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
         </Button>
       </div>
 
-      {addingMachine && <AddMachineHelp onClose={() => setAddingMachine(false)} />}
-      {herdrMachines.isError && (
-        <p role="alert" className="text-xs text-destructive">
-          Failed to list herdr machines: {herdrMachines.error.message}
-        </p>
-      )}
+      {addingMachine && <AddMachineHelp herdrMissing={herdrMissing} onClose={() => setAddingMachine(false)} />}
+      {herdrMachines.isError &&
+        (herdrMissing ? (
+          <p className="text-xs text-muted-foreground">
+            herdr is not installed on this server, so there are no SSH machines; workspaces on Local can use runner{" "}
+            {runnerLabels.plain}.
+          </p>
+        ) : (
+          <p role="alert" className="text-xs text-destructive">
+            Failed to list herdr machines: {herdrMachines.error.message}
+          </p>
+        ))}
       {workspaces.isPending && !serverDown && (
         <p className="text-sm text-muted-foreground">Loading workspaces...</p>
       )}
@@ -319,7 +331,7 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
             size="icon-xs"
             variant="ghost"
             aria-label={`Remove ${workspace.name}`}
-            title="Remove the workspace and its tasks from Toodo"
+            title="Move the workspace and its tasks to the archive"
             className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
             onClick={() => {
               deleteWorkspace.reset();
@@ -343,8 +355,8 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           }}
         >
           <p className="text-xs text-muted-foreground">
-            Remove {workspace.name} and its tasks from Toodo? The repository, worktrees, and herdr workspaces are
-            kept.
+            Remove {workspace.name} and its tasks from Toodo? They move to Settings &gt; Archive, where they can be
+            restored. The repository, worktrees, and herdr workspaces are kept.
           </p>
           {deleteWorkspace.isError && (
             <p role="alert" className="text-xs text-destructive">
@@ -465,15 +477,25 @@ export function MoveWorkspaceForm({ workspace, onClose }: { workspace: Workspace
   );
 }
 
-const ADD_MACHINE_COMMAND = "herdr machine add <host>";
-
-/** The server cannot open a terminal for `herdr machine add`, so the user runs it on the server. */
-function AddMachineHelp({ onClose }: { onClose: () => void }) {
+/**
+ * The server cannot open a terminal for `herdr machine add`, so the user runs it on the server,
+ * after testing here that the server reaches the host over SSH and finds git there.
+ */
+function AddMachineHelp({ herdrMissing, onClose }: { herdrMissing: boolean; onClose: () => void }) {
   const [notice, setNotice] = useState<string | null>(null);
+  const [host, setHost] = useState("");
+  const test = useTestSshMachine();
+  const hostId = useId();
+  const command = `herdr machine add ${host.trim() || "<host>"}`;
+
+  function runTest(event: FormEvent) {
+    event.preventDefault();
+    if (host.trim() !== "") test.mutate(host.trim());
+  }
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(ADD_MACHINE_COMMAND);
+      await navigator.clipboard.writeText(command);
       setNotice("Copied the command.");
     } catch (error) {
       setNotice(`Could not copy: ${String(error)}`);
@@ -487,13 +509,52 @@ function AddMachineHelp({ onClose }: { onClose: () => void }) {
       onKeyDown={escapeCloses(onClose)}
     >
       <p className="text-xs text-muted-foreground">
-        herdr asks questions in a terminal, which the Toodo server cannot open. Run this command in a terminal on the
-        server, replacing <code>&lt;host&gt;</code> with an SSH host from its ~/.ssh/config, then reload the machine
-        list here.
+        {herdrMissing && "Install herdr on the server first; SSH machines need it. "}
+        Enter an SSH host from the server's ~/.ssh/config and test the connection. herdr asks questions in a terminal,
+        which the Toodo server cannot open, so then run the command below in a terminal on the server and reload the
+        machine list here.
       </p>
+      <form aria-label="Test SSH connection" className="flex flex-col gap-1" onSubmit={runTest}>
+        <label htmlFor={hostId} className="text-xs font-medium">
+          SSH host
+        </label>
+        <div className="flex items-center gap-1">
+          <input
+            id={hostId}
+            className={inputClass}
+            value={host}
+            placeholder="devbox"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => {
+              setHost(event.target.value);
+              test.reset();
+            }}
+          />
+          <Button type="submit" size="sm" variant="outline" disabled={host.trim() === "" || test.isPending}>
+            {test.isPending ? "Testing..." : "Test connection"}
+          </Button>
+        </div>
+      </form>
+      {test.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          Could not test the connection: {test.error.message}
+        </p>
+      )}
+      {test.data?.problem && (
+        <p role="alert" className="text-xs text-destructive">
+          {test.data.problem}
+        </p>
+      )}
+      {test.data?.gitVersion && (
+        <p role="status" className="text-xs text-muted-foreground">
+          Connected to {test.variables} without a prompt and found {test.data.gitVersion}. Run the command below to
+          save it in herdr.
+        </p>
+      )}
       <div className="flex flex-col items-start gap-1">
         <code className="max-w-full rounded bg-muted px-1.5 py-1 text-xs" aria-label="Add machine command">
-          {ADD_MACHINE_COMMAND}
+          {command}
         </code>
         <Button type="button" size="sm" variant="outline" onClick={() => void copy()}>
           Copy command
@@ -529,10 +590,22 @@ const completionDescriptions: Record<CompletionMode, string> = {
   pr_merge: "Once its pull request is merged into the base branch.",
 };
 
+/** The guide that compares the runners, for the runner step of a new workspace. */
+const runnerGuideUrl = "https://github.com/dev-bokdong/toodo/blob/main/docs/runners.md";
+
 const runnerDescriptions: Record<Runner, string> = {
   herdr: "Opens agents in herdr on a worktree and branch of the task.",
+  plain: "Runs Claude or Codex in the background in a worktree and branch of the task, without herdr.",
+  tmux: "Runs Claude or Codex in a tmux session in a worktree and branch of the task, without herdr.",
   none: "Only marks the task in progress.",
 };
+
+/** What the herdr choice of a workspace on this server notes while herdr does not run there. */
+function herdrDownNote(installed: boolean): string {
+  return installed
+    ? `herdr is not running on this server; start it there before starting tasks, or choose ${runnerLabels.plain}.`
+    : `herdr is not running on this server since it is not installed there; install and start herdr before starting tasks, or choose ${runnerLabels.plain}.`;
+}
 
 /** The submit button of the last step, by how the folder becomes a workspace. */
 const submitLabels: Record<RepositoryKind | "none", { submit: string; pending: string }> = {
@@ -546,6 +619,8 @@ type Choice<T extends string> = {
   value: T;
   label: string;
   description: string;
+  /** A warning under the description that leaves the option open, such as herdr not running. */
+  note?: string | null;
   /** Why an earlier step rules the option out; the option is disabled and shows this instead of its description. */
   problem: string | null;
 };
@@ -572,6 +647,7 @@ function ChoiceGroup<T extends string>({
       {choices.map((choice) => {
         const checked = choice.value === value;
         const disabled = choice.problem !== null;
+        const note = disabled ? null : (choice.note ?? null);
         const labelId = `${id}-${choice.value}`;
         return (
           <label
@@ -590,8 +666,9 @@ function ChoiceGroup<T extends string>({
               disabled={disabled}
               autoFocus={autoFocus && checked}
               aria-labelledby={labelId}
-              aria-describedby={`${labelId}-about`}
-              onChange={() => onChange(choice.value)}
+              aria-describedby={note === null ? `${labelId}-about` : `${labelId}-about ${labelId}-note`}
+              // A click event that still reaches a disabled option, e.g. a synthetic one, picks nothing.
+              onChange={() => !disabled && onChange(choice.value)}
               className="mt-0.5 size-4 shrink-0 accent-primary"
             />
             <span className="flex min-w-0 flex-col gap-0.5">
@@ -602,6 +679,12 @@ function ChoiceGroup<T extends string>({
                 {disabled && <Ban aria-hidden className="mt-0.5 size-3 shrink-0" />}
                 {choice.problem ?? choice.description}
               </span>
+              {note !== null && (
+                <span id={`${labelId}-note`} className={cn("flex items-start gap-1 text-xs", toneText.attention)}>
+                  <TriangleAlert aria-hidden className="mt-0.5 size-3 shrink-0" />
+                  {note}
+                </span>
+              )}
             </span>
           </label>
         );
@@ -622,7 +705,7 @@ type NewWorkspaceDialogProps = {
  * that an earlier step rules out is disabled with the reason, and changing an earlier step
  * resets a later pick that it rules out to the default.
  */
-function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogProps) {
+export function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogProps) {
   const createWorkspace = useCreateWorkspace();
   const dialog = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -635,7 +718,12 @@ function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogP
 
   const label = machine ?? "Local";
   const target: Machine = machine === null ? { kind: "local" } : { kind: "ssh", label: machine };
-  const choice = choiceOf(picks);
+  const herdr = useRunnerHealth().data?.herdr;
+  // While herdr does not run on this server, a workspace here runs its agents with plain by
+  // default and the herdr choice says why; until the server has said, herdr stays the default.
+  const herdrNote = machine === null && herdr !== undefined && !herdr.running ? herdrDownNote(herdr.installed) : null;
+  const withoutHerdr = herdrNote !== null;
+  const choice = choiceOf(picks, withoutHerdr);
   const cloning = choice.repository === "clone";
   const home = useHomeDirectory(target).data;
   // A clone makes a new folder under home. The others name the workspace's own folder, so
@@ -659,9 +747,9 @@ function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogP
       : "The repository's own folder.";
 
   function choose(change: Partial<Picks>) {
-    const next = withPick(picks, change);
+    const next = withPick(picks, change, withoutHerdr);
     // A clone names the folder to clone into, the others the workspace's own folder.
-    if ((choiceOf(next).repository === "clone") !== cloning) setFolder(null);
+    if ((choiceOf(next, withoutHerdr).repository === "clone") !== cloning) setFolder(null);
     setPicks(next);
   }
 
@@ -810,18 +898,37 @@ function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogP
               />
             )}
             {step === 2 && (
-              <ChoiceGroup
-                legend="What does starting a task do?"
-                value={choice.runner}
-                autoFocus
-                choices={runners.map((runner) => ({
-                  value: runner,
-                  label: runnerLabels[runner],
-                  description: runnerDescriptions[runner],
-                  problem: runnerProblem(choice.source, choice.completion, runner),
-                }))}
-                onChange={(runner) => choose({ runner })}
-              />
+              <div className="flex flex-col gap-2">
+                <ChoiceGroup
+                  legend="What does starting a task do?"
+                  value={choice.runner}
+                  autoFocus
+                  choices={runners.map((runner) => ({
+                    value: runner,
+                    label: runnerLabels[runner],
+                    description: runnerDescriptions[runner],
+                    // Only a note: herdr can still be started before the first task is.
+                    note: runner === "herdr" ? herdrNote : null,
+                    // The machine is picked before the dialog opens, and the folder starts at its home,
+                    // whose path tells a Windows host apart, so its rule comes first.
+                    problem:
+                      runnerLocationProblem(runner, { kind: machine === null ? "local" : "ssh", path }) ??
+                      runnerProblem(choice.source, choice.completion, runner),
+                  }))}
+                  onChange={(runner) => choose({ runner })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Which one fits?{" "}
+                  <a
+                    href={runnerGuideUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary underline underline-offset-2 hover:no-underline"
+                  >
+                    Compare the runners
+                  </a>
+                </p>
+              </div>
             )}
             {last && (
               <div className="flex flex-col gap-3">

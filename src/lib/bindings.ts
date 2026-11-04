@@ -6,6 +6,11 @@ import { type EventCallback, listen } from "@/web/event";
 /** Commands */
 export const commands = {
 	appInfo: () => invoke<AppInfo>("app_info"),
+	/**
+	 *  Asks the npm registry (`TOODO_NPM_REGISTRY`, else the public one) for the newest
+	 *  version on the channel of the running server.
+	 */
+	checkUpdate: () => invoke<UpdateCheck>("check_update"),
 	listWorkspaces: () => typedError<Workspace[], CommandError>(invoke("list_workspaces")),
 	getWorkspace: (id: WorkspaceId) => typedError<Workspace, CommandError>(invoke("get_workspace", { id })),
 	/**
@@ -15,9 +20,9 @@ export const commands = {
 	 */
 	createWorkspace: (workspace: NewWorkspace) => typedError<Workspace, CommandError>(invoke("create_workspace", { workspace })),
 	/**
-	 *  Saves the name, default base branch, and agent merge policy of an existing workspace.
-	 *  Its location is kept, [`move_workspace`] changes it; its source, completion, and
-	 *  runner are kept as created.
+	 *  Saves the name, default base branch, agent merge policy, completion, and runner of an
+	 *  existing workspace. Its location is kept, [`move_workspace`] changes it; its source is
+	 *  kept as created. The runner cannot change while a task is being worked on.
 	 */
 	updateWorkspace: (workspace: Workspace) => typedError<Workspace, CommandError>(invoke("update_workspace", { workspace })),
 	/**
@@ -40,16 +45,39 @@ export const commands = {
 	 *  pushes it to `origin`, and makes it the default base branch of the workspace.
 	 */
 	createWorkspaceBaseBranch: (id: WorkspaceId, name: string, from: string) => typedError<Workspace, CommandError>(invoke("create_workspace_base_branch", { id, name, from })),
-	/**  Deletes a workspace together with its tasks, dependencies, and commit records. */
+	/**
+	 *  Removes a workspace from Toodo by archiving it with its tasks: they leave the lists but
+	 *  stay in reviews, and [`restore_workspace`] brings them back. [`purge_workspace`]
+	 *  deletes them for good.
+	 */
 	deleteWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(invoke("delete_workspace", { id })),
+	/**  Brings an archived workspace back with its tasks. */
+	restoreWorkspace: (id: WorkspaceId) => typedError<Workspace, CommandError>(invoke("restore_workspace", { id })),
+	/**
+	 *  Deletes an archived workspace for good with its tasks, their history, and commit
+	 *  records; a workspace that is not archived is rejected.
+	 */
+	purgeWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(invoke("purge_workspace", { id })),
+	/**  The workspaces and tasks deleting archived, to restore or purge. */
+	listArchive: () => typedError<Archive, CommandError>(invoke("list_archive")),
 	getMachineSettings: (machine: Machine) => typedError<MachineSettings, CommandError>(invoke("get_machine_settings", { machine })),
 	saveMachineSettings: (settings: MachineSettings) => typedError<MachineSettings, CommandError>(invoke("save_machine_settings", { settings })),
 	/**  Machines saved in herdr; remote workspaces can only live on these. */
 	listHerdrMachines: () => typedError<HerdrMachine[], CommandError>(invoke("list_herdr_machines")),
 	/**  Host aliases from `~/.ssh/config`, re-read on every call. */
 	listSshHosts: () => typedError<string[], CommandError>(invoke("list_ssh_hosts")),
-	/**  Appends a `Host` block to `~/.ssh/config` and returns the updated host aliases. */
-	addSshHost: (host: NewSshHost) => typedError<string[], CommandError>(invoke("add_ssh_host", { host })),
+	/**
+	 *  Appends a `Host` block to `~/.ssh/config`, then tests the connection to the new host,
+	 *  so that a wrong setup shows up now rather than when a workspace is cloned there. The
+	 *  block stays when the test fails, so the user can fix what it reports and test again.
+	 */
+	addSshHost: (host: NewSshHost) => typedError<AddedSshHost, CommandError>(invoke("add_ssh_host", { host })),
+	/**
+	 *  Tests that Toodo reaches the SSH host `machine` without a prompt and that git runs
+	 *  there, before `herdr machine add` saves it or a workspace is cloned on it. A failed test
+	 *  is a result with the next step that fixes it, not an error.
+	 */
+	testSshMachine: (machine: string) => typedError<SshMachineCheck, CommandError>(invoke("test_ssh_machine", { machine })),
 	/**
 	 *  Subdirectories of `path` on `machine`, or of the login directory when `path` is
 	 *  absent; `path` is a POSIX path, or a Windows path on a Windows host. ssh runs on a
@@ -62,10 +90,26 @@ export const commands = {
 	 */
 	listDirectories: (machine: Machine, path: string | null) => typedError<RemoteDirectory, CommandError>(invoke("list_directories", { machine, path })),
 	/**
-	 *  Tasks of every workspace ordered by ID, each with its dependencies, which may belong
-	 *  to another workspace.
+	 *  Tasks ordered by ID, each with its dependencies, which may belong to another
+	 *  workspace: every task without a filter, else those the filter selects. With a limit,
+	 *  the matching tasks with the highest IDs; pass the lowest ID of a full page as `before`
+	 *  to read the next.
 	 */
-	listTasks: () => typedError<Task[], CommandError>(invoke("list_tasks")),
+	listTasks: (filter: {
+	/**  Only tasks of this workspace. */
+	workspaceId?: WorkspaceId | null,
+	/**  Only tasks with one of these statuses; omitted or empty for any status. */
+	statuses?: TaskStatus[] | null,
+	/**  Only these tasks, at most 500. */
+	ids?: TaskId[] | null,
+	/**  Only tasks with a lower ID: the lowest ID of the previous page, to read the next. */
+	before?: TaskId | null,
+	/**
+	 *  At most this many tasks (1 to 500), those with the highest IDs; a full page means
+	 *  older ones may follow.
+	 */
+	limit?: number | null,
+} | null) => typedError<Task[], CommandError>(invoke("list_tasks", { filter })),
 	/**  Every related link between tasks, which neither block nor wait on each other. */
 	listTaskRelations: () => typedError<TaskRelation[], CommandError>(invoke("list_task_relations")),
 	/**  Links two tasks, from any workspaces, as related; linking twice keeps one link. */
@@ -120,12 +164,25 @@ export const commands = {
 	 */
 	checkCriterion: (taskId: TaskId, criterionId: CriterionId, met: boolean, evidence: string | null) => typedError<Task, CommandError>(invoke("check_criterion", { taskId, criterionId, met, evidence })),
 	/**
-	 *  Deletes a task with its dependency edges and commit records. A task that still has a worktree
+	 *  Deletes a task by archiving it: it leaves the task lists and stops holding back the tasks
+	 *  that depend on it, but keeps its history, commits, and links for reviews until
+	 *  [`restore_task`] brings it back or [`purge_task`] deletes it for good. A task that still has a worktree
 	 *  first removes it through herdr, which also closes its herdr workspace; the branch is
 	 *  kept. Without `force`, a worktree with modified or untracked files is rejected and the
-	 *  task is kept.
+	 *  task is kept. A task of a workspace with runner plain or tmux has its worktree removed
+	 *  by git, and its plain and tmux runs that are still running are stopped first.
 	 */
 	deleteTask: (id: TaskId, force: boolean) => typedError<null, CommandError>(invoke("delete_task", { id, force })),
+	/**
+	 *  Brings an archived task of a live workspace back with its dependencies; its worktree,
+	 *  removed when it was deleted, is not recreated.
+	 */
+	restoreTask: (id: TaskId) => typedError<Task, CommandError>(invoke("restore_task", { id })),
+	/**
+	 *  Deletes an archived task for good with its history, commit records, and links; a task
+	 *  that is not archived is rejected.
+	 */
+	purgeTask: (id: TaskId) => typedError<null, CommandError>(invoke("purge_task", { id })),
 	/**
 	 *  Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
 	 *  self and cyclic edges and `done` tasks. An `in_progress` task that the new
@@ -141,6 +198,11 @@ export const commands = {
 	 *  Empty for a task of a workspace without a git repository or completed by hand.
 	 */
 	listTaskActivity: (taskId: TaskId) => typedError<TaskActivity[], CommandError>(invoke("list_task_activity", { taskId })),
+	/**
+	 *  When the agent in the task's herdr workspace changed what it was doing, oldest first.
+	 *  Empty for a task never opened in herdr.
+	 */
+	listAgentStatusTransitions: (taskId: TaskId) => typedError<AgentStatusTransition[], CommandError>(invoke("list_agent_status_transitions", { taskId })),
 	herdrStatus: () => typedError<HerdrStatus, CommandError>(invoke("herdr_status")),
 	/**
 	 *  Creates the worktree of a `planned` task whose dependencies are done through herdr
@@ -176,6 +238,84 @@ export const commands = {
 	 *  The worktree is kept. Tasks that are worked on are rejected.
 	 */
 	closeTaskWorkspace: (id: TaskId) => typedError<Task, CommandError>(invoke("close_task_workspace", { id })),
+	/**
+	 *  Starts `adapter` (Claude or Codex) as a writer run in the worktree of an `in_progress`
+	 *  task of a workspace with runner plain or tmux, on the server or on the workspace's SSH
+	 *  machine. Runner plain runs the agent as a child process (over `ssh` for an SSH
+	 *  workspace); runner tmux runs it in a detached tmux session that `get_run_log` tells how
+	 *  to attach to. The prompt goes to the agent on stdin; without one (or a blank one) it is
+	 *  the task's title, description, and criteria, and with `mcp` it also tells the agent to
+	 *  call the Toodo MCP `current_task` tool. With `mcp` the agent gets the server's MCP
+	 *  endpoint and token in its environment only; on an SSH machine it reaches the server
+	 *  through the machine's MCP tunnel, which must be open. With `follow_up_of`, an ended run
+	 *  of the task, the agent resumes that run's session with `prompt` (required then)
+	 *  instead of starting a new one, and the new run joins the run's conversation. Returns
+	 *  the run as recorded right after the launch. The agent runs with the model, permission
+	 *  mode, and time limit the task sets, or else its workspace (see
+	 *  `get_task_agent_options`). While the machine runs as many runs as its limit allows (see
+	 *  `set_machine_run_limit`), or earlier runs wait for it, the run is returned `queued`
+	 *  with its place in the queue, and starts on its own once a run slot frees; a queued
+	 *  follow-up then resumes the latest session of its conversation.
+	 */
+	startPlainRun: (taskId: TaskId, adapter: AgentAdapter, prompt: string | null, mcp: boolean, followUpOf: number | null) => typedError<TaskRun, CommandError>(invoke("start_plain_run", { taskId, adapter, prompt, mcp, followUpOf })),
+	/**  The runs of a task, oldest first. */
+	listTaskRuns: (taskId: TaskId) => typedError<TaskRun[], CommandError>(invoke("list_task_runs", { taskId })),
+	/**  How many plain and tmux runs `machine` runs at once, and how many run or wait there. */
+	getMachineRuns: (machine: Machine) => typedError<MachineRuns, CommandError>(invoke("get_machine_runs", { machine })),
+	/**
+	 *  Sets how many plain and tmux runs `machine` runs at once; `None` (null) for no limit.
+	 *  Further runs wait in the machine's queue. Raising or removing the limit starts queued
+	 *  runs right away; lowering it stops no run.
+	 */
+	setMachineRunLimit: (machine: Machine, maxConcurrentRuns: number | null) => typedError<MachineRuns, CommandError>(invoke("set_machine_run_limit", { machine, maxConcurrentRuns })),
+	/**
+	 *  A run with its events and the last `tail_bytes` (default 64 KiB, at most 4 MiB) of its
+	 *  stdout and stderr logs, with the MCP token redacted. For an active tmux run, `attach`
+	 *  is the shell command that opens its terminal session (a view of the run, not a way
+	 *  to control it).
+	 */
+	getRunLog: (runId: RunId, tailBytes: number | null) => typedError<RunLog, CommandError>(invoke("get_run_log", { runId, tailBytes })),
+	/**
+	 *  Stops a plain or tmux run: a plain run's process group is terminated (killed after a
+	 *  grace period), a tmux run's session is killed, and the run ends as `cancelled`. A
+	 *  queued run leaves its queue as `cancelled` without starting. A run that already ended
+	 *  is returned as it is.
+	 */
+	stopRun: (runId: RunId) => typedError<TaskRun, CommandError>(invoke("stop_run", { runId })),
+	/**
+	 *  Settles a plain or tmux run whose observation was lost (state `unknown`, e.g. after a
+	 *  server restart or an SSH disconnect) from what its host recorded: its exit, a session
+	 *  or process that still runs, or neither. It never starts the agent again. A run that is
+	 *  observed or already ended is returned as it is.
+	 */
+	reconcileRun: (runId: RunId) => typedError<TaskRun, CommandError>(invoke("reconcile_run", { runId })),
+	/**  The launch options a workspace sets for the runs of its tasks. */
+	getWorkspaceAgentOptions: (workspaceId: WorkspaceId) => typedError<AgentOptions, CommandError>(invoke("get_workspace_agent_options", { workspaceId })),
+	/**
+	 *  Replaces the launch options a workspace sets for the runs of its tasks; a `null`
+	 *  value keeps the built-in default. Runs started later use them.
+	 */
+	setWorkspaceAgentOptions: (workspaceId: WorkspaceId, options: AgentOptions) => typedError<AgentOptions, CommandError>(invoke("set_workspace_agent_options", { workspaceId, options })),
+	/**  The launch options a task overrides and the ones its workspace sets. */
+	getTaskAgentOptions: (taskId: TaskId) => typedError<TaskAgentOptions, CommandError>(invoke("get_task_agent_options", { taskId })),
+	/**
+	 *  Replaces the launch options a task overrides; a `null` value takes its workspace's.
+	 *  Runs started later use them.
+	 */
+	setTaskAgentOptions: (taskId: TaskId, options: AgentOptions) => typedError<TaskAgentOptions, CommandError>(invoke("set_task_agent_options", { taskId, options })),
+	/**  The options pull requests of a workspace's tasks are opened with. */
+	getWorkspacePullRequestOptions: (workspaceId: WorkspaceId) => typedError<PullRequestOptions, CommandError>(invoke("get_workspace_pull_request_options", { workspaceId })),
+	/**
+	 *  Replaces the options pull requests of a workspace's tasks are opened with; blank
+	 *  reviewers and labels are dropped. Pull requests opened later use them.
+	 */
+	setWorkspacePullRequestOptions: (workspaceId: WorkspaceId, options: PullRequestOptions) => typedError<PullRequestOptions, CommandError>(invoke("set_workspace_pull_request_options", { workspaceId, options })),
+	/**
+	 *  Reports whether herdr is installed and running, whether tmux runs, whether the
+	 *  `claude` and `codex` CLIs of plain and tmux runs are on the server's `PATH`, whether
+	 *  git and ssh run, and whether gh runs and is logged in.
+	 */
+	runnerHealth: () => typedError<RunnerHealth, CommandError>(invoke("runner_health")),
 	/**
 	 *  Reads the commits of an `in_progress` or `in_review` task's branch that are not on
 	 *  the base branch and stores them as its commit records.
@@ -257,15 +397,54 @@ export const commands = {
 	/**  Disconnects an app by revoking its whole token family. */
 	revokeConnectedApp: (grantId: OAuthGrantId) => typedError<null, CommandError>(invoke("revoke_connected_app", { grantId })),
 	/**
-	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
-	 *  ordered by outcome, then by time. The caller picks the period, such as a week, a
-	 *  month, or a year in the local time zone.
+	 *  Tasks of every workspace that reached a milestone or got a commit from midnight of the
+	 *  day `from` to midnight after the day `to` (both `YYYY-MM-DD`) in the review time zone
+	 *  of the server, archived ones included, ordered by outcome, then by time. The caller
+	 *  picks the days, such as those of a week, a month, or a year.
 	 */
-	reviewPeriod: (start: Timestamp, end: Timestamp) => typedError<ReviewEntry[], CommandError>(invoke("review_period", { start, end })),
+	reviewPeriod: (from: string, to: string) => typedError<ReviewPeriodEntries, CommandError>(invoke("review_period", { from, to })),
+	/**
+	 *  Records the pull requests the signed-in `gh` user merged into the base branch of each
+	 *  GitHub workspace in the days `from` to `to` (judged as for [`review_period`]) as tasks
+	 *  done as merged, each planned, started,
+	 *  and in review from the opening of its pull request, so a review of that time shows
+	 *  work from before Toodo tracked it. A pull request a task already records, or whose
+	 *  branch a task of its workspace has, is skipped, so importing again adds nothing
+	 *  twice. A workspace whose pull requests cannot be read is reported in `failures`;
+	 *  the others are still imported.
+	 */
+	backfillPullRequests: (from: string, to: string) => typedError<BackfillSummary, CommandError>(invoke("backfill_pull_requests", { from, to })),
+	/**
+	 *  The review of a period rendered as Markdown or CSV, as the web app, the MCP tool
+	 *  `review_report`, and `toodo review` show it; see [`ReviewReportRequest`].
+	 */
+	reviewReport: (request: ReviewReportRequest) => typedError<ReviewReport, CommandError>(invoke("review_report", { request })),
+	/**  The time zone reviewed periods are judged in. */
+	getReviewTimeZone: () => typedError<ReviewTimeZone, CommandError>(invoke("get_review_time_zone")),
+	/**
+	 *  Sets the IANA time zone (e.g. `Europe/Berlin`) reviewed periods are judged in, on
+	 *  every device and for MCP and `toodo review`; `null` or blank goes back to the
+	 *  server's own.
+	 */
+	setReviewTimeZone: (timeZone: string | null) => typedError<ReviewTimeZone, CommandError>(invoke("set_review_time_zone", { timeZone })),
+	/**
+	 *  Saves the review of a period as it is now: its tasks, the names of their workspaces,
+	 *  and its report as Markdown and CSV, judged in the review time zone. Reopening it
+	 *  later shows the same, however the tasks change afterwards.
+	 */
+	saveReviewSnapshot: (request: SaveReviewSnapshotRequest) => typedError<ReviewSnapshotSummary, CommandError>(invoke("save_review_snapshot", { request })),
+	/**  The saved reviews, the most recently saved first. */
+	listReviewSnapshots: () => typedError<ReviewSnapshotSummary[], CommandError>(invoke("list_review_snapshots")),
+	/**  The saved review `id` exactly as it was saved. */
+	getReviewSnapshot: (id: ReviewSnapshotId) => typedError<ReviewSnapshot, CommandError>(invoke("get_review_snapshot", { id })),
+	/**  Deletes the saved review `id`. */
+	deleteReviewSnapshot: (id: ReviewSnapshotId) => typedError<null, CommandError>(invoke("delete_review_snapshot", { id })),
 	getBackupSettings: () => invoke<BackupSettings>("get_backup_settings"),
+	/**  Whether the latest automatic backup failed, and why. */
+	getBackupStatus: () => invoke<BackupStatus>("get_backup_status"),
 	/**
 	 *  Saves the automatic backup settings, then writes an automatic backup if one is now
-	 *  due.
+	 *  due. A backup directory in the settings is created if needed and must be writable.
 	 */
 	saveBackupSettings: (settings: BackupSettings) => typedError<BackupSettings, CommandError>(invoke("save_backup_settings", { settings })),
 	/**  Backups in Toodo's backup directory, newest first. */
@@ -293,6 +472,30 @@ export type ActivityKind = "commit" | "pr_opened" | "checks_passed" | "checks_fa
 /**  Where an activity event was first learned from. */
 export type ActivitySource = "git_poll" | "github_poll";
 
+/**  A host appended to the SSH config, and the connection test run on it right after. */
+export type AddedSshHost = {
+	/**  Host aliases of the updated config. */
+	hosts: string[],
+	check: SshMachineCheck,
+};
+
+/**  The agent CLI a plain run drives. */
+export type AgentAdapter = 
+/**  Claude Code in print mode (`claude -p`). */
+"claude" | 
+/**  Codex in exec mode (`codex exec`). */
+"codex";
+
+export type AgentHealth = {
+	adapter: AgentAdapter,
+	/**  Whether the adapter's CLI is an executable on the server's `PATH`. */
+	installed: boolean,
+	/**  Absolute path of the CLI found on `PATH`. */
+	path: string | null,
+	/**  What to do next when the CLI is missing; `None` when it is installed. */
+	message: string | null,
+};
+
 /**  Whether agents merge the pull request of their own task. Toodo itself never merges. */
 export type AgentMerge = 
 /**  Agents stop once the pull request is open; the user merges it. */
@@ -303,8 +506,37 @@ export type AgentMerge =
  */
 "afterChecks";
 
+/**
+ *  How agents of runs are launched. On a workspace, `null` keeps the agent CLI's default
+ *  model, the agent's default permission mode (Claude `bypass`, Codex `edit`), and a
+ *  time limit of 240 minutes; on a task, `null` takes the workspace's value.
+ */
+export type AgentOptions = {
+	/**
+	 *  The model passed to the agent CLI with `--model`, e.g. `sonnet` or `gpt-5-codex`;
+	 *  blank for none.
+	 */
+	model: string | null,
+	permissionMode: PermissionMode | null,
+	/**
+	 *  How long a plain run may take before it is stopped and fails, from 1 to 10080
+	 *  minutes (a week). tmux runs have no time limit.
+	 */
+	timeLimitMinutes: number | null,
+};
+
 /**  What the agent working on a task in herdr is doing. */
 export type AgentStatus = "idle" | "working" | "blocked" | "done";
+
+/**  A change of what the agent in a task's herdr workspace was doing. */
+export type AgentStatusTransition = {
+	/**
+	 *  What the agent did from `at` on; `null` once no agent was seen in the workspace,
+	 *  e.g. its pane closed or herdr stopped.
+	 */
+	status: AgentStatus | null,
+	at: Timestamp,
+};
 
 /**  The agent statuses of tasks changed; carries all of them. */
 export type AgentStatusesChanged = {
@@ -316,6 +548,28 @@ export type AppInfo = {
 	version: string,
 };
 
+/**
+ *  What deleting moved to the archive: workspaces, archived with their tasks, and tasks of
+ *  live workspaces, each ordered by ID.
+ */
+export type Archive = {
+	workspaces: Workspace[],
+	tasks: Task[],
+};
+
+/**  What importing merged pull requests as done tasks added. */
+export type BackfillSummary = {
+	/**  Pull requests recorded as new done tasks. */
+	imported: number,
+	/**  Pull requests left out because a task already records them or has their branch. */
+	skipped: number,
+	/**
+	 *  Workspaces whose pull requests could not be read: each names the workspace, what
+	 *  failed, and what to do next. The other workspaces were still imported.
+	 */
+	failures: string[],
+};
+
 /**  A backup in Toodo's backup directory. */
 export type BackupEntry = {
 	path: string,
@@ -324,13 +578,30 @@ export type BackupEntry = {
 	sizeBytes: number,
 };
 
-export type BackupKind = "automatic" | "preRestore";
+/**  An automatic backup that failed, and why. */
+export type BackupFailure = {
+	at: Timestamp,
+	message: string,
+};
+
+export type BackupKind = "automatic" | "preRestore" | "preMigration";
 
 export type BackupSettings = {
 	enabled: boolean,
 	intervalHours: number,
 	/**  Number of automatic backups kept; older ones are deleted. */
 	keep: number,
+	/**
+	 *  Absolute path of the directory backups are written to, e.g. on another disk;
+	 *  `null` (or empty) keeps them in the data directory.
+	 */
+	directory?: string | null,
+};
+
+/**  How automatic backups have gone since the server started. */
+export type BackupStatus = {
+	/**  The latest automatic backup failed; cleared once one succeeds again. */
+	lastFailure: BackupFailure | null,
 };
 
 /**
@@ -387,8 +658,59 @@ export type ChecksStatus = "passing" | "failing" | "pending";
 
 export type CommandError = {
 	kind: CommandErrorKind,
+	code: CommandErrorCode,
 	message: string,
 };
+
+/**
+ *  What went wrong, as a stable machine-readable code. The RPC endpoint and the MCP tools
+ *  return the same codes, so the web app and agents can react to a code instead of the
+ *  message text. Each code belongs to one [`CommandErrorKind`]; the generic codes named
+ *  after a kind cover failures without a more specific code.
+ */
+export type CommandErrorCode = 
+/**  An argument is malformed. */
+"invalidInput" | 
+/**
+ *  The request body does not match the command's parameters, e.g. after the server
+ *  was updated and the web app was not reloaded.
+ */
+"invalidArguments" | 
+/**  A referenced object does not exist. */
+"notFound" | 
+/**  No command or tool has this name. */
+"unknownCommand" | "workspaceNotFound" | "taskNotFound" | "criterionNotFound" | "dependencyNotFound" | "relationNotFound" | "runNotFound" | 
+/**  The request breaks a rule. */
+"rejected" | 
+/**  The dependency would make the task DAG cyclic or make a task depend on itself. */
+"dependencyCycle" | 
+/**  The task cannot move to the requested status from its current one. */
+"invalidTransition" | 
+/**  A prerequisite of the task is not done yet. */
+"dependenciesNotDone" | 
+/**  The caller may not use this tool, e.g. a chat app connected over OAuth. */
+"notPermitted" | 
+/**  An external tool failed. */
+"external" | 
+/**  git reported an error. */
+"gitFailed" | 
+/**  herdr reported an error or is not running. */
+"herdrFailed" | 
+/**  gh has no valid login, or the login may not open pull requests in the repository. */
+"gitHubAuthFailed" | 
+/**
+ *  GitHub refused the draft setting, a reviewer, or a label of the workspace's pull
+ *  request options.
+ */
+"pullRequestOptionInvalid" | 
+/**  GitHub refused to open the pull request for another reason. */
+"pullRequestFailed" | 
+/**  The server failed. */
+"internal" | 
+/**  The database failed or holds data the server cannot read. */
+"storageFailed" | 
+/**  The command stopped unexpectedly on the server; the details are in the server log. */
+"commandPanicked";
 
 export type CommandErrorKind = 
 /**  An argument is malformed, e.g. a relative path or an empty title. */
@@ -522,6 +844,16 @@ export type Estimate = {
  */
 export type EstimateUnit = "hours" | "days" | "weeks" | "months";
 
+export type HerdrHealth = {
+	/**  Whether herdr could be run from the server's `PATH`. */
+	installed: boolean,
+	/**  Whether the herdr server on this machine is running. */
+	running: boolean,
+	version: string | null,
+	/**  Why herdr is not usable and what to do next; `None` while it is running. */
+	message: string | null,
+};
+
 /**  A machine saved in herdr with `herdr machine add`. */
 export type HerdrMachine = {
 	/**  Opaque herdr profile ID. */
@@ -548,6 +880,19 @@ export type LinkedIssue = {
 };
 
 export type Machine = { kind: "local" } | { kind: "ssh"; label: string };
+
+/**  The runs of a machine: how many may run at once, and how many run or wait. */
+export type MachineRuns = {
+	machine: Machine,
+	/**
+	 *  The most plain and tmux runs the machine runs at once; further runs wait in its
+	 *  queue. `None` for no limit.
+	 */
+	maxConcurrentRuns: number | null,
+	/**  The plain and tmux runs that are starting, running, or whose end was not seen. */
+	activeRuns: number,
+	queuedRuns: number,
+};
 
 export type MachineSettings = {
 	machine: Machine,
@@ -641,6 +986,8 @@ export type NewTask = {
 	estimate: Estimate | null,
 	/**  `YYYY-MM-DD`; blank or `null` for none. */
 	dueDate: string | null,
+	/**  Labels such as a project or goal; none when omitted. */
+	labels?: string[],
 	/**  Completion criteria in order; an `id` is not allowed here. */
 	criteria: CriterionInput[],
 	/**
@@ -669,7 +1016,10 @@ export type NewWorkspace = {
 	 *  github: pr_merge).
 	 */
 	completion: CompletionMode | null,
-	/**  Omitted: the default of the source (none: none, git sources: herdr). */
+	/**
+	 *  Omitted: the default of the source (none: none, git sources: herdr), except that a
+	 *  local git workspace defaults to plain when herdr is not running on the server.
+	 */
 	runner: Runner | null,
 	/**  Detected from the repository when empty or absent; ignored for source none. */
 	defaultBaseBranch: string | null,
@@ -694,6 +1044,31 @@ export type PathProblem =
 "foreign" | 
 /**  A server path that is not a directory, e.g. a repository that was moved. */
 "missing";
+
+/**  How much the agent of a plain or tmux run may do without asking. */
+export type PermissionMode = 
+/**  Read and plan only: Claude `--permission-mode plan`, Codex `--sandbox read-only`. */
+"read_only" | 
+/**
+ *  Edit files in the worktree: Claude `--permission-mode acceptEdits`, Codex
+ *  `--full-auto`.
+ */
+"edit" | 
+/**
+ *  Anything, without permission checks or a sandbox: Claude `--permission-mode
+ *  bypassPermissions`, Codex `--dangerously-bypass-approvals-and-sandbox`.
+ */
+"bypass";
+
+/**  How Toodo opens the pull requests of a workspace's tasks with `gh pr create`. */
+export type PullRequestOptions = {
+	/**  Open pull requests as drafts (`--draft`). */
+	draft: boolean,
+	/**  Users (`login`) or teams (`org/team`) asked to review (`--reviewer`). */
+	reviewers: string[],
+	/**  Labels added (`--label`); each must exist in the repository. */
+	labels: string[],
+};
 
 /**  A merged pull request as GitHub reported it when it completed its task. */
 export type PullRequestSnapshot = {
@@ -726,6 +1101,16 @@ export type RemoteDirectory = {
 	directories: string[],
 };
 
+/**  The file format of a review report. */
+export type ReportFormat = 
+/**  Markdown, for pasting into a status update or a year-end report. */
+"markdown" | 
+/**
+ *  One row per reviewed task (RFC 4180, CRLF line ends, led by a UTF-8 byte order
+ *  mark), for spreadsheets.
+ */
+"csv";
+
 /**  How the repository of a new workspace gets to its location. */
 export type RepositorySetup = 
 /**  The location already holds a cloned repository. */
@@ -746,6 +1131,11 @@ export type ReviewEntry = {
 	at: Timestamp,
 	/**  Commits of the task made in the period, oldest first. */
 	commits: CommitRecord[],
+	/**
+	 *  Whether the task or its workspace was deleted, which archives it; its work still
+	 *  counts.
+	 */
+	archived: boolean,
 };
 
 /**
@@ -754,15 +1144,229 @@ export type ReviewEntry = {
  */
 export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "worked_on" | "planned";
 
+/**
+ *  The reviewed tasks of the days `from` to `to`, with the period the server judged
+ *  them by.
+ */
+export type ReviewPeriodEntries = {
+	/**  The first and last day, as `YYYY-MM-DD` in `timeZone`. */
+	from: string,
+	to: string,
+	/**
+	 *  The period as `[start, end)`: midnight of `from` to midnight after `to` in
+	 *  `timeZone`.
+	 */
+	start: Timestamp,
+	end: Timestamp,
+	timeZone: string,
+	entries: ReviewEntry[],
+};
+
+/**  The kind of a reviewed period. */
+export type ReviewPeriodKind = 
+/**  Seven days, from a Monday unless `from` names another first day. */
+"week" | 
+/**  A calendar month. */
+"month" | 
+/**  A calendar quarter. */
+"quarter" | 
+/**  A calendar year. */
+"year" | 
+/**  The days `from` to `to`, both included. */
+"custom";
+
+/**  A rendered review report. */
+export type ReviewReport = {
+	/**  A file name for the report, e.g. `toodo-review-2026-Q4.md`. */
+	fileName: string,
+	/**  `text/markdown` or `text/csv`. */
+	mediaType: string,
+	/**  The first and last day of the reviewed period, as `YYYY-MM-DD`. */
+	from: string,
+	to: string,
+	contents: string,
+};
+
+/**  Which review report to render. Days are `YYYY-MM-DD` in `timeZone`. */
+export type ReviewReportRequest = {
+	period: ReviewPeriodKind,
+	/**
+	 *  A day inside the period, for any kind but `custom`; today when neither `date` nor
+	 *  `from` is given.
+	 */
+	date?: string | null,
+	/**
+	 *  The first day of the period: required for `custom`, any first day of a `week`, and
+	 *  a day inside a month, quarter, or year.
+	 */
+	from?: string | null,
+	/**  The last day of a `custom` period, included. */
+	to?: string | null,
+	format: ReportFormat,
+	/**
+	 *  An IANA time zone such as `Europe/Berlin` that the days, the period, and the times
+	 *  in the report are in; the review time zone of the server when omitted (see
+	 *  [`ReviewTimeZone`]).
+	 */
+	timeZone?: string | null,
+	/**  Only tasks of this workspace. */
+	workspaceId?: WorkspaceId | null,
+	/**  Only tasks with this label. */
+	label?: string | null,
+};
+
+/**
+ *  A saved review as it was when saved: its reviewed tasks, the names of their
+ *  workspaces, and its report as Markdown and CSV.
+ */
+export type ReviewSnapshot = {
+	summary: ReviewSnapshotSummary,
+	/**  Kept as the JSON it was saved as, so later changes to tasks do not touch it. */
+	entries: ReviewEntry[],
+	workspaces: ReviewWorkspaceName[],
+	/**  The report as `review_report` rendered it when saved. */
+	markdown: ReviewReport,
+	csv: ReviewReport,
+};
+
+/**  The ID of a saved review. */
+export type ReviewSnapshotId = number;
+
+/**  A saved review, without its contents. */
+export type ReviewSnapshotSummary = {
+	id: ReviewSnapshotId,
+	title: string,
+	period: ReviewPeriodKind,
+	/**  The first and last day, as `YYYY-MM-DD` in `timeZone`. */
+	from: string,
+	to: string,
+	timeZone: string,
+	workspaceId: WorkspaceId | null,
+	label: string | null,
+	/**  The period as `[start, end)`. */
+	start: Timestamp,
+	end: Timestamp,
+	/**  When it was saved; durations and due dates in it are judged at this time. */
+	savedAt: Timestamp,
+	entryCount: number,
+};
+
 /**  Where the reviews of a pull request stand. */
 export type ReviewStatus = "approved" | "changes_requested" | "pending";
+
+/**
+ *  The time zone the server judges reviewed periods in, so a period covers the same
+ *  time on every device.
+ */
+export type ReviewTimeZone = {
+	/**
+	 *  The IANA time zone in use: the one set, else the server's own (`UTC` when the
+	 *  server's has no IANA name).
+	 */
+	timeZone: string,
+	/**  The time zone set for reviews; `null` while the server's own is used. */
+	configured: string | null,
+};
+
+/**  The name of a workspace as a saved review shows it. */
+export type ReviewWorkspaceName = {
+	id: WorkspaceId,
+	name: string,
+};
+
+/**  Something observed about a run, e.g. its result or how it exited. */
+export type RunEvent = {
+	/**  Increases from 1 per run. */
+	sequence: number,
+	kind: string,
+	payload: string | null,
+	observedAt: Timestamp,
+};
+
+export type RunId = number;
+
+/**  A run with its events and the ends of its output, with the MCP token redacted. */
+export type RunLog = {
+	run: TaskRun,
+	events: RunEvent[],
+	stdout: string,
+	stderr: string,
+	/**  For an active tmux run, the shell command that attaches a terminal to its session. */
+	attach: string | null,
+};
+
+/**  Where a run is in its life. */
+export type RunState = 
+/**  Waiting in its host's queue until fewer runs than the host's limit run there. */
+"queued" | 
+/**  Recorded, not launched yet. */
+"reserved" | 
+/**  Launched and not ended. */
+"running" | 
+/**  Ended with a successful result. */
+"settled" | 
+/**  Ended on its own, or ended after its result without success. */
+"exited" | 
+/**  Ended with an error result, without a result, or past its time limit. */
+"failed" | 
+/**  Stopped on request. */
+"cancelled" | 
+/**  Its end was not observed, e.g. the server restarted while it ran. */
+"unknown";
+
+/**  Tokens an agent reported using in a run. */
+export type RunUsage = {
+	/**  Input tokens, including the cached ones. */
+	inputTokens: number,
+	cachedInputTokens: number,
+	outputTokens: number,
+};
 
 /**  What runs the work of a started task. */
 export type Runner = 
 /**  Nothing: starting a task only marks it in progress. */
 "none" | 
 /**  Agents in a herdr workspace on a task worktree and branch. */
-"herdr";
+"herdr" | 
+/**  Agent CLIs that Toodo runs itself on a task worktree and branch, without herdr. */
+"plain" | 
+/**  Agent CLIs in a tmux session on a POSIX host. */
+"tmux";
+
+/**
+ *  What the server can run tasks with: herdr for herdr workspaces, and the agent CLIs of
+ *  plain runs, together with the other tools it runs: git, gh, and ssh.
+ */
+export type RunnerHealth = {
+	herdr: HerdrHealth,
+	/**  tmux for local workspaces with runner tmux. */
+	tmux: TmuxHealth,
+	/**  Claude, then Codex. */
+	agents: AgentHealth[],
+	/**  git, then gh, then ssh. */
+	tools: ToolHealth[],
+};
+
+/**
+ *  Which review to save as a snapshot: a period as for [`ReviewReportRequest`] (judged in
+ *  the review time zone of the server) and the tasks to keep.
+ */
+export type SaveReviewSnapshotRequest = {
+	period: ReviewPeriodKind,
+	/**
+	 *  The first day of a week or custom period, or a day inside a month, quarter, or
+	 *  year, as `YYYY-MM-DD`.
+	 */
+	from: string,
+	/**  The last day of a `custom` period, included. */
+	to?: string | null,
+	/**  Only tasks of this workspace. */
+	workspaceId?: WorkspaceId | null,
+	/**  Only tasks with this label. */
+	label?: string | null,
+	/**  A name for the snapshot; the period's, e.g. `Year review 2026`, when omitted. */
+	title?: string | null,
+};
 
 /**  What a workspace location holds. */
 export type Source = 
@@ -772,6 +1376,17 @@ export type Source =
 "local_git" | 
 /**  A git repository whose `origin` remote is on GitHub; tasks ship as pull requests. */
 "github";
+
+/**
+ *  What testing the connection to an SSH machine found: Toodo connects without a prompt and
+ *  git runs there, or a problem.
+ */
+export type SshMachineCheck = {
+	/**  `git --version` on the machine, e.g. `git version 2.43.0`; `None` when the test failed. */
+	gitVersion: string | null,
+	/**  What failed and the next step that fixes it; `None` when the test passed. */
+	problem: string | null,
+};
 
 export type Task = {
 	id: TaskId,
@@ -796,6 +1411,8 @@ export type Task = {
 	estimate: Estimate | null,
 	/**  The day the task should be done by, as `YYYY-MM-DD` in local time. */
 	dueDate: string | null,
+	/**  Labels such as a project or goal, sorted. */
+	labels: string[],
 	/**  Merge time of the pull request reported by GitHub. */
 	pullRequestMergedAt: Timestamp | null,
 	/**
@@ -842,6 +1459,15 @@ export type TaskActivity = {
 };
 
 /**
+ *  The launch options of a task's runs: what the task overrides and what its workspace
+ *  sets for the rest.
+ */
+export type TaskAgentOptions = {
+	task: AgentOptions,
+	workspace: AgentOptions,
+};
+
+/**
  *  The agent status of a task whose herdr workspace has an agent, summarized over the
  *  workspace's panes: blocked over working over done over idle.
  */
@@ -863,6 +1489,8 @@ export type TaskEdit = {
 	estimate: Estimate | null,
 	/**  `YYYY-MM-DD`; blank or `null` clears the due date. */
 	dueDate: string | null,
+	/**  The new labels, which replace the current ones; `null` or omitted keeps them. */
+	labels?: string[] | null,
 	/**
 	 *  The new completion criteria in order, which replace the current ones; `null`
 	 *  keeps them. The criteria of a done task cannot change.
@@ -880,9 +1508,35 @@ export type TaskEvent = {
 	at: Timestamp,
 	/**  The change reopened the task: it follows a move to `done`. */
 	reopened: boolean,
+	/**
+	 *  Why the work stopped, on a move back to `planned`: the reason of a pause, the
+	 *  prerequisites the task waits on, or why it was reopened; `null` for other changes
+	 *  and for pauses without a reason.
+	 */
+	reason: string | null,
 };
 
 export type TaskId = number;
+
+/**
+ *  Which tasks `list_tasks` returns; every condition given must hold. Without a limit,
+ *  every matching task.
+ */
+export type TaskListFilter = {
+	/**  Only tasks of this workspace. */
+	workspaceId?: WorkspaceId | null,
+	/**  Only tasks with one of these statuses; omitted or empty for any status. */
+	statuses?: TaskStatus[] | null,
+	/**  Only these tasks, at most 500. */
+	ids?: TaskId[] | null,
+	/**  Only tasks with a lower ID: the lowest ID of the previous page, to read the next. */
+	before?: TaskId | null,
+	/**
+	 *  At most this many tasks (1 to 500), those with the highest IDs; a full page means
+	 *  older ones may follow.
+	 */
+	limit?: number | null,
+};
 
 /**
  *  Milestones derived from a task's status history (see `docs/architecture.md`, Task
@@ -959,6 +1613,47 @@ export type TaskResolution =
  */
 "not_adopted";
 
+/**  A run of a task: an agent launch and its outcome. */
+export type TaskRun = {
+	id: RunId,
+	taskId: TaskId,
+	requestKey: string,
+	/**  Increases from 1 per task. */
+	generation: number,
+	/**  `plain`, `tmux`, `herdr`, or `none`. */
+	runnerKind: string,
+	/**  `writer` or `observer`. */
+	role: string,
+	/**  The agent CLI of a plain run: `claude` or `codex`. */
+	adapter: string | null,
+	checkoutPath: string | null,
+	state: RunState,
+	/**  The runner's reference of the launch, e.g. `pid:<pid>` for a plain run. */
+	providerRunRef: string | null,
+	createdAt: Timestamp,
+	startedAt: Timestamp | null,
+	endedAt: Timestamp | null,
+	/**
+	 *  When the agent last wrote output: while a plain run runs, every few seconds of its
+	 *  output; for a tmux run, once its end was seen.
+	 */
+	lastActivityAt: Timestamp | null,
+	/**  The tokens the agent reported using, once it reported them. */
+	usage: RunUsage | null,
+	/**  The earlier run this run follows up on: it resumed that run's agent session. */
+	followUpOf: RunId | null,
+	/**
+	 *  The agent session (Claude session id, Codex thread id) of this run's conversation,
+	 *  once the agent reported it: what a follow-up run (`follow_up_of` this run) resumes.
+	 */
+	agentSession: string | null,
+	/**
+	 *  For a queued run, where it is in its host's queue, from 1 for the run that starts
+	 *  next; `None` for any other run.
+	 */
+	queuePosition: number | null,
+};
+
 export type TaskStatus = "planned" | "in_progress" | "in_review" | "done";
 
 export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore" | "rnd";
@@ -970,6 +1665,50 @@ export type TasksChanged = {
 
 /**  Seconds since the Unix epoch (UTC). */
 export type Timestamp = number;
+
+export type TmuxHealth = {
+	/**  Whether `tmux -V` ran from the server's `PATH`. */
+	installed: boolean,
+	/**  The version `tmux -V` printed, such as `tmux 3.4`. */
+	version: string | null,
+	/**  What to do next when tmux cannot run; `None` when it can. */
+	message: string | null,
+};
+
+/**  A command-line tool the server runs besides the runners. */
+export type Tool = 
+/**  git, for local workspaces with a repository. */
+"git" | 
+/**  The GitHub CLI, for the pull requests of workspaces with source `github`. */
+"gh" | 
+/**  OpenSSH, for workspaces on SSH machines. */
+"ssh";
+
+export type ToolHealth = {
+	tool: Tool,
+	/**  Whether the tool ran from the server's `PATH`. */
+	installed: boolean,
+	/**  Whether the tool can do its work: installed, and for gh also logged in. */
+	ready: boolean,
+	/**  The version the tool printed, such as `git version 2.43.0`. */
+	version: string | null,
+	/**  Why the tool is not ready and what to do next; `None` when it is ready. */
+	message: string | null,
+};
+
+/**  The version this server runs and the newest one on the npm channel it follows. */
+export type UpdateCheck = {
+	/**  The version this server runs. */
+	current: string,
+	/**  The npm dist-tag the version follows: `dev` for a prerelease, else `latest`. */
+	channel: string,
+	/**  The version on the channel, when the registry told it. */
+	latest: string | null,
+	/**  Whether `latest` is newer than `current`. */
+	newer: boolean,
+	/**  Why the newest version is unknown, with what to do about it. */
+	error: string | null,
+};
 
 export type Workspace = {
 	id: WorkspaceId,
@@ -985,9 +1724,9 @@ export type Workspace = {
 	pathProblem: PathProblem | null,
 	/**  What the location holds; set at creation and ignored when the workspace is saved. */
 	source: Source,
-	/**  How its tasks get done; set at creation and ignored when the workspace is saved. */
+	/**  How its tasks get done. */
 	completion: CompletionMode,
-	/**  What runs started tasks; set at creation and ignored when the workspace is saved. */
+	/**  What runs started tasks. */
 	runner: Runner,
 };
 

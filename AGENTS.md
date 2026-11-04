@@ -30,8 +30,10 @@ Toodo is a task-planning app that turns a plan into implemented, reviewed code:
    cloned at, a local directory or a remote directory on a saved herdr SSH machine.
 2. **Plan** tasks inside a workspace. Tasks may depend on each other and form a DAG.
 3. **Prepare** a task for implementation: create a dedicated `git worktree` in a separate
-   directory through the herdr API.
-4. **Implement** the task inside herdr (agent panes running in that worktree).
+   directory, through the herdr CLI (`herdr worktree create`) for runner `herdr` and
+   with `git worktree add` for runners `plain` and `tmux` (runner `none` creates none).
+4. **Implement** the task in that worktree: in herdr agent panes, as `claude` or `codex`
+   child processes, or in a detached tmux session, depending on the runner.
 5. **Record** the commits produced (SHA, message, author, timestamp) against the task.
 6. **Review** the task: push the worktree branch and open a pull request; the task moves
    to `in_review`.
@@ -49,8 +51,11 @@ See [`docs/architecture.md`](docs/architecture.md) for the domain model and
 
 - **Target**: `toodo-server` on Linux, used through the web app (PWA) it serves to
   browsers on any device; see `docs/server.md`. There is no native app.
-- **Prerequisite**: herdr is installed and running on the server. Toodo is a companion
-  app that controls herdr; it never installs, updates, or bundles herdr. Git, OpenSSH
+- **Prerequisite**: herdr is optional; workspaces with runner `herdr` need it installed
+  and running on the server, while runner `plain` runs `claude` or `codex` from the
+  `PATH` of the server or the workspace's SSH host, runner `tmux` also needs `tmux`
+  there, and runner `none` needs neither. Toodo
+  controls herdr; it never installs, updates, or bundles herdr. Git, OpenSSH
   (`ssh`), and `gh` are also expected on the server's `PATH`.
 - **Backend**: Rust with tokio and axum: commands over HTTP, events over server-sent
   events, MCP, and Web Push. TypeScript bindings for the commands are generated with
@@ -93,8 +98,15 @@ Layout:
     locally or over `ssh`, `herdr.rs` drives the herdr CLI, `github.rs` opens pull
     requests with `gh`, `ssh.rs` reads and appends hosts in `~/.ssh/config` and lists
     remote directories), each behind a trait with a fake for tests.
+  - `src-tauri/src/runtime/plain/`: the plain runner, which runs `claude` or `codex` as child processes in a task worktree, locally or on an SSH host.
+  - `src-tauri/src/runtime/host.rs`: builds run commands for the local host or an SSH host
+    (POSIX `sh` or Windows PowerShell): staging, wrapper, stop, probe, and tmux commands.
+  - `src-tauri/src/runtime/tmux/`: the tmux runner, which runs each agent in a detached
+    tmux session locally or on a POSIX SSH host, and recovers sessions after a restart.
   - `src-tauri/src/mcp/`: MCP server for coding agents (rmcp over loopback HTTP with a
-    bearer token); `tools.rs` holds the tool logic over `Storage`.
+    bearer token); `tools.rs` holds the tool logic over `Storage`. Rules the `initialize`
+    instructions and the `toodo-skill.md` skill both state live once in `shared/` and are
+    filled in where a template says `{{name}}`; see `docs/agents.md`.
   - `src-tauri/src/oauth/`: OAuth authorization server for chat apps on `/mcp`, mounted
     only when `TOODO_PUBLIC_URL` is set (`routes.rs` endpoints, `clients.rs` client
     metadata documents).
@@ -106,7 +118,8 @@ Layout:
     and Codex.
 - `npm/toodo/`: the `@dubusoft/toodo` npm package (launcher `bin/toodo.js`, README).
 - `scripts/package-npm.mjs`: stages the npm packages (main and per-platform) for
-  publishing.
+  publishing; `scripts/smoke-npm.mjs` installs the staged packages from a local registry
+  and checks that `toodo init` brings up a working server.
 
 ## Commands
 
@@ -131,6 +144,8 @@ Run from the repository root unless noted. Package manager is npm.
 - Package (npm): `node scripts/package-npm.mjs --version X.Y.Z --web dist-web --out dist-npm
   --binaries linux-x64=<dir with toodo and toodo-server>`; never run `npm publish` by hand,
   the `npm` workflow publishes
+- Smoke test (npm): `node scripts/smoke-npm.mjs dist-npm` on the staged packages, part of
+  the release checklist in `README.md`
 
 After changing a command signature, run `cargo test` in `src-tauri/` and commit the
 updated `src/lib/bindings.ts` together with the Rust change. A test in `server/rpc.rs`
@@ -152,7 +167,7 @@ frontend); it runs no tests, lints, or format checks. Run the tests, clippy, and
 
 ## Integrations
 
-- **herdr** (required, preinstalled): terminal workspace manager for AI coding agents.
+- **herdr** (optional, preinstalled; needed for runner `herdr`): terminal workspace manager for AI coding agents.
   - On startup, check that `herdr` is on `PATH` and `herdr status --json` reports the
     server as running.
   - Commands go through the herdr CLI (`herdr worktree create|open|list|remove`,

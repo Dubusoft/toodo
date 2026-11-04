@@ -5,10 +5,12 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use super::{Result, Storage, StorageError};
 use crate::domain::device::DeviceId;
-use crate::domain::push::{PushEndpoint, PushSettings, PushSubscription, subscription_keys};
+use crate::domain::push::{
+    PushEndpoint, PushFailure, PushSettings, PushSubscription, subscription_keys,
+};
 
-const COLUMNS: &str =
-    "device_id, endpoint, p256dh, auth, agent, pull_requests, completion, created_at";
+const COLUMNS: &str = "device_id, endpoint, p256dh, auth, agent, pull_requests, completion, \
+                       created_at, last_failure, last_failure_at";
 
 fn subscription(row: &Row<'_>) -> rusqlite::Result<PushSubscription> {
     let invalid = |column: usize, error: Box<dyn std::error::Error + Send + Sync>| {
@@ -31,6 +33,10 @@ fn subscription(row: &Row<'_>) -> rusqlite::Result<PushSubscription> {
             completion: row.get(6)?,
         },
         created_at: row.get(7)?,
+        last_failure: match (row.get(8)?, row.get(9)?) {
+            (Some(message), Some(at)) => Some(PushFailure { message, at }),
+            _ => None,
+        },
     })
 }
 
@@ -83,7 +89,8 @@ impl Storage {
              VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT (device_id) DO UPDATE SET endpoint = excluded.endpoint,
                  p256dh = excluded.p256dh, auth = excluded.auth,
-                 created_at = excluded.created_at",
+                 created_at = excluded.created_at,
+                 last_failure = NULL, last_failure_at = NULL",
             params![
                 device.0,
                 new.endpoint.as_str(),
@@ -128,6 +135,27 @@ impl Storage {
             "DELETE FROM push_subscriptions WHERE endpoint = ?1",
             [endpoint.as_str()],
         )? > 0)
+    }
+
+    /// Records why the latest notification did not reach the subscription at `endpoint`.
+    pub fn record_push_failure(&mut self, endpoint: &PushEndpoint, message: &str) -> Result<()> {
+        let at = self.now();
+        self.conn.execute(
+            "UPDATE push_subscriptions SET last_failure = ?2, last_failure_at = ?3
+             WHERE endpoint = ?1",
+            params![endpoint.as_str(), message, at],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the last failure of the subscription at `endpoint`: a notification reached it.
+    pub fn clear_push_failure(&mut self, endpoint: &PushEndpoint) -> Result<()> {
+        self.conn.execute(
+            "UPDATE push_subscriptions SET last_failure = NULL, last_failure_at = NULL
+             WHERE endpoint = ?1",
+            [endpoint.as_str()],
+        )?;
+        Ok(())
     }
 
     pub fn set_push_settings(
@@ -175,6 +203,8 @@ mod tests {
                 .create_device(
                     &DeviceLabel::parse(label).unwrap(),
                     &hash.to_string().repeat(64),
+                    crate::domain::device::DeviceScope::Full,
+                    None,
                 )
                 .unwrap()
                 .id
@@ -204,6 +234,38 @@ mod tests {
         assert_eq!(second.auth, [2; 16]);
         assert_eq!(second.settings, quiet);
         assert_eq!(storage.active_push_subscriptions().unwrap(), [second]);
+    }
+
+    #[test]
+    fn the_last_failure_is_kept_until_a_delivery_or_a_new_subscription() {
+        let (mut storage, phone, _) = storage_with_devices();
+        let endpoint = PushEndpoint::parse("https://push.example/a").unwrap();
+        storage
+            .save_push_subscription(phone, &new(endpoint.as_str(), 1))
+            .unwrap();
+        storage.record_push_failure(&endpoint, "refused").unwrap();
+        let failure = |storage: &Storage| {
+            storage
+                .push_subscription(phone)
+                .unwrap()
+                .unwrap()
+                .last_failure
+        };
+        assert_eq!(
+            failure(&storage),
+            Some(PushFailure {
+                message: "refused".to_owned(),
+                at: 100
+            })
+        );
+        storage.clear_push_failure(&endpoint).unwrap();
+        assert_eq!(failure(&storage), None);
+
+        storage.record_push_failure(&endpoint, "refused").unwrap();
+        storage
+            .save_push_subscription(phone, &new(endpoint.as_str(), 2))
+            .unwrap();
+        assert_eq!(failure(&storage), None);
     }
 
     #[test]

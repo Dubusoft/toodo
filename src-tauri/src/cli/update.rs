@@ -13,14 +13,13 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use super::Var;
+use super::launchd;
 use super::process;
 use super::service;
 use super::settings::{self, Bundle, DataDir};
+use crate::commands::updates::{PACKAGE, channel_of, compare_versions};
 
-const PACKAGE: &str = "@dubusoft/toodo";
 const PLATFORM_PACKAGE: &str = "@dubusoft/toodo-";
-/// The launchd job the server runs as on macOS, when one is set up.
-const LAUNCHD_LABEL: &str = "toodo-server";
 /// The API command the health check calls, as `scripts/install-server.sh` does.
 const HEALTH_PATH: &str = "/api/rpc/list_tasks";
 
@@ -50,7 +49,7 @@ impl Channel {
 
     /// The channel an installed `version` follows: prereleases come from `dev`.
     fn of(version: &str) -> Self {
-        if version.contains('-') {
+        if channel_of(version) == "dev" {
             Self::Dev
         } else {
             Self::Latest
@@ -94,11 +93,47 @@ pub(super) fn version() -> String {
         )
 }
 
+/// `toodo update --check`: prints whether the channel (by default the one of the installed
+/// version) has a newer version, and changes nothing.
+pub(super) fn check(channel: Option<Channel>, var: Var) -> Result<(), String> {
+    let installed = version();
+    let tag = channel.unwrap_or_else(|| Channel::of(&installed)).tag();
+    let npm = process::find_on_path("npm", var).ok_or_else(|| {
+        "npm is not on PATH; install Node.js with npm, or add its bin directory to PATH, \
+         and rerun toodo update --check"
+            .to_owned()
+    })?;
+    let target = published_version(&npm, &format!("{PACKAGE}@{tag}"))?;
+    let option = channel.map_or_else(String::new, |_| format!(" --channel {tag}"));
+    println!("{}", check_report(&installed, &target, tag, &option));
+    Ok(())
+}
+
+/// What `toodo update --check` prints for the `installed` version and `target`, the one
+/// on `tag`; `option` is the `--channel` option of the suggested `toodo update`.
+fn check_report(installed: &str, target: &str, tag: &str, option: &str) -> String {
+    match compare_versions(target, installed) {
+        Some(Ordering::Greater) => format!(
+            "toodo {target} is available on {tag} (installed: {installed}); install it and \
+             restart the server with: toodo update{option}"
+        ),
+        Some(Ordering::Less) => format!(
+            "toodo {installed} is newer than {target}, the version on {tag}; nothing to update"
+        ),
+        Some(Ordering::Equal) => format!("toodo {installed} is the newest on {tag}"),
+        None if target == installed => format!("toodo {installed} is the newest on {tag}"),
+        None => format!(
+            "cannot tell whether {target} on {tag} is newer than the installed {installed}; \
+             install it anyway with: toodo update --channel {tag} --allow-downgrade"
+        ),
+    }
+}
+
 /// Who runs the server, as far as an update is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Runner {
     Systemd,
-    /// The launchd job [`LAUNCHD_LABEL`] on macOS.
+    /// The launchd agent [`launchd::LABEL`] on macOS.
     Launchd,
     /// `toodo start`, with a pid file.
     PidFile,
@@ -213,7 +248,7 @@ pub(super) fn update(
     if !running {
         // The unit runs copies of the server and the web app, so `toodo start` would
         // start the old version unless they are refreshed now.
-        if runner == Runner::Systemd {
+        if matches!(runner, Runner::Systemd | Runner::Launchd) {
             service::install_bundle(&bundle, var).map_err(|cause| {
                 format!(
                     "updated {changed}, but the service still has the old server: {cause}; \
@@ -224,6 +259,7 @@ pub(super) fn update(
         println!(
             "Updated {changed}. toodo-server is not running; start it with: toodo start{flag}"
         );
+        super::agents::refresh(data, listen, var);
         return Ok(());
     }
     let restarted = restart(runner, &bundle, data, listen, flag, var).and_then(|()| {
@@ -236,21 +272,68 @@ pub(super) fn update(
                 describe(runner),
                 settings::web_url(listen)
             );
+            super::agents::refresh(data, listen, var);
             Ok(())
         }
-        Err(cause) => Err(format!(
-            "updated {changed}, but the server did not come back: {cause}\n{}",
-            recovery(runner, &installed.version, flag)
+        Err(cause) => Err(roll_back(
+            &npm, &bin, old, runner, data, listen, flag, var, &changed, &cause,
         )),
     }
 }
 
-/// How `version` compares with `installed` by semver precedence (build metadata is
-/// ignored), or `None` when either is not a semver version.
-fn compare_versions(version: &str, installed: &str) -> Option<Ordering> {
-    let version = semver::Version::parse(version).ok()?;
-    let installed = semver::Version::parse(installed).ok()?;
-    Some(version.cmp_precedence(&installed))
+/// Installs `old` again after the server did not come back on the update `changed`
+/// for `cause`, restarts the server on it, and returns the error `toodo update` reports.
+#[allow(clippy::too_many_arguments)]
+fn roll_back(
+    npm: &Path,
+    bin: &Path,
+    old: &str,
+    runner: Runner,
+    data: &DataDir,
+    listen: SocketAddr,
+    flag: &str,
+    var: Var,
+    changed: &str,
+    cause: &str,
+) -> String {
+    eprintln!("toodo-server did not come back after the update: {cause}");
+    eprintln!("Going back to toodo {old}...");
+    let spec = format!("{PACKAGE}@{old}");
+    let restored = npm_install(npm, &spec)
+        .and_then(|()| Bundle::beside(&bin.join("toodo")))
+        .and_then(|bundle| restart(runner, &bundle, data, listen, flag, var))
+        .and_then(|()| {
+            healthy(listen).map_err(|cause| format!("toodo-server does not answer: {cause}"))
+        });
+    match restored {
+        Ok(()) => format!(
+            "updated {changed}, but the server did not come back: {cause}; went back to \
+             {old}, and toodo-server answers on {} again.\n{}",
+            settings::web_url(listen),
+            log_hint(runner, flag)
+        ),
+        Err(again) => format!(
+            "updated {changed}, but the server did not come back: {cause}; going back to {old} \
+             failed too: {again}\n{}",
+            recovery(runner, old, flag)
+        ),
+    }
+}
+
+/// Runs `npm i -g <spec> --include=optional`.
+fn npm_install(npm: &Path, spec: &str) -> Result<(), String> {
+    let status = Command::new(npm)
+        .args(["i", "-g", spec, "--include=optional"])
+        .stdin(Stdio::null())
+        .status()
+        .map_err(|error| format!("cannot run {}: {error}", npm.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`npm i -g {spec} --include=optional` failed ({status})"
+        ))
+    }
 }
 
 /// The version npm resolves `spec` (`name@tag` or `name@version`) to.
@@ -302,33 +385,20 @@ fn install_root(package: &Path) -> Option<&Path> {
         .last()
 }
 
-fn launchd_plist(var: Var) -> Result<PathBuf, String> {
-    Ok(settings::home(var)?
-        .join("Library/LaunchAgents")
-        .join(format!("{LAUNCHD_LABEL}.plist")))
-}
-
 fn runner(data: &DataDir, var: Var) -> Result<Runner, String> {
     if service::manages(&service::unit_path(var)?, data) {
         return Ok(Runner::Systemd);
     }
-    if cfg!(target_os = "macos") && launchd_plist(var)?.is_file() {
+    if launchd::supported() && launchd::manages(&launchd::plist_path(var)?, data) {
         return Ok(Runner::Launchd);
     }
     Ok(Runner::PidFile)
 }
 
-fn launchd_target() -> Result<String, String> {
-    let uid = process::run("id", &["-u"], "rerun toodo update")?;
-    Ok(format!("gui/{}/{LAUNCHD_LABEL}", uid.trim()))
-}
-
 fn is_running(runner: Runner, data: &DataDir) -> bool {
     match runner {
         Runner::Systemd => service::is_active(),
-        Runner::Launchd => {
-            launchd_target().is_ok_and(|target| process::succeeds("launchctl", &["print", &target]))
-        }
+        Runner::Launchd => launchd::is_running(),
         Runner::PidFile => process::running_pid(data).is_some(),
     }
 }
@@ -336,7 +406,7 @@ fn is_running(runner: Runner, data: &DataDir) -> bool {
 fn describe(runner: Runner) -> String {
     match runner {
         Runner::Systemd => service::UNIT_NAME.to_owned(),
-        Runner::Launchd => format!("launchd job {LAUNCHD_LABEL}"),
+        Runner::Launchd => format!("launchd job {}", launchd::LABEL),
         Runner::PidFile => "toodo start".to_owned(),
     }
 }
@@ -358,18 +428,10 @@ fn restart(
             service::wait_until_up(listen)
         }
         Runner::Launchd => {
-            let target = launchd_target()?;
-            process::run(
-                "launchctl",
-                &["kickstart", "-k", &target],
-                &format!("check the job with: launchctl print {target}"),
-            )?;
-            match process::wait_until_up(listen, || None) {
-                process::Wait::Up => Ok(()),
-                _ => Err(format!(
-                    "{target} did not accept connections on {listen} in time"
-                )),
-            }
+            // The job runs copies of the server and the web app; refresh them first.
+            service::install_bundle(bundle, var)?;
+            launchd::kickstart(true)?;
+            launchd::wait_until_up(listen, var)
         }
         Runner::PidFile => {
             process::stop(data)?;
@@ -379,7 +441,7 @@ fn restart(
 }
 
 /// Calls an API command without a token, which the server answers with `401`.
-fn healthy(listen: SocketAddr) -> Result<(), String> {
+pub(super) fn healthy(listen: SocketAddr) -> Result<(), String> {
     let address = settings::local_address(listen);
     let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
         .map_err(|error| format!("cannot connect to {address}: {error}"))?;
@@ -414,23 +476,28 @@ fn status_code(response: &[u8]) -> Option<u16> {
     parts.next()?.parse().ok()
 }
 
-/// What to run when the server did not come back after updating from `previous`.
+/// Where to find out why the server did not come back.
+fn log_hint(runner: Runner, flag: &str) -> String {
+    let more = match runner {
+        Runner::Launchd => format!(" and: launchctl print gui/$(id -u)/{}", launchd::LABEL),
+        Runner::Systemd | Runner::PidFile => String::new(),
+    };
+    format!("Find the cause with: toodo logs{flag}{more}")
+}
+
+/// What to run when the server did not come back after updating from `previous` and
+/// going back to it failed too.
 fn recovery(runner: Runner, previous: &str, flag: &str) -> String {
     let back = format!("npm i -g {PACKAGE}@{previous} --include=optional");
+    let hint = log_hint(runner, flag);
     match runner {
-        Runner::Systemd => format!(
-            "Find the cause with: journalctl --user -u toodo-server -n 50
-Fix it and restart with: systemctl --user restart {unit}
-Or go back to {previous} with: {back} && toodo service install{flag}",
-            unit = service::UNIT_NAME
-        ),
-        Runner::Launchd => format!(
-            "Find the cause with: launchctl print gui/$(id -u)/{LAUNCHD_LABEL}
-Fix it and restart with: launchctl kickstart -k gui/$(id -u)/{LAUNCHD_LABEL}
-Or go back to {previous} with: {back}, then restart it the same way"
+        Runner::Systemd | Runner::Launchd => format!(
+            "{hint}
+Fix it and restart with: toodo restart{flag}
+Or go back to {previous} with: {back} && toodo service install{flag}"
         ),
         Runner::PidFile => format!(
-            "Find the cause in the server log: toodo status{flag} shows where it is
+            "{hint}
 Fix it and start it with: toodo start{flag}
 Or go back to {previous} with: {back} && toodo start{flag}"
         ),
@@ -451,26 +518,22 @@ mod tests {
     }
 
     #[test]
-    fn versions_compare_by_semver_precedence() {
+    fn the_check_reports_a_newer_version_with_the_command_to_install_it() {
         assert_eq!(
-            compare_versions("1.3.2-dev.1", "1.3.2-dev.8"),
-            Some(Ordering::Less)
+            check_report("1.3.2", "1.4.0", "latest", ""),
+            "toodo 1.4.0 is available on latest (installed: 1.3.2); install it and restart \
+             the server with: toodo update"
+        );
+        assert!(
+            check_report("1.3.2", "1.3.3-dev.70", "dev", " --channel dev")
+                .ends_with("toodo update --channel dev")
         );
         assert_eq!(
-            compare_versions("1.3.2-dev.11", "1.3.2-dev.9"),
-            Some(Ordering::Greater)
+            check_report("1.3.2", "1.3.2", "latest", ""),
+            "toodo 1.3.2 is the newest on latest"
         );
-        assert_eq!(
-            compare_versions("1.3.2", "1.3.2-dev.11"),
-            Some(Ordering::Greater)
-        );
-        assert_eq!(
-            compare_versions("1.3.1", "1.3.2-dev.1"),
-            Some(Ordering::Less)
-        );
-        assert_eq!(compare_versions("1.10.0", "1.9.9"), Some(Ordering::Greater));
-        assert_eq!(compare_versions("1.3.1+b", "1.3.1"), Some(Ordering::Equal));
-        assert_eq!(compare_versions("next", "1.3.1"), None);
+        assert!(check_report("1.4.0", "1.3.2", "latest", "").contains("nothing to update"));
+        assert!(check_report("1.3.2", "next", "latest", "").contains("--allow-downgrade"));
     }
 
     #[test]

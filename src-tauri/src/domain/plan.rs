@@ -1,6 +1,6 @@
 //! What a task was planned to take: an estimate of its size and the day it is due.
 //! Both are optional; reviews compare them with the active time and completion day the
-//! status history records.
+//! status history records. Labels group tasks by project or goal for those reviews.
 
 use std::fmt;
 
@@ -139,9 +139,96 @@ impl fmt::Display for InvalidDueDate {
 
 impl std::error::Error for InvalidDueDate {}
 
+/// The most characters a label has.
+pub const MAX_LABEL_CHARS: usize = 40;
+/// The most labels a task has.
+pub const MAX_LABELS: usize = 20;
+
+/// The labels of a task from `raw`: each trimmed, sorted, and without duplicates. A label
+/// is non-empty, at most [`MAX_LABEL_CHARS`] characters, and has no comma or line break,
+/// so a comma-separated list can name several.
+pub fn labels(raw: &[String]) -> Result<Vec<String>, InvalidLabels> {
+    let mut labels = Vec::with_capacity(raw.len());
+    for label in raw {
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(InvalidLabels::Empty);
+        }
+        if label.contains([',', '\n', '\r']) {
+            return Err(InvalidLabels::Separator(label.to_owned()));
+        }
+        if label.chars().count() > MAX_LABEL_CHARS {
+            return Err(InvalidLabels::TooLong(label.to_owned()));
+        }
+        labels.push(label.to_owned());
+    }
+    labels.sort();
+    labels.dedup();
+    if labels.len() > MAX_LABELS {
+        return Err(InvalidLabels::TooMany(labels.len()));
+    }
+    Ok(labels)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidLabels {
+    Empty,
+    Separator(String),
+    TooLong(String),
+    TooMany(usize),
+}
+
+impl fmt::Display for InvalidLabels {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "labels must not be blank; leave out the empty label"),
+            Self::Separator(label) => write!(
+                f,
+                "label {label:?} has a comma or line break; pass each label as its own list item"
+            ),
+            Self::TooLong(label) => write!(
+                f,
+                "label {label:?} is longer than {MAX_LABEL_CHARS} characters; shorten it"
+            ),
+            Self::TooMany(count) => write!(
+                f,
+                "a task has at most {MAX_LABELS} labels, got {count}; keep the ones reviews group by"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InvalidLabels {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_are_trimmed_sorted_unique_and_bounded() {
+        let raw = |items: &[&str]| {
+            items
+                .iter()
+                .map(|&item| item.to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            labels(&raw(&[" toodo ", "goal: speed", "toodo"])).unwrap(),
+            ["goal: speed", "toodo"]
+        );
+        assert_eq!(labels(&raw(&[" "])), Err(InvalidLabels::Empty));
+        assert!(matches!(
+            labels(&raw(&["a,b"])),
+            Err(InvalidLabels::Separator(_))
+        ));
+        assert!(labels(&raw(&[&"é".repeat(MAX_LABEL_CHARS)])).is_ok());
+        assert!(matches!(
+            labels(&raw(&[&"x".repeat(MAX_LABEL_CHARS + 1)])),
+            Err(InvalidLabels::TooLong(_))
+        ));
+        let many: Vec<String> = (0..=MAX_LABELS).map(|n| n.to_string()).collect();
+        assert_eq!(labels(&many), Err(InvalidLabels::TooMany(MAX_LABELS + 1)));
+    }
 
     #[test]
     fn estimates_must_be_positive_finite_and_bounded() {

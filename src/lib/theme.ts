@@ -8,6 +8,13 @@ const storageKey = "toodo-theme";
 const darkQuery = "(prefers-color-scheme: dark)";
 const listeners = new Set<() => void>();
 
+/**
+ * The page background (`--background` in `src/index.css`) of each theme, for the browser's status
+ * bar. `index.html` starts with one `theme-color` per OS color scheme; an explicit choice must win
+ * over the OS setting, so both get the color of the applied theme.
+ */
+const themeColors = { light: "#ffffff", dark: "#0a0a0a" };
+
 function isThemePreference(value: string | null): value is ThemePreference {
   return themePreferences.includes(value as ThemePreference);
 }
@@ -23,6 +30,9 @@ function applyTheme() {
     preference === "dark" || (preference === "system" && window.matchMedia(darkQuery).matches);
   document.documentElement.classList.toggle("dark", dark);
   document.documentElement.style.colorScheme = dark ? "dark" : "light";
+  for (const meta of document.querySelectorAll('meta[name="theme-color"]')) {
+    meta.setAttribute("content", dark ? themeColors.dark : themeColors.light);
+  }
 }
 
 export function setThemePreference(preference: ThemePreference) {

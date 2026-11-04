@@ -6,7 +6,13 @@
  *
  * The service worker never answers `/api` or `/mcp` requests: commands, events, and files
  * always go to the server. It precaches exactly the files of this build, so a new build
- * installs a new cache and drops the old one.
+ * installs a new cache and drops the old one. A waiting worker takes over when an open page
+ * asks it to, before that page reloads into the new build.
+ *
+ * Each build is named by a hash of its `index.html`, which links every built script and
+ * style by content hash: the page carries the name in `<meta name="toodo-build">` and
+ * `/version.json` serves it, so an open tab can tell the server now serves another build
+ * (see `src/web/build.ts`).
  *
  * The icons come from `src/web/pwa/icon.svg` and its maskable variant
  * `src/web/pwa/icon-maskable.svg` (artwork inside the safe zone, full-bleed background),
@@ -33,7 +39,8 @@ const manifest = {
   id: "/",
   name: "Toodo",
   short_name: "Toodo",
-  description: "Plan tasks, implement them in herdr, and keep the record.",
+  description:
+    "Plan tasks as a dependency graph, run coding agents on them in their own worktrees, and track each one from plan to merged pull request.",
   start_url: "/",
   scope: "/",
   display: "standalone",
@@ -56,6 +63,8 @@ const SERVER_PATHS = ${JSON.stringify(serverPaths)};
 const NOTIFICATION_ICON = ${JSON.stringify(notificationIcon)};
 // The message that asks an open page to show a task; see listenForOpenTask in src/web/push.ts.
 const OPEN_TASK = "toodo-open-task";
+// The message that asks a waiting worker to take over; see reloadIntoNewBuild in src/web/build.ts.
+const SKIP_WAITING = "toodo-skip-waiting";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -70,6 +79,12 @@ self.addEventListener("activate", (event) => {
       .then((names) => Promise.all(names.filter((name) => name !== CACHE).map((name) => caches.delete(name))))
       .then(() => self.clients.claim()),
   );
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type === SKIP_WAITING) {
+    self.skipWaiting();
+  }
 });
 
 function isServerPath(pathname) {
@@ -184,16 +199,6 @@ export function pwa(): Plugin {
           injectTo: "head",
         },
         { tag: "link", attrs: { rel: "apple-touch-icon", href: `/pwa/${appleTouchIcon}` }, injectTo: "head" },
-        {
-          tag: "meta",
-          attrs: { name: "theme-color", content: "#ffffff", media: "(prefers-color-scheme: light)" },
-          injectTo: "head",
-        },
-        {
-          tag: "meta",
-          attrs: { name: "theme-color", content: "#0a0a0a", media: "(prefers-color-scheme: dark)" },
-          injectTo: "head",
-        },
       ];
     },
     generateBundle(_options, bundle) {
@@ -216,6 +221,13 @@ export function pwa(): Plugin {
       ].sort();
       const version = createHash("sha256").update(JSON.stringify(shell)).digest("hex").slice(0, 16);
       this.emitFile({ type: "asset", fileName: "sw.js", source: serviceWorker(`toodo-shell-${version}`, shell) });
+      // Named after the shell is listed: the service worker never keeps `version.json`.
+      const html = bundle["index.html"];
+      if (html?.type === "asset") {
+        const build = createHash("sha256").update(html.source).digest("hex").slice(0, 16);
+        html.source = String(html.source).replace("</head>", `  <meta name="toodo-build" content="${build}" />\n  </head>`);
+        this.emitFile({ type: "asset", fileName: "version.json", source: `${JSON.stringify({ build })}\n` });
+      }
     },
   };
 }

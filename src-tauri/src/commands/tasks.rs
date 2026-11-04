@@ -3,21 +3,30 @@
 use super::State;
 
 use super::types::{
-    self, CommitRecord, CriterionId, DependencyOutcome, NewTask, Task, TaskActivity, TaskEdit,
-    TaskId, TaskRelation,
+    self, AgentStatusTransition, CommitRecord, CriterionId, DependencyOutcome, NewTask, Task,
+    TaskActivity, TaskEdit, TaskId, TaskRelation,
 };
-use super::{CommandError, CommandResult, HerdrState, StorageState, lock};
+use super::{
+    CommandError, CommandResult, Git, GitState, Herdr, HerdrState, PlainRunState, StorageState,
+    TmuxRunState, lock,
+};
 use crate::domain::criteria::{self, CheckKind, CheckedBy, NewCriterion};
 use crate::domain::model;
 use crate::domain::model::{CompletionMode, TaskResolution};
 use crate::domain::status::TaskStatus;
 use crate::storage::{self, CriterionEdit, Storage, StorageError};
 
-/// Tasks of every workspace ordered by ID, each with its dependencies, which may belong
-/// to another workspace.
+/// Tasks ordered by ID, each with its dependencies, which may belong to another
+/// workspace: every task without a filter, else those the filter selects. With a limit,
+/// the matching tasks with the highest IDs; pass the lowest ID of a full page as `before`
+/// to read the next.
 #[specta::specta]
-pub fn list_tasks(storage: State<'_, StorageState>) -> CommandResult<Vec<Task>> {
-    Ok(types::map_all(&lock(&storage).list_all_tasks()?))
+pub fn list_tasks(
+    storage: State<'_, StorageState>,
+    filter: Option<types::TaskListFilter>,
+) -> CommandResult<Vec<Task>> {
+    let query: storage::TaskQuery = filter.unwrap_or_default().try_into()?;
+    Ok(types::map_all(&lock(&storage).query_tasks(&query)?))
 }
 
 #[specta::specta]
@@ -39,11 +48,17 @@ pub fn create_task(storage: State<'_, StorageState>, task: NewTask) -> CommandRe
 /// its workspace (see [`merge_criterion`]); git does not run.
 pub(crate) fn create(storage: &StorageState, task: NewTask) -> CommandResult<model::Task> {
     let wants_merge = task.merge_criterion;
+    let labels = types::labels(&task.labels)?;
     let mut new: storage::NewTask = task.try_into()?;
     if let Some(merge) = merge_criterion(storage, new.workspace_id, &new.criteria, wants_merge)? {
         new.criteria.insert(0, merge);
     }
-    Ok(lock(storage).create_task(&new)?)
+    let mut storage = lock(storage);
+    let task = storage.create_task(&new)?;
+    if labels.is_empty() {
+        return Ok(task);
+    }
+    Ok(storage.set_task_labels(task.id, &labels)?)
 }
 
 /// Checks the `criteria` of a new task of `workspace` against its completion (see
@@ -178,6 +193,7 @@ pub(crate) fn edit_task(
     task.description = edit.description;
     task.estimate = types::estimate(edit.estimate)?;
     task.due_date = types::due_date(edit.due_date.as_deref())?;
+    let labels = edit.labels.as_deref().map(types::labels).transpose()?;
     let kept;
     let criteria = match &edit.criteria {
         Some(criteria) => Some(criteria.as_slice()),
@@ -222,6 +238,9 @@ pub(crate) fn edit_task(
         storage.set_criteria(task.id, &edits)?;
     }
     storage.update_task(&task)?;
+    if let Some(labels) = labels {
+        storage.set_task_labels(task.id, &labels)?;
+    }
     let task = storage
         .get_task(task.id)?
         .ok_or(StorageError::TaskNotFound(task.id))?;
@@ -359,10 +378,15 @@ pub(crate) fn criterion_owner(
 /// it again resumes the work.
 #[specta::specta]
 pub fn pause_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<Task> {
-    pause(&mut lock(&storage), id)
+    pause(&mut lock(&storage), id, None)
 }
 
-pub(crate) fn pause(storage: &mut Storage, id: TaskId) -> CommandResult<Task> {
+/// [`pause_task`], recording `reason`, why the work stops, in the task's status history.
+pub(crate) fn pause(
+    storage: &mut Storage,
+    id: TaskId,
+    reason: Option<&str>,
+) -> CommandResult<Task> {
     let task = storage
         .get_task(id.into())?
         .ok_or(StorageError::TaskNotFound(id.into()))?;
@@ -372,7 +396,7 @@ pub(crate) fn pause(storage: &mut Storage, id: TaskId) -> CommandResult<Task> {
             task.id
         )));
     }
-    Ok((&storage.set_task_status(id.into(), TaskStatus::Planned)?).into())
+    Ok((&storage.pause_task(id.into(), reason)?).into())
 }
 
 /// Reopens a `done` task that was completed or concluded by mistake: it becomes `planned`
@@ -391,6 +415,13 @@ pub fn reopen_task(
 }
 
 pub(crate) fn reopen(storage: &mut Storage, id: TaskId, reason: &str) -> CommandResult<Task> {
+    let note = reopen_note(storage, id, reason)?;
+    Ok((&storage.reopen_task(id.into(), reason.trim(), &note)?).into())
+}
+
+/// Checks that [`reopen`] would reopen task `id` without changing anything, and returns
+/// the progress note it would record.
+pub(crate) fn reopen_note(storage: &Storage, id: TaskId, reason: &str) -> CommandResult<String> {
     let reason = reason.trim();
     if reason.is_empty() {
         return Err(CommandError::invalid_input(
@@ -440,7 +471,7 @@ pub(crate) fn reopen(storage: &mut Storage, id: TaskId, reason: &str) -> Command
             None => note.push('.'),
         }
     }
-    Ok((&storage.reopen_task(task.id, &note)?).into())
+    Ok(note)
 }
 
 /// Corrects how a `done` task ended without reopening it: `resolution` replaces its
@@ -537,18 +568,61 @@ fn note_completion(storage: &mut Storage, id: TaskId, note: &str) -> CommandResu
     Ok((&storage.set_completion_note(id.into(), note)?).into())
 }
 
-/// Deletes a task with its dependency edges and commit records. A task that still has a worktree
+/// Deletes a task by archiving it: it leaves the task lists and stops holding back the tasks
+/// that depend on it, but keeps its history, commits, and links for reviews until
+/// [`restore_task`] brings it back or [`purge_task`] deletes it for good. A task that still has a worktree
 /// first removes it through herdr, which also closes its herdr workspace; the branch is
 /// kept. Without `force`, a worktree with modified or untracked files is rejected and the
-/// task is kept.
+/// task is kept. A task of a workspace with runner plain or tmux has its worktree removed
+/// by git, and its plain and tmux runs that are still running are stopped first.
 #[specta::specta]
 pub fn delete_task(
     storage: State<'_, StorageState>,
+    git: State<'_, GitState>,
     herdr: State<'_, HerdrState>,
+    runs: State<'_, PlainRunState>,
+    tmux: State<'_, TmuxRunState>,
     id: TaskId,
     force: bool,
 ) -> CommandResult<()> {
-    super::herdr::delete(&storage, &herdr, id.into(), force)
+    delete(storage.0, git.0, herdr.0, runs.0, tmux.0, id.into(), force)
+}
+
+/// Brings an archived task of a live workspace back with its dependencies; its worktree,
+/// removed when it was deleted, is not recreated.
+#[specta::specta]
+pub fn restore_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<Task> {
+    Ok((&lock(&storage).restore_task(id.into())?).into())
+}
+
+/// Deletes an archived task for good with its history, commit records, and links; a task
+/// that is not archived is rejected.
+#[specta::specta]
+pub fn purge_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<()> {
+    Ok(lock(&storage).purge_task(id.into())?)
+}
+
+/// [`delete_task`] over the adapters themselves.
+pub(crate) fn delete(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    runs: &PlainRunState,
+    tmux: &TmuxRunState,
+    id: model::TaskId,
+    force: bool,
+) -> CommandResult<()> {
+    let task = lock(storage)
+        .get_task(id)?
+        .ok_or(StorageError::TaskNotFound(id))?;
+    // A task in progress or in review keeps its worktree, so deleting it is rejected
+    // below; its agents keep running.
+    let keeps_worktree = task.worktree_path.is_some()
+        && matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview);
+    if !keeps_worktree {
+        super::runs::stop_live_runs(storage, runs, tmux, id)?;
+    }
+    super::herdr::delete(storage, git, herdr, id, force)
 }
 
 /// Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
@@ -641,6 +715,18 @@ pub fn list_task_activity(
     ))
 }
 
+/// When the agent in the task's herdr workspace changed what it was doing, oldest first.
+/// Empty for a task never opened in herdr.
+#[specta::specta]
+pub fn list_agent_status_transitions(
+    storage: State<'_, StorageState>,
+    task_id: TaskId,
+) -> CommandResult<Vec<AgentStatusTransition>> {
+    Ok(types::map_all(
+        &lock(&storage).list_agent_status_transitions(task_id.into())?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,6 +775,7 @@ mod tests {
             description: String::new(),
             estimate: None,
             due_date: None,
+            labels: Vec::new(),
             criteria: Vec::new(),
             merge_criterion: true,
         }
@@ -806,6 +893,7 @@ mod tests {
                     amount: 3.0,
                 }),
                 due_date: Some(" 2026-10-31 ".to_owned()),
+                labels: None,
                 criteria: None,
                 merge_criterion: false,
             },
@@ -825,7 +913,7 @@ mod tests {
     #[test]
     fn pausing_moves_a_started_task_back_to_planned_and_keeps_its_branch() {
         let (mut storage, task) = storage_with_task();
-        let error = pause(&mut storage, task.id.into()).unwrap_err();
+        let error = pause(&mut storage, task.id.into(), None).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
 
         for status in [TaskStatus::InProgress, TaskStatus::InReview] {
@@ -835,7 +923,7 @@ mod tests {
             if status == TaskStatus::InReview {
                 storage.set_task_status(task.id, status).unwrap();
             }
-            let paused = pause(&mut storage, task.id.into()).unwrap();
+            let paused = pause(&mut storage, task.id.into(), None).unwrap();
             assert_eq!(paused.status, types::TaskStatus::Planned);
             assert_eq!(paused.branch.as_deref(), Some("feat/add-commands-1"));
         }
@@ -1075,6 +1163,7 @@ mod tests {
             description: String::new(),
             estimate: None,
             due_date: None,
+            labels: None,
             criteria: None,
             merge_criterion: false,
         };
@@ -1137,6 +1226,7 @@ mod tests {
             description: String::new(),
             estimate: None,
             due_date: None,
+            labels: None,
             criteria: None,
             merge_criterion,
         };

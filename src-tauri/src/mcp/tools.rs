@@ -12,13 +12,17 @@ use crate::adapters::github::GitHub;
 use crate::adapters::herdr::Herdr;
 use crate::commands::completion::{self, OpenPullRequest};
 use crate::commands::herdr as herdr_commands;
+use crate::commands::runs as run_commands;
 use crate::commands::tasks::{self as task_commands, edit_task};
 use crate::commands::types::{
     self, CommitRecord, Estimate, Task, TaskEdit, TaskId, TaskResolution, TaskStatus, TaskType,
     Workspace, WorkspaceId,
 };
 use crate::commands::workspaces;
-use crate::commands::{CommandError, CommandErrorKind, CommandResult, StorageState, lock};
+use crate::commands::{
+    CommandError, CommandErrorCode, CommandErrorKind, CommandResult, PlainRunState, State,
+    StorageState, TmuxRunState, lock,
+};
 use crate::domain::criteria::{CheckedBy, NewCriterion};
 use crate::domain::model::{self, NoteKind};
 use crate::domain::runtime::{HostRef, OwnerKey, RunRole};
@@ -26,11 +30,27 @@ use crate::mcp::ServerStatus;
 use crate::runtime::{RunCommand, RuntimeError, RuntimeService, StartRun};
 use crate::storage::{self, Storage, StorageError, TaskSearch};
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ListTasks {
     /// Only tasks of this workspace; all workspaces when omitted.
     pub workspace_id: Option<WorkspaceId>,
+    /// Only tasks with one of these statuses, e.g. `["planned", "in_progress"]`; every
+    /// status when omitted or empty.
+    #[serde(default)]
+    pub status: Option<Vec<TaskStatus>>,
+    /// `true`: only tasks start_task or resume_task can begin now; `false`: only the
+    /// others. Every task when omitted.
+    #[serde(default)]
+    pub ready: Option<bool>,
+    /// At most this many tasks (1 to 500): the matching tasks with the highest IDs, still
+    /// listed by ascending ID. Every matching task when omitted.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Only tasks with a lower ID. When a page has `limit` tasks, pass its first (lowest)
+    /// ID here to read the older ones.
+    #[serde(default)]
+    pub before_id: Option<TaskId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -70,6 +90,59 @@ pub struct CreateWorkspace {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct UpdateWorkspace {
+    /// The workspace, as in list_workspaces.
+    pub id: WorkspaceId,
+    /// Name shown in Toodo; kept when omitted.
+    pub name: Option<String>,
+    /// New absolute path of the repository on the workspace's machine, e.g. after the
+    /// repository moved or when list_workspaces reports a `pathProblem`. It must be inside
+    /// a git repository that no other workspace uses, whose root becomes the workspace
+    /// path (any directory for source `none`); the tasks stay with the workspace. Kept
+    /// when omitted.
+    pub path: Option<String>,
+    /// The branch task pull requests go into, e.g. `main`; it must exist in the
+    /// repository, locally or as `origin/<branch>`. Cannot change while a task is in
+    /// review. Kept when omitted.
+    pub default_base_branch: Option<String>,
+    /// Whether agents merge their own task pull request: `never` or `afterChecks`. Kept
+    /// when omitted.
+    pub agent_merge: Option<types::AgentMerge>,
+    /// How its tasks get done: `pr_merge` (github), `local_merge` (local_git), or
+    /// `manual` (any source). Kept when omitted.
+    pub completion: Option<types::CompletionMode>,
+    /// What runs started tasks: `herdr`, `plain`, `tmux` (git sources), or `none` (only
+    /// with completion `manual`). Cannot change while a task is in progress or in review.
+    /// Kept when omitted.
+    pub runner: Option<types::Runner>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ArchiveWorkspace {
+    /// The workspace to archive, as in list_workspaces.
+    pub id: WorkspaceId,
+    /// true archives the workspace. Without it nothing changes and the reply says what
+    /// archiving would do; read it before you confirm.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// The reply of archive_workspace, which changes nothing until it is called again with
+/// `confirm: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceConfirmation {
+    /// Whether the workspace was archived; false for a call without `confirm: true`.
+    pub confirmed: bool,
+    /// The workspace as it was before it was archived.
+    pub workspace: Workspace,
+    /// What archiving does, or did, and what to do next.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CurrentTask {
     /// Absolute path of the agent's working directory, e.g. the worktree of its task.
     pub cwd: String,
@@ -103,6 +176,10 @@ pub struct CreateTask {
     /// The day the task should be done by, as YYYY-MM-DD, if the user gave one.
     #[serde(default)]
     pub due_date: Option<String>,
+    /// Labels such as a project or goal, e.g. ["search", "q4-goal"], that the user's
+    /// reviews filter by; each non-empty, at most 40 characters, without commas.
+    #[serde(default)]
+    pub labels: Vec<String>,
     /// Verifiable completion criteria in order (no `id`). Use `manual` for what a person
     /// or you check with evidence, and `url`, `command`, `pr_open_ci_green` for what
     /// Toodo can check itself.
@@ -118,6 +195,74 @@ pub struct CreateTask {
     #[serde(default)]
     #[schemars(skip)]
     pub request_id: Option<String>,
+}
+
+/// The most tasks one `create_plan` call creates.
+const MAX_PLAN_TASKS: usize = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct CreatePlan {
+    /// The tasks to create, 1 to 100, in any order.
+    pub tasks: Vec<PlanTask>,
+}
+
+/// One task of `create_plan`: the fields of `create_task`, plus a key that the other
+/// tasks of the plan link to it by.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct PlanTask {
+    /// A name for this task within the plan, e.g. "schema", unique among its tasks.
+    pub key: String,
+    pub workspace_id: WorkspaceId,
+    pub task_type: TaskType,
+    pub title: String,
+    /// Details in GitHub-flavored Markdown.
+    #[serde(default)]
+    pub description: String,
+    /// Existing tasks, from any workspace, this task depends on.
+    #[serde(default)]
+    pub depends_on: Vec<TaskId>,
+    /// Keys of other tasks of this plan that this task depends on.
+    #[serde(default)]
+    pub depends_on_keys: Vec<String>,
+    /// Existing tasks, from any workspace, to link as related (see add_related).
+    #[serde(default)]
+    pub related: Vec<TaskId>,
+    /// Keys of other tasks of this plan to link as related.
+    #[serde(default)]
+    pub related_keys: Vec<String>,
+    /// Your estimate of the work, in hours, days, weeks, or months of active work.
+    #[serde(default)]
+    pub estimate: Option<Estimate>,
+    /// The day the task should be done by, as YYYY-MM-DD, if the user gave one.
+    #[serde(default)]
+    pub due_date: Option<String>,
+    /// Labels, as in create_task.
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Verifiable completion criteria in order (no `id`), as in create_task.
+    #[serde(default)]
+    pub criteria: Vec<types::CriterionInput>,
+    /// Put the merge criterion first, as in create_task; true when omitted.
+    #[serde(default)]
+    pub merge_criterion: Option<bool>,
+}
+
+/// A task `create_plan` created, with the key the plan gave it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedTask {
+    pub key: String,
+    #[serde(flatten)]
+    pub task: Task,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedPlan {
+    /// The created tasks in the order of the plan.
+    pub tasks: Vec<PlannedTask>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -139,6 +284,9 @@ pub struct UpdateTask {
     #[serde(default, deserialize_with = "present")]
     #[schemars(with = "Option<String>")]
     pub due_date: Option<Option<String>>,
+    /// The full new list of labels, replacing the current ones; unchanged when omitted,
+    /// [] removes them all.
+    pub labels: Option<Vec<String>>,
     /// The full new list of completion criteria, replacing the current one; unchanged when
     /// omitted. Criteria whose `id` is left out are deleted with their evidence. Keep an
     /// existing criterion by passing `{"id": N}`; given fields change it, omitted ones
@@ -295,6 +443,46 @@ pub struct ResumeTask {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct DeleteTask {
+    /// The planned task to delete, e.g. one you created by mistake.
+    pub id: TaskId,
+    /// true deletes the task. Without it nothing changes and the reply says what deleting
+    /// would remove; read it before you confirm.
+    #[serde(default)]
+    pub confirm: bool,
+    /// true removes a worktree with modified or untracked files too, discarding them.
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ReopenTask {
+    /// The done task to reopen, e.g. one completed or concluded by mistake.
+    pub id: TaskId,
+    /// Why the task is reopened, in GitHub-flavored Markdown; recorded as a progress note
+    /// with the earlier outcome.
+    pub reason: String,
+    /// true reopens the task. Without it nothing changes and the reply says what reopening
+    /// would do; read it before you confirm.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// The reply of a tool that changes nothing until it is called again with `confirm: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Confirmation {
+    /// Whether the change was made; false for a call without `confirm: true`.
+    pub confirmed: bool,
+    /// The task as it is now, or as it was before it was deleted.
+    pub task: Task,
+    /// What the change does, or did, and what to do next.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct StartTask {
     /// The task. Never your own task, the one current_task finds.
     pub id: TaskId,
@@ -389,6 +577,30 @@ pub struct SearchTasks {
     /// At most this many results, best match first: 20 when omitted, at most 100; 0
     /// returns none.
     pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ReviewReportRequest {
+    /// week (seven days from a Monday, or from `from`), month, quarter, year, or custom
+    /// (`from` to `to`).
+    pub period: types::ReviewPeriodKind,
+    /// A day inside the period as `YYYY-MM-DD`, for any period but custom; today when
+    /// neither date nor from is given.
+    pub date: Option<String>,
+    /// The first day as `YYYY-MM-DD`: required for custom, any first day of a week.
+    pub from: Option<String>,
+    /// The last day of a custom period as `YYYY-MM-DD`, included.
+    pub to: Option<String>,
+    /// markdown when omitted, or csv.
+    pub format: Option<types::ReportFormat>,
+    /// An IANA time zone such as `Europe/Berlin` for the days and times; the server's
+    /// review time zone when omitted, so every client gets the same period.
+    pub time_zone: Option<String>,
+    /// Only tasks of this workspace; all workspaces when omitted.
+    pub workspace_id: Option<WorkspaceId>,
+    /// Only tasks with this label; any label when omitted.
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -500,8 +712,90 @@ pub fn set_worktree_root(
     )
 }
 
+/// Renders the review of a period as the app's Review exports it.
+pub fn review_report(
+    storage: &Storage,
+    request: ReviewReportRequest,
+) -> CommandResult<types::ReviewReport> {
+    crate::commands::review::render_report(
+        storage,
+        types::ReviewReportRequest {
+            period: request.period,
+            date: request.date,
+            from: request.from,
+            to: request.to,
+            format: request.format.unwrap_or(types::ReportFormat::Markdown),
+            time_zone: request.time_zone,
+            workspace_id: request.workspace_id,
+            label: request.label,
+        },
+    )
+}
+
 pub fn list_workspaces(storage: &Storage) -> CommandResult<Vec<Workspace>> {
     Ok(types::map_all(&storage.list_workspaces()?))
+}
+
+/// Archives a workspace with its tasks as the app's Remove does (see
+/// [`workspaces::delete_workspace`]), but only with `confirm`; without it, nothing changes
+/// and the reply says what archiving would do. Rejected while a task of the workspace is
+/// `in_progress` or `in_review`, since someone is working on it.
+pub fn archive_workspace(
+    storage: &mut Storage,
+    request: ArchiveWorkspace,
+) -> CommandResult<WorkspaceConfirmation> {
+    let id = request.id.0;
+    let stored = storage.get_workspace(request.id.into())?.ok_or_else(|| {
+        CommandError::new(
+            CommandErrorCode::WorkspaceNotFound,
+            format!(
+                "workspace {id} does not exist or is already archived; take a workspace id from list_workspaces"
+            ),
+        )
+    })?;
+    let workspace = Workspace::from(&stored);
+    let tasks = storage.list_tasks(stored.id)?;
+    let active: Vec<(i64, &str)> = tasks
+        .iter()
+        .filter_map(|task| match task.status {
+            crate::domain::status::TaskStatus::InProgress => Some((task.id.0, "in_progress")),
+            crate::domain::status::TaskStatus::InReview => Some((task.id.0, "in_review")),
+            crate::domain::status::TaskStatus::Planned
+            | crate::domain::status::TaskStatus::Done => None,
+        })
+        .collect();
+    if let Some((first, _)) = active.first() {
+        let described: Vec<String> = active
+            .iter()
+            .map(|(task, status)| format!("#{task} ({status})"))
+            .collect();
+        return Err(CommandError::rejected(format!(
+            "workspace {id} \"{}\" still has task(s) being worked on: {}; finish each of them, or call pause_task on each, e.g. {{\"id\": {first}, \"reason\": \"...\"}}, then call archive_workspace again",
+            workspace.name,
+            described.join(", "),
+        )));
+    }
+    if !request.confirm {
+        return Ok(WorkspaceConfirmation {
+            confirmed: false,
+            message: format!(
+                "Nothing changed yet. Archiving workspace {id} \"{}\" removes it and its {} task(s) from list_workspaces and the task lists, while their history, notes, criteria, and commit records stay in review_report; the user can restore it, or delete it for good, under Settings > Archive in the Toodo app. Its repository, worktrees, and branches are left as they are. To archive it, call archive_workspace {{\"id\": {id}, \"confirm\": true}}.",
+                workspace.name,
+                tasks.len()
+            ),
+            workspace,
+        });
+    }
+    storage.archive_workspace(stored.id)?;
+    Ok(WorkspaceConfirmation {
+        confirmed: true,
+        message: format!(
+            "workspace {id} \"{}\" is archived with its {} task(s); they stay in review_report, and the user can restore the workspace in the Toodo app.",
+            workspace.name,
+            tasks.len()
+        ),
+        workspace,
+    })
 }
 
 /// Creates a local workspace through the app's own setup: clone or check the repository,
@@ -546,6 +840,45 @@ pub fn create_workspace(
     Ok((&workspaces::create(storage, git, herdr, setup)?).into())
 }
 
+/// Changes the settings of a workspace and, with `path`, moves it to another directory on
+/// its machine, through the app's own checks; omitted settings are kept.
+pub fn update_workspace(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    request: UpdateWorkspace,
+) -> CommandResult<Workspace> {
+    let id = request.id.into();
+    let stored = lock(storage)
+        .get_workspace(id)?
+        .ok_or(StorageError::WorkspaceNotFound(id))?;
+    let location = match request.path {
+        Some(path) => Some(
+            match &stored.location {
+                model::WorkspaceLocation::Local { .. } => types::WorkspaceLocation::Local { path },
+                model::WorkspaceLocation::Ssh { machine, .. } => types::WorkspaceLocation::Ssh {
+                    machine: machine.as_str().to_owned(),
+                    path,
+                },
+            }
+            .try_into()?,
+        ),
+        None => None,
+    };
+    let current = Workspace::from(&stored);
+    let workspace = Workspace {
+        name: request.name.unwrap_or(current.name),
+        default_base_branch: request
+            .default_base_branch
+            .unwrap_or(current.default_base_branch),
+        agent_merge: request.agent_merge.unwrap_or(current.agent_merge),
+        completion: request.completion.unwrap_or(current.completion),
+        runner: request.runner.unwrap_or(current.runner),
+        ..current
+    };
+    Ok((&workspaces::update(storage, git, herdr, workspace, location)?).into())
+}
+
 /// A task as list_tasks returns it, with whether it can start now.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -561,27 +894,112 @@ pub struct ListedTask {
 }
 
 pub fn list_tasks(storage: &Storage, request: ListTasks) -> CommandResult<Vec<ListedTask>> {
-    let links = Links::load(storage)?;
-    let tasks = match request.workspace_id {
-        Some(workspace) => {
-            storage
-                .get_workspace(workspace.into())?
-                .ok_or(StorageError::WorkspaceNotFound(workspace.into()))?;
-            storage.list_tasks(workspace.into())?
+    if let Some(workspace) = request.workspace_id {
+        storage
+            .get_workspace(workspace.into())?
+            .ok_or(StorageError::WorkspaceNotFound(workspace.into()))?;
+    }
+    if let Some(limit) = request.limit {
+        types::task_page_limit(limit)?;
+    }
+    let planned = crate::domain::status::TaskStatus::Planned;
+    let mut statuses: Vec<crate::domain::status::TaskStatus> = request
+        .status
+        .unwrap_or_default()
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    if request.ready == Some(true) {
+        // Only a planned task can be ready.
+        if !statuses.is_empty() && !statuses.contains(&planned) {
+            return Ok(Vec::new());
         }
-        None => storage.list_all_tasks()?,
+        statuses = vec![planned];
+    }
+    let query = storage::TaskQuery {
+        workspace: request.workspace_id.map(Into::into),
+        statuses,
+        ids: None,
+        before: request.before_id.map(Into::into),
+        // Readiness is known only once the prerequisites are loaded, so the limit then
+        // applies after filtering by it.
+        limit: request.limit.filter(|_| request.ready.is_none()),
     };
-    Ok(tasks
+    let tasks = storage.query_tasks(&query)?;
+    let prerequisites = prerequisites(storage, &tasks)?;
+    let mut listed: Vec<ListedTask> = tasks
         .iter()
         .map(|task| {
-            let blocked_by = links.blocked_by(task);
+            let blocked_by = blocked_by(&prerequisites, task);
             ListedTask {
                 task: task.into(),
                 ready: is_ready(task, &blocked_by),
                 blocked_by,
             }
         })
-        .collect())
+        .filter(|listed| request.ready.is_none_or(|ready| listed.ready == ready))
+        .collect();
+    if let Some(limit) = request.limit {
+        let older = listed.len().saturating_sub(limit as usize);
+        listed.drain(..older);
+    }
+    Ok(listed)
+}
+
+/// `tasks` and the tasks they depend on, by ID.
+fn prerequisites(
+    storage: &Storage,
+    tasks: &[model::Task],
+) -> CommandResult<HashMap<model::TaskId, model::Task>> {
+    let mut known: HashMap<_, _> = tasks.iter().map(|task| (task.id, task.clone())).collect();
+    let missing: BTreeSet<model::TaskId> = tasks
+        .iter()
+        .flat_map(|task| task.depends_on.iter().copied())
+        .filter(|id| !known.contains_key(id))
+        .collect();
+    if !missing.is_empty() {
+        let query = storage::TaskQuery {
+            ids: Some(missing.into_iter().collect()),
+            ..storage::TaskQuery::default()
+        };
+        known.extend(
+            storage
+                .query_tasks(&query)?
+                .into_iter()
+                .map(|task| (task.id, task)),
+        );
+    }
+    Ok(known)
+}
+
+/// The tasks `task` depends on that keep it from starting: not done, or done as not
+/// adopted. `tasks` holds them by ID.
+fn blocked_by(tasks: &HashMap<model::TaskId, model::Task>, task: &model::Task) -> Vec<TaskLink> {
+    task_links(
+        tasks,
+        task.depends_on.iter().copied().filter(|id| {
+            tasks.get(id).is_some_and(|prerequisite| {
+                prerequisite.status != crate::domain::status::TaskStatus::Done
+                    || prerequisite.resolution == Some(model::TaskResolution::NotAdopted)
+            })
+        }),
+    )
+}
+
+/// Links to the tasks `ids` of `tasks`.
+fn task_links(
+    tasks: &HashMap<model::TaskId, model::Task>,
+    ids: impl Iterator<Item = model::TaskId>,
+) -> Vec<TaskLink> {
+    ids.filter_map(|id| tasks.get(&id))
+        .map(|task| TaskLink {
+            id: task.id.into(),
+            workspace_id: task.workspace_id.into(),
+            title: task.title.clone(),
+            status: task.status.into(),
+            resolution: task.resolution.map(TaskResolution::from),
+        })
+        .collect()
 }
 
 /// Whether `task` can start (or resume) now: it is planned and nothing blocks it.
@@ -826,6 +1244,223 @@ pub fn create_task(storage: &StorageState, request: CreateTask) -> CommandResult
     insert_task(&mut lock(storage), request, merge)
 }
 
+/// Creates every task of `request` with its dependencies and related links in one
+/// transaction. Keys, links, criteria, and labels are checked before anything is
+/// written, and a failure names the task of the plan it is about; any failure creates
+/// nothing.
+pub fn create_plan(storage: &StorageState, request: CreatePlan) -> CommandResult<CreatedPlan> {
+    let count = request.tasks.len();
+    if count == 0 || count > MAX_PLAN_TASKS {
+        return Err(CommandError::invalid_input(format!(
+            "create_plan takes 1 to {MAX_PLAN_TASKS} tasks, got {count}; split a larger plan into several create_plan calls and link a later call's tasks to created ones by id in depends_on"
+        )));
+    }
+    let keys = plan_keys(&request.tasks)?;
+    let mut depends_on = Vec::with_capacity(count);
+    let mut related = Vec::with_capacity(count);
+    for (index, item) in request.tasks.iter().enumerate() {
+        let existing = |ids: &[TaskId]| {
+            ids.iter()
+                .map(|&id| storage::PlanLink::Existing(id.into()))
+                .collect::<Vec<_>>()
+        };
+        let mut links = existing(&item.depends_on);
+        links.extend(plan_links(
+            &keys,
+            index,
+            item,
+            "depends_on",
+            &item.depends_on_keys,
+        )?);
+        depends_on.push(links);
+        let mut links = existing(&item.related);
+        links.extend(plan_links(
+            &keys,
+            index,
+            item,
+            "related",
+            &item.related_keys,
+        )?);
+        related.push(links);
+    }
+    check_plan_order(&request.tasks, &depends_on)?;
+    {
+        let storage = lock(storage);
+        for item in &request.tasks {
+            if storage.get_workspace(item.workspace_id.into())?.is_none() {
+                return Err(CommandError::new(
+                    CommandErrorCode::WorkspaceNotFound,
+                    format!(
+                        "task `{}` of the plan is in workspace {}, which does not exist; take a workspace id from list_workspaces",
+                        item.key, item.workspace_id.0
+                    ),
+                ));
+            }
+            for &id in item.depends_on.iter().chain(&item.related) {
+                if storage.get_task(id.into())?.is_none() {
+                    return Err(CommandError::not_found(format!(
+                        "task `{}` of the plan links to task {}, which does not exist; find the task with search_tasks, or link a task of the plan by its key in depends_on_keys or related_keys",
+                        item.key, id.0
+                    )));
+                }
+            }
+        }
+    }
+    let mut plan = Vec::with_capacity(count);
+    for ((item, depends_on), related) in request.tasks.iter().zip(depends_on).zip(related) {
+        let in_item = |mut error: CommandError| {
+            error.message = format!("task `{}` of the plan: {}", item.key, error.message);
+            error
+        };
+        let mut task = plan_task(storage, item).map_err(in_item)?;
+        task.depends_on = depends_on;
+        task.related = related;
+        plan.push(task);
+    }
+    let mut storage = lock(storage);
+    let created = storage.create_tasks(&plan)?;
+    let tasks = request
+        .tasks
+        .into_iter()
+        .zip(created)
+        .map(|(item, task)| {
+            Ok(PlannedTask {
+                key: item.key,
+                task: get_task(&storage, task.id.into())?,
+            })
+        })
+        .collect::<CommandResult<_>>()?;
+    Ok(CreatedPlan { tasks })
+}
+
+/// The index of each key of `tasks`, rejecting empty and repeated keys.
+fn plan_keys(tasks: &[PlanTask]) -> CommandResult<HashMap<&str, usize>> {
+    let mut keys = HashMap::with_capacity(tasks.len());
+    for (index, item) in tasks.iter().enumerate() {
+        if item.key.trim().is_empty() {
+            return Err(CommandError::invalid_input(format!(
+                "task {} of the plan (\"{}\") has no key; give every task of the plan its own key, e.g. \"schema\"",
+                index + 1,
+                item.title
+            )));
+        }
+        if keys.insert(item.key.as_str(), index).is_some() {
+            return Err(CommandError::invalid_input(format!(
+                "more than one task of the plan has the key `{}`; give each task its own key",
+                item.key
+            )));
+        }
+    }
+    Ok(keys)
+}
+
+/// The links that `names`, the `{field}_keys` of the task at `index`, make to other tasks
+/// of the plan.
+fn plan_links(
+    keys: &HashMap<&str, usize>,
+    index: usize,
+    item: &PlanTask,
+    field: &str,
+    names: &[String],
+) -> CommandResult<Vec<storage::PlanLink>> {
+    names
+        .iter()
+        .map(|name| match keys.get(name.as_str()) {
+            Some(&linked) if linked == index => Err(CommandError::invalid_input(format!(
+                "task `{name}` of the plan names itself in {field}_keys; remove `{name}` from them"
+            ))),
+            Some(&linked) => Ok(storage::PlanLink::New(linked)),
+            None => Err(CommandError::invalid_input(format!(
+                "task `{}` of the plan names `{name}` in {field}_keys, but no task of the plan has that key; use the key of a task in tasks, or put the id of an existing task in {field}",
+                item.key
+            ))),
+        })
+        .collect()
+}
+
+/// Rejects dependencies between tasks of the plan that form a cycle, naming its tasks.
+/// Existing tasks cannot depend on new ones, so no other cycle is possible.
+fn check_plan_order(
+    tasks: &[PlanTask],
+    depends_on: &[Vec<storage::PlanLink>],
+) -> CommandResult<()> {
+    let mut waiting: Vec<usize> = depends_on
+        .iter()
+        .map(|links| {
+            links
+                .iter()
+                .filter(|link| matches!(link, storage::PlanLink::New(_)))
+                .count()
+        })
+        .collect();
+    let mut done: Vec<usize> = (0..tasks.len()).filter(|&i| waiting[i] == 0).collect();
+    let mut next = 0;
+    while let Some(&finished) = done.get(next) {
+        next += 1;
+        for (index, links) in depends_on.iter().enumerate() {
+            let edges = links
+                .iter()
+                .filter(|&&link| link == storage::PlanLink::New(finished))
+                .count();
+            if edges > 0 {
+                waiting[index] -= edges;
+                if waiting[index] == 0 {
+                    done.push(index);
+                }
+            }
+        }
+    }
+    if done.len() == tasks.len() {
+        return Ok(());
+    }
+    let cycle: Vec<String> = (0..tasks.len())
+        .filter(|&index| waiting[index] > 0)
+        .map(|index| format!("`{}`", tasks[index].key))
+        .collect();
+    Err(CommandError::rejected(format!(
+        "the depends_on_keys of tasks {} of the plan form a cycle, so none of them could ever start; remove a key from one of them so every task has prerequisites that finish first",
+        cycle.join(", ")
+    )))
+}
+
+/// The task `item` of a plan creates, with its merge criterion and labels and without
+/// links.
+fn plan_task(storage: &StorageState, item: &PlanTask) -> CommandResult<storage::NewPlanTask> {
+    let criteria = item
+        .criteria
+        .iter()
+        .map(types::CriterionInput::parse)
+        .collect::<CommandResult<Vec<_>>>()?;
+    let merge = task_commands::merge_criterion(
+        storage,
+        item.workspace_id.into(),
+        &criteria,
+        item.merge_criterion.unwrap_or(true),
+    )?;
+    let labels = types::labels(&item.labels)?;
+    let mut task: storage::NewTask = types::NewTask {
+        workspace_id: item.workspace_id,
+        task_type: item.task_type,
+        title: item.title.clone(),
+        description: item.description.clone(),
+        estimate: item.estimate,
+        due_date: item.due_date.clone(),
+        labels: Vec::new(),
+        criteria: item.criteria.clone(),
+        merge_criterion: false,
+    }
+    .try_into()?;
+    if let Some(merge) = merge {
+        task.criteria.insert(0, merge);
+    }
+    Ok(storage::NewPlanTask {
+        task,
+        labels,
+        depends_on: Vec::new(),
+        related: Vec::new(),
+    })
+}
+
 /// Creates the task of `request` with `merge`, its merge criterion if it gets one, in
 /// front of its criteria.
 fn insert_task(
@@ -838,6 +1473,7 @@ fn insert_task(
             .get_task(linked.into())?
             .ok_or(StorageError::TaskNotFound(linked.into()))?;
     }
+    let labels = types::labels(&request.labels)?;
     let mut new: storage::NewTask = types::NewTask {
         workspace_id: request.workspace_id,
         task_type: request.task_type,
@@ -845,6 +1481,7 @@ fn insert_task(
         description: request.description,
         estimate: request.estimate,
         due_date: request.due_date,
+        labels: Vec::new(),
         criteria: request.criteria,
         merge_criterion: false,
     }
@@ -853,13 +1490,18 @@ fn insert_task(
         new.criteria.insert(0, merge);
     }
     let task = storage.create_task(&new)?;
-    let linked = request
-        .depends_on
-        .iter()
-        .try_for_each(|&prerequisite| {
-            storage
-                .add_dependency(task.id, prerequisite.into())
-                .map(drop)
+    let labelled = if labels.is_empty() {
+        Ok(())
+    } else {
+        storage.set_task_labels(task.id, &labels).map(drop)
+    };
+    let linked = labelled
+        .and_then(|()| {
+            request.depends_on.iter().try_for_each(|&prerequisite| {
+                storage
+                    .add_dependency(task.id, prerequisite.into())
+                    .map(drop)
+            })
         })
         .and_then(|()| {
             request
@@ -890,7 +1532,7 @@ pub fn update_task(
     // A done task is part of the record reviews are built on; agents add to it instead.
     if current.status == types::TaskStatus::Done {
         return Err(CommandError::rejected(format!(
-            "task {} is done, so update_task leaves its record as it was finished; record a correction with add_progress_note task_id {}, or ask the user to reopen it in the Toodo app",
+            "task {} is done, so update_task leaves its record as it was finished; record a correction with add_progress_note task_id {}, or call reopen_task to work on it again",
             request.id.0, request.id.0
         )));
     }
@@ -903,6 +1545,7 @@ pub fn update_task(
             description: request.description.unwrap_or(current.description),
             estimate: request.estimate.unwrap_or(current.estimate),
             due_date: request.due_date.unwrap_or(current.due_date),
+            labels: request.labels,
             criteria: request.criteria,
             merge_criterion: false,
         },
@@ -944,6 +1587,7 @@ pub fn add_criterion(
             description: None,
             estimate: None,
             due_date: None,
+            labels: None,
             criteria: Some(criteria),
             remove_merge_criterion: false,
         },
@@ -976,6 +1620,7 @@ pub fn remove_criterion(storage: &mut Storage, request: RemoveCriterion) -> Comm
             description: None,
             estimate: None,
             due_date: None,
+            labels: None,
             criteria: Some(criteria),
             remove_merge_criterion: true,
         },
@@ -1094,7 +1739,7 @@ pub fn add_note(storage: &mut Storage, kind: NoteKind, request: AddNote) -> Comm
 }
 
 /// Pauses an `in_progress` or `in_review` task as the app's Pause does and records the
-/// reason as a progress note. The task keeps its branch, worktree, herdr workspace, commit
+/// reason in its status history and as a progress note. The task keeps its branch, worktree, herdr workspace, commit
 /// records, and pull request.
 pub fn pause_task(storage: &mut Storage, request: PauseTask) -> CommandResult<Task> {
     let reason = request.reason.trim();
@@ -1119,7 +1764,7 @@ pub fn pause_task(storage: &mut Storage, request: PauseTask) -> CommandResult<Ta
             )));
         }
     }
-    task_commands::pause(storage, request.id)?;
+    task_commands::pause(storage, request.id, Some(reason))?;
     let task = storage.add_task_note(
         request.id.into(),
         NoteKind::Progress,
@@ -1166,6 +1811,147 @@ pub fn resume_task(
     };
     let task = lock(storage).add_task_note(id, NoteKind::Progress, &format!("Resumed: {note}"))?;
     Ok((&task).into())
+}
+
+/// Deletes (archives) a `planned` task as the app's Delete does (see
+/// [`task_commands::delete_task`]), but only with `confirm`; without it, nothing changes and
+/// the reply says what deleting would do. Tasks being worked on and `done` tasks, which reviews are built on, are
+/// rejected.
+pub fn delete_task(
+    storage: &StorageState,
+    git: &Git,
+    herdr: &Herdr,
+    plain: &PlainRunState,
+    tmux: &TmuxRunState,
+    request: DeleteTask,
+) -> CommandResult<Confirmation> {
+    let details = task_details(&lock(storage), GetTask { id: request.id })?;
+    let task = details.task;
+    let id = task.id.0;
+    match task.status {
+        TaskStatus::Planned => {}
+        TaskStatus::InProgress | TaskStatus::InReview => {
+            let status = if task.status == TaskStatus::InProgress {
+                "in_progress"
+            } else {
+                "in_review"
+            };
+            return Err(CommandError::rejected(format!(
+                "task {id} is {status}, so it is being worked on; call pause_task {{\"id\": {id}, \"reason\": \"...\"}} first if the work should stop, then delete_task"
+            )));
+        }
+        TaskStatus::Done => {
+            return Err(CommandError::rejected(format!(
+                "task {id} is done and part of the record reviews are built on, so delete_task keeps it; call reopen_task to work on it again, or ask the user to delete it in the Toodo app"
+            )));
+        }
+    }
+    let dependents = describe_links(&details.dependents);
+    let wait = if details.dependents.len() == 1 {
+        "waits"
+    } else {
+        "wait"
+    };
+    if !request.confirm {
+        let mut message = format!(
+            "Nothing changed yet. Deleting task {id} \"{}\" archives it: it leaves the task lists and no longer holds back its dependents, while its history, notes, criteria, {} recorded commit(s), and {} dependency and related link(s) stay for the reports; the user can restore it, or delete it for good, under Settings > Archive in the Toodo app",
+            task.title,
+            details.commits.len(),
+            details.depends_on.len() + details.dependents.len() + details.related.len(),
+        );
+        if let Some(path) = &task.worktree_path {
+            message.push_str(&format!(
+                ". It removes its worktree at {path} with its herdr workspace and running agents, which a restore does not bring back; the branch {} is kept. A worktree with modified or untracked files keeps the task unless force is true",
+                task.branch.as_deref().unwrap_or("of the task")
+            ));
+        }
+        message.push('.');
+        if !dependents.is_empty() {
+            message.push_str(&format!(" {dependents} no longer {wait} on it."));
+        }
+        message.push_str(&format!(
+            " To delete it, call delete_task {{\"id\": {id}, \"confirm\": true}}."
+        ));
+        return Ok(Confirmation {
+            confirmed: false,
+            task,
+            message,
+        });
+    }
+    task_commands::delete(
+        storage,
+        git,
+        herdr,
+        plain,
+        tmux,
+        request.id.into(),
+        request.force,
+    )?;
+    let mut message = format!(
+        "task {id} \"{}\" is deleted and kept in the archive, where the user can restore it in the Toodo app.",
+        task.title
+    );
+    if !dependents.is_empty() {
+        message.push_str(&format!(" {dependents} no longer {wait} on it."));
+    }
+    Ok(Confirmation {
+        confirmed: true,
+        task,
+        message,
+    })
+}
+
+/// Reopens a `done` task as the app's Reopen does (see [`task_commands::reopen`]), but only
+/// with `confirm`; without it, the reopening is checked and the reply says what it would
+/// do, and nothing changes.
+pub fn reopen_task(storage: &mut Storage, request: ReopenTask) -> CommandResult<Confirmation> {
+    let note = task_commands::reopen_note(storage, request.id, &request.reason)?;
+    let id = request.id.0;
+    if !request.confirm {
+        let details = task_details(storage, GetTask { id: request.id })?;
+        let task = details.task;
+        let paused = if task.branch.is_some() {
+            " (paused on its branch, since it was started)"
+        } else {
+            ""
+        };
+        let mut message = format!(
+            "Nothing changed yet. Reopening task {id} \"{}\" makes it planned again{paused}, clears its resolution and completion note, and records this progress note: {note}",
+            task.title
+        );
+        let dependents = describe_links(&details.dependents);
+        if !dependents.is_empty() {
+            let wait = if details.dependents.len() == 1 {
+                "waits"
+            } else {
+                "wait"
+            };
+            message.push_str(&format!(
+                "\n{dependents} {wait} on it again until it is done."
+            ));
+        }
+        message.push_str(&format!(
+            "\nTo reopen it, call reopen_task again with the same reason and \"confirm\": true, e.g. {}.",
+            serde_json::json!({"id": id, "reason": request.reason.trim(), "confirm": true})
+        ));
+        return Ok(Confirmation {
+            confirmed: false,
+            task,
+            message,
+        });
+    }
+    let task = task_commands::reopen(storage, request.id, &request.reason)?;
+    let next = if task.branch.is_some() {
+        "call resume_task to continue it on its branch"
+    } else {
+        "call start_task to start it"
+    };
+    let message = format!("task {id} is reopened and planned; {next} once it is ready.");
+    Ok(Confirmation {
+        confirmed: true,
+        task,
+        message,
+    })
 }
 
 /// Starts or resumes a ready `planned` task as the app's Start does, then runs
@@ -1343,7 +2129,7 @@ fn with_worktree_root_hint(
 pub fn complete_task(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     herdr: &Herdr,
     request: CompleteTask,
 ) -> CommandResult<Task> {
@@ -1401,7 +2187,7 @@ pub struct ConcludedTask {
 pub fn conclude_task(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     herdr: &Herdr,
     request: ConcludeTask,
 ) -> CommandResult<ConcludedTask> {
@@ -1579,24 +2365,11 @@ impl Links {
     /// The tasks `task` depends on that keep it from starting: not done, or done as not
     /// adopted.
     fn blocked_by(&self, task: &model::Task) -> Vec<TaskLink> {
-        self.links(task.depends_on.iter().copied().filter(|id| {
-            self.tasks.get(id).is_some_and(|prerequisite| {
-                prerequisite.status != crate::domain::status::TaskStatus::Done
-                    || prerequisite.resolution == Some(model::TaskResolution::NotAdopted)
-            })
-        }))
+        blocked_by(&self.tasks, task)
     }
 
     fn links(&self, ids: impl Iterator<Item = model::TaskId>) -> Vec<TaskLink> {
-        ids.filter_map(|id| self.tasks.get(&id))
-            .map(|task| TaskLink {
-                id: task.id.into(),
-                workspace_id: task.workspace_id.into(),
-                title: task.title.clone(),
-                status: task.status.into(),
-                resolution: task.resolution.map(TaskResolution::from),
-            })
-            .collect()
+        task_links(&self.tasks, ids)
     }
 }
 
@@ -1687,6 +2460,375 @@ pub fn remove_related(storage: &mut Storage, request: Related) -> CommandResult<
     )
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct StartAgentRun {
+    /// An in_progress task of a workspace with runner plain or tmux, e.g. one start_task
+    /// started.
+    pub task_id: TaskId,
+    /// The agent CLI to run: `claude` or `codex`.
+    pub adapter: types::AgentAdapter,
+    /// What the agent is told to do, on its stdin. Omitted or blank: the task's title,
+    /// description, and criteria.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// Whether the agent gets this server's MCP endpoint and token in its environment, so
+    /// it can call current_task; `true` when omitted.
+    #[serde(default)]
+    pub mcp: Option<bool>,
+    /// An ended run of the task whose agent session to resume with prompt (required
+    /// then), e.g. to send review feedback to the agent that did the work. Omitted: a new
+    /// session.
+    #[serde(default)]
+    pub follow_up_of: Option<types::RunId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RunStatusRequest {
+    /// One run, e.g. the id start_run returned. Pass run_id or task_id, not both.
+    #[serde(default)]
+    pub run_id: Option<types::RunId>,
+    /// Every run of this task, oldest first.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RunLogRequest {
+    /// The run, e.g. the id start_run returned or one run_status lists.
+    pub run_id: types::RunId,
+    /// How much of the end of stdout and of stderr to return, in bytes (1 to 4194304);
+    /// the last 65536 bytes of each when omitted.
+    #[serde(default)]
+    pub tail_bytes: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RunRef {
+    /// A plain or tmux run, e.g. the id start_run returned or one run_status lists.
+    pub run_id: types::RunId,
+}
+
+/// A run with whether it may still be running and what to do next.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStatus {
+    #[serde(flatten)]
+    pub run: types::TaskRun,
+    /// Whether the run may still be running: `reserved`, `running`, or `unknown` (its
+    /// end was not observed).
+    pub active: bool,
+    /// What to do next with the run.
+    pub next: String,
+}
+
+/// One run for `run_id`, or the runs of a task for `task_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum RunStatusReply {
+    Run(Box<RunStatus>),
+    Runs { runs: Vec<RunStatus> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct PullRequestStatusRequest {
+    /// The task whose pull request to read; every pull request Toodo watches when
+    /// omitted.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
+}
+
+/// One CI check of a pull request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestCheck {
+    pub name: String,
+    pub state: types::ChecksStatus,
+    /// How it ended as GitHub reports it (e.g. `failure`, `skipped`); `null` while it runs.
+    pub conclusion: Option<String>,
+    /// The page with its details or log.
+    pub url: Option<String>,
+}
+
+/// The latest review of one reviewer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestReview {
+    pub author: Option<String>,
+    /// e.g. `approved`, `changes_requested`, `commented`.
+    pub state: String,
+}
+
+/// The pull request of an `in_review` task as Toodo's last check read it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolledPullRequestStatus {
+    pub task_id: TaskId,
+    pub url: String,
+    /// `open`: Toodo keeps the state of open pull requests only.
+    pub state: &'static str,
+    pub base: String,
+    pub head_sha: Option<String>,
+    /// All checks combined: `failing` if any failed, else `pending` if any runs, else
+    /// `passing`; `null` without checks.
+    pub checks: Option<types::ChecksStatus>,
+    pub review: types::ReviewStatus,
+    pub check_runs: Vec<PullRequestCheck>,
+    pub reviews: Vec<PullRequestReview>,
+    /// When Toodo read it, in seconds since the Unix epoch.
+    pub checked_at: i64,
+    /// What to do next with it.
+    pub next: String,
+}
+
+/// One pull request for `task_id`, or every one Toodo watches.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum PullRequestStatusReply {
+    One(Box<PolledPullRequestStatus>),
+    #[serde(rename_all = "camelCase")]
+    All {
+        pull_requests: Vec<PolledPullRequestStatus>,
+    },
+}
+
+/// The pull request state the background check keeps in `polled`, without running `gh`:
+/// the one of `task_id`, or all of them ordered by task ID.
+pub fn pull_request_status(
+    storage: &Storage,
+    polled: &HashMap<model::TaskId, completion::PolledPullRequest>,
+    request: PullRequestStatusRequest,
+) -> CommandResult<PullRequestStatusReply> {
+    let Some(id) = request.task_id else {
+        let mut all: Vec<_> = polled
+            .iter()
+            .map(|(&id, polled)| polled_status(id, polled))
+            .collect();
+        all.sort_by_key(|status| status.task_id.0);
+        return Ok(PullRequestStatusReply::All { pull_requests: all });
+    };
+    let task_id = id.into();
+    if let Some(found) = polled.get(&task_id) {
+        return Ok(PullRequestStatusReply::One(Box::new(polled_status(
+            task_id, found,
+        ))));
+    }
+    let task = storage
+        .get_task(task_id)?
+        .ok_or(StorageError::TaskNotFound(task_id))?;
+    let id = task.id;
+    Err(CommandError::rejected(
+        match (&task.pull_request_url, task.status) {
+            (_, crate::domain::status::TaskStatus::Done) => format!(
+                "task {id} is done, and Toodo keeps the state of open pull requests only; read its \
+             pull request and completion with get_task {{\"task_id\": {id}}}"
+            ),
+            (None, _) => format!(
+                "task {id} has no pull request yet; push its branch and open one into the \
+             workspace base branch (gh pr create --base <baseBranch> --head <branch>), then \
+             call pull_request_status again after a minute, when Toodo has read it"
+            ),
+            (Some(url), status) => format!(
+                "Toodo has not read pull request {url} of task {id} yet: it reads the open pull \
+             requests of in_review tasks every minute, and this task is {status}; call \
+             pull_request_status again after a minute, or get_task {{\"task_id\": {id}}} \
+             for the task's status"
+            ),
+        },
+    ))
+}
+
+fn polled_status(
+    task: model::TaskId,
+    polled: &completion::PolledPullRequest,
+) -> PolledPullRequestStatus {
+    use crate::adapters::github::{ChecksState, PullRequestState, ReviewState};
+    let viewed = &polled.viewed;
+    let status = viewed.status;
+    let next = match (status.checks, status.review) {
+        (Some(ChecksState::Failing), _) => {
+            "a check failed; read the failing checks at their url, fix them, and push; Toodo \
+             reads the pull request again every minute"
+        }
+        (_, ReviewState::ChangesRequested) => "a reviewer requested changes; address them and push",
+        (Some(ChecksState::Pending), _) => {
+            "checks are still running; call pull_request_status again after a minute"
+        }
+        (Some(ChecksState::Passing), _) => {
+            "every check passed; merge only as the workspace's agentMerge allows (current_task \
+             returns it), otherwise wait for the user"
+        }
+        (None, _) => "the pull request has no checks; wait for the user to review and merge it",
+    };
+    PolledPullRequestStatus {
+        task_id: task.into(),
+        url: viewed.pull_request.url.clone(),
+        state: match viewed.pull_request.state {
+            PullRequestState::Open => "open",
+            PullRequestState::Closed => "closed",
+            PullRequestState::Merged => "merged",
+        },
+        base: viewed.pull_request.base.clone(),
+        head_sha: viewed.head_sha.clone(),
+        checks: status.checks.map(Into::into),
+        review: status.review.into(),
+        check_runs: viewed
+            .check_runs
+            .iter()
+            .map(|run| PullRequestCheck {
+                name: run.name.clone(),
+                state: run.state.into(),
+                conclusion: run.conclusion.clone(),
+                url: run.url.clone(),
+            })
+            .collect(),
+        reviews: viewed
+            .reviews
+            .iter()
+            .map(|review| PullRequestReview {
+                author: review.author.clone(),
+                state: review.state.clone(),
+            })
+            .collect(),
+        checked_at: polled.checked_at,
+        next: next.to_owned(),
+    }
+}
+
+/// Starts an agent CLI for an `in_progress` task of a workspace with runner plain or
+/// tmux, as the app's Start run does; `mcp` defaults to `true`.
+pub fn start_run(
+    storage: &StorageState,
+    plain: &PlainRunState,
+    tmux: &TmuxRunState,
+    request: StartAgentRun,
+) -> CommandResult<types::TaskRun> {
+    run_commands::start_plain_run(
+        State(storage),
+        State(plain),
+        State(tmux),
+        request.task_id,
+        request.adapter,
+        request.prompt,
+        request.mcp.unwrap_or(true),
+        request.follow_up_of,
+    )
+}
+
+/// The run `run_id`, or every run of `task_id`, each with what to do next.
+pub fn run_status(storage: &Storage, request: RunStatusRequest) -> CommandResult<RunStatusReply> {
+    match (request.run_id, request.task_id) {
+        (Some(id), None) => {
+            let id = id.into();
+            let run = storage.get_run(id)?.ok_or(StorageError::RunNotFound(id))?;
+            Ok(RunStatusReply::Run(Box::new(run_status_of(&run))))
+        }
+        (None, Some(task)) => {
+            let task = task.into();
+            storage
+                .get_task(task)?
+                .ok_or(StorageError::TaskNotFound(task))?;
+            let runs = storage.list_task_runs(task)?;
+            Ok(RunStatusReply::Runs {
+                runs: runs.iter().map(run_status_of).collect(),
+            })
+        }
+        _ => Err(CommandError::invalid_input(
+            "pass exactly one of run_id (one run, e.g. {\"run_id\": 12}) or task_id (every run \
+             of a task, e.g. {\"task_id\": 5})",
+        )),
+    }
+}
+
+fn run_status_of(run: &storage::TaskRun) -> RunStatus {
+    use crate::domain::runtime::{RunState, RunnerKind};
+    let id = run.id;
+    let managed = matches!(run.runner_kind, RunnerKind::Plain | RunnerKind::Tmux);
+    let next = match (run.state, managed) {
+        (RunState::Queued, true) => format!(
+            "it waits in the queue of its machine, which runs no more runs at once than its \
+             limit; it starts on its own when a run there ends, so call run_status again \
+             later, or stop_run with run_id {id} to leave the queue"
+        ),
+        (RunState::Reserved | RunState::Running, true) => format!(
+            "it is running; call run_status again later, run_log with run_id {id} for its \
+             output so far, or stop_run to stop it"
+        ),
+        (RunState::Unknown, true)
+            if run.runner_kind == RunnerKind::Plain && run.host == HostRef::Local =>
+        {
+            format!(
+                "its end was not observed, since the server restarted while it ran; a local \
+                 plain run cannot be settled from its host, so call stop_run with run_id {id} \
+                 to end it"
+            )
+        }
+        (RunState::Unknown, true) => format!(
+            "its end was not observed, e.g. after a server restart or an SSH disconnect; call \
+             reconcile_run with run_id {id} to settle it from what its host recorded, or \
+             stop_run to stop it"
+        ),
+        (_, true) if run.session.is_some() => format!(
+            "it has ended; call run_log with run_id {id} to read its result and output, and \
+             start_run with follow_up_of {id} and a prompt to continue its agent session"
+        ),
+        (_, true) => {
+            format!("it has ended; call run_log with run_id {id} to read its result and output")
+        }
+        (state, false) if state.is_active() => format!(
+            "it is a {} run, which Toodo does not run itself; follow it where it runs, e.g. \
+             in the task's herdr pane",
+            run.runner_kind
+        ),
+        (_, false) => "it has ended".to_owned(),
+    };
+    RunStatus {
+        run: run.into(),
+        active: run.state.is_open(),
+        next,
+    }
+}
+
+/// A plain or tmux run with its events and the ends of its stdout and stderr.
+pub fn run_log(
+    storage: &StorageState,
+    plain: &PlainRunState,
+    tmux: &TmuxRunState,
+    request: RunLogRequest,
+) -> CommandResult<types::RunLog> {
+    run_commands::get_run_log(
+        State(storage),
+        State(plain),
+        State(tmux),
+        request.run_id,
+        request.tail_bytes,
+    )
+}
+
+/// Stops a plain or tmux run, which ends as `cancelled`.
+pub fn stop_run(
+    storage: &StorageState,
+    plain: &PlainRunState,
+    tmux: &TmuxRunState,
+    request: RunRef,
+) -> CommandResult<types::TaskRun> {
+    run_commands::stop_run(State(storage), State(plain), State(tmux), request.run_id)
+}
+
+/// Settles a plain or tmux run whose end was not observed from what its host recorded.
+pub fn reconcile_run(
+    storage: &StorageState,
+    plain: &PlainRunState,
+    tmux: &TmuxRunState,
+    request: RunRef,
+) -> CommandResult<types::TaskRun> {
+    run_commands::reconcile_run(State(storage), State(plain), State(tmux), request.run_id)
+}
+
 pub(super) fn get_task(storage: &Storage, id: TaskId) -> CommandResult<Task> {
     let task = storage
         .get_task(id.into())?
@@ -1697,9 +2839,11 @@ pub(super) fn get_task(storage: &Storage, id: TaskId) -> CommandResult<Task> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::github::GhCli;
     use crate::commands::CommandErrorKind;
     use crate::domain::model::{self, HostPath, WorkspaceLocation};
     use crate::domain::path::{PosixPath, WindowsPath};
+    use crate::domain::status::TaskStatus as DomainStatus;
     use crate::storage::NewWorkspace;
 
     fn storage_with_workspace() -> (Storage, WorkspaceId) {
@@ -1754,6 +2898,7 @@ mod tests {
                 related: Vec::new(),
                 estimate: None,
                 due_date: None,
+                labels: Vec::new(),
                 criteria: Vec::new(),
                 merge_criterion: None,
                 request_id: None,
@@ -2024,6 +3169,7 @@ mod tests {
                 description: Some("Add tables".to_owned()),
                 estimate: None,
                 due_date: None,
+                labels: None,
                 criteria: None,
                 remove_merge_criterion: false,
             },
@@ -2402,6 +3548,374 @@ mod tests {
         );
     }
 
+    fn plan(tasks: serde_json::Value) -> CreatePlan {
+        serde_json::from_value(serde_json::json!({ "tasks": tasks })).unwrap()
+    }
+
+    #[test]
+    fn delete_task_deletes_a_planned_task_only_when_confirmed() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Add login", vec![]).unwrap();
+        let dependent = create(&mut storage, workspace, "Use login", vec![task.id]).unwrap();
+        let done = create(&mut storage, workspace, "Ship login", vec![]).unwrap();
+        storage
+            .set_task_status(done.id.into(), DomainStatus::InProgress)
+            .unwrap();
+        storage
+            .conclude_task(done.id.into(), "Not needed", &[], None)
+            .unwrap();
+        let storage = std::sync::Arc::new(StorageState::new(storage));
+        let runs = tempfile::tempdir().unwrap();
+        let plain = PlainRunState::new(storage.clone(), runs.path(), "0123456789ab");
+        let tmux = TmuxRunState::new(storage.clone(), runs.path(), "0123456789ab");
+        let (git, _) = fake(Git::new, vec![]);
+        let (herdr, _) = fake(Herdr::new, vec![]);
+        let delete = |id: TaskId, confirm: bool| {
+            delete_task(
+                &storage,
+                &git,
+                &herdr,
+                &plain,
+                &tmux,
+                DeleteTask {
+                    id,
+                    confirm,
+                    force: false,
+                },
+            )
+        };
+
+        let preview = delete(task.id, false).unwrap();
+        assert!(!preview.confirmed);
+        assert!(
+            preview.message.contains("\"confirm\": true"),
+            "{}",
+            preview.message
+        );
+        assert!(
+            preview.message.contains("#2 (planned)"),
+            "{}",
+            preview.message
+        );
+        assert!(lock(&storage).get_task(task.id.into()).unwrap().is_some());
+
+        let deleted = delete(task.id, true).unwrap();
+        assert!(deleted.confirmed);
+        assert_eq!(deleted.task.id, task.id);
+        let storage_now = lock(&storage);
+        assert!(storage_now.get_task(task.id.into()).unwrap().is_none());
+        let dependent = storage_now.get_task(dependent.id.into()).unwrap().unwrap();
+        assert!(dependent.depends_on.is_empty());
+        drop(storage_now);
+
+        let error = delete(done.id, true).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("reopen_task"), "{}", error.message);
+        assert!(lock(&storage).get_task(done.id.into()).unwrap().is_some());
+    }
+
+    #[test]
+    fn archive_workspace_archives_only_when_confirmed_and_nothing_is_worked_on() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Add login", vec![]).unwrap();
+        storage
+            .set_task_status(task.id.into(), DomainStatus::InProgress)
+            .unwrap();
+        let archive = |storage: &mut Storage, confirm: bool| {
+            archive_workspace(
+                storage,
+                ArchiveWorkspace {
+                    id: workspace,
+                    confirm,
+                },
+            )
+        };
+
+        let error = archive(&mut storage, true).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.contains("#1 (in_progress)") && error.message.contains("pause_task"),
+            "{}",
+            error.message
+        );
+        assert_eq!(list_workspaces(&storage).unwrap().len(), 1);
+
+        storage
+            .conclude_task(task.id.into(), "Not needed", &[], None)
+            .unwrap();
+        let preview = archive(&mut storage, false).unwrap();
+        assert!(!preview.confirmed);
+        assert!(
+            preview.message.contains("\"confirm\": true"),
+            "{}",
+            preview.message
+        );
+        assert_eq!(list_workspaces(&storage).unwrap().len(), 1);
+
+        let archived = archive(&mut storage, true).unwrap();
+        assert!(archived.confirmed);
+        assert_eq!(archived.workspace.id, workspace);
+        assert!(list_workspaces(&storage).unwrap().is_empty());
+        let kept = storage.archived_workspaces().unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            storage
+                .review_tasks()
+                .unwrap()
+                .iter()
+                .filter(|stored| stored.id == task.id.into())
+                .count(),
+            1
+        );
+
+        let again = archive(&mut storage, true).unwrap_err();
+        assert_eq!(again.code, CommandErrorCode::WorkspaceNotFound);
+        assert!(
+            again.message.contains("list_workspaces"),
+            "{}",
+            again.message
+        );
+    }
+
+    #[test]
+    fn reopen_task_reopens_a_done_task_only_when_confirmed() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Add login", vec![]).unwrap();
+        storage
+            .set_task_status(task.id.into(), DomainStatus::InProgress)
+            .unwrap();
+        storage
+            .conclude_task(task.id.into(), "Too slow", &[], None)
+            .unwrap();
+        let reopen = |storage: &mut Storage, reason: &str, confirm: bool| {
+            reopen_task(
+                storage,
+                ReopenTask {
+                    id: task.id,
+                    reason: reason.to_owned(),
+                    confirm,
+                },
+            )
+        };
+
+        let error = reopen(&mut storage, " ", false).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        let preview = reopen(&mut storage, "Faster now", false).unwrap();
+        assert!(!preview.confirmed);
+        assert_eq!(preview.task.status, TaskStatus::Done);
+        assert!(
+            preview.message.contains("Reopened: Faster now"),
+            "{}",
+            preview.message
+        );
+        assert!(
+            preview.message.contains("\"confirm\":true"),
+            "{}",
+            preview.message
+        );
+        let stored = storage.get_task(task.id.into()).unwrap().unwrap();
+        assert_eq!(stored.status, DomainStatus::Done);
+
+        let reopened = reopen(&mut storage, "Faster now", true).unwrap();
+        assert!(reopened.confirmed);
+        assert_eq!(reopened.task.status, TaskStatus::Planned);
+        assert_eq!(reopened.task.resolution, None);
+        assert!(reopen(&mut storage, "Faster now", false).is_err());
+    }
+
+    #[test]
+    fn create_plan_creates_every_task_with_its_links() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let existing = storage
+            .create_task(&crate::storage::NewTask {
+                workspace_id: workspace.into(),
+                task_type: model::TaskType::Feat,
+                title: "Earlier work".to_owned(),
+                description: String::new(),
+                estimate: None,
+                due_date: None,
+                criteria: Vec::new(),
+            })
+            .unwrap()
+            .id;
+        let storage = StorageState::new(storage);
+        let created = create_plan(
+            &storage,
+            plan(serde_json::json!([
+                {"key": "ui", "workspace_id": workspace, "task_type": "feat", "title": "UI",
+                 "depends_on_keys": ["api"], "depends_on": [existing.0],
+                 "related_keys": ["schema"]},
+                {"key": "schema", "workspace_id": workspace, "task_type": "feat",
+                 "title": "Schema", "labels": ["search"], "merge_criterion": false,
+                 "criteria": [{"text": "Migrated", "kind": "manual"}]},
+                {"key": "api", "workspace_id": workspace, "task_type": "feat", "title": "API",
+                 "depends_on_keys": ["schema"], "related": [existing.0]},
+            ])),
+        )
+        .unwrap();
+
+        let keys: Vec<&str> = created.tasks.iter().map(|t| t.key.as_str()).collect();
+        assert_eq!(keys, ["ui", "schema", "api"]);
+        let [ui, schema, api] = [0, 1, 2].map(|i| &created.tasks[i].task);
+        let mut ui_depends_on = ui.depends_on.clone();
+        ui_depends_on.sort_by_key(|id| id.0);
+        assert_eq!(ui_depends_on, [TaskId(existing.0), api.id]);
+        assert_eq!(api.depends_on, [schema.id]);
+        assert!(schema.depends_on.is_empty());
+        assert_eq!(schema.labels, ["search"]);
+        assert_eq!(schema.criteria.len(), 1);
+        assert_eq!(api.criteria[0].kind, types::CheckKind::PrMerged);
+        let mut relations = lock(&storage).list_relations().unwrap();
+        relations.sort();
+        let pair =
+            |a: TaskId, b: TaskId| (model::TaskId(a.0.min(b.0)), model::TaskId(a.0.max(b.0)));
+        let mut expected = vec![pair(ui.id, schema.id), pair(api.id, TaskId(existing.0))];
+        expected.sort();
+        assert_eq!(relations, expected);
+    }
+
+    #[test]
+    fn create_plan_creates_nothing_when_any_task_fails() {
+        let (storage, workspace) = storage_with_workspace();
+        let storage = StorageState::new(storage);
+        let first = serde_json::json!(
+            {"key": "schema", "workspace_id": workspace, "task_type": "feat", "title": "Schema"}
+        );
+        let last = |fields: serde_json::Value| {
+            let mut task = serde_json::json!(
+                {"key": "api", "workspace_id": workspace, "task_type": "feat", "title": "API"}
+            );
+            task.as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            task
+        };
+        let cases = [
+            (
+                "unknown task",
+                last(serde_json::json!({"depends_on": [999]})),
+            ),
+            (
+                "unknown related task",
+                last(serde_json::json!({"related": [999]})),
+            ),
+            (
+                "unknown key",
+                last(serde_json::json!({"depends_on_keys": ["ui"]})),
+            ),
+            (
+                "own key",
+                last(serde_json::json!({"related_keys": ["api"]})),
+            ),
+            ("repeated key", last(serde_json::json!({"key": "schema"}))),
+            ("empty key", last(serde_json::json!({"key": " "}))),
+            (
+                "unknown workspace",
+                last(serde_json::json!({"workspace_id": 999})),
+            ),
+            ("bad label", last(serde_json::json!({"labels": ["a,b"]}))),
+            (
+                "bad due date",
+                last(serde_json::json!({"due_date": "tomorrow"})),
+            ),
+            ("empty title", last(serde_json::json!({"title": " "}))),
+        ];
+        for (name, task) in cases {
+            let error = create_plan(&storage, plan(serde_json::json!([first, task])));
+            assert!(error.is_err(), "{name}");
+            assert_eq!(lock(&storage).list_all_tasks().unwrap(), [], "{name}");
+        }
+
+        let cycle = plan(serde_json::json!([
+            first,
+            last(serde_json::json!({"depends_on_keys": ["ui"]})),
+            {"key": "ui", "workspace_id": workspace, "task_type": "feat", "title": "UI",
+             "depends_on_keys": ["api", "schema"]},
+        ]));
+        let error = create_plan(&storage, cycle).unwrap_err();
+        assert!(error.message.contains("`api`, `ui`"), "{}", error.message);
+        assert!(create_plan(&storage, plan(serde_json::json!([]))).is_err());
+        assert_eq!(lock(&storage).list_all_tasks().unwrap(), []);
+    }
+
+    /// The tasks of a plan are written in one transaction: a failure after the first task
+    /// is inserted rolls it back.
+    #[test]
+    fn create_tasks_rolls_back_every_task_on_a_failure() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = |workspace: i64| crate::storage::NewTask {
+            workspace_id: model::WorkspaceId(workspace),
+            task_type: model::TaskType::Feat,
+            title: "Task".to_owned(),
+            description: String::new(),
+            estimate: None,
+            due_date: None,
+            criteria: Vec::new(),
+        };
+        let item = |task, depends_on| crate::storage::NewPlanTask {
+            task,
+            labels: vec!["search".to_owned()],
+            depends_on,
+            related: Vec::new(),
+        };
+        for failing in [
+            item(task(999), Vec::new()),
+            item(
+                task(workspace.0),
+                vec![crate::storage::PlanLink::Existing(model::TaskId(999))],
+            ),
+        ] {
+            let plan = [item(task(workspace.0), Vec::new()), failing];
+            assert!(storage.create_tasks(&plan).is_err());
+            assert_eq!(storage.list_all_tasks().unwrap(), []);
+        }
+    }
+
+    #[test]
+    fn labels_are_set_kept_when_omitted_replaced_and_cleared() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let request: CreateTask = serde_json::from_value(serde_json::json!({
+            "workspace_id": workspace,
+            "task_type": "feat",
+            "title": "Schema",
+            "labels": [" search ", "q4-goal", "search"],
+        }))
+        .unwrap();
+        let task = insert_task(&mut storage, request, None).unwrap();
+        assert_eq!(task.labels, ["q4-goal", "search"]);
+
+        let update = |storage: &mut Storage, fields: serde_json::Value| {
+            let mut request = serde_json::json!({ "id": task.id });
+            request
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            update_task(storage, serde_json::from_value(request).unwrap(), None)
+        };
+        let kept = update(&mut storage, serde_json::json!({ "title": "Tables" })).unwrap();
+        assert_eq!(kept.labels, ["q4-goal", "search"]);
+        let replaced = update(&mut storage, serde_json::json!({ "labels": ["review"] })).unwrap();
+        assert_eq!(replaced.labels, ["review"]);
+
+        let error = update(&mut storage, serde_json::json!({ "labels": ["a,b"] })).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        assert!(error.message.contains("own list item"), "{error:?}");
+        let error = update(
+            &mut storage,
+            serde_json::json!({ "title": "Renamed", "labels": [""] }),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        let stored = Task::from(&storage.get_task(task.id.into()).unwrap().unwrap());
+        assert_eq!(
+            (stored.title.as_str(), stored.labels.as_slice()),
+            ("Tables", ["review".to_owned()].as_slice())
+        );
+
+        let cleared = update(&mut storage, serde_json::json!({ "labels": [] })).unwrap();
+        assert!(cleared.labels.is_empty());
+    }
+
     #[test]
     fn notes_are_trimmed_and_a_blank_note_or_unknown_task_adds_none() {
         let (mut storage, workspace) = storage_with_workspace();
@@ -2585,7 +4099,7 @@ mod tests {
         let (mut storage, workspace) = storage_with_workspace();
         let schema = create(&mut storage, workspace, "Schema", vec![]).unwrap();
         create(&mut storage, workspace, "API", vec![schema.id]).unwrap();
-        let all = list_tasks(&storage, ListTasks { workspace_id: None }).unwrap();
+        let all = list_tasks(&storage, ListTasks::default()).unwrap();
         assert_eq!(all.len(), 2);
         assert!(all[0].ready && all[0].blocked_by.is_empty());
         assert!(!all[1].ready);
@@ -2598,10 +4112,60 @@ mod tests {
             &storage,
             ListTasks {
                 workspace_id: Some(WorkspaceId(99)),
+                ..ListTasks::default()
             },
         )
         .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::NotFound);
+    }
+
+    #[test]
+    fn lists_tasks_narrowed_by_status_readiness_and_limit() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let schema = create(&mut storage, workspace, "Schema", vec![]).unwrap();
+        let api = create(&mut storage, workspace, "API", vec![schema.id]).unwrap();
+        let docs = create(&mut storage, workspace, "Docs", vec![]).unwrap();
+        let ids = |request: ListTasks| -> Vec<TaskId> {
+            list_tasks(&storage, request)
+                .unwrap()
+                .iter()
+                .map(|listed| listed.task.id)
+                .collect()
+        };
+        let ready = |ready: bool, limit: Option<u32>| ListTasks {
+            ready: Some(ready),
+            limit,
+            ..ListTasks::default()
+        };
+        assert_eq!(ids(ready(true, None)), [schema.id, docs.id]);
+        assert_eq!(ids(ready(true, Some(1))), [docs.id]);
+        assert_eq!(ids(ready(false, None)), [api.id]);
+        let page = |limit, before_id| ListTasks {
+            limit: Some(limit),
+            before_id,
+            ..ListTasks::default()
+        };
+        assert_eq!(ids(page(2, None)), [api.id, docs.id]);
+        assert_eq!(ids(page(2, Some(api.id))), [schema.id]);
+        let in_progress = ListTasks {
+            status: Some(vec![TaskStatus::InProgress]),
+            ..ListTasks::default()
+        };
+        assert_eq!(ids(in_progress.clone()), Vec::<TaskId>::new());
+        assert_eq!(
+            ids(ListTasks {
+                ready: Some(true),
+                ..in_progress
+            }),
+            Vec::<TaskId>::new()
+        );
+        // A page still tells what blocks its tasks when the blocker is on another page.
+        let listed = list_tasks(&storage, page(1, Some(docs.id))).unwrap();
+        assert_eq!(listed[0].task.id, api.id);
+        assert_eq!(listed[0].blocked_by[0].id, schema.id);
+        assert!(!listed[0].ready);
+        let error = list_tasks(&storage, page(0, None)).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
     }
 
     #[test]
@@ -3079,6 +4643,10 @@ mod tests {
         assert_eq!(paused.branch.as_deref(), Some("feat/add-login-1"));
         assert_eq!(paused.herdr_workspace_id.as_deref(), Some("w27"));
         assert!(paused.milestones.paused_at.is_some());
+        assert_eq!(
+            paused.timeline.last().unwrap().reason.as_deref(),
+            Some("Waiting for the API design")
+        );
         let note = paused.notes.last().unwrap();
         assert_eq!(note.kind, types::NoteKind::Progress);
         assert_eq!(note.body, "Paused: Waiting for the API design");
@@ -3123,7 +4691,7 @@ mod tests {
     fn complete_finishes_a_task_whose_pull_request_is_merged_and_only_that() {
         let (storage, task, _) = started(true);
         let (no_git, _) = fake(Git::new, vec![]);
-        let (open, _) = fake(GitHub::new, vec![viewed("OPEN")]);
+        let (open, _) = fake(GhCli::new, vec![viewed("OPEN")]);
         let (no_herdr, _) = fake(Herdr::new, vec![]);
 
         let error = complete_task(&storage, &no_git, &open, &no_herdr, own(task.id)).unwrap_err();
@@ -3136,7 +4704,7 @@ mod tests {
         assert_eq!(stored(&storage, task.id), task);
 
         let (merged, _) = fake(
-            GitHub::new,
+            GhCli::new,
             vec![viewed("MERGED"), Ok(MERGED_DETAILS.to_owned())],
         );
         let (herdr, herdr_runner) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
@@ -3156,7 +4724,7 @@ mod tests {
     fn complete_is_rejected_when_the_branch_has_no_pull_request() {
         let (storage, task, _) = started(false);
         let (git, _) = fake(Git::new, vec![Ok(String::new())]);
-        let (github, gh_runner) = fake(GitHub::new, vec![]);
+        let (github, gh_runner) = fake(GhCli::new, vec![]);
         let (herdr, _) = fake(Herdr::new, vec![]);
 
         let error = complete_task(&storage, &git, &github, &herdr, own(task.id)).unwrap_err();
@@ -3184,7 +4752,7 @@ mod tests {
     fn complete_accepts_without_pull_request_and_a_note() {
         let (storage, task, dependent) = started(false);
         let (git, _) = fake(Git::new, vec![Ok(String::new()), Ok(String::new())]);
-        let (github, _) = fake(GitHub::new, vec![]);
+        let (github, _) = fake(GhCli::new, vec![]);
         let (herdr, _) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
         let request = serde_json::from_value(serde_json::json!({
             "id": task.id, "without_pull_request": true, "note": "Deployed directly"
@@ -3205,7 +4773,7 @@ mod tests {
     fn complete_rejects_missing_notes_and_conflicting_modes_before_external_calls() {
         let (storage, task, _) = started(false);
         let (git, _) = fake(Git::new, vec![]);
-        let (github, _) = fake(GitHub::new, vec![]);
+        let (github, _) = fake(GhCli::new, vec![]);
         let (herdr, _) = fake(Herdr::new, vec![]);
         for arguments in [
             serde_json::json!({"id": task.id, "without_pull_request": true}),
@@ -3259,7 +4827,7 @@ mod tests {
     fn complete_with_merged_with_ships_a_task_through_another_tasks_pull_request() {
         let (storage, task, extra) = shipped();
         let (git, _) = fake(Git::new, github_checkout());
-        let (github, gh_runner) = fake(GitHub::new, vec![Ok("[]".to_owned())]);
+        let (github, gh_runner) = fake(GhCli::new, vec![Ok("[]".to_owned())]);
         let (herdr, herdr_runner) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
 
         let done = complete_task(
@@ -3330,7 +4898,7 @@ mod tests {
                 "target done as {expected:?}"
             );
             let (git, _) = fake(Git::new, github_checkout());
-            let (github, _) = fake(GitHub::new, vec![Ok("[]".to_owned())]);
+            let (github, _) = fake(GhCli::new, vec![Ok("[]".to_owned())]);
             let (herdr, _) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
 
             let done = complete_task(
@@ -3367,7 +4935,7 @@ mod tests {
             .unwrap())
             .into();
         let (no_git, git_runner) = fake(Git::new, vec![]);
-        let (github, _) = fake(GitHub::new, vec![viewed("MERGED")]);
+        let (github, _) = fake(GhCli::new, vec![viewed("MERGED")]);
         let (no_herdr, herdr_runner) = fake(Herdr::new, vec![]);
 
         let done = complete_task(
@@ -3395,7 +4963,7 @@ mod tests {
         assert!(herdr_runner.invocations.lock().unwrap().is_empty());
 
         // Completing it again, either way, has nothing left to do.
-        let (no_github, _) = fake(GitHub::new, vec![]);
+        let (no_github, _) = fake(GhCli::new, vec![]);
         let error = complete_task(
             &storage,
             &no_git,
@@ -3418,7 +4986,7 @@ mod tests {
             .conclude_task(extra.id.into(), "Fixed elsewhere", &[], None)
             .unwrap();
         let (git, _) = fake(Git::new, vec![]);
-        let (github, _) = fake(GitHub::new, vec![]);
+        let (github, _) = fake(GhCli::new, vec![]);
         let (herdr, _) = fake(Herdr::new, vec![]);
 
         let error = complete_task(&storage, &git, &github, &herdr, own(extra.id)).unwrap_err();
@@ -3458,7 +5026,7 @@ mod tests {
         let (no_git, _) = fake(Git::new, vec![]);
         let (no_herdr, herdr_runner) = fake(Herdr::new, vec![]);
         let reject = |id: TaskId, target: MergedWithRef, github: Scripted, reason: &str| {
-            let (github, _) = fake(GitHub::new, github);
+            let (github, _) = fake(GhCli::new, github);
             let error = complete_task(
                 &storage,
                 &no_git,
@@ -3535,7 +5103,7 @@ mod tests {
         let (storage, task, extra) = shipped();
         for (state, reason) in [("OPEN", "is still open"), ("MERGED", "was merged")] {
             let (git, _) = fake(Git::new, github_checkout());
-            let (github, _) = fake(GitHub::new, vec![listed(state)]);
+            let (github, _) = fake(GhCli::new, vec![listed(state)]);
             let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
 
             let error = complete_task(
@@ -3565,7 +5133,7 @@ mod tests {
     fn conclude_finishes_a_task_without_a_pull_request_as_not_adopted() {
         let (storage, task, dependent) = started(false);
         let (git, _) = fake(Git::new, github_checkout());
-        let (github, gh_runner) = fake(GitHub::new, vec![Ok("[]".to_owned())]);
+        let (github, gh_runner) = fake(GhCli::new, vec![Ok("[]".to_owned())]);
         let (herdr, herdr_runner) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
 
         let done = conclude_task(
@@ -3605,7 +5173,7 @@ mod tests {
     fn conclude_is_rejected_without_a_note_and_while_a_pull_request_is_open() {
         let (storage, task, _) = started(true);
         let (no_git, _) = fake(Git::new, vec![]);
-        let (no_github, _) = fake(GitHub::new, vec![]);
+        let (no_github, _) = fake(GhCli::new, vec![]);
         let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
 
         let error = conclude_task(
@@ -3619,7 +5187,7 @@ mod tests {
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);
 
         let (git, _) = fake(Git::new, github_checkout());
-        let (github, gh_runner) = fake(GitHub::new, vec![listed("OPEN")]);
+        let (github, gh_runner) = fake(GhCli::new, vec![listed("OPEN")]);
         let error = conclude_task(
             &storage,
             &git,
@@ -3646,7 +5214,7 @@ mod tests {
             ("MERGED", "completes with the merge"),
         ] {
             let (git, _) = fake(Git::new, github_checkout());
-            let (github, gh_runner) = fake(GitHub::new, vec![listed(state)]);
+            let (github, gh_runner) = fake(GhCli::new, vec![listed(state)]);
             let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
 
             let error = conclude_task(

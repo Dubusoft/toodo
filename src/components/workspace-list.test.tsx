@@ -1,12 +1,13 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceList } from "@/components/workspace-list";
-import type { Workspace } from "@/lib/bindings";
+import type { HerdrHealth, RunnerHealth, SshMachineCheck, Workspace } from "@/lib/bindings";
 import {
   completionLabels,
   completionProblem,
   repositoryProblem,
   runnerLabels,
+  runnerLocationProblem,
   runnerProblem,
   sourceLabels,
 } from "@/lib/workspace-axes";
@@ -14,20 +15,70 @@ import {
 const mutation = { mutate: vi.fn(), isPending: false, isError: false };
 const query = <T,>(data: T) => ({ data, isPending: false, isError: false });
 let workspaces: Workspace[] = [];
+let home = "/home/me";
+
+const ready: RunnerHealth = {
+  herdr: { installed: true, running: true, version: "0.9.5", message: null },
+  tmux: { installed: true, version: "tmux 3.6", message: null },
+  tools: [
+    { tool: "git", installed: true, ready: true, version: "git version 2.43.0", message: null },
+    { tool: "gh", installed: true, ready: true, version: "gh version 2.83.0", message: null },
+    { tool: "ssh", installed: true, ready: true, version: "OpenSSH_9.6p1", message: null },
+  ],
+  agents: [
+    { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
+    { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
+  ],
+};
+/** What the server said about its runners; `undefined` while it has not answered yet. */
+let health: RunnerHealth | undefined = ready;
+
+const stoppedHerdr: HerdrHealth = {
+  installed: true,
+  running: false,
+  version: "0.9.5",
+  message: "The herdr server is not running; start herdr on the server for herdr workspaces.",
+};
+const missingHerdr: HerdrHealth = {
+  installed: false,
+  running: false,
+  version: null,
+  message: "herdr was not found on the server's PATH; install herdr and start it for herdr workspaces.",
+};
+/** Why listing the machines saved in herdr fails; `null` while it succeeds. */
+let machinesError: Error | null = null;
+/** The connection test of the Add machine panel, as the last run left it. */
+const connectionTest = {
+  mutate: vi.fn(),
+  reset: vi.fn(),
+  isPending: false,
+  isError: false,
+  data: undefined as SshMachineCheck | undefined,
+  variables: undefined as string | undefined,
+};
 
 vi.mock("@/lib/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/queries")>()),
   useWorkspaces: () => query(workspaces),
-  useHerdrMachines: () => query([]),
-  useHomeDirectory: () => query("/home/me"),
+  useHerdrMachines: () =>
+    machinesError === null ? query([]) : { data: undefined, isPending: false, isError: true, error: machinesError },
+  useHomeDirectory: () => query(home),
   useDirectories: () => query({ path: "/home/me", directories: [] }),
+  useRunnerHealth: () => (health === undefined ? { data: undefined, isPending: true, isError: false } : query(health)),
   useCreateWorkspace: () => mutation,
   useDeleteWorkspace: () => mutation,
+  useTestSshMachine: () => connectionTest,
 }));
 
 beforeEach(() => {
   workspaces = [];
+  home = "/home/me";
+  health = ready;
+  machinesError = null;
   mutation.mutate.mockClear();
+  connectionTest.mutate.mockClear();
+  connectionTest.data = undefined;
+  connectionTest.variables = undefined;
 });
 
 /** Renders the list and opens the new workspace dialog for this server. */
@@ -37,12 +88,55 @@ function openNewWorkspace() {
   return screen.getByRole("dialog", { name: "New workspace on Local" });
 }
 
+/** Renders the list with a workspace on the SSH machine devbox and opens the new workspace dialog for devbox. */
+function openNewWorkspaceOnDevbox() {
+  workspaces = [
+    {
+      id: 2,
+      name: "site",
+      location: { kind: "ssh", machine: "devbox", path: "/srv/site" },
+      defaultBaseBranch: "main",
+      agentMerge: "never",
+      pathProblem: null,
+      source: "github",
+      completion: "pr_merge",
+      runner: "herdr",
+    },
+  ];
+  render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+  fireEvent.click(screen.getByRole("button", { name: "Add workspace on devbox" }));
+  return screen.getByRole("dialog", { name: "New workspace on devbox" });
+}
+
 const option = (dialog: HTMLElement, name: string) => within(dialog).getByRole("radio", { name });
 const next = (dialog: HTMLElement) => fireEvent.click(within(dialog).getByRole("button", { name: "Next" }));
 const back = (dialog: HTMLElement) => fireEvent.click(within(dialog).getByRole("button", { name: "Back" }));
 
 describe("Add machine", () => {
-  it("shows the command to run on the server and copies it instead of offering a form", () => {
+  it("tests the connection to the entered host and shows the next step of a failure", () => {
+    const { rerender } = render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
+    const testButton = screen.getByRole("button", { name: "Test connection" });
+    expect(testButton).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("SSH host"), { target: { value: " devbox " } });
+    fireEvent.click(testButton);
+    expect(connectionTest.mutate).toHaveBeenCalledWith("devbox");
+    expect(screen.getByLabelText("Add machine command")).toHaveTextContent("herdr machine add devbox");
+
+    const problem = "devbox refused the server's SSH key. Add the server's public key (`ssh-copy-id devbox`).";
+    connectionTest.data = { gitVersion: null, problem };
+    connectionTest.variables = "devbox";
+    rerender(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+    expect(screen.getByRole("alert")).toHaveTextContent(problem);
+
+    connectionTest.data = { gitVersion: "git version 2.43.0", problem: null };
+    rerender(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Connected to devbox without a prompt and found git version 2.43.0");
+  });
+
+  it("shows the command to run on the server and copies it", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
@@ -87,6 +181,18 @@ describe("New workspace", () => {
     fireEvent.click(herdr);
     expect(herdr).not.toBeChecked();
     expect(option(dialog, "No runner")).toBeChecked();
+  });
+
+  it("links the runner step to the runner guide in this repository", () => {
+    const dialog = openNewWorkspace();
+    next(dialog);
+    next(dialog);
+
+    const guide = within(dialog).getByRole("link", { name: "Compare the runners" });
+    const href = guide.getAttribute("href")!;
+    const prefix = "https://github.com/dev-bokdong/toodo/blob/main/";
+    expect(href.startsWith(prefix)).toBe(true);
+    expect(Object.keys(import.meta.glob("/docs/*.md"))).toContain(`/${href.slice(prefix.length)}`);
   });
 
   it("resets a later pick that an earlier change rules out to its default", () => {
@@ -183,6 +289,243 @@ describe("New workspace", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Add workspace on Local" })).toHaveFocus();
     expect(mutation.mutate).not.toHaveBeenCalled();
+  });
+});
+
+describe("Runner plain", () => {
+  it("is offered for a git source on this server and adds the workspace with it", () => {
+    const dialog = openNewWorkspace();
+    next(dialog);
+    next(dialog);
+    expect(option(dialog, runnerLabels.plain)).toBeEnabled();
+
+    back(dialog);
+    back(dialog);
+    fireEvent.click(option(dialog, "Local git"));
+    next(dialog);
+    next(dialog);
+    const plain = option(dialog, runnerLabels.plain);
+    expect(plain).toBeEnabled();
+    fireEvent.click(plain);
+    expect(plain).toBeChecked();
+    next(dialog);
+    fireEvent.change(within(dialog).getByLabelText("Folder"), { target: { value: "/home/me/tools" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open workspace" }));
+
+    expect(mutation.mutate).toHaveBeenCalledWith(
+      {
+        name: "tools",
+        location: { kind: "local", path: "/home/me/tools" },
+        repository: { kind: "open" },
+        source: "local_git",
+        completion: "local_merge",
+        runner: "plain",
+        defaultBaseBranch: null,
+      },
+      expect.anything(),
+    );
+  });
+
+  it("is ruled out for a plain folder, with the reason", () => {
+    const dialog = openNewWorkspace();
+    fireEvent.click(option(dialog, "Plain folder"));
+    next(dialog);
+    next(dialog);
+
+    const plain = option(dialog, runnerLabels.plain);
+    expect(plain).toBeDisabled();
+    expect(plain).toHaveAccessibleDescription(runnerProblem("none", "manual", "plain")!);
+    fireEvent.click(plain);
+    expect(plain).not.toBeChecked();
+  });
+
+  it("is offered on an SSH machine and adds the workspace with it", () => {
+    const dialog = openNewWorkspaceOnDevbox();
+    fireEvent.click(option(dialog, "Local git"));
+    next(dialog);
+    next(dialog);
+    const plain = option(dialog, runnerLabels.plain);
+    expect(plain).toBeEnabled();
+    fireEvent.click(plain);
+    next(dialog);
+    fireEvent.change(within(dialog).getByLabelText("Folder"), { target: { value: "/home/me/tools" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open workspace" }));
+
+    expect(mutation.mutate).toHaveBeenCalledWith(
+      {
+        name: "tools",
+        location: { kind: "ssh", machine: "devbox", path: "/home/me/tools" },
+        repository: { kind: "open" },
+        source: "local_git",
+        completion: "local_merge",
+        runner: "plain",
+        defaultBaseBranch: null,
+      },
+      expect.anything(),
+    );
+  });
+});
+
+describe("Runner tmux", () => {
+  it("is offered on a POSIX SSH machine and adds the workspace with it", () => {
+    const dialog = openNewWorkspaceOnDevbox();
+    next(dialog);
+    next(dialog);
+    const tmux = option(dialog, runnerLabels.tmux);
+    expect(tmux).toBeEnabled();
+    fireEvent.click(tmux);
+    expect(tmux).toBeChecked();
+    next(dialog);
+    fireEvent.change(within(dialog).getByLabelText("Folder"), { target: { value: "/home/me/site" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open workspace" }));
+
+    expect(mutation.mutate).toHaveBeenCalledWith(
+      {
+        name: "site",
+        location: { kind: "ssh", machine: "devbox", path: "/home/me/site" },
+        repository: { kind: "open" },
+        source: "github",
+        completion: "pr_merge",
+        runner: "tmux",
+        defaultBaseBranch: null,
+      },
+      expect.anything(),
+    );
+  });
+
+  it("is ruled out on a Windows SSH machine with the reason, while plain and herdr are offered", () => {
+    home = "C:\\Users\\me";
+    const dialog = openNewWorkspaceOnDevbox();
+    next(dialog);
+    next(dialog);
+
+    const tmux = option(dialog, runnerLabels.tmux);
+    expect(tmux).toBeDisabled();
+    expect(tmux).toHaveAccessibleDescription(runnerLocationProblem("tmux", { kind: "ssh", path: home })!);
+    fireEvent.click(tmux);
+    expect(tmux).not.toBeChecked();
+    expect(option(dialog, runnerLabels.plain)).toBeEnabled();
+    expect(option(dialog, runnerLabels.herdr)).toBeChecked();
+  });
+});
+
+describe("Without herdr running on this server", () => {
+  const devbox: Workspace = {
+    id: 2,
+    name: "site",
+    location: { kind: "ssh", machine: "devbox", path: "/srv/site" },
+    defaultBaseBranch: "main",
+    agentMerge: "never",
+    pathProblem: null,
+    source: "github",
+    completion: "pr_merge",
+    runner: "herdr",
+  };
+
+  it("defaults a git source to runner plain and notes it on herdr, which can still be picked", () => {
+    health = { ...ready, herdr: stoppedHerdr };
+    const dialog = openNewWorkspace();
+    next(dialog);
+    next(dialog);
+
+    expect(option(dialog, runnerLabels.plain)).toBeChecked();
+    const herdr = option(dialog, "herdr");
+    expect(herdr).toBeEnabled();
+    expect(herdr).toHaveAccessibleDescription(
+      /herdr is not running on this server; start it there before starting tasks, or choose Plain\.$/,
+    );
+    fireEvent.click(herdr);
+    expect(herdr).toBeChecked();
+    next(dialog);
+    fireEvent.change(within(dialog).getByLabelText("Folder"), { target: { value: "/home/me/site" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open workspace" }));
+
+    expect(mutation.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "github", completion: "pr_merge", runner: "herdr" }),
+      expect.anything(),
+    );
+  });
+
+  it("adds a workspace with runner plain by default while herdr is not installed, and a plain folder with none", () => {
+    health = { ...ready, herdr: missingHerdr };
+    const dialog = openNewWorkspace();
+    fireEvent.click(option(dialog, "Plain folder"));
+    next(dialog);
+    next(dialog);
+    expect(option(dialog, "No runner")).toBeChecked();
+
+    back(dialog);
+    back(dialog);
+    fireEvent.click(option(dialog, "Local git"));
+    next(dialog);
+    next(dialog);
+    expect(option(dialog, runnerLabels.plain)).toBeChecked();
+    expect(option(dialog, "herdr")).toHaveAccessibleDescription(
+      /herdr is not running on this server since it is not installed there; install and start herdr/,
+    );
+    next(dialog);
+    fireEvent.change(within(dialog).getByLabelText("Folder"), { target: { value: "/home/me/tools" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open workspace" }));
+
+    expect(mutation.mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "local_git", completion: "local_merge", runner: "plain" }),
+      expect.anything(),
+    );
+  });
+
+  it("keeps herdr as the default while the server has not said whether herdr runs", () => {
+    health = undefined;
+    const dialog = openNewWorkspace();
+    next(dialog);
+    next(dialog);
+
+    expect(option(dialog, "herdr")).toBeChecked();
+    expect(option(dialog, "herdr")).not.toHaveAccessibleDescription(/not running/);
+  });
+
+  it("keeps herdr as the default on an SSH machine, whose herdr this server does not check, and offers plain there", () => {
+    health = { ...ready, herdr: stoppedHerdr };
+    workspaces = [devbox];
+    render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add workspace on devbox" }));
+    const dialog = screen.getByRole("dialog", { name: "New workspace on devbox" });
+    next(dialog);
+    next(dialog);
+
+    expect(option(dialog, "herdr")).toBeChecked();
+    expect(option(dialog, "herdr")).not.toHaveAccessibleDescription(/not running/);
+    expect(option(dialog, runnerLabels.plain)).toBeEnabled();
+  });
+});
+
+describe("Herdr machines that cannot be listed", () => {
+  it("notes instead of alerting that there are no SSH machines while herdr is not installed", () => {
+    health = { ...ready, herdr: missingHerdr };
+    machinesError = new Error(
+      "failed to run herdr (is it installed and on PATH?): No such file or directory (os error 2)",
+    );
+    render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Failed to list herdr machines/)).not.toBeInTheDocument();
+    expect(screen.getByText(/^herdr is not installed on this server/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
+    expect(screen.getByRole("region", { name: "Add machine" })).toHaveTextContent(/^Install herdr on the server first/);
+  });
+
+  it("alerts while herdr is installed, or before the server has said whether it is", () => {
+    machinesError = new Error("herdr machine list: connection refused");
+    for (const answer of [{ ...ready, herdr: stoppedHerdr }, undefined]) {
+      health = answer;
+      const { unmount } = render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Failed to list herdr machines: herdr machine list: connection refused",
+      );
+      expect(screen.queryByText(/herdr is not installed on this server/)).not.toBeInTheDocument();
+      unmount();
+    }
   });
 });
 

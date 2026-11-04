@@ -84,7 +84,16 @@ pub(super) struct Unit<'a> {
     pub path: &'a str,
 }
 
-/// The unit file, in the shape `scripts/install-server.sh` writes.
+/// Programs the server runs whose directories go on the service `PATH`: integrations,
+/// the agent CLIs and tmux of the plain and tmux runners, and `node`, which npm-installed
+/// agent CLIs start through `/usr/bin/env node`.
+const SERVICE_TOOLS: [&str; 8] = [
+    "herdr", "gh", "git", "ssh", "tmux", "claude", "codex", "node",
+];
+
+/// The unit file. A server that keeps failing to start is restarted at most 5 times in
+/// 5 minutes, then left failed. Stopping or restarting it ends only the server process:
+/// agents of plain and tmux runs keep running, and the next server reattaches them.
 pub(super) fn render(unit: &Unit) -> String {
     let mut text = format!(
         "# Written by toodo service install; rerun it instead of editing this file.
@@ -92,6 +101,8 @@ pub(super) fn render(unit: &Unit) -> String {
 Description=Toodo server
 After=network.target herdr-server.service
 Wants=herdr-server.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 ExecStart={}
@@ -109,6 +120,7 @@ Environment=TOODO_DATA_DIR={}
         "Environment=PATH={}
 Restart=on-failure
 RestartSec=5
+KillMode=process
 
 [Install]
 WantedBy=default.target
@@ -140,6 +152,16 @@ pub(super) fn service_path(bin_dir: &Path, tools: &[PathBuf]) -> String {
         .join(":")
 }
 
+/// [`service_path`] for [`SERVICE_TOOLS`], as found on `PATH` now.
+pub(super) fn service_path_now(var: Var) -> Result<String, String> {
+    let bin_dir = settings::home(var)?.join(".local/bin");
+    let tools: Vec<PathBuf> = SERVICE_TOOLS
+        .iter()
+        .filter_map(|tool| process::find_on_path(tool, var))
+        .collect();
+    Ok(service_path(&bin_dir, &tools))
+}
+
 /// `toodo service install`.
 pub(super) fn install(data: &DataDir, listen: SocketAddr, var: Var) -> Result<(), String> {
     if process::find_on_path("systemctl", var).is_none() {
@@ -158,7 +180,6 @@ pub(super) fn install(data: &DataDir, listen: SocketAddr, var: Var) -> Result<()
         ));
     }
     let bundle = Bundle::find()?;
-    let bin_dir = settings::home(var)?.join(".local/bin");
 
     if process::stop(data)? {
         println!("Stopped the toodo-server started by toodo start; the service replaces it.");
@@ -166,11 +187,7 @@ pub(super) fn install(data: &DataDir, listen: SocketAddr, var: Var) -> Result<()
 
     let (server, web_dir) = install_bundle(&bundle, var)?;
 
-    let tools: Vec<PathBuf> = ["herdr", "gh", "git", "ssh"]
-        .iter()
-        .filter_map(|tool| process::find_on_path(tool, var))
-        .collect();
-    let path = service_path(&bin_dir, &tools);
+    let path = service_path_now(var)?;
     let text = render(&Unit {
         exec: &server,
         listen,
@@ -192,18 +209,29 @@ pub(super) fn install(data: &DataDir, listen: SocketAddr, var: Var) -> Result<()
     wait_until_up(listen)?;
     println!("{UNIT_NAME} is running on {}", settings::web_url(listen));
     if let Some(user) = user(var) {
-        let linger = process::output("loginctl", &["show-user", &user, "-p", "Linger", "--value"])
-            .ok()
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
-        if linger.as_deref() != Some("yes") {
-            println!(
-                "note: lingering is off, so the service stops when you log out; \
-                 keep it running with: sudo loginctl enable-linger {user}"
-            );
-        }
+        enable_linger(&user);
     }
     println!("Logs: journalctl --user -u toodo-server");
     Ok(())
+}
+
+/// Turns lingering on for `user`, so the service keeps running after they log out;
+/// systemd lets users do that for themselves unless a policy requires an admin.
+fn enable_linger(user: &str) {
+    let linger = process::output("loginctl", &["show-user", user, "-p", "Linger", "--value"])
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    if linger.as_deref() == Some("yes") {
+        return;
+    }
+    if process::succeeds("loginctl", &["enable-linger", user]) {
+        println!("Turned on lingering for {user}, so the service keeps running after logout.");
+    } else {
+        println!(
+            "note: lingering is off and loginctl enable-linger {user} failed, so the service \
+             stops when you log out; keep it running with: sudo loginctl enable-linger {user}"
+        );
+    }
 }
 
 /// Copies the server and the web app of `bundle` to where the unit runs them from:
@@ -318,7 +346,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_unit_has_the_shape_of_the_install_script() {
+    fn the_unit_runs_the_server_with_a_start_limit() {
         let text = render(&Unit {
             exec: Path::new("/home/a/.local/bin/toodo-server"),
             listen: "127.0.0.1:47616".parse().unwrap(),
@@ -333,6 +361,8 @@ mod tests {
 Description=Toodo server
 After=network.target herdr-server.service
 Wants=herdr-server.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 ExecStart=/home/a/.local/bin/toodo-server
@@ -342,6 +372,7 @@ Environment=TOODO_WEB_DIR=/home/a/.local/share/toodo-server-web
 Environment=PATH=/home/a/.local/bin:/usr/bin
 Restart=on-failure
 RestartSec=5
+KillMode=process
 
 [Install]
 WantedBy=default.target

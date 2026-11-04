@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, type CSSProperties, type ReactNode, type Ref } from "react";
 import { XIcon } from "lucide-react";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { Button } from "@/components/ui/button";
 import { useSwipeClose } from "@/lib/swipe-close";
 
@@ -91,7 +92,11 @@ export function DetailsSheet({
         </Button>
       </div>
       {banner}
-      <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain">{children}</ul>
+      <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        <ErrorBoundary label="the task details" as="li" className="m-4">
+          {children}
+        </ErrorBoundary>
+      </ul>
     </aside>
   );
 }

@@ -134,10 +134,10 @@ macro_rules! wire_enum {
 }
 
 wire_enum!(
-    /// What runs agents for a task. Herdr is the default and, for now, the only runner
-    /// that launches anything; `None` records the runs of tasks in workspaces with runner
-    /// none, which are worked on by hand. Only herdr has runtime workspaces.
-    RunnerKind, "runner kind", { Herdr => "herdr", None => "none" }
+    /// What runs agents for a task. Herdr is the default; `Plain` runs agent CLIs as
+    /// managed processes on the host; `Tmux` uses a POSIX tmux session; `None` records
+    /// tasks worked on by hand.
+    RunnerKind, "runner kind", { Herdr => "herdr", None => "none", Plain => "plain", Tmux => "tmux" }
 );
 
 wire_enum!(
@@ -149,6 +149,7 @@ wire_enum!(
 wire_enum!(
     /// Where a run is in its life.
     RunState, "run state", {
+        Queued => "queued",
         Reserved => "reserved",
         Running => "running",
         Settled => "settled",
@@ -164,6 +165,12 @@ impl RunState {
     /// a run whose fate is not confirmed may still be writing.
     pub fn is_active(self) -> bool {
         matches!(self, Self::Reserved | Self::Running | Self::Unknown)
+    }
+
+    /// Whether the run has not ended: it is active, or it waits in its host's queue for a
+    /// free run slot. A queued writer already holds its checkout.
+    pub fn is_open(self) -> bool {
+        self == Self::Queued || self.is_active()
     }
 }
 
@@ -190,6 +197,25 @@ wire_enum!(
         Transcript => "transcript",
     }
 );
+
+wire_enum!(
+    /// What the agent in a task's herdr workspace is doing, as herdr reports it for its
+    /// panes. Wire strings match the CHECK constraint of `agent_status_transitions`.
+    AgentState, "agent state", {
+        Idle => "idle",
+        Working => "working",
+        Blocked => "blocked",
+        Done => "done",
+    }
+);
+
+/// Tokens an agent reported using in a run. `input_tokens` includes the cached ones.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunUsage {
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+}
 
 #[cfg(test)]
 mod tests {
@@ -241,7 +267,8 @@ mod tests {
             OperationState::parse,
         );
         check(ResumeKind::ALL, ResumeKind::as_wire, ResumeKind::parse);
-        assert_eq!(RunState::ALL.len(), 7);
+        check(AgentState::ALL, AgentState::as_wire, AgentState::parse);
+        assert_eq!(RunState::ALL.len(), 8);
         assert_eq!(ResumeKind::NamedSession.as_wire(), "named_session");
     }
 
@@ -256,5 +283,6 @@ mod tests {
             active,
             [RunState::Reserved, RunState::Running, RunState::Unknown]
         );
+        assert!(RunState::Queued.is_open() && !RunState::Queued.is_active());
     }
 }

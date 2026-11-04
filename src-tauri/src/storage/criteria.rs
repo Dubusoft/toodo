@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, params, params_from_iter};
 
 use super::tasks::{find_task, record_event};
 use super::{Result, Storage, StorageError, invalid_data};
@@ -37,7 +37,7 @@ pub struct CriterionCheck {
 pub(super) fn load(
     conn: &Connection,
     filter: &str,
-    parameter: i64,
+    parameters: &[i64],
 ) -> Result<HashMap<i64, Vec<Criterion>>> {
     let mut statement = conn.prepare_cached(&format!(
         "SELECT c.task_id, c.id, c.text, c.kind, c.target, c.state, c.evidence, c.checked_by,
@@ -45,7 +45,7 @@ pub(super) fn load(
          FROM task_criteria c JOIN tasks t ON t.id = c.task_id
          WHERE {filter} ORDER BY c.task_id, c.position, c.id"
     ))?;
-    let rows = statement.query_map([parameter], |row| {
+    let rows = statement.query_map(params_from_iter(parameters), |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, i64>(1)?,

@@ -8,6 +8,7 @@ describe("workspaceCapabilities", () => {
       git: true,
       github: true,
       herdr: true,
+      plainRuns: false,
       pullRequests: true,
       merge: true,
       criterionKinds: ["manual", "url", "command", "pr_open_ci_green"],
@@ -20,6 +21,7 @@ describe("workspaceCapabilities", () => {
       git: false,
       github: false,
       herdr: false,
+      plainRuns: false,
       pullRequests: false,
       merge: false,
       criterionKinds: ["manual", "url", "command"],
@@ -32,7 +34,22 @@ describe("workspaceCapabilities", () => {
     expect(local.criterionKinds).toEqual(["manual", "url", "command"]);
   });
 
-  it("opens no pull requests without herdr, whose task branches they come from", () => {
+  it("runs the agents of a plain runner's tasks itself, without herdr", () => {
+    const plain = workspaceCapabilities({ source: "local_git", completion: "local_merge", runner: "plain" });
+    expect(plain).toMatchObject({ git: true, herdr: false, plainRuns: true, merge: true });
+  });
+
+  it("runs the agents of a tmux runner's tasks itself too, without herdr", () => {
+    const tmux = workspaceCapabilities({ source: "github", completion: "pr_merge", runner: "tmux" });
+    expect(tmux).toMatchObject({ git: true, herdr: false, plainRuns: true, pullRequests: true, merge: true });
+  });
+
+  it("opens pull requests from the task branches of a GitHub workspace with runner plain", () => {
+    const plain = workspaceCapabilities({ source: "github", completion: "pr_merge", runner: "plain" });
+    expect(plain).toMatchObject({ github: true, herdr: false, plainRuns: true, pullRequests: true, merge: true });
+  });
+
+  it("opens no pull requests without a runner, whose task branches they come from", () => {
     const unrun = workspaceCapabilities({ source: "github", completion: "manual", runner: "none" });
     expect(unrun).toMatchObject({ git: true, github: true, herdr: false, pullRequests: false, merge: false });
     expect(unrun.criterionKinds).toEqual(["manual", "url", "command"]);

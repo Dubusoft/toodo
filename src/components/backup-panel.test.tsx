@@ -10,6 +10,7 @@ vi.mock("@/lib/bindings", () => ({
   commands: {
     listBackups: vi.fn(),
     getBackupSettings: vi.fn(),
+    getBackupStatus: vi.fn(),
     saveBackupSettings: vi.fn(),
     restoreBackup: vi.fn(),
   },
@@ -46,7 +47,8 @@ describe("BackupPanel", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mocked.listBackups.mockResolvedValue({ status: "ok", data: [automatic] });
-    mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7 });
+    mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7, directory: null });
+    mocked.getBackupStatus.mockResolvedValue({ lastFailure: null });
   });
 
   it("downloads a snapshot instead of asking for a path", async () => {
@@ -103,7 +105,7 @@ describe("BackupPanel", () => {
   it("restores a listed backup by name and shows a rejected backup's error", async () => {
     mocked.restoreBackup.mockResolvedValue({
       status: "error",
-      error: { kind: "invalidInput", message: "invalid backup x: not a Toodo database" },
+      error: { kind: "invalidInput", code: "invalidInput", message: "invalid backup x: not a Toodo database" },
     });
     renderPanel();
 
@@ -117,20 +119,65 @@ describe("BackupPanel", () => {
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
-  it("saves the automatic backup schedule", async () => {
+  it("saves the automatic backup schedule and directory", async () => {
     mocked.saveBackupSettings.mockResolvedValue({
       status: "ok",
-      data: { enabled: true, intervalHours: 6, keep: 3 },
+      data: { enabled: true, intervalHours: 6, keep: 3, directory: "/mnt/backup/toodo" },
     });
     renderPanel();
 
     fireEvent.change(await screen.findByLabelText("Hours between backups"), { target: { value: "6" } });
     fireEvent.change(screen.getByLabelText("Backups to keep"), { target: { value: "3" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save schedule" }));
+    fireEvent.change(screen.getByLabelText("Backup directory"), { target: { value: " /mnt/backup/toodo " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save backup settings" }));
 
     await waitFor(() =>
-      expect(mocked.saveBackupSettings).toHaveBeenCalledWith({ enabled: true, intervalHours: 6, keep: 3 }),
+      expect(mocked.saveBackupSettings).toHaveBeenCalledWith({
+        enabled: true,
+        intervalHours: 6,
+        keep: 3,
+        directory: "/mnt/backup/toodo",
+      }),
     );
     await waitFor(() => expect(mocked.listBackups).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mocked.getBackupStatus).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText("Backup directory")).toHaveValue("/mnt/backup/toodo");
+  });
+
+  it("keeps backups in the data directory when the directory is left empty", async () => {
+    mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7, directory: "/mnt/old" });
+    mocked.saveBackupSettings.mockResolvedValue({
+      status: "ok",
+      data: { enabled: true, intervalHours: 24, keep: 7, directory: null },
+    });
+    renderPanel();
+
+    fireEvent.change(await screen.findByDisplayValue("/mnt/old"), { target: { value: "  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save backup settings" }));
+
+    await waitFor(() =>
+      expect(mocked.saveBackupSettings).toHaveBeenCalledWith({ enabled: true, intervalHours: 24, keep: 7, directory: null }),
+    );
+  });
+
+  it("shows a failed automatic backup with its reason", async () => {
+    mocked.getBackupStatus.mockResolvedValue({
+      lastFailure: { at: 1_791_970_205, message: "file error: Read-only file system (os error 30)" },
+    });
+    renderPanel();
+
+    const alert = await screen.findByRole("alert", { name: "Automatic backup failed" });
+    expect(alert).toHaveTextContent("Read-only file system");
+  });
+
+  it("labels backups taken before an update", async () => {
+    mocked.listBackups.mockResolvedValue({
+      status: "ok",
+      data: [{ ...automatic, kind: "preMigration", path: "/data/backups/toodo-pre-migration-20261014-093005.sqlite3" }],
+    });
+    renderPanel();
+
+    const list = await screen.findByRole("list", { name: "Saved backups" });
+    expect(await within(list).findByText(/Before update/)).toBeInTheDocument();
   });
 });

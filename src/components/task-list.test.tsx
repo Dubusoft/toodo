@@ -1,9 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskList, type TaskDraft } from "@/components/task-list";
-import { commands, type Task, type TaskActivity, type Workspace } from "@/lib/bindings";
+import { commands, type Task, type TaskActivity, type TaskId, type Workspace } from "@/lib/bindings";
 import { queryKeys } from "@/lib/queries";
 import { formatWhen } from "@/lib/timeline";
 
@@ -21,6 +21,8 @@ vi.mock("@/lib/bindings", () => ({
     branchFreshness: vi.fn(),
     createTask: vi.fn(),
     startTask: vi.fn(),
+    listTaskRuns: vi.fn(),
+    runnerHealth: vi.fn(),
   },
 }));
 
@@ -58,6 +60,22 @@ const folder: Workspace = {
   runner: "none",
 };
 
+const plainRunner: Workspace = {
+  ...localGit,
+  id: 5,
+  name: "tools",
+  location: { kind: "local", path: "/srv/tools" },
+  runner: "plain",
+};
+
+const tmuxOnDevbox: Workspace = {
+  ...plainRunner,
+  id: 6,
+  name: "infra",
+  location: { kind: "ssh", machine: "devbox", path: "/srv/infra" },
+  runner: "tmux",
+};
+
 const manualGitHub: Workspace = {
   ...github,
   id: 4,
@@ -91,6 +109,7 @@ function task(id: number, workspace: Workspace, title: string, overrides: Partia
     issue: null,
     estimate: null,
     dueDate: null,
+    labels: [],
     pullRequestMergedAt: null,
     pullRequest: null,
     mergedWith: null,
@@ -136,6 +155,7 @@ const newDraft: TaskDraft = {
   estimate: "",
   estimateUnit: "hours",
   dueDate: "",
+  labels: "",
 };
 
 /** Renders the tasks of `workspace`, with its new task form; returns the query cache. */
@@ -145,9 +165,12 @@ function renderTasks(workspace: Workspace, tasks: Task[]) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   function Page() {
     const [draft, setDraft] = useState(newDraft);
+    const [selected, setSelected] = useState<TaskId | null>(null);
     return (
       <TaskList
         workspace={workspace}
+        selectedTask={selected}
+        onSelectTask={setSelected}
         timelineScale="week"
         onTimelineScaleChange={() => {}}
         draft={draft}
@@ -169,6 +192,11 @@ function kindOptions(select: HTMLElement) {
     .getAllByRole("option")
     .map((option) => option.textContent);
 }
+
+// The details sheet is lazy-loaded; transform it once here so no test pays for that within its timeout.
+beforeAll(async () => {
+  await import("@/components/task-details");
+});
 
 async function openDetails(title: string) {
   fireEvent.click(await screen.findByRole("button", { name: title }));
@@ -199,6 +227,21 @@ describe("TaskList by workspace source, completion, and runner", () => {
     mocked.branchFreshness.mockResolvedValue(
       ok({ base: "origin/main", behind: 0, fetchError: null, mergeable: null, mergeableError: null }),
     );
+    mocked.runnerHealth.mockResolvedValue(
+      ok({
+        herdr: { installed: false, running: false, version: null, message: "herdr was not found on the server's PATH." },
+        tmux: { installed: true, version: "tmux 3.6", message: null },
+        tools: [
+          { tool: "git", installed: true, ready: true, version: "git version 2.43.0", message: null },
+          { tool: "gh", installed: true, ready: true, version: "gh version 2.83.0", message: null },
+          { tool: "ssh", installed: true, ready: true, version: "OpenSSH_9.6p1", message: null },
+        ],
+        agents: [
+          { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
+          { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
+        ],
+      }),
+    );
   });
 
   it("starts a plain directory's task without herdr and shows no base branch, agent merge, or worktree root", async () => {
@@ -217,6 +260,16 @@ describe("TaskList by workspace source, completion, and runner", () => {
     expect(screen.queryByLabelText("Agent merge")).not.toBeInTheDocument();
     expect(screen.queryByRole("form", { name: "Worktree root" })).not.toBeInTheDocument();
     expect(mocked.getMachineSettings).not.toHaveBeenCalled();
+  });
+
+  it("announces when the tasks finish loading and how many a search leaves in one live region", async () => {
+    renderTasks(folder, [task(3, folder, "Write outline"), task(4, folder, "Draft summary")]);
+
+    const status = screen.getByText("Loading tasks...");
+    expect(status).toHaveAttribute("role", "status");
+    await waitFor(() => expect(status).toHaveTextContent("Showing 2 tasks."));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search tasks" }), { target: { value: "outline" } });
+    await waitFor(() => expect(status).toHaveTextContent("Showing 1 of 2 tasks."));
   });
 
   it("needs herdr to start a GitHub workspace's task and shows its base branch, agent merge, and worktree root", async () => {
@@ -324,10 +377,38 @@ describe("TaskList by workspace source, completion, and runner", () => {
     expect(await within(details).findByLabelText("Review of #2")).toBeInTheDocument();
     expect(within(details).getByRole("button", { name: "Push #2 to its pull request" })).toBeInTheDocument();
     expect(within(details).getByRole("button", { name: "Open #2 in herdr" })).toBeInTheDocument();
+    expect(within(details).queryByRole("region", { name: "Runs" })).not.toBeInTheDocument();
     await waitFor(() => expect(mocked.branchFreshness).toHaveBeenCalledWith(2));
     const menu = await openMenu(2, details);
     expect(within(menu).getByRole("menuitem", { name: "Link issue to #2" })).toBeInTheDocument();
   });
+
+  it.each([plainRunner, tmuxOnDevbox])(
+    "shows the runs of a $runner runner workspace's started task, which needs no herdr",
+    async (workspace) => {
+      mocked.listTaskRuns.mockResolvedValue(ok([]));
+      renderTasks(workspace, [
+        task(8, workspace, "Port CLI", {
+          status: "in_progress",
+          branch: "feat/port-cli-8",
+          worktreePath: "/srv/worktrees/port-cli-8",
+        }),
+      ]);
+
+      const details = await openDetails("Port CLI");
+      const runs = within(details).getByRole("region", { name: "Runs" });
+      expect(await within(runs).findByText("No runs yet.")).toBeInTheDocument();
+      expect(within(runs).getByRole("button", { name: "Start run of #8" })).toBeEnabled();
+      expect(within(details).queryByRole("button", { name: "Open #8 in herdr" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("note", { name: "herdr unavailable for #8" })).not.toBeInTheDocument();
+      expect(mocked.listTaskRuns).toHaveBeenCalledWith(8);
+      // Its tasks start in worktrees under the machine's worktree root, like herdr's.
+      expect(screen.getByRole("form", { name: "Worktree root" })).toBeInTheDocument();
+      expect(mocked.getMachineSettings).toHaveBeenCalledWith(
+        workspace.location.kind === "ssh" ? { kind: "ssh", label: workspace.location.machine } : { kind: "local" },
+      );
+    },
+  );
 
   it("lists the git activity of a GitHub workspace's task in the order it happened", async () => {
     const pr = "https://github.com/acme/app/pull/7";

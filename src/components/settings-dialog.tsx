@@ -1,11 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bell, Bot, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, Plug, SlidersHorizontal, X } from "lucide-react";
+import { Archive, Bell, Bot, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, Plug, SlidersHorizontal, SquareTerminal, X } from "lucide-react";
 import { AgentAccessPanel, AgentAccessStatus } from "@/components/agent-access-panel";
-import { BackupPanel } from "@/components/backup-panel";
+import { ArchivePanel } from "@/components/archive-panel";
+import { BackupPanel, BackupStatusLabel } from "@/components/backup-panel";
 import { ConnectedAppsPanel } from "@/components/connected-apps-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
+import { RunnersPanel } from "@/components/runners-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { commands } from "@/lib/bindings";
@@ -13,7 +16,15 @@ import { keepFocusIn } from "@/lib/focus-trap";
 import { useNarrow } from "@/lib/narrow";
 import { cn } from "@/lib/utils";
 
-export type SettingsSection = "general" | "agents" | "apps" | "devices" | "notifications" | "backups";
+export type SettingsSection =
+  | "general"
+  | "agents"
+  | "runners"
+  | "apps"
+  | "devices"
+  | "notifications"
+  | "backups"
+  | "archive";
 
 type Section = {
   id: SettingsSection;
@@ -25,14 +36,22 @@ type Section = {
 const sections: Section[] = [
   { id: "general", label: "General", icon: <SlidersHorizontal /> },
   { id: "agents", label: "Agent access", icon: <Bot />, status: <AgentAccessStatus /> },
+  { id: "runners", label: "Runners", icon: <SquareTerminal /> },
   { id: "apps", label: "Connected apps", icon: <Plug /> },
   { id: "devices", label: "Devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
   { id: "notifications", label: "Notifications", icon: <Bell />, status: <NotificationsStatus /> },
-  { id: "backups", label: "Backups", icon: <DatabaseBackup /> },
+  { id: "backups", label: "Backups", icon: <DatabaseBackup />, status: <BackupStatusLabel /> },
+  { id: "archive", label: "Archive", icon: <Archive /> },
 ];
 
 function GeneralSettings() {
   const appInfo = useQuery({ queryKey: ["app-info"], queryFn: () => commands.appInfo() });
+  // The server asks the npm registry; once in a while is enough.
+  const update = useQuery({
+    queryKey: ["update-check"],
+    queryFn: () => commands.checkUpdate(),
+    staleTime: 6 * 60 * 60 * 1000,
+  });
   return (
     <section aria-label="General" className="flex flex-col gap-5 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -44,6 +63,13 @@ function GeneralSettings() {
         <span className="ml-auto text-muted-foreground">
           {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
         </span>
+        {update.data?.newer && (
+          <p role="status" className="w-full text-muted-foreground">
+            v{update.data.latest} is available on the {update.data.channel} channel. Update the server with{" "}
+            <code>toodo update</code>.
+          </p>
+        )}
+        {update.data?.error && <p className="w-full text-muted-foreground">Update check: {update.data.error}</p>}
       </div>
     </section>
   );
@@ -231,19 +257,25 @@ export function SettingsDialog({
                 aria-labelledby={tabId(item.id)}
                 hidden={item.id !== shown}
               >
-                {item.id === "general" ? (
-                  <GeneralSettings />
-                ) : item.id === "agents" ? (
-                  <AgentAccessPanel />
-                ) : item.id === "apps" ? (
-                  <ConnectedAppsPanel />
-                ) : item.id === "devices" ? (
-                  <DevicesPanel />
-                ) : item.id === "notifications" ? (
-                  <NotificationsPanel />
-                ) : (
-                  <BackupPanel />
-                )}
+                <ErrorBoundary label={`the ${item.label} settings`}>
+                  {item.id === "general" ? (
+                    <GeneralSettings />
+                  ) : item.id === "agents" ? (
+                    <AgentAccessPanel />
+                  ) : item.id === "runners" ? (
+                    <RunnersPanel />
+                  ) : item.id === "apps" ? (
+                    <ConnectedAppsPanel />
+                  ) : item.id === "devices" ? (
+                    <DevicesPanel />
+                  ) : item.id === "notifications" ? (
+                    <NotificationsPanel />
+                  ) : item.id === "backups" ? (
+                    <BackupPanel />
+                  ) : (
+                    <ArchivePanel />
+                  )}
+                </ErrorBoundary>
               </div>
             ))}
           </div>

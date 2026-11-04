@@ -1,6 +1,8 @@
 //! What deserves a push notification: the changes between two snapshots of task statuses,
-//! agent statuses, and pull request statuses. Something seen for the first time raises
-//! nothing, so starting the server or opening a task is silent.
+//! agent statuses, and pull request statuses. The first snapshot only sets the baseline,
+//! so starting the server is silent, and a newly seen task or agent raises nothing; a pull
+//! request first seen after the baseline counts as one whose checks and reviews had not
+//! finished, so CI that already failed when Toodo first reads it still raises an alert.
 
 use std::collections::HashMap;
 
@@ -79,7 +81,7 @@ fn shorten(text: &str) -> String {
 pub struct Watch {
     tasks: Option<HashMap<TaskId, (TaskStatus, String)>>,
     agents: HashMap<TaskId, AgentStatus>,
-    pull_requests: HashMap<TaskId, TaskPullRequestStatus>,
+    pull_requests: Option<HashMap<TaskId, TaskPullRequestStatus>>,
 }
 
 impl Watch {
@@ -162,11 +164,21 @@ impl Watch {
     /// changes.
     pub fn pull_requests(&mut self, statuses: &[TaskPullRequestStatus]) -> Vec<Alert> {
         let mut alerts = Vec::new();
+        let next = statuses
+            .iter()
+            .map(|entry| (TaskId(entry.task_id.0), entry.clone()))
+            .collect();
+        let Some(before) = self.pull_requests.replace(next) else {
+            return alerts;
+        };
         for entry in statuses {
             let task = TaskId(entry.task_id.0);
-            let Some(was) = self.pull_requests.get(&task) else {
-                continue;
+            let unseen = TaskPullRequestStatus {
+                task_id: entry.task_id,
+                checks: None,
+                review: ReviewStatus::Pending,
             };
+            let was = before.get(&task).unwrap_or(&unseen);
             let name = self.title(task);
             if entry.checks != was.checks {
                 match entry.checks {
@@ -207,10 +219,6 @@ impl Watch {
                 }
             }
         }
-        self.pull_requests = statuses
-            .iter()
-            .map(|entry| (TaskId(entry.task_id.0), entry.clone()))
-            .collect();
         alerts
     }
 }
@@ -365,6 +373,26 @@ mod tests {
                 .pull_requests(&[pr(1, Some(ChecksStatus::Failing), ReviewStatus::Approved)])
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_pull_request_first_seen_after_the_baseline_with_failed_ci_raises_alerts() {
+        let mut watch = Watch::default();
+        assert!(watch.pull_requests(&[]).is_empty());
+        let alerts = watch.pull_requests(&[
+            pr(
+                1,
+                Some(ChecksStatus::Failing),
+                ReviewStatus::ChangesRequested,
+            ),
+            pr(2, Some(ChecksStatus::Pending), ReviewStatus::Pending),
+            pr(3, None, ReviewStatus::Pending),
+        ]);
+        assert_eq!(
+            titles(&alerts),
+            [("CI failed", "#1"), ("Changes requested", "#1")]
+        );
+        assert!(alerts.iter().all(|alert| alert.urgent));
     }
 
     #[test]

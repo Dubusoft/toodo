@@ -142,10 +142,15 @@ mod tests {
             completion_note: None,
             estimate: None,
             due_date: None,
+            labels: Vec::new(),
             issue: None,
             timeline: history
                 .iter()
-                .map(|&(status, at)| TaskEvent { status, at })
+                .map(|&(status, at)| TaskEvent {
+                    status,
+                    at,
+                    reason: None,
+                })
                 .collect(),
             notes: Vec::new(),
             criteria: Vec::new(),

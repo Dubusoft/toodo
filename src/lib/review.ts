@@ -3,18 +3,16 @@ import type {
   ReviewEntry,
   ReviewOutcome,
   Task,
-  TaskResolution,
   TaskType,
   Timestamp,
   Workspace,
+  WorkspaceId,
 } from "@/lib/bindings";
 import { activeSeconds, formatDate } from "@/lib/timeline";
 import {
   dueEnd,
   dueState,
-  dueStateLabels,
   estimatedSeconds,
-  formatEstimate,
   secondsPastDue,
 } from "@/lib/plan";
 import { statusNames } from "@/lib/status-styles";
@@ -31,7 +29,10 @@ const outcomeOrder = Object.keys(outcomeLabels) as ReviewOutcome[];
 
 export type PeriodKind = "week" | "month" | "quarter" | "year" | "custom";
 
-/** A reviewed period: the local calendar days `from` to `to`, both included, as `YYYY-MM-DD`. */
+/**
+ * A reviewed period: the calendar days `from` to `to`, both included, as `YYYY-MM-DD`. The server
+ * judges them in its review time zone, so a period covers the same time on every device.
+ */
 export interface ReviewPeriod {
   kind: PeriodKind;
   from: string;
@@ -135,15 +136,16 @@ function periodDays(period: ReviewPeriod): number {
   return Math.round((localMidnight(period.to, 1).getTime() - localMidnight(period.from).getTime()) / 86_400_000);
 }
 
-/**
- * The period as `[start, end)` in seconds, from local midnight of `from` to local midnight
- * after `to`, so a period with a daylight saving change is an hour shorter or longer.
- */
-export function periodBounds(period: ReviewPeriod): { start: Timestamp; end: Timestamp } {
-  return {
-    start: localMidnight(period.from).getTime() / 1000,
-    end: localMidnight(period.to, 1).getTime() / 1000,
-  };
+/** The day of `at` as `YYYY-MM-DD` in the IANA time zone `timeZone`. */
+export function dayIn(at: Timestamp, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(at * 1000);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
 export function periodLabel(period: ReviewPeriod): string {
@@ -190,11 +192,6 @@ export function pullRequestStats(pullRequest: PullRequestSnapshot): string {
   )}, ${plural(pullRequest.reviewCount, "review")}`;
 }
 
-/** A completion note on one line, for list items and CSV cells. */
-function oneLine(note: string): string {
-  return note.split(/\s*\n\s*/).join(" ");
-}
-
 /** Size of the merged pull requests of completed tasks, summed. */
 export interface ChangeStat {
   pullRequests: number;
@@ -230,20 +227,6 @@ export interface ReviewSummary {
   notAdopted: number;
 }
 
-/** How a done task ended, for reports; null for a task that is not done. */
-export function resolutionLabel(task: { resolution: TaskResolution | null }): string | null {
-  switch (task.resolution) {
-    case "merged":
-      return "Merged";
-    case "completed":
-      return "Completed";
-    case "not_adopted":
-      return "Not adopted";
-    case null:
-      return null;
-  }
-}
-
 function median(values: number[]): DurationStat | null {
   if (values.length === 0) return null;
   const sorted = [...values].sort((a, b) => a - b);
@@ -267,8 +250,16 @@ function durations(entries: ReviewEntry[], span: (entry: ReviewEntry) => [Timest
   });
 }
 
-/** Counts and durations of the reviewed period, from the recorded milestones of its entries. */
-export function summarize(period: ReviewPeriod, entries: ReviewEntry[], workspaces: Workspace[]): ReviewSummary {
+/**
+ * Counts and durations of the reviewed period, from the recorded milestones of its entries;
+ * completions are counted per month in `timeZone`, the one the period was judged in.
+ */
+export function summarize(
+  period: ReviewPeriod,
+  entries: ReviewEntry[],
+  workspaces: Pick<Workspace, "id" | "name">[],
+  timeZone: string,
+): ReviewSummary {
   const names = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
   const completed = entries.filter((entry) => entry.outcome === "completed");
   const months = periodMonths(period);
@@ -299,7 +290,7 @@ export function summarize(period: ReviewPeriod, entries: ReviewEntry[], workspac
         ? null
         : months.map((month) => ({
             month,
-            count: completed.filter((entry) => formatDate(entry.at).startsWith(month)).length,
+            count: completed.filter((entry) => dayIn(entry.at, timeZone).startsWith(month)).length,
           })),
     changes:
       pullRequests.length === 0
@@ -338,11 +329,11 @@ export interface PlanVsActual {
 
 /**
  * Estimates and due dates of the reviewed tasks against what happened. An open task counts
- * as late when its due date passed before the end of the period, or before `now` while the
- * period is still under way. Null when no reviewed task has an estimate or a due date.
+ * as late when its due date passed before `periodEnd`, the end of the period, or before `now`
+ * while the period is still under way. Null when no reviewed task has an estimate or a due date.
  */
-export function planVsActual(period: ReviewPeriod, entries: ReviewEntry[], now: Timestamp): PlanVsActual | null {
-  const cutoff = Math.min(now, periodBounds(period).end);
+export function planVsActual(periodEnd: Timestamp, entries: ReviewEntry[], now: Timestamp): PlanVsActual | null {
+  const cutoff = Math.min(now, periodEnd);
   const completed = entries.filter((entry) => entry.outcome === "completed");
   const timed = completed.flatMap(({ task, at }) => {
     const estimated = estimatedSeconds(task.estimate);
@@ -488,39 +479,6 @@ export function formatReviews(totals: PullRequestTotals): string {
   return `${plural(totals.reviews, "review")} on ${totals.reviewed} of ${plural(totals.pullRequests, "pull request")}`;
 }
 
-function yearInReviewMarkdown(year: YearInReview): string[] {
-  const lines = ["## Year in review", ""];
-  if (year.pullRequests) {
-    lines.push(
-      `- Merged pull requests: ${formatChanges(year.pullRequests)}`,
-      `- Reviews: ${formatReviews(year.pullRequests)}`,
-    );
-  }
-  if (year.largest.length > 0) {
-    lines.push("- Largest pull requests:");
-    for (const { task, pullRequest } of year.largest) {
-      lines.push(`  - [${task.taskType}] ${task.title} (${pullRequestStats(pullRequest)})`);
-    }
-  }
-  if (year.research.length > 0) {
-    lines.push("- Research conclusions:");
-    for (const { task, adopted } of year.research) {
-      const conclusion = task.completionNote ? `: ${oneLine(task.completionNote)}` : "";
-      lines.push(`  - ${task.title} (${adopted ? "adopted" : "not adopted"})${conclusion}`);
-    }
-  }
-  if (year.overruns.length > 0) {
-    lines.push("- Largest estimate overruns:");
-    for (const { task, estimated, actual } of year.overruns) {
-      lines.push(
-        `  - [${task.taskType}] ${task.title} (estimated ${formatDuration(estimated)}, ${formatDuration(actual)} active)`,
-      );
-    }
-  }
-  lines.push("");
-  return lines;
-}
-
 /** The summed size of merged pull requests, e.g. `+120/-30 in 9 files (3 pull requests)`. */
 export function formatChanges(changes: ChangeStat): string {
   return `+${changes.additions}/-${changes.deletions} in ${plural(changes.changedFiles, "file")} (${plural(
@@ -548,11 +506,6 @@ export function formatDuration(seconds: number): string {
   return `${(hours / 24).toFixed(1)}d`;
 }
 
-function formatStat(stat: DurationStat | null): string {
-  if (stat === null) return "no data";
-  return `${formatDuration(stat.median)} (${stat.tasks} ${stat.tasks === 1 ? "task" : "tasks"})`;
-}
-
 export const durationKeys = ["leadTime", "cycleTime", "activeTime", "reviewTime"] as const;
 
 export const durationLabels = {
@@ -562,180 +515,20 @@ export const durationLabels = {
   reviewTime: "Median review time (awaiting completion to merged)",
 } as const;
 
-/** The review of `period` as Markdown, for pasting into a report; due dates are judged at `now`. */
-export function reviewMarkdown(
-  period: ReviewPeriod,
-  entries: ReviewEntry[],
-  workspaces: Workspace[],
-  now: Timestamp,
-): string {
-  const names = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
-  const lines = [`# ${periodTitles[period.kind]}: ${periodLabel(period)}`, ""];
-  const groups = groupByOutcome(entries);
-  if (groups.length === 0) {
-    lines.push("No recorded activity.", "");
-    return lines.join("\n");
-  }
-  const summary = summarize(period, entries, workspaces);
-  lines.push(
-    "## Summary",
-    "",
-    `- ${summary.outcomes.map(({ outcome, count }) => `${outcomeLabels[outcome]}: ${count}`).join(", ")}`,
-    `- Commits: ${summary.commits}`,
+/** Which reviewed tasks to show: those of one workspace and with one label; `null` for any. */
+export type ReviewFilter = { workspaceId: WorkspaceId | null; label: string | null };
+
+export const noReviewFilter: ReviewFilter = { workspaceId: null, label: null };
+
+export function filterEntries(entries: ReviewEntry[], filter: ReviewFilter): ReviewEntry[] {
+  return entries.filter(
+    ({ task }) =>
+      (filter.workspaceId === null || task.workspaceId === filter.workspaceId) &&
+      (filter.label === null || task.labels.includes(filter.label)),
   );
-  if (summary.notAdopted > 0) {
-    lines.push(`- Concluded without merging (not adopted): ${summary.notAdopted}`);
-  }
-  if (summary.completedByType.length > 0) {
-    lines.push(
-      `- Completed by type: ${summary.completedByType.map(({ taskType, count }) => `${taskType} ${count}`).join(", ")}`,
-      `- Completed by workspace: ${summary.completedByWorkspace
-        .map(({ workspace, count }) => `${workspace} ${count}`)
-        .join(", ")}`,
-    );
-  }
-  if (summary.changes) {
-    lines.push(`- Changes in completed pull requests: ${formatChanges(summary.changes)}`);
-  }
-  for (const key of durationKeys) {
-    lines.push(`- ${durationLabels[key]}: ${formatStat(summary[key])}`);
-  }
-  const plan = planVsActual(period, entries, now);
-  if (plan?.time) lines.push(`- Estimate vs active time: ${formatEstimateAccuracy(plan.time)}`);
-  if (plan?.dueDates) lines.push(`- Due dates met: ${formatDueRate(plan.dueDates)}`);
-  lines.push("");
-  if (plan && plan.late.length > 0) {
-    lines.push(`## Late (${plan.late.length})`, "");
-    for (const late of plan.late) {
-      lines.push(`- [${late.task.taskType}] ${late.task.title} (${lateDetails(late)})`);
-    }
-    lines.push("");
-  }
-  const year = period.kind === "year" ? yearInReview(entries) : null;
-  if (year) lines.push(...yearInReviewMarkdown(year));
-  if (summary.completedPerMonth) {
-    lines.push("| Month | Completed |", "| --- | --- |");
-    for (const { month, count } of summary.completedPerMonth) lines.push(`| ${month} | ${count} |`);
-    lines.push("");
-  }
-  const { start, end } = periodBounds(period);
-  for (const group of groups) {
-    lines.push(`## ${outcomeLabels[group.outcome]} (${group.entries.length})`, "");
-    for (const { task, at, commits } of group.entries) {
-      const notAdopted = task.resolution === "not_adopted";
-      const details = [names.get(task.workspaceId) ?? `workspace ${task.workspaceId}`, formatDate(at)];
-      if (notAdopted) details.push("not adopted");
-      if (task.resolution === "completed") details.push("Completed");
-      if (task.estimate) details.push(`estimate ${formatEstimate(task.estimate)}`);
-      if (task.dueDate) details.push(`due ${task.dueDate}`);
-      if (task.issue) details.push(task.issue.url);
-      if (task.pullRequestUrl) details.push(task.pullRequestUrl);
-      if (task.pullRequest) details.push(pullRequestStats(task.pullRequest));
-      lines.push(`- [${task.taskType}] ${task.title} (${details.join(", ")})`);
-      if (task.completionNote) {
-        lines.push(`  - ${notAdopted ? "Conclusion" : "Note"}: ${oneLine(task.completionNote)}`);
-      }
-      for (const note of task.notes) {
-        if (note.at >= start && note.at < end) {
-          lines.push(`  - ${note.kind === "blocker" ? "Blocker" : "Progress"}: ${oneLine(note.body)}`);
-        }
-      }
-      for (const commit of commits) {
-        lines.push(`  - \`${commit.sha.slice(0, 7)}\` ${commitSubject(commit.message)}`);
-      }
-    }
-    lines.push("");
-  }
-  return lines.join("\n");
 }
 
-/** Local date and time of `at` as `YYYY-MM-DD HH:MM`, which spreadsheets read as a date. */
-export function formatDateTime(at: Timestamp): string {
-  const date = new Date(at * 1000);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${formatDate(at)} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function csvField(value: string | number | null): string {
-  const text = value === null ? "" : String(value);
-  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-}
-
-const csvColumns = [
-  "Task",
-  "Workspace",
-  "Type",
-  "Title",
-  "Outcome",
-  "Outcome at",
-  "Resolution",
-  "Planned",
-  "Started",
-  "Awaiting completion",
-  "Completed",
-  "Merged",
-  "Pull request",
-  "Issue",
-  "Commits in period",
-  "Active hours",
-  "Estimate",
-  "Estimate unit",
-  "Due date",
-  "Due status",
-  "Additions",
-  "Deletions",
-  "Changed files",
-  "Reviews",
-  "Completion note",
-];
-
-/**
- * One row per reviewed task as CSV (RFC 4180, CRLF line ends), led by a UTF-8 byte order
- * mark so spreadsheet apps read non-ASCII titles correctly. Active hours of a task still
- * being worked on count until `now`.
- */
-export function reviewCsv(entries: ReviewEntry[], workspaces: Workspace[], now: Timestamp): string {
-  const names = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
-  const time = (at: Timestamp | null) => (at === null ? null : formatDateTime(at));
-  const rows = entries.map(({ task, outcome, at, commits }) => [
-    task.id,
-    names.get(task.workspaceId) ?? `workspace ${task.workspaceId}`,
-    task.taskType,
-    task.title,
-    outcomeLabels[outcome],
-    formatDateTime(at),
-    resolutionLabel(task),
-    time(task.milestones.plannedAt),
-    time(task.milestones.startedAt),
-    time(task.milestones.reviewAt),
-    time(task.milestones.completedAt),
-    time(task.pullRequestMergedAt),
-    task.pullRequestUrl,
-    task.issue?.url ?? null,
-    commits.length,
-    activeHours(activeSeconds(task.timeline, now)),
-    task.estimate?.amount ?? null,
-    task.estimate?.unit ?? null,
-    task.dueDate,
-    dueStateCsv(task, now),
-    task.pullRequest?.additions ?? null,
-    task.pullRequest?.deletions ?? null,
-    task.pullRequest?.changedFiles ?? null,
-    task.pullRequest?.reviewCount ?? null,
-    task.completionNote && oneLine(task.completionNote),
-  ]);
-  return `\uFEFF${[csvColumns, ...rows].map((row) => row.map(csvField).join(",")).join("\r\n")}\r\n`;
-}
-
-function dueStateCsv(task: Task, now: Timestamp): string | null {
-  const state = dueState(task, now);
-  return state === null ? null : state === "upcoming" ? "Not due yet" : dueStateLabels[state];
-}
-
-function activeHours(seconds: number | null): number | null {
-  return seconds === null ? null : Math.round(seconds / 360) / 10;
-}
-
-export function reviewFileName(period: ReviewPeriod, extension: "md" | "csv"): string {
-  return `toodo-review-${periodLabel(period).replaceAll(" ", "-")}.${extension}`;
+/** The labels of the reviewed tasks, sorted, to filter them by. */
+export function reviewLabels(entries: ReviewEntry[]): string[] {
+  return [...new Set(entries.flatMap(({ task }) => task.labels))].sort();
 }

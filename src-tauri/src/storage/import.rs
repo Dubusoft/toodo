@@ -3,8 +3,8 @@
 //! Workspaces and tasks with their history are added next to the data already here.
 //! Imported rows get IDs after every ID this database has used, so nothing here changes;
 //! references between imported rows move along. Devices, push subscriptions, connected
-//! OAuth apps, and the lead chat of the other database are not imported: they belong to
-//! the server that kept them. Tasks forget their herdr workspace: runtime records are not
+//! OAuth apps, settings, saved reviews, and the lead chat of the other database are not
+//! imported: they belong to the server that kept them. Tasks forget their herdr workspace: runtime records are not
 //! imported, since their IDs only meant something to the other machine's herdr.
 
 use std::time::Duration;
@@ -99,6 +99,11 @@ const TABLES: &[(&str, &[Column])] = &[
         "task_activity",
         &[("id", None), ("task_id", Some("task_id + {t}"))],
     ),
+    ("task_labels", &[("task_id", Some("task_id + {t}"))]),
+    (
+        "agent_status_transitions",
+        &[("id", None), ("task_id", Some("task_id + {t}"))],
+    ),
 ];
 
 /// Tables that are deliberately left out, see the module documentation. `task_search` is
@@ -120,8 +125,12 @@ pub(super) const SKIPPED: &[&str] = &[
     "task_runs",
     "run_events",
     "run_operations",
+    "queued_runs",
     "runtime_host_events",
     "runtime_hosts",
+    // Settings and saved reviews belong to the server that kept them.
+    "settings",
+    "review_snapshots",
 ];
 
 impl Storage {
@@ -310,9 +319,21 @@ mod tests {
                  ALTER TABLE workspaces DROP COLUMN completion;
                  ALTER TABLE workspaces DROP COLUMN runner;
                  ALTER TABLE workspaces DROP COLUMN axes_detected;
+                 ALTER TABLE workspaces DROP COLUMN agent_model;
+                 ALTER TABLE workspaces DROP COLUMN agent_permission_mode;
+                 ALTER TABLE workspaces DROP COLUMN run_time_limit_minutes;
+                 ALTER TABLE tasks DROP COLUMN agent_model;
+                 ALTER TABLE tasks DROP COLUMN agent_permission_mode;
+                 ALTER TABLE tasks DROP COLUMN run_time_limit_minutes;
                  DROP TABLE task_activity;
+                 DROP TABLE task_labels;
+                 DROP TABLE agent_status_transitions;
+                 ALTER TABLE devices DROP COLUMN expires_at;
+                 ALTER TABLE devices DROP COLUMN scope;
                  ALTER TABLE tasks ADD COLUMN herdr_workspace_id TEXT;
                  UPDATE tasks SET herdr_workspace_id = 'w1' WHERE title = 'Add storage';
+                 ALTER TABLE machine_settings DROP COLUMN max_concurrent_runs;
+                 DROP TABLE queued_runs;
                  DROP TABLE run_operations;
                  DROP TABLE run_events;
                  DROP TABLE task_runs;
@@ -323,6 +344,13 @@ mod tests {
                  DROP TABLE oauth_tokens;
                  DROP TABLE oauth_grants;
                  DROP TABLE oauth_clients;
+                 ALTER TABLE push_subscriptions DROP COLUMN last_failure;
+                 ALTER TABLE push_subscriptions DROP COLUMN last_failure_at;
+                 ALTER TABLE workspaces DROP COLUMN archived_at;
+                 ALTER TABLE tasks DROP COLUMN archived_at;
+                 ALTER TABLE task_events DROP COLUMN reason;
+                 DROP TABLE settings;
+                 DROP TABLE review_snapshots;
                  PRAGMA user_version = 25;",
             )
             .unwrap();
