@@ -61,6 +61,7 @@ import {
 } from "@/lib/task-graph";
 import { openBlocker } from "@/lib/attention";
 import { reachedMilestones } from "@/lib/timeline";
+import type { MissingPlanField } from "@/lib/plan";
 import { When } from "@/components/when";
 import { firstParagraph } from "@/lib/markdown";
 import { normalizePath, shortPath } from "@/lib/paths";
@@ -74,6 +75,7 @@ import {
   taskRef,
   DueDate,
   DetailField,
+  MissingPlanMark,
   useServerDown,
   Markdown,
 } from "@/components/task-common";
@@ -151,6 +153,8 @@ export function TaskRow({
   const restoreWorktree = useRestoreTaskWorktree();
   const closeWorkspace = useCloseTaskWorkspace();
   const [editing, setEditing] = useState(false);
+  // The plan field the edit form focuses when the user opened it to add that field.
+  const [focusPlan, setFocusPlan] = useState<MissingPlanField | undefined>(undefined);
   // The user chose to keep the herdr workspace of this paused task open for now.
   const [keepingWorkspace, setKeepingWorkspace] = useState(false);
   const [concluding, setConcluding] = useState(false);
@@ -368,7 +372,18 @@ export function TaskRow({
           onSelect: () => setLinkingIssue(true),
         }
       : null,
-    !final ? { key: "edit", label: "Edit", ariaLabel: `Edit #${task.id}`, icon: <Pencil />, onSelect: () => setEditing(true) } : null,
+    !final
+      ? {
+          key: "edit",
+          label: "Edit",
+          ariaLabel: `Edit #${task.id}`,
+          icon: <Pencil />,
+          onSelect: () => {
+            setFocusPlan(undefined);
+            setEditing(true);
+          },
+        }
+      : null,
     active
       ? {
           key: "pause", changesData: true,
@@ -493,7 +508,12 @@ export function TaskRow({
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
             <span className="text-xs text-muted-foreground">Editing</span>
           </div>
-          <TaskEditForm task={task} capabilities={capabilities} onDone={() => setEditing(false)} />
+          <TaskEditForm
+            task={task}
+            capabilities={capabilities}
+            focusPlan={focusPlan}
+            onDone={() => setEditing(false)}
+          />
         </div>
       ) : (
         <div className={cn("flex min-w-0 flex-col", detailed ? "gap-1.5" : "gap-0.5")}>
@@ -553,6 +573,13 @@ export function TaskRow({
                 </span>
               )}
               {task.dueDate !== null && <DueDate task={task} />}
+              <MissingPlanMark
+                task={task}
+                onEdit={(field) => {
+                  setFocusPlan(field);
+                  setEditing(true);
+                }}
+              />
               {hasWorktree && <FreshnessWarning taskId={task.id} />}
               {!final && task.criteria.length > 0 && (
                 <span>

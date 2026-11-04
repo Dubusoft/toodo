@@ -3,7 +3,8 @@ import { CalendarCheck, ChevronLeft, ChevronRight, Download } from "lucide-react
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/task-list";
-import { TaskLabels } from "@/components/task-common";
+import { MissingPlanMark, TaskLabels } from "@/components/task-common";
+import { TaskEditForm } from "@/components/task-edit-form";
 import { inputClass } from "@/components/workspace-list";
 import {
   commands,
@@ -47,7 +48,9 @@ import {
   type ReviewFilter,
   type ReviewPeriod,
 } from "@/lib/review";
+import { type MissingPlanField, missingPlan } from "@/lib/plan";
 import { toneChip, toneFill, toneText } from "@/lib/status-styles";
+import { workspaceCapabilities } from "@/lib/workspace-capabilities";
 import { When } from "@/components/when";
 import { formatDate } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
@@ -147,6 +150,8 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   const [period, setPeriod] = useState<ReviewPeriod>(() => periodContaining("week", formatDate(Date.now() / 1000)));
   const [notice, setNotice] = useState<string | null>(null);
   const [filter, setFilter] = useState<ReviewFilter>(noReviewFilter);
+  // The task whose edit form a missing-plan mark opened, and the field it focuses.
+  const [editingPlan, setEditingPlan] = useState<{ id: TaskId; field: MissingPlanField } | null>(null);
   const { start, end } = periodBounds(period);
   const review = useReview(start, end);
   const workspaces = useWorkspaces();
@@ -510,6 +515,18 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                     </span>
                   </div>
                   <TaskLabels task={task} />
+                  {archived ? null : editingPlan?.id === task.id ? (
+                    <TaskEditForm
+                      task={task}
+                      capabilities={workspaceCapabilities(workspaces.data?.find(({ id }) => id === task.workspaceId))}
+                      focusPlan={editingPlan.field}
+                      onDone={() => setEditingPlan(null)}
+                    />
+                  ) : (
+                    <p className="text-xs text-muted-foreground empty:hidden print:hidden">
+                      <MissingPlanMark task={task} onEdit={(field) => setEditingPlan({ id: task.id, field })} />
+                    </p>
+                  )}
                   {task.completionNote && (
                     <p aria-label={`Completion note of #${task.id}`} className="whitespace-pre-line break-words-keep text-xs">
                       {task.completionNote}
@@ -654,12 +671,36 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
 /** Estimates and due dates of the reviewed tasks against what happened. */
 function PlanPanel({ period, entries }: { period: ReviewPeriod; entries: ReviewEntry[] }) {
   const plan = planVsActual(period, entries, Date.now() / 1000);
-  if (plan === null) return null;
+  // Archived tasks can no longer be edited, so only live ones count as missing a plan.
+  const missing = entries.filter(({ archived }) => !archived).map(({ task }) => missingPlan(task));
+  const withoutEstimate = missing.filter((fields) => fields.includes("estimate")).length;
+  const withoutDueDate = missing.filter((fields) => fields.includes("dueDate")).length;
+  if (plan === null && withoutEstimate + withoutDueDate === 0) return null;
+  const missingSummary = (
+    <div className="contents">
+      <dt className="text-muted-foreground">Missing plan</dt>
+      <dd>
+        {[
+          withoutEstimate > 0 && `${plural(withoutEstimate, "task")} without an estimate`,
+          withoutDueDate > 0 && `${plural(withoutDueDate, "task")} without a due date`,
+        ]
+          .filter(Boolean)
+          .join(", ")}
+        ; add them from the marks on the tasks below
+      </dd>
+    </div>
+  );
   return (
     <section aria-labelledby="plan-heading" className="flex flex-col gap-3 rounded-lg border p-3">
       <h3 id="plan-heading" className="text-sm font-semibold">
         Plan vs actual
       </h3>
+      {plan === null ? (
+        <>
+          <p className="text-sm">No reviewed task has an estimate or a due date, so there is nothing to compare yet.</p>
+          <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">{missingSummary}</dl>
+        </>
+      ) : (
       <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
         <div className="contents">
           <dt className="text-muted-foreground">Estimate vs active time</dt>
@@ -669,8 +710,10 @@ function PlanPanel({ period, entries }: { period: ReviewPeriod; entries: ReviewE
           <dt className="text-muted-foreground">Due dates met</dt>
           <dd>{plan.dueDates ? formatDueRate(plan.dueDates) : "No completed task had a due date"}</dd>
         </div>
+        {withoutEstimate + withoutDueDate > 0 && missingSummary}
       </dl>
-      {plan.late.length > 0 && (
+      )}
+      {plan !== null && plan.late.length > 0 && (
         <div className="flex flex-col gap-1">
           <h4 className="text-xs text-muted-foreground">Late tasks</h4>
           <ul aria-label="Late tasks" className="flex flex-col gap-1">

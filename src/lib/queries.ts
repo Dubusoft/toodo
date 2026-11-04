@@ -923,7 +923,12 @@ export function useUpdateTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (task: TaskEdit) => unwrap(commands.updateTask(task)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+    // Reviews compare a task's estimate and due date with what happened.
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
   });
 }
 

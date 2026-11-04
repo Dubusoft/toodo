@@ -1,7 +1,7 @@
 import { lazy, useSyncExternalStore, type ReactNode } from "react";
 import type { Task, TaskId, TaskType, WorkspaceId } from "@/lib/bindings";
 import { shownStatus, type ShownStatus } from "@/lib/task-filter";
-import { dueState, dueStateLabels } from "@/lib/plan";
+import { dueState, dueStateLabels, type MissingPlanField, missingPlan, missingPlanLabel } from "@/lib/plan";
 import { statusNames, toneChip, toneText, type Tone } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 import { type WorkspaceCapabilities } from "@/lib/workspace-capabilities";
@@ -84,6 +84,29 @@ export function DueDate({ task }: { task: Task }) {
     <span data-due-state={state ?? undefined} className={cn(behind && cn("font-medium", toneText.danger))}>
       {state === null || state === "upcoming" ? "Due" : dueStateLabels[state]} {task.dueDate}
     </span>
+  );
+}
+
+/**
+ * Names the estimate or due date a task lacks, which leaves it out of the review's plan
+ * comparison; clicking it opens the edit form at the first missing field. Nothing when the
+ * task has both.
+ */
+export function MissingPlanMark({ task, onEdit }: { task: Task; onEdit: (field: MissingPlanField) => void }) {
+  const missing = missingPlan(task);
+  const label = missingPlanLabel(missing);
+  if (label === null) return null;
+  return (
+    <button
+      type="button"
+      aria-label={`Edit plan of #${task.id}: ${label.toLowerCase()}`}
+      title="Reviews compare estimates and due dates with what happened; add them"
+      data-missing-plan={missing.join(" ")}
+      className="cursor-pointer rounded-sm underline decoration-dotted underline-offset-2 outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11"
+      onClick={() => onEdit(missing[0])}
+    >
+      {label}
+    </button>
   );
 }
 

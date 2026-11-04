@@ -1,6 +1,6 @@
 import { compactSelectClass, inputClass } from "@/components/workspace-list";
 import type { Estimate, EstimateUnit } from "@/lib/bindings";
-import { parseEstimateAmount } from "@/lib/plan";
+import { type MissingPlanField, parseEstimateAmount } from "@/lib/plan";
 import { cn } from "@/lib/utils";
 
 
@@ -21,11 +21,14 @@ export function PlanFields({
   suffix,
   plan,
   onChange,
+  autoFocus,
 }: {
   /** Appended to the field labels, e.g. ` of #3` in the edit form of task 3. */
   suffix: string;
   plan: PlanDraft;
   onChange: (plan: PlanDraft) => void;
+  /** The field that takes the focus when the fields appear. */
+  autoFocus?: MissingPlanField;
 }) {
   const invalid = planEstimate(plan) === undefined;
   return (
@@ -38,6 +41,7 @@ export function PlanFields({
           placeholder="Optional"
           aria-label={`Estimate${suffix}`}
           aria-invalid={invalid}
+          autoFocus={autoFocus === "estimate"}
           title="Optional: expected size, a number greater than 0"
           value={plan.estimate}
           onChange={(e) => onChange({ ...plan, estimate: e.target.value })}
@@ -60,6 +64,7 @@ export function PlanFields({
           type="date"
           className={cn(inputClass, "w-40")}
           aria-label={`Due date${suffix}`}
+          autoFocus={autoFocus === "dueDate"}
           value={plan.dueDate}
           onChange={(e) => onChange({ ...plan, dueDate: e.target.value })}
         />
