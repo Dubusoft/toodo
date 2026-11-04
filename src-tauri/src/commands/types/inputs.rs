@@ -74,6 +74,11 @@ pub(crate) fn estimate(estimate: Option<Estimate>) -> CommandResult<Option<plan:
     estimate.map(plan::Estimate::try_from).transpose()
 }
 
+/// Labels of a task, trimmed, sorted, and unique.
+pub(crate) fn labels(raw: &[String]) -> CommandResult<Vec<String>> {
+    plan::labels(raw).map_err(|error| CommandError::invalid_input(error.to_string()))
+}
+
 /// A due date as `YYYY-MM-DD`; blank means none.
 pub(crate) fn due_date(raw: Option<&str>) -> CommandResult<Option<plan::DueDate>> {
     match raw.map(str::trim) {

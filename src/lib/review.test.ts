@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReviewEntry, Task, Workspace } from "@/lib/bindings";
 import {
   addDays,
+  filterEntries,
   formatDuration,
   groupByOutcome,
   periodBounds,
@@ -12,6 +13,7 @@ import {
   reviewFileName,
   reviewMarkdown,
   resolutionLabel,
+  reviewLabels,
   shiftPeriod,
   startOfWeek,
   summarize,
@@ -56,6 +58,7 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       issue: null,
       estimate: null,
       dueDate: null,
+      labels: [],
       pullRequestMergedAt: null,
       pullRequest: null,
       mergedWith: null,
@@ -675,5 +678,25 @@ describe("reviewCsv", () => {
         ].join("\r\n") +
         "\r\n",
     );
+  });
+});
+
+describe("filterEntries", () => {
+  const entries = [
+    entry(1, "completed", { workspaceId: 1, labels: ["search"] }),
+    entry(2, "started", { workspaceId: 2, labels: ["q4-goal", "search"] }),
+    entry(3, "planned", { workspaceId: 2 }),
+  ];
+  const ids = (filtered: ReviewEntry[]) => filtered.map(({ task }) => task.id);
+
+  it("keeps the tasks of the chosen workspace and label, every task without a filter", () => {
+    expect(ids(filterEntries(entries, { workspaceId: null, label: null }))).toEqual([1, 2, 3]);
+    expect(ids(filterEntries(entries, { workspaceId: 2, label: null }))).toEqual([2, 3]);
+    expect(ids(filterEntries(entries, { workspaceId: null, label: "search" }))).toEqual([1, 2]);
+    expect(ids(filterEntries(entries, { workspaceId: 1, label: "q4-goal" }))).toEqual([]);
+  });
+
+  it("offers the labels of the reviewed tasks once each, sorted", () => {
+    expect(reviewLabels(entries)).toEqual(["q4-goal", "search"]);
   });
 });

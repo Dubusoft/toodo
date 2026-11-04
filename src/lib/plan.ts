@@ -74,3 +74,17 @@ export function parseEstimateAmount(raw: string): number | null {
   const amount = /^\d+(\.\d+)?$/.test(text) ? Number(text) : Number.NaN;
   return amount > 0 && amount <= 10_000 ? amount : Number.NaN;
 }
+
+/**
+ * The labels typed as a comma-separated list: trimmed, without blanks or duplicates, sorted
+ * as the server stores them.
+ */
+export function parseLabels(raw: string): string[] {
+  const labels = raw.split(",").map((label) => label.trim()).filter((label) => label !== "");
+  return [...new Set(labels)].sort();
+}
+
+/** Labels as the comma-separated list the label field shows. */
+export function formatLabels(labels: readonly string[]): string {
+  return labels.join(", ");
+}

@@ -1350,6 +1350,37 @@ fn notes_are_kept_in_order_with_their_time_and_deleted_with_their_task() {
     assert_eq!(row_count(&storage, "task_notes"), 0);
 }
 
+#[test]
+fn labels_are_replaced_per_task_and_deleted_with_their_task() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let task = add_task(&mut storage, &workspace, "Login");
+    let other = add_task(&mut storage, &workspace, "Logout");
+
+    let labels = ["auth".to_owned(), "q4".to_owned()];
+    assert_eq!(
+        storage.set_task_labels(task.id, &labels).unwrap().labels,
+        labels
+    );
+    storage.set_task_labels(other.id, &labels[..1]).unwrap();
+    let replaced = storage.set_task_labels(task.id, &labels[1..]).unwrap();
+    assert_eq!(replaced.labels, ["q4"]);
+    let all: Vec<_> = storage
+        .list_all_tasks()
+        .unwrap()
+        .into_iter()
+        .map(|task| task.labels)
+        .collect();
+    assert_eq!(all, [vec!["q4".to_owned()], vec!["auth".to_owned()]]);
+    assert!(matches!(
+        storage.set_task_labels(TaskId(99), &labels),
+        Err(StorageError::TaskNotFound(TaskId(99)))
+    ));
+
+    storage.delete_task(task.id).unwrap();
+    assert_eq!(row_count(&storage, "task_labels"), 1);
+}
+
 fn search(storage: &Storage, query: &str) -> Vec<TaskId> {
     storage
         .search_tasks(&TaskSearch {

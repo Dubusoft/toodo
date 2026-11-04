@@ -143,6 +143,7 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     issue: null,
     estimate: null,
     dueDate: null,
+    labels: [],
     pullRequestMergedAt: null,
     pullRequest: null,
     mergedWith: null,
@@ -440,7 +441,7 @@ describe("App", () => {
                 at,
                 commits: [{ ...commit(1, "0123456789", "Add the storage schema\n\nBody"), committedAt: at }],
               },
-              { task: task(3, 2, "Fix ssh"), outcome: "worked_on", at, commits: [] },
+              { task: task(3, 2, "Fix ssh", { labels: ["infra"] }), outcome: "worked_on", at, commits: [] },
             ]
           : [],
     }));
@@ -467,6 +468,20 @@ describe("App", () => {
     const summary = screen.getByRole("region", { name: "Summary" });
     expect(within(summary).getByText("Completed by type").nextSibling).toHaveTextContent("feat 1");
     expect(within(summary).queryByRole("list", { name: "Completed per month" })).not.toBeInTheDocument();
+    expect(within(workedOn).getByRole("list", { name: "Labels of #3" })).toHaveTextContent("infra");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "Workspace" }), { target: { value: "2" } });
+    expect(screen.queryByRole("region", { name: "Completed" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Worked on" })).toBeInTheDocument();
+    expect(screen.getByText(/to 2026-10-18 in herdr\./)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Label" }), { target: { value: "infra" } });
+    expect(screen.queryByRole("region", { name: "Completed" })).not.toBeInTheDocument();
+    expect(screen.getByText(/across all workspaces, labelled infra\./)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Workspace" }), { target: { value: "1" } });
+    expect(screen.getByText("No recorded activity in this week matches the filters.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(screen.getByRole("region", { name: "Completed" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Export" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy as Markdown" }));
@@ -1221,6 +1236,7 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "2.5" } });
     fireEvent.change(screen.getByLabelText("Estimate unit"), { target: { value: "weeks" } });
     fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2026-11-01" } });
+    fireEvent.change(screen.getByLabelText("Labels"), { target: { value: " q4, docs ,, q4" } });
     fireEvent.click(screen.getByRole("button", { name: "Add task" }));
 
     expect(await screen.findByText("Write docs")).toBeInTheDocument();
@@ -1231,6 +1247,7 @@ describe("App", () => {
       description: "",
       estimate: { unit: "weeks", amount: 2.5 },
       dueDate: "2026-11-01",
+      labels: ["docs", "q4"],
       criteria: [],
       mergeCriterion: true,
     });
@@ -2558,6 +2575,7 @@ describe("App", () => {
       description: "old",
       estimate: { unit: "hours", amount: 3 },
       dueDate: "2026-11-01",
+      labels: ["auth"],
     });
     const edited = { ...original, taskType: "fix" as const, title: "Add sign-in", description: "new" };
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
@@ -2573,6 +2591,8 @@ describe("App", () => {
     expect(within(form).getByLabelText("Estimate of #1")).toHaveValue("3");
     fireEvent.change(within(form).getByLabelText("Estimate of #1"), { target: { value: "" } });
     fireEvent.change(within(form).getByLabelText("Due date of #1"), { target: { value: "2026-12-01" } });
+    expect(within(form).getByLabelText("Labels of #1")).toHaveValue("auth");
+    fireEvent.change(within(form).getByLabelText("Labels of #1"), { target: { value: "q4, auth" } });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [edited] });
     fireEvent.click(within(form).getByRole("button", { name: "Save" }));
 
@@ -2585,6 +2605,7 @@ describe("App", () => {
       description: "new",
       estimate: null,
       dueDate: "2026-12-01",
+      labels: ["auth", "q4"],
       criteria: null,
       mergeCriterion: false,
     });

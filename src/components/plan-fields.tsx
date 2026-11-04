@@ -4,8 +4,11 @@ import { parseEstimateAmount } from "@/lib/plan";
 import { cn } from "@/lib/utils";
 
 
-/** What the user typed for a task's estimate and due date (`YYYY-MM-DD`, blank for none). */
-export type PlanDraft = { estimate: string; estimateUnit: EstimateUnit; dueDate: string };
+/**
+ * What the user typed for a task's estimate, due date (`YYYY-MM-DD`, blank for none), and
+ * labels (comma-separated).
+ */
+export type PlanDraft = { estimate: string; estimateUnit: EstimateUnit; dueDate: string; labels: string };
 
 /** The estimate typed in `plan`: null when blank, undefined when it is not a valid amount. */
 export function planEstimate(plan: PlanDraft): Estimate | null | undefined {
@@ -59,6 +62,17 @@ export function PlanFields({
           aria-label={`Due date${suffix}`}
           value={plan.dueDate}
           onChange={(e) => onChange({ ...plan, dueDate: e.target.value })}
+        />
+      </label>
+      <label className="flex min-w-48 flex-1 items-center gap-1">
+        Labels
+        <input
+          className={inputClass}
+          placeholder="Optional, comma-separated"
+          aria-label={`Labels${suffix}`}
+          title="Optional: projects or goals, separated by commas, that reviews filter by"
+          value={plan.labels}
+          onChange={(e) => onChange({ ...plan, labels: e.target.value })}
         />
       </label>
     </div>

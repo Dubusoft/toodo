@@ -58,6 +58,7 @@ fn plain_workspace_task(
             description: String::new(),
             estimate: None,
             due_date: None,
+            labels: Vec::new(),
             criteria,
             // Requested, but a workspace completed manually gets no merge criterion.
             merge_criterion: true,

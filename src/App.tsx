@@ -215,7 +215,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-dvh bg-background text-foreground">
+    <div className="flex h-dvh bg-background text-foreground print:block print:h-auto">
       {menuOpen && (
         <div aria-hidden className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setMenuOpen(false)} />
       )}
@@ -226,7 +226,7 @@ export default function App() {
         aria-modal={menuOpen || undefined}
         aria-label={menuOpen ? "Menu" : undefined}
         className={cn(
-          "flex min-h-0 w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r bg-sidebar p-3 text-sidebar-foreground",
+          "flex min-h-0 w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r bg-sidebar p-3 text-sidebar-foreground print:hidden",
           "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:shadow-lg",
           !menuOpen && "max-md:hidden",
         )}
@@ -298,7 +298,7 @@ export default function App() {
         </Button>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col" inert={menuOpen || settingsOpen}>
-        <header className="flex items-center gap-2 border-b px-2 py-1.5 md:hidden">
+        <header className="flex items-center gap-2 border-b px-2 py-1.5 md:hidden print:hidden">
           <Button
             variant="ghost"
             size="icon-sm"
@@ -310,9 +310,11 @@ export default function App() {
           </Button>
           <span className="font-semibold tracking-tight">Toodo</span>
         </header>
-        <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6">
-          <InstallBanner />
-          <HerdrBanner />
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6 print:block print:overflow-visible print:p-0">
+          <div className="contents print:hidden">
+            <InstallBanner />
+            <HerdrBanner />
+          </div>
           <ErrorBoundary label="this view" resetKey={reviewing ? "review" : showingAll ? "all" : selected?.id}>
             {reviewing ? (
               <Suspense fallback={<p className="text-sm text-muted-foreground">Loading review...</p>}>

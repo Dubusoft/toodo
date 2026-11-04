@@ -142,6 +142,7 @@ mod tests {
             completion_note: None,
             estimate: None,
             due_date: None,
+            labels: Vec::new(),
             issue: None,
             timeline: history
                 .iter()

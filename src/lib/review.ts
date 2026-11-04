@@ -7,6 +7,7 @@ import type {
   TaskType,
   Timestamp,
   Workspace,
+  WorkspaceId,
 } from "@/lib/bindings";
 import { activeSeconds, formatDate } from "@/lib/timeline";
 import {
@@ -738,4 +739,22 @@ function activeHours(seconds: number | null): number | null {
 
 export function reviewFileName(period: ReviewPeriod, extension: "md" | "csv"): string {
   return `toodo-review-${periodLabel(period).replaceAll(" ", "-")}.${extension}`;
+}
+
+/** Which reviewed tasks to show: those of one workspace and with one label; `null` for any. */
+export type ReviewFilter = { workspaceId: WorkspaceId | null; label: string | null };
+
+export const noReviewFilter: ReviewFilter = { workspaceId: null, label: null };
+
+export function filterEntries(entries: ReviewEntry[], filter: ReviewFilter): ReviewEntry[] {
+  return entries.filter(
+    ({ task }) =>
+      (filter.workspaceId === null || task.workspaceId === filter.workspaceId) &&
+      (filter.label === null || task.labels.includes(filter.label)),
+  );
+}
+
+/** The labels of the reviewed tasks, sorted, to filter them by. */
+export function reviewLabels(entries: ReviewEntry[]): string[] {
+  return [...new Set(entries.flatMap(({ task }) => task.labels))].sort();
 }

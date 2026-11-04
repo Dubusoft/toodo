@@ -5,6 +5,7 @@ import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import type { Task, TaskType } from "@/lib/bindings";
 import { useUpdateTask } from "@/lib/queries";
+import { formatLabels, parseLabels } from "@/lib/plan";
 import { cn } from "@/lib/utils";
 import { type WorkspaceCapabilities } from "@/lib/workspace-capabilities";
 import { taskTypes } from "@/components/task-common";
@@ -36,8 +37,10 @@ export function TaskEditForm({
     estimate: task.estimate === null ? "" : String(task.estimate.amount),
     estimateUnit: task.estimate?.unit ?? "hours",
     dueDate: task.dueDate ?? "",
+    labels: formatLabels(task.labels),
   }));
   const [plan, setPlan] = useState<PlanDraft>(initialPlan);
+  const labelsChanged = formatLabels(parseLabels(plan.labels)) !== formatLabels(task.labels);
   const [initialCriteria] = useState(() => task.criteria.map((criterion) => criterionDraft(criterion)));
   const [criteria, setCriteria] = useState<CriterionDraft[]>(initialCriteria);
   // Checking "Done when merged" without a merge criterion asks the backend for the one of the repository.
@@ -56,6 +59,7 @@ export function TaskEditForm({
     plan.estimate !== initialPlan.estimate ||
     plan.estimateUnit !== initialPlan.estimateUnit ||
     plan.dueDate !== initialPlan.dueDate ||
+    plan.labels !== initialPlan.labels ||
     criteriaChanged ||
     addMerge;
   const guard = useDiscardGuard(dirty, onDone, updateTask.isPending);
@@ -71,6 +75,7 @@ export function TaskEditForm({
         description: description.trim(),
         estimate,
         dueDate: plan.dueDate || null,
+        labels: labelsChanged ? parseLabels(plan.labels) : null,
         // The criteria of a done task cannot change.
         criteria: criteriaChanged && task.status !== "done" ? criterionInputs(criteria) : null,
         mergeCriterion: addMerge && !hasMerge && task.status !== "done",

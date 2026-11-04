@@ -42,11 +42,17 @@ pub fn create_task(storage: State<'_, StorageState>, task: NewTask) -> CommandRe
 /// its workspace (see [`merge_criterion`]); git does not run.
 pub(crate) fn create(storage: &StorageState, task: NewTask) -> CommandResult<model::Task> {
     let wants_merge = task.merge_criterion;
+    let labels = types::labels(&task.labels)?;
     let mut new: storage::NewTask = task.try_into()?;
     if let Some(merge) = merge_criterion(storage, new.workspace_id, &new.criteria, wants_merge)? {
         new.criteria.insert(0, merge);
     }
-    Ok(lock(storage).create_task(&new)?)
+    let mut storage = lock(storage);
+    let task = storage.create_task(&new)?;
+    if labels.is_empty() {
+        return Ok(task);
+    }
+    Ok(storage.set_task_labels(task.id, &labels)?)
 }
 
 /// Checks the `criteria` of a new task of `workspace` against its completion (see
@@ -181,6 +187,7 @@ pub(crate) fn edit_task(
     task.description = edit.description;
     task.estimate = types::estimate(edit.estimate)?;
     task.due_date = types::due_date(edit.due_date.as_deref())?;
+    let labels = edit.labels.as_deref().map(types::labels).transpose()?;
     let kept;
     let criteria = match &edit.criteria {
         Some(criteria) => Some(criteria.as_slice()),
@@ -225,6 +232,9 @@ pub(crate) fn edit_task(
         storage.set_criteria(task.id, &edits)?;
     }
     storage.update_task(&task)?;
+    if let Some(labels) = labels {
+        storage.set_task_labels(task.id, &labels)?;
+    }
     let task = storage
         .get_task(task.id)?
         .ok_or(StorageError::TaskNotFound(task.id))?;
@@ -707,6 +717,7 @@ mod tests {
             description: String::new(),
             estimate: None,
             due_date: None,
+            labels: Vec::new(),
             criteria: Vec::new(),
             merge_criterion: true,
         }
@@ -824,6 +835,7 @@ mod tests {
                     amount: 3.0,
                 }),
                 due_date: Some(" 2026-10-31 ".to_owned()),
+                labels: None,
                 criteria: None,
                 merge_criterion: false,
             },
@@ -1093,6 +1105,7 @@ mod tests {
             description: String::new(),
             estimate: None,
             due_date: None,
+            labels: None,
             criteria: None,
             merge_criterion: false,
         };
@@ -1155,6 +1168,7 @@ mod tests {
             description: String::new(),
             estimate: None,
             due_date: None,
+            labels: None,
             criteria: None,
             merge_criterion,
         };

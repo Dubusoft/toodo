@@ -532,6 +532,9 @@ pub struct Task {
     pub estimate: Option<Estimate>,
     /// The day the task should be done by, if it has one.
     pub due_date: Option<DueDate>,
+    /// Labels such as a project or goal, sorted and unique (see
+    /// [`crate::domain::plan::labels`]).
+    pub labels: Vec<String>,
     /// Merge time of the pull request reported by GitHub, in seconds since the Unix
     /// epoch.
     pub pull_request_merged_at: Option<i64>,

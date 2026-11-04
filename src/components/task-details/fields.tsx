@@ -16,7 +16,7 @@ import { When } from "@/components/when";
 import { formatEstimate } from "@/lib/plan";
 import { toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
-import { type TaskContext, taskRef, DueDate, DetailField, useServerDown } from "@/components/task-common";
+import { type TaskContext, taskRef, DueDate, DetailField, TaskLabels, useServerDown } from "@/components/task-common";
 
 
 export function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean }) {
@@ -296,11 +296,15 @@ export function CommitList({ task, detailed }: { task: Task; detailed: boolean }
 
 /** A task's estimate and due date, the due date in red once it is missed. */
 export function TaskPlan({ task }: { task: Task }) {
-  if (task.estimate === null && task.dueDate === null) return null;
   return (
-    <p aria-label={`Plan of #${task.id}`} className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
-      {task.estimate !== null && <span>Estimate {formatEstimate(task.estimate)}</span>}
-      {task.dueDate !== null && <DueDate task={task} />}
-    </p>
+    <>
+      {(task.estimate !== null || task.dueDate !== null) && (
+        <p aria-label={`Plan of #${task.id}`} className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+          {task.estimate !== null && <span>Estimate {formatEstimate(task.estimate)}</span>}
+          {task.dueDate !== null && <DueDate task={task} />}
+        </p>
+      )}
+      <TaskLabels task={task} />
+    </>
   );
 }

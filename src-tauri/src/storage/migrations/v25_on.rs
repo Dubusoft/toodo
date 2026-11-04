@@ -515,4 +515,12 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
         WHERE role = 'writer' AND checkout_path IS NOT NULL
           AND state IN ('reserved', 'running', 'unknown');
     ",
+    // Version 35: task labels, such as a project or goal, that reviews filter by.
+    r"
+    CREATE TABLE task_labels (
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        label TEXT NOT NULL CHECK (length(trim(label)) > 0),
+        PRIMARY KEY (task_id, label)
+    ) WITHOUT ROWID;
+    ",
 ];
