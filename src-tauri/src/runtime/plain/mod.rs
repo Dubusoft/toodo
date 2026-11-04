@@ -15,7 +15,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::{LaunchReceipt, LaunchSpec, RunCommand, RunLauncher, RunnerError, RuntimeError, lock};
 use crate::domain::runtime::{HostRef, RunId, RunState, RunnerKind};
@@ -66,6 +66,41 @@ fn io_error(error: std::io::Error) -> RunnerError {
     RunnerError(format!(
         "{error}; check the local checkout and runs directory permissions, then start a new run"
     ))
+}
+
+/// The adapter and the timeout deadline (Unix seconds) of a local run, which a later server
+/// process needs to reattach it.
+const LAUNCH_FILE: &str = "launch";
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// Opens an existing private log for writing from its start.
+fn rewritten_file(path: &Path) -> Result<File, RunnerError> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path).map_err(io_error)
+}
+
+/// Counts the complete lines in `path`.
+fn complete_lines(path: &Path) -> Result<usize, RunnerError> {
+    let mut file = File::open(path).map_err(io_error)?;
+    let mut chunk = [0; 8192];
+    let mut lines = 0;
+    loop {
+        match file.read(&mut chunk).map_err(io_error)? {
+            0 => return Ok(lines),
+            count => lines += chunk[..count].iter().filter(|&&byte| byte == b'\n').count(),
+        }
+    }
 }
 
 fn private_file(path: &Path, contents: &[u8]) -> Result<File, RunnerError> {
@@ -237,6 +272,16 @@ impl PlainRunner {
             if !current.state.is_active() {
                 return Ok(current);
             }
+            // Reconciling again in the background must not repeat the same finding.
+            if state == RunState::Unknown
+                && current.state == RunState::Unknown
+                && storage
+                    .run_events(run)?
+                    .last()
+                    .is_some_and(|last| last.kind == event)
+            {
+                return Ok(current);
+            }
             storage.append_run_event(run, event, payload.as_deref())?;
             storage.finish_run(run, state)?
         };
@@ -302,24 +347,113 @@ impl PlainRunner {
         })
     }
 
-    /// Marks plain runs inherited from an earlier server process as unknown.
-    pub fn recover_after_restart(storage: &Mutex<Storage>) -> Result<(), RuntimeError> {
-        let mut storage = lock(storage);
-        for workspace in storage.list_workspaces()? {
-            for task in storage.list_tasks(workspace.id)? {
-                for run in storage.list_task_runs(task.id)? {
-                    if run.runner_kind == RunnerKind::Plain
-                        && (matches!(run.state, RunState::Reserved | RunState::Running)
-                            || (matches!(run.host, HostRef::Ssh(_))
-                                && run.state == RunState::Unknown))
-                    {
-                        storage.append_run_event(run.id, "server_restarted", None)?;
-                        storage.finish_run(run.id, RunState::Unknown)?;
-                    }
+    /// Takes over the plain runs of an earlier server process. A local run whose wrapper
+    /// recorded its PID is reattached: followed while its agent still runs, or settled from
+    /// its output and exit code. Other runs become unknown; remote ones are left to
+    /// [`Self::reconcile`], since this runs before the server serves and never uses SSH.
+    pub fn recover_after_restart(&self) -> Result<(), RuntimeError> {
+        let runs = {
+            let storage = lock(&self.storage);
+            let mut runs = Vec::new();
+            for workspace in storage.list_workspaces()? {
+                for task in storage.list_tasks(workspace.id)? {
+                    runs.extend(storage.list_task_runs(task.id)?.into_iter().filter(|run| {
+                        run.runner_kind == RunnerKind::Plain
+                            && (matches!(run.state, RunState::Reserved | RunState::Running)
+                                || (matches!(run.host, HostRef::Ssh(_))
+                                    && run.state == RunState::Unknown))
+                    }));
                 }
             }
+            runs
+        };
+        for run in runs {
+            lock(&self.storage).append_run_event(run.id, "server_restarted", None)?;
+            if run.host == HostRef::Local {
+                match self.reattach(&run) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) => eprintln!(
+                        "toodo-server: could not reattach plain run {} ({error}); it is \
+                         unknown now, stop it with stop_run",
+                        run.id
+                    ),
+                }
+            }
+            lock(&self.storage).finish_run(run.id, RunState::Unknown)?;
         }
         Ok(())
+    }
+
+    /// Follows a local run from the files its wrapper left. False when the run predates
+    /// them or its wrapper never recorded a PID.
+    fn reattach(&self, run: &TaskRun) -> Result<bool, RunnerError> {
+        let dir = self.runs_dir.join(run.id.to_string());
+        let Ok(launch) = fs::read_to_string(dir.join(LAUNCH_FILE)) else {
+            return Ok(false);
+        };
+        let Some((adapter, deadline)) = launch.trim_end().split_once(' ') else {
+            return Ok(false);
+        };
+        let (Ok(adapter), Ok(deadline)) = (AgentAdapter::parse(adapter), deadline.parse::<u64>())
+        else {
+            return Ok(false);
+        };
+        let Some(pid) = process::recorded_wrapper(&dir) else {
+            return Ok(false);
+        };
+        let raw_stdout = dir.join(process::RAW_STDOUT);
+        let replayed = complete_lines(&raw_stdout)?;
+        let raw = |name| File::open(dir.join(name)).map_err(io_error);
+        let (raw_stdout, raw_stderr) = (raw(process::RAW_STDOUT)?, raw(process::RAW_STDERR)?);
+        let stdout = rewritten_file(&dir.join("stdout.log"))?;
+        let stderr = rewritten_file(&dir.join("stderr.log"))?;
+        let receipt = LaunchReceipt {
+            provider_run_ref: run.provider_run_ref.clone().unwrap_or_else(|| {
+                format!("pid:{}", pid.map_or(String::new(), |pid| pid.to_string()))
+            }),
+        };
+        lock(&self.storage)
+            .append_run_event(run.id, "reattached", None)
+            .map_err(|error| RunnerError(format!("{error}; restart the server")))?;
+        let (sender, receiver) = mpsc::channel();
+        let end = Arc::new(Completion::default());
+        self.registry.lock().unwrap().insert(
+            run.request_key.clone(),
+            LiveRun {
+                run: run.id,
+                receipt: receipt.clone(),
+                stop: sender.clone(),
+                end: end.clone(),
+            },
+        );
+        process::manage(process::ManagedRun {
+            watch: process::Watch::Reattached {
+                pid,
+                dir,
+                stdout: raw_stdout,
+                stderr: raw_stderr,
+                replayed,
+            },
+            sender,
+            receiver,
+            stdout,
+            stderr,
+            adapter,
+            secret: self
+                .mcp
+                .as_ref()
+                .and_then(|provider| provider())
+                .map(|endpoint| endpoint.token)
+                .unwrap_or_default(),
+            timeout: Duration::from_secs(deadline.saturating_sub(unix_now())),
+            storage: self.storage.clone(),
+            run: run.id,
+            receipt,
+            end,
+            remote: None,
+        });
+        Ok(true)
     }
 }
 
@@ -427,7 +561,7 @@ impl RunLauncher for PlainRunner {
             AgentAdapter::Claude => &self.claude,
             AgentAdapter::Codex => &self.codex,
         };
-        let (child, sender, receiver) = if let Some(remote) = &remote {
+        let (watch, sender, receiver) = if let Some(remote) = &remote {
             remote.stage(spec.run, "brief.md", agent.brief.as_bytes())?;
             for (name, contents) in &invocation.files {
                 remote.stage(spec.run, name, contents.as_bytes())?;
@@ -435,14 +569,46 @@ impl RunLauncher for PlainRunner {
             if let Some(endpoint) = &endpoint {
                 remote.stage(spec.run, "token", endpoint.token.as_bytes())?;
             }
-            remote.spawn(spec.run, cwd, program, &invocation)?
+            let (child, sender, receiver) = remote.spawn(spec.run, cwd, program, &invocation)?;
+            (process::Watch::Pipes(child), sender, receiver)
         } else {
-            process::spawn(program, cwd, brief, &invocation)?
+            let deadline = unix_now().saturating_add(agent.timeout_secs);
+            private_file(
+                &dir.join(LAUNCH_FILE),
+                format!("{} {deadline}\n", agent.adapter.as_wire()).as_bytes(),
+            )?;
+            let raw_stdout = private_file(&dir.join(process::RAW_STDOUT), b"")?;
+            let raw_stderr = private_file(&dir.join(process::RAW_STDERR), b"")?;
+            let raw = |name| File::open(dir.join(name)).map_err(io_error);
+            let (out, err) = (raw(process::RAW_STDOUT)?, raw(process::RAW_STDERR)?);
+            let child = process::spawn_local(
+                program,
+                cwd,
+                &dir,
+                brief,
+                raw_stdout,
+                raw_stderr,
+                &invocation,
+            )?;
+            let (sender, receiver) = mpsc::channel();
+            (
+                process::Watch::Files {
+                    child,
+                    dir: dir.clone(),
+                    stdout: out,
+                    stderr: err,
+                },
+                sender,
+                receiver,
+            )
         };
         let receipt = LaunchReceipt {
-            provider_run_ref: match &spec.host {
-                HostRef::Local => format!("pid:{}", child.id()),
-                HostRef::Ssh(target) => format!("ssh:{target}:{}", spec.run),
+            provider_run_ref: match (&spec.host, &watch) {
+                (HostRef::Local, process::Watch::Files { child, .. }) => {
+                    format!("pid:{}", child.id())
+                }
+                (HostRef::Local, _) => unreachable!("local runs are watched through files"),
+                (HostRef::Ssh(target), _) => format!("ssh:{target}:{}", spec.run),
             },
         };
         let end = Arc::new(Completion::default());
@@ -456,7 +622,7 @@ impl RunLauncher for PlainRunner {
             },
         );
         process::manage(process::ManagedRun {
-            child,
+            watch,
             sender,
             receiver,
             stdout,

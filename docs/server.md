@@ -572,11 +572,15 @@ Environment=TOODO_DATA_DIR=/home/me/.local/share/toodo-server
 Environment=PATH=/home/me/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=5
+KillMode=process
 
 [Install]
 WantedBy=default.target
 ```
 
+`KillMode=process` makes a stop or restart end only the server process: agents of plain
+and tmux runs keep running, and the server picks them up again when it starts. Rerun
+`toodo service install` to add it to a unit written by an earlier version.
 `herdr-server.service` is the unit of a headless herdr server, if there is one; without it
 the `Wants=` is ignored. A server that fails to start is restarted every 5 s, at most 5
 times in 5 minutes; then the unit stays failed until

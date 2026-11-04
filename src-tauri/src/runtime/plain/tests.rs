@@ -533,7 +533,7 @@ fn restart_marks_reserved_and_running_unknown_and_stop_without_process_cancels()
     lock(&fixture.storage)
         .record_launch(running.id, "pid:123")
         .unwrap();
-    PlainRunner::recover_after_restart(&fixture.storage).unwrap();
+    fixture.runner.recover_after_restart().unwrap();
     for run in [reserved, running] {
         let storage = lock(&fixture.storage);
         assert_eq!(
@@ -548,6 +548,156 @@ fn restart_marks_reserved_and_running_unknown_and_stop_without_process_cancels()
             RunState::Cancelled
         );
     }
+}
+
+/// Starts the agent the way an earlier server process did, without managing it, and lets
+/// a thread reap the wrapper like that process would have. Joining the thread waits for
+/// the wrapper to exit.
+fn launch_unmanaged(
+    fixture: &Fixture,
+    key: &str,
+) -> (
+    TaskRun,
+    std::thread::JoinHandle<std::io::Result<std::process::ExitStatus>>,
+) {
+    let run = reserve(fixture, key);
+    let dir = fixture.dir.path().join("runs").join(run.id.to_string());
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brief.md"), "Implement the task").unwrap();
+    fs::write(
+        dir.join(LAUNCH_FILE),
+        format!("claude {}\n", unix_now() + 60),
+    )
+    .unwrap();
+    let invocation = AgentAdapter::Claude.invocation(&dir, None);
+    let mut child = process::spawn_local(
+        &fixture.runner.claude,
+        fixture.dir.path().to_str().unwrap(),
+        &dir,
+        File::open(dir.join("brief.md")).unwrap(),
+        File::create(dir.join(process::RAW_STDOUT)).unwrap(),
+        File::create(dir.join(process::RAW_STDERR)).unwrap(),
+        &invocation,
+    )
+    .unwrap();
+    let run = lock(&fixture.storage)
+        .record_launch(run.id, &format!("pid:{}", child.id()))
+        .unwrap();
+    (run, std::thread::spawn(move || child.wait()))
+}
+
+fn event_kinds(fixture: &Fixture, run: RunId) -> Vec<String> {
+    lock(&fixture.storage)
+        .run_events(run)
+        .unwrap()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect()
+}
+
+#[test]
+fn restart_reattaches_a_running_local_run_and_settles_it_from_its_output() {
+    let todo = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"Fix","status":"pending","activeForm":"Fixing"}]}}]}}"#;
+    let mut fixture = Fixture::new(&format!(
+        "printf '%s\\n' '{todo}'\nprintf R > ready\nread value < gate\n{RESULT}"
+    ));
+    let (run, _) = launch_unmanaged(&fixture, "one");
+    fixture.ready();
+    // The earlier server process recorded the todo list before it went away.
+    lock(&fixture.storage)
+        .append_run_event(run.id, "todo", Some("before restart"))
+        .unwrap();
+    fixture.runner.recover_after_restart().unwrap();
+    assert_eq!(
+        lock(&fixture.storage)
+            .get_run(run.id)
+            .unwrap()
+            .unwrap()
+            .state,
+        RunState::Running
+    );
+    fixture.release();
+    let ended = fixture.runner.wait_for_end(run.id, WAIT).unwrap();
+    assert_eq!(ended.state, RunState::Settled);
+    assert_eq!(
+        event_kinds(&fixture, run.id),
+        [
+            "reserved",
+            "launched",
+            "todo",
+            "server_restarted",
+            "reattached",
+            "result",
+            "settled"
+        ]
+    );
+    let log = fixture.runner.log(run.id, 65536).unwrap();
+    assert!(log.stdout.starts_with(todo), "{}", log.stdout);
+    assert!(log.stdout.contains(r#""result":"done""#));
+    let dir = fixture.dir.path().join("runs").join(run.id.to_string());
+    assert!(!dir.join(process::RAW_STDOUT).exists());
+    assert!(!dir.join(process::RAW_STDERR).exists());
+}
+
+#[test]
+fn restart_settles_a_local_run_that_ended_while_the_server_was_down() {
+    let fixture = Fixture::new(&format!("printf 'warning\\n' >&2\n{RESULT}\nexit 3"));
+    let (run, wrapper) = launch_unmanaged(&fixture, "one");
+    assert_eq!(wrapper.join().unwrap().unwrap().code(), Some(3));
+    fixture.runner.recover_after_restart().unwrap();
+    let ended = fixture.runner.wait_for_end(run.id, WAIT).unwrap();
+    assert_eq!(ended.state, RunState::Exited);
+    assert_eq!(
+        event_kinds(&fixture, run.id),
+        [
+            "reserved",
+            "launched",
+            "server_restarted",
+            "reattached",
+            "exit_after_result",
+            "exited"
+        ]
+    );
+    assert_eq!(
+        fixture.runner.log(run.id, 65536).unwrap().stderr,
+        "warning\n"
+    );
+}
+
+#[test]
+fn a_reattached_run_stops_and_a_vanished_one_fails_as_interrupted() {
+    let mut fixture = Fixture::new("printf R > ready\nread value < gate");
+    let (stopped, _) = launch_unmanaged(&fixture, "stopped");
+    fixture.ready();
+    let (vanished, wrapper) = launch_unmanaged(&fixture, "vanished");
+    fixture.ready();
+    let pid: i32 = vanished
+        .provider_run_ref
+        .as_deref()
+        .unwrap()
+        .strip_prefix("pid:")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(unsafe { libc::kill(-pid, libc::SIGKILL) }, 0);
+    assert!(wrapper.join().unwrap().unwrap().code().is_none());
+    fixture.runner.recover_after_restart().unwrap();
+    assert_eq!(
+        fixture.runner.stop(stopped.id).unwrap().state,
+        RunState::Cancelled
+    );
+    assert!(event_kinds(&fixture, stopped.id).ends_with(&[
+        "reattached".to_owned(),
+        "stop_requested".to_owned(),
+        "cancelled".to_owned()
+    ]));
+    let ended = fixture.runner.wait_for_end(vanished.id, WAIT).unwrap();
+    assert_eq!(ended.state, RunState::Failed);
+    assert!(event_kinds(&fixture, vanished.id).ends_with(&[
+        "reattached".to_owned(),
+        "interrupted".to_owned(),
+        "failed".to_owned()
+    ]));
 }
 
 #[test]
@@ -938,7 +1088,7 @@ fn remote_reconcile_maps_durable_evidence_and_restart_never_contacts_ssh() {
         let count = fs::read_to_string(fixture.dir.path().join("ssh-argv"))
             .unwrap()
             .len();
-        PlainRunner::recover_after_restart(&fixture.storage).unwrap();
+        fixture.runner.recover_after_restart().unwrap();
         assert_eq!(
             fs::read_to_string(fixture.dir.path().join("ssh-argv"))
                 .unwrap()
@@ -991,6 +1141,54 @@ fn remote_reconcile_maps_durable_evidence_and_restart_never_contacts_ssh() {
             .unwrap()
             .state,
         RunState::Running
+    );
+}
+
+#[test]
+fn remote_runs_left_unknown_by_a_restart_are_reconciled_in_a_background_pass() {
+    let mut fixture = Fixture::new(RESULT);
+    fixture.enable_remote();
+    let remote = fixture.remote();
+    let identity = std::process::Command::new("ps")
+        .args(["-o", "lstart=", "-p", &std::process::id().to_string()])
+        .env("LC_ALL", "C")
+        .output()
+        .unwrap();
+    let identity = String::from_utf8(identity.stdout).unwrap();
+    let clean = fixture.reserve_remote("clean");
+    remote.create_directory(clean.id).unwrap();
+    remote.stage(clean.id, "exit", b"0").unwrap();
+    let running = fixture.reserve_remote("running");
+    remote.create_directory(running.id).unwrap();
+    remote
+        .stage(
+            running.id,
+            "pid",
+            format!("{} {identity}", std::process::id()).as_bytes(),
+        )
+        .unwrap();
+    fixture.runner.recover_after_restart().unwrap();
+    let tmux = crate::runtime::tmux::TmuxRunner::new(
+        fixture.storage.clone(),
+        fixture.dir.path().join("runs"),
+        "0123456789ab",
+    );
+    let pass =
+        crate::runtime::reconcile_remote_runs(&fixture.storage, &fixture.runner, &tmux).unwrap();
+    let state = |run: RunId| lock(&fixture.storage).get_run(run).unwrap().unwrap().state;
+    assert_eq!(state(clean.id), RunState::Exited);
+    assert_eq!(state(running.id), RunState::Unknown);
+    assert!(pass.pending);
+    assert_eq!(pass.changed.len(), 1);
+    let events = event_kinds(&fixture, running.id);
+    // A later pass finds the same live agent and records nothing new.
+    let again =
+        crate::runtime::reconcile_remote_runs(&fixture.storage, &fixture.runner, &tmux).unwrap();
+    assert!(again.pending && again.changed.is_empty());
+    assert_eq!(event_kinds(&fixture, running.id), events);
+    assert_eq!(
+        events.last().map(String::as_str),
+        Some("remote_still_running")
     );
 }
 
