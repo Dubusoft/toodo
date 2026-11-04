@@ -1,3 +1,4 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use specta_typescript::Number;
@@ -7,7 +8,7 @@ use crate::domain::runtime as domain_runtime;
 use crate::runtime::plain;
 use crate::storage;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
 #[serde(transparent)]
 pub struct RunId(#[specta(type = Number)] pub i64);
 
@@ -24,7 +25,7 @@ impl From<domain_runtime::RunId> for RunId {
 }
 
 /// The agent CLI a plain run drives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentAdapter {
     /// Claude Code in print mode (`claude -p`).

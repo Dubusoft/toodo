@@ -312,7 +312,8 @@ impl fmt::Display for StorageError {
             ),
             Self::RunNotFound(id) => write!(
                 f,
-                "run {id} does not exist; list the runs of its task to find the run to use"
+                "run {id} does not exist; list the runs of its task (run_status with its \
+                 task_id over MCP, or the task's runs in the Toodo app) to find the run to use"
             ),
             Self::CheckoutHasActiveWriter {
                 checkout,

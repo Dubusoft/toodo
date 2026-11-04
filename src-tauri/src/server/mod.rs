@@ -246,6 +246,14 @@ impl Backend for Services {
         &self.herdr
     }
 
+    fn plain(&self) -> &PlainRunState {
+        &self.plain
+    }
+
+    fn tmux(&self) -> &TmuxRunState {
+        &self.tmux
+    }
+
     fn server(&self) -> &ServerStatus {
         &self.mcp
     }
