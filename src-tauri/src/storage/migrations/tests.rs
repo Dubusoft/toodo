@@ -920,6 +920,38 @@ fn version_16_turns_done_when_items_into_criteria_after_the_pull_request() {
 }
 
 #[test]
+fn version_36_keeps_subscriptions_without_a_failure() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    for sql in &MIGRATIONS[..35] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 35).unwrap();
+    conn.execute(
+        "INSERT INTO devices (label, token_hash, created_at, last_seen_at)
+             VALUES ('Phone', ?1, 1, 1)",
+        ["0".repeat(64)],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO push_subscriptions (device_id, endpoint, p256dh, auth, created_at)
+             VALUES (1, 'https://push.example/1', ?1, ?2, 2)",
+        params![vec![4u8; 65], vec![1u8; 16]],
+    )
+    .unwrap();
+
+    migrate(&mut conn).unwrap();
+
+    let row: (String, Option<String>, Option<i64>) = conn
+        .query_row(
+            "SELECT endpoint, last_failure, last_failure_at FROM push_subscriptions",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("https://push.example/1".to_owned(), None, None));
+}
+
+#[test]
 fn version_17_keeps_devices_without_subscriptions_and_drops_them_with_the_device() {
     let mut conn = Connection::open_in_memory().unwrap();
     for sql in &MIGRATIONS[..16] {

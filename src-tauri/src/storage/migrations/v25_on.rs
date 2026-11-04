@@ -523,4 +523,10 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
         PRIMARY KEY (task_id, label)
     ) WITHOUT ROWID;
     ",
+    // Version 36: the last notification a subscription's push service did not take, so
+    // the device can see why notifications stop arriving.
+    r"
+    ALTER TABLE push_subscriptions ADD COLUMN last_failure TEXT;
+    ALTER TABLE push_subscriptions ADD COLUMN last_failure_at INTEGER;
+    ",
 ];

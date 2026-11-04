@@ -1274,6 +1274,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let transport = push::tests::FakeTransport::default();
         let requests = transport.requests.clone();
+        let statuses = transport.statuses.clone();
         let services = services(temp.path());
         let services = Arc::new(Services {
             push: push::tests::push(temp.path(), transport),
@@ -1334,7 +1335,8 @@ mod tests {
             saved,
             serde_json::json!({
                 "endpoint": "https://push.example/send/1",
-                "settings": { "agent": true, "pullRequests": true, "completion": true }
+                "settings": { "agent": true, "pullRequests": true, "completion": true },
+                "lastFailure": null
             })
         );
         let quiet = serde_json::json!({ "agent": true, "pullRequests": false, "completion": true });
@@ -1361,6 +1363,37 @@ mod tests {
             request
                 .authorization
                 .ends_with(&format!(", k={public_key}"))
+        );
+
+        // A refused test notification shows on the device until one gets through.
+        statuses.lock().unwrap().push(403);
+        let (status, _) = send_json(
+            address,
+            "POST",
+            "/api/push/test",
+            &token,
+            &serde_json::json!({}),
+        );
+        assert!(!status.contains(" 200 "), "{status}");
+        let state = send_json(address, "GET", "/api/push", &token, &serde_json::json!({})).1;
+        let failure = &state["subscription"]["lastFailure"];
+        assert_eq!(
+            failure["message"],
+            "the push service refused the notification (403): nope"
+        );
+        assert!(failure["at"].as_i64().unwrap() > 0);
+        let (status, _) = send_json(
+            address,
+            "POST",
+            "/api/push/test",
+            &token,
+            &serde_json::json!({}),
+        );
+        assert!(status.contains(" 200 "), "{status}");
+        let state = send_json(address, "GET", "/api/push", &token, &serde_json::json!({})).1;
+        assert_eq!(
+            state["subscription"]["lastFailure"],
+            serde_json::Value::Null
         );
 
         let (status, _) = send_json(

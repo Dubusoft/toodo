@@ -325,6 +325,8 @@ mod tests {
                  DROP TABLE oauth_tokens;
                  DROP TABLE oauth_grants;
                  DROP TABLE oauth_clients;
+                 ALTER TABLE push_subscriptions DROP COLUMN last_failure;
+                 ALTER TABLE push_subscriptions DROP COLUMN last_failure_at;
                  PRAGMA user_version = 25;",
             )
             .unwrap();
