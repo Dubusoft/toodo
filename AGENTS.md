@@ -30,8 +30,10 @@ Toodo is a task-planning app that turns a plan into implemented, reviewed code:
    cloned at, a local directory or a remote directory on a saved herdr SSH machine.
 2. **Plan** tasks inside a workspace. Tasks may depend on each other and form a DAG.
 3. **Prepare** a task for implementation: create a dedicated `git worktree` in a separate
-   directory through the herdr API.
-4. **Implement** the task inside herdr (agent panes running in that worktree).
+   directory, through the herdr CLI (`herdr worktree create`) for runner `herdr` and
+   with `git worktree add` for runners `plain` and `tmux` (runner `none` creates none).
+4. **Implement** the task in that worktree: in herdr agent panes, as `claude` or `codex`
+   child processes, or in a detached tmux session, depending on the runner.
 5. **Record** the commits produced (SHA, message, author, timestamp) against the task.
 6. **Review** the task: push the worktree branch and open a pull request; the task moves
    to `in_review`.
