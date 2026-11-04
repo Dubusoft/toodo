@@ -244,6 +244,11 @@ git or herdr call. A git source needs one of these repository setups (`init` onl
 
 A remote machine is saved once in herdr: run `herdr machine add <host>` in a terminal on
 the server and answer herdr's setup prompts. Toodo lists the saved machines in the sidebar.
+Before that, the sidebar's Add machine panel tests the host (`test_ssh_machine`): the
+server runs `ssh -o BatchMode=yes <host> git --version` on a new connection, so a wrong
+host name, a refused key, an unknown host key, an unreachable host, or a missing git shows
+up with the step that fixes it, rather than when a workspace is first cloned there.
+`add_ssh_host` runs the same test right after it appends a `Host` block.
 
 Git runs locally as `git` and remotely as `ssh <machine> git ...` (on a Windows host through
 an encoded PowerShell script; see "Windows Hosts" in [server.md](server.md)). The default

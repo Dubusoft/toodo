@@ -23,6 +23,7 @@ import {
   useHomeDirectory,
   useMoveWorkspace,
   useRunnerHealth,
+  useTestSshMachine,
   useWorkspaces,
 } from "@/lib/queries";
 import { toneText } from "@/lib/status-styles";
@@ -476,15 +477,25 @@ export function MoveWorkspaceForm({ workspace, onClose }: { workspace: Workspace
   );
 }
 
-const ADD_MACHINE_COMMAND = "herdr machine add <host>";
-
-/** The server cannot open a terminal for `herdr machine add`, so the user runs it on the server. */
+/**
+ * The server cannot open a terminal for `herdr machine add`, so the user runs it on the server,
+ * after testing here that the server reaches the host over SSH and finds git there.
+ */
 function AddMachineHelp({ herdrMissing, onClose }: { herdrMissing: boolean; onClose: () => void }) {
   const [notice, setNotice] = useState<string | null>(null);
+  const [host, setHost] = useState("");
+  const test = useTestSshMachine();
+  const hostId = useId();
+  const command = `herdr machine add ${host.trim() || "<host>"}`;
+
+  function runTest(event: FormEvent) {
+    event.preventDefault();
+    if (host.trim() !== "") test.mutate(host.trim());
+  }
 
   async function copy() {
     try {
-      await navigator.clipboard.writeText(ADD_MACHINE_COMMAND);
+      await navigator.clipboard.writeText(command);
       setNotice("Copied the command.");
     } catch (error) {
       setNotice(`Could not copy: ${String(error)}`);
@@ -499,13 +510,51 @@ function AddMachineHelp({ herdrMissing, onClose }: { herdrMissing: boolean; onCl
     >
       <p className="text-xs text-muted-foreground">
         {herdrMissing && "Install herdr on the server first; SSH machines need it. "}
-        herdr asks questions in a terminal, which the Toodo server cannot open. Run this command in a terminal on the
-        server, replacing <code>&lt;host&gt;</code> with an SSH host from its ~/.ssh/config, then reload the machine
-        list here.
+        Enter an SSH host from the server's ~/.ssh/config and test the connection. herdr asks questions in a terminal,
+        which the Toodo server cannot open, so then run the command below in a terminal on the server and reload the
+        machine list here.
       </p>
+      <form aria-label="Test SSH connection" className="flex flex-col gap-1" onSubmit={runTest}>
+        <label htmlFor={hostId} className="text-xs font-medium">
+          SSH host
+        </label>
+        <div className="flex items-center gap-1">
+          <input
+            id={hostId}
+            className={inputClass}
+            value={host}
+            placeholder="devbox"
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => {
+              setHost(event.target.value);
+              test.reset();
+            }}
+          />
+          <Button type="submit" size="sm" variant="outline" disabled={host.trim() === "" || test.isPending}>
+            {test.isPending ? "Testing..." : "Test connection"}
+          </Button>
+        </div>
+      </form>
+      {test.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          Could not test the connection: {test.error.message}
+        </p>
+      )}
+      {test.data?.problem && (
+        <p role="alert" className="text-xs text-destructive">
+          {test.data.problem}
+        </p>
+      )}
+      {test.data?.gitVersion && (
+        <p role="status" className="text-xs text-muted-foreground">
+          Connected to {test.variables} without a prompt and found {test.data.gitVersion}. Run the command below to
+          save it in herdr.
+        </p>
+      )}
       <div className="flex flex-col items-start gap-1">
         <code className="max-w-full rounded bg-muted px-1.5 py-1 text-xs" aria-label="Add machine command">
-          {ADD_MACHINE_COMMAND}
+          {command}
         </code>
         <Button type="button" size="sm" variant="outline" onClick={() => void copy()}>
           Copy command
