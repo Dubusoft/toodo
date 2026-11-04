@@ -22,11 +22,19 @@ function isDark() {
   return document.documentElement.classList.contains("dark");
 }
 
+/** The `theme-color` of each OS color scheme, as `index.html` declares them. */
+function themeColors() {
+  return [...document.querySelectorAll('meta[name="theme-color"]')].map((meta) => meta.getAttribute("content"));
+}
+
 describe("theme", () => {
   beforeEach(() => {
     localStorage.clear();
     osDark = false;
     stubMatchMedia();
+    document.head.innerHTML =
+      '<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />' +
+      '<meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />';
   });
 
   it("defaults to system and follows the OS setting", () => {
@@ -52,6 +60,21 @@ describe("theme", () => {
 
     setThemePreference("dark");
     expect(isDark()).toBe(true);
+  });
+
+  it("colors the status bar with the background of the chosen theme, whatever the OS setting", () => {
+    initTheme();
+    expect(themeColors()).toEqual(["#ffffff", "#ffffff"]);
+
+    setThemePreference("dark");
+    expect(themeColors()).toEqual(["#0a0a0a", "#0a0a0a"]);
+
+    osDark = true;
+    setThemePreference("light");
+    expect(themeColors()).toEqual(["#ffffff", "#ffffff"]);
+
+    setThemePreference("system");
+    expect(themeColors()).toEqual(["#0a0a0a", "#0a0a0a"]);
   });
 
   it("falls back to system for an unknown stored value", () => {

@@ -89,7 +89,7 @@ export default function App() {
     workspaces.data?.find((workspace) => workspace.id === selectedId) ?? workspaces.data?.[0];
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div className="flex h-dvh bg-background text-foreground">
       {menuOpen && (
         <div aria-hidden className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setMenuOpen(false)} />
       )}

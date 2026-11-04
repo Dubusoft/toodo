@@ -33,7 +33,8 @@ const manifest = {
   id: "/",
   name: "Toodo",
   short_name: "Toodo",
-  description: "Plan tasks, implement them in herdr, and keep the record.",
+  description:
+    "Plan tasks as a dependency graph, run coding agents on them in their own worktrees, and track each one from plan to merged pull request.",
   start_url: "/",
   scope: "/",
   display: "standalone",
@@ -184,16 +185,6 @@ export function pwa(): Plugin {
           injectTo: "head",
         },
         { tag: "link", attrs: { rel: "apple-touch-icon", href: `/pwa/${appleTouchIcon}` }, injectTo: "head" },
-        {
-          tag: "meta",
-          attrs: { name: "theme-color", content: "#ffffff", media: "(prefers-color-scheme: light)" },
-          injectTo: "head",
-        },
-        {
-          tag: "meta",
-          attrs: { name: "theme-color", content: "#0a0a0a", media: "(prefers-color-scheme: dark)" },
-          injectTo: "head",
-        },
       ];
     },
     generateBundle(_options, bundle) {
