@@ -242,13 +242,25 @@ fn viewed(state: &str, base: &str) -> Result<String, GitError> {
     viewed_with(state, base, "[]", "\"\"")
 }
 
-/// `gh pr view` output with these `statusCheckRollup` and `reviewDecision` values.
+/// `gh pr view` output with these `statusCheckRollup` and `reviewDecision` values,
+/// including the fields of its activity and body the background check reads with it.
 fn viewed_with(state: &str, base: &str, checks: &str, decision: &str) -> Result<String, GitError> {
     let mut view: serde_json::Value =
         serde_json::from_str(&pull_request_json(state, base)).unwrap();
     view["statusCheckRollup"] = serde_json::from_str(checks).unwrap();
     view["reviewDecision"] = serde_json::from_str(decision).unwrap();
     view["latestReviews"] = serde_json::json!([]);
+    view["number"] = serde_json::json!(12);
+    view["title"] = serde_json::json!("Add login");
+    view["createdAt"] = serde_json::json!("2026-10-08T10:00:00Z");
+    view["body"] = serde_json::json!("");
+    Ok(view.to_string())
+}
+
+/// `gh pr view` output of an open pull request into `main` whose body is `text`.
+fn viewed_with_body(text: &str) -> Result<String, GitError> {
+    let mut view: serde_json::Value = serde_json::from_str(&viewed("OPEN", "main")?).unwrap();
+    view["body"] = serde_json::json!(text);
     Ok(view.to_string())
 }
 

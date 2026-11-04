@@ -2,17 +2,17 @@
 //! workspaces on a saved herdr SSH machine. On a Windows host git runs through PowerShell
 //! (see [`windows_remote`]).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Mutex, PoisonError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
 
-use crate::domain::model::{HostPath, MachineLabel, WorkspaceLocation};
+use crate::domain::model::{HostPath, Machine, MachineLabel, WorkspaceLocation};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation {
@@ -321,13 +321,65 @@ pub(super) fn ssh_invocation(machine: &MachineLabel, remote: String) -> Invocati
     }
 }
 
+/// How long the result of a `git fetch` that only refreshes what Toodo shows (branch
+/// lists, how far a branch is behind) is reused instead of fetching again.
+const FETCH_CACHE_TTL: Duration = Duration::from_secs(30);
+
+/// A fetch with the same arguments in the same directory of the same machine.
+type FetchKey = (Machine, String, Vec<String>);
+
+/// When a cached fetch started and what it gave.
+type FetchResult = (Instant, Result<String, GitError>);
+
 pub struct Git {
     runner: Box<dyn Runner>,
+    /// The result of each recent cached fetch and when it started.
+    fetches: Mutex<HashMap<FetchKey, FetchResult>>,
+    fetch_ttl: Duration,
 }
 
 impl Git {
     pub fn new(runner: Box<dyn Runner>) -> Self {
-        Self { runner }
+        Self {
+            runner,
+            fetches: Mutex::default(),
+            fetch_ttl: FETCH_CACHE_TTL,
+        }
+    }
+
+    /// Reuses fetch results for `ttl` instead of [`FETCH_CACHE_TTL`].
+    #[cfg(test)]
+    pub fn with_fetch_ttl(mut self, ttl: Duration) -> Self {
+        self.fetch_ttl = ttl;
+        self
+    }
+
+    /// Runs `git -C <dir> <args>`, a fetch, unless the same fetch started less than the
+    /// fetch cache interval ago, whose result, success or failure, is returned instead.
+    fn cached_fetch(
+        &self,
+        location: &WorkspaceLocation,
+        dir: &str,
+        args: &[&str],
+    ) -> Result<String, GitError> {
+        let key = (
+            location.machine(),
+            dir.to_owned(),
+            args.iter().map(|arg| (*arg).to_owned()).collect(),
+        );
+        let fresh = |started: &Instant| started.elapsed() < self.fetch_ttl;
+        let fetches = || self.fetches.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((started, result)) = fetches().get(&key)
+            && fresh(started)
+        {
+            return result.clone();
+        }
+        let started = Instant::now();
+        let result = self.run(location, Some(dir), args);
+        let mut fetches = fetches();
+        fetches.retain(|_, (started, _)| fresh(started));
+        fetches.insert(key, (started, result.clone()));
+        result
     }
 
     /// Clones `url` into the location's path, which must not exist or be empty.
@@ -689,7 +741,8 @@ impl Git {
 
     /// How many commits of the base branch `branch` lacks, read in the repository or
     /// worktree at `dir`. The repository's `origin` is where prerequisites get merged, so its
-    /// `base` is fetched first and counted against; a failed fetch (e.g. offline) counts
+    /// `base` is fetched first, unless it was within [`FETCH_CACHE_TTL`], and counted
+    /// against; a failed fetch (e.g. offline) counts
     /// against the last fetched state and reports the failure. `None` when the repository
     /// has no `origin`: there is no shared base to fall behind.
     pub fn commits_behind(
@@ -707,7 +760,7 @@ impl Git {
             return Ok(None);
         }
         let mut fetch_error = None;
-        match self.run(location, Some(dir), &["fetch", "--quiet", "origin", base]) {
+        match self.cached_fetch(location, dir, &["fetch", "--quiet", "origin", base]) {
             Ok(_) => {}
             Err(error @ GitError::Failed { .. }) => fetch_error = Some(error.to_string()),
             Err(error) => return Err(error),
@@ -759,12 +812,16 @@ impl Git {
 
     /// Branch names of the repository: its local branches and those of `origin`, sorted
     /// and without duplicates, after fetching `origin` with pruning so the list matches the
-    /// remote. A failed fetch (e.g. offline) still lists the branches known locally and
+    /// remote (unless it was fetched so within [`FETCH_CACHE_TTL`]). A failed fetch (e.g. offline) still lists the branches known locally and
     /// reports the failure.
     pub fn list_branches(&self, repo: &WorkspaceLocation) -> Result<BranchList, GitError> {
         let path = Some(location_path(repo));
         let fetch_error = if self.has_origin(repo)? {
-            match self.run(repo, path, &["fetch", "--prune", "--quiet", "origin"]) {
+            match self.cached_fetch(
+                repo,
+                location_path(repo),
+                &["fetch", "--prune", "--quiet", "origin"],
+            ) {
                 Ok(_) => None,
                 Err(error @ GitError::Failed { .. }) => Some(error.to_string()),
                 Err(error) => return Err(error),
@@ -2040,6 +2097,75 @@ mod tests {
         assert_eq!(behind.base, "origin/main");
         assert_eq!(behind.behind, 0);
         assert!(behind.fetch_error.is_some());
+    }
+
+    #[test]
+    fn fetches_within_the_cache_interval_reuse_the_last_result() {
+        let behind = |count: &str| {
+            vec![
+                Ok("origin\n".to_owned()),
+                Ok("abc\n".to_owned()),
+                Ok(format!("{count}\n")),
+            ]
+        };
+        let mut results = vec![Ok("origin\n".to_owned()), Err(failed())];
+        results.extend(behind("1").into_iter().skip(1));
+        results.extend(behind("2"));
+        results.push(Ok("origin\n".to_owned()));
+        results.push(Ok(String::new()));
+        results.extend(behind("3").into_iter().skip(1));
+        let (git, runner) = git(results);
+        let repo = local(r"C:\dev\a");
+        let count = |base: &str| {
+            git.commits_behind(&repo, r"D:\wt\a", base, "feat/x-1")
+                .unwrap()
+                .unwrap()
+        };
+
+        let first = count("main");
+        let second = count("main");
+        let other_base = count("release");
+
+        // The failed fetch is reused too, so an unreachable origin is not tried again
+        // and again; a different base is fetched on its own.
+        assert!(first.fetch_error.is_some());
+        assert_eq!(second.fetch_error, first.fetch_error);
+        assert_eq!(second.behind, 2);
+        assert_eq!(other_base.fetch_error, None);
+        let fetches: Vec<_> = git_commands(&runner)
+            .into_iter()
+            .filter(|command| command[0] == "fetch")
+            .collect();
+        assert_eq!(
+            fetches,
+            [
+                args(&["fetch", "--quiet", "origin", "main"]),
+                args(&["fetch", "--quiet", "origin", "release"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn fetches_run_again_once_the_cache_interval_passed() {
+        let listing = || {
+            vec![
+                Ok("origin\n".to_owned()),
+                Ok(String::new()),
+                Ok("refs/heads/main\n".to_owned()),
+            ]
+        };
+        let (git, runner) = git(listing().into_iter().chain(listing()).collect());
+        let git = git.with_fetch_ttl(Duration::ZERO);
+        let repo = local(r"C:\dev\a");
+
+        git.list_branches(&repo).unwrap();
+        git.list_branches(&repo).unwrap();
+
+        let fetches = git_commands(&runner)
+            .into_iter()
+            .filter(|command| command[0] == "fetch")
+            .count();
+        assert_eq!(fetches, 2);
     }
 
     #[test]

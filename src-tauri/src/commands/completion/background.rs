@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use super::polling::PollingGitHub;
 use super::pull_request::{adopt_pull_request, clear_missing_worktree};
 use super::settle::{Settle, Settled, branch_commits, settle};
 use crate::adapters::git::Git;
@@ -210,6 +211,14 @@ pub(super) fn check_pull_requests_on(
         .into_iter()
         .filter(|task| on_machine(storage, machine, task))
         .collect();
+    let github = PollingGitHub::new(
+        github,
+        tasks
+            .iter()
+            .filter(|task| matches!(task.status, TaskStatus::InProgress | TaskStatus::InReview))
+            .filter_map(|task| task.pull_request_url.as_deref()),
+    );
+    let github = &github;
     for task in &tasks {
         if task.worktree_path.is_none() {
             continue;
