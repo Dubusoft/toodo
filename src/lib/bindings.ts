@@ -62,10 +62,26 @@ export const commands = {
 	 */
 	listDirectories: (machine: Machine, path: string | null) => typedError<RemoteDirectory, CommandError>(invoke("list_directories", { machine, path })),
 	/**
-	 *  Tasks of every workspace ordered by ID, each with its dependencies, which may belong
-	 *  to another workspace.
+	 *  Tasks ordered by ID, each with its dependencies, which may belong to another
+	 *  workspace: every task without a filter, else those the filter selects. With a limit,
+	 *  the matching tasks with the highest IDs; pass the lowest ID of a full page as `before`
+	 *  to read the next.
 	 */
-	listTasks: () => typedError<Task[], CommandError>(invoke("list_tasks")),
+	listTasks: (filter: {
+	/**  Only tasks of this workspace. */
+	workspaceId?: WorkspaceId | null,
+	/**  Only tasks with one of these statuses; omitted or empty for any status. */
+	statuses?: TaskStatus[] | null,
+	/**  Only these tasks, at most 500. */
+	ids?: TaskId[] | null,
+	/**  Only tasks with a lower ID: the lowest ID of the previous page, to read the next. */
+	before?: TaskId | null,
+	/**
+	 *  At most this many tasks (1 to 500), those with the highest IDs; a full page means
+	 *  older ones may follow.
+	 */
+	limit?: number | null,
+} | null) => typedError<Task[], CommandError>(invoke("list_tasks", { filter })),
 	/**  Every related link between tasks, which neither block nor wait on each other. */
 	listTaskRelations: () => typedError<TaskRelation[], CommandError>(invoke("list_task_relations")),
 	/**  Links two tasks, from any workspaces, as related; linking twice keeps one link. */
@@ -1056,6 +1072,26 @@ export type TaskEvent = {
 };
 
 export type TaskId = number;
+
+/**
+ *  Which tasks `list_tasks` returns; every condition given must hold. Without a limit,
+ *  every matching task.
+ */
+export type TaskListFilter = {
+	/**  Only tasks of this workspace. */
+	workspaceId?: WorkspaceId | null,
+	/**  Only tasks with one of these statuses; omitted or empty for any status. */
+	statuses?: TaskStatus[] | null,
+	/**  Only these tasks, at most 500. */
+	ids?: TaskId[] | null,
+	/**  Only tasks with a lower ID: the lowest ID of the previous page, to read the next. */
+	before?: TaskId | null,
+	/**
+	 *  At most this many tasks (1 to 500), those with the highest IDs; a full page means
+	 *  older ones may follow.
+	 */
+	limit?: number | null,
+};
 
 /**
  *  Milestones derived from a task's status history (see `docs/architecture.md`, Task

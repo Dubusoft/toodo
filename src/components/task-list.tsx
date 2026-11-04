@@ -88,11 +88,12 @@ export function TaskList({
   /** Called once the timeline selected `shownTask`. */
   onTaskShown?: () => void;
 }) {
-  const allTasks = useTasks();
   const workspaces = useWorkspaces();
   const [timelineWorkspace, setTimelineWorkspace] = useState<WorkspaceId | null>(null);
   // The filter the user set; until then the timeline leaves finished tasks out and the list shows every status.
   const [chosenFilter, setTaskFilter] = useState<TaskFilter | null>(null);
+  // A task a link shows or a number search names loads even when it is older than the loaded pages.
+  const allTasks = useTasks([shownTask?.id, detailId, taskNumber(chosenFilter?.query ?? "")]);
   // On a phone the filters fold behind a button so the view gets most of the screen.
   const [filtersOpen, setFiltersOpen] = useState(false);
   const agentStatuses = useAgentStatuses();
@@ -136,6 +137,10 @@ export function TaskList({
       matchesFilter(task, taskFilter, context.byId),
   );
   const timelineTasks = numbered === undefined ? (filtered ?? []) : [numbered, ...(filtered ?? [])];
+  // Older finished tasks load on request, offered wherever finished tasks are shown.
+  const finishedShown = showTimeline
+    ? taskFilter.statuses.length === 0 || taskFilter.statuses.some((status) => status === "done" || status === "not_adopted")
+    : (doneShown ?? isFilterActive(taskFilter));
   const shownTaskData = shownTask === null ? undefined : context.byId.get(shownTask.id);
   useEffect(() => {
     if (shownTaskData === undefined) {
@@ -401,6 +406,17 @@ export function TaskList({
                 />
               </Suspense>
             </ErrorBoundary>
+          )}
+          {allTasks.hasNextPage && finishedShown && (
+            <Button
+              size="xs"
+              variant="outline"
+              className="self-start"
+              disabled={allTasks.isFetchingNextPage}
+              onClick={() => void allTasks.fetchNextPage()}
+            >
+              {allTasks.isFetchingNextPage ? "Loading older finished tasks..." : "Load older finished tasks"}
+            </Button>
           )}
         </>
       )}

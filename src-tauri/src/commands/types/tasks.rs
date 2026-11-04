@@ -107,6 +107,78 @@ impl From<status::TaskStatus> for TaskStatus {
     }
 }
 
+/// The most tasks one page of a task list holds, and the most task IDs a list may ask for.
+pub const MAX_TASK_PAGE: u32 = 500;
+
+/// Which tasks `list_tasks` returns; every condition given must hold. Without a limit,
+/// every matching task.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Type)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskListFilter {
+    /// Only tasks of this workspace.
+    #[serde(default)]
+    pub workspace_id: Option<WorkspaceId>,
+    /// Only tasks with one of these statuses; omitted or empty for any status.
+    #[serde(default)]
+    pub statuses: Option<Vec<TaskStatus>>,
+    /// Only these tasks, at most 500.
+    #[serde(default)]
+    pub ids: Option<Vec<TaskId>>,
+    /// Only tasks with a lower ID: the lowest ID of the previous page, to read the next.
+    #[serde(default)]
+    pub before: Option<TaskId>,
+    /// At most this many tasks (1 to 500), those with the highest IDs; a full page means
+    /// older ones may follow.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+impl TryFrom<TaskListFilter> for storage::TaskQuery {
+    type Error = CommandError;
+
+    fn try_from(filter: TaskListFilter) -> CommandResult<Self> {
+        if let Some(limit) = filter.limit {
+            task_page_limit(limit)?;
+        }
+        if filter
+            .ids
+            .as_ref()
+            .is_some_and(|ids| ids.len() > MAX_TASK_PAGE as usize)
+        {
+            return Err(CommandError::invalid_input(format!(
+                "ids lists more than {MAX_TASK_PAGE} tasks; split them into lists of at most \
+                 {MAX_TASK_PAGE} IDs and list each"
+            )));
+        }
+        Ok(Self {
+            workspace: filter.workspace_id.map(Into::into),
+            statuses: filter
+                .statuses
+                .unwrap_or_default()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            ids: filter
+                .ids
+                .map(|ids| ids.into_iter().map(Into::into).collect()),
+            before: filter.before.map(Into::into),
+            limit: filter.limit,
+        })
+    }
+}
+
+/// Checks that `limit` is a page size a task list accepts.
+pub(crate) fn task_page_limit(limit: u32) -> CommandResult<()> {
+    if (1..=MAX_TASK_PAGE).contains(&limit) {
+        Ok(())
+    } else {
+        Err(CommandError::invalid_input(format!(
+            "limit {limit} is out of range; pass a limit from 1 to {MAX_TASK_PAGE}, and pass \
+             the lowest task ID of a full page as before to read the next page"
+        )))
+    }
+}
+
 impl From<TaskStatus> for status::TaskStatus {
     fn from(status: TaskStatus) -> Self {
         match status {

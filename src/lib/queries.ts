@@ -1,5 +1,12 @@
 import { useEffect } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+  type QueryClient,
+} from "@tanstack/react-query";
 import {
   commands,
   events,
@@ -16,7 +23,9 @@ import {
   type Task,
   type TaskEdit,
   type TaskId,
+  type TaskListFilter,
   type TaskResolution,
+  type TaskStatus,
   type TaskAgentStatus,
   type TaskPullRequestStatus,
   type TaskRun,
@@ -53,8 +62,11 @@ export async function unwrap<T>(result: Promise<CommandResult<T>>): Promise<T> {
 
 export const queryKeys = {
   workspaces: ["workspaces"] as const,
-  /** Tasks of every workspace: dependencies cross workspaces, so they are loaded together. */
-  tasks: ["task-list"] as const,
+  /**
+   * Tasks of every workspace, loaded in pages (see `useTasks`): dependencies cross workspaces,
+   * so they are loaded together. Not `["task-list"]` alone, which held one plain list before.
+   */
+  tasks: ["task-list", "pages"] as const,
   /** Related links between tasks; under "tasks", so a tasks-changed event refetches them. */
   taskRelations: ["tasks", "relations"] as const,
   herdrStatus: ["herdr-status"] as const,
@@ -282,12 +294,85 @@ export function useDeleteWorkspace() {
   });
 }
 
-/** Tasks of every workspace; a status change may release dependents in other workspaces. */
-export function useTasks() {
-  return useQuery({
+/** How many finished tasks a page of the task list loads, newest first. */
+export const finishedTasksPage = 100;
+
+const openStatuses: TaskStatus[] = ["planned", "in_progress", "in_review"];
+
+/** Loaded tasks, and the ID to load older finished tasks below; null when there are none. */
+export type TasksPage = { tasks: Task[]; olderBefore: TaskId | null };
+
+function listTasks(filter: TaskListFilter): Promise<Task[]> {
+  return unwrap(commands.listTasks(filter));
+}
+
+/**
+ * A page of the task list. The first holds every open task, the newest finished ones, and the
+ * finished tasks the open ones depend on; each later page the next older finished tasks. So the
+ * first screen loads a bounded number of tasks however long the history grows.
+ */
+async function loadTasksPage(before: TaskId | null): Promise<TasksPage> {
+  const finished = listTasks({ statuses: ["done"], before, limit: finishedTasksPage });
+  const olderBefore = (tasks: Task[]) =>
+    tasks.length < finishedTasksPage ? null : Math.min(...tasks.map((task) => task.id));
+  if (before !== null) {
+    const older = await finished;
+    return { tasks: older, olderBefore: olderBefore(older) };
+  }
+  const [open, newest] = await Promise.all([listTasks({ statuses: openStatuses }), finished]);
+  const loaded = new Set([...open, ...newest].map((task) => task.id));
+  const missing = [...new Set(open.flatMap((task) => task.dependsOn))].filter((id) => !loaded.has(id));
+  const chunks: TaskId[][] = [];
+  for (let start = 0; start < missing.length; start += finishedTasksPage) {
+    chunks.push(missing.slice(start, start + finishedTasksPage));
+  }
+  const prerequisites = await Promise.all(chunks.map((ids) => listTasks({ ids })));
+  return { tasks: [...open, ...newest, ...prerequisites.flat()], olderBefore: olderBefore(newest) };
+}
+
+/** Every task the pages loaded, once each, ordered by ID: a page may repeat a task another holds. */
+export function loadedTasks(data: InfiniteData<TasksPage, TaskId | null>): Task[] {
+  const byId = new Map<TaskId, Task>();
+  for (const page of data.pages) {
+    for (const task of page.tasks) byId.set(task.id, task);
+  }
+  return [...byId.values()].sort((a, b) => a.id - b.id);
+}
+
+/** The loaded tasks in the cache of `queryClient`, without loading them. */
+export function cachedTasks(queryClient: QueryClient): Task[] | undefined {
+  const data = queryClient.getQueryData<InfiniteData<TasksPage, TaskId | null>>(queryKeys.tasks);
+  return data === undefined ? undefined : loadedTasks(data);
+}
+
+/**
+ * Tasks of every workspace, as loaded so far: open ones and the newest finished ones first,
+ * older finished ones on `fetchNextPage`. A status change may release dependents in other
+ * workspaces, so they load together. The tasks `wanted` names (one a link or a search points at)
+ * are loaded too when the pages do not hold them yet.
+ */
+export function useTasks(wanted: readonly (TaskId | null | undefined)[] = []) {
+  const pages = useInfiniteQuery({
     queryKey: queryKeys.tasks,
-    queryFn: () => unwrap(commands.listTasks()),
+    queryFn: ({ pageParam }) => loadTasksPage(pageParam),
+    initialPageParam: null as TaskId | null,
+    getNextPageParam: (page) => page.olderBefore,
+    select: loadedTasks,
   });
+  const paged = pages.data;
+  const pagedIds = new Set(paged?.map((task) => task.id));
+  const missing = [
+    ...new Set(wanted.filter((id): id is TaskId => id !== null && id !== undefined && !pagedIds.has(id))),
+  ].sort((a, b) => a - b);
+  // Under the pages' key, so whatever refreshes the pages refreshes these too.
+  const extra = useQuery({
+    queryKey: [...queryKeys.tasks, "by-id", missing],
+    queryFn: () => listTasks({ ids: missing }),
+    enabled: paged !== undefined && missing.length > 0,
+  });
+  const extraTasks = missing.length === 0 ? [] : (extra.data ?? []);
+  if (paged === undefined || extraTasks.length === 0) return pages;
+  return { ...pages, data: [...paged, ...extraTasks].sort((a, b) => a.id - b.id) };
 }
 
 /** Tasks of every workspace with a milestone or commit in `[start, end)`. */
@@ -353,7 +438,7 @@ export function useHerdrEvents() {
       if (previous === undefined || document.hasFocus()) {
         return;
       }
-      const tasks = queryClient.getQueryData<Task[]>(queryKeys.tasks) ?? [];
+      const tasks = cachedTasks(queryClient) ?? [];
       notify(alerts(previous, next, tasks)).catch((error: unknown) =>
         console.error("toodo: failed to show notifications", error),
       );
@@ -361,7 +446,7 @@ export function useHerdrEvents() {
 
     const subscriptions = [
       events.tasksChanged.listen(async () => {
-        const previous = queryClient.getQueryData<Task[]>(queryKeys.tasks);
+        const previous = cachedTasks(queryClient);
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
           // A task completed in the background got the commits of its pull request.
@@ -370,7 +455,7 @@ export function useHerdrEvents() {
         if (previous === undefined || document.hasFocus()) {
           return;
         }
-        const next = queryClient.getQueryData<Task[]>(queryKeys.tasks) ?? [];
+        const next = cachedTasks(queryClient) ?? [];
         notify(taskStatusAlerts(previous, next)).catch((error: unknown) =>
           console.error("toodo: failed to show status notifications", error),
         );
