@@ -98,6 +98,10 @@ that no placeholder is left.
   note means the worker needs someone; answer it or tell the user.
 - `pull_request_status` (without `task_id`) lists the open pull requests of `in_review`
   tasks with their CI checks and reviews as Toodo last read them, without running `gh`.
+- `review_report` renders the review of a week, month, quarter, year, or custom period as
+  Markdown or CSV, the same report the app's Review exports, e.g. `{"period": "week"}`
+  for a weekly status update or `{"period": "year", "format": "csv"}` for a year-end
+  report. Chat apps can call it with the `toodo.read` scope.
 - A worker that finds a missing prerequisite creates the prerequisite tasks and pauses
   its own task with `add_dependency`. Start those prerequisites; once they are done,
   `start_task` on the paused task resumes it.

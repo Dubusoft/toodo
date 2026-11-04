@@ -82,6 +82,7 @@ vi.mock("@/lib/bindings", () => ({
     restoreBackup: vi.fn(),
     reviewPeriod: vi.fn(),
     backfillPullRequests: vi.fn(),
+    reviewReport: vi.fn(),
   },
   events: {
     tasksChanged: { listen: vi.fn() },
@@ -533,6 +534,20 @@ describe("App", () => {
             ]
           : [],
     }));
+    mocked.reviewReport.mockImplementation(async ({ format }) => ({
+      status: "ok",
+      data:
+        format === "csv"
+          ? { fileName: "toodo-review-2026.csv", mediaType: "text/csv", from: "2026-01-01", to: "2026-12-31", contents: "\uFEFFTask\r\n1,toodo\r\n" }
+          : {
+              fileName: "toodo-review-2026-10-12-to-2026-10-18.md",
+              mediaType: "text/markdown",
+              from: "2026-10-12",
+              to: "2026-10-18",
+              contents: "# Week review: 2026-10-12 to 2026-10-18\n",
+            },
+    }));
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Review" }));
@@ -574,11 +589,17 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Export" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy as Markdown" }));
     expect(await screen.findByText("Copied as Markdown.")).toBeInTheDocument();
-    expect(writeText).toHaveBeenCalledWith(
-      expect.stringContaining(
-        "## Completed (1)\n\n- [feat] Add storage (toodo, 2026-10-13, https://github.com/acme/toodo/pull/7)",
-      ),
-    );
+    expect(writeText).toHaveBeenCalledWith("# Week review: 2026-10-12 to 2026-10-18\n");
+    expect(mocked.reviewReport).toHaveBeenLastCalledWith({
+      period: "week",
+      date: null,
+      from: "2026-10-12",
+      to: null,
+      format: "markdown",
+      timeZone,
+      workspaceId: null,
+      label: null,
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "Previous week" }));
     expect(await screen.findByText("No recorded activity in this week.")).toBeInTheDocument();
@@ -599,7 +620,11 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Save as CSV" }));
     expect(await screen.findByText("Downloaded toodo-review-2026.csv")).toBeInTheDocument();
     expect(downloads).toEqual(["toodo-review-2026.csv"]);
-    expect(await createObjectURL.mock.calls[0][0].text()).toContain(",toodo,feat,Add storage,Completed,");
+    const saved = [...new Uint8Array(await createObjectURL.mock.calls[0][0].arrayBuffer())];
+    expect(saved).toEqual([...new TextEncoder().encode("\uFEFFTask\r\n1,toodo\r\n")]);
+    expect(mocked.reviewReport).toHaveBeenLastCalledWith(
+      expect.objectContaining({ period: "year", from: "2026-01-01", to: null, format: "csv" }),
+    );
     click.mockRestore();
 
     fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));

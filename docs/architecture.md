@@ -401,8 +401,11 @@ generated or guessed by an agent.
   active hours so far, its estimate and unit, its due date and whether it was met (`On
   time`, `Late`, `Overdue`, or `Not due yet`), the size and review count of its pull request, and its completion
   note; UTF-8 with a byte
-  order mark). The frontend
-  builds the file, since it knows the local time zone, and the browser downloads it.
+  order mark). The server renders both reports with the `review_report` command, in the
+  IANA time zone the caller names (the web app sends the browser's, `toodo review` the
+  machine's, and the server's own is the default), and the browser downloads the file.
+  Agents get the same report from the MCP tool `review_report`, and the CLI prints it
+  with `toodo review` (see [server.md](server.md)).
 - Printing the review (Export > Print or save as PDF, or the browser's print command)
   leaves out the sidebar, the controls, and banners, and uses the light theme.
 

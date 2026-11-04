@@ -14,8 +14,8 @@ use serde::de::DeserializeOwned;
 use super::Services;
 use crate::commands::types::{
     AgentAdapter, AgentOptions, BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost,
-    NewTask, NewWorkspace, OAuthGrantId, PullRequestOptions, RunId, TaskEdit, TaskId,
-    TaskListFilter, TaskResolution, Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
+    NewTask, NewWorkspace, OAuthGrantId, PullRequestOptions, ReviewReportRequest, RunId, TaskEdit,
+    TaskId, TaskListFilter, TaskResolution, Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
 };
 use crate::commands::{
     CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, agent_options, backup,
@@ -210,6 +210,7 @@ pub const READ_COMMANDS: &[&str] = &[
     "list_mcp_tunnels",
     "review_period",
     "list_archive",
+    "review_report",
     "get_backup_settings",
     "list_backups",
 ];
@@ -431,6 +432,9 @@ commands!(s => {
     );
     "backfill_pull_requests"(start: Timestamp, end: Timestamp) => sync Reply::result(
         review::backfill_pull_requests(State(&s.storage), State(&s.git), State(&s.github), start, end)
+    );
+    "review_report"(request: ReviewReportRequest) => sync Reply::result(
+        review::review_report(State(s.reader()), request)
     );
 
     "get_backup_settings"() => sync Reply::value(backup::get_backup_settings(State(&s.backups)));

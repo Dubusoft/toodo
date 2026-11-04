@@ -15,6 +15,7 @@ pub mod issues;
 pub mod machines;
 pub mod mcp;
 pub mod pull_request_options;
+pub mod report;
 pub mod review;
 pub mod run_logs;
 pub mod runners;

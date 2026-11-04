@@ -494,7 +494,8 @@ impl Access {
             | "list_tasks"
             | "search_tasks"
             | "get_task"
-            | "pull_request_status" => scopes.can_read(),
+            | "pull_request_status"
+            | "review_report" => scopes.can_read(),
             "create_workspace" | "create_task" | "create_plan" | "update_task"
             | "add_dependency" | "remove_dependency" | "add_related" | "remove_related"
             | "add_criterion" | "remove_criterion" | "check_criterion" | "add_progress_note"
@@ -1152,6 +1153,16 @@ impl ToodoMcp {
             &polled,
             request,
         ))
+    }
+
+    #[tool(
+        description = "Render the review of a period across all workspaces (or one workspace or label) as Markdown (the default) or CSV, the same report the Toodo app's Review exports: a summary of outcomes, commits, durations, plan vs actual, late tasks, a Year in review for a year, and each task under its outcome with its pull request, notes, and commits. period is week (from its Monday, or from from), month, quarter, year, or custom (from and to, both included); date (YYYY-MM-DD) picks the period containing that day, today when omitted. Days and times are in time_zone (IANA, e.g. Europe/Berlin), the server's when omitted. e.g. {\"period\": \"week\"} or {\"period\": \"year\", \"date\": \"2026-01-01\", \"format\": \"csv\"}. Returns {fileName, mediaType, from, to, contents}."
+    )]
+    fn review_report(
+        &self,
+        Parameters(request): Parameters<tools::ReviewReportRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(tools::review_report(&lock(self.backend.reader()), request))
     }
 
     #[tool(
@@ -3257,7 +3268,8 @@ mod tests {
                 "list_tasks",
                 "search_tasks",
                 "get_task",
-                "pull_request_status"
+                "pull_request_status",
+                "review_report"
             ]
             .into_iter()
             .map(str::to_owned)

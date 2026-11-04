@@ -5,8 +5,17 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/task-list";
 import { TaskLabels } from "@/components/task-common";
 import { inputClass } from "@/components/workspace-list";
-import type { BackfillSummary, ReviewEntry, ReviewOutcome, TaskId, Workspace } from "@/lib/bindings";
-import { useArchive, useBackfillPullRequests, useReview, useWorkspaces } from "@/lib/queries";
+import {
+  commands,
+  type BackfillSummary,
+  type ReportFormat,
+  type ReviewEntry,
+  type ReviewOutcome,
+  type ReviewReport,
+  type TaskId,
+  type Workspace,
+} from "@/lib/bindings";
+import { unwrap, useArchive, useBackfillPullRequests, useReview, useWorkspaces } from "@/lib/queries";
 import {
   commitSubject,
   durationKeys,
@@ -29,10 +38,7 @@ import {
   planVsActual,
   pullRequestNumber,
   pullRequestStats,
-  reviewCsv,
-  reviewFileName,
   reviewLabels,
-  reviewMarkdown,
   shiftPeriod,
   summarize,
   weekStarting,
@@ -188,24 +194,47 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
     moveTo(kind === "custom" ? { ...period, kind } : periodContaining(kind, period.from));
   }
 
-  async function copyMarkdown(entries: ReviewEntry[]) {
+  // The server renders the report, as for MCP and `toodo review`, in this browser's time zone.
+  function renderReport(format: ReportFormat): Promise<ReviewReport> {
+    return unwrap(
+      commands.reviewReport({
+        period: period.kind,
+        date: null,
+        from: period.from,
+        to: period.kind === "custom" ? period.to : null,
+        format,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
+        workspaceId: filter.workspaceId,
+        label: filter.label,
+      }),
+    );
+  }
+
+  async function copyMarkdown() {
     try {
-      await navigator.clipboard.writeText(reviewMarkdown(period, entries, workspaceList, Date.now() / 1000));
+      const report = renderReport("markdown");
+      if (typeof ClipboardItem === "undefined") {
+        await navigator.clipboard.writeText((await report).contents);
+      } else {
+        // Handing the clipboard a pending item keeps Safari's user-gesture check satisfied.
+        const text = report.then(({ contents }) => new Blob([contents], { type: "text/plain" }));
+        await navigator.clipboard.write([new ClipboardItem({ "text/plain": text })]);
+      }
       setNotice("Copied as Markdown.");
     } catch (error) {
       setNotice(`Could not copy: ${String(error)}`);
     }
   }
 
-  function saveAs(extension: "md" | "csv", entries: ReviewEntry[]) {
-    const contents =
-      extension === "csv"
-        ? reviewCsv(entries, workspaceList, Date.now() / 1000)
-        : reviewMarkdown(period, entries, workspaceList, Date.now() / 1000);
-    // The report is for the user, not the server: the browser downloads it.
-    const name = reviewFileName(period, extension);
-    download(name, contents, extension === "csv" ? "text/csv" : "text/markdown");
-    setNotice(`Downloaded ${name}`);
+  async function saveAs(format: ReportFormat) {
+    try {
+      const report = await renderReport(format);
+      // The report is for the user, not the server: the browser downloads it.
+      download(report.fileName, report.contents, report.mediaType);
+      setNotice(`Downloaded ${report.fileName}`);
+    } catch (error) {
+      setNotice(`Could not export: ${String(error)}`);
+    }
   }
 
   return (
@@ -314,7 +343,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                 <MenuItem
                   onSelect={() => {
                     close();
-                    if (entries) void copyMarkdown(entries);
+                    void copyMarkdown();
                   }}
                 >
                   Copy as Markdown
@@ -322,7 +351,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                 <MenuItem
                   onSelect={() => {
                     close();
-                    if (entries) void saveAs("md", entries);
+                    void saveAs("markdown");
                   }}
                 >
                   Save as Markdown
@@ -330,7 +359,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                 <MenuItem
                   onSelect={() => {
                     close();
-                    if (entries) void saveAs("csv", entries);
+                    void saveAs("csv");
                   }}
                 >
                   Save as CSV

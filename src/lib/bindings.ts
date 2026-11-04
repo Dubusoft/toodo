@@ -403,6 +403,11 @@ export const commands = {
 	 *  the others are still imported.
 	 */
 	backfillPullRequests: (start: Timestamp, end: Timestamp) => typedError<BackfillSummary, CommandError>(invoke("backfill_pull_requests", { start, end })),
+	/**
+	 *  The review of a period rendered as Markdown or CSV, as the web app, the MCP tool
+	 *  `review_report`, and `toodo review` show it; see [`ReviewReportRequest`].
+	 */
+	reviewReport: (request: ReviewReportRequest) => typedError<ReviewReport, CommandError>(invoke("review_report", { request })),
 	getBackupSettings: () => invoke<BackupSettings>("get_backup_settings"),
 	/**  Whether the latest automatic backup failed, and why. */
 	getBackupStatus: () => invoke<BackupStatus>("get_backup_status"),
@@ -1065,6 +1070,16 @@ export type RemoteDirectory = {
 	directories: string[],
 };
 
+/**  The file format of a review report. */
+export type ReportFormat = 
+/**  Markdown, for pasting into a status update or a year-end report. */
+"markdown" | 
+/**
+ *  One row per reviewed task (RFC 4180, CRLF line ends, led by a UTF-8 byte order
+ *  mark), for spreadsheets.
+ */
+"csv";
+
 /**  How the repository of a new workspace gets to its location. */
 export type RepositorySetup = 
 /**  The location already holds a cloned repository. */
@@ -1097,6 +1112,58 @@ export type ReviewEntry = {
  *  reached in the period, or `worked_on` when it only got commits.
  */
 export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "worked_on" | "planned";
+
+/**  The kind of a reviewed period. */
+export type ReviewPeriodKind = 
+/**  Seven days, from a Monday unless `from` names another first day. */
+"week" | 
+/**  A calendar month. */
+"month" | 
+/**  A calendar quarter. */
+"quarter" | 
+/**  A calendar year. */
+"year" | 
+/**  The days `from` to `to`, both included. */
+"custom";
+
+/**  A rendered review report. */
+export type ReviewReport = {
+	/**  A file name for the report, e.g. `toodo-review-2026-Q4.md`. */
+	fileName: string,
+	/**  `text/markdown` or `text/csv`. */
+	mediaType: string,
+	/**  The first and last day of the reviewed period, as `YYYY-MM-DD`. */
+	from: string,
+	to: string,
+	contents: string,
+};
+
+/**  Which review report to render. Days are `YYYY-MM-DD` in `timeZone`. */
+export type ReviewReportRequest = {
+	period: ReviewPeriodKind,
+	/**
+	 *  A day inside the period, for any kind but `custom`; today when neither `date` nor
+	 *  `from` is given.
+	 */
+	date?: string | null,
+	/**
+	 *  The first day of the period: required for `custom`, any first day of a `week`, and
+	 *  a day inside a month, quarter, or year.
+	 */
+	from?: string | null,
+	/**  The last day of a `custom` period, included. */
+	to?: string | null,
+	format: ReportFormat,
+	/**
+	 *  An IANA time zone such as `Europe/Berlin` that the days, the period, and the times
+	 *  in the report are in; the server's time zone when omitted.
+	 */
+	timeZone?: string | null,
+	/**  Only tasks of this workspace. */
+	workspaceId?: WorkspaceId | null,
+	/**  Only tasks with this label. */
+	label?: string | null,
+};
 
 /**  Where the reviews of a pull request stand. */
 export type ReviewStatus = "approved" | "changes_requested" | "pending";

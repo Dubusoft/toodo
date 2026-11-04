@@ -8,6 +8,7 @@
 
 mod agents;
 mod process;
+mod review;
 mod service;
 mod settings;
 mod update;
@@ -32,6 +33,8 @@ const USAGE: &str = "Usage: toodo init [--port N | --listen HOST:PORT] [--data-d
        toodo status [--data-dir DIR]
        toodo service install [--port N | --listen HOST:PORT] [--data-dir DIR]
        toodo update [--channel dev|latest] [--allow-downgrade] [--data-dir DIR]
+       toodo review [--period week|month|quarter|year|custom] [--date DAY]
+                    [--from DAY] [--to DAY] [--format markdown|csv] [--data-dir DIR]
        toodo --version | --help
        toodo COMMAND --help
 
@@ -54,6 +57,8 @@ Commands:
                    endpoint again like start; a failed install
                    leaves the running server alone, and a channel version older than
                    the installed one is not installed
+  review           print the review of a week, month, quarter, year, or custom period
+                   as Markdown or CSV, rendered by the running server
 
 Options:
   --port N            port to listen on, keeping the saved host (default 47616)
@@ -122,6 +127,11 @@ the unit, enables and restarts it, and turns on lingering. With --port or --list
 saves a new listen address first, like init.",
             format!("{LISTEN_OPTIONS}\n{DATA_DIR_OPTION}"),
         ),
+        "review" => (
+            review::USAGE,
+            review::ABOUT,
+            format!("{}\n{DATA_DIR_OPTION}", review::OPTIONS),
+        ),
         _ => (
             "toodo update [--channel dev|latest] [--allow-downgrade] [--data-dir DIR]",
             "Installs the newest @dubusoft/toodo of the channel with npm, restarts the server
@@ -171,6 +181,7 @@ enum Command {
     ServiceInstall(Option<ListenFlag>, Option<PathBuf>),
     /// The channel, whether a downgrade is allowed, and the data directory.
     Update(Option<Channel>, bool, Option<PathBuf>),
+    Review(review::ReviewArgs),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,7 +196,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
     if args.iter().any(|arg| arg == "-h" || arg == "--help") {
         let command = match args.first().map(String::as_str) {
             Some("service") => Some("service install"),
-            Some(name) => ["init", "start", "stop", "status", "update"]
+            Some(name) => ["init", "start", "stop", "status", "update", "review"]
                 .into_iter()
                 .find(|command| *command == name),
             None => None,
@@ -202,6 +213,9 @@ fn parse(args: &[String]) -> Result<Command, String> {
         }
         [service, ..] if service == "service" => {
             return Err("service takes the subcommand install".to_owned());
+        }
+        [command, rest @ ..] if command == "review" => {
+            return review::parse(rest).map(Command::Review);
         }
         [command, rest @ ..] => (command.as_str(), rest),
     };
@@ -347,6 +361,9 @@ pub fn main() {
                 update::update(channel, allow_downgrade, &data, &flag, &var).map(|()| 0)
             })
         }
+        Command::Review(args) => data_dir(args.data_dir.as_deref(), &var)
+            .and_then(|data| review::review(&args, &data, &var))
+            .map(|()| 0),
     };
     match result {
         Ok(code) => std::process::exit(code),
