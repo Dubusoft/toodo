@@ -26,9 +26,9 @@ mod tests;
 
 use std::fmt;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 
 use crate::domain::criteria::{CheckKind, CriterionId};
 use crate::domain::dag::{BlockingDependency, DependencyError};
@@ -59,6 +59,10 @@ pub struct Storage {
     clock: Box<dyn Fn() -> i64 + Send>,
 }
 
+/// How long a statement waits for a lock another connection or process holds before it
+/// fails with `SQLITE_BUSY`.
+pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn system_clock() -> i64 {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -70,7 +74,27 @@ impl Storage {
     /// Opens (or creates) the database file at `path` and migrates it to the latest
     /// schema.
     pub fn open(path: &Path) -> Result<Self> {
-        Self::init(Connection::open(path)?)
+        let conn = Connection::open(path)?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        // Write-ahead logging lets readers (the connection of `open_reader`, backups, an
+        // external sqlite3) read the last committed data while a write is in progress.
+        conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
+        Self::init(conn)
+    }
+
+    /// Opens a read-only connection to the database file at `path`, which [`Self::open`]
+    /// has created and migrated. Its reads do not wait for writes of other connections;
+    /// writes through it fail.
+    pub fn open_reader(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        Ok(Self {
+            conn,
+            clock: Box::new(system_clock),
+        })
     }
 
     /// Opens a private in-memory database with the latest schema.

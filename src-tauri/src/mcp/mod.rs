@@ -182,6 +182,11 @@ pub trait Backend: Notifier + Send + Sync + 'static {
         None
     }
     fn storage(&self) -> &StorageState;
+    /// The database for tools that only read: a separate read-only connection where the
+    /// database is a file, so reads do not wait for writes.
+    fn reader(&self) -> &StorageState {
+        self.storage()
+    }
     fn git(&self) -> &Git;
     fn github(&self) -> &dyn GitHub;
     fn herdr(&self) -> &Herdr;
@@ -681,7 +686,7 @@ impl ToodoMcp {
 
     #[tool(description = "List Toodo workspaces (repositories) with their IDs.")]
     fn list_workspaces(&self) -> Result<CallToolResult, ErrorData> {
-        reply(tools::list_workspaces(&lock(self.backend.storage())))
+        reply(tools::list_workspaces(&lock(self.backend.reader())))
     }
 
     #[tool(
@@ -750,7 +755,7 @@ impl ToodoMcp {
         &self,
         Parameters(request): Parameters<tools::ListTasks>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::list_tasks(&lock(self.backend.storage()), request))
+        reply(tools::list_tasks(&lock(self.backend.reader()), request))
     }
 
     #[tool(
@@ -760,7 +765,7 @@ impl ToodoMcp {
         &self,
         Parameters(request): Parameters<tools::SearchTasks>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::search_tasks(&lock(self.backend.storage()), request))
+        reply(tools::search_tasks(&lock(self.backend.reader()), request))
     }
 
     #[tool(
@@ -770,7 +775,7 @@ impl ToodoMcp {
         &self,
         Parameters(request): Parameters<tools::GetTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::task_details(&lock(self.backend.storage()), request))
+        reply(tools::task_details(&lock(self.backend.reader()), request))
     }
 
     #[tool(
@@ -804,7 +809,7 @@ impl ToodoMcp {
         &self,
         Parameters(request): Parameters<tools::CurrentTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::current_task(&lock(self.backend.storage()), request))
+        reply(tools::current_task(&lock(self.backend.reader()), request))
     }
 
     #[tool(
