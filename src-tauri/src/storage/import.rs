@@ -100,6 +100,10 @@ const TABLES: &[(&str, &[Column])] = &[
         &[("id", None), ("task_id", Some("task_id + {t}"))],
     ),
     ("task_labels", &[("task_id", Some("task_id + {t}"))]),
+    (
+        "agent_status_transitions",
+        &[("id", None), ("task_id", Some("task_id + {t}"))],
+    ),
 ];
 
 /// Tables that are deliberately left out, see the module documentation. `task_search` is
@@ -313,6 +317,7 @@ mod tests {
                  ALTER TABLE workspaces DROP COLUMN axes_detected;
                  DROP TABLE task_activity;
                  DROP TABLE task_labels;
+                 DROP TABLE agent_status_transitions;
                  ALTER TABLE devices DROP COLUMN expires_at;
                  ALTER TABLE devices DROP COLUMN scope;
                  ALTER TABLE tasks ADD COLUMN herdr_workspace_id TEXT;

@@ -396,6 +396,7 @@ impl TmuxRunner {
         let mut splitter = adapter::LineSplitter::new();
         let mut lines = splitter.push(stdout.as_bytes());
         lines.extend(splitter.finish());
+        let wrote_output = !lines.is_empty();
         for line in lines {
             if !line.truncated {
                 tracker.feed(&line.text);
@@ -415,6 +416,11 @@ impl TmuxRunner {
                     run,
                     &receipt(&self.instance, run, &current.host).provider_run_ref,
                 )?;
+            }
+            // The output of a tmux run is read once it ended, so its last activity is
+            // when that end was seen.
+            if wrote_output {
+                storage.record_run_activity(run, tracker.usage())?;
             }
             if let Some(id) = tracker.session_id() {
                 storage.append_run_event(

@@ -191,6 +191,25 @@ wire_enum!(
     }
 );
 
+wire_enum!(
+    /// What the agent in a task's herdr workspace is doing, as herdr reports it for its
+    /// panes. Wire strings match the CHECK constraint of `agent_status_transitions`.
+    AgentState, "agent state", {
+        Idle => "idle",
+        Working => "working",
+        Blocked => "blocked",
+        Done => "done",
+    }
+);
+
+/// Tokens an agent reported using in a run. `input_tokens` includes the cached ones.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunUsage {
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +260,7 @@ mod tests {
             OperationState::parse,
         );
         check(ResumeKind::ALL, ResumeKind::as_wire, ResumeKind::parse);
+        check(AgentState::ALL, AgentState::as_wire, AgentState::parse);
         assert_eq!(RunState::ALL.len(), 7);
         assert_eq!(ResumeKind::NamedSession.as_wire(), "named_session");
     }

@@ -1708,7 +1708,7 @@ fn version_34_preserves_runtime_rows_indexes_and_triggers_and_allows_tmux() {
         .collect::<rusqlite::Result<_>>()
         .unwrap()
     }
-    let mut conn = Connection::open_in_memory().unwrap();
+    let conn = Connection::open_in_memory().unwrap();
     for sql in &MIGRATIONS[..33] {
         conn.execute_batch(sql).unwrap();
     }
@@ -1750,7 +1750,10 @@ fn version_34_preserves_runtime_rows_indexes_and_triggers_and_allows_tmux() {
         "SELECT name, sql FROM sqlite_master WHERE type IN ('index', 'trigger') ORDER BY name",
     ];
     let before: Vec<_> = queries.iter().map(|sql| rows(&conn, sql)).collect();
-    migrate(&mut conn).unwrap();
+    // Only version 34 itself, as `migrate` runs it: later versions add columns and indexes
+    // of their own.
+    conn.pragma_update(None, "foreign_keys", false).unwrap();
+    conn.execute_batch(MIGRATIONS[33]).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
     for (sql, expected) in queries.iter().zip(before) {
         assert_eq!(rows(&conn, sql), expected, "{sql}");
@@ -1791,6 +1794,54 @@ fn version_34_preserves_runtime_rows_indexes_and_triggers_and_allows_tmux() {
         "the active writer index still rejects a second writer"
     );
     assert!(rows(&conn, "PRAGMA foreign_key_check").is_empty());
+}
+
+#[test]
+fn version_38_keeps_runs_without_activity_and_drops_transitions_with_their_task() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    for sql in &MIGRATIONS[..37] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 37).unwrap();
+    conn.execute_batch(
+        "INSERT INTO workspaces (name, kind, path, default_base_branch, runner)
+             VALUES ('old', 'local', '/repo', 'main', 'plain');
+         INSERT INTO tasks (workspace_id, type, title, status)
+             VALUES (1, 'feat', 'Ran', 'in_progress');
+         INSERT INTO task_runs (task_id, request_key, generation, runner_kind, role,
+             host_ref, state, created_at)
+             VALUES (1, 'old', 1, 'plain', 'writer', 'local', 'settled', 10);",
+    )
+    .unwrap();
+    migrate(&mut conn).unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+    let activity: (Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT last_activity_at, output_tokens FROM task_runs WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(activity, (None, None));
+    conn.execute_batch(
+        "INSERT INTO agent_status_transitions (task_id, status, at) VALUES (1, 'working', 20);
+         INSERT INTO agent_status_transitions (task_id, status, at) VALUES (1, NULL, 30);",
+    )
+    .unwrap();
+    assert!(
+        conn.execute(
+            "INSERT INTO agent_status_transitions (task_id, status, at) VALUES (1, 'busy', 40)",
+            [],
+        )
+        .is_err()
+    );
+    conn.execute("DELETE FROM tasks WHERE id = 1", []).unwrap();
+    let left: i64 = conn
+        .query_row("SELECT count(*) FROM agent_status_transitions", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(left, 0);
 }
 
 #[test]

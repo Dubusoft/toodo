@@ -9,7 +9,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use crate::domain::runtime::{RunState, UnknownWireValue};
+use crate::domain::runtime::{RunState, RunUsage, UnknownWireValue};
 
 /// The longest line, in bytes, that is parsed; a longer line is cut to this length.
 pub const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -260,6 +260,7 @@ pub struct EventTracker {
     last_message: Option<String>,
     /// The last todo list reported by [`EventTracker::feed`].
     todos: Option<Vec<TodoItem>>,
+    usage: Option<RunUsage>,
 }
 
 impl EventTracker {
@@ -271,7 +272,14 @@ impl EventTracker {
             error: None,
             last_message: None,
             todos: None,
+            usage: None,
         }
+    }
+
+    /// The tokens the agent reported using so far: those of Claude's result, or the sum
+    /// over Codex's completed turns.
+    pub fn usage(&self) -> Option<RunUsage> {
+        self.usage
     }
 
     /// The Claude session id or the Codex thread id, once seen.
@@ -340,6 +348,16 @@ impl EventTracker {
                 if let Some(id) = str_field(event, "session_id") {
                     self.session_id = Some(id.to_owned());
                 }
+                if let Some(usage) = event.get("usage") {
+                    let cached = token_count(usage, "cache_read_input_tokens");
+                    self.usage = Some(RunUsage {
+                        input_tokens: token_count(usage, "input_tokens")
+                            + token_count(usage, "cache_creation_input_tokens")
+                            + cached,
+                        cached_input_tokens: cached,
+                        output_tokens: token_count(usage, "output_tokens"),
+                    });
+                }
                 let text = str_field(event, "result").unwrap_or("");
                 let is_error = event.get("is_error").and_then(Value::as_bool) == Some(true)
                     || str_field(event, "subtype").is_some_and(|s| s != "success");
@@ -394,6 +412,12 @@ impl EventTracker {
             }
             Some("turn.completed") => {
                 self.success = Some(self.last_message.clone().unwrap_or_default());
+                if let Some(usage) = event.get("usage") {
+                    let total = self.usage.get_or_insert_default();
+                    total.input_tokens += token_count(usage, "input_tokens");
+                    total.cached_input_tokens += token_count(usage, "cached_input_tokens");
+                    total.output_tokens += token_count(usage, "output_tokens");
+                }
             }
             Some("turn.failed") => {
                 let message = event
@@ -430,6 +454,11 @@ fn todo_items(todos: &[Value], item: impl Fn(&Value) -> TodoItem) -> Vec<TodoIte
             item
         })
         .collect()
+}
+
+/// A token count of a usage object; a missing or malformed one counts as 0.
+fn token_count(usage: &Value, key: &str) -> i64 {
+    usage.get(key).and_then(Value::as_i64).unwrap_or(0).max(0)
 }
 
 fn str_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -787,6 +816,47 @@ mod tests {
         );
         assert_eq!(t.session_id(), Some("th-1"));
         assert_eq!(t.success_summary(), Some("final"));
+    }
+
+    #[test]
+    fn claude_result_usage_counts_cache_reads_and_writes_as_input() {
+        let t = tracked(
+            AgentAdapter::Claude,
+            &[
+                r#"{"type":"result","subtype":"success","result":"ok","usage":{"input_tokens":10,"cache_creation_input_tokens":200,"cache_read_input_tokens":3000,"output_tokens":40}}"#,
+            ],
+        );
+        assert_eq!(
+            t.usage(),
+            Some(RunUsage {
+                input_tokens: 3210,
+                cached_input_tokens: 3000,
+                output_tokens: 40,
+            })
+        );
+        assert_eq!(
+            tracked(AgentAdapter::Claude, &[r#"{"type":"result"}"#]).usage(),
+            None
+        );
+    }
+
+    #[test]
+    fn codex_usage_sums_completed_turns() {
+        let t = tracked(
+            AgentAdapter::Codex,
+            &[
+                r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":60,"output_tokens":7}}"#,
+                r#"{"type":"turn.completed","usage":{"input_tokens":50,"cached_input_tokens":"many","output_tokens":3}}"#,
+            ],
+        );
+        assert_eq!(
+            t.usage(),
+            Some(RunUsage {
+                input_tokens: 150,
+                cached_input_tokens: 60,
+                output_tokens: 10,
+            })
+        );
     }
 
     #[test]

@@ -89,6 +89,7 @@ const ShippedWith = lazy(() => taskDetails().then((module) => ({ default: module
 const RelatedTasks = lazy(() => taskDetails().then((module) => ({ default: module.RelatedTasks })));
 const CommitList = lazy(() => taskDetails().then((module) => ({ default: module.CommitList })));
 const TaskActivity = lazy(() => taskDetails().then((module) => ({ default: module.TaskActivity })));
+const AgentActivity = lazy(() => taskDetails().then((module) => ({ default: module.AgentActivity })));
 const TaskNotes = lazy(() => taskDetails().then((module) => ({ default: module.TaskNotes })));
 const TaskPlan = lazy(() => taskDetails().then((module) => ({ default: module.TaskPlan })));
 const TaskCriteria = lazy(() => taskDetails().then((module) => ({ default: module.TaskCriteria })));
@@ -737,6 +738,7 @@ export function TaskRow({
       {detailed && <Suspense fallback={null}><RelatedTasks task={task} tasks={tasks} context={context} navigation={navigation} /></Suspense>}
       {detailed && <Suspense fallback={null}><CommitList task={task} detailed /></Suspense>}
       {detailed && <Suspense fallback={null}><TaskActivity task={task} capabilities={capabilities} /></Suspense>}
+      {detailed && <Suspense fallback={null}><AgentActivity task={task} capabilities={capabilities} /></Suspense>}
       {detailed && <Suspense fallback={null}><TaskNotes task={task} detailed /></Suspense>}
       {final && !editing && (detailed || addingNote) && (
         <CompletionNote task={task} adding={addingNote} onAdded={() => setAddingNote(false)} />

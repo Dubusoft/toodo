@@ -7,7 +7,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use super::*;
 use crate::domain::model::{CompletionMode, Runner, Source, TaskId, TaskType, WorkspaceLocation};
 use crate::domain::path::PosixPath;
-use crate::domain::runtime::{OwnerKey, RunRole};
+use crate::domain::runtime::{OwnerKey, RunRole, RunUsage};
 use crate::runtime::{AgentLaunch, NoRunner, RuntimeService, StartRun};
 use crate::storage::{NewRun, NewTask, NewWorkspace};
 
@@ -413,6 +413,33 @@ fn changed_todo_lists_are_recorded_while_running() {
     assert_eq!(
         events[3].payload.as_deref(),
         Some(r#"{"items":[{"text":"Fix","status":"in_progress"}]}"#)
+    );
+}
+
+#[test]
+fn runs_record_their_last_activity_and_reported_usage() {
+    let fixture = Fixture::new(
+        r#"printf '%s\n' '{"type":"thread.started","thread_id":"t"}' '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":9}}'"#,
+    );
+    lock(&fixture.storage).set_clock(|| 4242);
+    let run = fixture.start(AgentAdapter::Codex, false, 30);
+    let ended = fixture.end(run.id, RunState::Settled, &["result"]);
+    assert_eq!(ended.last_activity_at, Some(4242));
+    assert_eq!(
+        ended.usage,
+        Some(RunUsage {
+            input_tokens: 120,
+            cached_input_tokens: 20,
+            output_tokens: 9,
+        })
+    );
+    // An ended run keeps the activity it had.
+    let mut storage = lock(&fixture.storage);
+    storage.set_clock(|| 9999);
+    assert!(!storage.record_run_activity(run.id, None).unwrap());
+    assert_eq!(
+        storage.get_run(run.id).unwrap().unwrap().last_activity_at,
+        Some(4242)
     );
 }
 

@@ -193,6 +193,7 @@ pub const READ_COMMANDS: &[&str] = &[
     "get_task",
     "list_commit_records",
     "list_task_activity",
+    "list_agent_status_transitions",
     "herdr_status",
     "list_task_runs",
     "get_run_log",
@@ -294,6 +295,9 @@ commands!(s => {
     );
     "list_task_activity"(task_id: TaskId) => sync Reply::result(
         tasks::list_task_activity(State(s.reader()), task_id)
+    );
+    "list_agent_status_transitions"(task_id: TaskId) => sync Reply::result(
+        tasks::list_agent_status_transitions(State(s.reader()), task_id)
     );
 
     "herdr_status"() => sync Reply::result(herdr::herdr_status(State(&s.herdr)));

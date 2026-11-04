@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-use super::TaskId;
+use super::{TaskId, Timestamp};
 use crate::adapters::{github, herdr};
 use crate::domain::model;
+use crate::domain::runtime::AgentState;
+use crate::storage;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +43,47 @@ impl AgentStatus {
             herdr::AgentStatus::Done => Some(Self::Done),
             herdr::AgentStatus::Working => Some(Self::Working),
             herdr::AgentStatus::Blocked => Some(Self::Blocked),
+        }
+    }
+}
+
+impl From<AgentStatus> for AgentState {
+    fn from(status: AgentStatus) -> Self {
+        match status {
+            AgentStatus::Idle => Self::Idle,
+            AgentStatus::Working => Self::Working,
+            AgentStatus::Blocked => Self::Blocked,
+            AgentStatus::Done => Self::Done,
+        }
+    }
+}
+
+impl From<AgentState> for AgentStatus {
+    fn from(state: AgentState) -> Self {
+        match state {
+            AgentState::Idle => Self::Idle,
+            AgentState::Working => Self::Working,
+            AgentState::Blocked => Self::Blocked,
+            AgentState::Done => Self::Done,
+        }
+    }
+}
+
+/// A change of what the agent in a task's herdr workspace was doing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStatusTransition {
+    /// What the agent did from `at` on; `null` once no agent was seen in the workspace,
+    /// e.g. its pane closed or herdr stopped.
+    pub status: Option<AgentStatus>,
+    pub at: Timestamp,
+}
+
+impl From<&storage::AgentStatusTransition> for AgentStatusTransition {
+    fn from(transition: &storage::AgentStatusTransition) -> Self {
+        Self {
+            status: transition.status.map(AgentStatus::from),
+            at: Timestamp(transition.at),
         }
     }
 }

@@ -158,6 +158,11 @@ export const commands = {
 	 *  Empty for a task of a workspace without a git repository or completed by hand.
 	 */
 	listTaskActivity: (taskId: TaskId) => typedError<TaskActivity[], CommandError>(invoke("list_task_activity", { taskId })),
+	/**
+	 *  When the agent in the task's herdr workspace changed what it was doing, oldest first.
+	 *  Empty for a task never opened in herdr.
+	 */
+	listAgentStatusTransitions: (taskId: TaskId) => typedError<AgentStatusTransition[], CommandError>(invoke("list_agent_status_transitions", { taskId })),
 	herdrStatus: () => typedError<HerdrStatus, CommandError>(invoke("herdr_status")),
 	/**
 	 *  Creates the worktree of a `planned` task whose dependencies are done through herdr
@@ -379,6 +384,16 @@ export type AgentMerge =
 
 /**  What the agent working on a task in herdr is doing. */
 export type AgentStatus = "idle" | "working" | "blocked" | "done";
+
+/**  A change of what the agent in a task's herdr workspace was doing. */
+export type AgentStatusTransition = {
+	/**
+	 *  What the agent did from `at` on; `null` once no agent was seen in the workspace,
+	 *  e.g. its pane closed or herdr stopped.
+	 */
+	status: AgentStatus | null,
+	at: Timestamp,
+};
 
 /**  The agent statuses of tasks changed; carries all of them. */
 export type AgentStatusesChanged = {
@@ -926,6 +941,14 @@ export type RunState =
 /**  Its end was not observed, e.g. the server restarted while it ran. */
 "unknown";
 
+/**  Tokens an agent reported using in a run. */
+export type RunUsage = {
+	/**  Input tokens, including the cached ones. */
+	inputTokens: number,
+	cachedInputTokens: number,
+	outputTokens: number,
+};
+
 /**  What runs the work of a started task. */
 export type Runner = 
 /**  Nothing: starting a task only marks it in progress. */
@@ -1188,6 +1211,13 @@ export type TaskRun = {
 	createdAt: Timestamp,
 	startedAt: Timestamp | null,
 	endedAt: Timestamp | null,
+	/**
+	 *  When the agent last wrote output: while a plain run runs, every few seconds of its
+	 *  output; for a tmux run, once its end was seen.
+	 */
+	lastActivityAt: Timestamp | null,
+	/**  The tokens the agent reported using, once it reported them. */
+	usage: RunUsage | null,
 };
 
 export type TaskStatus = "planned" | "in_progress" | "in_review" | "done";

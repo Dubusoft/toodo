@@ -62,6 +62,7 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         tasks::remove_dependency,
         tasks::list_commit_records,
         tasks::list_task_activity,
+        tasks::list_agent_status_transitions,
         herdr::herdr_status,
         herdr::start_task,
         herdr::ensure_task_workspace,
