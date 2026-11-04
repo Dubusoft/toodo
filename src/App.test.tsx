@@ -806,6 +806,112 @@ describe("App", () => {
     expect(bar("Write docs")).toHaveFocus();
   });
 
+  it("jumps to a task and runs actions from the command palette opened with Ctrl+K or Cmd+K", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [task(1, 1, "Add storage"), task(2, 2, "Ship pane events")],
+    });
+    await renderWorkspace();
+    await taskList();
+
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    const palette = screen.getByRole("dialog", { name: "Command palette" });
+    const search = within(palette).getByRole("combobox", { name: "Search actions and tasks" });
+    expect(search).toHaveFocus();
+    fireEvent.change(search, { target: { value: "#2" } });
+    expect(within(palette).getByRole("option", { selected: true })).toHaveTextContent("#2 Ship pane events");
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "herdr" })).toBeInTheDocument();
+    const details = await screen.findByRole("complementary", { name: "Task details" });
+    expect(within(details).getByText("Ship pane events")).toBeInTheDocument();
+
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    const again = screen.getByRole("combobox", { name: "Search actions and tasks" });
+    fireEvent.change(again, { target: { value: "show review" } });
+    fireEvent.keyDown(again, { key: "Enter" });
+    expect(screen.getByRole("button", { name: "Review" })).toHaveAttribute("aria-pressed", "true");
+
+    // Escape closes the palette without running anything.
+    fireEvent.keyDown(document.body, { key: "k", ctrlKey: true });
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Search actions and tasks" }), { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
+  });
+
+  it("moves between tasks with j and k and opens their details without the mouse, but not while typing", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [task(1, 1, "Add storage"), task(2, 1, "Add UI"), task(3, 1, "Write docs")],
+    });
+    await renderWorkspace();
+    const list = await taskList();
+    const titles = () => [...list.querySelectorAll<HTMLElement>("[data-task-title]")];
+    await waitFor(() => expect(titles()).toHaveLength(3));
+    const [first, second, third] = titles();
+
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(first).toHaveFocus();
+    fireEvent.keyDown(first, { key: "j" });
+    expect(second).toHaveFocus();
+    fireEvent.keyDown(second, { key: "j" });
+    fireEvent.keyDown(third, { key: "k" });
+    expect(second).toHaveFocus();
+
+    // Enter on the focused title presses it, which opens the details; j then shows the next task's.
+    fireEvent.click(second);
+    const details = await screen.findByRole("complementary", { name: "Task details" });
+    expect(within(details).getByText(second.textContent!)).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "j" });
+    expect(await within(details).findByText(third.textContent!)).toBeInTheDocument();
+    expect(third).toHaveFocus();
+
+    // Typed into a field, the letters stay text.
+    const searchField = screen.getByRole("searchbox", { name: "Search tasks" });
+    searchField.focus();
+    fireEvent.keyDown(searchField, { key: "k" });
+    fireEvent.keyDown(searchField, { key: "?" });
+    expect(searchField).toHaveFocus();
+    expect(within(details).getByText(third.textContent!)).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Keyboard shortcuts" })).not.toBeInTheDocument();
+
+    third.focus();
+    fireEvent.keyDown(third, { key: "/" });
+    expect(searchField).toHaveFocus();
+    searchField.blur();
+    fireEvent.keyDown(document.body, { key: "?" });
+    expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveTextContent("Open the command palette");
+  });
+
+  it("moves the timeline selection with j and k from anywhere on the page", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const planned = { ...task(0, 1, "").milestones, plannedAt: new Date(2026, 5, 1).getTime() / 1000 };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({
+      status: "ok",
+      data: [
+        task(1, 1, "Add storage", { milestones: planned }),
+        task(2, 1, "Add UI", { dependsOn: [1], milestones: planned }),
+      ],
+    });
+    renderApp();
+    const timeline = await screen.findByRole("region", { name: "Task timeline" }, { timeout: 5000 });
+    await within(timeline).findByText("Add UI");
+    const heading = async (title: string) =>
+      within(await within(timeline).findByRole("complementary", { name: "Task details" })).findByRole("heading", {
+        name: title,
+      });
+
+    fireEvent.keyDown(document.body, { key: "j" });
+    expect(await heading("Add storage")).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "j" });
+    expect(await heading("Add UI")).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "k" });
+    expect(await heading("Add storage")).toBeInTheDocument();
+  });
+
   it("shows the agent status of active tasks on the timeline", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
