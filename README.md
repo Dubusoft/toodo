@@ -12,11 +12,13 @@ into a performance report.
 - **Workspaces**: use a local directory or a remote directory on a saved herdr SSH
   machine as a workspace.
 - **Planning**: create tasks per workspace; express ordering as dependencies (a DAG).
-- **Worktree preparation**: before a task is implemented, create a dedicated
-  `git worktree` in a separate directory via the herdr API.
-- **Implementation in herdr**: the work itself happens in herdr panes and agents
-  attached to the task's worktree. Workspaces with runner `plain` run `claude` or
-  `codex` as child processes in the worktree instead, without herdr.
+- **Worktree preparation**: starting a task creates its branch and a dedicated
+  `git worktree` in a separate directory: with `herdr worktree create` for runner
+  `herdr`, with `git worktree add` for runners `plain` and `tmux`. Runner `none` creates
+  neither.
+- **Implementation**: agents work in the task's worktree: in herdr panes (runner
+  `herdr`), as `claude` or `codex` child processes (runner `plain`), or in a detached
+  tmux session (runner `tmux`); see [docs/runners.md](docs/runners.md).
 - **Commit tracking**: record the commits (SHA, message, author, time) made for a task.
 - **Completion and PR**: a task's branch is pushed and a pull request opened for it;
   once that pull request is merged on GitHub, Toodo completes the task automatically.
@@ -92,7 +94,8 @@ The web app lists these with `?`. Letter shortcuts do nothing while you type in 
 
 ## Requirements
 
-- A Linux machine (x86_64 for release builds) for `toodo-server`
+- A Linux machine for `toodo-server`: x64 or arm64 with glibc for the npm packages,
+  x86_64 for the release archive
 - Optional: [herdr](https://herdr.dev), installed and running there, for workspaces with runner
   `herdr` and all remote SSH workspaces (Toodo controls it; it is not bundled). Runner `plain`
   needs `claude` or `codex` on the server's `PATH`; runner `none` needs neither

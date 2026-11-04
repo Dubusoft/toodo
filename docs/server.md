@@ -166,8 +166,7 @@ To update a global install, run `toodo update`. It:
    the new version, the way it runs: for the systemd user service `toodo-server.service`
    it copies the new `toodo-server` and web app over `~/.local/bin/toodo-server` and
    `~/.local/share/toodo-server-web` and runs `systemctl --user restart`; a server started
-   by `toodo start` is stopped and started again; on macOS a launchd job `toodo-server`
-   (`~/Library/LaunchAgents/toodo-server.plist`) is restarted with `launchctl kickstart -k`.
+   by `toodo start` is stopped and started again.
    A server that is not running is left stopped; for the systemd service the new server and
    web app are still copied, so the next `toodo start` runs the new version.
 4. Checks that the server answers (`POST /api/rpc/list_tasks` without a token is `401`).
