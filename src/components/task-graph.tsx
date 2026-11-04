@@ -73,6 +73,7 @@ import {
   toneText,
   type Tone,
 } from "@/lib/status-styles";
+import { singleKeyShortcut } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 
 type BarNode = Node<
@@ -146,6 +147,9 @@ const rowKeys: Record<string, "previous" | "next" | "first" | "last"> = {
   Home: "first",
   End: "last",
 };
+
+/** The letter shortcuts that move the selection, also when the focus is not on a bar. */
+const letterKeys: Record<string, "previous" | "next"> = { j: "next", k: "previous" };
 
 const scaleLabels: Record<TimelineScale, string> = { hour: "Hour", day: "Day", week: "Week", month: "Month" };
 
@@ -513,8 +517,29 @@ export function TaskGraph({
     if (move === undefined || !container.current?.contains(target) || (node === null && selectedTask === undefined)) {
       return;
     }
+    if (moveRow(move, node?.dataset.id ?? String(selectedTask?.id))) {
+      event.preventDefault();
+    }
+  }
+
+  // j and k move the selection from anywhere on the page, starting at the first row.
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      const move = letterKeys[event.key];
+      const focused = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(".react-flow__node") : null;
+      const from = focused?.dataset.id ?? (selectedTask && String(selectedTask.id));
+      if (move !== undefined && singleKeyShortcut(event) && moveRow(move, from)) {
+        event.preventDefault();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  });
+
+  /** Selects and focuses the bar `move` leads to from the bar of task `from`; false when there is none. */
+  function moveRow(move: "previous" | "next" | "first" | "last", from: string | undefined): boolean {
     const rows = [...layout.bars].sort((a, b) => a.row - b.row);
-    const current = rows.findIndex((bar) => String(bar.task.id) === (node?.dataset.id ?? String(selectedTask?.id)));
+    const current = rows.findIndex((bar) => String(bar.task.id) === from);
     const index = {
       previous: current <= 0 ? 0 : current - 1,
       next: current === -1 ? 0 : Math.min(current + 1, rows.length - 1),
@@ -523,14 +548,14 @@ export function TaskGraph({
     }[move];
     const id = rows[index]?.task.id;
     if (id === undefined) {
-      return;
+      return false;
     }
-    event.preventDefault();
     container.current
-      .querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)
+      ?.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`)
       ?.focus({ preventScroll: true });
     focusSheet.current = false;
     changeSelection(id);
+    return true;
   }
 
   function changeNodes(changes: NodeChange<BarNode>[]) {

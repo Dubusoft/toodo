@@ -156,6 +156,7 @@ import {
   toneText,
   type Tone,
 } from "@/lib/status-styles";
+import { singleKeyShortcut } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import { workspaceCapabilities, type WorkspaceCapabilities } from "@/lib/workspace-capabilities";
 import { reachability, subscribeReachability } from "@/web/connection";
@@ -322,6 +323,27 @@ export function TaskList({
     });
     // Only a new request moves the view; later changes to the task do not.
   }, [shownTask, shownTaskData === undefined]);
+  // In the list, j and k move the focus between task titles, where Enter opens the details;
+  // with the details open they show the next task's. The timeline handles them itself.
+  useEffect(() => {
+    if (showTimeline) return;
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      const step = event.key === "j" ? 1 : event.key === "k" ? -1 : 0;
+      if (step === 0 || !singleKeyShortcut(event) || document.querySelector("form[data-dirty]")) return;
+      const titles = [...document.querySelectorAll<HTMLElement>("[data-task-row] [data-task-title]")];
+      const rowOf = (title: HTMLElement) => title.closest<HTMLElement>("[data-task-row]")!;
+      let current = titles.findIndex((title) => rowOf(title).contains(document.activeElement));
+      if (current === -1) current = titles.findIndex((title) => rowOf(title).dataset.taskRow === String(detailId));
+      const next = titles[current === -1 ? (step > 0 ? 0 : titles.length - 1) : current + step];
+      if (next === undefined) return;
+      event.preventDefault();
+      next.focus();
+      next.scrollIntoView?.({ block: "nearest" });
+      if (detailId !== null) setDetailId(Number(rowOf(next).dataset.taskRow));
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  });
   // Prerequisites in other workspaces are drawn too, dimmed, so the wait is visible.
   const prerequisites =
     filter === null
@@ -1129,6 +1151,7 @@ function TaskRow({
                 type="button"
                 className="break-words-keep line-clamp-2 min-w-0 cursor-pointer rounded-sm text-left text-base font-semibold outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50 max-md:order-last max-md:min-h-11 max-md:basis-full md:flex-1 md:text-sm"
                 title={task.title}
+                data-task-title
                 onClick={onShowDetails}
               >
                 {task.title}

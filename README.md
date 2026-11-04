@@ -28,6 +28,20 @@ into a performance report.
 - **Timeline**: every status change is timestamped; the dependency graph is drawn on a
   time axis showing when each task was planned, started, reviewed, and completed.
 
+## Keyboard Shortcuts
+
+The web app lists these with `?`. Letter shortcuts do nothing while you type in a field.
+
+| Keys | Action |
+| --- | --- |
+| `Ctrl+K` / `Cmd+K` | Open the command palette: jump to a task by title or `#number`, or run an action such as opening a workspace, the review, or settings |
+| `j` / `k` | Select the next or previous task in the list or on the timeline |
+| `Enter` | Open the details of the selected task |
+| `Esc` | Close the details, the palette, or a dialog |
+| `/` | Search tasks |
+| `?` | Show the shortcuts |
+| `Up` / `Down` / `Home` / `End` | On a timeline bar, move the selection between rows |
+
 ## Documentation
 
 - [AGENTS.md](AGENTS.md): contributor and AI-agent guidelines, including the language policy.

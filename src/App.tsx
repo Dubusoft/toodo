@@ -1,6 +1,25 @@
 import { useEffect, useRef, useState } from "react";
-import { ChartColumn, FolderPlus, Layers, ListTodo, Menu, Settings, X } from "lucide-react";
+import {
+  ChartColumn,
+  CircleDot,
+  FolderGit2,
+  FolderPlus,
+  ChartGantt,
+  Keyboard,
+  Layers,
+  List,
+  ListTodo,
+  Menu,
+  Moon,
+  Plus,
+  Search,
+  Settings,
+  Sun,
+  SunMoon,
+  X,
+} from "lucide-react";
 import { AgentAccessStatus } from "@/components/agent-access-panel";
+import { CommandPalette, ShortcutsDialog, type PaletteCommand } from "@/components/command-palette";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { InstallBanner } from "@/components/install-banner";
@@ -10,13 +29,21 @@ import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/componen
 import { SettingsDialog, type SettingsSection } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
 import { WorkspaceList } from "@/components/workspace-list";
-import type { TaskId, WorkspaceId } from "@/lib/bindings";
+import type { Task, TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
-import { useHerdrEvents, useWorkspaces } from "@/lib/queries";
+import { useHerdrEvents, useTasks, useWorkspaces } from "@/lib/queries";
 import { useRoute, type Route } from "@/lib/route";
+import { isPaletteKey, singleKeyShortcut } from "@/lib/shortcuts";
+import { setThemePreference } from "@/lib/theme";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
 import { listenForOpenTask } from "@/web/push";
+
+/** The search field of the shown task view, unless it is folded away on a phone. */
+function searchField(): HTMLInputElement | null {
+  const field = document.querySelector<HTMLInputElement>("input[aria-label='Search tasks']");
+  return field !== null && (typeof field.checkVisibility !== "function" || field.checkVisibility()) ? field : null;
+}
 
 export default function App() {
   const workspaces = useWorkspaces();
@@ -87,6 +114,103 @@ export default function App() {
   const showingAll = selectedId === "all" && !reviewing;
   const selected =
     workspaces.data?.find((workspace) => workspace.id === selectedId) ?? workspaces.data?.[0];
+
+  const tasks = useTasks();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      // The palette opens from anywhere but the settings, which own the keyboard while open.
+      if (isPaletteKey(event)) {
+        if (settingsOpen) return;
+        event.preventDefault();
+        setMenuOpen(false);
+        setShortcutsOpen(false);
+        setPaletteOpen((open) => !open);
+      } else if (event.key === "?" && singleKeyShortcut(event)) {
+        event.preventDefault();
+        setShortcutsOpen(true);
+      } else if (event.key === "/" && singleKeyShortcut(event) && searchField() !== null) {
+        event.preventDefault();
+        searchField()?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [settingsOpen]);
+  // A task opens where the user is: in the list or on the timeline of every workspace, else in its workspace.
+  const openTask = (task: Task) => {
+    if (route.page === "all" && route.view === "timeline") showTask(task.id);
+    else if (route.page === "all") openPage({ ...route, task: task.id });
+    else openPage({ page: "workspace", workspace: task.workspaceId, task: task.id });
+  };
+  const paletteCommands = (): PaletteCommand[] => {
+    const workspaceName = new Map(workspaces.data?.map((workspace) => [workspace.id, workspace.name]));
+    const search = searchField();
+    const newTask = document.querySelector<HTMLInputElement>("input[aria-label='Task title']");
+    const actions: (PaletteCommand | false)[] = [
+      !!workspaces.data?.length && {
+        id: "timeline",
+        group: "Actions",
+        label: "Show the timeline of all workspaces",
+        icon: <ChartGantt />,
+        run: () => openPage({ page: "all", view: "timeline", task: null }),
+      },
+      !!workspaces.data?.length && {
+        id: "list",
+        group: "Actions",
+        label: "Show the task list of all workspaces",
+        icon: <List />,
+        run: () => openPage({ page: "all", view: "list", task: null }),
+      },
+      { id: "review", group: "Actions", label: "Show the review", icon: <ChartColumn />, run: () => openPage({ page: "review" }) },
+      newTask !== null && {
+        id: "new-task",
+        group: "Actions",
+        label: "New task in this workspace",
+        icon: <Plus />,
+        run: () => newTask.focus(),
+      },
+      search !== null && { id: "search", group: "Actions", label: "Search tasks", hint: "/", icon: <Search />, run: () => search.focus() },
+      { id: "settings", group: "Actions", label: "Open settings", icon: <Settings />, run: () => showSettings(null) },
+      {
+        id: "shortcuts",
+        group: "Actions",
+        label: "Show keyboard shortcuts",
+        hint: "?",
+        icon: <Keyboard />,
+        run: () => setShortcutsOpen(true),
+      },
+      { id: "light", group: "Actions", label: "Use the light theme", icon: <Sun />, run: () => setThemePreference("light") },
+      { id: "dark", group: "Actions", label: "Use the dark theme", icon: <Moon />, run: () => setThemePreference("dark") },
+      { id: "system", group: "Actions", label: "Use the system theme", icon: <SunMoon />, run: () => setThemePreference("system") },
+      ...(workspaces.data ?? []).map(
+        (workspace): PaletteCommand => ({
+          id: `workspace-${workspace.id}`,
+          group: "Actions",
+          label: `Open workspace ${workspace.name}`,
+          icon: <FolderGit2 />,
+          run: () => openPage({ page: "workspace", workspace: workspace.id, task: null }),
+        }),
+      ),
+    ];
+    // Open tasks come first, newest first, then finished ones.
+    const ordered = [...(tasks.data ?? [])].sort(
+      (a, b) => Number(a.status === "done") - Number(b.status === "done") || b.id - a.id,
+    );
+    const taskCommands = ordered.map(
+      (task): PaletteCommand => ({
+        id: `task-${task.id}`,
+        group: "Tasks",
+        label: `#${task.id} ${task.title}`,
+        keywords: workspaceName.get(task.workspaceId),
+        hint: workspaceName.get(task.workspaceId),
+        icon: <CircleDot />,
+        run: () => openTask(task),
+      }),
+    );
+    return [...actions.filter((action) => action !== false), ...taskCommands];
+  };
 
   return (
     <div className="flex h-screen bg-background text-foreground">
@@ -234,6 +358,8 @@ export default function App() {
         onClose={() => setSettingsOpen(false)}
         returnFocus={() => (settingsFromDrawer.current ? openMenuButton.current : settingsButton.current)}
       />
+      {paletteOpen && <CommandPalette commands={paletteCommands()} onClose={() => setPaletteOpen(false)} />}
+      {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}
     </div>
   );
 }
