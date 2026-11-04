@@ -53,6 +53,7 @@ import {
 import { pullRequestStats } from "@/lib/review";
 import {
   dependenciesDone,
+  canAddDependency,
   dependencyEditableStatuses,
   freshnessWarning,
   isNotAdopted,
@@ -207,9 +208,8 @@ export function TaskRow({
     closeWorkspace.error ??
     addDependency.error ??
     removeDependency.error;
-  const candidates = tasks.filter(
-    (other) => other.id !== task.id && !task.dependsOn.includes(other.id),
-  );
+  // Tasks that would close a cycle are not offered.
+  const candidates = tasks.filter((other) => canAddDependency(tasks, other.id, task.id));
   // Candidates grouped by workspace, the task's own workspace first.
   const candidateGroups = [...new Set([task.workspaceId, ...candidates.map((other) => other.workspaceId)])]
     .map((workspaceId) => ({

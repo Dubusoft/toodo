@@ -1492,10 +1492,14 @@ impl Storage {
         Ok(cleared)
     }
 
-    /// Removes the edge `task -> depends_on`; rejects an edge that does not exist.
+    /// Removes the edge `task -> depends_on`; rejects an edge that does not exist and a
+    /// `done` task, whose dependencies stay as they were when it finished.
     pub fn remove_dependency(&mut self, task: TaskId, depends_on: TaskId) -> Result<()> {
         let tx = self.conn.transaction()?;
-        task_workspace(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
+        let current = find_task(&tx, task)?.ok_or(StorageError::TaskNotFound(task))?;
+        if current.status == TaskStatus::Done && current.depends_on.contains(&depends_on) {
+            return Err(StorageError::DependencyOfDoneTask { task, depends_on });
+        }
         let removed = tx.execute(
             "DELETE FROM task_dependencies WHERE task_id = ?1 AND depends_on_id = ?2",
             [task.0, depends_on.0],

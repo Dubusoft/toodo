@@ -192,6 +192,11 @@ pub enum StorageError {
         task: TaskId,
         depends_on: Vec<TaskId>,
     },
+    /// The dependencies of a `done` task are kept as they were when it finished.
+    DependencyOfDoneTask {
+        task: TaskId,
+        depends_on: TaskId,
+    },
     /// The dependency to remove does not exist.
     DependencyNotFound {
         task: TaskId,
@@ -332,6 +337,10 @@ impl fmt::Display for StorageError {
                     ids.join(", ")
                 )
             }
+            Self::DependencyOfDoneTask { task, depends_on } => write!(
+                f,
+                "task {task} is done, so its dependency on {depends_on} is kept; to change its dependencies, reopen it with reopen_task {task} first, then call remove_dependency again"
+            ),
             Self::DependencyNotFound { task, depends_on } => write!(
                 f,
                 "task {task} does not depend on {depends_on}; get_task {task} lists the tasks it depends on (dependsOn), and task_id is the task that waits"
