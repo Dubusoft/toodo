@@ -110,7 +110,7 @@ describe("RunnersPanel", () => {
   it("says why the runners could not be checked and how to check again", async () => {
     mocked.runnerHealth.mockResolvedValue({
       status: "error",
-      error: { kind: "internal", message: "the server could not read its PATH" },
+      error: { kind: "internal", code: "internal", message: "the server could not read its PATH" },
     });
     renderPanel();
 

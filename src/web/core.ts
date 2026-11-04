@@ -5,13 +5,14 @@
 import { serverFetch } from "@/web/connection";
 import { authorization, forgetToken, getToken } from "@/web/session";
 
-type CommandError = { kind: string; message: string };
+type CommandError = { kind: string; code: string; message: string };
 
 function isCommandError(value: unknown): value is CommandError {
   return (
     typeof value === "object" &&
     value !== null &&
     typeof (value as CommandError).kind === "string" &&
+    typeof (value as CommandError).code === "string" &&
     typeof (value as CommandError).message === "string"
   );
 }
@@ -43,7 +44,7 @@ export async function invoke<T>(command: string, args: Record<string, unknown> =
   try {
     body = JSON.parse(text);
   } catch {
-    // Not JSON: the server's own message, e.g. an unknown command.
+    // Not JSON: e.g. a proxy's error page.
   }
   if (isCommandError(body)) {
     throw body;

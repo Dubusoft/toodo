@@ -283,7 +283,7 @@ describe("RunsPanel", () => {
     );
     mocked.reconcileRun.mockResolvedValue({
       status: "error",
-      error: { kind: "external", message: "ssh devbox: Connection refused; restore SSH connectivity and reconcile again" },
+      error: { kind: "external", code: "external", message: "ssh devbox: Connection refused; restore SSH connectivity and reconcile again" },
     });
     renderPanel();
 

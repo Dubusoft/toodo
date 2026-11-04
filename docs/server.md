@@ -667,9 +667,13 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
 
 - `POST /api/rpc/<command>`: runs a command by its name in `src/lib/bindings.ts` (e.g. `list_tasks`) with
   its arguments as a JSON object with camelCase keys. A result is `200` with the JSON
-  result; a command error is `{ "kind", "message" }` with `422` (invalidInput), `404`
-  (notFound), `409` (rejected), `502` (external), or `500` (internal). An unknown command
-  is `404` and malformed arguments `400`, both with a text body.
+  result; a command error is `{ "kind", "code", "message" }` with `422` (invalidInput),
+  `404` (notFound), `409` (rejected), `502` (external), or `500` (internal). `code` is one
+  of `CommandErrorCode` in `src/lib/bindings.ts`, e.g. `taskNotFound` or
+  `dependencyCycle`, shared with the MCP tools. An unknown command is `404` with code
+  `unknownCommand` and malformed arguments `400` with code `invalidArguments`. A command
+  that panics is `500` with code `commandPanicked`; the panic text goes only to the
+  server log.
 - `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
   `agent-statuses-changed`, and `pull-request-statuses-changed` with the payloads of the
   events in `src/lib/bindings.ts`. Every event has an id `<epoch>-<sequence>`; `epoch`

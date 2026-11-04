@@ -280,10 +280,10 @@ fn setup_failed(
     next_step: &str,
 ) -> CommandError {
     let error = CommandError::from(error);
-    CommandError {
-        kind: error.kind,
-        message: format!("{}; {next_step}. git said: {}", attempted(), error.message),
-    }
+    CommandError::new(
+        error.code,
+        format!("{}; {next_step}. git said: {}", attempted(), error.message),
+    )
 }
 
 /// Saves the name, default base branch, agent merge policy, completion, and runner of an

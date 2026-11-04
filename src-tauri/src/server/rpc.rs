@@ -18,8 +18,8 @@ use crate::commands::types::{
     WorkspaceId, WorkspaceLocation,
 };
 use crate::commands::{
-    CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
-    herdr, issues, machines, mcp, review, runners, runs, tasks, workspaces,
+    CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, backup, completion,
+    events, freshness, herdr, issues, machines, mcp, review, runners, runs, tasks, workspaces,
 };
 use crate::mcp::Backend as _;
 
@@ -68,12 +68,24 @@ impl IntoResponse for Reply {
                 };
                 json(status, &error)
             }
-            Self::UnknownCommand => (StatusCode::NOT_FOUND, "unknown command").into_response(),
-            Self::BadArguments(message) => (
+            Self::UnknownCommand => json(
+                StatusCode::NOT_FOUND,
+                &CommandError::new(
+                    CommandErrorCode::UnknownCommand,
+                    "unknown command; reload the web app so that it matches the server's \
+                     version",
+                ),
+            ),
+            Self::BadArguments(message) => json(
                 StatusCode::BAD_REQUEST,
-                format!("invalid arguments: {message}"),
-            )
-                .into_response(),
+                &CommandError::new(
+                    CommandErrorCode::InvalidArguments,
+                    format!(
+                        "invalid arguments: {message}; reload the web app so that it matches \
+                         the server's version"
+                    ),
+                ),
+            ),
         }
     }
 }
@@ -117,9 +129,7 @@ fn parse<T: DeserializeOwned>(args: serde_json::Value) -> Result<T, Reply> {
 async fn blocking(run: impl FnOnce() -> Reply + Send + 'static) -> Reply {
     tokio::task::spawn_blocking(run)
         .await
-        .unwrap_or_else(|error| {
-            Reply::Failed(CommandError::internal(format!("command panicked: {error}")))
-        })
+        .unwrap_or_else(|error| Reply::Failed(CommandError::panicked(error)))
 }
 
 /// Declares the commands: each has a name, its parameters (the JSON arguments), and how it

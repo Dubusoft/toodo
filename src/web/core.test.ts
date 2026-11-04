@@ -26,9 +26,13 @@ describe("invoke", () => {
   });
 
   it("rejects with the command error object", async () => {
-    vi.stubGlobal("fetch", reply(409, '{"kind":"rejected","message":"cycle"}'));
+    vi.stubGlobal("fetch", reply(409, '{"kind":"rejected","code":"dependencyCycle","message":"cycle"}'));
 
-    await expect(invoke("add_dependency")).rejects.toEqual({ kind: "rejected", message: "cycle" });
+    await expect(invoke("add_dependency")).rejects.toEqual({
+      kind: "rejected",
+      code: "dependencyCycle",
+      message: "cycle",
+    });
   });
 
   it("forgets a token the server rejects", async () => {
@@ -38,9 +42,9 @@ describe("invoke", () => {
     expect(getToken()).toBeNull();
   });
 
-  it("rejects with an Error for an unknown command", async () => {
-    vi.stubGlobal("fetch", reply(404, "unknown command"));
+  it("rejects with an Error for a reply that is not a command error", async () => {
+    vi.stubGlobal("fetch", reply(502, "Bad Gateway"));
 
-    await expect(invoke("nope")).rejects.toThrow("unknown command");
+    await expect(invoke("list_tasks")).rejects.toThrow("Bad Gateway");
   });
 });
