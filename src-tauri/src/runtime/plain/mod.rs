@@ -556,6 +556,7 @@ impl RunLauncher for PlainRunner {
         let invocation = agent.adapter.invocation(
             &dir,
             endpoint.as_ref(),
+            &agent.options,
             agent.resume.as_ref().map(|resume| resume.session.as_str()),
         );
         for (name, contents) in &invocation.files {

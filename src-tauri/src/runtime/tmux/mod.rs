@@ -796,6 +796,7 @@ impl RunLauncher for TmuxRunner {
         let mut invocation = agent.adapter.invocation(
             Path::new(host::RUN_FILE_PREFIX),
             endpoint.as_ref(),
+            &agent.options,
             agent.resume.as_ref().map(|resume| resume.session.as_str()),
         );
         // Path::join preserves the {run}/ prefix for host-native resolution.

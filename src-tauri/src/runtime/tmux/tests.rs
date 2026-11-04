@@ -150,6 +150,7 @@ impl Fixture {
                 adapter: AgentAdapter::Claude,
                 brief: "Implement the task\n".into(),
                 mcp,
+                options: Default::default(),
                 timeout_secs: 60,
                 resume: None,
             }),

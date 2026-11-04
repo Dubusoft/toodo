@@ -51,13 +51,20 @@ fn version_24_keeps_task_data_references_search_and_the_id_counter() {
         "task_criteria",
         "pull_request_snapshots",
     ];
-    // The herdr handle moves from `tasks` to the runtime workspaces (version 31).
+    // The herdr handle moves from `tasks` to the runtime workspaces (version 31); the
+    // agent options of version 39 are new columns that start out NULL.
+    let skipped = [
+        "herdr_workspace_id",
+        "agent_model",
+        "agent_permission_mode",
+        "run_time_limit_minutes",
+    ];
     let rows = |conn: &Connection, table: &str| {
         let mut statement = conn
             .prepare(&format!("SELECT * FROM {table} ORDER BY 1"))
             .unwrap();
         let columns: Vec<usize> = (0..statement.column_count())
-            .filter(|&column| statement.column_name(column).unwrap() != "herdr_workspace_id")
+            .filter(|&column| !skipped.contains(&statement.column_name(column).unwrap()))
             .collect();
         statement
             .query_map([], |row| {

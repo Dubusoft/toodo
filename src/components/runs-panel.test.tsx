@@ -5,6 +5,7 @@ import { RunsPanel } from "@/components/runs-panel";
 import {
   commands,
   type AgentAdapter,
+  type AgentOptions,
   type RunEvent,
   type RunLog,
   type RunnerHealth,
@@ -20,6 +21,8 @@ vi.mock("@/lib/bindings", () => ({
     stopRun: vi.fn(),
     reconcileRun: vi.fn(),
     runnerHealth: vi.fn(),
+    getTaskAgentOptions: vi.fn(),
+    setTaskAgentOptions: vi.fn(),
   },
 }));
 
@@ -124,6 +127,8 @@ function todo(sequence: number, steps: TodoStep[]): RunEvent {
   return event(sequence, "todo", JSON.stringify({ items: steps.map(([text, status]) => ({ text, status })) }));
 }
 
+const unset: AgentOptions = { model: null, permissionMode: null, timeLimitMinutes: null };
+
 function renderPanel(task: Task = inProgress, remote = false) {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -138,10 +143,37 @@ describe("RunsPanel", () => {
     // A live run reloads on an interval; it only ticks when a test moves the clock.
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     mocked.runnerHealth.mockResolvedValue(ok(health()));
+    mocked.getTaskAgentOptions.mockResolvedValue(ok({ task: unset, workspace: unset }));
   });
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("overrides the workspace's agent options for the task's runs", async () => {
+    const workspace: AgentOptions = { model: "sonnet", permissionMode: "edit", timeLimitMinutes: 30 };
+    const task: AgentOptions = { model: "opus", permissionMode: null, timeLimitMinutes: 90 };
+    mocked.listTaskRuns.mockResolvedValue(ok([]));
+    mocked.getTaskAgentOptions.mockResolvedValue(ok({ task: unset, workspace }));
+    mocked.setTaskAgentOptions.mockResolvedValue(ok({ task, workspace }));
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Agent options of #7")).toHaveTextContent("sonnet, Edit files, 30 min"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Change agent options of #7" }));
+    const form = screen.getByRole("form", { name: "Agent options of #7" });
+    fireEvent.change(within(form).getByLabelText("Model"), { target: { value: " opus " } });
+    const limit = within(form).getByLabelText("Time limit (minutes, plain runs)");
+    fireEvent.change(limit, { target: { value: "0" } });
+    expect(within(form).getByRole("button", { name: "Save" })).toBeDisabled();
+    fireEvent.change(limit, { target: { value: "90" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Agent options of #7")).toHaveTextContent("opus, Edit files, 90 min"),
+    );
+    expect(mocked.setTaskAgentOptions).toHaveBeenCalledWith(7, task);
   });
 
   it("starts a run with the picked agent and MCP setting and opens it", async () => {

@@ -13,8 +13,6 @@ use crate::runtime::plain::adapter;
 use crate::runtime::{AgentLaunch, AgentResume, RunCommand, RunLauncher, RuntimeService, StartRun};
 use crate::storage::{self, StorageError};
 
-/// How long a plain run may take before it is stopped and fails.
-const RUN_TIMEOUT_SECS: u64 = 4 * 60 * 60;
 /// How much of the end of each log `get_run_log` returns by default.
 const DEFAULT_TAIL_BYTES: u32 = 64 * 1024;
 /// The most of the end of each log one `get_run_log` returns.
@@ -31,7 +29,9 @@ const MAX_TAIL_BYTES: u32 = 4 * 1024 * 1024;
 /// through the machine's MCP tunnel, which must be open. With `follow_up_of`, an ended run
 /// of the task, the agent resumes that run's session with `prompt` (required then)
 /// instead of starting a new one, and the new run joins the run's conversation. Returns
-/// the run as recorded right after the launch.
+/// the run as recorded right after the launch. The agent runs with the model, permission
+/// mode, and time limit the task sets, or else its workspace (see
+/// `get_task_agent_options`).
 #[specta::specta]
 #[allow(clippy::too_many_arguments)]
 pub fn start_plain_run(
@@ -316,7 +316,7 @@ fn start(
         )));
     }
     let agent = adapter::AgentAdapter::from(agent);
-    let (task, worktree, generation, host, runner, resume) = {
+    let (task, worktree, generation, host, runner, options, resume) = {
         let storage = lock(storage);
         let task = storage
             .get_task(id)?
@@ -361,6 +361,9 @@ fn start(
         // The worktree path keeps its style, which tells the runner the host's OS.
         let worktree = worktree.to_string();
         let host = HostRef::from(&workspace.location.machine());
+        let options = storage
+            .task_agent_options(id)?
+            .over(&storage.workspace_agent_options(workspace.id)?);
         let resume = match follow_up_of {
             None => None,
             Some(run) => {
@@ -370,7 +373,15 @@ fn start(
                 Some(follow_up(&previous, id, agent, &host, &worktree)?)
             }
         };
-        (task, worktree, generation, host, workspace.runner, resume)
+        (
+            task,
+            worktree,
+            generation,
+            host,
+            workspace.runner,
+            options,
+            resume,
+        )
     };
     let brief = match prompt {
         Some(prompt) => prompt,
@@ -394,7 +405,11 @@ fn start(
             adapter: agent,
             brief,
             mcp,
-            timeout_secs: RUN_TIMEOUT_SECS,
+            timeout_secs: options.time_limit_secs(),
+            options: adapter::LaunchOptions {
+                model: options.model,
+                permission_mode: options.permission_mode,
+            },
             resume,
         }),
     };
@@ -621,6 +636,80 @@ exec sh -c "$1"
             }
             works
         }
+    }
+
+    #[test]
+    fn a_run_uses_the_task_options_over_the_workspace_options() {
+        use crate::commands::agent_options::{set_task_agent_options, set_workspace_agent_options};
+        use crate::commands::types::{AgentOptions, PermissionMode};
+
+        let fixture = fixture(Runner::Plain, &format!("printf '%s\\n' \"$@\"\n{RESULT}"));
+        fixture.start_task();
+        let workspace = lock(&fixture.storage)
+            .get_task(fixture.task)
+            .unwrap()
+            .unwrap()
+            .workspace_id;
+        set_workspace_agent_options(
+            State(&fixture.storage),
+            workspace.into(),
+            AgentOptions {
+                model: Some("sonnet".to_owned()),
+                permission_mode: Some(PermissionMode::Edit),
+                time_limit_minutes: Some(30),
+            },
+        )
+        .unwrap();
+        let options = set_task_agent_options(
+            State(&fixture.storage),
+            fixture.task.into(),
+            AgentOptions {
+                model: Some(" opus ".to_owned()),
+                ..AgentOptions::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(options.task.model.as_deref(), Some("opus"));
+        assert_eq!(options.workspace.time_limit_minutes, Some(30));
+
+        let run = fixture.run(None).unwrap();
+        assert_eq!(fixture.end(&run), types::RunState::Settled);
+        let argv = fixture.log(&run).stdout;
+        assert!(
+            argv.contains("--permission-mode\nacceptEdits\n--model\nopus\n"),
+            "{argv}"
+        );
+    }
+
+    #[test]
+    fn agent_options_out_of_range_are_rejected_with_the_next_step() {
+        use crate::commands::agent_options::set_task_agent_options;
+        use crate::commands::types::AgentOptions;
+
+        let fixture = fixture(Runner::Plain, RESULT);
+        for options in [
+            AgentOptions {
+                model: Some("opus; rm -rf /".to_owned()),
+                ..AgentOptions::default()
+            },
+            AgentOptions {
+                time_limit_minutes: Some(0),
+                ..AgentOptions::default()
+            },
+            AgentOptions {
+                time_limit_minutes: Some(model::MAX_RUN_TIME_LIMIT_MINUTES + 1),
+                ..AgentOptions::default()
+            },
+        ] {
+            let error =
+                set_task_agent_options(State(&fixture.storage), fixture.task.into(), options)
+                    .unwrap_err();
+            assert_eq!(error.kind, CommandErrorKind::InvalidInput, "{error:?}");
+        }
+        let stored = lock(&fixture.storage)
+            .task_agent_options(fixture.task)
+            .unwrap();
+        assert_eq!(stored, model::AgentOptions::default());
     }
 
     #[test]

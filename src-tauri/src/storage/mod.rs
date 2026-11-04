@@ -8,6 +8,7 @@
 //! line with the dependencies after every change.
 
 mod activity;
+mod agent_options;
 mod agent_status;
 mod backup;
 mod commits;
