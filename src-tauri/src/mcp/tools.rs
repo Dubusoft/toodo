@@ -1653,7 +1653,7 @@ pub fn add_note(storage: &mut Storage, kind: NoteKind, request: AddNote) -> Comm
 }
 
 /// Pauses an `in_progress` or `in_review` task as the app's Pause does and records the
-/// reason as a progress note. The task keeps its branch, worktree, herdr workspace, commit
+/// reason in its status history and as a progress note. The task keeps its branch, worktree, herdr workspace, commit
 /// records, and pull request.
 pub fn pause_task(storage: &mut Storage, request: PauseTask) -> CommandResult<Task> {
     let reason = request.reason.trim();
@@ -1678,7 +1678,7 @@ pub fn pause_task(storage: &mut Storage, request: PauseTask) -> CommandResult<Ta
             )));
         }
     }
-    task_commands::pause(storage, request.id)?;
+    task_commands::pause(storage, request.id, Some(reason))?;
     let task = storage.add_task_note(
         request.id.into(),
         NoteKind::Progress,
@@ -4494,6 +4494,10 @@ mod tests {
         assert_eq!(paused.branch.as_deref(), Some("feat/add-login-1"));
         assert_eq!(paused.herdr_workspace_id.as_deref(), Some("w27"));
         assert!(paused.milestones.paused_at.is_some());
+        assert_eq!(
+            paused.timeline.last().unwrap().reason.as_deref(),
+            Some("Waiting for the API design")
+        );
         let note = paused.notes.last().unwrap();
         assert_eq!(note.kind, types::NoteKind::Progress);
         assert_eq!(note.body, "Paused: Waiting for the API design");

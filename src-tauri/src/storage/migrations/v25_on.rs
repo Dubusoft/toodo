@@ -631,4 +631,9 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     ALTER TABLE workspaces ADD COLUMN archived_at INTEGER;
     ALTER TABLE tasks ADD COLUMN archived_at INTEGER;
     ",
+    // Version 43: why the work on a task stopped, on its move back to `planned`: the reason
+    // of a pause, the prerequisites it waits on, or why it was reopened.
+    r"
+    ALTER TABLE task_events ADD COLUMN reason TEXT;
+    ",
 ];

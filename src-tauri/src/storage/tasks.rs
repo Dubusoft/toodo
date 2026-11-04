@@ -379,7 +379,7 @@ fn load_tasks(
     }
 
     let mut statement = conn.prepare_cached(&format!(
-        "SELECT e.task_id, e.status, e.at
+        "SELECT e.task_id, e.status, e.at, e.reason
          FROM task_events e JOIN tasks t ON t.id = e.task_id
          WHERE {filter} ORDER BY e.id"
     ))?;
@@ -389,12 +389,14 @@ fn load_tasks(
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, i64>(2)?,
+            row.get::<_, Option<String>>(3)?,
         ))
     })? {
-        let (task, status, at) = event?;
+        let (task, status, at, reason) = event?;
         timelines.entry(task).or_default().push(TaskEvent {
             status: parse_task_status(&status)?,
             at,
+            reason,
         });
     }
 
@@ -460,9 +462,20 @@ pub(super) fn record_event(
     status: TaskStatus,
     at: i64,
 ) -> Result<()> {
+    record_event_with_reason(conn, task, status, at, None)
+}
+
+/// [`record_event`] with `reason`, why the work stopped on a move back to `planned`.
+fn record_event_with_reason(
+    conn: &Connection,
+    task: TaskId,
+    status: TaskStatus,
+    at: i64,
+    reason: Option<&str>,
+) -> Result<()> {
     conn.execute(
-        "INSERT INTO task_events (task_id, status, at) VALUES (?1, ?2, ?3)",
-        params![task.0, status.as_str(), at],
+        "INSERT INTO task_events (task_id, status, at, reason) VALUES (?1, ?2, ?3, ?4)",
+        params![task.0, status.as_str(), at, reason],
     )?;
     Ok(())
 }
@@ -1060,10 +1073,11 @@ impl Storage {
 
     /// Reopens a `done` task in one transaction (see [`TaskStatus::reopen`]): it becomes
     /// `planned` without a resolution, completion note, or `merged_with`, the reopening is
-    /// recorded in its status history, and `note`, which says why and keeps the earlier
-    /// outcome, is added as a progress note. Branch, worktree path, commit records, pull
-    /// request, and criteria stay. Whether its dependents allow it is up to the caller.
-    pub fn reopen_task(&mut self, id: TaskId, note: &str) -> Result<Task> {
+    /// recorded in its status history with `reason`, and `note`, which says why and keeps
+    /// the earlier outcome, is added as a progress note. Branch, worktree path, commit
+    /// records, pull request, and criteria stay. Whether its dependents allow it is up to
+    /// the caller.
+    pub fn reopen_task(&mut self, id: TaskId, reason: &str, note: &str) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
@@ -1075,7 +1089,7 @@ impl Storage {
              WHERE id = ?1",
             params![id.0, status.as_str()],
         )?;
-        record_event(&tx, id, status, at)?;
+        record_event_with_reason(&tx, id, status, at, Some(reason))?;
         add_note(&tx, id, NoteKind::Progress, note, at)?;
         let reopened = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
@@ -1276,6 +1290,21 @@ impl Storage {
     /// done. The pull request checks that guard `in_review` and `done` are up to the
     /// caller; a task moved to `done` here counts as merged.
     pub fn set_task_status(&mut self, id: TaskId, status: TaskStatus) -> Result<Task> {
+        self.change_task_status(id, status, None)
+    }
+
+    /// Pauses an `in_progress` or `in_review` task with [`Self::set_task_status`],
+    /// recording `reason`, why the work stops, with the move back to `planned`.
+    pub fn pause_task(&mut self, id: TaskId, reason: Option<&str>) -> Result<Task> {
+        self.change_task_status(id, TaskStatus::Planned, reason)
+    }
+
+    fn change_task_status(
+        &mut self,
+        id: TaskId,
+        status: TaskStatus,
+        reason: Option<&str>,
+    ) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
@@ -1288,7 +1317,7 @@ impl Storage {
             "UPDATE tasks SET status = ?2, resolution = ?3 WHERE id = ?1",
             params![id.0, status.as_str(), resolution],
         )?;
-        record_event(&tx, id, status, at)?;
+        record_event_with_reason(&tx, id, status, at, reason)?;
         let changed = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(changed)
@@ -1451,7 +1480,6 @@ impl Storage {
                 "UPDATE tasks SET status = ?2 WHERE id = ?1",
                 params![task.0, status.as_str()],
             )?;
-            record_event(&tx, task, status, at)?;
             let titles: HashMap<TaskId, &str> = tasks
                 .iter()
                 .map(|task| (task.id, task.title.as_str()))
@@ -1463,6 +1491,8 @@ impl Storage {
                     format!("#{} {title} ({})", blocker.id, blocker.status)
                 })
                 .collect();
+            let reason = format!("Waiting on {}", waiting.join(", "));
+            record_event_with_reason(&tx, task, status, at, Some(&reason))?;
             tx.execute(
                 "INSERT INTO task_notes (task_id, kind, body, at) VALUES (?1, ?2, ?3, ?4)",
                 params![

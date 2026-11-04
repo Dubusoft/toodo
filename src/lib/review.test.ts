@@ -295,12 +295,12 @@ describe("summarize", () => {
     const end = local(2026, 5, 20);
     const resumed = completed(1, end, { startedAt: end - 10 * day }, {
       timeline: [
-        { status: "planned", at: end - 20 * day, reopened: false },
-        { status: "in_progress", at: end - 10 * day, reopened: false },
-        { status: "planned", at: end - 9 * day, reopened: false },
-        { status: "in_progress", at: end - 2 * day, reopened: false },
-        { status: "in_review", at: end - day, reopened: false },
-        { status: "done", at: end, reopened: false },
+        { status: "planned", at: end - 20 * day, reopened: false, reason: null },
+        { status: "in_progress", at: end - 10 * day, reopened: false, reason: null },
+        { status: "planned", at: end - 9 * day, reopened: false, reason: null },
+        { status: "in_progress", at: end - 2 * day, reopened: false, reason: null },
+        { status: "in_review", at: end - day, reopened: false, reason: null },
+        { status: "done", at: end, reopened: false, reason: null },
       ],
     });
 
@@ -323,8 +323,8 @@ describe("formatDuration", () => {
 describe("planVsActual", () => {
   const week = weekStarting("2026-10-12");
   const worked = (start: number, end: number): Task["timeline"] => [
-    { status: "in_progress", at: start, reopened: false },
-    { status: "done", at: end, reopened: false },
+    { status: "in_progress", at: start, reopened: false, reason: null },
+    { status: "done", at: end, reopened: false, reason: null },
   ];
 
   it("compares estimates in any unit with active time and rates due dates of completed tasks", () => {
@@ -386,8 +386,8 @@ describe("yearInReview overruns", () => {
       completed(id, local(2026, 5, 1, 12), {}, {
         estimate: { unit: "hours", amount: estimate },
         timeline: [
-          { status: "in_progress", at: local(2026, 5, 1, 12) - activeHours * hour, reopened: false },
-          { status: "done", at: local(2026, 5, 1, 12), reopened: false },
+          { status: "in_progress", at: local(2026, 5, 1, 12) - activeHours * hour, reopened: false, reason: null },
+          { status: "done", at: local(2026, 5, 1, 12), reopened: false, reason: null },
         ],
       });
     const entries = [overran(1, 2, 3), overran(2, 1, 6), overran(3, 4, 2), overran(4, 1, 3), overran(5, 2, 4)];

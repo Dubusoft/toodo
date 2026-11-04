@@ -345,6 +345,7 @@ mod tests {
                  ALTER TABLE push_subscriptions DROP COLUMN last_failure_at;
                  ALTER TABLE workspaces DROP COLUMN archived_at;
                  ALTER TABLE tasks DROP COLUMN archived_at;
+                 ALTER TABLE task_events DROP COLUMN reason;
                  PRAGMA user_version = 25;",
             )
             .unwrap();

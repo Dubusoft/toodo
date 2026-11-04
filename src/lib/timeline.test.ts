@@ -1,12 +1,21 @@
 import { describe, expect, it } from "vitest";
 import type { TaskEvent, TaskStatus } from "@/lib/bindings";
-import { activeSeconds, formatDate, formatFull, formatWhen, reachedMilestones, workSegments } from "@/lib/timeline";
+import {
+  activeSeconds,
+  formatDate,
+  formatFull,
+  formatWhen,
+  reachedMilestones,
+  waitingSeconds,
+  workSegments,
+} from "@/lib/timeline";
 
 function history(raw: [TaskStatus, number][]): TaskEvent[] {
   return raw.map(([status, at], index) => ({
     status,
     at,
     reopened: index > 0 && raw[index - 1][0] === "done" && status !== "done",
+    reason: null,
   }));
 }
 
@@ -22,18 +31,18 @@ const resumed = history([
 describe("workSegments", () => {
   it("splits the work from the first start to completion into stretches, pauses included", () => {
     expect(workSegments(resumed)).toEqual([
-      { state: "in_progress", start: 100, end: 300 },
-      { state: "paused", start: 300, end: 1000 },
-      { state: "in_progress", start: 1000, end: 1100 },
-      { state: "in_review", start: 1100, end: 1200 },
+      { state: "in_progress", start: 100, end: 300, reason: null },
+      { state: "paused", start: 300, end: 1000, reason: null },
+      { state: "in_progress", start: 1000, end: 1100, reason: null },
+      { state: "in_review", start: 1100, end: 1200, reason: null },
     ]);
   });
 
   it("leaves the current stretch open and ignores the time before the first start", () => {
     expect(workSegments(history([["planned", 0]]))).toEqual([]);
     expect(workSegments(history([["planned", 0], ["in_progress", 50], ["planned", 80]]))).toEqual([
-      { state: "in_progress", start: 50, end: 80 },
-      { state: "paused", start: 80, end: null },
+      { state: "in_progress", start: 50, end: 80, reason: null },
+      { state: "paused", start: 80, end: null, reason: null },
     ]);
   });
 
@@ -48,11 +57,22 @@ describe("workSegments", () => {
     ]);
 
     expect(workSegments(reopened)).toEqual([
-      { state: "in_progress", start: 100, end: 200 },
-      { state: "paused", start: 500, end: 600 },
-      { state: "in_progress", start: 600, end: 700 },
+      { state: "in_progress", start: 100, end: 200, reason: null },
+      { state: "paused", start: 500, end: 600, reason: null },
+      { state: "in_progress", start: 600, end: 700, reason: null },
     ]);
     expect(activeSeconds(reopened, 5000)).toBe(200);
+  });
+});
+
+describe("waitingSeconds", () => {
+  it("counts the pauses after the first start, one under way until now, with their reasons", () => {
+    expect(waitingSeconds(resumed, 5000)).toBe(700);
+    const waiting = history([["planned", 0], ["in_progress", 50], ["planned", 80]]);
+    waiting[2].reason = "Waiting on #3 API (planned)";
+    expect(waitingSeconds(waiting, 900)).toBe(820);
+    expect(workSegments(waiting).at(-1)?.reason).toBe("Waiting on #3 API (planned)");
+    expect(waitingSeconds(history([["planned", 0]]), 90)).toBeNull();
   });
 });
 

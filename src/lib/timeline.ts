@@ -46,8 +46,12 @@ export function formatFull(at: Timestamp): string {
 
 export type WorkState = "in_progress" | "in_review" | "paused";
 
-/** A stretch of a task's history in one state; `end` is null while the task is still in it. */
-export type WorkSegment = { state: WorkState; start: Timestamp; end: Timestamp | null };
+/**
+ * A stretch of a task's history in one state; `end` is null while the task is still in it.
+ * `reason` says why a paused stretch began: the reason of the pause, the prerequisites the
+ * task waits on, or why it was reopened; null when none was recorded.
+ */
+export type WorkSegment = { state: WorkState; start: Timestamp; end: Timestamp | null; reason: string | null };
 
 /**
  * The history of a task from its first start to its latest completion, oldest first: the
@@ -65,9 +69,9 @@ export function workSegments(timeline: TaskEvent[]): WorkSegment[] {
       continue;
     }
     if (event.status !== "planned") {
-      segments.push({ state: event.status, start: event.at, end: null });
+      segments.push({ state: event.status, start: event.at, end: null, reason: null });
     } else if (segments.length > 0) {
-      segments.push({ state: "paused", start: event.at, end: null });
+      segments.push({ state: "paused", start: event.at, end: null, reason: event.reason });
     }
   }
   return segments;
@@ -78,12 +82,26 @@ export function workSegments(timeline: TaskEvent[]): WorkSegment[] {
  * under way counts until `now`. Null when the history records no start.
  */
 export function activeSeconds(timeline: TaskEvent[], now: Timestamp): number | null {
+  return secondsIn(timeline, now, (state) => state !== "paused");
+}
+
+/**
+ * Seconds a task spent waiting after its first start: paused, blocked by prerequisites, or
+ * reopened, until it was started again; a wait still under way counts until `now`. Null
+ * when the history records no start.
+ */
+export function waitingSeconds(timeline: TaskEvent[], now: Timestamp): number | null {
+  return secondsIn(timeline, now, (state) => state === "paused");
+}
+
+/** Seconds of the segments whose state `counts`, until `now` for one under way. */
+function secondsIn(timeline: TaskEvent[], now: Timestamp, counts: (state: WorkState) => boolean): number | null {
   const segments = workSegments(timeline);
   if (segments.length === 0) {
     return null;
   }
   return segments
-    .filter((segment) => segment.state !== "paused")
+    .filter((segment) => counts(segment.state))
     .reduce((total, segment) => total + Math.max((segment.end ?? now) - segment.start, 0), 0);
 }
 
