@@ -149,6 +149,7 @@ wire_enum!(
 wire_enum!(
     /// Where a run is in its life.
     RunState, "run state", {
+        Queued => "queued",
         Reserved => "reserved",
         Running => "running",
         Settled => "settled",
@@ -164,6 +165,12 @@ impl RunState {
     /// a run whose fate is not confirmed may still be writing.
     pub fn is_active(self) -> bool {
         matches!(self, Self::Reserved | Self::Running | Self::Unknown)
+    }
+
+    /// Whether the run has not ended: it is active, or it waits in its host's queue for a
+    /// free run slot. A queued writer already holds its checkout.
+    pub fn is_open(self) -> bool {
+        self == Self::Queued || self.is_active()
     }
 }
 
@@ -261,7 +268,7 @@ mod tests {
         );
         check(ResumeKind::ALL, ResumeKind::as_wire, ResumeKind::parse);
         check(AgentState::ALL, AgentState::as_wire, AgentState::parse);
-        assert_eq!(RunState::ALL.len(), 7);
+        assert_eq!(RunState::ALL.len(), 8);
         assert_eq!(ResumeKind::NamedSession.as_wire(), "named_session");
     }
 
@@ -276,5 +283,6 @@ mod tests {
             active,
             [RunState::Reserved, RunState::Running, RunState::Unknown]
         );
+        assert!(RunState::Queued.is_open() && !RunState::Queued.is_active());
     }
 }

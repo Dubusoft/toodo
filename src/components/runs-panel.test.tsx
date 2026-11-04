@@ -100,6 +100,7 @@ function run(generation: number, state: TaskRun["state"], adapter = "claude"): T
     endedAt: state === "reserved" || state === "running" ? null : 1_791_970_600,
     lastActivityAt: null,
     usage: null,
+    queuePosition: null,
   };
 }
 
@@ -215,6 +216,27 @@ describe("RunsPanel", () => {
     await waitFor(() => expect(mocked.getRunLog).toHaveBeenCalledWith(41, null));
     // The new run holds the worktree, so no second run starts until it ends.
     expect(within(form).getByRole("button", { name: "Start run of #7" })).toBeDisabled();
+  });
+
+  it("shows a queued run with its place in the queue and lets it leave the queue", async () => {
+    const queued: TaskRun = { ...run(1, "queued"), startedAt: null, providerRunRef: null, queuePosition: 2 };
+    mocked.listTaskRuns.mockResolvedValue(ok([queued]));
+    mocked.getRunLog.mockResolvedValue(ok(log(queued, [event(1, "queued")])));
+    mocked.stopRun.mockResolvedValue(ok({ ...queued, state: "cancelled", queuePosition: null }));
+    renderPanel();
+
+    expect(await screen.findByRole("button", { name: "Run 1, Claude, Queued" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Run 1 is number 2 in the queue")).toHaveTextContent("#2 in queue");
+    expect(screen.getByRole("note", { name: "Why no run of #7 starts" })).toHaveTextContent(
+      "number 2 in the queue",
+    );
+    expect(screen.getByRole("button", { name: "Start run of #7" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Stop run 1 of #7" }));
+    expect(screen.getByRole("group", { name: "Stop run 1 of #7?" })).toHaveTextContent(
+      "It leaves the queue without starting.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Confirm stop run 1 of #7" }));
+    await waitFor(() => expect(mocked.stopRun).toHaveBeenCalledWith(41));
   });
 
   it("stops a running run only once the stop is confirmed", async () => {
