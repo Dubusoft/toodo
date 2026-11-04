@@ -822,6 +822,8 @@ pub(crate) mod tests {
             .create_device(
                 &crate::domain::device::DeviceLabel::parse(label).unwrap(),
                 &crate::server::devices::token_hash(label),
+                crate::domain::device::DeviceScope::Full,
+                None,
             )
             .unwrap()
             .id;

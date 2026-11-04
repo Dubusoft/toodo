@@ -1,7 +1,7 @@
 import { useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/workspace-list";
-import { guessDeviceLabel, signIn, TokenRejected } from "@/web/devices";
+import { DEFAULT_ACCESS, guessDeviceLabel, LIFETIMES, signIn, TokenRejected, type DeviceScope } from "@/web/devices";
 import { getToken, setToken, subscribeToken } from "@/web/session";
 
 /**
@@ -17,6 +17,8 @@ export function ServerAccess({ children }: { children: ReactNode }) {
 function TokenForm() {
   const [token, setDraft] = useState("");
   const [label, setLabel] = useState(() => guessDeviceLabel(navigator.userAgent));
+  const [scope, setScope] = useState<DeviceScope>(DEFAULT_ACCESS.scope);
+  const [lifetime, setLifetime] = useState(String(DEFAULT_ACCESS.expiresInDays));
   const [error, setError] = useState<string | null>(null);
   const [rejected, setRejected] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -31,7 +33,8 @@ function TokenForm() {
     setError(null);
     setRejected(false);
     try {
-      setToken(await signIn(token.trim(), label.trim()));
+      const expiresInDays = lifetime === "never" ? null : Number(lifetime);
+      setToken(await signIn(token.trim(), label.trim(), { scope, expiresInDays }));
     } catch (failure) {
       if (failure instanceof TokenRejected) {
         setRejected(true);
@@ -93,6 +96,28 @@ function TokenForm() {
             required
           />
         </label>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            Access
+            <select className={inputClass} value={scope} onChange={(event) => setScope(event.target.value as DeviceScope)}>
+              <option value="full">Full access</option>
+              <option value="read">Read-only</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            Token expires after
+            <select className={inputClass} value={lifetime} onChange={(event) => setLifetime(event.target.value)}>
+              {LIFETIMES.map(({ label, days }) => (
+                <option key={label} value={days === null ? "never" : String(days)}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Applies when you sign in with <code className="text-xs">web-token</code>. When the token expires, sign in again.
+        </p>
         {error && (
           <p role="alert" className="text-xs text-destructive">
             {error}

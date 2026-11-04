@@ -13,6 +13,7 @@
 //! as a resource, since not every client can read resources. Agents on SSH machines reach
 //! the server through the reverse tunnels of [`tunnels`].
 
+pub(crate) mod attempts;
 mod tools;
 pub mod tunnels;
 
@@ -360,6 +361,7 @@ pub(crate) fn router(
         token,
         web_token,
         backend: backend.clone(),
+        attempts: attempts::FailedAttempts::default(),
     });
     let service = StreamableHttpService::new(
         move || Ok(ToodoMcp::new(backend.clone())),
@@ -375,10 +377,12 @@ struct Guard {
     token: String,
     web_token: Option<String>,
     backend: Arc<dyn Backend>,
+    attempts: attempts::FailedAttempts,
 }
 
 /// Lets requests through that bear the MCP token; the others get `401` with the reason,
-/// which is also kept for the app to show.
+/// which is also kept for the app to show. An address that sent too many wrong tokens
+/// gets `429` until it may try again (see [`attempts`]).
 async fn require_token(
     State(guard): State<Arc<Guard>>,
     mut request: Request,
@@ -401,6 +405,10 @@ async fn require_token(
             "Connect through loopback or an SSH tunnel, or set TOODO_PUBLIC_URL to enable remote MCP access.",
         )
             .into_response();
+    }
+    let peer = attempts::peer(&request);
+    if let Some(wait) = guard.attempts.locked_out(peer) {
+        return attempts::too_many("MCP", wait);
     }
     let rejection = match bearer(request.headers()) {
         Ok(presented) if same_secret(presented, &guard.token) => {
@@ -443,6 +451,9 @@ async fn require_token(
         Ok(_) => Rejection::WrongToken,
         Err(rejection) => rejection,
     };
+    if rejection == Rejection::WrongToken {
+        guard.attempts.record(peer);
+    }
     let server = guard.backend.server();
     server.rejections.record(rejection);
     let mut response = unauthorized(Surface::Mcp, rejection, Some(&server.instance));

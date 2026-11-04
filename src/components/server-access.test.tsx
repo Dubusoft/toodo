@@ -16,11 +16,11 @@ function fakeServer() {
     const token = new Headers(init.headers).get("Authorization")?.replace("Bearer ", "");
     if (token !== "shared" && token !== deviceToken) return reply(401, "missing or wrong Toodo access token");
     if (path === "/api/devices" && (init.method ?? "GET") === "GET") {
-      return reply(200, [{ id: 1, label: "Phone", createdAt: 1, lastSeenAt: 1, revokedAt: null, current: token === deviceToken }]);
+      return reply(200, [{ id: 1, label: "Phone", createdAt: 1, lastSeenAt: 1, revokedAt: null, expiresAt: null, scope: "full", current: token === deviceToken }]);
     }
     if (path === "/api/devices" && init.method === "POST") {
       const { label } = JSON.parse(String(init.body)) as { label: string };
-      return reply(201, { device: { id: 2, label, createdAt: 2, lastSeenAt: 2, revokedAt: null, current: false }, token: deviceToken });
+      return reply(201, { device: { id: 2, label, createdAt: 2, lastSeenAt: 2, revokedAt: null, expiresAt: null, scope: "full", current: false }, token: deviceToken });
     }
     return reply(404, "not found");
   });
@@ -56,7 +56,23 @@ describe("ServerAccess", () => {
     expect(await screen.findByText("App")).toBeInTheDocument();
     expect(getToken()).toBe(deviceToken);
     const registration = server.mock.calls.find(([, init]) => init?.method === "POST");
-    expect(JSON.parse(String(registration?.[1]?.body))).toEqual({ label: "Work laptop" });
+    expect(JSON.parse(String(registration?.[1]?.body))).toEqual({ label: "Work laptop", scope: "full", expiresInDays: 90 });
+  });
+
+  it("registers a read-only device whose token never expires when asked to", async () => {
+    render(
+      <ServerAccess>
+        <p>App</p>
+      </ServerAccess>,
+    );
+    fireEvent.change(screen.getByLabelText("Access"), { target: { value: "read" } });
+    fireEvent.change(screen.getByLabelText("Token expires after"), { target: { value: "never" } });
+    fireEvent.change(screen.getByLabelText("Access token"), { target: { value: "shared" } });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+    expect(await screen.findByText("App")).toBeInTheDocument();
+    const registration = server.mock.calls.find(([, init]) => init?.method === "POST");
+    expect(JSON.parse(String(registration?.[1]?.body))).toMatchObject({ scope: "read", expiresInDays: null });
   });
 
   it("keeps a device token as it is without registering again", async () => {
