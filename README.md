@@ -28,6 +28,38 @@ into a performance report.
   sessions, watch them, and close out what shipped; see [docs/agents.md](docs/agents.md).
 - **Timeline**: every status change is timestamped; the dependency graph is drawn on a
   time axis showing when each task was planned, started, reviewed, and completed.
+- **Review**: a report of what was planned, started, and completed in a period, built
+  from that history; see [Review](#review).
+
+![Tasks of two workspaces on the timeline, with their dependencies](docs/images/timeline.png)
+
+## Getting Started
+
+[docs/quickstart.md](docs/quickstart.md) goes from installing the server to a first task
+whose pull request is merged. [docs/runners.md](docs/runners.md) helps you pick the runner
+of a workspace, and [docs/troubleshooting.md](docs/troubleshooting.md) covers the errors
+new setups run into most.
+
+## Review
+
+**Review** in the sidebar reports the work recorded in a week, month, quarter, year, or a
+custom range, across all workspaces or narrowed to one workspace or label. It is built only
+from recorded facts: status changes, commits, pull request snapshots, and the completion
+notes you write.
+
+- A summary counts the tasks completed, awaiting completion, started, and planned, and the
+  commits; it gives the median lead, cycle, active, and review times and what was
+  completed by type and by workspace.
+- "Plan vs actual" compares estimates with active time and due dates with completion
+  dates, when tasks have them; a year adds a "Year in review" section.
+- Each task is listed once, under the most advanced milestone it reached in the period,
+  with its pull request and completion note.
+- Export copies the review as Markdown, saves it as Markdown or CSV, or prints it.
+
+The review is the source for status updates and a year-end report.
+[docs/architecture.md](docs/architecture.md#review) defines each number.
+
+![The week review](docs/images/review.png)
 
 ## Keyboard Shortcuts
 
@@ -45,6 +77,9 @@ The web app lists these with `?`. Letter shortcuts do nothing while you type in 
 
 ## Documentation
 
+- [docs/quickstart.md](docs/quickstart.md): from install to a first merged task.
+- [docs/runners.md](docs/runners.md): the four runners compared, and how to pick one.
+- [docs/troubleshooting.md](docs/troubleshooting.md): common errors and what to do.
 - [AGENTS.md](AGENTS.md): contributor and AI-agent guidelines, including the language policy.
 - [docs/architecture.md](docs/architecture.md): domain model and system components.
 - [docs/workflow.md](docs/workflow.md): task lifecycle from planning to pull request.
@@ -81,7 +116,8 @@ toodo service install
 
 `toodo update` installs the newest version later and restarts the server on it. See
 [Install with npm](docs/server.md#install-with-npm), and [docs/server.md](docs/server.md)
-for installing without Node.js or from a checkout.
+for installing without Node.js or from a checkout. Continue with
+[docs/quickstart.md](docs/quickstart.md) to sign in and ship a first task.
 
 ## End-to-End Tests
 
@@ -160,10 +196,6 @@ The `Release` workflow also starts the `npm` workflow on `main` with dist-tag `l
 publish the release to npm. If that publish fails or is skipped, run the `npm` workflow by
 hand on `main` with dist-tag `latest`. Every push to `dev` publishes an `X.Y.Z-dev.N`
 prerelease under `dev`; see [npm Packages](docs/server.md#npm-packages).
-
-## Status
-
-Early bootstrap. Setup instructions will be added with the project scaffold.
 
 ## Language Policy
 
