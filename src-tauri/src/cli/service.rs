@@ -152,6 +152,16 @@ pub(super) fn service_path(bin_dir: &Path, tools: &[PathBuf]) -> String {
         .join(":")
 }
 
+/// [`service_path`] for [`SERVICE_TOOLS`], as found on `PATH` now.
+pub(super) fn service_path_now(var: Var) -> Result<String, String> {
+    let bin_dir = settings::home(var)?.join(".local/bin");
+    let tools: Vec<PathBuf> = SERVICE_TOOLS
+        .iter()
+        .filter_map(|tool| process::find_on_path(tool, var))
+        .collect();
+    Ok(service_path(&bin_dir, &tools))
+}
+
 /// `toodo service install`.
 pub(super) fn install(data: &DataDir, listen: SocketAddr, var: Var) -> Result<(), String> {
     if process::find_on_path("systemctl", var).is_none() {
@@ -170,7 +180,6 @@ pub(super) fn install(data: &DataDir, listen: SocketAddr, var: Var) -> Result<()
         ));
     }
     let bundle = Bundle::find()?;
-    let bin_dir = settings::home(var)?.join(".local/bin");
 
     if process::stop(data)? {
         println!("Stopped the toodo-server started by toodo start; the service replaces it.");
@@ -178,11 +187,7 @@ pub(super) fn install(data: &DataDir, listen: SocketAddr, var: Var) -> Result<()
 
     let (server, web_dir) = install_bundle(&bundle, var)?;
 
-    let tools: Vec<PathBuf> = SERVICE_TOOLS
-        .iter()
-        .filter_map(|tool| process::find_on_path(tool, var))
-        .collect();
-    let path = service_path(&bin_dir, &tools);
+    let path = service_path_now(var)?;
     let text = render(&Unit {
         exec: &server,
         listen,

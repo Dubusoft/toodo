@@ -119,7 +119,8 @@ The web app lists these with `?`. Letter shortcuts do nothing while you type in 
 - For runner `tmux`: tmux on the host that runs the agent. For runner `plain` on a POSIX
   SSH host: util-linux `setsid` (with `--wait`) there
 
-The recommended install, on Linux x64 or arm64 (glibc) with Node.js 18 or later:
+The recommended install, on Linux x64 or arm64 (glibc or musl) or macOS with Node.js 18 or
+later:
 
 ```sh
 npm i -g @dubusoft/toodo

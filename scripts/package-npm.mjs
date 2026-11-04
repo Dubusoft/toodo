@@ -18,8 +18,18 @@ import { fileURLToPath } from 'node:url';
 
 const USAGE =
   'Usage: node scripts/package-npm.mjs --version <semver> --web <web dir> --out <out dir> ' +
-  '--binaries <linux-x64|linux-arm64>=<dir> [--binaries <target>=<dir> ...]';
-const TARGETS = { 'linux-x64': 'x64', 'linux-arm64': 'arm64' };
+  '--binaries <target>=<dir> [--binaries <target>=<dir> ...], where <target> is one of ' +
+  'linux-x64, linux-arm64, linux-x64-musl, linux-arm64-musl, darwin-x64, darwin-arm64';
+// Each target is published as @dubusoft/toodo-<target>; npm installs the one whose os,
+// cpu, and libc match, and the launcher (npm/toodo/bin/toodo.js) runs it.
+const TARGETS = {
+  'linux-x64': { os: 'linux', cpu: 'x64', libc: 'glibc', label: 'Linux x64 (glibc)' },
+  'linux-arm64': { os: 'linux', cpu: 'arm64', libc: 'glibc', label: 'Linux arm64 (glibc)' },
+  'linux-x64-musl': { os: 'linux', cpu: 'x64', libc: 'musl', label: 'Linux x64 (musl)' },
+  'linux-arm64-musl': { os: 'linux', cpu: 'arm64', libc: 'musl', label: 'Linux arm64 (musl)' },
+  'darwin-x64': { os: 'darwin', cpu: 'x64', label: 'macOS x64' },
+  'darwin-arm64': { os: 'darwin', cpu: 'arm64', label: 'macOS arm64' },
+};
 const SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
 const HOMEPAGE = 'https://github.com/dev-bokdong/toodo';
@@ -71,7 +81,7 @@ for (const spec of args.binaries) {
   const target = eq < 0 ? spec : spec.slice(0, eq);
   const dir = eq < 0 ? '' : spec.slice(eq + 1);
   if (!(target in TARGETS)) {
-    fail(`unknown target "${target}"; use --binaries linux-x64=<dir> or --binaries linux-arm64=<dir>.`);
+    fail(`unknown target "${target}"; use one of ${Object.keys(TARGETS).join(', ')}, as --binaries <target>=<dir>.`);
   }
   if (!dir) fail(`--binaries ${target} has no directory; pass --binaries ${target}=<dir>.`);
   if (binaries.has(target)) fail(`target ${target} passed twice; pass --binaries ${target}=<dir> once.`);
@@ -94,7 +104,8 @@ const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, 
 const dirs = [];
 
 for (const [target, binDir] of binaries) {
-  const arch = TARGETS[target];
+  const { os, cpu, libc, label } = TARGETS[target];
+  const name = `@dubusoft/toodo-${target}`;
   const dir = path.join(out, `toodo-${target}`);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(path.join(dir, 'bin'), { recursive: true });
@@ -106,18 +117,18 @@ for (const [target, binDir] of binaries) {
   cpSync(web, path.join(dir, 'web'), { recursive: true });
   writeFileSync(
     path.join(dir, 'README.md'),
-    `# @dubusoft/toodo-linux-${arch}\n\nLinux ${arch} binaries for [@dubusoft/toodo](${HOMEPAGE}). Install \`@dubusoft/toodo\` instead of this package.\n`,
+    `# ${name}\n\n${label} binaries for [@dubusoft/toodo](${HOMEPAGE}). Install \`@dubusoft/toodo\` instead of this package.\n`,
   );
   writeJson(path.join(dir, 'package.json'), {
-    name: `@dubusoft/toodo-linux-${arch}`,
+    name,
     version: args.version,
-    description: `Toodo server and CLI binaries for Linux ${arch}`,
+    description: `Toodo server and CLI binaries for ${label}`,
     license: 'AGPL-3.0-only',
     homepage: HOMEPAGE,
     repository: { type: 'git', url: 'git+https://github.com/dev-bokdong/toodo.git' },
-    os: ['linux'],
-    cpu: [arch],
-    libc: ['glibc'],
+    os: [os],
+    cpu: [cpu],
+    ...(libc ? { libc: [libc] } : {}),
     files: ['bin', 'web'],
   });
   dirs.push(dir);
@@ -142,7 +153,7 @@ writeJson(path.join(mainDir, 'package.json'), {
   files: ['bin'],
   engines: { node: '>=18' },
   optionalDependencies: Object.fromEntries(
-    [...binaries.keys()].map((t) => [`@dubusoft/toodo-linux-${TARGETS[t]}`, args.version]),
+    [...binaries.keys()].map((t) => [`@dubusoft/toodo-${t}`, args.version]),
   ),
 });
 dirs.push(mainDir);

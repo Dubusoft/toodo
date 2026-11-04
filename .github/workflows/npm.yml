@@ -1,8 +1,9 @@
 name: npm
 
-# Builds and publishes the npm packages @dubusoft/toodo (the launcher and the web app) and
-# the platform packages @dubusoft/toodo-linux-x64 and @dubusoft/toodo-linux-arm64
-# (the toodo and toodo-server binaries).
+# Builds and publishes the npm packages @dubusoft/toodo (the launcher) and the platform
+# packages @dubusoft/toodo-<target> (the toodo and toodo-server binaries and the web app)
+# for the targets linux-x64, linux-arm64 (glibc), linux-x64-musl, linux-arm64-musl,
+# darwin-x64, and darwin-arm64.
 #
 # Two channels:
 # - dev: every push to dev publishes a prerelease "<next patch>-dev.<run number>" under the
@@ -17,9 +18,13 @@ name: npm
 # the caller's identity (release.yml), which the npm trusted publisher does not match.
 #
 # Publishing authenticates with the NPM_TOKEN secret when it is set, otherwise with npm
-# trusted publishing (OIDC) when it is configured on npmjs.com for all three packages
-# (repository dev-bokdong/toodo, workflow npm.yml). When neither is available the workflow
-# only prints a notice and succeeds.
+# trusted publishing (OIDC) when it is configured on npmjs.com for @dubusoft/toodo,
+# @dubusoft/toodo-linux-x64, and @dubusoft/toodo-linux-arm64 (repository dev-bokdong/toodo,
+# workflow npm.yml). When neither is available the workflow only prints a notice and
+# succeeds. Under trusted publishing, a platform package of another target is published
+# only once trusted publishing is configured for it too (npm can configure it only for a
+# package that exists, so its first version is published by hand); until then it is left
+# out of the release, and @dubusoft/toodo does not list it.
 on:
   push:
     branches:
@@ -58,6 +63,7 @@ jobs:
       version: ${{ steps.plan.outputs.version }}
       dist-tag: ${{ steps.plan.outputs.dist-tag }}
       mode: ${{ steps.plan.outputs.mode }}
+      targets: ${{ steps.plan.outputs.targets }}
     steps:
       - uses: actions/checkout@v4
 
@@ -95,9 +101,15 @@ jobs:
             exit 0
           fi
 
+          # Platform packages the release always carries, and the ones it carries once they
+          # can be published.
+          required="linux-x64 linux-arm64"
+          optional="linux-x64-musl linux-arm64-musl darwin-x64 darwin-arm64"
+          targets="$required"
           mode=skip
           if [ -n "$NPM_TOKEN" ]; then
             mode=token
+            targets="$required $optional"
           else
             # Trusted publishing must work for every package, or a publish would stop halfway.
             id_token=
@@ -107,22 +119,33 @@ jobs:
             fi
             if [ -n "$id_token" ] && [ "$id_token" != null ]; then
               mode=oidc
-              for name in @dubusoft/toodo @dubusoft/toodo-linux-x64 @dubusoft/toodo-linux-arm64; do
+              publishable() {
                 code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
-                  "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${name//\//%2F}" \
+                  "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/${1//\//%2F}" \
                   -H "Authorization: Bearer $id_token" || true)
                 case "$code" in
-                  2??) ;;
-                  *) echo "trusted publishing check for $name returned HTTP ${code:-none}"; mode=skip ;;
+                  2??) return 0 ;;
+                  *) echo "trusted publishing check for $1 returned HTTP ${code:-none}"; return 1 ;;
                 esac
+              }
+              for name in @dubusoft/toodo @dubusoft/toodo-linux-x64 @dubusoft/toodo-linux-arm64; do
+                publishable "$name" || mode=skip
+              done
+              for target in $optional; do
+                if publishable "@dubusoft/toodo-$target"; then
+                  targets="$targets $target"
+                else
+                  echo "::notice::@dubusoft/toodo-$target is left out: publish its first version by hand, then configure trusted publishing for it on npmjs.com (repository dev-bokdong/toodo, workflow npm.yml), and the next run includes it."
+                fi
               done
             fi
           fi
           echo "mode=$mode" >>"$GITHUB_OUTPUT"
+          echo "targets=$targets" >>"$GITHUB_OUTPUT"
           if [ "$mode" = skip ]; then
             echo "::notice::Publishing is skipped: set the NPM_TOKEN secret, or configure trusted publishing on npmjs.com for @dubusoft/toodo, @dubusoft/toodo-linux-x64, and @dubusoft/toodo-linux-arm64 (repository dev-bokdong/toodo, workflow npm.yml), then rerun this workflow."
           fi
-          echo "version=$version dist-tag=$tag mode=$mode"
+          echo "version=$version dist-tag=$tag mode=$mode targets=$targets"
 
   build:
     needs: plan
@@ -135,13 +158,35 @@ jobs:
             # The oldest supported runners, so the binaries link against an old glibc and
             # run on current Debian and Ubuntu LTS releases too.
             runner: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
           - target: linux-arm64
             runner: ubuntu-22.04-arm
+            rust-target: aarch64-unknown-linux-gnu
+          # Statically linked against musl, for Alpine and other musl distributions.
+          - target: linux-x64-musl
+            runner: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-musl
+          - target: linux-arm64-musl
+            runner: ubuntu-22.04-arm
+            rust-target: aarch64-unknown-linux-musl
+          # Both macOS targets build on an Apple silicon runner; Xcode cross-compiles x64.
+          - target: darwin-x64
+            runner: macos-15
+            rust-target: x86_64-apple-darwin
+          - target: darwin-arm64
+            runner: macos-15
+            rust-target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Install the musl C toolchain
+        if: endsWith(matrix.rust-target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -153,14 +198,20 @@ jobs:
         # The binaries report the version they are published as (build.rs).
         env:
           TOODO_VERSION: ${{ needs.plan.outputs.version }}
-        run: cargo build --release --locked --bin toodo --bin toodo-server
+          RUST_TARGET: ${{ matrix.rust-target }}
+        run: |
+          case "$RUST_TARGET" in
+            # C code of the dependencies (SQLite, ring) builds against musl too.
+            *-musl) export "CC_${RUST_TARGET//-/_}=musl-gcc" ;;
+          esac
+          cargo build --release --locked --target "$RUST_TARGET" --bin toodo --bin toodo-server
 
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.target }}
           path: |
-            src-tauri/target/release/toodo
-            src-tauri/target/release/toodo-server
+            src-tauri/target/${{ matrix.rust-target }}/release/toodo
+            src-tauri/target/${{ matrix.rust-target }}/release/toodo-server
           if-no-files-found: error
 
   publish:
@@ -202,11 +253,15 @@ jobs:
         id: stage
         env:
           VERSION: ${{ needs.plan.outputs.version }}
+          TARGETS: ${{ needs.plan.outputs.targets }}
         run: |
           chmod +x artifacts/*/toodo artifacts/*/toodo-server
+          binaries=()
+          for target in $TARGETS; do
+            binaries+=(--binaries "$target=artifacts/binaries-$target")
+          done
           node scripts/package-npm.mjs --version "$VERSION" --web dist-web --out dist-npm \
-            --binaries linux-x64=artifacts/binaries-linux-x64 \
-            --binaries linux-arm64=artifacts/binaries-linux-arm64 >dirs.txt
+            "${binaries[@]}" >dirs.txt
           cat dirs.txt
 
       - name: Publish the packages
