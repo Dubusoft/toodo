@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
+  CalendarRange,
   ChartColumn,
   CircleDot,
   FolderGit2,
@@ -169,6 +170,13 @@ export default function App() {
         label: "Show the task list of all workspaces",
         icon: <List />,
         run: () => openPage({ page: "all", view: "list", task: null }),
+      },
+      !!workspaces.data?.length && {
+        id: "plan",
+        group: "Actions",
+        label: "Show the quarter and year plan of all workspaces",
+        icon: <CalendarRange />,
+        run: () => openPage({ page: "all", view: "plan", task: null }),
       },
       { id: "review", group: "Actions", label: "Show the review", icon: <ChartColumn />, run: () => openPage({ page: "review" }) },
       newTask !== null && {

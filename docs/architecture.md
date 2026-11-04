@@ -325,6 +325,26 @@ the task list's Done group), "Load older finished tasks" loads the next 100.
   row and behind its label, and the axis reaches far enough to show it. A task done after that day, or still open past it, is
   outlined in red, and so is its marker.
 
+## Plan View
+
+"Plan" in the "All workspaces" view (`?view=plan`) shows whether a quarter or a year of
+planned work fits, before it slips. Like the timeline it can be narrowed to one
+workspace, and the search, status, and type filters apply.
+
+- Each task counts in the calendar quarter or year of its due date, with its estimate
+  converted to seconds as everywhere else (a day is 24 hours, a week 7 days, a month 30
+  days). Done tasks count, since their work filled the period; tasks that were not
+  adopted do not.
+- Periods run without gaps from the earliest due date to the latest, and always include
+  the current one. Each lists its tasks, the summed estimate, the part of it already done,
+  and how many of its tasks have no estimate and so are left out of the sum.
+- Tasks without a due date are listed apart under "No due date", with their summed
+  estimate.
+- The capacity is an amount of work per quarter in an estimate unit; a year holds four
+  quarters. A period whose summed estimate is more than its capacity is highlighted as
+  over capacity, with the excess. The capacity is saved in the browser (`localStorage`),
+  like the theme; without one, no period is highlighted.
+
 ## Review
 
 A report of the work recorded in a period, across all workspaces, for status updates and

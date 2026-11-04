@@ -7,6 +7,7 @@ describe("route", () => {
       [{ page: "all", view: "timeline", task: null }, ""],
       [{ page: "all", view: "timeline", task: 12 }, "?task=12"],
       [{ page: "all", view: "list", task: 3 }, "?view=list&task=3"],
+      [{ page: "all", view: "plan", task: null }, "?view=plan"],
       [{ page: "workspace", workspace: 2, task: null }, "?workspace=2"],
       [{ page: "workspace", workspace: 2, task: 7 }, "?workspace=2&task=7"],
       [{ page: "review" }, "?view=review"],
