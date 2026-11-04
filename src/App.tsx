@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   ChartColumn,
   CircleDot,
@@ -24,7 +24,6 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { HerdrBanner } from "@/components/herdr-banner";
 import { InstallBanner } from "@/components/install-banner";
 import { NeedsAttention } from "@/components/needs-attention";
-import { Review } from "@/components/review";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
 import { SettingsDialog, type SettingsSection } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
@@ -38,6 +37,9 @@ import { setThemePreference } from "@/lib/theme";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
 import { listenForOpenTask } from "@/web/push";
+
+// The review screen loads only when it is first shown.
+const Review = lazy(() => import("@/components/review").then((module) => ({ default: module.Review })));
 
 /** The search field of the shown task view, unless it is folded away on a phone. */
 function searchField(): HTMLInputElement | null {
@@ -313,7 +315,9 @@ export default function App() {
           <HerdrBanner />
           <ErrorBoundary label="this view" resetKey={reviewing ? "review" : showingAll ? "all" : selected?.id}>
             {reviewing ? (
-              <Review onShowTask={showTask} />
+              <Suspense fallback={<p className="text-sm text-muted-foreground">Loading review...</p>}>
+                <Review onShowTask={showTask} />
+              </Suspense>
             ) : route.page === "all" && workspaces.data?.length ? (
               <TaskList
                 key="all"

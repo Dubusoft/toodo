@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskList, type TaskDraft } from "@/components/task-list";
 import { commands, type Task, type TaskActivity, type TaskId, type Workspace } from "@/lib/bindings";
 import { queryKeys } from "@/lib/queries";
@@ -190,6 +190,11 @@ function kindOptions(select: HTMLElement) {
     .getAllByRole("option")
     .map((option) => option.textContent);
 }
+
+// The details sheet is lazy-loaded; transform it once here so no test pays for that within its timeout.
+beforeAll(async () => {
+  await import("@/components/task-details");
+});
 
 async function openDetails(title: string) {
   fireEvent.click(await screen.findByRole("button", { name: title }));
