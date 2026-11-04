@@ -671,6 +671,23 @@ describe("App", () => {
     expect(within(tasks).getByText("Follow up on 3")).toBeInTheDocument();
   });
 
+  it("loads a finished task older than the loaded pages when a search names its number", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    const old = task(3, 1, "Old storage work", { status: "done", resolution: "completed" });
+    mocked.listTasks.mockImplementation(async (filter) => ({
+      status: "ok",
+      data: filter?.ids ? [old].filter((entry) => filter.ids?.includes(entry.id)) : filter?.statuses?.includes("planned") ? [task(9, 1, "Add search")] : [],
+    }));
+    await renderWorkspace();
+
+    const tasks = await taskList();
+    expect(within(tasks).queryByText("Old storage work")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search tasks" }), { target: { value: "#3" } });
+    const match = await screen.findByRole("list", { name: "Task number match" });
+    expect(within(match).getByText("Old storage work")).toBeInTheDocument();
+    expect(mocked.listTasks).toHaveBeenCalledWith({ ids: [3] });
+  });
+
   it("filters the tasks that can be started now in the list and on the timeline", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
@@ -1221,7 +1238,7 @@ describe("App", () => {
 
   it("creates a task and reloads the task list", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
-    mocked.listTasks.mockResolvedValueOnce({ status: "ok", data: [] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     mocked.createTask.mockResolvedValue({ status: "ok", data: task(5, 1, "Write docs") });
     await renderWorkspace();
 
@@ -1328,7 +1345,7 @@ describe("App", () => {
   it("links the issue number given with a new task", async () => {
     const issue = { number: 12, url: "https://github.com/acme/toodo/issues/12" };
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
-    mocked.listTasks.mockResolvedValueOnce({ status: "ok", data: [] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     mocked.createTask.mockResolvedValue({ status: "ok", data: task(5, 1, "Fix login") });
     mocked.linkIssue.mockResolvedValue({ status: "ok", data: task(5, 1, "Fix login", { issue }) });
     await renderWorkspace();
@@ -1388,7 +1405,7 @@ describe("App", () => {
       herdrWorkspaceId: "w27",
     });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
-    mocked.listTasks.mockResolvedValueOnce({ status: "ok", data: [task(1, 1, "Add login")] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Add login")] });
     mocked.startTask.mockResolvedValue({ status: "ok", data: started });
     mocked.openTaskInHerdr.mockResolvedValue({ status: "ok", data: null });
     await renderWorkspace();

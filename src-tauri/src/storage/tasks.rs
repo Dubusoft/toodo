@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
 use super::runtime::set_herdr_workspace;
 use super::{Result, Storage, StorageError, invalid_data};
@@ -27,6 +27,22 @@ pub struct NewTask {
     pub due_date: Option<DueDate>,
     /// What has to hold for the task to be done, in order.
     pub criteria: Vec<NewCriterion>,
+}
+
+/// Which tasks [`Storage::query_tasks`] lists. Every condition set must hold; the default
+/// lists every task.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskQuery {
+    /// Only tasks of this workspace.
+    pub workspace: Option<WorkspaceId>,
+    /// Only tasks with one of these statuses; empty for any status.
+    pub statuses: Vec<TaskStatus>,
+    /// Only these tasks.
+    pub ids: Option<Vec<TaskId>>,
+    /// Only tasks with a lower ID, to page back from the oldest task of a previous page.
+    pub before: Option<TaskId>,
+    /// At most this many tasks: the matching tasks with the highest IDs.
+    pub limit: Option<u32>,
 }
 
 /// The dependent task after [`Storage::add_dependencies`], and whether the new
@@ -267,13 +283,13 @@ impl TaskRow {
     }
 }
 
-/// Tasks matching `filter`, a condition on the `tasks` table aliased `t` that takes the
-/// single parameter `?1`.
-fn query_tasks(conn: &Connection, filter: &str, parameter: i64) -> Result<Vec<Task>> {
+/// Tasks matching `filter`, a condition on the `tasks` table aliased `t` whose
+/// placeholders take `parameters` in order, ordered by ID.
+fn query_tasks(conn: &Connection, filter: &str, parameters: &[i64]) -> Result<Vec<Task>> {
     let mut statement =
         conn.prepare_cached(&format!("{TASK_SELECT} WHERE {filter} ORDER BY t.id"))?;
     let rows = statement
-        .query_map([parameter], TaskRow::read)?
+        .query_map(params_from_iter(parameters), TaskRow::read)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
     let mut statement = conn.prepare_cached(&format!(
@@ -282,7 +298,7 @@ fn query_tasks(conn: &Connection, filter: &str, parameter: i64) -> Result<Vec<Ta
          WHERE {filter}"
     ))?;
     let mut depends_on: HashMap<i64, BTreeSet<TaskId>> = HashMap::new();
-    for edge in statement.query_map([parameter], |row| {
+    for edge in statement.query_map(params_from_iter(parameters), |row| {
         Ok((row.get::<_, i64>(0)?, TaskId(row.get(1)?)))
     })? {
         let (task, dependency) = edge?;
@@ -295,7 +311,7 @@ fn query_tasks(conn: &Connection, filter: &str, parameter: i64) -> Result<Vec<Ta
          WHERE {filter} ORDER BY e.id"
     ))?;
     let mut timelines: HashMap<i64, Vec<TaskEvent>> = HashMap::new();
-    for event in statement.query_map([parameter], |row| {
+    for event in statement.query_map(params_from_iter(parameters), |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -315,7 +331,7 @@ fn query_tasks(conn: &Connection, filter: &str, parameter: i64) -> Result<Vec<Ta
          WHERE {filter} ORDER BY n.id"
     ))?;
     let mut notes: HashMap<i64, Vec<TaskNote>> = HashMap::new();
-    for note in statement.query_map([parameter], |row| {
+    for note in statement.query_map(params_from_iter(parameters), |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -331,7 +347,7 @@ fn query_tasks(conn: &Connection, filter: &str, parameter: i64) -> Result<Vec<Ta
         });
     }
 
-    let mut criteria = super::criteria::load(conn, filter, parameter)?;
+    let mut criteria = super::criteria::load(conn, filter, parameters)?;
 
     let mut statement = conn.prepare_cached(&format!(
         "SELECT l.task_id, l.label
@@ -339,7 +355,7 @@ fn query_tasks(conn: &Connection, filter: &str, parameter: i64) -> Result<Vec<Ta
          WHERE {filter} ORDER BY l.label"
     ))?;
     let mut labels: HashMap<i64, Vec<String>> = HashMap::new();
-    for label in statement.query_map([parameter], |row| {
+    for label in statement.query_map(params_from_iter(parameters), |row| {
         Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
     })? {
         let (task, label) = label?;
@@ -392,16 +408,66 @@ fn add_note(conn: &Connection, task: TaskId, kind: NoteKind, body: &str, at: i64
 }
 
 fn workspace_tasks(conn: &Connection, workspace: WorkspaceId) -> Result<Vec<Task>> {
-    query_tasks(conn, "t.workspace_id = ?1", workspace.0)
+    query_tasks(conn, "t.workspace_id = ?", &[workspace.0])
 }
 
 /// Every task of every workspace: the dependency DAG spans workspaces.
 fn all_tasks(conn: &Connection) -> Result<Vec<Task>> {
-    query_tasks(conn, "?1 = 1", 1)
+    query_tasks(conn, "1 = 1", &[])
 }
 
 pub(super) fn find_task(conn: &Connection, id: TaskId) -> Result<Option<Task>> {
-    Ok(query_tasks(conn, "t.id = ?1", id.0)?.pop())
+    Ok(query_tasks(conn, "t.id = ?", &[id.0])?.pop())
+}
+
+/// The tasks `query` selects, ordered by ID. With a limit, the matching tasks with the
+/// highest IDs are picked first; they are all the matching tasks between the lowest and
+/// the highest picked ID, so the details of the tasks load for that range alone.
+fn queried_tasks(conn: &Connection, query: &TaskQuery) -> Result<Vec<Task>> {
+    let mut conditions = Vec::new();
+    let mut parameters = Vec::new();
+    if let Some(workspace) = query.workspace {
+        conditions.push("t.workspace_id = ?".to_owned());
+        parameters.push(workspace.0);
+    }
+    if !query.statuses.is_empty() {
+        // Statuses are fixed names, never user text.
+        let names: Vec<String> = query
+            .statuses
+            .iter()
+            .map(|status| format!("'{}'", status.as_str()))
+            .collect();
+        conditions.push(format!("t.status IN ({})", names.join(", ")));
+    }
+    if let Some(ids) = &query.ids {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        conditions.push(format!("t.id IN ({})", vec!["?"; ids.len()].join(", ")));
+        parameters.extend(ids.iter().map(|id| id.0));
+    }
+    if let Some(before) = query.before {
+        conditions.push("t.id < ?".to_owned());
+        parameters.push(before.0);
+    }
+    if conditions.is_empty() {
+        conditions.push("1 = 1".to_owned());
+    }
+    let mut filter = conditions.join(" AND ");
+    if let Some(limit) = query.limit {
+        let mut statement = conn.prepare(&format!(
+            "SELECT t.id FROM tasks t WHERE {filter} ORDER BY t.id DESC LIMIT {limit}"
+        ))?;
+        let ids = statement
+            .query_map(params_from_iter(&parameters), |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let (Some(&highest), Some(&lowest)) = (ids.first(), ids.last()) else {
+            return Ok(Vec::new());
+        };
+        filter.push_str(" AND t.id BETWEEN ? AND ?");
+        parameters.extend([lowest, highest]);
+    }
+    query_tasks(conn, &filter, &parameters)
 }
 
 fn task_workspace(conn: &Connection, id: TaskId) -> Result<Option<WorkspaceId>> {
@@ -491,6 +557,12 @@ impl Storage {
     /// Tasks of every workspace ordered by ID, each with its dependencies.
     pub fn list_all_tasks(&self) -> Result<Vec<Task>> {
         all_tasks(&self.conn)
+    }
+
+    /// The tasks `query` selects, ordered by ID, each with its dependencies; with a
+    /// limit, the matching tasks with the highest IDs.
+    pub fn query_tasks(&self, query: &TaskQuery) -> Result<Vec<Task>> {
+        queried_tasks(&self.conn, query)
     }
 
     /// Saves the editable fields of `task`: type, title, description, estimate, due date,

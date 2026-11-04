@@ -14,8 +14,8 @@ use serde::de::DeserializeOwned;
 use super::Services;
 use crate::commands::types::{
     AgentAdapter, BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost, NewTask,
-    NewWorkspace, OAuthGrantId, RunId, TaskEdit, TaskId, TaskResolution, Timestamp, Workspace,
-    WorkspaceId, WorkspaceLocation,
+    NewWorkspace, OAuthGrantId, RunId, TaskEdit, TaskId, TaskListFilter, TaskResolution, Timestamp,
+    Workspace, WorkspaceId, WorkspaceLocation,
 };
 use crate::commands::{
     CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, backup, completion,
@@ -250,7 +250,9 @@ commands!(s => {
         machines::list_directories(State(&s.ssh), machine, path).await
     );
 
-    "list_tasks"() => sync Reply::result(tasks::list_tasks(State(s.reader())));
+    "list_tasks"(filter: Option<TaskListFilter>) => sync Reply::result(
+        tasks::list_tasks(State(s.reader()), filter)
+    );
     "list_task_relations"() => sync Reply::result(tasks::list_task_relations(State(s.reader())));
     "add_task_relation"(task_id: TaskId, related_id: TaskId) => sync Reply::result(
         tasks::add_task_relation(State(&s.storage), task_id, related_id)

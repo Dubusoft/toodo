@@ -1950,3 +1950,66 @@ fn the_reader_reads_committed_data_while_a_write_is_in_progress() {
     assert_eq!(renamed.name, "Renamed");
     assert!(reader.conn.execute("DELETE FROM workspaces", []).is_err());
 }
+
+#[test]
+fn query_tasks_filters_and_pages_back_from_the_newest() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let local = add_workspace(&mut storage, "local", local_location(r"C:\dev\local"));
+    let remote = add_workspace(&mut storage, "remote", ssh_location("box", "/srv/remote"));
+    let [a, b, c, d, e] = ["A", "B", "C", "D", "E"].map(|title| {
+        let workspace = if title == "B" || title == "D" {
+            &remote
+        } else {
+            &local
+        };
+        add_task(&mut storage, workspace, title).id
+    });
+    for done in [a, b, c] {
+        storage
+            .conn
+            .execute(
+                "UPDATE tasks SET status = 'done', resolution = 'completed' WHERE id = ?1",
+                [done.0],
+            )
+            .unwrap();
+    }
+    let ids = |query: TaskQuery| -> Vec<TaskId> {
+        storage
+            .query_tasks(&query)
+            .unwrap()
+            .into_iter()
+            .map(|task| task.id)
+            .collect()
+    };
+    assert_eq!(ids(TaskQuery::default()), [a, b, c, d, e]);
+    let done = |before| TaskQuery {
+        statuses: vec![Done],
+        before,
+        limit: Some(2),
+        ..TaskQuery::default()
+    };
+    assert_eq!(ids(done(None)), [b, c]);
+    assert_eq!(ids(done(Some(b))), [a]);
+    let local_planned = TaskQuery {
+        workspace: Some(local.id),
+        statuses: vec![Planned, InProgress],
+        ..TaskQuery::default()
+    };
+    assert_eq!(ids(local_planned), [e]);
+    let listed = |list: Vec<TaskId>| TaskQuery {
+        ids: Some(list),
+        ..TaskQuery::default()
+    };
+    assert_eq!(ids(listed(vec![d, a])), [a, d]);
+    assert_eq!(ids(listed(Vec::new())), Vec::<TaskId>::new());
+    // A limited page loads the same details as reading each task.
+    let page = storage
+        .query_tasks(&TaskQuery {
+            before: Some(e),
+            limit: Some(2),
+            ..TaskQuery::default()
+        })
+        .unwrap();
+    let each = [c, d].map(|id| storage.get_task(id).unwrap().unwrap());
+    assert_eq!(page, each);
+}

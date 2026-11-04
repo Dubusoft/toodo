@@ -46,7 +46,7 @@ pub use runtime::{
     HostCursor, NewRun, Reservation, RunEvent, RunOperation, RuntimeWorkspace, TaskRun,
 };
 pub use search::TaskSearch;
-pub use tasks::{AddedDependencies, DependencyChange, NewTask, PauseRule};
+pub use tasks::{AddedDependencies, DependencyChange, NewTask, PauseRule, TaskQuery};
 pub use workspaces::NewWorkspace;
 
 pub type Result<T> = std::result::Result<T, StorageError>;

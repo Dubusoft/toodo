@@ -16,11 +16,17 @@ use crate::domain::model::{CompletionMode, TaskResolution};
 use crate::domain::status::TaskStatus;
 use crate::storage::{self, CriterionEdit, Storage, StorageError};
 
-/// Tasks of every workspace ordered by ID, each with its dependencies, which may belong
-/// to another workspace.
+/// Tasks ordered by ID, each with its dependencies, which may belong to another
+/// workspace: every task without a filter, else those the filter selects. With a limit,
+/// the matching tasks with the highest IDs; pass the lowest ID of a full page as `before`
+/// to read the next.
 #[specta::specta]
-pub fn list_tasks(storage: State<'_, StorageState>) -> CommandResult<Vec<Task>> {
-    Ok(types::map_all(&lock(&storage).list_all_tasks()?))
+pub fn list_tasks(
+    storage: State<'_, StorageState>,
+    filter: Option<types::TaskListFilter>,
+) -> CommandResult<Vec<Task>> {
+    let query: storage::TaskQuery = filter.unwrap_or_default().try_into()?;
+    Ok(types::map_all(&lock(&storage).query_tasks(&query)?))
 }
 
 #[specta::specta]

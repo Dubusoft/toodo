@@ -275,6 +275,11 @@ a task list): it draws the tasks of every workspace together, each bar labeled w
 workspace, and can be narrowed to one workspace. Narrowed, prerequisites from other
 workspaces are still drawn, dimmed and labeled with their workspace.
 
+The app loads tasks in pages so its first screen stays quick however long the history
+grows: every open task, the 100 newest done tasks, and the done tasks open ones depend
+on. Where done tasks are shown (the timeline with a status filter that includes them, or
+the task list's Done group), "Load older finished tasks" loads the next 100.
+
 - It reads like a Gantt chart: a time axis header (coarse dates above fine dates or
   hours) stays at the top while the rows scroll, and a cursor marks the current time,
   refreshed every 30 seconds.
@@ -763,7 +768,8 @@ path deletes journal history.
   - Every request needs `Authorization: Bearer <token>`. The token is 32 random bytes,
     hex encoded, created once in `mcp-token` in the server's data directory. rmcp also
     rejects non-loopback `Host` headers against DNS rebinding.
-  - Tools: `list_workspaces`, `list_tasks`, `current_task` (the task whose worktree
+  - Tools: `list_workspaces`, `list_tasks` (narrowed by `status`, `ready`, and `limit`,
+    the newest matching tasks, paged back with `before_id`), `current_task` (the task whose worktree
     contains a given directory, after resolving `.` and `..`; an optional `machine`
     scopes it to one machine, and a path inside worktrees on several machines is
     rejected without it), `restore_worktree` (the app's Restore worktree for an active

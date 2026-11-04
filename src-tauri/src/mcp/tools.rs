@@ -26,11 +26,27 @@ use crate::mcp::ServerStatus;
 use crate::runtime::{RunCommand, RuntimeError, RuntimeService, StartRun};
 use crate::storage::{self, Storage, StorageError, TaskSearch};
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ListTasks {
     /// Only tasks of this workspace; all workspaces when omitted.
     pub workspace_id: Option<WorkspaceId>,
+    /// Only tasks with one of these statuses, e.g. `["planned", "in_progress"]`; every
+    /// status when omitted or empty.
+    #[serde(default)]
+    pub status: Option<Vec<TaskStatus>>,
+    /// `true`: only tasks start_task or resume_task can begin now; `false`: only the
+    /// others. Every task when omitted.
+    #[serde(default)]
+    pub ready: Option<bool>,
+    /// At most this many tasks (1 to 500): the matching tasks with the highest IDs, still
+    /// listed by ascending ID. Every matching task when omitted.
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Only tasks with a lower ID. When a page has `limit` tasks, pass its first (lowest)
+    /// ID here to read the older ones.
+    #[serde(default)]
+    pub before_id: Option<TaskId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -636,27 +652,112 @@ pub struct ListedTask {
 }
 
 pub fn list_tasks(storage: &Storage, request: ListTasks) -> CommandResult<Vec<ListedTask>> {
-    let links = Links::load(storage)?;
-    let tasks = match request.workspace_id {
-        Some(workspace) => {
-            storage
-                .get_workspace(workspace.into())?
-                .ok_or(StorageError::WorkspaceNotFound(workspace.into()))?;
-            storage.list_tasks(workspace.into())?
+    if let Some(workspace) = request.workspace_id {
+        storage
+            .get_workspace(workspace.into())?
+            .ok_or(StorageError::WorkspaceNotFound(workspace.into()))?;
+    }
+    if let Some(limit) = request.limit {
+        types::task_page_limit(limit)?;
+    }
+    let planned = crate::domain::status::TaskStatus::Planned;
+    let mut statuses: Vec<crate::domain::status::TaskStatus> = request
+        .status
+        .unwrap_or_default()
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    if request.ready == Some(true) {
+        // Only a planned task can be ready.
+        if !statuses.is_empty() && !statuses.contains(&planned) {
+            return Ok(Vec::new());
         }
-        None => storage.list_all_tasks()?,
+        statuses = vec![planned];
+    }
+    let query = storage::TaskQuery {
+        workspace: request.workspace_id.map(Into::into),
+        statuses,
+        ids: None,
+        before: request.before_id.map(Into::into),
+        // Readiness is known only once the prerequisites are loaded, so the limit then
+        // applies after filtering by it.
+        limit: request.limit.filter(|_| request.ready.is_none()),
     };
-    Ok(tasks
+    let tasks = storage.query_tasks(&query)?;
+    let prerequisites = prerequisites(storage, &tasks)?;
+    let mut listed: Vec<ListedTask> = tasks
         .iter()
         .map(|task| {
-            let blocked_by = links.blocked_by(task);
+            let blocked_by = blocked_by(&prerequisites, task);
             ListedTask {
                 task: task.into(),
                 ready: is_ready(task, &blocked_by),
                 blocked_by,
             }
         })
-        .collect())
+        .filter(|listed| request.ready.is_none_or(|ready| listed.ready == ready))
+        .collect();
+    if let Some(limit) = request.limit {
+        let older = listed.len().saturating_sub(limit as usize);
+        listed.drain(..older);
+    }
+    Ok(listed)
+}
+
+/// `tasks` and the tasks they depend on, by ID.
+fn prerequisites(
+    storage: &Storage,
+    tasks: &[model::Task],
+) -> CommandResult<HashMap<model::TaskId, model::Task>> {
+    let mut known: HashMap<_, _> = tasks.iter().map(|task| (task.id, task.clone())).collect();
+    let missing: BTreeSet<model::TaskId> = tasks
+        .iter()
+        .flat_map(|task| task.depends_on.iter().copied())
+        .filter(|id| !known.contains_key(id))
+        .collect();
+    if !missing.is_empty() {
+        let query = storage::TaskQuery {
+            ids: Some(missing.into_iter().collect()),
+            ..storage::TaskQuery::default()
+        };
+        known.extend(
+            storage
+                .query_tasks(&query)?
+                .into_iter()
+                .map(|task| (task.id, task)),
+        );
+    }
+    Ok(known)
+}
+
+/// The tasks `task` depends on that keep it from starting: not done, or done as not
+/// adopted. `tasks` holds them by ID.
+fn blocked_by(tasks: &HashMap<model::TaskId, model::Task>, task: &model::Task) -> Vec<TaskLink> {
+    task_links(
+        tasks,
+        task.depends_on.iter().copied().filter(|id| {
+            tasks.get(id).is_some_and(|prerequisite| {
+                prerequisite.status != crate::domain::status::TaskStatus::Done
+                    || prerequisite.resolution == Some(model::TaskResolution::NotAdopted)
+            })
+        }),
+    )
+}
+
+/// Links to the tasks `ids` of `tasks`.
+fn task_links(
+    tasks: &HashMap<model::TaskId, model::Task>,
+    ids: impl Iterator<Item = model::TaskId>,
+) -> Vec<TaskLink> {
+    ids.filter_map(|id| tasks.get(&id))
+        .map(|task| TaskLink {
+            id: task.id.into(),
+            workspace_id: task.workspace_id.into(),
+            title: task.title.clone(),
+            status: task.status.into(),
+            resolution: task.resolution.map(TaskResolution::from),
+        })
+        .collect()
 }
 
 /// Whether `task` can start (or resume) now: it is planned and nothing blocks it.
@@ -1664,24 +1765,11 @@ impl Links {
     /// The tasks `task` depends on that keep it from starting: not done, or done as not
     /// adopted.
     fn blocked_by(&self, task: &model::Task) -> Vec<TaskLink> {
-        self.links(task.depends_on.iter().copied().filter(|id| {
-            self.tasks.get(id).is_some_and(|prerequisite| {
-                prerequisite.status != crate::domain::status::TaskStatus::Done
-                    || prerequisite.resolution == Some(model::TaskResolution::NotAdopted)
-            })
-        }))
+        blocked_by(&self.tasks, task)
     }
 
     fn links(&self, ids: impl Iterator<Item = model::TaskId>) -> Vec<TaskLink> {
-        ids.filter_map(|id| self.tasks.get(&id))
-            .map(|task| TaskLink {
-                id: task.id.into(),
-                workspace_id: task.workspace_id.into(),
-                title: task.title.clone(),
-                status: task.status.into(),
-                resolution: task.resolution.map(TaskResolution::from),
-            })
-            .collect()
+        task_links(&self.tasks, ids)
     }
 }
 
@@ -2718,7 +2806,7 @@ mod tests {
         let (mut storage, workspace) = storage_with_workspace();
         let schema = create(&mut storage, workspace, "Schema", vec![]).unwrap();
         create(&mut storage, workspace, "API", vec![schema.id]).unwrap();
-        let all = list_tasks(&storage, ListTasks { workspace_id: None }).unwrap();
+        let all = list_tasks(&storage, ListTasks::default()).unwrap();
         assert_eq!(all.len(), 2);
         assert!(all[0].ready && all[0].blocked_by.is_empty());
         assert!(!all[1].ready);
@@ -2731,10 +2819,60 @@ mod tests {
             &storage,
             ListTasks {
                 workspace_id: Some(WorkspaceId(99)),
+                ..ListTasks::default()
             },
         )
         .unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::NotFound);
+    }
+
+    #[test]
+    fn lists_tasks_narrowed_by_status_readiness_and_limit() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let schema = create(&mut storage, workspace, "Schema", vec![]).unwrap();
+        let api = create(&mut storage, workspace, "API", vec![schema.id]).unwrap();
+        let docs = create(&mut storage, workspace, "Docs", vec![]).unwrap();
+        let ids = |request: ListTasks| -> Vec<TaskId> {
+            list_tasks(&storage, request)
+                .unwrap()
+                .iter()
+                .map(|listed| listed.task.id)
+                .collect()
+        };
+        let ready = |ready: bool, limit: Option<u32>| ListTasks {
+            ready: Some(ready),
+            limit,
+            ..ListTasks::default()
+        };
+        assert_eq!(ids(ready(true, None)), [schema.id, docs.id]);
+        assert_eq!(ids(ready(true, Some(1))), [docs.id]);
+        assert_eq!(ids(ready(false, None)), [api.id]);
+        let page = |limit, before_id| ListTasks {
+            limit: Some(limit),
+            before_id,
+            ..ListTasks::default()
+        };
+        assert_eq!(ids(page(2, None)), [api.id, docs.id]);
+        assert_eq!(ids(page(2, Some(api.id))), [schema.id]);
+        let in_progress = ListTasks {
+            status: Some(vec![TaskStatus::InProgress]),
+            ..ListTasks::default()
+        };
+        assert_eq!(ids(in_progress.clone()), Vec::<TaskId>::new());
+        assert_eq!(
+            ids(ListTasks {
+                ready: Some(true),
+                ..in_progress
+            }),
+            Vec::<TaskId>::new()
+        );
+        // A page still tells what blocks its tasks when the blocker is on another page.
+        let listed = list_tasks(&storage, page(1, Some(docs.id))).unwrap();
+        assert_eq!(listed[0].task.id, api.id);
+        assert_eq!(listed[0].blocked_by[0].id, schema.id);
+        assert!(!listed[0].ready);
+        let error = list_tasks(&storage, page(0, None)).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
     }
 
     #[test]
