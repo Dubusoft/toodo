@@ -240,6 +240,12 @@ or `path`, the new absolute path of its repository after it moved (also the fix 
 `pathProblem` in `list_workspaces`). A base branch must exist in the repository, and a
 path must be inside a git repository no other workspace uses.
 
+To retire a workspace that is no longer used, call `archive_workspace` with its `id`:
+without `confirm` nothing changes and the reply says what archiving does; then call it
+again with `"confirm": true`. It leaves `list_workspaces` with its tasks, which stay in
+reviews, and only the user restores or purges it. It is rejected while a task of the
+workspace is `in_progress` or `in_review`; finish or `pause_task` those first.
+
 # Setting a machine's worktree root
 
 Toodo creates each started task's worktree under the worktree root of the machine its

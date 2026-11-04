@@ -272,7 +272,7 @@ impl fmt::Display for StorageError {
                 depends_on,
             } => write!(
                 f,
-                "workspace {} cannot be removed: task {task} of another workspace depends on its task {depends_on}",
+                "workspace {} cannot be removed: task {task} of another workspace depends on its task {depends_on}; remove that dependency first (in task {task}'s dependencies, or remove_dependency over MCP), then remove the workspace again",
                 workspace.0
             ),
             Self::BaseBranchInReview { workspace, task } => write!(

@@ -119,6 +119,30 @@ pub struct UpdateWorkspace {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ArchiveWorkspace {
+    /// The workspace to archive, as in list_workspaces.
+    pub id: WorkspaceId,
+    /// true archives the workspace. Without it nothing changes and the reply says what
+    /// archiving would do; read it before you confirm.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// The reply of archive_workspace, which changes nothing until it is called again with
+/// `confirm: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceConfirmation {
+    /// Whether the workspace was archived; false for a call without `confirm: true`.
+    pub confirmed: bool,
+    /// The workspace as it was before it was archived.
+    pub workspace: Workspace,
+    /// What archiving does, or did, and what to do next.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct CurrentTask {
     /// Absolute path of the agent's working directory, e.g. the worktree of its task.
     pub cwd: String,
@@ -710,6 +734,68 @@ pub fn review_report(
 
 pub fn list_workspaces(storage: &Storage) -> CommandResult<Vec<Workspace>> {
     Ok(types::map_all(&storage.list_workspaces()?))
+}
+
+/// Archives a workspace with its tasks as the app's Remove does (see
+/// [`workspaces::delete_workspace`]), but only with `confirm`; without it, nothing changes
+/// and the reply says what archiving would do. Rejected while a task of the workspace is
+/// `in_progress` or `in_review`, since someone is working on it.
+pub fn archive_workspace(
+    storage: &mut Storage,
+    request: ArchiveWorkspace,
+) -> CommandResult<WorkspaceConfirmation> {
+    let id = request.id.0;
+    let stored = storage.get_workspace(request.id.into())?.ok_or_else(|| {
+        CommandError::new(
+            CommandErrorCode::WorkspaceNotFound,
+            format!(
+                "workspace {id} does not exist or is already archived; take a workspace id from list_workspaces"
+            ),
+        )
+    })?;
+    let workspace = Workspace::from(&stored);
+    let tasks = storage.list_tasks(stored.id)?;
+    let active: Vec<(i64, &str)> = tasks
+        .iter()
+        .filter_map(|task| match task.status {
+            crate::domain::status::TaskStatus::InProgress => Some((task.id.0, "in_progress")),
+            crate::domain::status::TaskStatus::InReview => Some((task.id.0, "in_review")),
+            crate::domain::status::TaskStatus::Planned
+            | crate::domain::status::TaskStatus::Done => None,
+        })
+        .collect();
+    if let Some((first, _)) = active.first() {
+        let described: Vec<String> = active
+            .iter()
+            .map(|(task, status)| format!("#{task} ({status})"))
+            .collect();
+        return Err(CommandError::rejected(format!(
+            "workspace {id} \"{}\" still has task(s) being worked on: {}; finish each of them, or call pause_task on each, e.g. {{\"id\": {first}, \"reason\": \"...\"}}, then call archive_workspace again",
+            workspace.name,
+            described.join(", "),
+        )));
+    }
+    if !request.confirm {
+        return Ok(WorkspaceConfirmation {
+            confirmed: false,
+            message: format!(
+                "Nothing changed yet. Archiving workspace {id} \"{}\" removes it and its {} task(s) from list_workspaces and the task lists, while their history, notes, criteria, and commit records stay in review_report; the user can restore it, or delete it for good, under Settings > Archive in the Toodo app. Its repository, worktrees, and branches are left as they are. To archive it, call archive_workspace {{\"id\": {id}, \"confirm\": true}}.",
+                workspace.name,
+                tasks.len()
+            ),
+            workspace,
+        });
+    }
+    storage.archive_workspace(stored.id)?;
+    Ok(WorkspaceConfirmation {
+        confirmed: true,
+        message: format!(
+            "workspace {id} \"{}\" is archived with its {} task(s); they stay in review_report, and the user can restore the workspace in the Toodo app.",
+            workspace.name,
+            tasks.len()
+        ),
+        workspace,
+    })
 }
 
 /// Creates a local workspace through the app's own setup: clone or check the repository,
@@ -3516,6 +3602,69 @@ mod tests {
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(error.message.contains("reopen_task"), "{}", error.message);
         assert!(lock(&storage).get_task(done.id.into()).unwrap().is_some());
+    }
+
+    #[test]
+    fn archive_workspace_archives_only_when_confirmed_and_nothing_is_worked_on() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Add login", vec![]).unwrap();
+        storage
+            .set_task_status(task.id.into(), DomainStatus::InProgress)
+            .unwrap();
+        let archive = |storage: &mut Storage, confirm: bool| {
+            archive_workspace(
+                storage,
+                ArchiveWorkspace {
+                    id: workspace,
+                    confirm,
+                },
+            )
+        };
+
+        let error = archive(&mut storage, true).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(
+            error.message.contains("#1 (in_progress)") && error.message.contains("pause_task"),
+            "{}",
+            error.message
+        );
+        assert_eq!(list_workspaces(&storage).unwrap().len(), 1);
+
+        storage
+            .conclude_task(task.id.into(), "Not needed", &[], None)
+            .unwrap();
+        let preview = archive(&mut storage, false).unwrap();
+        assert!(!preview.confirmed);
+        assert!(
+            preview.message.contains("\"confirm\": true"),
+            "{}",
+            preview.message
+        );
+        assert_eq!(list_workspaces(&storage).unwrap().len(), 1);
+
+        let archived = archive(&mut storage, true).unwrap();
+        assert!(archived.confirmed);
+        assert_eq!(archived.workspace.id, workspace);
+        assert!(list_workspaces(&storage).unwrap().is_empty());
+        let kept = storage.archived_workspaces().unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            storage
+                .review_tasks()
+                .unwrap()
+                .iter()
+                .filter(|stored| stored.id == task.id.into())
+                .count(),
+            1
+        );
+
+        let again = archive(&mut storage, true).unwrap_err();
+        assert_eq!(again.code, CommandErrorCode::WorkspaceNotFound);
+        assert!(
+            again.message.contains("list_workspaces"),
+            "{}",
+            again.message
+        );
     }
 
     #[test]

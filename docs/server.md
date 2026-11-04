@@ -516,7 +516,7 @@ agent. The tools that run things stay local: `current_task`, `start_task`, `resu
 `restore_worktree`, `set_worktree_root`, `list_machine_settings`, `complete_task`,
 `conclude_task`, `delete_task`, `reopen_task`, and the run tools (`start_run`, `run_status`, `run_log`, `stop_run`,
 `reconcile_run`) never appear in an app's tool list, and calling one is refused even with
-`toodo.write`. `check_criterion` checks a stored manual criterion and never runs a
+`toodo.write`; so do `update_workspace` and `archive_workspace`. `check_criterion` checks a stored manual criterion and never runs a
 criterion's command; `pause_task` keeps the worktree and herdr workspace. An app's
 `initialize` reply and `read_toodo_skill` carry planning instructions for a chat, not the
 worktree and pull request workflow.
