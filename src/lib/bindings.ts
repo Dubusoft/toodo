@@ -40,16 +40,39 @@ export const commands = {
 	 *  pushes it to `origin`, and makes it the default base branch of the workspace.
 	 */
 	createWorkspaceBaseBranch: (id: WorkspaceId, name: string, from: string) => typedError<Workspace, CommandError>(invoke("create_workspace_base_branch", { id, name, from })),
-	/**  Deletes a workspace together with its tasks, dependencies, and commit records. */
+	/**
+	 *  Removes a workspace from Toodo by archiving it with its tasks: they leave the lists but
+	 *  stay in reviews, and [`restore_workspace`] brings them back. [`purge_workspace`]
+	 *  deletes them for good.
+	 */
 	deleteWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(invoke("delete_workspace", { id })),
+	/**  Brings an archived workspace back with its tasks. */
+	restoreWorkspace: (id: WorkspaceId) => typedError<Workspace, CommandError>(invoke("restore_workspace", { id })),
+	/**
+	 *  Deletes an archived workspace for good with its tasks, their history, and commit
+	 *  records; a workspace that is not archived is rejected.
+	 */
+	purgeWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(invoke("purge_workspace", { id })),
+	/**  The workspaces and tasks deleting archived, to restore or purge. */
+	listArchive: () => typedError<Archive, CommandError>(invoke("list_archive")),
 	getMachineSettings: (machine: Machine) => typedError<MachineSettings, CommandError>(invoke("get_machine_settings", { machine })),
 	saveMachineSettings: (settings: MachineSettings) => typedError<MachineSettings, CommandError>(invoke("save_machine_settings", { settings })),
 	/**  Machines saved in herdr; remote workspaces can only live on these. */
 	listHerdrMachines: () => typedError<HerdrMachine[], CommandError>(invoke("list_herdr_machines")),
 	/**  Host aliases from `~/.ssh/config`, re-read on every call. */
 	listSshHosts: () => typedError<string[], CommandError>(invoke("list_ssh_hosts")),
-	/**  Appends a `Host` block to `~/.ssh/config` and returns the updated host aliases. */
-	addSshHost: (host: NewSshHost) => typedError<string[], CommandError>(invoke("add_ssh_host", { host })),
+	/**
+	 *  Appends a `Host` block to `~/.ssh/config`, then tests the connection to the new host,
+	 *  so that a wrong setup shows up now rather than when a workspace is cloned there. The
+	 *  block stays when the test fails, so the user can fix what it reports and test again.
+	 */
+	addSshHost: (host: NewSshHost) => typedError<AddedSshHost, CommandError>(invoke("add_ssh_host", { host })),
+	/**
+	 *  Tests that Toodo reaches the SSH host `machine` without a prompt and that git runs
+	 *  there, before `herdr machine add` saves it or a workspace is cloned on it. A failed test
+	 *  is a result with the next step that fixes it, not an error.
+	 */
+	testSshMachine: (machine: string) => typedError<SshMachineCheck, CommandError>(invoke("test_ssh_machine", { machine })),
 	/**
 	 *  Subdirectories of `path` on `machine`, or of the login directory when `path` is
 	 *  absent; `path` is a POSIX path, or a Windows path on a Windows host. ssh runs on a
@@ -136,13 +159,25 @@ export const commands = {
 	 */
 	checkCriterion: (taskId: TaskId, criterionId: CriterionId, met: boolean, evidence: string | null) => typedError<Task, CommandError>(invoke("check_criterion", { taskId, criterionId, met, evidence })),
 	/**
-	 *  Deletes a task with its dependency edges and commit records. A task that still has a worktree
+	 *  Deletes a task by archiving it: it leaves the task lists and stops holding back the tasks
+	 *  that depend on it, but keeps its history, commits, and links for reviews until
+	 *  [`restore_task`] brings it back or [`purge_task`] deletes it for good. A task that still has a worktree
 	 *  first removes it through herdr, which also closes its herdr workspace; the branch is
 	 *  kept. Without `force`, a worktree with modified or untracked files is rejected and the
 	 *  task is kept. A task of a workspace with runner plain or tmux has its worktree removed
 	 *  by git, and its plain and tmux runs that are still running are stopped first.
 	 */
 	deleteTask: (id: TaskId, force: boolean) => typedError<null, CommandError>(invoke("delete_task", { id, force })),
+	/**
+	 *  Brings an archived task of a live workspace back with its dependencies; its worktree,
+	 *  removed when it was deleted, is not recreated.
+	 */
+	restoreTask: (id: TaskId) => typedError<Task, CommandError>(invoke("restore_task", { id })),
+	/**
+	 *  Deletes an archived task for good with its history, commit records, and links; a task
+	 *  that is not archived is rejected.
+	 */
+	purgeTask: (id: TaskId) => typedError<null, CommandError>(invoke("purge_task", { id })),
 	/**
 	 *  Makes `task_id` depend on `depends_on`, which may belong to another workspace. Rejects
 	 *  self and cyclic edges and `done` tasks. An `in_progress` task that the new
@@ -263,6 +298,13 @@ export const commands = {
 	 *  Runs started later use them.
 	 */
 	setTaskAgentOptions: (taskId: TaskId, options: AgentOptions) => typedError<TaskAgentOptions, CommandError>(invoke("set_task_agent_options", { taskId, options })),
+	/**  The options pull requests of a workspace's tasks are opened with. */
+	getWorkspacePullRequestOptions: (workspaceId: WorkspaceId) => typedError<PullRequestOptions, CommandError>(invoke("get_workspace_pull_request_options", { workspaceId })),
+	/**
+	 *  Replaces the options pull requests of a workspace's tasks are opened with; blank
+	 *  reviewers and labels are dropped. Pull requests opened later use them.
+	 */
+	setWorkspacePullRequestOptions: (workspaceId: WorkspaceId, options: PullRequestOptions) => typedError<PullRequestOptions, CommandError>(invoke("set_workspace_pull_request_options", { workspaceId, options })),
 	/**
 	 *  Reports whether herdr is installed and running, whether tmux runs, and whether the
 	 *  `claude` and `codex` CLIs of plain and tmux runs are on the server's `PATH`.
@@ -350,10 +392,25 @@ export const commands = {
 	revokeConnectedApp: (grantId: OAuthGrantId) => typedError<null, CommandError>(invoke("revoke_connected_app", { grantId })),
 	/**
 	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
-	 *  ordered by outcome, then by time. The caller picks the period, such as a week, a
+	 *  archived ones included, ordered by outcome, then by time. The caller picks the period, such as a week, a
 	 *  month, or a year in the local time zone.
 	 */
 	reviewPeriod: (start: Timestamp, end: Timestamp) => typedError<ReviewEntry[], CommandError>(invoke("review_period", { start, end })),
+	/**
+	 *  Records the pull requests the signed-in `gh` user merged into the base branch of each
+	 *  GitHub workspace in `[start, end)` as tasks done as merged, each planned, started,
+	 *  and in review from the opening of its pull request, so a review of that time shows
+	 *  work from before Toodo tracked it. A pull request a task already records, or whose
+	 *  branch a task of its workspace has, is skipped, so importing again adds nothing
+	 *  twice. A workspace whose pull requests cannot be read is reported in `failures`;
+	 *  the others are still imported.
+	 */
+	backfillPullRequests: (start: Timestamp, end: Timestamp) => typedError<BackfillSummary, CommandError>(invoke("backfill_pull_requests", { start, end })),
+	/**
+	 *  The review of a period rendered as Markdown or CSV, as the web app, the MCP tool
+	 *  `review_report`, and `toodo review` show it; see [`ReviewReportRequest`].
+	 */
+	reviewReport: (request: ReviewReportRequest) => typedError<ReviewReport, CommandError>(invoke("review_report", { request })),
 	getBackupSettings: () => invoke<BackupSettings>("get_backup_settings"),
 	/**  Whether the latest automatic backup failed, and why. */
 	getBackupStatus: () => invoke<BackupStatus>("get_backup_status"),
@@ -386,6 +443,13 @@ export type ActivityKind = "commit" | "pr_opened" | "checks_passed" | "checks_fa
 
 /**  Where an activity event was first learned from. */
 export type ActivitySource = "git_poll" | "github_poll";
+
+/**  A host appended to the SSH config, and the connection test run on it right after. */
+export type AddedSshHost = {
+	/**  Host aliases of the updated config. */
+	hosts: string[],
+	check: SshMachineCheck,
+};
 
 /**  The agent CLI a plain run drives. */
 export type AgentAdapter = 
@@ -454,6 +518,28 @@ export type AgentStatusesChanged = {
 export type AppInfo = {
 	name: string,
 	version: string,
+};
+
+/**
+ *  What deleting moved to the archive: workspaces, archived with their tasks, and tasks of
+ *  live workspaces, each ordered by ID.
+ */
+export type Archive = {
+	workspaces: Workspace[],
+	tasks: Task[],
+};
+
+/**  What importing merged pull requests as done tasks added. */
+export type BackfillSummary = {
+	/**  Pull requests recorded as new done tasks. */
+	imported: number,
+	/**  Pull requests left out because a task already records them or has their branch. */
+	skipped: number,
+	/**
+	 *  Workspaces whose pull requests could not be read: each names the workspace, what
+	 *  failed, and what to do next. The other workspaces were still imported.
+	 */
+	failures: string[],
 };
 
 /**  A backup in Toodo's backup directory. */
@@ -582,6 +668,15 @@ export type CommandErrorCode =
 "gitFailed" | 
 /**  herdr reported an error or is not running. */
 "herdrFailed" | 
+/**  gh has no valid login, or the login may not open pull requests in the repository. */
+"gitHubAuthFailed" | 
+/**
+ *  GitHub refused the draft setting, a reviewer, or a label of the workspace's pull
+ *  request options.
+ */
+"pullRequestOptionInvalid" | 
+/**  GitHub refused to open the pull request for another reason. */
+"pullRequestFailed" | 
 /**  The server failed. */
 "internal" | 
 /**  The database failed or holds data the server cannot read. */
@@ -937,6 +1032,16 @@ export type PermissionMode =
  */
 "bypass";
 
+/**  How Toodo opens the pull requests of a workspace's tasks with `gh pr create`. */
+export type PullRequestOptions = {
+	/**  Open pull requests as drafts (`--draft`). */
+	draft: boolean,
+	/**  Users (`login`) or teams (`org/team`) asked to review (`--reviewer`). */
+	reviewers: string[],
+	/**  Labels added (`--label`); each must exist in the repository. */
+	labels: string[],
+};
+
 /**  A merged pull request as GitHub reported it when it completed its task. */
 export type PullRequestSnapshot = {
 	number: number,
@@ -968,6 +1073,16 @@ export type RemoteDirectory = {
 	directories: string[],
 };
 
+/**  The file format of a review report. */
+export type ReportFormat = 
+/**  Markdown, for pasting into a status update or a year-end report. */
+"markdown" | 
+/**
+ *  One row per reviewed task (RFC 4180, CRLF line ends, led by a UTF-8 byte order
+ *  mark), for spreadsheets.
+ */
+"csv";
+
 /**  How the repository of a new workspace gets to its location. */
 export type RepositorySetup = 
 /**  The location already holds a cloned repository. */
@@ -988,6 +1103,11 @@ export type ReviewEntry = {
 	at: Timestamp,
 	/**  Commits of the task made in the period, oldest first. */
 	commits: CommitRecord[],
+	/**
+	 *  Whether the task or its workspace was deleted, which archives it; its work still
+	 *  counts.
+	 */
+	archived: boolean,
 };
 
 /**
@@ -995,6 +1115,58 @@ export type ReviewEntry = {
  *  reached in the period, or `worked_on` when it only got commits.
  */
 export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "worked_on" | "planned";
+
+/**  The kind of a reviewed period. */
+export type ReviewPeriodKind = 
+/**  Seven days, from a Monday unless `from` names another first day. */
+"week" | 
+/**  A calendar month. */
+"month" | 
+/**  A calendar quarter. */
+"quarter" | 
+/**  A calendar year. */
+"year" | 
+/**  The days `from` to `to`, both included. */
+"custom";
+
+/**  A rendered review report. */
+export type ReviewReport = {
+	/**  A file name for the report, e.g. `toodo-review-2026-Q4.md`. */
+	fileName: string,
+	/**  `text/markdown` or `text/csv`. */
+	mediaType: string,
+	/**  The first and last day of the reviewed period, as `YYYY-MM-DD`. */
+	from: string,
+	to: string,
+	contents: string,
+};
+
+/**  Which review report to render. Days are `YYYY-MM-DD` in `timeZone`. */
+export type ReviewReportRequest = {
+	period: ReviewPeriodKind,
+	/**
+	 *  A day inside the period, for any kind but `custom`; today when neither `date` nor
+	 *  `from` is given.
+	 */
+	date?: string | null,
+	/**
+	 *  The first day of the period: required for `custom`, any first day of a `week`, and
+	 *  a day inside a month, quarter, or year.
+	 */
+	from?: string | null,
+	/**  The last day of a `custom` period, included. */
+	to?: string | null,
+	format: ReportFormat,
+	/**
+	 *  An IANA time zone such as `Europe/Berlin` that the days, the period, and the times
+	 *  in the report are in; the server's time zone when omitted.
+	 */
+	timeZone?: string | null,
+	/**  Only tasks of this workspace. */
+	workspaceId?: WorkspaceId | null,
+	/**  Only tasks with this label. */
+	label?: string | null,
+};
 
 /**  Where the reviews of a pull request stand. */
 export type ReviewStatus = "approved" | "changes_requested" | "pending";
@@ -1078,6 +1250,17 @@ export type Source =
 "local_git" | 
 /**  A git repository whose `origin` remote is on GitHub; tasks ship as pull requests. */
 "github";
+
+/**
+ *  What testing the connection to an SSH machine found: Toodo connects without a prompt and
+ *  git runs there, or a problem.
+ */
+export type SshMachineCheck = {
+	/**  `git --version` on the machine, e.g. `git version 2.43.0`; `None` when the test failed. */
+	gitVersion: string | null,
+	/**  What failed and the next step that fixes it; `None` when the test passed. */
+	problem: string | null,
+};
 
 export type Task = {
 	id: TaskId,

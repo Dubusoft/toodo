@@ -16,6 +16,7 @@ use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{Value, json};
 
+use crate::adapters::git::{SSH_OPTIONS, SSH_SHARED_CONNECTION};
 use crate::domain::model::MachineLabel;
 
 /// Subscriptions that do not depend on a pane.
@@ -160,18 +161,11 @@ impl SshSocket {
 
     fn args(&self) -> Vec<String> {
         let shared: &[&str] = if self.multiplexed {
-            &[
-                "-o",
-                "ControlMaster=auto",
-                "-o",
-                "ControlPath=~/.ssh/toodo-%C",
-                "-o",
-                "ControlPersist=60",
-            ]
+            &SSH_SHARED_CONNECTION
         } else {
             &[]
         };
-        ["-o", "BatchMode=yes"]
+        SSH_OPTIONS
             .iter()
             .chain(shared)
             .chain(&["-W", &self.socket_path, "--", self.host.as_str()])
@@ -587,6 +581,12 @@ mod tests {
             [
                 "-o",
                 "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=3",
                 "-W",
                 "/home/u/.config/herdr/herdr.sock",
                 "--",
@@ -608,6 +608,12 @@ mod tests {
             [
                 "-o",
                 "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=3",
                 "-o",
                 "ControlMaster=auto",
                 "-o",

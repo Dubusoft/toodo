@@ -19,6 +19,7 @@ import {
   type MachineSettings,
   type NewTask,
   type NewWorkspace,
+  type PullRequestOptions,
   type RunId,
   type RunState,
   type Task,
@@ -70,6 +71,8 @@ export const queryKeys = {
   tasks: ["task-list", "pages"] as const,
   /** Related links between tasks; under "tasks", so a tasks-changed event refetches them. */
   taskRelations: ["tasks", "relations"] as const,
+  /** Deleted workspaces and tasks; under "tasks", so a tasks-changed event refetches them. */
+  archive: ["tasks", "archive"] as const,
   herdrStatus: ["herdr-status"] as const,
   runnerHealth: ["runner-health"] as const,
   agentStatuses: ["agent-statuses"] as const,
@@ -85,6 +88,7 @@ export const queryKeys = {
   /** Under "agent-options", so saving a workspace's options refetches the task views that show them. */
   workspaceAgentOptions: (workspace: WorkspaceId) => ["agent-options", "workspace", workspace] as const,
   taskAgentOptions: (taskId: TaskId) => ["agent-options", "task", taskId] as const,
+  workspacePullRequestOptions: (workspace: WorkspaceId) => ["pull-request-options", workspace] as const,
   /** Not under "tasks": agent status changes refetch them, task changes do not. */
   agentStatusTransitions: (taskId: TaskId) => ["agent-status-transitions", taskId] as const,
   /** Not under "tasks": a log can be large, so it is refetched only for its run. */
@@ -193,6 +197,11 @@ export function useHerdrMachines() {
     queryKey: queryKeys.herdrMachines,
     queryFn: () => unwrap(commands.listHerdrMachines()),
   });
+}
+
+/** Tests that the server reaches an SSH host without a prompt and that git runs there. */
+export function useTestSshMachine() {
+  return useMutation({ mutationFn: (machine: string) => unwrap(commands.testSshMachine(machine)) });
 }
 
 /**
@@ -305,17 +314,50 @@ export function useCreateBaseBranch() {
   });
 }
 
-/** Removes a workspace from Toodo with its tasks; the repository and herdr stay untouched. */
+/** Archives a workspace with its tasks; the repository and herdr stay untouched. */
 export function useDeleteWorkspace() {
+  return useArchiveMutation((id: WorkspaceId) => unwrap(commands.deleteWorkspace(id)));
+}
+
+/** The workspaces and tasks deleting archived, to restore or purge. */
+export function useArchive() {
+  return useQuery({ queryKey: queryKeys.archive, queryFn: () => unwrap(commands.listArchive()) });
+}
+
+/**
+ * Commands that move workspaces or tasks into or out of the archive, which changes the
+ * workspaces, the tasks, the archive, and what reviews show.
+ */
+function useArchiveMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: WorkspaceId) => unwrap(commands.deleteWorkspace(id)),
+    mutationFn,
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.archive }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
       ]),
   });
+}
+
+export function useRestoreWorkspace() {
+  return useArchiveMutation((id: WorkspaceId) => unwrap(commands.restoreWorkspace(id)));
+}
+
+/** Deletes an archived workspace for good with its tasks and their history. */
+export function usePurgeWorkspace() {
+  return useArchiveMutation((id: WorkspaceId) => unwrap(commands.purgeWorkspace(id)));
+}
+
+export function useRestoreTask() {
+  return useArchiveMutation((id: TaskId) => unwrap(commands.restoreTask(id)));
+}
+
+/** Deletes an archived task for good with its history. */
+export function usePurgeTask() {
+  return useArchiveMutation((id: TaskId) => unwrap(commands.purgeTask(id)));
 }
 
 /** How many finished tasks a page of the task list loads, newest first. */
@@ -404,6 +446,20 @@ export function useReview(start: Timestamp, end: Timestamp) {
   return useQuery({
     queryKey: queryKeys.review(start, end),
     queryFn: () => unwrap(commands.reviewPeriod(start, end)),
+  });
+}
+
+/** Records the pull requests the user merged in `[start, end)` as done tasks, for reviews of that time. */
+export function useBackfillPullRequests() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ start, end }: { start: Timestamp; end: Timestamp }) =>
+      unwrap(commands.backfillPullRequests(start, end)),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
   });
 }
 
@@ -681,6 +737,25 @@ export function useSetWorkspaceAgentOptions() {
   });
 }
 
+/** Whether a workspace opens pull requests as drafts, and the reviewers and labels they get. */
+export function useWorkspacePullRequestOptions(workspace: WorkspaceId) {
+  return useQuery({
+    queryKey: queryKeys.workspacePullRequestOptions(workspace),
+    queryFn: () => unwrap(commands.getWorkspacePullRequestOptions(workspace)),
+  });
+}
+
+/** Saves the pull request options of a workspace; pull requests opened later use them. */
+export function useSetWorkspacePullRequestOptions() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ workspace, options }: { workspace: WorkspaceId; options: PullRequestOptions }) =>
+      unwrap(commands.setWorkspacePullRequestOptions(workspace, options)),
+    onSuccess: (saved, { workspace }) =>
+      queryClient.setQueryData(queryKeys.workspacePullRequestOptions(workspace), saved),
+  });
+}
+
 /** Saves the launch options a task overrides; runs started later use them. */
 export function useSetTaskAgentOptions() {
   const queryClient = useQueryClient();
@@ -860,7 +935,12 @@ export function useUpdateTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (task: TaskEdit) => unwrap(commands.updateTask(task)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+    // Reviews compare a task's estimate and due date with what happened.
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
   });
 }
 
@@ -895,9 +975,11 @@ export function useCheckCriterion() {
   );
 }
 
-/** Deletes a task, first removing its worktree through herdr; `force` discards local changes. */
+/**
+ * Archives a task, first removing its worktree through herdr; `force` discards local changes.
+ */
 export function useDeleteTask() {
-  return useTasksMutation(({ id, force }: { id: TaskId; force: boolean }) =>
+  return useArchiveMutation(({ id, force }: { id: TaskId; force: boolean }) =>
     unwrap(commands.deleteTask(id, force)),
   );
 }

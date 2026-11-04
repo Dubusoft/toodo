@@ -17,8 +17,8 @@ use specta_typescript::{Error, Exporter, FrameworkExporter, Typescript, define};
 
 use crate::commands::events::{self, names};
 use crate::commands::{
-    self, agent_options, backup, completion, freshness, herdr, issues, machines, mcp, review,
-    runners, runs, tasks, workspaces,
+    self, agent_options, backup, completion, freshness, herdr, issues, machines, mcp,
+    pull_request_options, review, runners, runs, tasks, workspaces,
 };
 
 const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
@@ -38,11 +38,15 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         workspaces::list_workspace_branches,
         workspaces::create_workspace_base_branch,
         workspaces::delete_workspace,
+        workspaces::restore_workspace,
+        workspaces::purge_workspace,
+        workspaces::list_archive,
         workspaces::get_machine_settings,
         workspaces::save_machine_settings,
         machines::list_herdr_machines,
         machines::list_ssh_hosts,
         machines::add_ssh_host,
+        machines::test_ssh_machine,
         machines::list_remote_directories,
         machines::list_directories,
         tasks::list_tasks,
@@ -58,6 +62,8 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         tasks::set_task_outcome,
         tasks::check_criterion,
         tasks::delete_task,
+        tasks::restore_task,
+        tasks::purge_task,
         tasks::add_dependency,
         tasks::remove_dependency,
         tasks::list_commit_records,
@@ -81,6 +87,8 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         agent_options::set_workspace_agent_options,
         agent_options::get_task_agent_options,
         agent_options::set_task_agent_options,
+        pull_request_options::get_workspace_pull_request_options,
+        pull_request_options::set_workspace_pull_request_options,
         runners::runner_health,
         completion::refresh_commit_records,
         completion::open_pull_request,
@@ -97,6 +105,8 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         mcp::list_connected_apps,
         mcp::revoke_connected_app,
         review::review_period,
+        review::backfill_pull_requests,
+        review::review_report,
         backup::get_backup_settings,
         backup::get_backup_status,
         backup::save_backup_settings,

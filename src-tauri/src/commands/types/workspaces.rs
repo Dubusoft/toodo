@@ -457,6 +457,41 @@ impl TryFrom<NewSshHost> for ssh_config::SshHost {
     }
 }
 
+/// What testing the connection to an SSH machine found: Toodo connects without a prompt and
+/// git runs there, or a problem.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SshMachineCheck {
+    /// `git --version` on the machine, e.g. `git version 2.43.0`; `None` when the test failed.
+    pub git_version: Option<String>,
+    /// What failed and the next step that fixes it; `None` when the test passed.
+    pub problem: Option<String>,
+}
+
+impl From<ssh::MachineCheck> for SshMachineCheck {
+    fn from(check: ssh::MachineCheck) -> Self {
+        match check {
+            ssh::MachineCheck::Ready { git_version } => Self {
+                git_version: Some(git_version),
+                problem: None,
+            },
+            ssh::MachineCheck::Problem(problem) => Self {
+                git_version: None,
+                problem: Some(problem),
+            },
+        }
+    }
+}
+
+/// A host appended to the SSH config, and the connection test run on it right after.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AddedSshHost {
+    /// Host aliases of the updated config.
+    pub hosts: Vec<String>,
+    pub check: SshMachineCheck,
+}
+
 /// A machine saved in herdr with `herdr machine add`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]

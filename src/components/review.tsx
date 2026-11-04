@@ -3,10 +3,20 @@ import { CalendarCheck, ChevronLeft, ChevronRight, Download } from "lucide-react
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/task-list";
-import { TaskLabels } from "@/components/task-common";
+import { MissingPlanMark, TaskLabels } from "@/components/task-common";
+import { TaskEditForm } from "@/components/task-edit-form";
 import { inputClass } from "@/components/workspace-list";
-import type { ReviewEntry, ReviewOutcome, TaskId, Workspace } from "@/lib/bindings";
-import { useReview, useWorkspaces } from "@/lib/queries";
+import {
+  commands,
+  type BackfillSummary,
+  type ReportFormat,
+  type ReviewEntry,
+  type ReviewOutcome,
+  type ReviewReport,
+  type TaskId,
+  type Workspace,
+} from "@/lib/bindings";
+import { unwrap, useArchive, useBackfillPullRequests, useReview, useWorkspaces } from "@/lib/queries";
 import {
   commitSubject,
   durationKeys,
@@ -29,10 +39,7 @@ import {
   planVsActual,
   pullRequestNumber,
   pullRequestStats,
-  reviewCsv,
-  reviewFileName,
   reviewLabels,
-  reviewMarkdown,
   shiftPeriod,
   summarize,
   weekStarting,
@@ -41,7 +48,9 @@ import {
   type ReviewFilter,
   type ReviewPeriod,
 } from "@/lib/review";
+import { type MissingPlanField, missingPlan } from "@/lib/plan";
 import { toneChip, toneFill, toneText } from "@/lib/status-styles";
+import { workspaceCapabilities } from "@/lib/workspace-capabilities";
 import { When } from "@/components/when";
 import { formatDate } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
@@ -110,6 +119,20 @@ function ExportMenu({ disabled, children }: { disabled: boolean; children: (clos
   );
 }
 
+function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** What importing merged pull requests added, for the status line. */
+export function backfillNotice(summary: BackfillSummary, noun: string): string {
+  const skipped =
+    summary.skipped > 0 ? ` Left out ${plural(summary.skipped, "pull request")} a task already records.` : "";
+  if (summary.imported === 0) {
+    return `Found no new pull requests you merged in this ${noun}.${skipped}`;
+  }
+  return `Imported ${plural(summary.imported, "merged pull request")} as done tasks.${skipped}`;
+}
+
 function MenuItem({ onSelect, children }: { onSelect: () => void; children: React.ReactNode }) {
   return (
     <button
@@ -127,10 +150,18 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   const [period, setPeriod] = useState<ReviewPeriod>(() => periodContaining("week", formatDate(Date.now() / 1000)));
   const [notice, setNotice] = useState<string | null>(null);
   const [filter, setFilter] = useState<ReviewFilter>(noReviewFilter);
+  // The task whose edit form a missing-plan mark opened, and the field it focuses.
+  const [editingPlan, setEditingPlan] = useState<{ id: TaskId; field: MissingPlanField } | null>(null);
   const { start, end } = periodBounds(period);
   const review = useReview(start, end);
   const workspaces = useWorkspaces();
-  const names = new Map(workspaces.data?.map((workspace) => [workspace.id, workspace.name]));
+  const archive = useArchive();
+  const backfill = useBackfillPullRequests();
+  const [backfillFailures, setBackfillFailures] = useState<string[]>([]);
+  const onGitHub = workspaces.data?.some((workspace) => workspace.source === "github") ?? false;
+  // Reviews keep the work of deleted workspaces, so they are named too.
+  const workspaceList = [...(workspaces.data ?? []), ...(archive.data?.workspaces ?? [])];
+  const names = new Map(workspaceList.map((workspace) => [workspace.id, workspace.name]));
   const entries = review.data && filterEntries(review.data, filter);
   // The chosen label stays listed when the period has no task with it.
   const labels = reviewLabels(review.data ?? []);
@@ -147,7 +178,20 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
 
   function moveTo(next: ReviewPeriod) {
     setNotice(null);
+    setBackfillFailures([]);
     setPeriod(next);
+  }
+
+  async function importPullRequests() {
+    setNotice(null);
+    setBackfillFailures([]);
+    try {
+      const summary = await backfill.mutateAsync({ start, end });
+      setNotice(backfillNotice(summary, noun));
+      setBackfillFailures(summary.failures);
+    } catch (error) {
+      setNotice(`Could not import pull requests: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   function switchKind(kind: PeriodKind) {
@@ -155,25 +199,47 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
     moveTo(kind === "custom" ? { ...period, kind } : periodContaining(kind, period.from));
   }
 
-  async function copyMarkdown(entries: ReviewEntry[]) {
+  // The server renders the report, as for MCP and `toodo review`, in this browser's time zone.
+  function renderReport(format: ReportFormat): Promise<ReviewReport> {
+    return unwrap(
+      commands.reviewReport({
+        period: period.kind,
+        date: null,
+        from: period.from,
+        to: period.kind === "custom" ? period.to : null,
+        format,
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
+        workspaceId: filter.workspaceId,
+        label: filter.label,
+      }),
+    );
+  }
+
+  async function copyMarkdown() {
     try {
-      await navigator.clipboard.writeText(reviewMarkdown(period, entries, workspaces.data ?? [], Date.now() / 1000));
+      const report = renderReport("markdown");
+      if (typeof ClipboardItem === "undefined") {
+        await navigator.clipboard.writeText((await report).contents);
+      } else {
+        // Handing the clipboard a pending item keeps Safari's user-gesture check satisfied.
+        const text = report.then(({ contents }) => new Blob([contents], { type: "text/plain" }));
+        await navigator.clipboard.write([new ClipboardItem({ "text/plain": text })]);
+      }
       setNotice("Copied as Markdown.");
     } catch (error) {
       setNotice(`Could not copy: ${String(error)}`);
     }
   }
 
-  function saveAs(extension: "md" | "csv", entries: ReviewEntry[]) {
-    const workspaceList = workspaces.data ?? [];
-    const contents =
-      extension === "csv"
-        ? reviewCsv(entries, workspaceList, Date.now() / 1000)
-        : reviewMarkdown(period, entries, workspaceList, Date.now() / 1000);
-    // The report is for the user, not the server: the browser downloads it.
-    const name = reviewFileName(period, extension);
-    download(name, contents, extension === "csv" ? "text/csv" : "text/markdown");
-    setNotice(`Downloaded ${name}`);
+  async function saveAs(format: ReportFormat) {
+    try {
+      const report = await renderReport(format);
+      // The report is for the user, not the server: the browser downloads it.
+      download(report.fileName, report.contents, report.mediaType);
+      setNotice(`Downloaded ${report.fileName}`);
+    } catch (error) {
+      setNotice(`Could not export: ${String(error)}`);
+    }
   }
 
   return (
@@ -282,7 +348,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                 <MenuItem
                   onSelect={() => {
                     close();
-                    if (entries) void copyMarkdown(entries);
+                    void copyMarkdown();
                   }}
                 >
                   Copy as Markdown
@@ -290,7 +356,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                 <MenuItem
                   onSelect={() => {
                     close();
-                    if (entries) void saveAs("md", entries);
+                    void saveAs("markdown");
                   }}
                 >
                   Save as Markdown
@@ -298,7 +364,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                 <MenuItem
                   onSelect={() => {
                     close();
-                    if (entries) void saveAs("csv", entries);
+                    void saveAs("csv");
                   }}
                 >
                   Save as CSV
@@ -325,7 +391,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           onChange={(e) => setFilter({ ...filter, workspaceId: e.target.value === "" ? null : Number(e.target.value) })}
         >
           <option value="">All workspaces</option>
-          {workspaces.data?.map((workspace) => (
+          {workspaceList.map((workspace) => (
             <option key={workspace.id} value={workspace.id}>
               {workspace.name}
             </option>
@@ -356,6 +422,13 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           {notice}
         </p>
       )}
+      {backfillFailures.length > 0 && (
+        <ul role="alert" aria-label="Pull requests not imported" className="text-xs text-destructive print:hidden">
+          {backfillFailures.map((failure) => (
+            <li key={failure}>{failure}</li>
+          ))}
+        </ul>
+      )}
 
       {/* Stays mounted so screen readers hear loading start and finish for each period. */}
       <p role="status" className={cn("text-sm text-muted-foreground", !review.isPending && "sr-only")}>
@@ -377,16 +450,31 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
               ? `No recorded activity in this ${noun}.`
               : `No recorded activity in this ${noun} matches the filters.`
           }
-          hint="Pick another period or change the filters to look at other work."
+          hint={
+            review.data?.length === 0
+              ? `Toodo records each task as it is planned, started, opened for review, and completed, with the commits of its branch, so reviews fill up as you work. Work merged before Toodo tracked it is not here: ${
+                  onGitHub
+                    ? `import the pull requests you merged in this ${noun} to add it.`
+                    : "add a workspace with a GitHub repository to import the pull requests you merged."
+                }`
+              : "Pick another period or change the filters to look at other work."
+          }
           action={
-            <Button size="sm" variant="outline" onClick={() => moveTo(shiftPeriod(period, -1))}>
-              Show the {noun} before
-            </Button>
+            <div className="flex flex-wrap justify-center gap-2 print:hidden">
+              {review.data?.length === 0 && onGitHub && (
+                <Button size="sm" disabled={backfill.isPending} onClick={() => void importPullRequests()}>
+                  {backfill.isPending ? "Importing..." : "Import merged pull requests"}
+                </Button>
+              )}
+              <Button size="sm" variant="outline" onClick={() => moveTo(shiftPeriod(period, -1))}>
+                Show the {noun} before
+              </Button>
+            </div>
           }
         />
       )}
       {entries && entries.length > 0 && (
-        <ReviewSummaryPanel period={period} entries={entries} workspaces={workspaces.data ?? []} />
+        <ReviewSummaryPanel period={period} entries={entries} workspaces={workspaceList} />
       )}
       {entries && <PlanPanel period={period} entries={entries} />}
       {period.kind === "year" && entries && <YearInReviewPanel entries={entries} />}
@@ -398,7 +486,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
               <span className="font-normal text-muted-foreground">({group.entries.length})</span>
             </h3>
             <ul className="flex flex-col divide-y rounded-lg border">
-              {group.entries.map(({ task, at, commits }) => (
+              {group.entries.map(({ task, at, commits, archived }) => (
                 <li key={task.id} className="flex flex-col gap-1 px-3 py-2">
                   <div className="flex min-w-0 items-center gap-2">
                     <TaskTypeBadge type={task.taskType} />
@@ -415,6 +503,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                     {task.resolution === "not_adopted" && (
                       <span className={notAdoptedChip}>Not adopted</span>
                     )}
+                    {archived && <span className={notAdoptedChip}>Archived</span>}
                     {task.resolution === "completed" && (
                       <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", toneChip.success)}>Completed</span>
                     )}
@@ -426,6 +515,18 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                     </span>
                   </div>
                   <TaskLabels task={task} />
+                  {archived ? null : editingPlan?.id === task.id ? (
+                    <TaskEditForm
+                      task={task}
+                      capabilities={workspaceCapabilities(workspaces.data?.find(({ id }) => id === task.workspaceId))}
+                      focusPlan={editingPlan.field}
+                      onDone={() => setEditingPlan(null)}
+                    />
+                  ) : (
+                    <p className="text-xs text-muted-foreground empty:hidden print:hidden">
+                      <MissingPlanMark task={task} onEdit={(field) => setEditingPlan({ id: task.id, field })} />
+                    </p>
+                  )}
                   {task.completionNote && (
                     <p aria-label={`Completion note of #${task.id}`} className="whitespace-pre-line break-words-keep text-xs">
                       {task.completionNote}
@@ -570,12 +671,36 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
 /** Estimates and due dates of the reviewed tasks against what happened. */
 function PlanPanel({ period, entries }: { period: ReviewPeriod; entries: ReviewEntry[] }) {
   const plan = planVsActual(period, entries, Date.now() / 1000);
-  if (plan === null) return null;
+  // Archived tasks can no longer be edited, so only live ones count as missing a plan.
+  const missing = entries.filter(({ archived }) => !archived).map(({ task }) => missingPlan(task));
+  const withoutEstimate = missing.filter((fields) => fields.includes("estimate")).length;
+  const withoutDueDate = missing.filter((fields) => fields.includes("dueDate")).length;
+  if (plan === null && withoutEstimate + withoutDueDate === 0) return null;
+  const missingSummary = (
+    <div className="contents">
+      <dt className="text-muted-foreground">Missing plan</dt>
+      <dd>
+        {[
+          withoutEstimate > 0 && `${plural(withoutEstimate, "task")} without an estimate`,
+          withoutDueDate > 0 && `${plural(withoutDueDate, "task")} without a due date`,
+        ]
+          .filter(Boolean)
+          .join(", ")}
+        ; add them from the marks on the tasks below
+      </dd>
+    </div>
+  );
   return (
     <section aria-labelledby="plan-heading" className="flex flex-col gap-3 rounded-lg border p-3">
       <h3 id="plan-heading" className="text-sm font-semibold">
         Plan vs actual
       </h3>
+      {plan === null ? (
+        <>
+          <p className="text-sm">No reviewed task has an estimate or a due date, so there is nothing to compare yet.</p>
+          <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">{missingSummary}</dl>
+        </>
+      ) : (
       <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
         <div className="contents">
           <dt className="text-muted-foreground">Estimate vs active time</dt>
@@ -585,8 +710,10 @@ function PlanPanel({ period, entries }: { period: ReviewPeriod; entries: ReviewE
           <dt className="text-muted-foreground">Due dates met</dt>
           <dd>{plan.dueDates ? formatDueRate(plan.dueDates) : "No completed task had a due date"}</dd>
         </div>
+        {withoutEstimate + withoutDueDate > 0 && missingSummary}
       </dl>
-      {plan.late.length > 0 && (
+      )}
+      {plan !== null && plan.late.length > 0 && (
         <div className="flex flex-col gap-1">
           <h4 className="text-xs text-muted-foreground">Late tasks</h4>
           <ul aria-label="Late tasks" className="flex flex-col gap-1">

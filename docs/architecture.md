@@ -160,9 +160,12 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
 - Creating a task records its initial status (`planned`). Every later status change
   records one event in the same transaction as the change itself. Dependency changes do
   not change a status, so they record nothing.
-- Events are never edited or deleted on their own; they go away only when their task is
-  deleted. A deleted task no longer appears in reports, so pause rather than delete a
-  task whose work should be reported.
+- Events are never edited or deleted on their own. Deleting a task or its workspace
+  archives it (`archived_at` on `tasks` or `workspaces`): it leaves the task lists and the
+  DAG, but its history, commits, and links stay, and reviews still report its work, marked
+  archived. Settings > Archive restores it (`restore_task`, `restore_workspace`) or
+  deletes it for good (`purge_task`, `purge_workspace`); only that purge removes its
+  events, and it accepts archived items only.
 - The milestones used by the timeline view and reports are derived from the history:
 
   | Milestone | Derived from |
@@ -193,8 +196,11 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   lives; finishing a task can release dependents in other workspaces. Readiness is
   derived from the DAG whenever it is needed and is not a status.
 - A workspace cannot be deleted while a `planned` task of another workspace depends on
-  one of its tasks, since that task would silently become ready. Dependencies of tasks
-  being worked on or done are dropped with the workspace.
+  one of its tasks, since that task would silently become ready, or while a run of one of
+  its tasks is queued or active. An archived task is left out of the DAG: its edges are
+  kept but no longer hold back their dependents, and no new edge can reach it. Restoring
+  it brings its edges back, and is rejected if they would close a cycle with edges added
+  meanwhile.
 - Dependents of a task can be planned at any time but only started (or resumed) once
   ready.
 - Dependencies change while a task is `planned` or `in_progress`. A new prerequisite that
@@ -210,7 +216,7 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
   whose decisions a new one builds on, or a follow-up of research that was not adopted.
 - A related link is symmetric, may cross workspaces, and never affects readiness or
   starting a task; only dependencies do. Table `task_relations` stores each link once,
-  from the lower task ID to the higher one, and deleting a task drops its links.
+  from the lower task ID to the higher one, and purging a task drops its links.
 - Related links are set through MCP only (`add_related` / `remove_related`); the app
   does not show them yet.
 
@@ -319,6 +325,26 @@ the task list's Done group), "Load older finished tasks" loads the next 100.
   row and behind its label, and the axis reaches far enough to show it. A task done after that day, or still open past it, is
   outlined in red, and so is its marker.
 
+## Plan View
+
+"Plan" in the "All workspaces" view (`?view=plan`) shows whether a quarter or a year of
+planned work fits, before it slips. Like the timeline it can be narrowed to one
+workspace, and the search, status, and type filters apply.
+
+- Each task counts in the calendar quarter or year of its due date, with its estimate
+  converted to seconds as everywhere else (a day is 24 hours, a week 7 days, a month 30
+  days). Done tasks count, since their work filled the period; tasks that were not
+  adopted do not.
+- Periods run without gaps from the earliest due date to the latest, and always include
+  the current one. Each lists its tasks, the summed estimate, the part of it already done,
+  and how many of its tasks have no estimate and so are left out of the sum.
+- Tasks without a due date are listed apart under "No due date", with their summed
+  estimate.
+- The capacity is an amount of work per quarter in an estimate unit; a year holds four
+  quarters. A period whose summed estimate is more than its capacity is highlighted as
+  over capacity, with the excess. The capacity is saved in the browser (`localStorage`),
+  like the theme; without one, no period is highlighted.
+
 ## Review
 
 A report of the work recorded in a period, across all workspaces, for status updates and
@@ -349,6 +375,18 @@ generated or guessed by an agent.
   outcome, its pull request (with its size and review count once merged), its completion
   note, and the commits it got in the period.
 - Tasks without status history appear only through their commits.
+- The commits of a task are its commit records (recorded when its branch is refreshed,
+  its pull request opens, and it completes) and the commits its git activity recorded
+  since, so a task in progress without a pull request shows its commits within a minute
+  of the background check reading its branch.
+- Work merged before Toodo tracked it can be imported from GitHub: "Import merged pull
+  requests" on an empty review (`backfill_pull_requests`) records each pull request the
+  signed-in `gh` user merged into the base branch of a GitHub workspace in the period as a
+  task done as merged, planned, started, and in review when the pull request was opened
+  and completed when it was merged. Its type comes from the branch prefix (`fix/...`) or a
+  conventional title (`docs: ...`), else `modify`. A pull request a task already records,
+  or whose branch a task of the workspace has, is skipped, so importing again adds nothing
+  twice.
 - A summary leads the review: the count of tasks per outcome, the commits made in the
   period, completed tasks by task type and by workspace, the summed size of their merged
   pull requests, and the median durations of the tasks completed in the period:
@@ -383,8 +421,11 @@ generated or guessed by an agent.
   active hours so far, its estimate and unit, its due date and whether it was met (`On
   time`, `Late`, `Overdue`, or `Not due yet`), the size and review count of its pull request, and its completion
   note; UTF-8 with a byte
-  order mark). The frontend
-  builds the file, since it knows the local time zone, and the browser downloads it.
+  order mark). The server renders both reports with the `review_report` command, in the
+  IANA time zone the caller names (the web app sends the browser's, `toodo review` the
+  machine's, and the server's own is the default), and the browser downloads the file.
+  Agents get the same report from the MCP tool `review_report`, and the CLI prints it
+  with `toodo review` (see [server.md](server.md)).
 - Printing the review (Export > Print or save as PDF, or the browser's print command)
   leaves out the sidebar, the controls, and banners, and uses the light theme.
 
@@ -522,6 +563,11 @@ The session id (Claude) or thread id (Codex) a run's agent reports is kept in an
 conversation and resumes its latest session with `--resume <id>` (Claude) or
 `resume <id>` before `-` (Codex). A run's `followUpOf` is the latest earlier run of its
 conversation.
+
+A workspace's pull request options (`set_workspace_pull_request_options`, stored in the
+`pull_request_draft`, `pull_request_reviewers`, and `pull_request_labels` columns of
+`workspaces`, the lists as JSON arrays) set whether the pull requests Toodo opens for its
+tasks are drafts and which reviewers and labels they get; see `docs/workflow.md`.
 
 The model, permission mode, and time limit come from the task's agent options, and each
 value the task leaves unset from its workspace's (`set_task_agent_options`,
@@ -773,8 +819,12 @@ path deletes journal history.
   - Events use the socket API (`src-tauri/src/adapters/herdr_events.rs`,
     `src-tauri/src/commands/events.rs`): newline-delimited JSON over the server socket
     that `herdr status --json` reports as `server.socket`, a Unix domain socket.
-    - The herdr server of an SSH machine is reached with `ssh -o BatchMode=yes -W
-      <socket path> -- <host>`, which forwards ssh's standard input and output to the
+    - The herdr server of an SSH machine is reached with `ssh -o BatchMode=yes -o
+      ConnectTimeout=10 -W <socket path> -- <host>` (with the other options of
+      `git::SSH_OPTIONS`), so an unreachable machine fails within seconds and is
+      recorded offline. Short `ssh` commands to a machine (git, directory listings,
+      remote herdr) share one connection through OpenSSH multiplexing
+      (`git::SSH_SHARED_CONNECTION`). The command forwards ssh's standard input and output to the
       remote socket. The socket path comes from running the remote herdr over SSH
       (`herdr --session <saved session> status --json`, looked up on `PATH`, then in
       `~/.local/bin`, Homebrew, `/usr/local/bin`, and the Nix profile), because
@@ -943,8 +993,8 @@ path deletes journal history.
     its dependencies are done.
   - Every task status change appends a row to the task's status history in the same
     transaction (see [Task Timeline](#task-timeline)).
-  - Deleting a workspace or task also deletes its tasks, dependency edges, commit
-    records, and status history.
+  - Deleting a workspace or task archives it; only purging an archived one deletes its
+    tasks, dependency edges, commit records, and status history.
 
 ## Decisions
 

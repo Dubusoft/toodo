@@ -3,6 +3,7 @@
 
 use rusqlite::{Connection, OptionalExtension, ToSql};
 
+use super::tasks::LIVE_TASK;
 use super::{Result, Storage, StorageError};
 use crate::domain::model::{TaskId, WorkspaceId};
 use crate::domain::status::TaskStatus;
@@ -151,11 +152,15 @@ impl Storage {
         Ok(())
     }
 
-    /// Every related link, as pairs of task IDs with the lower ID first.
+    /// Every related link between live tasks, as pairs of task IDs with the lower ID first;
+    /// links of archived tasks are kept for a restore.
     pub fn list_relations(&self) -> Result<Vec<(TaskId, TaskId)>> {
-        let mut statement = self.conn.prepare_cached(
-            "SELECT task_id, related_id FROM task_relations ORDER BY task_id, related_id",
-        )?;
+        let mut statement = self.conn.prepare_cached(&format!(
+            "SELECT r.task_id, r.related_id FROM task_relations r
+             WHERE EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id AND {LIVE_TASK})
+               AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.related_id AND {LIVE_TASK})
+             ORDER BY r.task_id, r.related_id"
+        ))?;
         let pairs = statement
             .query_map([], |row| Ok((TaskId(row.get(0)?), TaskId(row.get(1)?))))?
             .collect::<rusqlite::Result<Vec<_>>>()?;

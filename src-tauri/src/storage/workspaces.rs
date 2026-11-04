@@ -2,12 +2,13 @@
 
 use rusqlite::{OptionalExtension, Row, params};
 
+use super::tasks::LIVE_TASK;
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::model::{
     AgentMerge, CompletionMode, HostPath, Machine, MachineLabel, MachineSettings, Runner, Source,
     TaskId, Workspace, WorkspaceId, WorkspaceLocation,
 };
-use crate::domain::runtime::HostRef;
+use crate::domain::runtime::{HostRef, RunId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewWorkspace {
@@ -46,6 +47,22 @@ fn agent_merge_column(agent_merge: AgentMerge) -> &'static str {
     match agent_merge {
         AgentMerge::Never => "never",
         AgentMerge::AfterChecks => "after_checks",
+    }
+}
+
+/// Rejects workspace `id` unless it is stored and archived.
+fn ensure_archived(conn: &rusqlite::Connection, id: WorkspaceId) -> Result<()> {
+    let archived: Option<Option<i64>> = conn
+        .query_row(
+            "SELECT archived_at FROM workspaces WHERE id = ?1",
+            [id.0],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match archived {
+        None => Err(StorageError::WorkspaceNotFound(id)),
+        Some(None) => Err(StorageError::WorkspaceNotArchived(id)),
+        Some(Some(_)) => Ok(()),
     }
 }
 
@@ -186,7 +203,8 @@ impl Storage {
     /// migration could not infer from their tasks, to detect from their repository.
     pub fn workspaces_to_detect(&self) -> Result<Vec<Workspace>> {
         let mut statement = self.conn.prepare(&format!(
-            "SELECT {WORKSPACE_COLUMNS} FROM workspaces WHERE axes_detected = 0 ORDER BY id"
+            "SELECT {WORKSPACE_COLUMNS} FROM workspaces
+             WHERE axes_detected = 0 AND archived_at IS NULL ORDER BY id"
         ))?;
         let rows = statement
             .query_map([], WorkspaceRow::read)?
@@ -216,7 +234,9 @@ impl Storage {
     pub fn get_workspace(&self, id: WorkspaceId) -> Result<Option<Workspace>> {
         self.conn
             .query_row(
-                &format!("SELECT {WORKSPACE_COLUMNS} FROM workspaces WHERE id = ?1"),
+                &format!(
+                    "SELECT {WORKSPACE_COLUMNS} FROM workspaces WHERE id = ?1 AND archived_at IS NULL"
+                ),
                 [id.0],
                 WorkspaceRow::read,
             )
@@ -226,8 +246,17 @@ impl Storage {
     }
 
     pub fn list_workspaces(&self) -> Result<Vec<Workspace>> {
+        self.workspaces_where("archived_at IS NULL")
+    }
+
+    /// Archived workspaces ordered by ID; their tasks are archived with them.
+    pub fn archived_workspaces(&self) -> Result<Vec<Workspace>> {
+        self.workspaces_where("archived_at IS NOT NULL")
+    }
+
+    fn workspaces_where(&self, filter: &str) -> Result<Vec<Workspace>> {
         let mut statement = self.conn.prepare(&format!(
-            "SELECT {WORKSPACE_COLUMNS} FROM workspaces ORDER BY id"
+            "SELECT {WORKSPACE_COLUMNS} FROM workspaces WHERE {filter} ORDER BY id"
         ))?;
         let rows = statement
             .query_map([], WorkspaceRow::read)?
@@ -295,7 +324,7 @@ impl Storage {
             "UPDATE workspaces
              SET name = ?2, kind = ?3, path = ?4, herdr_machine = ?5, default_base_branch = ?6,
                  agent_merge = ?7, completion = ?8, runner = ?9
-             WHERE id = ?1",
+             WHERE id = ?1 AND archived_at IS NULL",
             params![
                 workspace.id.0,
                 workspace.name,
@@ -315,22 +344,36 @@ impl Storage {
         Ok(())
     }
 
-    /// Deletes a workspace together with its tasks, dependencies, and commit records.
-    /// Rejected while a `planned` task of another workspace depends on one of its tasks,
-    /// which would otherwise silently become ready to start; dependencies of tasks being
-    /// worked on or done are dropped with the workspace.
-    pub fn delete_workspace(&mut self, id: WorkspaceId) -> Result<()> {
+    /// Archives a live workspace with its tasks: they leave the lists and the dependency
+    /// DAG but keep their history for reviews until [`Self::restore_workspace`] brings them
+    /// back or [`Self::purge_workspace`] deletes them. Rejected while a `planned` task of
+    /// another workspace depends on one of its tasks, which would otherwise silently become
+    /// ready to start, and while a run of one of its tasks is queued or active. The herdr
+    /// workspaces its tasks have open are forgotten; herdr keeps them.
+    pub fn archive_workspace(&mut self, id: WorkspaceId) -> Result<()> {
+        let at = self.now();
         let tx = self.conn.transaction()?;
+        let live: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM workspaces WHERE id = ?1 AND archived_at IS NULL)",
+            [id.0],
+            |row| row.get(0),
+        )?;
+        if !live {
+            return Err(StorageError::WorkspaceNotFound(id));
+        }
         let dependent: Option<(i64, i64)> = tx
             .query_row(
-                "SELECT d.task_id, d.depends_on_id
-                 FROM task_dependencies d
-                 JOIN tasks t ON t.id = d.task_id
-                 JOIN tasks p ON p.id = d.depends_on_id
-                 WHERE p.workspace_id = ?1 AND t.workspace_id <> ?1
-                   AND t.status = 'planned'
-                 ORDER BY d.task_id, d.depends_on_id
-                 LIMIT 1",
+                &format!(
+                    "SELECT d.task_id, d.depends_on_id
+                     FROM task_dependencies d
+                     JOIN tasks t ON t.id = d.task_id
+                     JOIN tasks p ON p.id = d.depends_on_id
+                     WHERE p.workspace_id = ?1 AND t.workspace_id <> ?1
+                       AND t.status = 'planned' AND p.archived_at IS NULL
+                       AND {LIVE_TASK}
+                     ORDER BY d.task_id, d.depends_on_id
+                     LIMIT 1"
+                ),
                 [id.0],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
@@ -342,10 +385,62 @@ impl Storage {
                 depends_on: TaskId(depends_on),
             });
         }
-        let changed = tx.execute("DELETE FROM workspaces WHERE id = ?1", [id.0])?;
-        if changed == 0 {
-            return Err(StorageError::WorkspaceNotFound(id));
+        let running: Option<(i64, i64)> = tx
+            .query_row(
+                "SELECT r.task_id, r.id
+                 FROM task_runs r JOIN tasks t ON t.id = r.task_id
+                 WHERE t.workspace_id = ?1
+                   AND r.state IN ('queued', 'reserved', 'running', 'unknown')
+                 ORDER BY r.id
+                 LIMIT 1",
+                [id.0],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if let Some((task, run)) = running {
+            return Err(StorageError::WorkspaceHasActiveRun {
+                workspace: id,
+                task: TaskId(task),
+                run: RunId(run),
+            });
         }
+        tx.execute(
+            "UPDATE runtime_workspaces SET state = 'closed', closed_at = ?2
+             WHERE state = 'open'
+               AND task_id IN (SELECT id FROM tasks WHERE workspace_id = ?1)",
+            params![id.0, at],
+        )?;
+        tx.execute(
+            "UPDATE workspaces SET archived_at = ?2 WHERE id = ?1",
+            params![id.0, at],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Brings an archived workspace back with its tasks, except those archived on their
+    /// own before. Rejected when their dependencies would close a cycle with edges added
+    /// while it was archived.
+    pub fn restore_workspace(&mut self, id: WorkspaceId) -> Result<Workspace> {
+        let tx = self.conn.transaction()?;
+        self::ensure_archived(&tx, id)?;
+        tx.execute(
+            "UPDATE workspaces SET archived_at = NULL WHERE id = ?1",
+            [id.0],
+        )?;
+        super::tasks::ensure_acyclic(&tx)?;
+        tx.commit()?;
+        self.get_workspace(id)?
+            .ok_or(StorageError::WorkspaceNotFound(id))
+    }
+
+    /// Deletes an archived workspace for good, with its tasks, their dependencies, commit
+    /// records, and history; a live workspace is rejected, so deleting history is always
+    /// explicit.
+    pub fn purge_workspace(&mut self, id: WorkspaceId) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        self::ensure_archived(&tx, id)?;
+        tx.execute("DELETE FROM workspaces WHERE id = ?1", [id.0])?;
         tx.commit()?;
         Ok(())
     }

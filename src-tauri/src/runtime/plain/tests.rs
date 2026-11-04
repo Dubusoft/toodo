@@ -1240,7 +1240,7 @@ fn remote_windows_uses_native_staging_launch_stop_and_probe_scripts() {
     let launch = remote
         .launch_invocation(RunId(42), r"C:\repo", Path::new("claude.exe"), &invocation)
         .unwrap();
-    let script = decode_powershell(&launch.args[4]);
+    let script = decode_powershell(launch.args.last().unwrap());
     assert!(script.contains("(Join-Path $run 'mcp.json')"));
     assert!(script.contains("$info.WorkingDirectory = 'C:\\repo'"));
     assert!(
@@ -1264,11 +1264,16 @@ fn remote_windows_uses_native_staging_launch_stop_and_probe_scripts() {
         instance: "0123456789ab",
         id: RunId(42),
     });
-    assert!(decode_powershell(&stage.args[4]).contains("[Console]::OpenStandardInput().CopyTo"));
-    assert!(decode_powershell(&stop.args[4]).contains("taskkill /PID $process.Id /T /F"));
-    assert!(decode_powershell(&probe.args[4]).contains("StartTime.ToFileTimeUtc()"));
+    assert!(
+        decode_powershell(stage.args.last().unwrap())
+            .contains("[Console]::OpenStandardInput().CopyTo")
+    );
+    assert!(
+        decode_powershell(stop.args.last().unwrap()).contains("taskkill /PID $process.Id /T /F")
+    );
+    assert!(decode_powershell(probe.args.last().unwrap()).contains("StartTime.ToFileTimeUtc()"));
     for invocation in [launch, stage, stop, probe] {
-        let decoded = decode_powershell(&invocation.args[4]);
+        let decoded = decode_powershell(invocation.args.last().unwrap());
         assert!(!decoded.contains(TOKEN));
         assert!(!decoded.contains("sh -c"));
     }

@@ -98,6 +98,10 @@ that no placeholder is left.
   note means the worker needs someone; answer it or tell the user.
 - `pull_request_status` (without `task_id`) lists the open pull requests of `in_review`
   tasks with their CI checks and reviews as Toodo last read them, without running `gh`.
+- `review_report` renders the review of a week, month, quarter, year, or custom period as
+  Markdown or CSV, the same report the app's Review exports, e.g. `{"period": "week"}`
+  for a weekly status update or `{"period": "year", "format": "csv"}` for a year-end
+  report. Chat apps can call it with the `toodo.read` scope.
 - A worker that finds a missing prerequisite creates the prerequisite tasks and pauses
   its own task with `add_dependency`. Start those prerequisites; once they are done,
   `start_task` on the paused task resumes it.
@@ -145,7 +149,8 @@ that way. The exact rules are in the shared fragments the agents read:
   herdr workspace.
 - Delete a `planned` task created by mistake with `delete_task` and reopen a done task
   with `reopen_task`: call once without `confirm`, read what the change would do, then
-  call again with `"confirm": true`. Done tasks are deleted in the Toodo app only.
+  call again with `"confirm": true`. Done tasks are deleted in the Toodo app only. A deleted
+  task is archived: it stays in reviews, and only the user restores or purges it in the app.
 - When a call is rejected, read the error: it names the argument or step that succeeds.
 
 ## Example Session

@@ -494,7 +494,8 @@ impl Access {
             | "list_tasks"
             | "search_tasks"
             | "get_task"
-            | "pull_request_status" => scopes.can_read(),
+            | "pull_request_status"
+            | "review_report" => scopes.can_read(),
             "create_workspace" | "create_task" | "create_plan" | "update_task"
             | "add_dependency" | "remove_dependency" | "add_related" | "remove_related"
             | "add_criterion" | "remove_criterion" | "check_criterion" | "add_progress_note"
@@ -989,7 +990,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Delete a planned task, e.g. one you created by mistake, as Delete in the Toodo app does. Deleting cannot be undone and drops the task from the reports, so it takes two calls: without confirm nothing changes and the reply (confirmed false) says what would be removed (history, commits, links, a worktree and its herdr workspace; the branch is kept); then call again with {\"id\": 5, \"confirm\": true}. force: true also removes a worktree with modified or untracked files. Rejected for an in_progress or in_review task (pause_task it first) and a done task (reopen_task it, or the user deletes it in the app). Returns {confirmed, task, message}; task is the task as it was."
+        description = "Delete a planned task, e.g. one you created by mistake, as Delete in the Toodo app does. Deleting archives the task: it leaves the task lists and stops holding back its dependents, but stays in the reports, and only the user can restore it or delete it for good in the app. It takes two calls: without confirm nothing changes and the reply (confirmed false) says what deleting does (a worktree and its herdr workspace are removed; the branch is kept); then call again with {\"id\": 5, \"confirm\": true}. force: true also removes a worktree with modified or untracked files. Rejected for an in_progress or in_review task (pause_task it first) and a done task (reopen_task it, or the user deletes it in the app). Returns {confirmed, task, message}; task is the task as it was."
     )]
     async fn delete_task(
         &self,
@@ -1104,7 +1105,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Remove the dependency of task_id on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": 3}. A dependency that does not exist is rejected, and then none is removed. Returns {task, paused, message} like add_dependency; message says whether the task is now ready, e.g. a paused task that resume_task can resume."
+        description = "Remove the dependency of task_id on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": 3}. A dependency that does not exist is rejected, and so is a done task_id (reopen_task it first); then none is removed. Returns {task, paused, message} like add_dependency; message says whether the task is now ready, e.g. a paused task that resume_task can resume."
     )]
     fn remove_dependency(
         &self,
@@ -1152,6 +1153,16 @@ impl ToodoMcp {
             &polled,
             request,
         ))
+    }
+
+    #[tool(
+        description = "Render the review of a period across all workspaces (or one workspace or label) as Markdown (the default) or CSV, the same report the Toodo app's Review exports: a summary of outcomes, commits, durations, plan vs actual, late tasks, a Year in review for a year, and each task under its outcome with its pull request, notes, and commits. period is week (from its Monday, or from from), month, quarter, year, or custom (from and to, both included); date (YYYY-MM-DD) picks the period containing that day, today when omitted. Days and times are in time_zone (IANA, e.g. Europe/Berlin), the server's when omitted. e.g. {\"period\": \"week\"} or {\"period\": \"year\", \"date\": \"2026-01-01\", \"format\": \"csv\"}. Returns {fileName, mediaType, from, to, contents}."
+    )]
+    fn review_report(
+        &self,
+        Parameters(request): Parameters<tools::ReviewReportRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(tools::review_report(&lock(self.backend.reader()), request))
     }
 
     #[tool(
@@ -3257,7 +3268,8 @@ mod tests {
                 "list_tasks",
                 "search_tasks",
                 "get_task",
-                "pull_request_status"
+                "pull_request_status",
+                "review_report"
             ]
             .into_iter()
             .map(str::to_owned)

@@ -1,7 +1,7 @@
 # Server/Client Split
 
 > **Note:** The Windows desktop app was removed after this document was written. Toodo now
-> has one client, the web app (PWA) served by `toodo-server`; see [server.md](server.md).
+> has one client, the web app (PWA) served by `toodo-server`; see [server.md](../server.md).
 > This record is kept as it was.
 
 Toodo is moving from "a desktop app that owns everything" to one **toodo-server** with

@@ -14,13 +14,13 @@ use serde::de::DeserializeOwned;
 use super::Services;
 use crate::commands::types::{
     AgentAdapter, AgentOptions, BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost,
-    NewTask, NewWorkspace, OAuthGrantId, RunId, TaskEdit, TaskId, TaskListFilter, TaskResolution,
-    Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
+    NewTask, NewWorkspace, OAuthGrantId, PullRequestOptions, ReviewReportRequest, RunId, TaskEdit,
+    TaskId, TaskListFilter, TaskResolution, Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
 };
 use crate::commands::{
     CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, agent_options, backup,
-    completion, events, freshness, herdr, issues, machines, mcp, review, runners, runs, tasks,
-    workspaces,
+    completion, events, freshness, herdr, issues, machines, mcp, pull_request_options, review,
+    runners, runs, tasks, workspaces,
 };
 use crate::mcp::Backend as _;
 
@@ -187,6 +187,7 @@ pub const READ_COMMANDS: &[&str] = &[
     "get_machine_settings",
     "list_herdr_machines",
     "list_ssh_hosts",
+    "test_ssh_machine",
     "list_remote_directories",
     "list_directories",
     "list_tasks",
@@ -201,12 +202,15 @@ pub const READ_COMMANDS: &[&str] = &[
     "get_run_log",
     "get_workspace_agent_options",
     "get_task_agent_options",
+    "get_workspace_pull_request_options",
     "runner_health",
     "list_pull_request_statuses",
     "branch_freshness",
     "list_agent_statuses",
     "list_mcp_tunnels",
     "review_period",
+    "list_archive",
+    "review_report",
     "get_backup_settings",
     "list_backups",
 ];
@@ -238,6 +242,9 @@ commands!(s => {
         workspaces::create_workspace_base_branch(State(&s.storage), State(&s.git), id, name, from)
     );
     "delete_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::delete_workspace(State(&s.storage), id));
+    "restore_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::restore_workspace(State(&s.storage), id));
+    "purge_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::purge_workspace(State(&s.storage), id));
+    "list_archive"() => sync Reply::result(workspaces::list_archive(State(s.reader())));
     "get_machine_settings"(machine: Machine) => sync Reply::result(
         workspaces::get_machine_settings(State(s.reader()), machine)
     );
@@ -247,7 +254,12 @@ commands!(s => {
 
     "list_herdr_machines"() => sync Reply::result(machines::list_herdr_machines(State(&s.herdr)));
     "list_ssh_hosts"() => sync Reply::result(machines::list_ssh_hosts(State(&s.ssh_config)));
-    "add_ssh_host"(host: NewSshHost) => sync Reply::result(machines::add_ssh_host(State(&s.ssh_config), host));
+    "add_ssh_host"(host: NewSshHost) => async Reply::result(
+        machines::add_ssh_host(State(&s.ssh_config), State(&s.ssh), host).await
+    );
+    "test_ssh_machine"(machine: String) => async Reply::result(
+        machines::test_ssh_machine(State(&s.ssh), machine).await
+    );
     "list_remote_directories"(machine: String, path: Option<String>) => async Reply::result(
         machines::list_remote_directories(State(&s.ssh), machine, path).await
     );
@@ -288,6 +300,8 @@ commands!(s => {
     "delete_task"(id: TaskId, force: bool) => sync Reply::result(
         tasks::delete_task(State(&s.storage), State(&s.git), State(&s.herdr), State(&s.plain), State(&s.tmux), id, force)
     );
+    "restore_task"(id: TaskId) => sync Reply::result(tasks::restore_task(State(&s.storage), id));
+    "purge_task"(id: TaskId) => sync Reply::result(tasks::purge_task(State(&s.storage), id));
     "add_dependency"(task_id: TaskId, depends_on: TaskId, confirm_pause: bool) => sync Reply::result(
         tasks::add_dependency(State(&s.storage), State(&s.herdr), task_id, depends_on, confirm_pause)
     );
@@ -336,6 +350,12 @@ commands!(s => {
     );
     "set_task_agent_options"(task_id: TaskId, options: AgentOptions) => sync Reply::result(
         agent_options::set_task_agent_options(State(&s.storage), task_id, options)
+    );
+    "get_workspace_pull_request_options"(workspace_id: WorkspaceId) => sync Reply::result(
+        pull_request_options::get_workspace_pull_request_options(State(s.reader()), workspace_id)
+    );
+    "set_workspace_pull_request_options"(workspace_id: WorkspaceId, options: PullRequestOptions) => sync Reply::result(
+        pull_request_options::set_workspace_pull_request_options(State(&s.storage), workspace_id, options)
     );
     "get_machine_runs"(machine: Machine) => sync Reply::result(
         runs::get_machine_runs(State(s.reader()), machine)
@@ -409,6 +429,12 @@ commands!(s => {
 
     "review_period"(start: Timestamp, end: Timestamp) => sync Reply::result(
         review::review_period(State(s.reader()), start, end)
+    );
+    "backfill_pull_requests"(start: Timestamp, end: Timestamp) => sync Reply::result(
+        review::backfill_pull_requests(State(&s.storage), State(&s.git), State(&s.github), start, end)
+    );
+    "review_report"(request: ReviewReportRequest) => sync Reply::result(
+        review::review_report(State(s.reader()), request)
     );
 
     "get_backup_settings"() => sync Reply::value(backup::get_backup_settings(State(&s.backups)));
