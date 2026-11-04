@@ -315,6 +315,12 @@ mod tests {
                  ALTER TABLE workspaces DROP COLUMN completion;
                  ALTER TABLE workspaces DROP COLUMN runner;
                  ALTER TABLE workspaces DROP COLUMN axes_detected;
+                 ALTER TABLE workspaces DROP COLUMN agent_model;
+                 ALTER TABLE workspaces DROP COLUMN agent_permission_mode;
+                 ALTER TABLE workspaces DROP COLUMN run_time_limit_minutes;
+                 ALTER TABLE tasks DROP COLUMN agent_model;
+                 ALTER TABLE tasks DROP COLUMN agent_permission_mode;
+                 ALTER TABLE tasks DROP COLUMN run_time_limit_minutes;
                  DROP TABLE task_activity;
                  DROP TABLE task_labels;
                  DROP TABLE agent_status_transitions;

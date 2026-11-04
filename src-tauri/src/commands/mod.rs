@@ -5,6 +5,7 @@
 //! they take by reference, see [`State`]. Each is annotated with `#[specta::specta]` so
 //! that `bindings.rs` can generate the frontend's typed bindings from its signature.
 
+pub mod agent_options;
 pub mod backup;
 pub mod completion;
 pub mod events;

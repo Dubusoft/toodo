@@ -419,7 +419,9 @@ impl RunLauncher for PlainRunner {
         let brief = private_file(&dir.join("brief.md"), agent.brief.as_bytes())?;
         let stdout = private_file(&dir.join("stdout.log"), b"")?;
         let stderr = private_file(&dir.join("stderr.log"), b"")?;
-        let invocation = agent.adapter.invocation(&dir, endpoint.as_ref());
+        let invocation = agent
+            .adapter
+            .invocation(&dir, endpoint.as_ref(), &agent.options);
         for (name, contents) in &invocation.files {
             private_file(&dir.join(name), contents.as_bytes())?;
         }

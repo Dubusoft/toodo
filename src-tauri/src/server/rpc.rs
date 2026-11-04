@@ -13,13 +13,14 @@ use serde::de::DeserializeOwned;
 
 use super::Services;
 use crate::commands::types::{
-    AgentAdapter, BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost, NewTask,
-    NewWorkspace, OAuthGrantId, RunId, TaskEdit, TaskId, TaskListFilter, TaskResolution, Timestamp,
-    Workspace, WorkspaceId, WorkspaceLocation,
+    AgentAdapter, AgentOptions, BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost,
+    NewTask, NewWorkspace, OAuthGrantId, RunId, TaskEdit, TaskId, TaskListFilter, TaskResolution,
+    Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
 };
 use crate::commands::{
-    CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, backup, completion,
-    events, freshness, herdr, issues, machines, mcp, review, runners, runs, tasks, workspaces,
+    CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, agent_options, backup,
+    completion, events, freshness, herdr, issues, machines, mcp, review, runners, runs, tasks,
+    workspaces,
 };
 use crate::mcp::Backend as _;
 
@@ -197,6 +198,8 @@ pub const READ_COMMANDS: &[&str] = &[
     "herdr_status",
     "list_task_runs",
     "get_run_log",
+    "get_workspace_agent_options",
+    "get_task_agent_options",
     "runner_health",
     "list_pull_request_statuses",
     "branch_freshness",
@@ -320,6 +323,18 @@ commands!(s => {
 
     "start_plain_run"(task_id: TaskId, adapter: AgentAdapter, prompt: Option<String>, mcp: bool) => sync Reply::result(
         runs::start_plain_run(State(&s.storage), State(&s.plain), State(&s.tmux), task_id, adapter, prompt, mcp)
+    );
+    "get_workspace_agent_options"(workspace_id: WorkspaceId) => sync Reply::result(
+        agent_options::get_workspace_agent_options(State(s.reader()), workspace_id)
+    );
+    "set_workspace_agent_options"(workspace_id: WorkspaceId, options: AgentOptions) => sync Reply::result(
+        agent_options::set_workspace_agent_options(State(&s.storage), workspace_id, options)
+    );
+    "get_task_agent_options"(task_id: TaskId) => sync Reply::result(
+        agent_options::get_task_agent_options(State(s.reader()), task_id)
+    );
+    "set_task_agent_options"(task_id: TaskId, options: AgentOptions) => sync Reply::result(
+        agent_options::set_task_agent_options(State(&s.storage), task_id, options)
     );
     "list_task_runs"(task_id: TaskId) => sync Reply::result(
         runs::list_task_runs(State(s.reader()), task_id)
