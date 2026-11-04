@@ -258,10 +258,15 @@ async function chooseAction(id: number, name: string, scope: HTMLElement = docum
 }
 
 describe("App", () => {
-  // The timeline and Markdown are lazy-loaded; transform them once here so no test pays for
-  // that within its timeout.
+  // The timeline, Markdown, the task details, and the review are lazy-loaded; transform them
+  // once here so no test pays for that within its timeout.
   beforeAll(async () => {
-    await Promise.all([import("@/components/task-graph"), import("@/components/markdown")]);
+    await Promise.all([
+      import("@/components/task-graph"),
+      import("@/components/markdown"),
+      import("@/components/task-details"),
+      import("@/components/review"),
+    ]);
   });
 
   beforeEach(() => {
@@ -443,7 +448,7 @@ describe("App", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Review" }));
 
-    expect(screen.getByRole("heading", { name: "Week review" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Week review" })).toBeInTheDocument();
     expect(screen.getByLabelText("Week starting")).toHaveValue("2026-10-12");
     const completed = await screen.findByRole("region", { name: "Completed" });
     expect(within(completed).getByText("Add storage")).toBeInTheDocument();
@@ -2237,7 +2242,7 @@ describe("App", () => {
 
     fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 2" }));
     let details = await openDetails("Fix typo");
-    const shipped = within(details).getByLabelText("Shipped with pull request of #2");
+    const shipped = await within(details).findByLabelText("Shipped with pull request of #2");
     expect(shipped).toHaveTextContent(url);
     expect(shipped.parentElement).toHaveTextContent(`Shipped with${url}Pull request of #1`);
     details = await openDetails("Add login");
