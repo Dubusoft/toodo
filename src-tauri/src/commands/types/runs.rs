@@ -35,7 +35,7 @@ pub enum AgentAdapter {
 }
 
 /// What the server can run tasks with: herdr for herdr workspaces, and the agent CLIs of
-/// plain runs.
+/// plain runs, together with the other tools it runs: git, gh, and ssh.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RunnerHealth {
@@ -44,6 +44,34 @@ pub struct RunnerHealth {
     pub tmux: TmuxHealth,
     /// Claude, then Codex.
     pub agents: Vec<AgentHealth>,
+    /// git, then gh, then ssh.
+    pub tools: Vec<ToolHealth>,
+}
+
+/// A command-line tool the server runs besides the runners.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum Tool {
+    /// git, for local workspaces with a repository.
+    Git,
+    /// The GitHub CLI, for the pull requests of workspaces with source `github`.
+    Gh,
+    /// OpenSSH, for workspaces on SSH machines.
+    Ssh,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolHealth {
+    pub tool: Tool,
+    /// Whether the tool ran from the server's `PATH`.
+    pub installed: bool,
+    /// Whether the tool can do its work: installed, and for gh also logged in.
+    pub ready: bool,
+    /// The version the tool printed, such as `git version 2.43.0`.
+    pub version: Option<String>,
+    /// Why the tool is not ready and what to do next; `None` when it is ready.
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]

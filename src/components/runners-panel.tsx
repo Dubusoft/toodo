@@ -1,6 +1,6 @@
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { AgentAdapter, AgentHealth, HerdrHealth, TmuxHealth } from "@/lib/bindings";
+import type { AgentAdapter, AgentHealth, HerdrHealth, TmuxHealth, ToolHealth } from "@/lib/bindings";
 import { useRunnerHealth } from "@/lib/queries";
 import { toneChip, type Tone } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
@@ -17,6 +17,12 @@ function herdrReadiness(herdr: HerdrHealth): Readiness {
 
 function tmuxReadiness(tmux: TmuxHealth): Readiness {
   return tmux.installed ? { label: "Installed", tone: "success" } : { label: "Not installed", tone: "attention" };
+}
+
+function toolReadiness(tool: ToolHealth): Readiness {
+  if (tool.ready) return { label: "Ready", tone: "success" };
+  if (!tool.installed) return { label: "Not installed", tone: "attention" };
+  return { label: tool.tool === "gh" ? "Not logged in" : "Not working", tone: "attention" };
 }
 
 function agentReadiness(agent: AgentHealth): Readiness {
@@ -89,7 +95,8 @@ export function RunnersPanel() {
       <p className="text-muted-foreground">
         The tools this server starts agents with: herdr for workspaces with runner herdr, tmux for local workspaces
         with runner tmux, and the Claude or Codex CLI for runner plain and tmux. Runner plain works without herdr. SSH
-        workspaces use the tmux and agent CLIs of their host.
+        workspaces use the tmux and agent CLIs of their host. The server also runs git for local repositories, gh for the
+        pull requests of GitHub workspaces, and ssh for SSH workspaces.
       </p>
       {health.isPending && <p className="text-muted-foreground">Checking the runners...</p>}
       {health.isError && (
@@ -120,6 +127,15 @@ export function RunnersPanel() {
               message={agent.message}
             />
           ))}
+          {data.tools.map((tool) => (
+            <RunnerRow
+              key={tool.tool}
+              name={tool.tool}
+              readiness={toolReadiness(tool)}
+              detail={tool.version}
+              message={tool.message}
+            />
+          ))}
         </ul>
       )}
       <Button
@@ -127,7 +143,7 @@ export function RunnersPanel() {
         variant="outline"
         className="self-start"
         aria-label="Refresh runners"
-        title="Check herdr, tmux, and the agent CLIs on the server again"
+        title="Check herdr, tmux, the agent CLIs, git, gh, and ssh on the server again"
         disabled={health.isFetching}
         onClick={() => void health.refetch()}
       >

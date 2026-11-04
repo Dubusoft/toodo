@@ -107,6 +107,11 @@ function health(missing: AgentAdapter[] = []): RunnerHealth {
   return {
     herdr: { installed: false, running: false, version: null, message: "herdr was not found on the server's PATH." },
     tmux: { installed: true, version: "tmux 3.6", message: null },
+    tools: [
+      { tool: "git", installed: true, ready: true, version: "git version 2.43.0", message: null },
+      { tool: "gh", installed: true, ready: true, version: "gh version 2.83.0", message: null },
+      { tool: "ssh", installed: true, ready: true, version: "OpenSSH_9.6p1", message: null },
+    ],
     agents: (["claude", "codex"] as const).map((adapter) =>
       missing.includes(adapter)
         ? { adapter, installed: false, path: null, message: notFound(adapter) }

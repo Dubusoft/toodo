@@ -20,6 +20,11 @@ let home = "/home/me";
 const ready: RunnerHealth = {
   herdr: { installed: true, running: true, version: "0.9.5", message: null },
   tmux: { installed: true, version: "tmux 3.6", message: null },
+  tools: [
+    { tool: "git", installed: true, ready: true, version: "git version 2.43.0", message: null },
+    { tool: "gh", installed: true, ready: true, version: "gh version 2.83.0", message: null },
+    { tool: "ssh", installed: true, ready: true, version: "OpenSSH_9.6p1", message: null },
+  ],
   agents: [
     { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
     { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },

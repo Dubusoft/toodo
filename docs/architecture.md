@@ -701,8 +701,14 @@ path deletes journal history.
   workspaces with runner `herdr` (runs of SSH workspaces with runner `plain` or `tmux` do not use it).
   - Runner health: the `runner_health` command reports whether `herdr` is on `PATH`, whether
     it is running, and its version, whether `tmux -V` runs and its version, and whether
-    `claude` and `codex` are each on the server's `PATH`. The web app shows it in a Runners
-    section of Settings; the new-workspace runner step prefers `plain` when herdr is missing,
+    `claude` and `codex` are each on the server's `PATH`, together with the other tools the
+    server runs: whether `git --version` and `ssh -V` run, and whether `gh --version` runs and
+    `gh auth status` succeeds (each check stops after 10 seconds). Every tool that is not
+    ready carries its next step. The web app shows it in a Runners section of Settings and
+    in a banner that names each tool a workspace needs and that is not ready (git for local
+    repositories, gh for GitHub workspaces, ssh for SSH workspaces, tmux and an agent CLI
+    for local tmux or plain workspaces, herdr for herdr workspaces); `toodo init` prints the
+    same checks as this shell sees them; the new-workspace runner step prefers `plain` when herdr is missing,
     and the runs panel disables an agent whose CLI is missing (for local workspaces only: an
     SSH workspace runs the agent CLIs of its host) and refreshes the open run while it is active. The server itself defaults
     an omitted runner of a local git workspace to `plain` when herdr is not running.
