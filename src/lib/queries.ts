@@ -71,6 +71,8 @@ export const queryKeys = {
   tasks: ["task-list", "pages"] as const,
   /** Related links between tasks; under "tasks", so a tasks-changed event refetches them. */
   taskRelations: ["tasks", "relations"] as const,
+  /** Deleted workspaces and tasks; under "tasks", so a tasks-changed event refetches them. */
+  archive: ["tasks", "archive"] as const,
   herdrStatus: ["herdr-status"] as const,
   runnerHealth: ["runner-health"] as const,
   agentStatuses: ["agent-statuses"] as const,
@@ -312,17 +314,50 @@ export function useCreateBaseBranch() {
   });
 }
 
-/** Removes a workspace from Toodo with its tasks; the repository and herdr stay untouched. */
+/** Archives a workspace with its tasks; the repository and herdr stay untouched. */
 export function useDeleteWorkspace() {
+  return useArchiveMutation((id: WorkspaceId) => unwrap(commands.deleteWorkspace(id)));
+}
+
+/** The workspaces and tasks deleting archived, to restore or purge. */
+export function useArchive() {
+  return useQuery({ queryKey: queryKeys.archive, queryFn: () => unwrap(commands.listArchive()) });
+}
+
+/**
+ * Commands that move workspaces or tasks into or out of the archive, which changes the
+ * workspaces, the tasks, the archive, and what reviews show.
+ */
+function useArchiveMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: WorkspaceId) => unwrap(commands.deleteWorkspace(id)),
+    mutationFn,
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.archive }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
       ]),
   });
+}
+
+export function useRestoreWorkspace() {
+  return useArchiveMutation((id: WorkspaceId) => unwrap(commands.restoreWorkspace(id)));
+}
+
+/** Deletes an archived workspace for good with its tasks and their history. */
+export function usePurgeWorkspace() {
+  return useArchiveMutation((id: WorkspaceId) => unwrap(commands.purgeWorkspace(id)));
+}
+
+export function useRestoreTask() {
+  return useArchiveMutation((id: TaskId) => unwrap(commands.restoreTask(id)));
+}
+
+/** Deletes an archived task for good with its history. */
+export function usePurgeTask() {
+  return useArchiveMutation((id: TaskId) => unwrap(commands.purgeTask(id)));
 }
 
 /** How many finished tasks a page of the task list loads, newest first. */
@@ -923,9 +958,11 @@ export function useCheckCriterion() {
   );
 }
 
-/** Deletes a task, first removing its worktree through herdr; `force` discards local changes. */
+/**
+ * Archives a task, first removing its worktree through herdr; `force` discards local changes.
+ */
 export function useDeleteTask() {
-  return useTasksMutation(({ id, force }: { id: TaskId; force: boolean }) =>
+  return useArchiveMutation(({ id, force }: { id: TaskId; force: boolean }) =>
     unwrap(commands.deleteTask(id, force)),
   );
 }

@@ -83,6 +83,7 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
     outcome,
     at: local(2026, 10, 13, 15),
     commits: [],
+    archived: false,
   };
 }
 

@@ -989,7 +989,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Delete a planned task, e.g. one you created by mistake, as Delete in the Toodo app does. Deleting cannot be undone and drops the task from the reports, so it takes two calls: without confirm nothing changes and the reply (confirmed false) says what would be removed (history, commits, links, a worktree and its herdr workspace; the branch is kept); then call again with {\"id\": 5, \"confirm\": true}. force: true also removes a worktree with modified or untracked files. Rejected for an in_progress or in_review task (pause_task it first) and a done task (reopen_task it, or the user deletes it in the app). Returns {confirmed, task, message}; task is the task as it was."
+        description = "Delete a planned task, e.g. one you created by mistake, as Delete in the Toodo app does. Deleting archives the task: it leaves the task lists and stops holding back its dependents, but stays in the reports, and only the user can restore it or delete it for good in the app. It takes two calls: without confirm nothing changes and the reply (confirmed false) says what deleting does (a worktree and its herdr workspace are removed; the branch is kept); then call again with {\"id\": 5, \"confirm\": true}. force: true also removes a worktree with modified or untracked files. Rejected for an in_progress or in_review task (pause_task it first) and a done task (reopen_task it, or the user deletes it in the app). Returns {confirmed, task, message}; task is the task as it was."
     )]
     async fn delete_task(
         &self,

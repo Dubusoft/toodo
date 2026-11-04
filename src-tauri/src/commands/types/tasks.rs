@@ -482,6 +482,18 @@ pub struct ReviewEntry {
     pub at: Timestamp,
     /// Commits of the task made in the period, oldest first.
     pub commits: Vec<CommitRecord>,
+    /// Whether the task or its workspace was deleted, which archives it; its work still
+    /// counts.
+    pub archived: bool,
+}
+
+/// What deleting moved to the archive: workspaces, archived with their tasks, and tasks of
+/// live workspaces, each ordered by ID.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct Archive {
+    pub workspaces: Vec<super::Workspace>,
+    pub tasks: Vec<Task>,
 }
 
 /// What importing merged pull requests as done tasks added.

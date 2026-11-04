@@ -198,7 +198,7 @@ fn machines_without_saved_settings_have_no_worktree_root() {
 }
 
 #[test]
-fn workspace_updates_and_cascading_deletes() {
+fn workspace_updates_archive_restore_and_purge() {
     let mut storage = Storage::open_in_memory().unwrap();
     let mut workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
     let kept = add_workspace(&mut storage, "Kept", local_location(r"C:\src\kept"));
@@ -222,15 +222,40 @@ fn workspace_updates_and_cascading_deletes() {
         Some(workspace.clone())
     );
 
-    storage.delete_workspace(workspace.id).unwrap();
+    assert!(matches!(
+        storage.purge_workspace(workspace.id),
+        Err(StorageError::WorkspaceNotArchived(id)) if id == workspace.id
+    ));
+    storage.archive_workspace(workspace.id).unwrap();
     assert_eq!(storage.get_workspace(workspace.id).unwrap(), None);
+    assert_eq!(
+        storage.list_workspaces().unwrap(),
+        std::slice::from_ref(&kept)
+    );
+    assert_eq!(storage.archived_workspaces().unwrap(), [workspace.clone()]);
     assert_eq!(storage.get_task(a.id).unwrap(), None);
-    assert_eq!(row_count(&storage, "task_dependencies"), 0);
-    assert_eq!(row_count(&storage, "commit_records"), 0);
-    assert_eq!(storage.list_tasks(kept.id).unwrap(), [kept_task]);
+    assert_eq!(
+        storage.list_all_tasks().unwrap(),
+        std::slice::from_ref(&kept_task)
+    );
+    // The tasks of an archived workspace are archived with it, not on their own.
+    assert_eq!(storage.archived_tasks().unwrap(), []);
+    let reviewed: Vec<_> = storage
+        .review_tasks()
+        .unwrap()
+        .into_iter()
+        .map(|task| task.id)
+        .collect();
+    assert_eq!(reviewed, [a.id, b.id, kept_task.id]);
+    assert_eq!(row_count(&storage, "task_dependencies"), 1);
+    assert_eq!(row_count(&storage, "commit_records"), 1);
+    assert!(matches!(
+        storage.restore_task(a.id),
+        Err(StorageError::WorkspaceArchived { workspace: id, task }) if id == workspace.id && task == a.id
+    ));
 
     assert!(matches!(
-        storage.delete_workspace(workspace.id),
+        storage.archive_workspace(workspace.id),
         Err(StorageError::WorkspaceNotFound(id)) if id == workspace.id
     ));
     assert!(matches!(
@@ -249,6 +274,101 @@ fn workspace_updates_and_cascading_deletes() {
         }),
         Err(StorageError::WorkspaceNotFound(_))
     ));
+
+    assert_eq!(
+        storage.restore_workspace(workspace.id).unwrap(),
+        workspace.clone()
+    );
+    assert_eq!(
+        storage.get_task(b.id).unwrap().unwrap().depends_on,
+        [a.id].into()
+    );
+    storage.archive_workspace(workspace.id).unwrap();
+    storage.purge_workspace(workspace.id).unwrap();
+    assert_eq!(
+        storage.review_tasks().unwrap(),
+        std::slice::from_ref(&kept_task)
+    );
+    assert_eq!(row_count(&storage, "task_dependencies"), 0);
+    assert_eq!(row_count(&storage, "commit_records"), 0);
+    assert_eq!(storage.list_tasks(kept.id).unwrap(), [kept_task]);
+    assert!(matches!(
+        storage.purge_workspace(workspace.id),
+        Err(StorageError::WorkspaceNotFound(id)) if id == workspace.id
+    ));
+}
+
+#[test]
+fn archived_tasks_leave_the_dag_until_restored_and_purge_explicitly() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+    storage.add_dependency(b.id, a.id).unwrap();
+    assert!(!ready(&storage, &b));
+
+    assert!(matches!(
+        storage.purge_task(a.id),
+        Err(StorageError::TaskNotArchived(id)) if id == a.id
+    ));
+    storage.archive_task(a.id).unwrap();
+    assert_eq!(storage.get_task(a.id).unwrap(), None);
+    assert!(
+        storage
+            .get_task(b.id)
+            .unwrap()
+            .unwrap()
+            .depends_on
+            .is_empty()
+    );
+    assert!(ready(&storage, &b));
+    let archived: Vec<_> = storage
+        .archived_tasks()
+        .unwrap()
+        .into_iter()
+        .map(|task| task.id)
+        .collect();
+    assert_eq!(archived, [a.id]);
+    assert!(matches!(
+        storage.add_dependency(b.id, a.id),
+        Err(StorageError::Dependency(DependencyError::UnknownTask(id))) if id == a.id
+    ));
+
+    // An edge added while A was archived would close a loop once A is back.
+    let c = add_task(&mut storage, &workspace, "C");
+    storage.add_dependency(c.id, b.id).unwrap();
+    storage
+        .conn
+        .execute(
+            "INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+            [a.id.0, c.id.0],
+        )
+        .unwrap();
+    assert!(matches!(
+        storage.restore_task(a.id),
+        Err(StorageError::RestoreClosesCycle(_))
+    ));
+    assert_eq!(storage.get_task(a.id).unwrap(), None);
+    storage.remove_dependency(c.id, b.id).unwrap();
+
+    let restored = storage.restore_task(a.id).unwrap();
+    assert_eq!(restored.id, a.id);
+    assert_eq!(
+        storage.get_task(b.id).unwrap().unwrap().depends_on,
+        [a.id].into()
+    );
+    assert!(matches!(
+        storage.restore_task(a.id),
+        Err(StorageError::TaskNotArchived(id)) if id == a.id
+    ));
+
+    storage.archive_task(a.id).unwrap();
+    storage.purge_task(a.id).unwrap();
+    assert!(matches!(
+        storage.purge_task(a.id),
+        Err(StorageError::TaskNotFound(id)) if id == a.id
+    ));
+    assert_eq!(row_count(&storage, "task_dependencies"), 0);
 }
 
 #[test]
@@ -312,7 +432,7 @@ fn dependencies_across_workspaces_share_one_dag() {
     // The library workspace cannot go while the app task still waits on it.
     let tasks_before = storage.list_all_tasks().unwrap();
     assert!(matches!(
-        storage.delete_workspace(library.id),
+        storage.archive_workspace(library.id),
         Err(StorageError::WorkspaceHasDependents { workspace, task, depends_on })
             if workspace == library.id && task == ui.id && depends_on == api.id
     ));
@@ -334,7 +454,7 @@ fn dependencies_across_workspaces_share_one_dag() {
 
     // Once the dependent has started, removing the library drops the edge only.
     storage.set_task_status(ui.id, InProgress).unwrap();
-    storage.delete_workspace(library.id).unwrap();
+    storage.archive_workspace(library.id).unwrap();
     assert_eq!(storage.get_task(api.id).unwrap(), None);
     let ui = storage.get_task(ui.id).unwrap().unwrap();
     assert_eq!(ui.status, InProgress);
@@ -1623,6 +1743,10 @@ fn related_links_go_both_ways_across_workspaces_and_never_block() {
     storage.remove_related(later.id, earlier.id).unwrap();
     assert!(storage.list_relations().unwrap().is_empty());
     storage.add_related(later.id, earlier.id).unwrap();
+    storage.archive_task(earlier.id).unwrap();
+    assert!(storage.list_relations().unwrap().is_empty());
+    storage.restore_task(earlier.id).unwrap();
+    assert_eq!(storage.list_relations().unwrap(), [(earlier.id, later.id)]);
     storage.delete_task(earlier.id).unwrap();
     assert!(storage.list_relations().unwrap().is_empty());
 }

@@ -331,7 +331,7 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
             size="icon-xs"
             variant="ghost"
             aria-label={`Remove ${workspace.name}`}
-            title="Remove the workspace and its tasks from Toodo"
+            title="Move the workspace and its tasks to the archive"
             className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
             onClick={() => {
               deleteWorkspace.reset();
@@ -355,8 +355,8 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           }}
         >
           <p className="text-xs text-muted-foreground">
-            Remove {workspace.name} and its tasks from Toodo? The repository, worktrees, and herdr workspaces are
-            kept.
+            Remove {workspace.name} and its tasks from Toodo? They move to Settings &gt; Archive, where they can be
+            restored. The repository, worktrees, and herdr workspaces are kept.
           </p>
           {deleteWorkspace.isError && (
             <p role="alert" className="text-xs text-destructive">

@@ -6,7 +6,7 @@ import { EmptyState } from "@/components/task-list";
 import { TaskLabels } from "@/components/task-common";
 import { inputClass } from "@/components/workspace-list";
 import type { BackfillSummary, ReviewEntry, ReviewOutcome, TaskId, Workspace } from "@/lib/bindings";
-import { useBackfillPullRequests, useReview, useWorkspaces } from "@/lib/queries";
+import { useArchive, useBackfillPullRequests, useReview, useWorkspaces } from "@/lib/queries";
 import {
   commitSubject,
   durationKeys,
@@ -144,10 +144,13 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   const { start, end } = periodBounds(period);
   const review = useReview(start, end);
   const workspaces = useWorkspaces();
+  const archive = useArchive();
   const backfill = useBackfillPullRequests();
   const [backfillFailures, setBackfillFailures] = useState<string[]>([]);
   const onGitHub = workspaces.data?.some((workspace) => workspace.source === "github") ?? false;
-  const names = new Map(workspaces.data?.map((workspace) => [workspace.id, workspace.name]));
+  // Reviews keep the work of deleted workspaces, so they are named too.
+  const workspaceList = [...(workspaces.data ?? []), ...(archive.data?.workspaces ?? [])];
+  const names = new Map(workspaceList.map((workspace) => [workspace.id, workspace.name]));
   const entries = review.data && filterEntries(review.data, filter);
   // The chosen label stays listed when the period has no task with it.
   const labels = reviewLabels(review.data ?? []);
@@ -187,7 +190,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
 
   async function copyMarkdown(entries: ReviewEntry[]) {
     try {
-      await navigator.clipboard.writeText(reviewMarkdown(period, entries, workspaces.data ?? [], Date.now() / 1000));
+      await navigator.clipboard.writeText(reviewMarkdown(period, entries, workspaceList, Date.now() / 1000));
       setNotice("Copied as Markdown.");
     } catch (error) {
       setNotice(`Could not copy: ${String(error)}`);
@@ -195,7 +198,6 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   }
 
   function saveAs(extension: "md" | "csv", entries: ReviewEntry[]) {
-    const workspaceList = workspaces.data ?? [];
     const contents =
       extension === "csv"
         ? reviewCsv(entries, workspaceList, Date.now() / 1000)
@@ -355,7 +357,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           onChange={(e) => setFilter({ ...filter, workspaceId: e.target.value === "" ? null : Number(e.target.value) })}
         >
           <option value="">All workspaces</option>
-          {workspaces.data?.map((workspace) => (
+          {workspaceList.map((workspace) => (
             <option key={workspace.id} value={workspace.id}>
               {workspace.name}
             </option>
@@ -438,7 +440,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
         />
       )}
       {entries && entries.length > 0 && (
-        <ReviewSummaryPanel period={period} entries={entries} workspaces={workspaces.data ?? []} />
+        <ReviewSummaryPanel period={period} entries={entries} workspaces={workspaceList} />
       )}
       {entries && <PlanPanel period={period} entries={entries} />}
       {period.kind === "year" && entries && <YearInReviewPanel entries={entries} />}
@@ -450,7 +452,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
               <span className="font-normal text-muted-foreground">({group.entries.length})</span>
             </h3>
             <ul className="flex flex-col divide-y rounded-lg border">
-              {group.entries.map(({ task, at, commits }) => (
+              {group.entries.map(({ task, at, commits, archived }) => (
                 <li key={task.id} className="flex flex-col gap-1 px-3 py-2">
                   <div className="flex min-w-0 items-center gap-2">
                     <TaskTypeBadge type={task.taskType} />
@@ -467,6 +469,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                     {task.resolution === "not_adopted" && (
                       <span className={notAdoptedChip}>Not adopted</span>
                     )}
+                    {archived && <span className={notAdoptedChip}>Archived</span>}
                     {task.resolution === "completed" && (
                       <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", toneChip.success)}>Completed</span>
                     )}

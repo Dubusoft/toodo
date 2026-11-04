@@ -33,6 +33,7 @@ vi.mock("@/lib/bindings", () => ({
     listWorkspaceBranches: vi.fn(),
     createWorkspaceBaseBranch: vi.fn(),
     deleteWorkspace: vi.fn(),
+    listArchive: vi.fn(),
     listTasks: vi.fn(),
     createTask: vi.fn(),
     updateTask: vi.fn(),
@@ -303,6 +304,7 @@ describe("App", () => {
     mocked.listAgentStatuses.mockResolvedValue([]);
     mocked.listPullRequestStatuses.mockResolvedValue([]);
     mocked.listBackups.mockResolvedValue({ status: "ok", data: [] });
+    mocked.listArchive.mockResolvedValue({ status: "ok", data: { workspaces: [], tasks: [] } });
     mocked.mcpServerInfo.mockResolvedValue({
       url: "http://127.0.0.1:47615/mcp",
       token: "secret",
@@ -378,6 +380,7 @@ describe("App", () => {
               outcome: "completed",
               at,
               commits: [],
+              archived: false,
             },
           ]
         : [],
@@ -524,8 +527,9 @@ describe("App", () => {
                 outcome: "completed",
                 at,
                 commits: [{ ...commit(1, "0123456789", "Add the storage schema\n\nBody"), committedAt: at }],
+                archived: false,
               },
-              { task: task(3, 2, "Fix ssh", { labels: ["infra"] }), outcome: "worked_on", at, commits: [] },
+              { task: task(3, 2, "Fix ssh", { labels: ["infra"] }), outcome: "worked_on", at, commits: [], archived: false },
             ]
           : [],
     }));
@@ -2460,7 +2464,7 @@ describe("App", () => {
         done(1, "Add login", { pullRequest: pullRequest(11, 40, 2) }),
         done(2, "Rewrite storage", { pullRequest: pullRequest(12, 400, 0) }),
         done(3, "Try a cache", { taskType: "rnd", resolution: "not_adopted", completionNote: "Twice as slow" }),
-      ].map((task) => ({ task, outcome: "completed" as const, at, commits: [] })),
+      ].map((task) => ({ task, outcome: "completed" as const, at, commits: [], archived: false })),
     });
     renderApp();
 

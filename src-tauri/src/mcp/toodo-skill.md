@@ -12,7 +12,8 @@ description: Work on a Toodo task from its description to a pull request into th
 To remove a `planned` task you created by mistake, call `delete_task`; to work again on
 a `done` task completed or concluded by mistake, call `reopen_task` with a reason. Both
 change nothing on the first call: read what the reply says the change would do, then
-call again with `"confirm": true`. Done tasks are deleted in the Toodo app only.
+call again with `"confirm": true`. Done tasks are deleted in the Toodo app only. A deleted
+task is archived, not erased: it stays in reviews, and only the user restores or purges it.
 
 ## 1. Start
 
