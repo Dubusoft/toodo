@@ -1,9 +1,11 @@
 /**
  * Delivers server events: listeners get the events of
  * `toodo-server`'s event stream (`GET /api/events`), which one connection reads for all
- * of them. When the stream drops, it reconnects after a growing delay and, once the server
- * answers again, tells `onReconnect` subscribers, since events may have been missed
- * meanwhile. It reconnects at once when the server answers again (see `connection.ts`).
+ * of them. When the stream drops, it reconnects after a growing delay with the id of the
+ * last event it got (`Last-Event-ID`), and the server replays what was missed meanwhile.
+ * When the server cannot, or this stream fell behind, the server sends a `resync` event and
+ * `onReconnect` subscribers are told to refetch everything; so are they after a reconnect
+ * without an id. It reconnects at once when the server answers again (see `connection.ts`).
  * A rejected token is forgotten, so the app asks for it again.
  */
 import { onReachable, recoveryCount, serverFetch } from "@/web/connection";
@@ -13,7 +15,10 @@ export type Event<T> = { event: string; id: number; payload: T };
 export type EventCallback<T> = (event: Event<T>) => void;
 export type UnlistenFn = () => void;
 
-type ServerSentEvent = { event: string; data: string };
+type ServerSentEvent = { event: string; data: string; id?: string };
+
+/** Tells the client it missed events and has to refetch everything. */
+const RESYNC = "resync";
 
 const FIRST_RETRY_MS = 1000;
 const MAX_RETRY_MS = 30_000;
@@ -22,10 +27,13 @@ const handlers = new Map<string, Set<EventCallback<unknown>>>();
 const reconnectListeners = new Set<() => void>();
 let connection: AbortController | null = null;
 let nextId = 0;
+/** The id of the last event the server sent, to resume from after a reconnect. */
+let lastEventId: string | null = null;
 
 /**
  * Splits server-sent events off the front of `buffer`: complete events and the incomplete
- * rest. Comments (keep-alives) and events without a name are dropped.
+ * rest. Comments (keep-alives) and events without a name are dropped; `id` is set only
+ * on events that carry one.
  */
 export function parseServerSentEvents(buffer: string): { events: ServerSentEvent[]; rest: string } {
   const normalized = buffer.replace(/\r\n?/g, "\n");
@@ -34,22 +42,30 @@ export function parseServerSentEvents(buffer: string): { events: ServerSentEvent
   const events: ServerSentEvent[] = [];
   for (const block of blocks) {
     let event = "";
+    let id: string | undefined;
     const data: string[] = [];
     for (const line of block.split("\n")) {
       if (line.startsWith("event:")) {
         event = line.slice(6).trim();
       } else if (line.startsWith("data:")) {
         data.push(line.slice(5).replace(/^ /, ""));
+      } else if (line.startsWith("id:")) {
+        id = line.slice(3).trim();
       }
     }
     if (event) {
-      events.push({ event, data: data.join("\n") });
+      events.push(id === undefined ? { event, data: data.join("\n") } : { event, data: data.join("\n"), id });
     }
   }
   return { events, rest };
 }
 
-function deliver({ event, data }: ServerSentEvent) {
+function deliver({ event, data, id }: ServerSentEvent) {
+  if (id !== undefined) lastEventId = id;
+  if (event === RESYNC) {
+    reconnectListeners.forEach((listener) => listener());
+    return;
+  }
   const listeners = handlers.get(event);
   if (!listeners) return;
   const payload: unknown = data ? JSON.parse(data) : null;
@@ -60,7 +76,8 @@ function deliver({ event, data }: ServerSentEvent) {
 
 /** Opens the event stream; resolves once the server accepted it. */
 async function open(token: string, signal: AbortSignal): Promise<ReadableStreamDefaultReader<string>> {
-  const response = await serverFetch("/api/events", { headers: authorization(token), signal });
+  const headers = { ...authorization(token), ...(lastEventId === null ? {} : { "Last-Event-ID": lastEventId }) };
+  const response = await serverFetch("/api/events", { headers, signal });
   if (response.status === 401) {
     // Stops this connection: forgetting the token disconnects.
     forgetToken();
@@ -94,7 +111,8 @@ function connect() {
       const recoveries = recoveryCount();
       try {
         const reader = await open(token, controller.signal);
-        if (connected) {
+        // With an id, the server replays what was missed or sends a resync itself.
+        if (connected && lastEventId === null) {
           reconnectListeners.forEach((listener) => listener());
         }
         connected = true;
@@ -143,7 +161,7 @@ export async function listen<T>(event: string, handler: EventCallback<T>): Promi
   };
 }
 
-/** Calls `listener` whenever the stream reconnects after it dropped. */
+/** Calls `listener` whenever events may have been missed, so everything has to be refetched. */
 export function onReconnect(listener: () => void): () => void {
   reconnectListeners.add(listener);
   return () => reconnectListeners.delete(listener);

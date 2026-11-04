@@ -15,6 +15,19 @@ function eventStream(open: boolean): Response {
   );
 }
 
+/** A stream that sends `text`, then stays open or ends. */
+function eventStreamOf(text: string, open: boolean): Response {
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(text));
+        if (!open) controller.close();
+      },
+    }),
+    { status: 200 },
+  );
+}
+
 /** A fresh copy of the module, since it keeps one connection for the whole page. */
 async function freshEventModule() {
   vi.resetModules();
@@ -82,6 +95,43 @@ describe("event stream connection", () => {
     unlisten();
   });
 
+  it("resumes from the last event id instead of refetching everything", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(TOKEN_KEY, "secret");
+    const stream = vi
+      .fn<(init?: RequestInit) => Promise<Response>>()
+      .mockResolvedValueOnce(eventStreamOf("id: ab-0\nevent: ready\ndata:\n\nid: ab-1\nevent: tasks-changed\ndata: 1\n\n", false))
+      .mockResolvedValueOnce(eventStreamOf("id: ab-2\nevent: tasks-changed\ndata: 2\n\n", true));
+    vi.stubGlobal("fetch", (path: string, init?: RequestInit) =>
+      path === "/api/events" ? stream(init) : Promise.resolve(new Response(null, { status: 401 })),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { listen, onReconnect } = await freshEventModule();
+    const reconnected = vi.fn();
+    onReconnect(reconnected);
+    const payloads: unknown[] = [];
+    const unlisten = await listen("tasks-changed", (event) => payloads.push(event.payload));
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(stream).toHaveBeenCalledTimes(2);
+    expect(new Headers(stream.mock.calls[0][0]?.headers).get("Last-Event-ID")).toBeNull();
+    expect(new Headers(stream.mock.calls[1][0]?.headers).get("Last-Event-ID")).toBe("ab-1");
+    expect(payloads).toEqual([1, 2]);
+    expect(reconnected).not.toHaveBeenCalled();
+    unlisten();
+  });
+
+  it("tells reconnect listeners to refetch when the server sends a resync", async () => {
+    localStorage.setItem(TOKEN_KEY, "secret");
+    vi.stubGlobal("fetch", () => Promise.resolve(eventStreamOf("id: ab-7\nevent: resync\ndata:\n\n", true)));
+    const { listen, onReconnect } = await freshEventModule();
+    const refetch = new Promise<void>((resolve) => onReconnect(resolve));
+    const unlisten = await listen("tasks-changed", () => {});
+
+    await expect(refetch).resolves.toBeUndefined();
+    unlisten();
+  });
+
   it("forgets a token the server rejects and stops retrying", async () => {
     vi.useFakeTimers();
     localStorage.setItem(TOKEN_KEY, "revoked");
@@ -111,5 +161,10 @@ describe("parseServerSentEvents", () => {
     const { events, rest } = parseServerSentEvents("event: x\r\ndata: a\r\ndata: b\r\n\r\n");
     expect(events).toEqual([{ event: "x", data: "a\nb" }]);
     expect(rest).toBe("");
+  });
+
+  it("reads the event id", () => {
+    const { events } = parseServerSentEvents("id: ab-3\nevent: tasks-changed\ndata: {}\n\n");
+    expect(events).toEqual([{ event: "tasks-changed", data: "{}", id: "ab-3" }]);
   });
 });

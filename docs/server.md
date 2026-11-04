@@ -532,7 +532,9 @@ whole server account. To open it from a phone, see
 
 The event stream (`/api/events`) is a long-lived server-sent event response with a
 keep-alive comment every 15 seconds; a proxy in front must not buffer it. When the stream
-drops, the web app reconnects and refetches everything. The pane view's WebSocket
+drops, the web app reconnects with the id of the last event it got and the server replays
+what it missed; when those events are no longer kept, the web app refetches everything.
+The pane view's WebSocket
 (`/api/panes/stream`) needs the proxy to pass WebSocket upgrades through, with the
 browser's `Host` (or `X-Forwarded-Host`), since the server only accepts upgrades whose
 `Origin` matches it.
@@ -670,7 +672,12 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   is `404` and malformed arguments `400`, both with a text body.
 - `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
   `agent-statuses-changed`, and `pull-request-statuses-changed` with the payloads of the
-  events in `src/lib/bindings.ts`.
+  events in `src/lib/bindings.ts`. Every event has an id `<epoch>-<sequence>`; `epoch`
+  changes with each server start. A request without `Last-Event-ID` starts with a
+  `ready` event carrying the current id. With `Last-Event-ID`, the stream first replays
+  the events after it (the server keeps the last 256); when some are gone, the id is of
+  another server start, or a reader falls behind, the stream sends a `resync` event
+  instead, after which the client refetches everything.
 - `GET /api/backups/export`: a consistent snapshot of the database, as an
   `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
 - `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
