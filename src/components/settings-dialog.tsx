@@ -5,6 +5,7 @@ import { AgentAccessPanel, AgentAccessStatus } from "@/components/agent-access-p
 import { BackupPanel } from "@/components/backup-panel";
 import { ConnectedAppsPanel } from "@/components/connected-apps-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
 import { RunnersPanel } from "@/components/runners-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -233,21 +234,23 @@ export function SettingsDialog({
                 aria-labelledby={tabId(item.id)}
                 hidden={item.id !== shown}
               >
-                {item.id === "general" ? (
-                  <GeneralSettings />
-                ) : item.id === "agents" ? (
-                  <AgentAccessPanel />
-                ) : item.id === "runners" ? (
-                  <RunnersPanel />
-                ) : item.id === "apps" ? (
-                  <ConnectedAppsPanel />
-                ) : item.id === "devices" ? (
-                  <DevicesPanel />
-                ) : item.id === "notifications" ? (
-                  <NotificationsPanel />
-                ) : (
-                  <BackupPanel />
-                )}
+                <ErrorBoundary label={`the ${item.label} settings`}>
+                  {item.id === "general" ? (
+                    <GeneralSettings />
+                  ) : item.id === "agents" ? (
+                    <AgentAccessPanel />
+                  ) : item.id === "runners" ? (
+                    <RunnersPanel />
+                  ) : item.id === "apps" ? (
+                    <ConnectedAppsPanel />
+                  ) : item.id === "devices" ? (
+                    <DevicesPanel />
+                  ) : item.id === "notifications" ? (
+                    <NotificationsPanel />
+                  ) : (
+                    <BackupPanel />
+                  )}
+                </ErrorBoundary>
               </div>
             ))}
           </div>

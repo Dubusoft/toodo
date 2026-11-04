@@ -44,6 +44,7 @@ import {
 import { PathLabel } from "@/components/path-label";
 import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import { DetailsSheet } from "@/components/details-sheet";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { AgentBadge } from "@/components/agent-badge";
 import type { SheetNavigation } from "@/components/task-graph";
 import { PullRequestBadges } from "@/components/pull-request-badge";
@@ -505,34 +506,36 @@ export function TaskList({
               )}
             </>
           ) : (
-            <Suspense fallback={<p className="text-sm text-muted-foreground">Loading timeline...</p>}>
-              <TaskGraph
-                tasks={[...timelineTasks, ...prerequisites]}
-                allTasks={allTasks.data}
-                dimmed={new Set(prerequisites.map((task) => task.id))}
-                workspaceLabel={(task) =>
-                  filter === null || task.workspaceId !== filter ? context.workspaceName(task.workspaceId) : null
-                }
-                statusLabel={(task) => statusLabel(task, context.byId)}
-                statusStyle={(task) => statusStyle(task, context.byId)}
-                ready={(task) => shownStatus(task, context.byId) === "ready"}
-                scale={timelineScale}
-                onScaleChange={onTimelineScaleChange}
-                shownTaskId={shownTask?.id ?? null}
-                onTaskShown={() => onTaskShown?.()}
-                renderDetail={(selected, navigation) => (
-                  <TaskRow
-                    key={selected.id}
-                    task={selected}
-                    tasks={allTasks.data ?? []}
-                    context={context}
-                    showWorkspace
-                    detailed
-                    navigation={navigation}
-                  />
-                )}
-              />
-            </Suspense>
+            <ErrorBoundary label="the timeline">
+              <Suspense fallback={<p className="text-sm text-muted-foreground">Loading timeline...</p>}>
+                <TaskGraph
+                  tasks={[...timelineTasks, ...prerequisites]}
+                  allTasks={allTasks.data}
+                  dimmed={new Set(prerequisites.map((task) => task.id))}
+                  workspaceLabel={(task) =>
+                    filter === null || task.workspaceId !== filter ? context.workspaceName(task.workspaceId) : null
+                  }
+                  statusLabel={(task) => statusLabel(task, context.byId)}
+                  statusStyle={(task) => statusStyle(task, context.byId)}
+                  ready={(task) => shownStatus(task, context.byId) === "ready"}
+                  scale={timelineScale}
+                  onScaleChange={onTimelineScaleChange}
+                  shownTaskId={shownTask?.id ?? null}
+                  onTaskShown={() => onTaskShown?.()}
+                  renderDetail={(selected, navigation) => (
+                    <TaskRow
+                      key={selected.id}
+                      task={selected}
+                      tasks={allTasks.data ?? []}
+                      context={context}
+                      showWorkspace
+                      detailed
+                      navigation={navigation}
+                    />
+                  )}
+                />
+              </Suspense>
+            </ErrorBoundary>
           )}
         </>
       )}
