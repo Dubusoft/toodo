@@ -203,6 +203,8 @@ mod tests {
                 .create_device(
                     &DeviceLabel::parse(label).unwrap(),
                     &hash.to_string().repeat(64),
+                    crate::domain::device::DeviceScope::Full,
+                    None,
                 )
                 .unwrap()
                 .id

@@ -529,4 +529,14 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     ALTER TABLE push_subscriptions ADD COLUMN last_failure TEXT;
     ALTER TABLE push_subscriptions ADD COLUMN last_failure_at INTEGER;
     ",
+    // Version 37: device tokens expire and may be read-only. Tokens issued before keep
+    // full access and expire 90 days after the upgrade, so no device is signed out at
+    // once and none keeps a token that never expires.
+    r"
+    ALTER TABLE devices ADD COLUMN expires_at INTEGER;
+    ALTER TABLE devices ADD COLUMN scope TEXT NOT NULL DEFAULT 'full'
+        CHECK (scope IN ('full', 'read'));
+    UPDATE devices SET expires_at = CAST(strftime('%s', 'now') AS INTEGER) + 90 * 86400
+        WHERE revoked_at IS NULL;
+    ",
 ];

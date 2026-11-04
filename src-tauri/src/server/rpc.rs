@@ -175,6 +175,37 @@ macro_rules! commands {
     }};
 }
 
+/// The commands a read-only device may run: they only read. `mcp_server_info` is left out
+/// because it shows the MCP token, which can change data.
+pub const READ_COMMANDS: &[&str] = &[
+    "app_info",
+    "list_connected_apps",
+    "list_workspaces",
+    "get_workspace",
+    "list_workspace_branches",
+    "get_machine_settings",
+    "list_herdr_machines",
+    "list_ssh_hosts",
+    "list_remote_directories",
+    "list_directories",
+    "list_tasks",
+    "list_task_relations",
+    "get_task",
+    "list_commit_records",
+    "list_task_activity",
+    "herdr_status",
+    "list_task_runs",
+    "get_run_log",
+    "runner_health",
+    "list_pull_request_statuses",
+    "branch_freshness",
+    "list_agent_statuses",
+    "list_mcp_tunnels",
+    "review_period",
+    "get_backup_settings",
+    "list_backups",
+];
+
 commands!(s => {
     "app_info"() => sync Reply::value(crate::commands::app_info());
     "list_connected_apps"() => sync Reply::result(
@@ -380,6 +411,14 @@ mod tests {
         );
         let served: BTreeSet<String> = COMMANDS.iter().map(|name| (*name).to_owned()).collect();
         assert_eq!(served, bound);
+    }
+
+    #[test]
+    fn read_commands_are_served_and_leave_out_the_mcp_token() {
+        for command in READ_COMMANDS {
+            assert!(COMMANDS.contains(command), "{command}");
+        }
+        assert!(!READ_COMMANDS.contains(&"mcp_server_info"));
     }
 
     #[test]

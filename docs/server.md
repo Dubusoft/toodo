@@ -257,6 +257,14 @@ header, a header that is not `Bearer <token>` (the scheme is case-insensitive), 
 the server does not accept, or the other surface's token (`web-token` at `/mcp`, the MCP
 token at `/api`). At `/mcp` the body also names the server instance, which tells a reply
 from another Toodo server, e.g. one an old config or a tunnel reached, apart from this one.
+An expired device token gets `401` that says it expired.
+
+Wrong tokens are rate limited per client address and per surface: after 20 wrong tokens
+within a minute, every request from that address to that surface (`/api` or `/mcp`) gets
+`429` with `Retry-After` until the minute since the first of them is over, even with the
+right token. Missing headers and the other surface's token do not count. Behind a reverse
+proxy every client shares the proxy's address, so one client that keeps sending an old
+token locks out the others for that minute; stop it, or replace its token.
 
 ### Import
 
@@ -282,15 +290,27 @@ service first (`systemctl --user stop toodo-server`) and start it again afterwar
 
 Each device has its own access token, so a lost phone is revoked alone instead of
 rotating the token of every client. The database keeps a device's name, when it was
-registered and last seen (to within a minute), and when it was revoked, but only a
-SHA-256 hash of its token; the token itself is shown to the device once, when it
-registers. Revoking is final: the token never works again, and the device signs in anew
-with the shared token. Only the shared token registers devices, so a device token cannot
-mint more tokens. A device keeps its id after it is revoked, so data kept per device can
-refer to it.
+registered and last seen, when its token expires, what it may do, and when it was
+revoked, but only a SHA-256 hash of its token; the token itself is shown to the device
+once, when it registers. Revoking is final: the token never works again, and the device
+signs in anew with the shared token. Only the shared token registers devices, so a device
+token cannot mint more tokens. A device keeps its id after it is revoked, so data kept per
+device can refer to it.
 
-The web app lists the devices under **Devices** in Settings, marks the current one,
-and revokes them. Devices live in the database, so restoring a backup also restores the
+A device token expires 90 days after it is registered unless the registration picks
+another lifetime (30 days, a year, or never in the web app); the device then signs in
+again with the shared token. Tokens registered before expiry existed expire 90 days after
+the upgrade that added it. A device registered read-only may read everything the app
+shows, keep its own notifications, and revoke itself; every other request gets `403`.
+Read-only devices cannot see the MCP token, which can change data, nor open pane streams,
+which can type into a pane.
+
+The last-seen time is checked on the database's read-only connection and written at most
+once a minute per device, so requests do not wait for the database's writer.
+
+The web app asks for the access and lifetime when it signs in with the shared token,
+lists the devices under **Devices** in Settings with their expiry and whether they are
+read-only, marks the current one, and revokes them. Devices live in the database, so restoring a backup also restores the
 devices of that backup: devices registered after it sign in again.
 
 **Treat `web-token` like a password to the server account.** It opens every command of

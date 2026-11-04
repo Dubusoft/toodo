@@ -313,6 +313,8 @@ mod tests {
                  ALTER TABLE workspaces DROP COLUMN axes_detected;
                  DROP TABLE task_activity;
                  DROP TABLE task_labels;
+                 ALTER TABLE devices DROP COLUMN expires_at;
+                 ALTER TABLE devices DROP COLUMN scope;
                  ALTER TABLE tasks ADD COLUMN herdr_workspace_id TEXT;
                  UPDATE tasks SET herdr_workspace_id = 'w1' WHERE title = 'Add storage';
                  DROP TABLE run_operations;

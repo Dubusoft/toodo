@@ -570,6 +570,7 @@ fn router(
                 services: services.clone(),
                 shared_token: Arc::new(web_token.clone()),
                 mcp_token: Arc::new(mcp_token.clone()),
+                attempts: mcp::attempts::FailedAttempts::default(),
             },
             devices::require_access,
         ))
@@ -1247,6 +1248,128 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn device_tokens_expire_and_read_only_ones_only_read() {
+        let (address, _temp, services) = serve_services(None);
+        let rpc = |command: &str, token: &str| {
+            post_json(
+                address,
+                &format!("/api/rpc/{command}"),
+                token,
+                &serde_json::json!({}),
+            )
+        };
+
+        let (_, laptop) = post_json(
+            address,
+            "/api/devices",
+            "web",
+            &serde_json::json!({ "label": "Laptop" }),
+        );
+        let device = &laptop["device"];
+        assert_eq!(device["scope"], "full");
+        assert_eq!(
+            device["expiresAt"].as_i64().unwrap() - device["createdAt"].as_i64().unwrap(),
+            90 * 86_400
+        );
+        let laptop_token = laptop["token"].as_str().unwrap().to_owned();
+        let (created, phone) = post_json(
+            address,
+            "/api/devices",
+            "web",
+            &serde_json::json!({ "label": "Phone", "scope": "read", "expiresInDays": null }),
+        );
+        assert!(created.contains(" 201 "), "{created}");
+        assert_eq!(phone["device"]["scope"], "read");
+        assert!(phone["device"]["expiresAt"].is_null());
+        let phone_token = phone["token"].as_str().unwrap().to_owned();
+        for days in [0, 3651] {
+            let (refused, error) = post_json(
+                address,
+                "/api/devices",
+                "web",
+                &serde_json::json!({ "label": "Tablet", "expiresInDays": days }),
+            );
+            assert!(refused.contains(" 422 "), "{refused}");
+            assert!(error["message"].as_str().unwrap().contains("send null"));
+        }
+
+        assert!(rpc("list_tasks", &phone_token).0.contains(" 200 "));
+        assert!(devices_seen_by(address, &phone_token).is_array());
+        for command in ["create_workspace", "mcp_server_info"] {
+            let (refused, error) = rpc(command, &phone_token);
+            assert!(refused.contains(" 403 "), "{command}: {refused}");
+            assert!(
+                error["message"].as_str().unwrap().contains("read-only"),
+                "{error}"
+            );
+        }
+        assert!(rpc("mcp_server_info", &laptop_token).0.contains(" 200 "));
+        let laptop_id = laptop["device"]["id"].as_i64().unwrap();
+        let phone_id = phone["device"]["id"].as_i64().unwrap();
+        let revoke = |id: i64| {
+            post_json(
+                address,
+                &format!("/api/devices/{id}/revoke"),
+                &phone_token,
+                &serde_json::json!({}),
+            )
+            .0
+        };
+        assert!(revoke(laptop_id).contains(" 403 "));
+        assert!(revoke(phone_id).contains(" 200 "));
+        assert!(rpc("list_tasks", &phone_token).0.contains(" 401 "));
+
+        // Once the laptop's 90 days are over, its token stops working and says why.
+        let later = device["expiresAt"].as_i64().unwrap();
+        for storage in [&*services.storage, services.reader()] {
+            crate::commands::lock(storage).set_clock(move || later);
+        }
+        let (status, _, body) = get(address, "/api/devices", Some(&laptop_token));
+        assert!(status.contains(" 401 "), "{status}");
+        assert!(
+            String::from_utf8(body)
+                .unwrap()
+                .contains("token has expired")
+        );
+        assert!(rpc("list_tasks", "web").0.contains(" 200 "));
+    }
+
+    #[test]
+    fn too_many_wrong_tokens_lock_an_address_out_of_that_surface() {
+        let (address, _temp) = serve_router(None);
+        let max = mcp::attempts::MAX_FAILURES;
+        let api = |token: &str| status(address, "POST", "/api/rpc/app_info", Some(token));
+        for _ in 0..max {
+            assert!(api("nope").contains(" 401 "));
+        }
+        // Now nothing gets through, not even the right token.
+        let (locked, headers, body) = get(address, "/api/devices", Some("web"));
+        assert!(locked.contains(" 429 "), "{locked}");
+        let wait: u64 = headers
+            .lines()
+            .find_map(|line| line.strip_prefix("retry-after: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((1..=60).contains(&wait), "{wait}");
+        assert!(
+            String::from_utf8(body)
+                .unwrap()
+                .contains("too many requests")
+        );
+
+        // `/mcp` keeps its own count, and the other surface's token does not add to it.
+        let mcp = |token: &str| status(address, "POST", "/mcp", Some(token));
+        assert!(!mcp("agent").contains(" 429 "));
+        for _ in 0..max - 1 {
+            assert!(mcp("web").contains(" 401 "));
+            assert!(mcp("nope").contains(" 401 "));
+        }
+        assert!(mcp("nope").contains(" 401 "));
+        assert!(mcp("agent").contains(" 429 "));
     }
 
     fn send_json(

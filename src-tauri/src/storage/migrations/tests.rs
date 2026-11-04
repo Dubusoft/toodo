@@ -952,6 +952,49 @@ fn version_36_keeps_subscriptions_without_a_failure() {
 }
 
 #[test]
+fn version_37_keeps_earlier_device_tokens_working_with_full_access_for_90_days() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    for sql in &MIGRATIONS[..36] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 36).unwrap();
+    conn.execute(
+        "INSERT INTO devices (label, token_hash, created_at, last_seen_at, revoked_at)
+             VALUES ('Phone', ?1, 1, 1, NULL), ('Old', ?2, 1, 1, 5)",
+        ["0".repeat(64), "1".repeat(64)],
+    )
+    .unwrap();
+    let before: i64 = conn
+        .query_row("SELECT CAST(strftime('%s', 'now') AS INTEGER)", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+
+    migrate(&mut conn).unwrap();
+
+    let rows: Vec<(String, String, Option<i64>)> = conn
+        .prepare("SELECT label, scope, expires_at FROM devices ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let ninety_days = 90 * 86_400;
+    let (_, scope, expires_at) = &rows[0];
+    assert_eq!(scope, "full");
+    let expires_at = expires_at.unwrap();
+    assert!(
+        (before + ninety_days..before + ninety_days + 60).contains(&expires_at),
+        "{expires_at}"
+    );
+    assert_eq!(rows[1], ("Old".to_owned(), "full".to_owned(), None));
+    assert!(
+        conn.execute("UPDATE devices SET scope = 'admin' WHERE id = 1", [])
+            .is_err()
+    );
+}
+
+#[test]
 fn version_17_keeps_devices_without_subscriptions_and_drops_them_with_the_device() {
     let mut conn = Connection::open_in_memory().unwrap();
     for sql in &MIGRATIONS[..16] {
