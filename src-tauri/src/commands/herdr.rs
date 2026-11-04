@@ -2804,7 +2804,7 @@ mod tests {
 
     #[test]
     fn a_task_without_a_repository_is_planned_started_checked_and_completed() {
-        use crate::adapters::github::GitHub;
+        use crate::adapters::github::GhCli;
         use crate::commands::{completion, tasks, types};
         use crate::domain::criteria::CheckedBy;
         let dir = tempfile::tempdir().unwrap();
@@ -2839,7 +2839,7 @@ mod tests {
         let done = completion::complete(
             &storage,
             &Git::new(Box::new(git_runner.clone())),
-            &GitHub::new(Box::new(gh.clone())),
+            &GhCli::new(Box::new(gh.clone())),
             &herdr,
             task.id,
         )
@@ -2855,7 +2855,7 @@ mod tests {
 
     #[test]
     fn a_command_criterion_of_a_task_without_a_worktree_runs_in_the_workspace_location() {
-        use crate::adapters::github::GitHub;
+        use crate::adapters::github::GhCli;
         use crate::commands::{completion, tasks, types};
         use crate::domain::criteria::CheckedBy;
         let dir = tempfile::tempdir().unwrap();
@@ -2875,7 +2875,7 @@ mod tests {
         let done = completion::complete(
             &storage,
             &Git::new(Box::new(git_runner.clone())),
-            &GitHub::new(Box::new(Arc::new(FakeRunner::new(Vec::new())))),
+            &GhCli::new(Box::new(Arc::new(FakeRunner::new(Vec::new())))),
             &herdr(Vec::new()).0,
             task.id,
         )

@@ -183,7 +183,7 @@ pub trait Backend: Notifier + Send + Sync + 'static {
     }
     fn storage(&self) -> &StorageState;
     fn git(&self) -> &Git;
-    fn github(&self) -> &GitHub;
+    fn github(&self) -> &dyn GitHub;
     fn herdr(&self) -> &Herdr;
     /// How agents reach this server.
     fn server(&self) -> &ServerStatus;
@@ -1232,6 +1232,7 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
+    use crate::adapters::github::GhCli;
 
     #[test]
     fn the_token_is_created_once_and_then_reused() {
@@ -1270,7 +1271,7 @@ mod tests {
         storage: StorageState,
         public_url: Option<PublicUrl>,
         git: Git,
-        github: GitHub,
+        github: GhCli,
         herdr: Herdr,
         server: ServerStatus,
         changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
@@ -1292,7 +1293,7 @@ mod tests {
                 storage: std::sync::Mutex::new(storage),
                 public_url: None,
                 git: Git::new(runner(git)),
-                github: GitHub::new(runner(Vec::new())),
+                github: GhCli::new(runner(Vec::new())),
                 herdr: Herdr::new(runner(herdr)),
                 server: ServerStatus {
                     url: url(47617),
@@ -1336,7 +1337,7 @@ mod tests {
             &self.git
         }
 
-        fn github(&self) -> &GitHub {
+        fn github(&self) -> &dyn GitHub {
             &self.github
         }
 

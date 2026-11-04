@@ -1411,7 +1411,7 @@ fn with_worktree_root_hint(
 pub fn complete_task(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     herdr: &Herdr,
     request: CompleteTask,
 ) -> CommandResult<Task> {
@@ -1469,7 +1469,7 @@ pub struct ConcludedTask {
 pub fn conclude_task(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     herdr: &Herdr,
     request: ConcludeTask,
 ) -> CommandResult<ConcludedTask> {
@@ -1765,6 +1765,7 @@ pub(super) fn get_task(storage: &Storage, id: TaskId) -> CommandResult<Task> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::adapters::github::GhCli;
     use crate::commands::CommandErrorKind;
     use crate::domain::model::{self, HostPath, WorkspaceLocation};
     use crate::domain::path::{PosixPath, WindowsPath};
@@ -3191,7 +3192,7 @@ mod tests {
     fn complete_finishes_a_task_whose_pull_request_is_merged_and_only_that() {
         let (storage, task, _) = started(true);
         let (no_git, _) = fake(Git::new, vec![]);
-        let (open, _) = fake(GitHub::new, vec![viewed("OPEN")]);
+        let (open, _) = fake(GhCli::new, vec![viewed("OPEN")]);
         let (no_herdr, _) = fake(Herdr::new, vec![]);
 
         let error = complete_task(&storage, &no_git, &open, &no_herdr, own(task.id)).unwrap_err();
@@ -3204,7 +3205,7 @@ mod tests {
         assert_eq!(stored(&storage, task.id), task);
 
         let (merged, _) = fake(
-            GitHub::new,
+            GhCli::new,
             vec![viewed("MERGED"), Ok(MERGED_DETAILS.to_owned())],
         );
         let (herdr, herdr_runner) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
@@ -3224,7 +3225,7 @@ mod tests {
     fn complete_is_rejected_when_the_branch_has_no_pull_request() {
         let (storage, task, _) = started(false);
         let (git, _) = fake(Git::new, vec![Ok(String::new())]);
-        let (github, gh_runner) = fake(GitHub::new, vec![]);
+        let (github, gh_runner) = fake(GhCli::new, vec![]);
         let (herdr, _) = fake(Herdr::new, vec![]);
 
         let error = complete_task(&storage, &git, &github, &herdr, own(task.id)).unwrap_err();
@@ -3252,7 +3253,7 @@ mod tests {
     fn complete_accepts_without_pull_request_and_a_note() {
         let (storage, task, dependent) = started(false);
         let (git, _) = fake(Git::new, vec![Ok(String::new()), Ok(String::new())]);
-        let (github, _) = fake(GitHub::new, vec![]);
+        let (github, _) = fake(GhCli::new, vec![]);
         let (herdr, _) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
         let request = serde_json::from_value(serde_json::json!({
             "id": task.id, "without_pull_request": true, "note": "Deployed directly"
@@ -3273,7 +3274,7 @@ mod tests {
     fn complete_rejects_missing_notes_and_conflicting_modes_before_external_calls() {
         let (storage, task, _) = started(false);
         let (git, _) = fake(Git::new, vec![]);
-        let (github, _) = fake(GitHub::new, vec![]);
+        let (github, _) = fake(GhCli::new, vec![]);
         let (herdr, _) = fake(Herdr::new, vec![]);
         for arguments in [
             serde_json::json!({"id": task.id, "without_pull_request": true}),
@@ -3327,7 +3328,7 @@ mod tests {
     fn complete_with_merged_with_ships_a_task_through_another_tasks_pull_request() {
         let (storage, task, extra) = shipped();
         let (git, _) = fake(Git::new, github_checkout());
-        let (github, gh_runner) = fake(GitHub::new, vec![Ok("[]".to_owned())]);
+        let (github, gh_runner) = fake(GhCli::new, vec![Ok("[]".to_owned())]);
         let (herdr, herdr_runner) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
 
         let done = complete_task(
@@ -3398,7 +3399,7 @@ mod tests {
                 "target done as {expected:?}"
             );
             let (git, _) = fake(Git::new, github_checkout());
-            let (github, _) = fake(GitHub::new, vec![Ok("[]".to_owned())]);
+            let (github, _) = fake(GhCli::new, vec![Ok("[]".to_owned())]);
             let (herdr, _) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
 
             let done = complete_task(
@@ -3435,7 +3436,7 @@ mod tests {
             .unwrap())
             .into();
         let (no_git, git_runner) = fake(Git::new, vec![]);
-        let (github, _) = fake(GitHub::new, vec![viewed("MERGED")]);
+        let (github, _) = fake(GhCli::new, vec![viewed("MERGED")]);
         let (no_herdr, herdr_runner) = fake(Herdr::new, vec![]);
 
         let done = complete_task(
@@ -3463,7 +3464,7 @@ mod tests {
         assert!(herdr_runner.invocations.lock().unwrap().is_empty());
 
         // Completing it again, either way, has nothing left to do.
-        let (no_github, _) = fake(GitHub::new, vec![]);
+        let (no_github, _) = fake(GhCli::new, vec![]);
         let error = complete_task(
             &storage,
             &no_git,
@@ -3486,7 +3487,7 @@ mod tests {
             .conclude_task(extra.id.into(), "Fixed elsewhere", &[], None)
             .unwrap();
         let (git, _) = fake(Git::new, vec![]);
-        let (github, _) = fake(GitHub::new, vec![]);
+        let (github, _) = fake(GhCli::new, vec![]);
         let (herdr, _) = fake(Herdr::new, vec![]);
 
         let error = complete_task(&storage, &git, &github, &herdr, own(extra.id)).unwrap_err();
@@ -3526,7 +3527,7 @@ mod tests {
         let (no_git, _) = fake(Git::new, vec![]);
         let (no_herdr, herdr_runner) = fake(Herdr::new, vec![]);
         let reject = |id: TaskId, target: MergedWithRef, github: Scripted, reason: &str| {
-            let (github, _) = fake(GitHub::new, github);
+            let (github, _) = fake(GhCli::new, github);
             let error = complete_task(
                 &storage,
                 &no_git,
@@ -3603,7 +3604,7 @@ mod tests {
         let (storage, task, extra) = shipped();
         for (state, reason) in [("OPEN", "is still open"), ("MERGED", "was merged")] {
             let (git, _) = fake(Git::new, github_checkout());
-            let (github, _) = fake(GitHub::new, vec![listed(state)]);
+            let (github, _) = fake(GhCli::new, vec![listed(state)]);
             let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
 
             let error = complete_task(
@@ -3633,7 +3634,7 @@ mod tests {
     fn conclude_finishes_a_task_without_a_pull_request_as_not_adopted() {
         let (storage, task, dependent) = started(false);
         let (git, _) = fake(Git::new, github_checkout());
-        let (github, gh_runner) = fake(GitHub::new, vec![Ok("[]".to_owned())]);
+        let (github, gh_runner) = fake(GhCli::new, vec![Ok("[]".to_owned())]);
         let (herdr, herdr_runner) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
 
         let done = conclude_task(
@@ -3673,7 +3674,7 @@ mod tests {
     fn conclude_is_rejected_without_a_note_and_while_a_pull_request_is_open() {
         let (storage, task, _) = started(true);
         let (no_git, _) = fake(Git::new, vec![]);
-        let (no_github, _) = fake(GitHub::new, vec![]);
+        let (no_github, _) = fake(GhCli::new, vec![]);
         let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
 
         let error = conclude_task(
@@ -3687,7 +3688,7 @@ mod tests {
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);
 
         let (git, _) = fake(Git::new, github_checkout());
-        let (github, gh_runner) = fake(GitHub::new, vec![listed("OPEN")]);
+        let (github, gh_runner) = fake(GhCli::new, vec![listed("OPEN")]);
         let error = conclude_task(
             &storage,
             &git,
@@ -3714,7 +3715,7 @@ mod tests {
             ("MERGED", "completes with the merge"),
         ] {
             let (git, _) = fake(Git::new, github_checkout());
-            let (github, gh_runner) = fake(GitHub::new, vec![listed(state)]);
+            let (github, gh_runner) = fake(GhCli::new, vec![listed(state)]);
             let (herdr, herdr_runner) = fake(Herdr::new, vec![]);
 
             let error = conclude_task(

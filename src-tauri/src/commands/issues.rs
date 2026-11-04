@@ -27,7 +27,7 @@ pub fn link_issue(
     id: TaskId,
     number: Option<u32>,
 ) -> CommandResult<Task> {
-    Ok((&link(&storage, &git, &github, id.into(), number)?).into())
+    Ok((&link(&storage, &git, &**github, id.into(), number)?).into())
 }
 
 /// Opens an issue in the workspace repository with the title and description of a task
@@ -40,7 +40,7 @@ pub fn create_issue(
     github: State<'_, GitHubState>,
     id: TaskId,
 ) -> CommandResult<Task> {
-    Ok((&create(&storage, &git, &github, id.into())?).into())
+    Ok((&create(&storage, &git, &**github, id.into())?).into())
 }
 
 /// A task that may change its issue, with the GitHub repository of its workspace.
@@ -80,7 +80,7 @@ fn issue_target(
 fn link(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     id: model::TaskId,
     number: Option<u32>,
 ) -> CommandResult<model::Task> {
@@ -108,7 +108,7 @@ fn link(
 fn create(
     storage: &StorageState,
     git: &Git,
-    github: &GitHub,
+    github: &dyn GitHub,
     id: model::TaskId,
 ) -> CommandResult<model::Task> {
     let (task, repository) = issue_target(storage, git, id)?;
@@ -126,7 +126,7 @@ fn create(
 /// was just created; the background check adds the missing reference later.
 fn link_and_reference(
     storage: &StorageState,
-    github: &GitHub,
+    github: &dyn GitHub,
     task: &model::Task,
     issue: &LinkedIssue,
 ) -> CommandResult<model::Task> {
@@ -146,6 +146,7 @@ mod tests {
     use super::*;
     use crate::adapters::git::fake::{FakeRunner, failed};
     use crate::adapters::git::{GitError, Invocation};
+    use crate::adapters::github::GhCli;
     use crate::commands::CommandErrorKind;
     use crate::domain::model::{HostPath, TaskType};
     use crate::domain::naming::TaskCheckout;
@@ -187,12 +188,12 @@ mod tests {
     fn adapters(
         git: Vec<Result<String, GitError>>,
         gh: Vec<Result<String, GitError>>,
-    ) -> (Git, GitHub, Arc<FakeRunner>, Arc<FakeRunner>) {
+    ) -> (Git, GhCli, Arc<FakeRunner>, Arc<FakeRunner>) {
         let git_runner = Arc::new(FakeRunner::new(git));
         let gh_runner = Arc::new(FakeRunner::new(gh));
         (
             Git::new(Box::new(git_runner.clone())),
-            GitHub::new(Box::new(gh_runner.clone())),
+            GhCli::new(Box::new(gh_runner.clone())),
             git_runner,
             gh_runner,
         )

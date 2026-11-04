@@ -42,7 +42,7 @@ use tokio::sync::broadcast;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::adapters::git::{Git, ProcessRunner};
-use crate::adapters::github::GitHub;
+use crate::adapters::github::{GhCli, GitHub};
 use crate::adapters::herdr::Herdr;
 use crate::adapters::ssh::{Ssh, SshConfigFile};
 use crate::adapters::ssh_tunnel::SshForwarder;
@@ -241,8 +241,8 @@ impl Backend for Services {
         &self.git
     }
 
-    fn github(&self) -> &GitHub {
-        &self.github
+    fn github(&self) -> &dyn GitHub {
+        &*self.github
     }
 
     fn herdr(&self) -> &Herdr {
@@ -400,7 +400,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         storage,
         public_url: config.public_url.clone(),
         git: Arc::new(Git::new(Box::new(ProcessRunner))),
-        github: Arc::new(GitHub::new(Box::new(ProcessRunner))),
+        github: Arc::new(GhCli::new(Box::new(ProcessRunner))),
         ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
         ssh_config: SshConfigFile::in_home(),
         panes: panes::Panes::new(Arc::new(panes::HerdrSockets(herdr.clone()))),
@@ -864,7 +864,7 @@ mod tests {
             storage,
             public_url: None,
             git: Arc::new(Git::new(Box::new(ProcessRunner))),
-            github: Arc::new(GitHub::new(Box::new(ProcessRunner))),
+            github: Arc::new(GhCli::new(Box::new(ProcessRunner))),
             ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
             ssh_config: SshConfigFile::in_home(),
             panes: panes::Panes::new(access),
