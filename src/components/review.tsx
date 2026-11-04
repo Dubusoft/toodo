@@ -13,12 +13,25 @@ import {
   type ReviewEntry,
   type ReviewOutcome,
   type ReviewReport,
+  type ReviewSnapshotId,
   type Task,
   type TaskId,
   type Timestamp,
   type Workspace,
 } from "@/lib/bindings";
-import { unwrap, useArchive, useBackfillPullRequests, useReview, useWorkspaces } from "@/lib/queries";
+import {
+  unwrap,
+  useArchive,
+  useBackfillPullRequests,
+  useDeleteReviewSnapshot,
+  useReview,
+  useReviewSnapshot,
+  useReviewSnapshots,
+  useReviewTimeZone,
+  useSaveReviewSnapshot,
+  useSetReviewTimeZone,
+  useWorkspaces,
+} from "@/lib/queries";
 import {
   commitSubject,
   durationKeys,
@@ -33,7 +46,6 @@ import {
   lateDetails,
   noReviewFilter,
   outcomeLabels,
-  periodBounds,
   periodContaining,
   periodLabel,
   periodNouns,
@@ -54,7 +66,7 @@ import { type MissingPlanField, missingPlan } from "@/lib/plan";
 import { toneChip, toneFill, toneText } from "@/lib/status-styles";
 import { workspaceCapabilities } from "@/lib/workspace-capabilities";
 import { When } from "@/components/when";
-import { activeSeconds, formatDate, waitingSeconds, workSegments } from "@/lib/timeline";
+import { activeSeconds, formatDate, formatFull, waitingSeconds, workSegments } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import { openUrl } from "@/web/opener";
 
@@ -148,25 +160,147 @@ function MenuItem({ onSelect, children }: { onSelect: () => void; children: Reac
   );
 }
 
+/** The time zone reviewed periods are judged in, and a form to change it. */
+function TimeZoneControl() {
+  const timeZone = useReviewTimeZone();
+  const setTimeZone = useSetReviewTimeZone();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const zones = typeof Intl.supportedValuesOf === "function" ? Intl.supportedValuesOf("timeZone") : [];
+  async function save(value: string | null) {
+    setError(null);
+    try {
+      await setTimeZone.mutateAsync(value);
+      setEditing(false);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : String(failure));
+    }
+  }
+  if (!timeZone.data) return null;
+  const { timeZone: current, configured } = timeZone.data;
+  if (!editing) {
+    return (
+      <span>
+        Days are in {current}
+        {configured === null && " (the server's time zone)"}.{" "}
+        <button
+          type="button"
+          className="text-primary underline underline-offset-2 hover:no-underline print:hidden"
+          onClick={() => {
+            setDraft(configured ?? current);
+            setEditing(true);
+          }}
+        >
+          Change time zone
+        </button>
+      </span>
+    );
+  }
+  return (
+    <form
+      aria-label="Review time zone"
+      className="flex flex-wrap items-center gap-2 print:hidden"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save(draft);
+      }}
+    >
+      <label htmlFor="review-time-zone" className="text-xs">
+        Time zone for every device
+      </label>
+      <input
+        id="review-time-zone"
+        list="review-time-zones"
+        required
+        className={cn(inputClass, "w-56")}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+      />
+      <datalist id="review-time-zones">
+        {zones.map((zone) => (
+          <option key={zone} value={zone} />
+        ))}
+      </datalist>
+      <Button size="sm" type="submit" disabled={setTimeZone.isPending}>
+        Save
+      </Button>
+      {configured !== null && (
+        <Button size="sm" type="button" variant="outline" onClick={() => void save(null)}>
+          Use the server's
+        </Button>
+      )}
+      <Button size="sm" type="button" variant="ghost" onClick={() => setEditing(false)}>
+        Cancel
+      </Button>
+      {error && (
+        <span role="alert" className="w-full text-xs text-destructive">
+          {error}
+        </span>
+      )}
+    </form>
+  );
+}
+
+/** What the review shows: the live review of a period or a saved one. */
+interface Shown {
+  period: ReviewPeriod;
+  entries: ReviewEntry[];
+  /** The period as `[start, end)`, as the server judged it. */
+  start: Timestamp;
+  end: Timestamp;
+  timeZone: string;
+  /** The time durations and due dates are judged at: now, or when the review was saved. */
+  now: Timestamp;
+}
+
 export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   const [period, setPeriod] = useState<ReviewPeriod>(() => periodContaining("week", formatDate(Date.now() / 1000)));
   const [notice, setNotice] = useState<string | null>(null);
   const [filter, setFilter] = useState<ReviewFilter>(noReviewFilter);
   // The task whose edit form a missing-plan mark opened, and the field it focuses.
   const [editingPlan, setEditingPlan] = useState<{ id: TaskId; field: MissingPlanField } | null>(null);
-  const { start, end } = periodBounds(period);
-  const review = useReview(start, end);
+  // The saved review on screen; null for the live review of `period`.
+  const [snapshotId, setSnapshotId] = useState<ReviewSnapshotId | null>(null);
+  const live = useReview(period.from, period.to);
+  const snapshots = useReviewSnapshots();
+  const snapshot = useReviewSnapshot(snapshotId);
+  const saveSnapshot = useSaveReviewSnapshot();
+  const deleteSnapshot = useDeleteReviewSnapshot();
+  const viewing = snapshotId !== null;
+  const review = viewing ? snapshot : live;
   const workspaces = useWorkspaces();
   const archive = useArchive();
   const backfill = useBackfillPullRequests();
   const [backfillFailures, setBackfillFailures] = useState<string[]>([]);
   const onGitHub = workspaces.data?.some((workspace) => workspace.source === "github") ?? false;
-  // Reviews keep the work of deleted workspaces, so they are named too.
-  const workspaceList = [...(workspaces.data ?? []), ...(archive.data?.workspaces ?? [])];
+  // Reviews keep the work of deleted workspaces, so they are named too; a saved review
+  // names them as they were named when it was saved.
+  const workspaceList: Pick<Workspace, "id" | "name">[] = viewing
+    ? (snapshot.data?.workspaces ?? [])
+    : [...(workspaces.data ?? []), ...(archive.data?.workspaces ?? [])];
   const names = new Map(workspaceList.map((workspace) => [workspace.id, workspace.name]));
-  const entries = review.data && filterEntries(review.data, filter);
+  const shown: Shown | undefined = viewing
+    ? snapshot.data && {
+        period: { kind: snapshot.data.summary.period, from: snapshot.data.summary.from, to: snapshot.data.summary.to },
+        entries: snapshot.data.entries,
+        start: snapshot.data.summary.start,
+        end: snapshot.data.summary.end,
+        timeZone: snapshot.data.summary.timeZone,
+        now: snapshot.data.summary.savedAt,
+      }
+    : live.data && {
+        period,
+        entries: live.data.entries,
+        start: live.data.start,
+        end: live.data.end,
+        timeZone: live.data.timeZone,
+        now: Date.now() / 1000,
+      };
+  const shownPeriod = shown?.period ?? period;
+  const entries = shown && filterEntries(shown.entries, filter);
   // The chosen label stays listed when the period has no task with it.
-  const labels = reviewLabels(review.data ?? []);
+  const labels = reviewLabels(shown?.entries ?? []);
   if (filter.label !== null && !labels.includes(filter.label)) labels.push(filter.label);
   const scope = [
     filter.workspaceId === null
@@ -176,7 +310,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   ]
     .filter(Boolean)
     .join(", ");
-  const noun = periodNouns[period.kind];
+  const noun = periodNouns[shownPeriod.kind];
 
   function moveTo(next: ReviewPeriod) {
     setNotice(null);
@@ -184,11 +318,44 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
     setPeriod(next);
   }
 
+  function openSnapshot(id: ReviewSnapshotId | null) {
+    setNotice(null);
+    setBackfillFailures([]);
+    setEditingPlan(null);
+    setSnapshotId(id);
+  }
+
+  async function saveAsSnapshot() {
+    try {
+      const saved = await saveSnapshot.mutateAsync({
+        period: period.kind,
+        from: period.from,
+        to: period.kind === "custom" ? period.to : null,
+        workspaceId: filter.workspaceId,
+        label: filter.label,
+        title: null,
+      });
+      setNotice(`Saved "${saved.title}" with ${plural(saved.entryCount, "task")}; reopen it from Saved reviews.`);
+    } catch (error) {
+      setNotice(`Could not save the review: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function removeSnapshot(id: ReviewSnapshotId) {
+    try {
+      await deleteSnapshot.mutateAsync(id);
+      openSnapshot(null);
+      setNotice("Deleted the saved review.");
+    } catch (error) {
+      setNotice(`Could not delete the saved review: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   async function importPullRequests() {
     setNotice(null);
     setBackfillFailures([]);
     try {
-      const summary = await backfill.mutateAsync({ start, end });
+      const summary = await backfill.mutateAsync({ from: period.from, to: period.to });
       setNotice(backfillNotice(summary, noun));
       setBackfillFailures(summary.failures);
     } catch (error) {
@@ -201,8 +368,13 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
     moveTo(kind === "custom" ? { ...period, kind } : periodContaining(kind, period.from));
   }
 
-  // The server renders the report, as for MCP and `toodo review`, in this browser's time zone.
+  // The server renders the report, as for MCP and `toodo review`, in its review time zone;
+  // a saved review keeps the report rendered when it was saved.
   function renderReport(format: ReportFormat): Promise<ReviewReport> {
+    if (viewing) {
+      if (!snapshot.data) return Promise.reject(new Error("the saved review is still loading"));
+      return Promise.resolve(format === "csv" ? snapshot.data.csv : snapshot.data.markdown);
+    }
     return unwrap(
       commands.reviewReport({
         period: period.kind,
@@ -210,7 +382,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
         from: period.from,
         to: period.kind === "custom" ? period.to : null,
         format,
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
+        timeZone: null,
         workspaceId: filter.workspaceId,
         label: filter.label,
       }),
@@ -248,105 +420,162 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
     <section aria-labelledby="review-heading" className="flex flex-col gap-4">
       <header className="flex flex-col gap-1">
         <h2 id="review-heading" className="text-xl font-semibold tracking-tight">
-          {periodTitles[period.kind]}
+          {viewing && snapshot.data ? snapshot.data.summary.title : periodTitles[shownPeriod.kind]}
         </h2>
         <p className="text-sm text-muted-foreground">
-          Work recorded from {period.from} to {period.to} {scope}.
+          Work recorded from {shownPeriod.from} to {shownPeriod.to} {scope}.{" "}
+          {viewing ? (
+            snapshot.data && (
+              <span>
+                Saved {formatFull(snapshot.data.summary.savedAt)}, with days in {snapshot.data.summary.timeZone}; it
+                stays as it was when saved.
+              </span>
+            )
+          ) : (
+            <TimeZoneControl />
+          )}
         </p>
       </header>
 
-      <div className="flex flex-wrap items-center gap-2 print:hidden">
-        <div role="group" aria-label="Review period" className="flex rounded-md border p-0.5 max-md:w-full">
-          {periodKinds.map(({ kind, label }) => (
-            <Button
-              key={kind}
-              size="sm"
-              variant={period.kind === kind ? "default" : "ghost"}
-              aria-pressed={period.kind === kind}
-              onClick={() => switchKind(kind)}
-            >
-              {label}
-            </Button>
-          ))}
-        </div>
-        {period.kind === "week" && (
-          <>
-            <label htmlFor="week-start" className="text-xs text-muted-foreground max-md:sr-only">
-              Week starting
-            </label>
-            <input
-              id="week-start"
-              type="date"
-              required
-              className={cn(inputClass, "w-40 max-md:w-0 max-md:min-w-0 max-md:flex-1")}
-              value={period.from}
-              onChange={(e) => e.target.value && moveTo(weekStarting(e.target.value))}
-            />
-          </>
-        )}
-        {period.kind === "custom" && (
-          <>
-            <label htmlFor="review-from" className="text-xs text-muted-foreground max-md:sr-only">
-              From
-            </label>
-            <input
-              id="review-from"
-              type="date"
-              required
-              max={period.to}
-              className={cn(inputClass, "w-40")}
-              value={period.from}
-              onChange={(e) => e.target.value && e.target.value <= period.to && moveTo({ ...period, from: e.target.value })}
-            />
-            <label htmlFor="review-to" className="text-xs text-muted-foreground max-md:sr-only">
-              To
-            </label>
-            <input
-              id="review-to"
-              type="date"
-              required
-              min={period.from}
-              className={cn(inputClass, "w-40")}
-              value={period.to}
-              onChange={(e) => e.target.value && e.target.value >= period.from && moveTo({ ...period, to: e.target.value })}
-            />
-          </>
-        )}
-        {period.kind !== "week" && period.kind !== "custom" && (
-          <span className="px-1 text-sm font-medium">{periodLabel(period)}</span>
-        )}
-        <Button
-          size="icon-sm"
-          variant="outline"
-          aria-label={`Previous ${noun}`}
-          title={`Previous ${noun}`}
-          onClick={() => moveTo(shiftPeriod(period, -1))}
-        >
-          <ChevronLeft />
-        </Button>
-        <Button
-          size="icon-sm"
-          variant="outline"
-          aria-label={`Next ${noun}`}
-          title={`Next ${noun}`}
-          onClick={() => moveTo(shiftPeriod(period, 1))}
-        >
-          <ChevronRight />
-        </Button>
-        {period.kind !== "custom" && (
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => moveTo(periodContaining(period.kind, formatDate(Date.now() / 1000)))}
+      {(viewing || (snapshots.data?.length ?? 0) > 0) && (
+        <div className="flex flex-wrap items-center gap-2 print:hidden">
+          <select
+            aria-label="Saved reviews"
+            className={cn(inputClass, "w-auto max-md:min-w-0 max-md:flex-1")}
+            value={snapshotId ?? ""}
+            onChange={(e) => openSnapshot(e.target.value === "" ? null : Number(e.target.value))}
           >
-            <CalendarCheck className="md:hidden" aria-hidden />
-            <span className="max-md:sr-only">This {noun}</span>
-          </Button>
+            <option value="">Live review</option>
+            {snapshots.data?.map((saved) => (
+              <option key={saved.id} value={saved.id}>
+                {saved.title} (saved {formatDate(saved.savedAt)})
+              </option>
+            ))}
+          </select>
+          {snapshotId !== null && (
+            <>
+              <Button size="sm" variant="outline" onClick={() => openSnapshot(null)}>
+                Back to the live review
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={deleteSnapshot.isPending}
+                onClick={() => void removeSnapshot(snapshotId)}
+              >
+                Delete saved review
+              </Button>
+            </>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 print:hidden">
+        {!viewing && (
+          <>
+            <div role="group" aria-label="Review period" className="flex rounded-md border p-0.5 max-md:w-full">
+              {periodKinds.map(({ kind, label }) => (
+                <Button
+                  key={kind}
+                  size="sm"
+                  variant={period.kind === kind ? "default" : "ghost"}
+                  aria-pressed={period.kind === kind}
+                  onClick={() => switchKind(kind)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+            {period.kind === "week" && (
+              <>
+                <label htmlFor="week-start" className="text-xs text-muted-foreground max-md:sr-only">
+                  Week starting
+                </label>
+                <input
+                  id="week-start"
+                  type="date"
+                  required
+                  className={cn(inputClass, "w-40 max-md:w-0 max-md:min-w-0 max-md:flex-1")}
+                  value={period.from}
+                  onChange={(e) => e.target.value && moveTo(weekStarting(e.target.value))}
+                />
+              </>
+            )}
+            {period.kind === "custom" && (
+              <>
+                <label htmlFor="review-from" className="text-xs text-muted-foreground max-md:sr-only">
+                  From
+                </label>
+                <input
+                  id="review-from"
+                  type="date"
+                  required
+                  max={period.to}
+                  className={cn(inputClass, "w-40")}
+                  value={period.from}
+                  onChange={(e) => e.target.value && e.target.value <= period.to && moveTo({ ...period, from: e.target.value })}
+                />
+                <label htmlFor="review-to" className="text-xs text-muted-foreground max-md:sr-only">
+                  To
+                </label>
+                <input
+                  id="review-to"
+                  type="date"
+                  required
+                  min={period.from}
+                  className={cn(inputClass, "w-40")}
+                  value={period.to}
+                  onChange={(e) => e.target.value && e.target.value >= period.from && moveTo({ ...period, to: e.target.value })}
+                />
+              </>
+            )}
+            {period.kind !== "week" && period.kind !== "custom" && (
+              <span className="px-1 text-sm font-medium">{periodLabel(period)}</span>
+            )}
+            <Button
+              size="icon-sm"
+              variant="outline"
+              aria-label={`Previous ${noun}`}
+              title={`Previous ${noun}`}
+              onClick={() => moveTo(shiftPeriod(period, -1))}
+            >
+              <ChevronLeft />
+            </Button>
+            <Button
+              size="icon-sm"
+              variant="outline"
+              aria-label={`Next ${noun}`}
+              title={`Next ${noun}`}
+              onClick={() => moveTo(shiftPeriod(period, 1))}
+            >
+              <ChevronRight />
+            </Button>
+            {period.kind !== "custom" && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => moveTo(periodContaining(period.kind, formatDate(Date.now() / 1000)))}
+              >
+                <CalendarCheck className="md:hidden" aria-hidden />
+                <span className="max-md:sr-only">This {noun}</span>
+              </Button>
+            )}
+          </>
         )}
         <div className="ml-auto">
           <ExportMenu disabled={!entries}>
             {(close) => (
               <>
+                {!viewing && (
+                  <MenuItem
+                    onSelect={() => {
+                      close();
+                      void saveAsSnapshot();
+                    }}
+                  >
+                    Save as snapshot
+                  </MenuItem>
+                )}
                 <MenuItem
                   onSelect={() => {
                     close();
@@ -448,12 +677,14 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
       {entries?.length === 0 && (
         <EmptyState
           title={
-            review.data?.length === 0
+            shown?.entries.length === 0
               ? `No recorded activity in this ${noun}.`
               : `No recorded activity in this ${noun} matches the filters.`
           }
           hint={
-            review.data?.length === 0
+            viewing
+              ? "This saved review keeps the tasks it had when it was saved."
+              : shown?.entries.length === 0
               ? `Toodo records each task as it is planned, started, opened for review, and completed, with the commits of its branch, so reviews fill up as you work. Work merged before Toodo tracked it is not here: ${
                   onGitHub
                     ? `import the pull requests you merged in this ${noun} to add it.`
@@ -462,8 +693,9 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
               : "Pick another period or change the filters to look at other work."
           }
           action={
+            viewing ? undefined : (
             <div className="flex flex-wrap justify-center gap-2 print:hidden">
-              {review.data?.length === 0 && onGitHub && (
+              {shown?.entries.length === 0 && onGitHub && (
                 <Button size="sm" disabled={backfill.isPending} onClick={() => void importPullRequests()}>
                   {backfill.isPending ? "Importing..." : "Import merged pull requests"}
                 </Button>
@@ -472,14 +704,15 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                 Show the {noun} before
               </Button>
             </div>
+            )
           }
         />
       )}
-      {entries && entries.length > 0 && (
-        <ReviewSummaryPanel period={period} entries={entries} workspaces={workspaceList} />
+      {shown && entries && entries.length > 0 && (
+        <ReviewSummaryPanel shown={shown} entries={entries} workspaces={workspaceList} />
       )}
-      {entries && <PlanPanel period={period} entries={entries} />}
-      {period.kind === "year" && entries && <YearInReviewPanel entries={entries} />}
+      {shown && entries && <PlanPanel shown={shown} entries={entries} editable={!viewing} />}
+      {shownPeriod.kind === "year" && entries && <YearInReviewPanel entries={entries} />}
       {entries &&
         groupByOutcome(entries).map((group) => (
           <section key={group.outcome} aria-label={outcomeLabels[group.outcome]} className="flex flex-col gap-2">
@@ -517,7 +750,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                     </span>
                   </div>
                   <TaskLabels task={task} />
-                  {archived ? null : editingPlan?.id === task.id ? (
+                  {archived || viewing ? null : editingPlan?.id === task.id ? (
                     <TaskEditForm
                       task={task}
                       capabilities={workspaceCapabilities(workspaces.data?.find(({ id }) => id === task.workspaceId))}
@@ -534,7 +767,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                       {task.completionNote}
                     </p>
                   )}
-                  <TaskTime task={task} start={start} end={end} />
+                  {shown && <TaskTime task={task} shown={shown} />}
                   {commits.length > 0 && (
                     <ul aria-label={`Commits of #${task.id} this ${noun}`} className="flex flex-col gap-0.5">
                       {commits.map((commit) => (
@@ -560,11 +793,12 @@ function formatSpan(seconds: number): string {
 }
 
 /**
- * Active against waiting time of a started task, and its waits in the period `[start, end)`
- * with the reason recorded when each began; nothing for a task never started.
+ * Active against waiting time of a started task, and its waits in the shown period with the
+ * reason recorded when each began, as of the time the review is judged at; nothing for a task
+ * never started.
  */
-function TaskTime({ task, start, end }: { task: Task; start: Timestamp; end: Timestamp }) {
-  const now = Date.now() / 1000;
+function TaskTime({ task, shown }: { task: Task; shown: Shown }) {
+  const { start, end, now } = shown;
   const active = activeSeconds(task.timeline, now);
   const waiting = waitingSeconds(task.timeline, now);
   if (active === null || waiting === null) return null;
@@ -708,10 +942,10 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
 }
 
 /** Estimates and due dates of the reviewed tasks against what happened. */
-function PlanPanel({ period, entries }: { period: ReviewPeriod; entries: ReviewEntry[] }) {
-  const plan = planVsActual(period, entries, Date.now() / 1000);
-  // Archived tasks can no longer be edited, so only live ones count as missing a plan.
-  const missing = entries.filter(({ archived }) => !archived).map(({ task }) => missingPlan(task));
+function PlanPanel({ shown, entries, editable }: { shown: Shown; entries: ReviewEntry[]; editable: boolean }) {
+  const plan = planVsActual(shown.end, entries, shown.now);
+  // Archived tasks and saved reviews cannot be edited, so only live tasks count as missing a plan.
+  const missing = editable ? entries.filter(({ archived }) => !archived).map(({ task }) => missingPlan(task)) : [];
   const withoutEstimate = missing.filter((fields) => fields.includes("estimate")).length;
   const withoutDueDate = missing.filter((fields) => fields.includes("dueDate")).length;
   if (plan === null && withoutEstimate + withoutDueDate === 0) return null;
@@ -773,15 +1007,15 @@ function PlanPanel({ period, entries }: { period: ReviewPeriod; entries: ReviewE
 }
 
 function ReviewSummaryPanel({
-  period,
+  shown,
   entries,
   workspaces,
 }: {
-  period: ReviewPeriod;
+  shown: Shown;
   entries: ReviewEntry[];
-  workspaces: Workspace[];
+  workspaces: Pick<Workspace, "id" | "name">[];
 }) {
-  const summary = summarize(period, entries, workspaces);
+  const summary = summarize(shown.period, entries, workspaces, shown.timeZone);
   const busiestMonth = Math.max(1, ...(summary.completedPerMonth ?? []).map(({ count }) => count));
   return (
     <section aria-label="Summary" className="flex flex-col gap-3 rounded-lg border p-3">

@@ -595,7 +595,7 @@ pub struct ReviewReportRequest {
     /// markdown when omitted, or csv.
     pub format: Option<types::ReportFormat>,
     /// An IANA time zone such as `Europe/Berlin` for the days and times; the server's
-    /// when omitted.
+    /// review time zone when omitted, so every client gets the same period.
     pub time_zone: Option<String>,
     /// Only tasks of this workspace; all workspaces when omitted.
     pub workspace_id: Option<WorkspaceId>,

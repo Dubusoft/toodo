@@ -3,8 +3,8 @@
 //! Workspaces and tasks with their history are added next to the data already here.
 //! Imported rows get IDs after every ID this database has used, so nothing here changes;
 //! references between imported rows move along. Devices, push subscriptions, connected
-//! OAuth apps, and the lead chat of the other database are not imported: they belong to
-//! the server that kept them. Tasks forget their herdr workspace: runtime records are not
+//! OAuth apps, settings, saved reviews, and the lead chat of the other database are not
+//! imported: they belong to the server that kept them. Tasks forget their herdr workspace: runtime records are not
 //! imported, since their IDs only meant something to the other machine's herdr.
 
 use std::time::Duration;
@@ -128,6 +128,9 @@ pub(super) const SKIPPED: &[&str] = &[
     "queued_runs",
     "runtime_host_events",
     "runtime_hosts",
+    // Settings and saved reviews belong to the server that kept them.
+    "settings",
+    "review_snapshots",
 ];
 
 impl Storage {
@@ -346,6 +349,8 @@ mod tests {
                  ALTER TABLE workspaces DROP COLUMN archived_at;
                  ALTER TABLE tasks DROP COLUMN archived_at;
                  ALTER TABLE task_events DROP COLUMN reason;
+                 DROP TABLE settings;
+                 DROP TABLE review_snapshots;
                  PRAGMA user_version = 25;",
             )
             .unwrap();

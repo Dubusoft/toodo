@@ -145,7 +145,8 @@ The commands of a global install (`toodo COMMAND --help` shows the options of ea
   [--to DAY] [--format markdown|csv] [--workspace ID] [--label LABEL] [--time-zone ZONE]`:
   print the review of a period as the web app's Review exports it, rendered by the
   running server with the web access token of the data directory; days and times are in
-  this machine's time zone unless `--time-zone` names another. For example
+  the server's review time zone (see the Review section of
+  [architecture.md](architecture.md)) unless `--time-zone` names another. For example
   `toodo review --period year --format csv > review.csv`.
 - `toodo --version`, `toodo --help`. `--version` prints the version of the installed npm
   package (`toodo 1.3.2-dev.9 (commit 1c78b7a1a2b3)`). `toodo-server --version` and the

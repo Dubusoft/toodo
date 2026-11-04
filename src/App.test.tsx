@@ -3,7 +3,6 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { beforeAll, beforeEach, describe, expect, it, vi, onTestFinished } from "vitest";
 import App from "@/App";
 import { formatFull, formatWhen } from "@/lib/timeline";
-import { periodBounds, periodContaining, weekStarting } from "@/lib/review";
 import { isPermissionGranted, sendNotification } from "@/web/notification";
 import {
   commands,
@@ -11,6 +10,7 @@ import {
   type CommitRecord,
   type Criterion,
   type HerdrMachine,
+  type ReviewEntry,
   type RunnerHealth,
   type Task,
   type TaskAgentStatus,
@@ -83,6 +83,12 @@ vi.mock("@/lib/bindings", () => ({
     reviewPeriod: vi.fn(),
     backfillPullRequests: vi.fn(),
     reviewReport: vi.fn(),
+    getReviewTimeZone: vi.fn(),
+    setReviewTimeZone: vi.fn(),
+    saveReviewSnapshot: vi.fn(),
+    listReviewSnapshots: vi.fn(),
+    getReviewSnapshot: vi.fn(),
+    deleteReviewSnapshot: vi.fn(),
   },
   events: {
     tasksChanged: { listen: vi.fn() },
@@ -104,7 +110,16 @@ const readyRunners: RunnerHealth = {
     { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
   ],
 };
-const weekPeriod = (day: string) => periodBounds(weekStarting(day));
+const machineZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const localMidnight = (day: string, days = 0) => {
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(year, month - 1, date + days).getTime() / 1000;
+};
+/** What review_period answers for the days `from` to `to`, judged in this machine's time zone. */
+const reviewOf = (from: string, to: string, entries: ReviewEntry[]) => ({
+  status: "ok" as const,
+  data: { from, to, start: localMidnight(from), end: localMidnight(to, 1), timeZone: machineZone, entries },
+});
 
 const toodo: Workspace = {
   id: 1,
@@ -306,6 +321,8 @@ describe("App", () => {
     mocked.listPullRequestStatuses.mockResolvedValue([]);
     mocked.listBackups.mockResolvedValue({ status: "ok", data: [] });
     mocked.listArchive.mockResolvedValue({ status: "ok", data: { workspaces: [], tasks: [] } });
+    mocked.getReviewTimeZone.mockResolvedValue({ status: "ok", data: { timeZone: machineZone, configured: null } });
+    mocked.listReviewSnapshots.mockResolvedValue({ status: "ok", data: [] });
     mocked.mcpServerInfo.mockResolvedValue({
       url: "http://127.0.0.1:47615/mcp",
       token: "secret",
@@ -372,9 +389,8 @@ describe("App", () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     let imported = false;
-    mocked.reviewPeriod.mockImplementation(async () => ({
-      status: "ok",
-      data: imported
+    mocked.reviewPeriod.mockImplementation(async (from, to) =>
+      reviewOf(from, to, imported
         ? [
             {
               task: task(5, 1, "Add storage", { status: "done", pullRequestUrl: "https://github.com/acme/toodo/pull/7" }),
@@ -384,8 +400,8 @@ describe("App", () => {
               archived: false,
             },
           ]
-        : [],
-    }));
+        : []),
+    );
     mocked.backfillPullRequests.mockImplementation(async () => {
       imported = true;
       return {
@@ -403,8 +419,7 @@ describe("App", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Import merged pull requests" }));
 
-    const { start, end } = weekPeriod("2026-10-12");
-    await waitFor(() => expect(mocked.backfillPullRequests).toHaveBeenCalledWith(start, end));
+    await waitFor(() => expect(mocked.backfillPullRequests).toHaveBeenCalledWith("2026-10-12", "2026-10-18"));
     expect(await screen.findByText("Imported 1 merged pull request as done tasks. Left out 2 pull requests a task already records.")).toBeInTheDocument();
     expect(screen.getByRole("alert", { name: "Pull requests not imported" })).toHaveTextContent(
       "Workspace herdr: gh is not signed in; run gh auth login",
@@ -469,10 +484,9 @@ describe("App", () => {
     let reviewed = unplanned;
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
-    mocked.reviewPeriod.mockImplementation(async () => ({
-      status: "ok",
-      data: [{ task: reviewed, outcome: "completed", at, commits: [], archived: false }],
-    }));
+    mocked.reviewPeriod.mockImplementation(async (from, to) =>
+      reviewOf(from, to, [{ task: reviewed, outcome: "completed", at, commits: [], archived: false }]),
+    );
     mocked.updateTask.mockImplementation(async () => {
       reviewed = estimated;
       return { status: "ok", data: estimated };
@@ -497,6 +511,91 @@ describe("App", () => {
     expect(mocked.updateTask).toHaveBeenCalledWith(
       expect.objectContaining({ id: 1, estimate: { unit: "hours", amount: 2 }, dueDate: null, criteria: null }),
     );
+  });
+
+  it("saves the review as a snapshot and reopens it as it was saved", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 14, 10));
+    const at = new Date(2026, 9, 13, 15).getTime() / 1000;
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    // Since the review was saved, its completed task was reopened.
+    mocked.reviewPeriod.mockImplementation(async (from, to) =>
+      reviewOf(from, to, [{ task: task(1, 1, "Add storage"), outcome: "started", at, commits: [], archived: false }]),
+    );
+    const summary = {
+      id: 7,
+      title: "Week review 2026-10-12 to 2026-10-18",
+      period: "week" as const,
+      from: "2026-10-12",
+      to: "2026-10-18",
+      timeZone: "Asia/Seoul",
+      workspaceId: null,
+      label: null,
+      start: localMidnight("2026-10-12"),
+      end: localMidnight("2026-10-19"),
+      savedAt: at + 3600,
+      entryCount: 1,
+    };
+    mocked.saveReviewSnapshot.mockImplementation(async () => {
+      mocked.listReviewSnapshots.mockResolvedValue({ status: "ok", data: [summary] });
+      return { status: "ok", data: summary };
+    });
+    const report = (fileName: string, contents: string) => ({
+      fileName,
+      mediaType: "text/markdown",
+      from: "2026-10-12",
+      to: "2026-10-18",
+      contents,
+    });
+    mocked.getReviewSnapshot.mockResolvedValue({
+      status: "ok",
+      data: {
+        summary,
+        entries: [{ task: task(1, 1, "Add storage", { status: "done" }), outcome: "completed", at, commits: [], archived: false }],
+        workspaces: [{ id: 1, name: "toodo before renaming" }],
+        markdown: report("toodo-review-2026-10-12-to-2026-10-18.md", "# Saved week\n"),
+        csv: report("toodo-review-2026-10-12-to-2026-10-18.csv", "Task\r\n"),
+      },
+    });
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+    expect(await screen.findByRole("region", { name: "Started" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Change time zone" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Save as snapshot" }));
+    expect(
+      await screen.findByText('Saved "Week review 2026-10-12 to 2026-10-18" with 1 task; reopen it from Saved reviews.'),
+    ).toBeInTheDocument();
+    expect(mocked.saveReviewSnapshot).toHaveBeenCalledWith({
+      period: "week",
+      from: "2026-10-12",
+      to: null,
+      workspaceId: null,
+      label: null,
+      title: null,
+    });
+
+    fireEvent.change(await screen.findByRole("combobox", { name: "Saved reviews" }), { target: { value: "7" } });
+    expect(await screen.findByRole("heading", { name: "Week review 2026-10-12 to 2026-10-18" })).toBeInTheDocument();
+    expect(mocked.getReviewSnapshot).toHaveBeenCalledWith(7);
+    expect(screen.getByText(/with days in Asia\/Seoul; it stays as it was when saved/)).toBeInTheDocument();
+    const completed = await screen.findByRole("region", { name: "Completed" });
+    expect(within(completed).getByText("toodo before renaming ·")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Started" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Week starting")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    expect(screen.queryByRole("menuitem", { name: "Save as snapshot" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy as Markdown" }));
+    expect(await screen.findByText("Copied as Markdown.")).toBeInTheDocument();
+    expect(writeText).toHaveBeenCalledWith("# Saved week\n");
+    expect(mocked.reviewReport).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to the live review" }));
+    expect(await screen.findByRole("region", { name: "Started" })).toBeInTheDocument();
   });
 
   it("plans dependencies across workspaces and lists every workspace together", async () => {
@@ -544,7 +643,6 @@ describe("App", () => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
-    const year = periodBounds(periodContaining("year", "2026-10-12"));
     const createObjectURL = vi.fn((_blob: Blob) => "blob:review");
     Object.defineProperty(URL, "createObjectURL", { value: createObjectURL, configurable: true });
     Object.defineProperty(URL, "revokeObjectURL", { value: vi.fn(), configurable: true });
@@ -552,10 +650,11 @@ describe("App", () => {
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
       downloads.push(this.download);
     });
-    mocked.reviewPeriod.mockImplementation(async (start) => ({
-      status: "ok",
-      data:
-        start === weekPeriod("2026-10-12").start || start === year.start
+    mocked.reviewPeriod.mockImplementation(async (from, to) =>
+      reviewOf(
+        from,
+        to,
+        from === "2026-10-12" || from === "2026-01-01"
           ? [
               {
                 task: task(1, 1, "Add storage", {
@@ -570,7 +669,8 @@ describe("App", () => {
               { task: task(3, 2, "Fix ssh", { labels: ["infra"] }), outcome: "worked_on", at, commits: [], archived: false },
             ]
           : [],
-    }));
+      ),
+    );
     mocked.reviewReport.mockImplementation(async ({ format }) => ({
       status: "ok",
       data:
@@ -584,7 +684,6 @@ describe("App", () => {
               contents: "# Week review: 2026-10-12 to 2026-10-18\n",
             },
     }));
-    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Review" }));
@@ -603,8 +702,7 @@ describe("App", () => {
     );
     const workedOn = screen.getByRole("region", { name: "Worked on" });
     expect(within(workedOn).getByText("herdr ·")).toHaveTextContent(`herdr · ${formatWhen(at)}`);
-    const { start, end } = weekPeriod("2026-10-12");
-    expect(mocked.reviewPeriod).toHaveBeenCalledWith(start, end);
+    expect(mocked.reviewPeriod).toHaveBeenCalledWith("2026-10-12", "2026-10-18");
     const summary = screen.getByRole("region", { name: "Summary" });
     expect(within(summary).getByText("Completed by type").nextSibling).toHaveTextContent("feat 1");
     expect(within(summary).queryByRole("list", { name: "Completed per month" })).not.toBeInTheDocument();
@@ -633,7 +731,7 @@ describe("App", () => {
       from: "2026-10-12",
       to: null,
       format: "markdown",
-      timeZone,
+      timeZone: null,
       workspaceId: null,
       label: null,
     });
@@ -641,12 +739,12 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Previous week" }));
     expect(await screen.findByText("No recorded activity in this week.")).toBeInTheDocument();
     expect(screen.getByLabelText("Week starting")).toHaveValue("2026-10-05");
-    expect(mocked.reviewPeriod).toHaveBeenLastCalledWith(weekPeriod("2026-10-05").start, start);
+    expect(mocked.reviewPeriod).toHaveBeenLastCalledWith("2026-10-05", "2026-10-11");
 
     fireEvent.click(within(screen.getByRole("group", { name: "Review period" })).getByRole("button", { name: "Year" }));
     expect(screen.getByRole("heading", { name: "Year review" })).toBeInTheDocument();
     expect(await screen.findByRole("region", { name: "Completed" })).toBeInTheDocument();
-    expect(mocked.reviewPeriod).toHaveBeenLastCalledWith(year.start, year.end);
+    expect(mocked.reviewPeriod).toHaveBeenLastCalledWith("2026-01-01", "2026-12-31");
     const months = within(screen.getByRole("region", { name: "Summary" })).getByRole("list", {
       name: "Completed per month",
     });
@@ -2520,14 +2618,13 @@ describe("App", () => {
       task(id, 1, title, { status: "done", resolution: "merged", ...overrides });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
-    mocked.reviewPeriod.mockResolvedValue({
-      status: "ok",
-      data: [
+    mocked.reviewPeriod.mockImplementation(async (from, to) =>
+      reviewOf(from, to, [
         done(1, "Add login", { pullRequest: pullRequest(11, 40, 2) }),
         done(2, "Rewrite storage", { pullRequest: pullRequest(12, 400, 0) }),
         done(3, "Try a cache", { taskType: "rnd", resolution: "not_adopted", completionNote: "Twice as slow" }),
-      ].map((task) => ({ task, outcome: "completed" as const, at, commits: [], archived: false })),
-    });
+      ].map((task) => ({ task, outcome: "completed" as const, at, commits: [], archived: false }))),
+    );
     renderApp();
 
     fireEvent.click(await screen.findByRole("button", { name: "Review" }));

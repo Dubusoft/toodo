@@ -29,7 +29,10 @@ const outcomeOrder = Object.keys(outcomeLabels) as ReviewOutcome[];
 
 export type PeriodKind = "week" | "month" | "quarter" | "year" | "custom";
 
-/** A reviewed period: the local calendar days `from` to `to`, both included, as `YYYY-MM-DD`. */
+/**
+ * A reviewed period: the calendar days `from` to `to`, both included, as `YYYY-MM-DD`. The server
+ * judges them in its review time zone, so a period covers the same time on every device.
+ */
 export interface ReviewPeriod {
   kind: PeriodKind;
   from: string;
@@ -133,15 +136,16 @@ function periodDays(period: ReviewPeriod): number {
   return Math.round((localMidnight(period.to, 1).getTime() - localMidnight(period.from).getTime()) / 86_400_000);
 }
 
-/**
- * The period as `[start, end)` in seconds, from local midnight of `from` to local midnight
- * after `to`, so a period with a daylight saving change is an hour shorter or longer.
- */
-export function periodBounds(period: ReviewPeriod): { start: Timestamp; end: Timestamp } {
-  return {
-    start: localMidnight(period.from).getTime() / 1000,
-    end: localMidnight(period.to, 1).getTime() / 1000,
-  };
+/** The day of `at` as `YYYY-MM-DD` in the IANA time zone `timeZone`. */
+export function dayIn(at: Timestamp, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(at * 1000);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
 export function periodLabel(period: ReviewPeriod): string {
@@ -246,8 +250,16 @@ function durations(entries: ReviewEntry[], span: (entry: ReviewEntry) => [Timest
   });
 }
 
-/** Counts and durations of the reviewed period, from the recorded milestones of its entries. */
-export function summarize(period: ReviewPeriod, entries: ReviewEntry[], workspaces: Workspace[]): ReviewSummary {
+/**
+ * Counts and durations of the reviewed period, from the recorded milestones of its entries;
+ * completions are counted per month in `timeZone`, the one the period was judged in.
+ */
+export function summarize(
+  period: ReviewPeriod,
+  entries: ReviewEntry[],
+  workspaces: Pick<Workspace, "id" | "name">[],
+  timeZone: string,
+): ReviewSummary {
   const names = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
   const completed = entries.filter((entry) => entry.outcome === "completed");
   const months = periodMonths(period);
@@ -278,7 +290,7 @@ export function summarize(period: ReviewPeriod, entries: ReviewEntry[], workspac
         ? null
         : months.map((month) => ({
             month,
-            count: completed.filter((entry) => formatDate(entry.at).startsWith(month)).length,
+            count: completed.filter((entry) => dayIn(entry.at, timeZone).startsWith(month)).length,
           })),
     changes:
       pullRequests.length === 0
@@ -317,11 +329,11 @@ export interface PlanVsActual {
 
 /**
  * Estimates and due dates of the reviewed tasks against what happened. An open task counts
- * as late when its due date passed before the end of the period, or before `now` while the
- * period is still under way. Null when no reviewed task has an estimate or a due date.
+ * as late when its due date passed before `periodEnd`, the end of the period, or before `now`
+ * while the period is still under way. Null when no reviewed task has an estimate or a due date.
  */
-export function planVsActual(period: ReviewPeriod, entries: ReviewEntry[], now: Timestamp): PlanVsActual | null {
-  const cutoff = Math.min(now, periodBounds(period).end);
+export function planVsActual(periodEnd: Timestamp, entries: ReviewEntry[], now: Timestamp): PlanVsActual | null {
+  const cutoff = Math.min(now, periodEnd);
   const completed = entries.filter((entry) => entry.outcome === "completed");
   const timed = completed.flatMap(({ task, at }) => {
     const estimated = estimatedSeconds(task.estimate);
