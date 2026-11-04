@@ -302,6 +302,7 @@ impl From<StorageError> for CommandError {
             | StorageError::InvalidBackup(_) => CommandErrorCode::InvalidInput,
             StorageError::Io(_) => CommandErrorCode::External,
             StorageError::Sqlite(_)
+            | StorageError::BackupCheckFailed(_)
             | StorageError::UnsupportedSchemaVersion { .. }
             | StorageError::InvalidData(_) => CommandErrorCode::StorageFailed,
         };

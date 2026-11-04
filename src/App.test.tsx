@@ -76,6 +76,7 @@ vi.mock("@/lib/bindings", () => ({
     mcpServerInfo: vi.fn(),
     listMcpTunnels: vi.fn(),
     getBackupSettings: vi.fn(),
+    getBackupStatus: vi.fn(),
     saveBackupSettings: vi.fn(),
     restoreBackup: vi.fn(),
     reviewPeriod: vi.fn(),
@@ -309,7 +310,8 @@ describe("App", () => {
       lastRejection: null,
     });
     mocked.listMcpTunnels.mockResolvedValue([]);
-    mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7 });
+    mocked.getBackupSettings.mockResolvedValue({ enabled: true, intervalHours: 24, keep: 7, directory: null });
+    mocked.getBackupStatus.mockResolvedValue({ lastFailure: null });
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
     mockedEvents.workspacesChanged.listen.mockResolvedValue(() => {});
     mockedEvents.agentStatusesChanged.listen.mockResolvedValue(() => {});
@@ -1727,6 +1729,17 @@ describe("App", () => {
     expect(within(panel).getByRole("listitem", { name: "Claude" })).toHaveTextContent("/usr/local/bin/claude");
     expect(within(panel).getByRole("listitem", { name: "Codex" })).toHaveTextContent("Installed");
     expect(panel).toHaveTextContent("Runner plain works without herdr.");
+  });
+
+  it("flags a failed automatic backup on the Settings button and the Backups tab", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    mocked.getBackupStatus.mockResolvedValue({ lastFailure: { at: 1_791_970_205, message: "file error: disk full" } });
+    renderApp();
+
+    const settings = await screen.findByRole("button", { name: /^Settings.*Backup failed$/ });
+    fireEvent.click(settings);
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(within(dialog).getByRole("tab", { name: /^Backups.*Backup failed/ })).toBeInTheDocument();
   });
 
   it("groups the settings in a dialog that Escape and a click beside it close", async () => {

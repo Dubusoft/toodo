@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, type KeyboardEvent as ReactKeyboard
 import { useQuery } from "@tanstack/react-query";
 import { Bell, Bot, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, Plug, SlidersHorizontal, SquareTerminal, X } from "lucide-react";
 import { AgentAccessPanel, AgentAccessStatus } from "@/components/agent-access-panel";
-import { BackupPanel } from "@/components/backup-panel";
+import { BackupPanel, BackupStatusLabel } from "@/components/backup-panel";
 import { ConnectedAppsPanel } from "@/components/connected-apps-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -31,7 +31,7 @@ const sections: Section[] = [
   { id: "apps", label: "Connected apps", icon: <Plug /> },
   { id: "devices", label: "Devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
   { id: "notifications", label: "Notifications", icon: <Bell />, status: <NotificationsStatus /> },
-  { id: "backups", label: "Backups", icon: <DatabaseBackup /> },
+  { id: "backups", label: "Backups", icon: <DatabaseBackup />, status: <BackupStatusLabel /> },
 ];
 
 function GeneralSettings() {

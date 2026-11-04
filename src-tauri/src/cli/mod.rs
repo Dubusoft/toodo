@@ -17,7 +17,6 @@ use std::path::{Path, PathBuf};
 
 use crate::mcp;
 use crate::server;
-use crate::storage::Storage;
 use agents::Outcome;
 use settings::{Bundle, DataDir, ListenFlag};
 use update::Channel;
@@ -296,7 +295,8 @@ fn init(args: &InitArgs, var: Var) -> Result<(), String> {
         process::ensure_port_free(listen, &settings::data_dir_flag(&data, var))?;
     }
     server::create_private_dir(data.path()).map_err(|error| in_data(&error))?;
-    drop(Storage::open(&data.database()).map_err(|error| in_data(&error))?);
+    let backups = crate::commands::backup::Backups::load(data.path());
+    drop(server::open_storage(&data.database(), &backups)?);
     let mcp_token = mcp::load_token(&data.mcp_token()).map_err(|error| in_data(&error))?;
     mcp::load_token(&data.web_token()).map_err(|error| in_data(&error))?;
     settings::record_data_dir(&data, var)?;

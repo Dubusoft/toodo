@@ -39,7 +39,10 @@ use crate::domain::runtime::{RunId, RunState};
 use crate::domain::status::TransitionError;
 
 pub use agent_status::AgentStatusTransition;
-pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
+pub use backup::{
+    BackupFile, StagedBackup, backup_before_migration, backup_database, export_database,
+    list_backups, prune_backups, stage_backup,
+};
 pub use criteria::{CriterionCheck, CriterionEdit};
 pub use devices::DeviceAuth;
 pub use import::ImportSummary;
@@ -55,6 +58,10 @@ pub use workspaces::NewWorkspace;
 
 pub type Result<T> = std::result::Result<T, StorageError>;
 
+/// The schema of the first version, for tests that open a database of an older Toodo.
+#[cfg(test)]
+pub(crate) const FIRST_MIGRATION: &str = migrations::MIGRATIONS[0];
+
 /// Handle to the Toodo database. Readers take `&self`; writers take `&mut self` and run
 /// in a transaction.
 pub struct Storage {
@@ -68,7 +75,7 @@ pub struct Storage {
 /// fails with `SQLITE_BUSY`.
 pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn system_clock() -> i64 {
+pub(crate) fn system_clock() -> i64 {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the system clock is set after the Unix epoch");
@@ -218,6 +225,8 @@ pub enum StorageError {
     InvalidData(String),
     /// A file to restore from is not a readable Toodo database.
     InvalidBackup(String),
+    /// A backup Toodo just wrote failed `PRAGMA integrity_check`; it was deleted.
+    BackupCheckFailed(String),
     Io(std::io::Error),
 }
 
@@ -331,6 +340,10 @@ impl fmt::Display for StorageError {
             ),
             Self::InvalidData(message) => write!(f, "stored data is invalid: {message}"),
             Self::InvalidBackup(message) => write!(f, "invalid backup {message}"),
+            Self::BackupCheckFailed(message) => write!(
+                f,
+                "the backup failed its integrity check and was deleted ({message}); check the disk of the backup directory and back up again"
+            ),
             Self::Io(error) => write!(f, "file error: {error}"),
         }
     }

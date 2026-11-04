@@ -390,6 +390,7 @@ commands!(s => {
     );
 
     "get_backup_settings"() => sync Reply::value(backup::get_backup_settings(State(&s.backups)));
+    "get_backup_status"() => sync Reply::value(backup::get_backup_status(State(&s.backups)));
     "save_backup_settings"(settings: BackupSettings) => sync Reply::result(
         backup::save_backup_settings(State(&s.storage), State(&s.backups), settings)
     );

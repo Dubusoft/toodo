@@ -19,6 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { AgentAccessStatus } from "@/components/agent-access-panel";
+import { BackupStatusLabel } from "@/components/backup-panel";
 import { CommandPalette, ShortcutsDialog, type PaletteCommand } from "@/components/command-palette";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { HerdrBanner } from "@/components/herdr-banner";
@@ -292,8 +293,9 @@ export default function App() {
         >
           <Settings />
           Settings
-          <span className="ml-auto text-xs font-normal">
+          <span className="ml-auto flex flex-col items-end text-xs font-normal">
             <AgentAccessStatus />
+            <BackupStatusLabel />
           </span>
         </Button>
       </aside>

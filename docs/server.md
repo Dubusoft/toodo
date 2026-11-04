@@ -266,6 +266,27 @@ right token. Missing headers and the other surface's token do not count. Behind 
 proxy every client shares the proxy's address, so one client that keeps sending an old
 token locks out the others for that minute; stop it, or replace its token.
 
+### Backups
+
+The server writes backups of the database into its backup directory, `<data>/backups/`
+unless *Settings > Backups* names another absolute path, such as a directory on another
+disk (saved as `directory` in `<data>/backup-settings.json`). Backups already in the old
+directory stay there and are no longer listed. There are three kinds:
+
+- `toodo-auto-<time>.sqlite3`: on the automatic schedule (every 24 hours by default,
+  the newest 7 kept).
+- `toodo-pre-restore-<time>.sqlite3`: right before a restore or an import replaces or
+  adds data.
+- `toodo-pre-migration-<time>.sqlite3`: on start, right before a newer version migrates
+  the database to its schema. If this backup cannot be written, the server does not start
+  and leaves the database unchanged; its error names the directory to fix.
+
+Each backup is a `VACUUM INTO` snapshot that must pass `PRAGMA integrity_check` before it
+takes its name; a damaged one is deleted. Automatic backups and exports read the
+database through a connection of their own, so requests keep being served while they
+run. When an automatic backup fails, the Settings button and *Settings > Backups* say so,
+with the reason, until one succeeds again.
+
 ### Import
 
 ```sh
