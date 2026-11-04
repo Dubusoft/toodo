@@ -484,6 +484,19 @@ pub struct ReviewEntry {
     pub commits: Vec<CommitRecord>,
 }
 
+/// What importing merged pull requests as done tasks added.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct BackfillSummary {
+    /// Pull requests recorded as new done tasks.
+    pub imported: u32,
+    /// Pull requests left out because a task already records them or has their branch.
+    pub skipped: u32,
+    /// Workspaces whose pull requests could not be read: each names the workspace, what
+    /// failed, and what to do next. The other workspaces were still imported.
+    pub failures: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct NewTask {

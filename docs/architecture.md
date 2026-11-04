@@ -349,6 +349,14 @@ generated or guessed by an agent.
   outcome, its pull request (with its size and review count once merged), its completion
   note, and the commits it got in the period.
 - Tasks without status history appear only through their commits.
+- Work merged before Toodo tracked it can be imported from GitHub: "Import merged pull
+  requests" on an empty review (`backfill_pull_requests`) records each pull request the
+  signed-in `gh` user merged into the base branch of a GitHub workspace in the period as a
+  task done as merged, planned, started, and in review when the pull request was opened
+  and completed when it was merged. Its type comes from the branch prefix (`fix/...`) or a
+  conventional title (`docs: ...`), else `modify`. A pull request a task already records,
+  or whose branch a task of the workspace has, is skipped, so importing again adds nothing
+  twice.
 - A summary leads the review: the count of tasks per outcome, the commits made in the
   period, completed tasks by task type and by workspace, the summed size of their merged
   pull requests, and the median durations of the tasks completed in the period:

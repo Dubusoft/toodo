@@ -423,6 +423,9 @@ commands!(s => {
     "review_period"(start: Timestamp, end: Timestamp) => sync Reply::result(
         review::review_period(State(s.reader()), start, end)
     );
+    "backfill_pull_requests"(start: Timestamp, end: Timestamp) => sync Reply::result(
+        review::backfill_pull_requests(State(&s.storage), State(&s.git), State(&s.github), start, end)
+    );
 
     "get_backup_settings"() => sync Reply::value(backup::get_backup_settings(State(&s.backups)));
     "get_backup_status"() => sync Reply::value(backup::get_backup_status(State(&s.backups)));

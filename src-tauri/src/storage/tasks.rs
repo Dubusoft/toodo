@@ -55,6 +55,23 @@ pub struct NewPlanTask {
     pub related: Vec<PlanLink>,
 }
 
+/// A pull request merged before Toodo tracked its work, which
+/// [`Storage::record_merged_pull_request`] records as a `done` task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedPullRequestTask {
+    pub workspace_id: WorkspaceId,
+    pub task_type: TaskType,
+    pub title: String,
+    pub description: String,
+    /// The head branch of the pull request.
+    pub branch: String,
+    pub pull_request_url: String,
+    /// When the pull request was opened: the task counts as planned, started, and in
+    /// review from then.
+    pub opened_at: i64,
+    pub merged_at: i64,
+}
+
 /// A task a task of a plan links to: one that exists, or another task of the plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanLink {
@@ -609,6 +626,61 @@ impl Storage {
             .collect::<Result<Vec<_>>>()?;
         tx.commit()?;
         Ok(created)
+    }
+
+    /// Records `merged` as a task `done` as merged, with a status history from the opening
+    /// of its pull request to its merge, so reviews of that time include the work. Writes
+    /// nothing and returns `None` when a task already records the pull request, or one of
+    /// the same workspace has its branch (its pull request is adopted there instead).
+    pub fn record_merged_pull_request(
+        &mut self,
+        merged: &MergedPullRequestTask,
+    ) -> Result<Option<Task>> {
+        let tx = self.conn.transaction()?;
+        let known: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM tasks
+                 WHERE pull_request_url = ?1 OR (workspace_id = ?2 AND branch = ?3))",
+            params![
+                merged.pull_request_url,
+                merged.workspace_id.0,
+                merged.branch
+            ],
+            |row| row.get(0),
+        )?;
+        if known {
+            return Ok(None);
+        }
+        let opened_at = merged.opened_at.min(merged.merged_at);
+        let new = NewTask {
+            workspace_id: merged.workspace_id,
+            task_type: merged.task_type,
+            title: merged.title.clone(),
+            description: merged.description.clone(),
+            estimate: None,
+            due_date: None,
+            criteria: Vec::new(),
+        };
+        let id = insert_task(&tx, &new, opened_at)?;
+        tx.execute(
+            "UPDATE tasks
+             SET status = ?2, resolution = ?3, branch = ?4, pull_request_url = ?5,
+                 pull_request_merged_at = ?6
+             WHERE id = ?1",
+            params![
+                id.0,
+                TaskStatus::Done.as_str(),
+                TaskResolution::Merged.as_str(),
+                merged.branch,
+                merged.pull_request_url,
+                merged.merged_at
+            ],
+        )?;
+        record_event(&tx, id, TaskStatus::InProgress, opened_at)?;
+        record_event(&tx, id, TaskStatus::InReview, opened_at)?;
+        record_event(&tx, id, TaskStatus::Done, merged.merged_at)?;
+        let recorded = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(Some(recorded))
     }
 
     pub fn get_task(&self, id: TaskId) -> Result<Option<Task>> {

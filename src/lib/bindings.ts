@@ -368,6 +368,16 @@ export const commands = {
 	 *  month, or a year in the local time zone.
 	 */
 	reviewPeriod: (start: Timestamp, end: Timestamp) => typedError<ReviewEntry[], CommandError>(invoke("review_period", { start, end })),
+	/**
+	 *  Records the pull requests the signed-in `gh` user merged into the base branch of each
+	 *  GitHub workspace in `[start, end)` as tasks done as merged, each planned, started,
+	 *  and in review from the opening of its pull request, so a review of that time shows
+	 *  work from before Toodo tracked it. A pull request a task already records, or whose
+	 *  branch a task of its workspace has, is skipped, so importing again adds nothing
+	 *  twice. A workspace whose pull requests cannot be read is reported in `failures`;
+	 *  the others are still imported.
+	 */
+	backfillPullRequests: (start: Timestamp, end: Timestamp) => typedError<BackfillSummary, CommandError>(invoke("backfill_pull_requests", { start, end })),
 	getBackupSettings: () => invoke<BackupSettings>("get_backup_settings"),
 	/**  Whether the latest automatic backup failed, and why. */
 	getBackupStatus: () => invoke<BackupStatus>("get_backup_status"),
@@ -475,6 +485,19 @@ export type AgentStatusesChanged = {
 export type AppInfo = {
 	name: string,
 	version: string,
+};
+
+/**  What importing merged pull requests as done tasks added. */
+export type BackfillSummary = {
+	/**  Pull requests recorded as new done tasks. */
+	imported: number,
+	/**  Pull requests left out because a task already records them or has their branch. */
+	skipped: number,
+	/**
+	 *  Workspaces whose pull requests could not be read: each names the workspace, what
+	 *  failed, and what to do next. The other workspaces were still imported.
+	 */
+	failures: string[],
 };
 
 /**  A backup in Toodo's backup directory. */

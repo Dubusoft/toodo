@@ -414,6 +414,20 @@ export function useReview(start: Timestamp, end: Timestamp) {
   });
 }
 
+/** Records the pull requests the user merged in `[start, end)` as done tasks, for reviews of that time. */
+export function useBackfillPullRequests() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ start, end }: { start: Timestamp; end: Timestamp }) =>
+      unwrap(commands.backfillPullRequests(start, end)),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
+  });
+}
+
 export function useHerdrStatus() {
   return useQuery({
     queryKey: queryKeys.herdrStatus,

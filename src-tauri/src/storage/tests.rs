@@ -2043,3 +2043,66 @@ fn workspace_pull_request_options_round_trip() {
         Err(StorageError::WorkspaceNotFound(_))
     ));
 }
+
+#[test]
+fn a_merged_pull_request_is_recorded_once_as_a_done_task_with_its_history() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "toodo", local_location(r"C:\dev\toodo"));
+    let task = add_task(&mut storage, &workspace, "Add login");
+    let path = HostPath::Windows(WindowsPath::parse(r"D:\wt\toodo\feat-add-login-1").unwrap());
+    storage
+        .start_task(task.id, &checkout(path, "feat/add-login-1"), "w7")
+        .unwrap();
+    let merged = |branch: &str, number: i64| MergedPullRequestTask {
+        workspace_id: workspace.id,
+        task_type: TaskType::Fix,
+        title: format!("Change {number}"),
+        description: String::new(),
+        branch: branch.to_owned(),
+        pull_request_url: format!("https://github.com/acme/toodo/pull/{number}"),
+        opened_at: 100,
+        merged_at: 200,
+    };
+
+    // The started task has the branch: its pull request is adopted there.
+    assert_eq!(
+        storage
+            .record_merged_pull_request(&merged("feat/add-login-1", 1))
+            .unwrap(),
+        None
+    );
+    let recorded = storage
+        .record_merged_pull_request(&merged("fix/crash", 2))
+        .unwrap()
+        .unwrap();
+    assert_eq!(recorded.status, Done);
+    assert_eq!(
+        recorded.resolution,
+        Some(crate::domain::model::TaskResolution::Merged)
+    );
+    assert_eq!(recorded.task_type, TaskType::Fix);
+    assert_eq!(recorded.branch.as_deref(), Some("fix/crash"));
+    assert_eq!(recorded.pull_request_merged_at, Some(200));
+    let history: Vec<_> = recorded
+        .timeline
+        .iter()
+        .map(|event| (event.status, event.at))
+        .collect();
+    assert_eq!(
+        history,
+        [
+            (Planned, 100),
+            (InProgress, 100),
+            (InReview, 100),
+            (Done, 200)
+        ]
+    );
+    // Importing the same pull request again adds nothing.
+    assert_eq!(
+        storage
+            .record_merged_pull_request(&merged("fix/crash", 2))
+            .unwrap(),
+        None
+    );
+    assert_eq!(row_count(&storage, "tasks"), 2);
+}

@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::git::{GitError, Invocation, LoggedCommit, Runner, describe};
+use crate::domain::backup::civil_from_days;
 use crate::domain::model::{LinkedIssue, PullRequestOptions, PullRequestSnapshot};
 use crate::domain::remote::GitHubRepository;
 
@@ -401,6 +402,40 @@ fn parse_pull_request(value: &Value) -> Option<PullRequest> {
     })
 }
 
+/// A merged pull request as [`GitHub::merged_pull_requests`] lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedPullRequest {
+    pub url: String,
+    pub number: i64,
+    pub title: String,
+    /// Branch the pull request was opened from.
+    pub head: String,
+    pub created_at: i64,
+    pub merged_at: i64,
+}
+
+/// Fields requested with `--json` for a [`ListedPullRequest`].
+const LISTED_PULL_REQUEST_FIELDS: &str = "url,number,title,headRefName,createdAt,mergedAt";
+
+fn parse_listed_pull_request(value: &Value) -> Option<ListedPullRequest> {
+    let field = |name: &str| value.get(name).and_then(Value::as_str);
+    Some(ListedPullRequest {
+        url: field("url")?.to_owned(),
+        number: value.get("number")?.as_i64()?,
+        title: field("title")?.to_owned(),
+        head: field("headRefName")?.to_owned(),
+        created_at: parse_utc_timestamp(field("createdAt")?)?,
+        merged_at: parse_utc_timestamp(field("mergedAt")?)?,
+    })
+}
+
+/// The UTC day of `seconds` since the Unix epoch as `YYYY-MM-DD`, as GitHub's search
+/// qualifiers take it.
+fn utc_date(seconds: i64) -> String {
+    let (year, month, day) = civil_from_days(seconds.div_euclid(86_400));
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 /// What a merged pull request contained, read when it completes its task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergedPullRequest {
@@ -609,6 +644,17 @@ pub trait GitHub: Send + Sync {
         &self,
         repository: &GitHubRepository,
     ) -> Result<Vec<PullRequestDetails>, GitError>;
+
+    /// The pull requests the signed-in `gh` user opened in `repository` and merged into
+    /// `base` in `[since, until)` (seconds since the Unix epoch), oldest merge first.
+    /// Read every result, including beyond the first page.
+    fn merged_pull_requests(
+        &self,
+        repository: &GitHubRepository,
+        base: &str,
+        since: i64,
+        until: i64,
+    ) -> Result<Vec<ListedPullRequest>, GitError>;
 
     /// How much longer callers that poll GitHub should wait because GitHub refused a call
     /// for its API rate limit; `None` when no limit is in effect.
@@ -921,6 +967,36 @@ impl GitHub for GhCli {
                 parse_pull_request_details(value).ok_or_else(|| unexpected(&invocation, &output))
             })
             .collect()
+    }
+
+    fn merged_pull_requests(
+        &self,
+        repository: &GitHubRepository,
+        base: &str,
+        since: i64,
+        until: i64,
+    ) -> Result<Vec<ListedPullRequest>, GitError> {
+        if until <= since {
+            return Ok(Vec::new());
+        }
+        // Search takes whole UTC days; the times are checked below.
+        let search = format!("merged:{}..{}", utc_date(since), utc_date(until - 1));
+        let (invocation, output, values) = self.list_pull_requests(
+            repository,
+            &[
+                "--state", "merged", "--base", base, "--author", "@me", "--search", &search,
+            ],
+            LISTED_PULL_REQUEST_FIELDS,
+        )?;
+        let mut merged = values
+            .iter()
+            .map(|value| {
+                parse_listed_pull_request(value).ok_or_else(|| unexpected(&invocation, &output))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        merged.retain(|pull_request| (since..until).contains(&pull_request.merged_at));
+        merged.sort_by_key(|pull_request| (pull_request.merged_at, pull_request.number));
+        Ok(merged)
     }
 
     fn rate_limit_backoff(&self) -> Option<Duration> {
@@ -1932,6 +2008,64 @@ mod tests {
             .map(str::to_owned)
         );
         assert_eq!(invocations[1].args.last().unwrap(), "200");
+    }
+
+    #[test]
+    fn merged_pull_requests_search_the_days_of_the_period_and_keep_its_merges() {
+        let listed = |number: i64, merged_at: &str| {
+            serde_json::json!({
+                "url": format!("https://github.com/acme/toodo/pull/{number}"),
+                "number": number,
+                "title": format!("Change {number}"),
+                "headRefName": format!("feat/change-{number}"),
+                "createdAt": "2026-10-08T09:00:00Z",
+                "mergedAt": merged_at,
+            })
+        };
+        let (github, runner) = github(vec![Ok(serde_json::json!([
+            listed(3, "2026-10-10T08:00:00Z"),
+            listed(2, MERGED_AT),
+            // Merged on the last searched day, after the period.
+            listed(4, "2026-10-11T20:00:00Z"),
+        ])
+        .to_string())]);
+        let since = MERGED_AT_SECONDS - 3_600;
+        let until = since + 2 * 86_400;
+
+        let merged = github
+            .merged_pull_requests(&repository(), "main", since, until)
+            .unwrap();
+
+        let numbers: Vec<_> = merged
+            .iter()
+            .map(|pull_request| pull_request.number)
+            .collect();
+        assert_eq!(numbers, [2, 3]);
+        assert_eq!(merged[0].head, "feat/change-2");
+        assert_eq!(merged[0].merged_at, MERGED_AT_SECONDS);
+        let invocations = runner.invocations.lock().unwrap();
+        assert_eq!(
+            invocations[0].args,
+            [
+                "pr",
+                "list",
+                "--repo",
+                "github.com/acme/toodo",
+                "--state",
+                "merged",
+                "--base",
+                "main",
+                "--author",
+                "@me",
+                "--search",
+                "merged:2026-10-09..2026-10-11",
+                "--json",
+                LISTED_PULL_REQUEST_FIELDS,
+                "--limit",
+                "100"
+            ]
+            .map(str::to_owned)
+        );
     }
 
     #[test]
