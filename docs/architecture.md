@@ -156,6 +156,7 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
 | `taskId` | Task the event belongs to. |
 | `status` | Status the task moved to. |
 | `at` | Time of the change, in seconds since the Unix epoch (UTC), from the clock of the machine running Toodo. Shown in the local time zone. |
+| `reason` | Why the work stopped, on a move back to `planned`: the reason given to `pause_task`, the prerequisites a task paused by a new dependency waits on, or why it was reopened. `null` for other changes and for the app's Pause, which asks for no reason. |
 
 - Creating a task records its initial status (`planned`). Every later status change
   records one event in the same transaction as the change itself. Dependency changes do
@@ -353,7 +354,12 @@ generated or guessed by an agent.
 
 - Each task is listed once, under its outcome, with its workspace, the time of the
   outcome, its pull request (with its size and review count once merged), its completion
-  note, and the commits it got in the period.
+  note, and the commits it got in the period. A started task also shows its active time
+  (`in_progress` or `in_review`) against its waiting time (back in `planned` after its
+  first start: paused, blocked by a prerequisite, or reopened, until it was started
+  again), and each wait in the period with the `reason` its event recorded; time still
+  under way counts until now. The CSV export has both as `Active hours` and
+  `Waiting hours`.
 - Tasks without status history appear only through their commits.
 - The commits of a task are its commit records (recorded when its branch is refreshed,
   its pull request opens, and it completes) and the commits its git activity recorded

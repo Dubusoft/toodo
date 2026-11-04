@@ -146,7 +146,11 @@ mod tests {
             issue: None,
             timeline: history
                 .iter()
-                .map(|&(status, at)| TaskEvent { status, at })
+                .map(|&(status, at)| TaskEvent {
+                    status,
+                    at,
+                    reason: None,
+                })
                 .collect(),
             notes: Vec::new(),
             criteria: Vec::new(),

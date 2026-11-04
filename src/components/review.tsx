@@ -13,7 +13,9 @@ import {
   type ReviewEntry,
   type ReviewOutcome,
   type ReviewReport,
+  type Task,
   type TaskId,
+  type Timestamp,
   type Workspace,
 } from "@/lib/bindings";
 import { unwrap, useArchive, useBackfillPullRequests, useReview, useWorkspaces } from "@/lib/queries";
@@ -52,7 +54,7 @@ import { type MissingPlanField, missingPlan } from "@/lib/plan";
 import { toneChip, toneFill, toneText } from "@/lib/status-styles";
 import { workspaceCapabilities } from "@/lib/workspace-capabilities";
 import { When } from "@/components/when";
-import { formatDate } from "@/lib/timeline";
+import { activeSeconds, formatDate, waitingSeconds, workSegments } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import { openUrl } from "@/web/opener";
 
@@ -532,6 +534,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                       {task.completionNote}
                     </p>
                   )}
+                  <TaskTime task={task} start={start} end={end} />
                   {commits.length > 0 && (
                     <ul aria-label={`Commits of #${task.id} this ${noun}`} className="flex flex-col gap-0.5">
                       {commits.map((commit) => (
@@ -548,6 +551,42 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           </section>
         ))}
     </section>
+  );
+}
+
+/** `formatDuration`, with no time at all as `0h` rather than `<1h`. */
+function formatSpan(seconds: number): string {
+  return seconds === 0 ? "0h" : formatDuration(seconds);
+}
+
+/**
+ * Active against waiting time of a started task, and its waits in the period `[start, end)`
+ * with the reason recorded when each began; nothing for a task never started.
+ */
+function TaskTime({ task, start, end }: { task: Task; start: Timestamp; end: Timestamp }) {
+  const now = Date.now() / 1000;
+  const active = activeSeconds(task.timeline, now);
+  const waiting = waitingSeconds(task.timeline, now);
+  if (active === null || waiting === null) return null;
+  const waits = workSegments(task.timeline).filter(
+    (segment) => segment.state === "paused" && segment.start < end && (segment.end ?? now) > start,
+  );
+  return (
+    <div aria-label={`Time of #${task.id}`} className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+      <p>
+        {formatSpan(active)} active, {formatSpan(waiting)} waiting
+      </p>
+      {waits.length > 0 && (
+        <ul aria-label={`Waits of #${task.id}`} className="flex flex-col gap-0.5">
+          {waits.map((wait) => (
+            <li key={wait.start} className="break-words-keep">
+              Waiting {formatSpan(Math.max((wait.end ?? now) - wait.start, 0))} from {formatDate(wait.start)}
+              {wait.end === null && ", still waiting"}: {wait.reason ?? "no reason recorded"}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

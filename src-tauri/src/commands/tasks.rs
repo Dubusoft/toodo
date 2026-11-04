@@ -378,10 +378,15 @@ pub(crate) fn criterion_owner(
 /// it again resumes the work.
 #[specta::specta]
 pub fn pause_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<Task> {
-    pause(&mut lock(&storage), id)
+    pause(&mut lock(&storage), id, None)
 }
 
-pub(crate) fn pause(storage: &mut Storage, id: TaskId) -> CommandResult<Task> {
+/// [`pause_task`], recording `reason`, why the work stops, in the task's status history.
+pub(crate) fn pause(
+    storage: &mut Storage,
+    id: TaskId,
+    reason: Option<&str>,
+) -> CommandResult<Task> {
     let task = storage
         .get_task(id.into())?
         .ok_or(StorageError::TaskNotFound(id.into()))?;
@@ -391,7 +396,7 @@ pub(crate) fn pause(storage: &mut Storage, id: TaskId) -> CommandResult<Task> {
             task.id
         )));
     }
-    Ok((&storage.set_task_status(id.into(), TaskStatus::Planned)?).into())
+    Ok((&storage.pause_task(id.into(), reason)?).into())
 }
 
 /// Reopens a `done` task that was completed or concluded by mistake: it becomes `planned`
@@ -411,7 +416,7 @@ pub fn reopen_task(
 
 pub(crate) fn reopen(storage: &mut Storage, id: TaskId, reason: &str) -> CommandResult<Task> {
     let note = reopen_note(storage, id, reason)?;
-    Ok((&storage.reopen_task(id.into(), &note)?).into())
+    Ok((&storage.reopen_task(id.into(), reason.trim(), &note)?).into())
 }
 
 /// Checks that [`reopen`] would reopen task `id` without changing anything, and returns
@@ -908,7 +913,7 @@ mod tests {
     #[test]
     fn pausing_moves_a_started_task_back_to_planned_and_keeps_its_branch() {
         let (mut storage, task) = storage_with_task();
-        let error = pause(&mut storage, task.id.into()).unwrap_err();
+        let error = pause(&mut storage, task.id.into(), None).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::Rejected);
 
         for status in [TaskStatus::InProgress, TaskStatus::InReview] {
@@ -918,7 +923,7 @@ mod tests {
             if status == TaskStatus::InReview {
                 storage.set_task_status(task.id, status).unwrap();
             }
-            let paused = pause(&mut storage, task.id.into()).unwrap();
+            let paused = pause(&mut storage, task.id.into(), None).unwrap();
             assert_eq!(paused.status, types::TaskStatus::Planned);
             assert_eq!(paused.branch.as_deref(), Some("feat/add-commands-1"));
         }

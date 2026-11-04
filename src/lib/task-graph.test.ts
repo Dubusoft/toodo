@@ -237,12 +237,12 @@ describe("layoutTimeline", () => {
       status: "done",
       branch: "feat/task-6-6",
       timeline: [
-        { status: "planned", at: jan(1), reopened: false },
-        { status: "in_progress", at: jan(2), reopened: false },
-        { status: "planned", at: jan(3), reopened: false },
-        { status: "in_progress", at: jan(5), reopened: false },
-        { status: "in_review", at: jan(6), reopened: false },
-        { status: "done", at: jan(7), reopened: false },
+        { status: "planned", at: jan(1), reopened: false, reason: null },
+        { status: "in_progress", at: jan(2), reopened: false, reason: null },
+        { status: "planned", at: jan(3), reopened: false, reason: null },
+        { status: "in_progress", at: jan(5), reopened: false, reason: null },
+        { status: "in_review", at: jan(6), reopened: false, reason: null },
+        { status: "done", at: jan(7), reopened: false, reason: null },
       ],
       milestones: milestones({ plannedAt: jan(1), startedAt: jan(2), reviewAt: jan(6), completedAt: jan(7) }),
     });
@@ -267,10 +267,10 @@ describe("layoutTimeline", () => {
       status: "done",
       branch: "feat/task-7-7",
       timeline: [
-        { status: "in_progress", at: jan(2), reopened: false },
-        { status: "planned", at: jan(3), reopened: false },
-        { status: "in_progress", at: jan(4), reopened: false },
-        { status: "done", at: jan(7), reopened: false },
+        { status: "in_progress", at: jan(2), reopened: false, reason: null },
+        { status: "planned", at: jan(3), reopened: false, reason: null },
+        { status: "in_progress", at: jan(4), reopened: false, reason: null },
+        { status: "done", at: jan(7), reopened: false, reason: null },
       ],
       milestones: milestones({ plannedAt: jan(2), startedAt: jan(2), completedAt: jan(7) }),
     });
