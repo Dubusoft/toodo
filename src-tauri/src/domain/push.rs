@@ -65,6 +65,16 @@ pub struct PushSubscription {
     pub settings: PushSettings,
     /// Unix seconds.
     pub created_at: i64,
+    /// The last notification that did not reach the device, until one reaches it again.
+    pub last_failure: Option<PushFailure>,
+}
+
+/// Why a notification did not reach a device, and when.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushFailure {
+    pub message: String,
+    /// Unix seconds.
+    pub at: i64,
 }
 
 /// A push service URL: `https`, one line, at most [`MAX_ENDPOINT_LEN`] bytes. The server

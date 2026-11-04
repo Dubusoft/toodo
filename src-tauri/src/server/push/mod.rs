@@ -11,6 +11,11 @@
 //!   kinds of notification the device gets.
 //! - `POST /api/push/test` sends a test notification to the asking device.
 //!
+//! A subscription also carries `lastFailure` (`{ message, at }` or `null`): why the latest
+//! notification did not reach the device, until one reaches it again. Messages the push
+//! service could not take for a while (no connection, 429, 5xx) are tried again after
+//! [`RETRY_DELAYS`] first.
+//!
 //! Subscriptions belong to devices: a browser signed in with the shared web token gets 403.
 
 pub mod alerts;
@@ -38,7 +43,9 @@ use super::rpc::{Reply, json};
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{CommandError, StorageState, lock};
 use crate::domain::device::DeviceId;
-use crate::domain::push::{PushEndpoint, PushSettings, PushSubscription, subscription_keys};
+use crate::domain::push::{
+    PushEndpoint, PushFailure, PushSettings, PushSubscription, subscription_keys,
+};
 use crate::storage::NewPushSubscription;
 
 /// The file in the data directory that holds the VAPID key.
@@ -52,6 +59,13 @@ const TIME_TO_LIVE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long a VAPID token is valid; push services accept at most 24 hours.
 const TOKEN_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
+
+/// How long to wait before each new try of a message that failed for a while, doubling.
+pub const RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushRequest {
@@ -122,8 +136,21 @@ pub enum SendError {
     Gone,
     /// The push service refused the message.
     Refused(PushResponse),
-    /// The message could not be built or posted.
+    /// The push service could not be reached.
+    Unreachable(String),
+    /// The message could not be built.
     Failed(String),
+}
+
+impl SendError {
+    /// Whether the same message may get through when tried again a little later.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Self::Unreachable(_) => true,
+            Self::Refused(response) => response.status == 429 || response.status >= 500,
+            Self::Gone | Self::Failed(_) => false,
+        }
+    }
 }
 
 impl std::fmt::Display for SendError {
@@ -136,6 +163,7 @@ impl std::fmt::Display for SendError {
                 response.status,
                 response.body.trim()
             ),
+            Self::Unreachable(message) => write!(f, "cannot reach the push service: {message}"),
             Self::Failed(message) => message.fmt(f),
         }
     }
@@ -155,6 +183,7 @@ pub struct Push {
     key: VapidKey,
     subject: String,
     transport: Box<dyn Transport>,
+    retry_delays: Vec<Duration>,
     changes: OnceLock<mpsc::Sender<Change>>,
 }
 
@@ -164,8 +193,15 @@ impl Push {
             key,
             subject,
             transport,
+            retry_delays: RETRY_DELAYS.to_vec(),
             changes: OnceLock::new(),
         }
+    }
+
+    #[cfg(test)]
+    fn with_retry_delays(mut self, delays: Vec<Duration>) -> Self {
+        self.retry_delays = delays;
+        self
     }
 
     /// Loads (or creates) the key in `data_dir` and posts over HTTP.
@@ -233,17 +269,54 @@ impl Push {
             .transport
             .post(request)
             .await
-            .map_err(SendError::Failed)?;
+            .map_err(SendError::Unreachable)?;
         match response.status {
             200..=299 => Ok(()),
             404 | 410 => Err(SendError::Gone),
             _ => Err(SendError::Refused(response)),
         }
     }
+
+    /// Sends like [`Push::send`], trying a transient failure again after each retry delay.
+    pub async fn send_with_retry(
+        &self,
+        subscription: &PushSubscription,
+        alert: &Alert,
+    ) -> Result<(), SendError> {
+        let mut delays = self.retry_delays.iter();
+        loop {
+            match self.send(subscription, alert).await {
+                Err(error) if error.is_transient() => match delays.next() {
+                    Some(delay) => tokio::time::sleep(*delay).await,
+                    None => return Err(error),
+                },
+                result => return result,
+            }
+        }
+    }
 }
 
-/// Sends every alert to every subscription whose settings allow it, and drops the
-/// subscriptions their push service reports gone. Returns how many messages were sent.
+/// Keeps the outcome of the latest message to `subscription`: a failure is shown to the
+/// device until a message reaches it again.
+fn record_outcome(
+    storage: &StorageState,
+    subscription: &PushSubscription,
+    outcome: Result<(), &SendError>,
+) {
+    let saved = match outcome {
+        Ok(()) if subscription.last_failure.is_none() => return,
+        Ok(()) => lock(storage).clear_push_failure(&subscription.endpoint),
+        Err(error) => lock(storage).record_push_failure(&subscription.endpoint, &error.to_string()),
+    };
+    if let Err(error) = saved {
+        eprintln!("toodo-server: cannot record a push delivery outcome: {error}");
+    }
+}
+
+/// Sends every alert to every subscription whose settings allow it, records the outcome
+/// of each subscription's latest message, and drops the subscriptions their push service
+/// reports gone. A subscription whose push service stays unreachable gets no further
+/// alerts this time. Returns how many messages were sent.
 pub(crate) fn deliver(
     storage: &StorageState,
     push: &Push,
@@ -263,6 +336,7 @@ pub(crate) fn deliver(
     let mut sent = 0;
     let mut gone = Vec::new();
     for subscription in &subscriptions {
+        let mut latest = None;
         for alert in alerts {
             if alert
                 .kind
@@ -270,17 +344,31 @@ pub(crate) fn deliver(
             {
                 continue;
             }
-            match runtime.block_on(push.send(subscription, alert)) {
-                Ok(()) => sent += 1,
+            match runtime.block_on(push.send_with_retry(subscription, alert)) {
+                Ok(()) => {
+                    sent += 1;
+                    latest = Some(Ok(()));
+                }
                 Err(SendError::Gone) => {
                     gone.push(subscription.endpoint.clone());
+                    latest = None;
                     break;
                 }
-                Err(error) => eprintln!(
-                    "toodo-server: push to device {} failed: {error}",
-                    subscription.device
-                ),
+                Err(error) => {
+                    eprintln!(
+                        "toodo-server: push to device {} failed: {error}",
+                        subscription.device
+                    );
+                    let transient = error.is_transient();
+                    latest = Some(Err(error));
+                    if transient {
+                        break;
+                    }
+                }
             }
+        }
+        if let Some(outcome) = &latest {
+            record_outcome(storage, subscription, outcome.as_ref().map(|_| ()));
         }
     }
     for endpoint in gone {
@@ -365,9 +453,27 @@ impl From<SettingsView> for PushSettings {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SubscriptionView {
     endpoint: String,
     settings: SettingsView,
+    last_failure: Option<FailureView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FailureView {
+    message: String,
+    /// Unix seconds.
+    at: i64,
+}
+
+impl From<PushFailure> for FailureView {
+    fn from(failure: PushFailure) -> Self {
+        Self {
+            message: failure.message,
+            at: failure.at,
+        }
+    }
 }
 
 impl From<PushSubscription> for SubscriptionView {
@@ -375,6 +481,7 @@ impl From<PushSubscription> for SubscriptionView {
         Self {
             endpoint: subscription.endpoint.as_str().to_owned(),
             settings: subscription.settings.into(),
+            last_failure: subscription.last_failure.map(Into::into),
         }
     }
 }
@@ -548,7 +655,31 @@ pub async fn send_test(
         Ok(subscription) => subscription,
         Err(error) => return Reply::Failed(error).into_response(),
     };
-    let sent = match services.push.send(&subscription, &Alert::test()).await {
+    let outcome = services
+        .push
+        .send_with_retry(&subscription, &Alert::test())
+        .await;
+    if !matches!(outcome, Err(SendError::Gone)) {
+        let storage_services = services.clone();
+        let subscription = subscription.clone();
+        let failure = outcome.clone().err();
+        let recorded = blocking(move || {
+            record_outcome(
+                &storage_services.storage,
+                &subscription,
+                failure.as_ref().map_or(Ok(()), Err),
+            );
+            Ok(())
+        })
+        .await;
+        if let Err(error) = recorded {
+            eprintln!(
+                "toodo-server: cannot record a push delivery outcome: {}",
+                error.message
+            );
+        }
+    }
+    let sent = match outcome {
         Ok(()) => Ok(()),
         Err(SendError::Gone) => {
             let endpoint = subscription.endpoint.clone();
@@ -562,7 +693,10 @@ pub async fn send_test(
                  notifications on again",
             )))
         }
-        Err(error) => Err(CommandError::external(error.to_string())),
+        Err(error) => Err(CommandError::external(format!(
+            "{error}; send a test notification again later, or disable and enable \
+             notifications on this device to subscribe it anew"
+        ))),
     };
     Reply::result(sent).into_response()
 }
@@ -574,7 +708,7 @@ pub(crate) mod tests {
     use super::*;
 
     /// Records every request and answers each with the next queued status (201 when none
-    /// is queued).
+    /// is queued); a queued 0 fails as an unreachable push service.
     #[derive(Default)]
     pub(crate) struct FakeTransport {
         pub requests: Arc<Mutex<Vec<PushRequest>>>,
@@ -596,6 +730,9 @@ pub(crate) mod tests {
                 }
             };
             Box::pin(async move {
+                if status == 0 {
+                    return Err("connection refused".to_owned());
+                }
                 Ok(PushResponse {
                     status,
                     body: "nope".to_owned(),
@@ -612,6 +749,7 @@ pub(crate) mod tests {
             "mailto:toodo@example.com".to_owned(),
             Box::new(transport),
         )
+        .with_retry_delays(vec![Duration::ZERO; RETRY_DELAYS.len()])
     }
 
     /// A browser's side of a subscription: the key it decrypts with and the JSON it sends.
@@ -699,6 +837,65 @@ pub(crate) mod tests {
             .unwrap();
         storage.set_push_settings(device, settings).unwrap();
         browser
+    }
+
+    #[test]
+    fn transient_failures_are_retried_and_the_latest_failure_is_kept() {
+        let temp = tempfile::tempdir().unwrap();
+        let transport = FakeTransport::default();
+        let requests = transport.requests.clone();
+        let statuses = transport.statuses.clone();
+        let push = push(temp.path(), transport);
+        let storage: StorageState =
+            std::sync::Mutex::new(crate::storage::Storage::open_in_memory().unwrap());
+        subscribed(
+            &storage,
+            "Phone",
+            "https://push.example/phone",
+            PushSettings::default(),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let tries = || requests.lock().unwrap().len();
+        let failure = || {
+            lock(&storage).active_push_subscriptions().unwrap()[0]
+                .last_failure
+                .clone()
+                .map(|failure| failure.message)
+        };
+
+        // A busy push service, then an unreachable one, then the message gets through.
+        statuses.lock().unwrap().extend([503, 0]);
+        assert_eq!(deliver(&storage, &push, &runtime, &[Alert::test()]), 1);
+        assert_eq!(tries(), 3);
+        assert_eq!(failure(), None);
+
+        // A refusal that would not change is not tried again, and is kept.
+        statuses.lock().unwrap().push(400);
+        assert_eq!(deliver(&storage, &push, &runtime, &[Alert::test()]), 0);
+        assert_eq!(tries(), 4);
+        assert_eq!(
+            failure().as_deref(),
+            Some("the push service refused the notification (400): nope")
+        );
+
+        // An unreachable push service gets every retry, and the device's other alerts wait.
+        statuses.lock().unwrap().extend([0; RETRY_DELAYS.len() + 1]);
+        assert_eq!(
+            deliver(&storage, &push, &runtime, &[Alert::test(), Alert::test()]),
+            0
+        );
+        assert_eq!(tries(), 4 + RETRY_DELAYS.len() + 1);
+        assert_eq!(
+            failure().as_deref(),
+            Some("cannot reach the push service: connection refused")
+        );
+
+        // The next message that gets through clears it.
+        assert_eq!(deliver(&storage, &push, &runtime, &[Alert::test()]), 1);
+        assert_eq!(failure(), None);
     }
 
     #[test]

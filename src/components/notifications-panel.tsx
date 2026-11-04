@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
+import { formatFull, formatWhen } from "@/lib/timeline";
 import {
   disablePush,
   enablePush,
@@ -8,6 +9,7 @@ import {
   pushSupport,
   saveSettings,
   sendTest,
+  type PushFailure,
   type PushSettings,
   type PushState,
   type PushSupport,
@@ -31,6 +33,25 @@ function summary({ subscription, permission }: PushState): string {
   return subscription ? "on" : permission === "denied" ? "blocked" : "off";
 }
 
+/** Why notifications stopped reaching this device, and what to try. */
+function LastFailure({ failure }: { failure: PushFailure }) {
+  return (
+    <div role="note" aria-label="Last delivery failure" className="flex flex-col gap-0.5 rounded-md border border-destructive/40 p-2">
+      <p className="font-medium">The last notification did not reach this device</p>
+      <p className="break-words text-muted-foreground">
+        <time dateTime={new Date(failure.at * 1000).toISOString()} title={formatFull(failure.at)}>
+          {formatWhen(failure.at)}
+        </time>
+        : {failure.message}
+      </p>
+      <p className="text-muted-foreground">
+        Send a test notification to check again. If it keeps failing, disable and enable notifications to subscribe
+        this device anew.
+      </p>
+    </div>
+  );
+}
+
 function PushControls({ state }: { state: PushState }) {
   const queryClient = useQueryClient();
   const show = (subscription: ServerSubscription | null) =>
@@ -44,7 +65,8 @@ function PushControls({ state }: { state: PushState }) {
   });
   const disable = useMutation({ mutationFn: disablePush, onSuccess: () => show(null), onError: recheck });
   const save = useMutation({ mutationFn: saveSettings, onSuccess: show });
-  const test = useMutation({ mutationFn: sendTest });
+  // A test notification records its outcome as the device's last delivery failure or clears it.
+  const test = useMutation({ mutationFn: sendTest, onSettled: recheck });
   // Only the outcome of the latest action shows.
   const latest = [enable, disable, save, test].reduce((last, mutation) =>
     mutation.submittedAt > last.submittedAt ? mutation : last,
@@ -60,6 +82,7 @@ function PushControls({ state }: { state: PushState }) {
       {subscription && settings ? (
         <>
           <p className="font-medium">Notifications are on for this device.</p>
+          {subscription.lastFailure && <LastFailure failure={subscription.lastFailure} />}
           <fieldset className="flex flex-col gap-1">
             <legend className="mb-1 text-muted-foreground">Notify about</legend>
             {settingOptions.map(({ key, label }) => (

@@ -328,6 +328,12 @@ Subscriptions belong to devices: a browser signed in with the shared `web-token`
 in again to get a device token first. Revoking a device ends its subscription, and a
 subscription the push service reports gone is dropped.
 
+A notification the push service cannot take for a while (it cannot be reached, or it
+answers 429 or 5xx) is tried again after 1, 2, and 4 seconds; while a device's push
+service stays unreachable, its other notifications of the same change are skipped. Any
+other refusal is not retried. The settings show the last notification that did not
+reach the device and why, until a notification (such as a test one) reaches it again.
+
 The server signs its requests to push services with a P-256 key (VAPID) that it creates
 in `push-key` in the data directory on first start (`0600`, like the tokens). Browsers
 bind their subscriptions to that key: replacing or losing the file ends every

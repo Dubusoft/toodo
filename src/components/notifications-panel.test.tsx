@@ -14,7 +14,7 @@ vi.mock("@/web/push", () => ({
 }));
 
 const settings = { agent: true, pullRequests: true, completion: true };
-const subscription = { endpoint: "https://push.example/a", settings };
+const subscription = { endpoint: "https://push.example/a", settings, lastFailure: null };
 const off: PushState = { publicKey: "BP8A-_w", permission: "default", subscription: null };
 const on: PushState = { ...off, permission: "granted", subscription };
 
@@ -86,6 +86,24 @@ describe("NotificationsPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send test notification" }));
 
     expect(await screen.findByRole("status")).toHaveTextContent("Test notification sent.");
+  });
+
+  it("shows the last delivery failure and refreshes it after a test notification", async () => {
+    const failure = { message: "the push service refused the notification (403): nope", at: 1_700_000_000 };
+    vi.mocked(getPushState)
+      .mockResolvedValueOnce({ ...on, subscription: { ...subscription, lastFailure: failure } })
+      .mockResolvedValue(on);
+    vi.mocked(sendTest).mockResolvedValue();
+    renderPanel();
+
+    const note = await screen.findByRole("note", { name: "Last delivery failure" });
+    expect(note).toHaveTextContent(failure.message);
+    expect(note).toHaveTextContent("Send a test notification to check again");
+
+    fireEvent.click(screen.getByRole("button", { name: "Send test notification" }));
+
+    await waitFor(() => expect(screen.queryByRole("note", { name: "Last delivery failure" })).not.toBeInTheDocument());
+    expect(getPushState).toHaveBeenCalledTimes(2);
   });
 
   it("points to the browser settings when notifications are blocked", async () => {
