@@ -45,6 +45,24 @@ pub struct TaskQuery {
     pub limit: Option<u32>,
 }
 
+/// One task of a plan [`Storage::create_tasks`] creates, with its labels and links.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewPlanTask {
+    pub task: NewTask,
+    /// Labels [`crate::domain::plan::labels`] checked.
+    pub labels: Vec<String>,
+    pub depends_on: Vec<PlanLink>,
+    pub related: Vec<PlanLink>,
+}
+
+/// A task a task of a plan links to: one that exists, or another task of the plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanLink {
+    Existing(TaskId),
+    /// The task of the plan at this index.
+    New(usize),
+}
+
 /// The dependent task after [`Storage::add_dependencies`], and whether the new
 /// prerequisites paused it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -511,36 +529,84 @@ fn ensure_ready(conn: &Connection, task: TaskId) -> Result<()> {
     }
 }
 
+/// Inserts `new` as a `planned` task without dependencies, recording its creation at `at`
+/// as the first event of its history.
+fn insert_task(conn: &Connection, new: &NewTask, at: i64) -> Result<TaskId> {
+    let status = TaskStatus::Planned;
+    let (estimate_unit, estimate_amount) = estimate_columns(new.estimate);
+    let inserted = conn.execute(
+        "INSERT INTO tasks (workspace_id, type, title, description, status, estimate_unit,
+             estimate_amount, due_date)
+         SELECT id, ?2, ?3, ?4, ?5, ?6, ?7, ?8 FROM workspaces WHERE id = ?1",
+        params![
+            new.workspace_id.0,
+            new.task_type.as_str(),
+            new.title,
+            new.description,
+            status.as_str(),
+            estimate_unit,
+            estimate_amount,
+            new.due_date.map(|due| due.to_string())
+        ],
+    )?;
+    if inserted == 0 {
+        return Err(StorageError::WorkspaceNotFound(new.workspace_id));
+    }
+    let id = TaskId(conn.last_insert_rowid());
+    record_event(conn, id, status, at)?;
+    super::criteria::insert(conn, id, &new.criteria)?;
+    Ok(id)
+}
+
 impl Storage {
     /// Creates a `planned` task without dependencies and records its creation as the
     /// first event of its history.
     pub fn create_task(&mut self, new: &NewTask) -> Result<Task> {
-        let status = TaskStatus::Planned;
         let at = self.now();
         let tx = self.conn.transaction()?;
-        let (estimate_unit, estimate_amount) = estimate_columns(new.estimate);
-        let inserted = tx.execute(
-            "INSERT INTO tasks (workspace_id, type, title, description, status, estimate_unit,
-                 estimate_amount, due_date)
-             SELECT id, ?2, ?3, ?4, ?5, ?6, ?7, ?8 FROM workspaces WHERE id = ?1",
-            params![
-                new.workspace_id.0,
-                new.task_type.as_str(),
-                new.title,
-                new.description,
-                status.as_str(),
-                estimate_unit,
-                estimate_amount,
-                new.due_date.map(|due| due.to_string())
-            ],
-        )?;
-        if inserted == 0 {
-            return Err(StorageError::WorkspaceNotFound(new.workspace_id));
-        }
-        let id = TaskId(tx.last_insert_rowid());
-        record_event(&tx, id, status, at)?;
-        super::criteria::insert(&tx, id, &new.criteria)?;
+        let id = insert_task(&tx, new, at)?;
         let created = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(created)
+    }
+
+    /// Creates every task of `plan` as `planned`, with its labels, dependencies, and
+    /// related links, in one transaction: an unknown workspace or task, or a dependency
+    /// that would close a cycle, writes nothing. Returns the tasks in the order of `plan`.
+    pub fn create_tasks(&mut self, plan: &[NewPlanTask]) -> Result<Vec<Task>> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let mut ids = Vec::with_capacity(plan.len());
+        for item in plan {
+            let id = insert_task(&tx, &item.task, at)?;
+            for label in &item.labels {
+                tx.execute(
+                    "INSERT OR IGNORE INTO task_labels (task_id, label) VALUES (?1, ?2)",
+                    params![id.0, label],
+                )?;
+            }
+            ids.push(id);
+        }
+        let resolve = |link: &PlanLink| match *link {
+            PlanLink::Existing(id) => id,
+            PlanLink::New(index) => ids[index],
+        };
+        for (item, &id) in plan.iter().zip(&ids) {
+            for prerequisite in item.depends_on.iter().map(resolve) {
+                dag::validate_dependency(&all_tasks(&tx)?, id, prerequisite)?;
+                tx.execute(
+                    "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+                    [id.0, prerequisite.0],
+                )?;
+            }
+            for related in item.related.iter().map(resolve) {
+                super::search::link_related(&tx, id, related)?;
+            }
+        }
+        let created = ids
+            .iter()
+            .map(|&id| find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id)))
+            .collect::<Result<Vec<_>>>()?;
         tx.commit()?;
         Ok(created)
     }

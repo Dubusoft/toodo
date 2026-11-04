@@ -398,6 +398,12 @@ Besides the regular task tools, two arguments help an agent wire and start a pla
 
 - **Create.** `create_task` takes `depends_on` and `related`, so a plan is wired in one
   call; an unknown task in either rejects the call and creates nothing.
+- **Plan.** `create_plan` creates several tasks in one call and one transaction. Each
+  task takes the fields of `create_task` and a `key` unique in the plan; it links to other
+  tasks of the plan by key in `depends_on_keys` and `related_keys`, and to existing tasks
+  by ID in `depends_on` and `related`. An unknown key or task, a repeated key, keys whose
+  dependencies form a cycle, or a failure in any one task rejects the call and creates no
+  task. The reply lists the created tasks with their keys, in the order given.
 - **Start.** `start_task` takes `agent_command`, which Toodo runs in the shell pane of
   the task's new herdr workspace once the task is started (for the coding agent; only
   for workspaces on the server's machine). The command runs after
@@ -457,8 +463,8 @@ on loopback as before and still see every tool.
 
 - `toodo.read`: `read_toodo_skill`, `list_workspaces`, `list_tasks`, `search_tasks`,
   `get_task`, and the [task and run resources](#task-and-run-resources).
-- `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `update_task`,
-  `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
+- `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `create_plan`,
+  `update_task`, `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
   `add_criterion`, `remove_criterion`, `check_criterion`, `add_progress_note`,
   `report_blocker`, and `pause_task`.
 

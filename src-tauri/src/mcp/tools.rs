@@ -20,8 +20,8 @@ use crate::commands::types::{
 };
 use crate::commands::workspaces;
 use crate::commands::{
-    CommandError, CommandErrorKind, CommandResult, PlainRunState, State, StorageState,
-    TmuxRunState, lock,
+    CommandError, CommandErrorCode, CommandErrorKind, CommandResult, PlainRunState, State,
+    StorageState, TmuxRunState, lock,
 };
 use crate::domain::criteria::{CheckedBy, NewCriterion};
 use crate::domain::model::{self, NoteKind};
@@ -171,6 +171,74 @@ pub struct CreateTask {
     #[serde(default)]
     #[schemars(skip)]
     pub request_id: Option<String>,
+}
+
+/// The most tasks one `create_plan` call creates.
+const MAX_PLAN_TASKS: usize = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct CreatePlan {
+    /// The tasks to create, 1 to 100, in any order.
+    pub tasks: Vec<PlanTask>,
+}
+
+/// One task of `create_plan`: the fields of `create_task`, plus a key that the other
+/// tasks of the plan link to it by.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct PlanTask {
+    /// A name for this task within the plan, e.g. "schema", unique among its tasks.
+    pub key: String,
+    pub workspace_id: WorkspaceId,
+    pub task_type: TaskType,
+    pub title: String,
+    /// Details in GitHub-flavored Markdown.
+    #[serde(default)]
+    pub description: String,
+    /// Existing tasks, from any workspace, this task depends on.
+    #[serde(default)]
+    pub depends_on: Vec<TaskId>,
+    /// Keys of other tasks of this plan that this task depends on.
+    #[serde(default)]
+    pub depends_on_keys: Vec<String>,
+    /// Existing tasks, from any workspace, to link as related (see add_related).
+    #[serde(default)]
+    pub related: Vec<TaskId>,
+    /// Keys of other tasks of this plan to link as related.
+    #[serde(default)]
+    pub related_keys: Vec<String>,
+    /// Your estimate of the work, in hours, days, weeks, or months of active work.
+    #[serde(default)]
+    pub estimate: Option<Estimate>,
+    /// The day the task should be done by, as YYYY-MM-DD, if the user gave one.
+    #[serde(default)]
+    pub due_date: Option<String>,
+    /// Labels, as in create_task.
+    #[serde(default)]
+    pub labels: Vec<String>,
+    /// Verifiable completion criteria in order (no `id`), as in create_task.
+    #[serde(default)]
+    pub criteria: Vec<types::CriterionInput>,
+    /// Put the merge criterion first, as in create_task; true when omitted.
+    #[serde(default)]
+    pub merge_criterion: Option<bool>,
+}
+
+/// A task `create_plan` created, with the key the plan gave it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedTask {
+    pub key: String,
+    #[serde(flatten)]
+    pub task: Task,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedPlan {
+    /// The created tasks in the order of the plan.
+    pub tasks: Vec<PlannedTask>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -1004,6 +1072,223 @@ pub fn create_task(storage: &StorageState, request: CreateTask) -> CommandResult
         request.merge_criterion.unwrap_or(true),
     )?;
     insert_task(&mut lock(storage), request, merge)
+}
+
+/// Creates every task of `request` with its dependencies and related links in one
+/// transaction. Keys, links, criteria, and labels are checked before anything is
+/// written, and a failure names the task of the plan it is about; any failure creates
+/// nothing.
+pub fn create_plan(storage: &StorageState, request: CreatePlan) -> CommandResult<CreatedPlan> {
+    let count = request.tasks.len();
+    if count == 0 || count > MAX_PLAN_TASKS {
+        return Err(CommandError::invalid_input(format!(
+            "create_plan takes 1 to {MAX_PLAN_TASKS} tasks, got {count}; split a larger plan into several create_plan calls and link a later call's tasks to created ones by id in depends_on"
+        )));
+    }
+    let keys = plan_keys(&request.tasks)?;
+    let mut depends_on = Vec::with_capacity(count);
+    let mut related = Vec::with_capacity(count);
+    for (index, item) in request.tasks.iter().enumerate() {
+        let existing = |ids: &[TaskId]| {
+            ids.iter()
+                .map(|&id| storage::PlanLink::Existing(id.into()))
+                .collect::<Vec<_>>()
+        };
+        let mut links = existing(&item.depends_on);
+        links.extend(plan_links(
+            &keys,
+            index,
+            item,
+            "depends_on",
+            &item.depends_on_keys,
+        )?);
+        depends_on.push(links);
+        let mut links = existing(&item.related);
+        links.extend(plan_links(
+            &keys,
+            index,
+            item,
+            "related",
+            &item.related_keys,
+        )?);
+        related.push(links);
+    }
+    check_plan_order(&request.tasks, &depends_on)?;
+    {
+        let storage = lock(storage);
+        for item in &request.tasks {
+            if storage.get_workspace(item.workspace_id.into())?.is_none() {
+                return Err(CommandError::new(
+                    CommandErrorCode::WorkspaceNotFound,
+                    format!(
+                        "task `{}` of the plan is in workspace {}, which does not exist; take a workspace id from list_workspaces",
+                        item.key, item.workspace_id.0
+                    ),
+                ));
+            }
+            for &id in item.depends_on.iter().chain(&item.related) {
+                if storage.get_task(id.into())?.is_none() {
+                    return Err(CommandError::not_found(format!(
+                        "task `{}` of the plan links to task {}, which does not exist; find the task with search_tasks, or link a task of the plan by its key in depends_on_keys or related_keys",
+                        item.key, id.0
+                    )));
+                }
+            }
+        }
+    }
+    let mut plan = Vec::with_capacity(count);
+    for ((item, depends_on), related) in request.tasks.iter().zip(depends_on).zip(related) {
+        let in_item = |mut error: CommandError| {
+            error.message = format!("task `{}` of the plan: {}", item.key, error.message);
+            error
+        };
+        let mut task = plan_task(storage, item).map_err(in_item)?;
+        task.depends_on = depends_on;
+        task.related = related;
+        plan.push(task);
+    }
+    let mut storage = lock(storage);
+    let created = storage.create_tasks(&plan)?;
+    let tasks = request
+        .tasks
+        .into_iter()
+        .zip(created)
+        .map(|(item, task)| {
+            Ok(PlannedTask {
+                key: item.key,
+                task: get_task(&storage, task.id.into())?,
+            })
+        })
+        .collect::<CommandResult<_>>()?;
+    Ok(CreatedPlan { tasks })
+}
+
+/// The index of each key of `tasks`, rejecting empty and repeated keys.
+fn plan_keys(tasks: &[PlanTask]) -> CommandResult<HashMap<&str, usize>> {
+    let mut keys = HashMap::with_capacity(tasks.len());
+    for (index, item) in tasks.iter().enumerate() {
+        if item.key.trim().is_empty() {
+            return Err(CommandError::invalid_input(format!(
+                "task {} of the plan (\"{}\") has no key; give every task of the plan its own key, e.g. \"schema\"",
+                index + 1,
+                item.title
+            )));
+        }
+        if keys.insert(item.key.as_str(), index).is_some() {
+            return Err(CommandError::invalid_input(format!(
+                "more than one task of the plan has the key `{}`; give each task its own key",
+                item.key
+            )));
+        }
+    }
+    Ok(keys)
+}
+
+/// The links that `names`, the `{field}_keys` of the task at `index`, make to other tasks
+/// of the plan.
+fn plan_links(
+    keys: &HashMap<&str, usize>,
+    index: usize,
+    item: &PlanTask,
+    field: &str,
+    names: &[String],
+) -> CommandResult<Vec<storage::PlanLink>> {
+    names
+        .iter()
+        .map(|name| match keys.get(name.as_str()) {
+            Some(&linked) if linked == index => Err(CommandError::invalid_input(format!(
+                "task `{name}` of the plan names itself in {field}_keys; remove `{name}` from them"
+            ))),
+            Some(&linked) => Ok(storage::PlanLink::New(linked)),
+            None => Err(CommandError::invalid_input(format!(
+                "task `{}` of the plan names `{name}` in {field}_keys, but no task of the plan has that key; use the key of a task in tasks, or put the id of an existing task in {field}",
+                item.key
+            ))),
+        })
+        .collect()
+}
+
+/// Rejects dependencies between tasks of the plan that form a cycle, naming its tasks.
+/// Existing tasks cannot depend on new ones, so no other cycle is possible.
+fn check_plan_order(
+    tasks: &[PlanTask],
+    depends_on: &[Vec<storage::PlanLink>],
+) -> CommandResult<()> {
+    let mut waiting: Vec<usize> = depends_on
+        .iter()
+        .map(|links| {
+            links
+                .iter()
+                .filter(|link| matches!(link, storage::PlanLink::New(_)))
+                .count()
+        })
+        .collect();
+    let mut done: Vec<usize> = (0..tasks.len()).filter(|&i| waiting[i] == 0).collect();
+    let mut next = 0;
+    while let Some(&finished) = done.get(next) {
+        next += 1;
+        for (index, links) in depends_on.iter().enumerate() {
+            let edges = links
+                .iter()
+                .filter(|&&link| link == storage::PlanLink::New(finished))
+                .count();
+            if edges > 0 {
+                waiting[index] -= edges;
+                if waiting[index] == 0 {
+                    done.push(index);
+                }
+            }
+        }
+    }
+    if done.len() == tasks.len() {
+        return Ok(());
+    }
+    let cycle: Vec<String> = (0..tasks.len())
+        .filter(|&index| waiting[index] > 0)
+        .map(|index| format!("`{}`", tasks[index].key))
+        .collect();
+    Err(CommandError::rejected(format!(
+        "the depends_on_keys of tasks {} of the plan form a cycle, so none of them could ever start; remove a key from one of them so every task has prerequisites that finish first",
+        cycle.join(", ")
+    )))
+}
+
+/// The task `item` of a plan creates, with its merge criterion and labels and without
+/// links.
+fn plan_task(storage: &StorageState, item: &PlanTask) -> CommandResult<storage::NewPlanTask> {
+    let criteria = item
+        .criteria
+        .iter()
+        .map(types::CriterionInput::parse)
+        .collect::<CommandResult<Vec<_>>>()?;
+    let merge = task_commands::merge_criterion(
+        storage,
+        item.workspace_id.into(),
+        &criteria,
+        item.merge_criterion.unwrap_or(true),
+    )?;
+    let labels = types::labels(&item.labels)?;
+    let mut task: storage::NewTask = types::NewTask {
+        workspace_id: item.workspace_id,
+        task_type: item.task_type,
+        title: item.title.clone(),
+        description: item.description.clone(),
+        estimate: item.estimate,
+        due_date: item.due_date.clone(),
+        labels: Vec::new(),
+        criteria: item.criteria.clone(),
+        merge_criterion: false,
+    }
+    .try_into()?;
+    if let Some(merge) = merge {
+        task.criteria.insert(0, merge);
+    }
+    Ok(storage::NewPlanTask {
+        task,
+        labels,
+        depends_on: Vec::new(),
+        related: Vec::new(),
+    })
 }
 
 /// Creates the task of `request` with `merge`, its merge criterion if it gets one, in
@@ -2768,6 +3053,158 @@ mod tests {
             Task::from(&storage.get_task(task.id.into()).unwrap().unwrap()),
             cleared
         );
+    }
+
+    fn plan(tasks: serde_json::Value) -> CreatePlan {
+        serde_json::from_value(serde_json::json!({ "tasks": tasks })).unwrap()
+    }
+
+    #[test]
+    fn create_plan_creates_every_task_with_its_links() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let existing = storage
+            .create_task(&crate::storage::NewTask {
+                workspace_id: workspace.into(),
+                task_type: model::TaskType::Feat,
+                title: "Earlier work".to_owned(),
+                description: String::new(),
+                estimate: None,
+                due_date: None,
+                criteria: Vec::new(),
+            })
+            .unwrap()
+            .id;
+        let storage = StorageState::new(storage);
+        let created = create_plan(
+            &storage,
+            plan(serde_json::json!([
+                {"key": "ui", "workspace_id": workspace, "task_type": "feat", "title": "UI",
+                 "depends_on_keys": ["api"], "depends_on": [existing.0],
+                 "related_keys": ["schema"]},
+                {"key": "schema", "workspace_id": workspace, "task_type": "feat",
+                 "title": "Schema", "labels": ["search"], "merge_criterion": false,
+                 "criteria": [{"text": "Migrated", "kind": "manual"}]},
+                {"key": "api", "workspace_id": workspace, "task_type": "feat", "title": "API",
+                 "depends_on_keys": ["schema"], "related": [existing.0]},
+            ])),
+        )
+        .unwrap();
+
+        let keys: Vec<&str> = created.tasks.iter().map(|t| t.key.as_str()).collect();
+        assert_eq!(keys, ["ui", "schema", "api"]);
+        let [ui, schema, api] = [0, 1, 2].map(|i| &created.tasks[i].task);
+        let mut ui_depends_on = ui.depends_on.clone();
+        ui_depends_on.sort_by_key(|id| id.0);
+        assert_eq!(ui_depends_on, [TaskId(existing.0), api.id]);
+        assert_eq!(api.depends_on, [schema.id]);
+        assert!(schema.depends_on.is_empty());
+        assert_eq!(schema.labels, ["search"]);
+        assert_eq!(schema.criteria.len(), 1);
+        assert_eq!(api.criteria[0].kind, types::CheckKind::PrMerged);
+        let mut relations = lock(&storage).list_relations().unwrap();
+        relations.sort();
+        let pair =
+            |a: TaskId, b: TaskId| (model::TaskId(a.0.min(b.0)), model::TaskId(a.0.max(b.0)));
+        let mut expected = vec![pair(ui.id, schema.id), pair(api.id, TaskId(existing.0))];
+        expected.sort();
+        assert_eq!(relations, expected);
+    }
+
+    #[test]
+    fn create_plan_creates_nothing_when_any_task_fails() {
+        let (storage, workspace) = storage_with_workspace();
+        let storage = StorageState::new(storage);
+        let first = serde_json::json!(
+            {"key": "schema", "workspace_id": workspace, "task_type": "feat", "title": "Schema"}
+        );
+        let last = |fields: serde_json::Value| {
+            let mut task = serde_json::json!(
+                {"key": "api", "workspace_id": workspace, "task_type": "feat", "title": "API"}
+            );
+            task.as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            task
+        };
+        let cases = [
+            (
+                "unknown task",
+                last(serde_json::json!({"depends_on": [999]})),
+            ),
+            (
+                "unknown related task",
+                last(serde_json::json!({"related": [999]})),
+            ),
+            (
+                "unknown key",
+                last(serde_json::json!({"depends_on_keys": ["ui"]})),
+            ),
+            (
+                "own key",
+                last(serde_json::json!({"related_keys": ["api"]})),
+            ),
+            ("repeated key", last(serde_json::json!({"key": "schema"}))),
+            ("empty key", last(serde_json::json!({"key": " "}))),
+            (
+                "unknown workspace",
+                last(serde_json::json!({"workspace_id": 999})),
+            ),
+            ("bad label", last(serde_json::json!({"labels": ["a,b"]}))),
+            (
+                "bad due date",
+                last(serde_json::json!({"due_date": "tomorrow"})),
+            ),
+            ("empty title", last(serde_json::json!({"title": " "}))),
+        ];
+        for (name, task) in cases {
+            let error = create_plan(&storage, plan(serde_json::json!([first, task])));
+            assert!(error.is_err(), "{name}");
+            assert_eq!(lock(&storage).list_all_tasks().unwrap(), [], "{name}");
+        }
+
+        let cycle = plan(serde_json::json!([
+            first,
+            last(serde_json::json!({"depends_on_keys": ["ui"]})),
+            {"key": "ui", "workspace_id": workspace, "task_type": "feat", "title": "UI",
+             "depends_on_keys": ["api", "schema"]},
+        ]));
+        let error = create_plan(&storage, cycle).unwrap_err();
+        assert!(error.message.contains("`api`, `ui`"), "{}", error.message);
+        assert!(create_plan(&storage, plan(serde_json::json!([]))).is_err());
+        assert_eq!(lock(&storage).list_all_tasks().unwrap(), []);
+    }
+
+    /// The tasks of a plan are written in one transaction: a failure after the first task
+    /// is inserted rolls it back.
+    #[test]
+    fn create_tasks_rolls_back_every_task_on_a_failure() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = |workspace: i64| crate::storage::NewTask {
+            workspace_id: model::WorkspaceId(workspace),
+            task_type: model::TaskType::Feat,
+            title: "Task".to_owned(),
+            description: String::new(),
+            estimate: None,
+            due_date: None,
+            criteria: Vec::new(),
+        };
+        let item = |task, depends_on| crate::storage::NewPlanTask {
+            task,
+            labels: vec!["search".to_owned()],
+            depends_on,
+            related: Vec::new(),
+        };
+        for failing in [
+            item(task(999), Vec::new()),
+            item(
+                task(workspace.0),
+                vec![crate::storage::PlanLink::Existing(model::TaskId(999))],
+            ),
+        ] {
+            let plan = [item(task(workspace.0), Vec::new()), failing];
+            assert!(storage.create_tasks(&plan).is_err());
+            assert_eq!(storage.list_all_tasks().unwrap(), []);
+        }
     }
 
     #[test]

@@ -96,7 +96,9 @@ its scope (a bug in the base branch, a missing API, a refactor the change depend
 
 1. Call `search_tasks` for the work and reuse a matching open task instead of creating
    a duplicate; read relevant done tasks with `get_task` before planning the new ones.
-2. Create each missing task with `create_task`, with a description in the format below.
+2. Create each missing task with `create_task`, with a description in the format below;
+   create several at once with `create_plan`, which links them to each other by key and
+   creates none if any one is rejected.
    Do not make it depend on your task: your task could then never finish. Link it with
    `add_related` to earlier tasks it builds on that it does not have to wait for.
 3. Tell the user which tasks you created and why this task needs them.

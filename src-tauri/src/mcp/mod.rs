@@ -489,10 +489,10 @@ impl Access {
             "read_toodo_skill" | "list_workspaces" | "list_tasks" | "search_tasks" | "get_task" => {
                 scopes.can_read()
             }
-            "create_workspace" | "create_task" | "update_task" | "add_dependency"
-            | "remove_dependency" | "add_related" | "remove_related" | "add_criterion"
-            | "remove_criterion" | "check_criterion" | "add_progress_note" | "report_blocker"
-            | "pause_task" => scopes.can_write(),
+            "create_workspace" | "create_task" | "create_plan" | "update_task"
+            | "add_dependency" | "remove_dependency" | "add_related" | "remove_related"
+            | "add_criterion" | "remove_criterion" | "check_criterion" | "add_progress_note"
+            | "report_blocker" | "pause_task" => scopes.can_write(),
             _ => {
                 return Err(format!(
                     "{name} is local-only; use the Toodo app or a local agent with the MCP token."
@@ -834,6 +834,29 @@ impl ToodoMcp {
             .blocking(move |backend| tools::create_task(backend.storage(), request))
             .await?;
         self.announce(result)
+    }
+
+    #[tool(
+        description = "Create a whole plan of tasks in one call, all or nothing: each task takes the fields of create_task plus a key unique in the plan, e.g. \"schema\", and links to other tasks of the plan by key in depends_on_keys and related_keys, to existing tasks by id in depends_on and related. Keys, links, criteria, and labels are checked first; a failure in any task, an unknown key or task, or depends_on_keys that form a cycle creates no task at all. Returns {tasks}: the created tasks in the order given, each with its key."
+    )]
+    async fn create_plan(
+        &self,
+        Parameters(request): Parameters<tools::CreatePlan>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| tools::create_plan(backend.storage(), request))
+            .await?;
+        if let Ok(plan) = &result {
+            let workspaces: std::collections::BTreeSet<i64> = plan
+                .tasks
+                .iter()
+                .map(|planned| planned.task.workspace_id.0)
+                .collect();
+            for workspace in workspaces {
+                self.backend.tasks_changed(model::WorkspaceId(workspace));
+            }
+        }
+        reply(result)
     }
 
     #[tool(
@@ -3120,6 +3143,7 @@ mod tests {
                 .chain([
                     "create_workspace",
                     "create_task",
+                    "create_plan",
                     "update_task",
                     "add_dependency",
                     "remove_dependency",

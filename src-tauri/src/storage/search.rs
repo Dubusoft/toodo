@@ -1,7 +1,7 @@
 //! Finding earlier tasks: full-text search over the `task_search` index, and related
 //! links, which connect tasks without making one wait on the other.
 
-use rusqlite::{OptionalExtension, ToSql};
+use rusqlite::{Connection, OptionalExtension, ToSql};
 
 use super::{Result, Storage, StorageError};
 use crate::domain::model::{TaskId, WorkspaceId};
@@ -48,6 +48,23 @@ pub(super) fn like_pattern(word: &str) -> String {
 const SEARCHED_TEXT: &str = "(task_search.title || char(10) || task_search.description \
     || char(10) || task_search.notes || char(10) || task_search.branch || char(10) \
     || task_search.pull_request)";
+
+/// Links `task` and `related` as [`Storage::add_related`] does, on `conn`.
+pub(super) fn link_related(conn: &Connection, task: TaskId, related: TaskId) -> Result<()> {
+    if task == related {
+        return Err(StorageError::SelfRelation(task));
+    }
+    for id in [task, related] {
+        conn.query_row("SELECT 1 FROM tasks WHERE id = ?1", [id.0], |_| Ok(()))
+            .optional()?
+            .ok_or(StorageError::TaskNotFound(id))?;
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO task_relations (task_id, related_id) VALUES (?1, ?2)",
+        [task.0.min(related.0), task.0.max(related.0)],
+    )?;
+    Ok(())
+}
 
 impl Storage {
     /// IDs of the tasks matching `search`, best match first, at most `search.limit`.
@@ -110,19 +127,8 @@ impl Storage {
     /// either direction, keeps one link. Rejects a link of a task to itself and unknown
     /// tasks.
     pub fn add_related(&mut self, task: TaskId, related: TaskId) -> Result<()> {
-        if task == related {
-            return Err(StorageError::SelfRelation(task));
-        }
         let tx = self.conn.transaction()?;
-        for id in [task, related] {
-            tx.query_row("SELECT 1 FROM tasks WHERE id = ?1", [id.0], |_| Ok(()))
-                .optional()?
-                .ok_or(StorageError::TaskNotFound(id))?;
-        }
-        tx.execute(
-            "INSERT OR IGNORE INTO task_relations (task_id, related_id) VALUES (?1, ?2)",
-            [task.0.min(related.0), task.0.max(related.0)],
-        )?;
+        link_related(&tx, task, related)?;
         tx.commit()?;
         Ok(())
     }

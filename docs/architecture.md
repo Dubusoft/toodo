@@ -791,7 +791,9 @@ path deletes journal history.
     scopes it to one machine, and a path inside worktrees on several machines is
     rejected without it), `restore_worktree` (the app's Restore worktree for an active
     task whose worktree directory is gone), `create_task` (with optional `depends_on`; unknown
-    prerequisites create nothing), `update_task`, `add_dependency` (several
+    prerequisites create nothing), `create_plan` (several tasks linked to each other by
+    key and to existing tasks by ID, in one transaction; any failure creates nothing),
+    `update_task`, `add_dependency` (several
     prerequisites in one call; it pauses an `in_progress` task they block but leaves its
     herdr workspace open, and the app asks the user whether to close it),
     `remove_dependency`, `pause_task` / `resume_task` (the app's Pause and Resume; the
