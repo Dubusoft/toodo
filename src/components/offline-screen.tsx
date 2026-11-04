@@ -1,13 +1,17 @@
 import { useSyncExternalStore, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { When } from "@/components/when";
+import { queryKeys } from "@/lib/queries";
 import { reachability, retryNow, subscribeReachability, unreachableCause } from "@/web/connection";
 
 /**
  * Tells while `toodo-server` does not answer and takes the banner away once it answers
  * again. The app stays mounted underneath, so what was loaded stays readable and nothing
  * typed or selected is lost; buttons that change data are disabled meanwhile (see
- * `src/components/ui/button.tsx`).
+ * `src/components/ui/button.tsx`). What was loaded may come from an earlier visit (see
+ * `src/web/query-cache.ts`), so the banner tells when.
  */
 export function ConnectionGate({ children }: { children: ReactNode }) {
   const state = useSyncExternalStore(subscribeReachability, reachability);
@@ -24,6 +28,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 
 function OfflineBanner({ retrying }: { retrying: boolean }) {
   const reason = navigator.onLine ? unreachableCause() : "This device is offline.";
+  const loadedAt = useQueryClient().getQueryState(queryKeys.tasks)?.dataUpdatedAt;
   return (
     <div
       role="alert"
@@ -35,8 +40,15 @@ function OfflineBanner({ retrying }: { retrying: boolean }) {
           Can't reach the Toodo server
         </p>
         <p className="text-xs">
-          {reason} What you see may be out of date, and changes are paused. Toodo reconnects on its own as soon as
-          the server answers.
+          {reason}{" "}
+          {loadedAt ? (
+            <>
+              Read-only: the tasks shown were loaded <When at={Math.floor(loadedAt / 1000)} /> and may be out of date.
+            </>
+          ) : (
+            "What you see may be out of date."
+          )}{" "}
+          Changes are paused. Toodo reconnects on its own as soon as the server answers.
         </p>
       </div>
       <Button size="sm" variant="outline" disabled={retrying} onClick={retryNow}>

@@ -7,10 +7,13 @@ import "@/index.css";
 import { initTheme } from "@/lib/theme";
 import { onReachable, watchConnection } from "@/web/connection";
 import { watchInstallOffer } from "@/web/install";
+import { indexedDbStore, pauseQueriesWhileUnreachable, restoreQueries, saveQueries } from "@/web/query-cache";
 
 initTheme();
 
-const queryClient = new QueryClient();
+// A change waits for no reconnect: while the server is unreachable it fails at once.
+const queryClient = new QueryClient({ defaultOptions: { mutations: { networkMode: "always" } } });
+const savedQueries = indexedDbStore();
 
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 
@@ -30,16 +33,19 @@ function render(app: ReactNode) {
 // The browser may announce that it can install the app before the app has loaded.
 watchInstallOffer();
 watchConnection();
+pauseQueriesWhileUnreachable();
 void Promise.all([
   import("@/components/server-access"),
   import("@/components/offline-screen"),
   import("@/web/event"),
+  restoreQueries(queryClient, savedQueries),
 ]).then(
   ([{ ServerAccess }, { ConnectionGate }, { onReconnect }]) => {
     // Events sent while the stream was down are lost; refetch what they would have changed.
     onReconnect(() => void queryClient.invalidateQueries());
     // What failed while the server was unreachable shows its data again.
     onReachable(() => void queryClient.invalidateQueries());
+    saveQueries(queryClient, savedQueries);
     // The service worker comes with the built app (see vite-pwa.ts), not the dev server.
     if (import.meta.env.PROD && "serviceWorker" in navigator) {
       navigator.serviceWorker.register("/sw.js").catch((error: unknown) => {
