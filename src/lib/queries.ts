@@ -20,7 +20,9 @@ import {
   type NewTask,
   type NewWorkspace,
   type PullRequestOptions,
+  type ReviewSnapshotId,
   type RunId,
+  type SaveReviewSnapshotRequest,
   type RunState,
   type Task,
   type TaskEdit,
@@ -31,7 +33,6 @@ import {
   type TaskAgentStatus,
   type TaskPullRequestStatus,
   type TaskRun,
-  type Timestamp,
   type Workspace,
   type WorkspaceId,
   type WorkspaceLocation,
@@ -99,7 +100,12 @@ export const queryKeys = {
   backupStatus: ["backup-status"] as const,
   mcpServerInfo: ["mcp-server-info"] as const,
   mcpTunnels: ["mcp-tunnels"] as const,
-  review: (start: Timestamp, end: Timestamp) => ["review", start, end] as const,
+  review: (from: string, to: string) => ["review", from, to] as const,
+  /** Under "review", so changing it refetches every review. */
+  reviewTimeZone: ["review", "time-zone"] as const,
+  /** Not under "review": saved reviews never change with the tasks. */
+  reviewSnapshots: ["review-snapshots"] as const,
+  reviewSnapshot: (id: ReviewSnapshotId) => ["review-snapshots", id] as const,
   directories: (machine: Machine, path: string | null) => ["directories", machine, path] as const,
 };
 
@@ -441,20 +447,73 @@ export function useTasks(wanted: readonly (TaskId | null | undefined)[] = []) {
   return { ...pages, data: [...paged, ...extraTasks].sort((a, b) => a.id - b.id) };
 }
 
-/** Tasks of every workspace with a milestone or commit in `[start, end)`. */
-export function useReview(start: Timestamp, end: Timestamp) {
+/**
+ * Tasks of every workspace with a milestone or commit in the days `from` to `to`, judged in the
+ * review time zone of the server, with the period it judged them by.
+ */
+export function useReview(from: string, to: string) {
   return useQuery({
-    queryKey: queryKeys.review(start, end),
-    queryFn: () => unwrap(commands.reviewPeriod(start, end)),
+    queryKey: queryKeys.review(from, to),
+    queryFn: () => unwrap(commands.reviewPeriod(from, to)),
   });
 }
 
-/** Records the pull requests the user merged in `[start, end)` as done tasks, for reviews of that time. */
+/** The time zone the server judges reviewed periods in. */
+export function useReviewTimeZone() {
+  return useQuery({
+    queryKey: queryKeys.reviewTimeZone,
+    queryFn: () => unwrap(commands.getReviewTimeZone()),
+  });
+}
+
+/** Sets the review time zone (`null` for the server's own); every review is refetched. */
+export function useSetReviewTimeZone() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (timeZone: string | null) => unwrap(commands.setReviewTimeZone(timeZone)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["review"] }),
+  });
+}
+
+/** The saved reviews, the most recently saved first. */
+export function useReviewSnapshots() {
+  return useQuery({
+    queryKey: queryKeys.reviewSnapshots,
+    queryFn: () => unwrap(commands.listReviewSnapshots()),
+  });
+}
+
+/** A saved review as it was saved; nothing is loaded while `id` is null. */
+export function useReviewSnapshot(id: ReviewSnapshotId | null) {
+  return useQuery({
+    queryKey: queryKeys.reviewSnapshot(id ?? 0),
+    queryFn: () => unwrap(commands.getReviewSnapshot(id ?? 0)),
+    enabled: id !== null,
+    staleTime: Infinity,
+  });
+}
+
+export function useSaveReviewSnapshot() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (request: SaveReviewSnapshotRequest) => unwrap(commands.saveReviewSnapshot(request)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.reviewSnapshots }),
+  });
+}
+
+export function useDeleteReviewSnapshot() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: ReviewSnapshotId) => unwrap(commands.deleteReviewSnapshot(id)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.reviewSnapshots }),
+  });
+}
+
+/** Records the pull requests the user merged in the days `from` to `to` as done tasks, for reviews of that time. */
 export function useBackfillPullRequests() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ start, end }: { start: Timestamp; end: Timestamp }) =>
-      unwrap(commands.backfillPullRequests(start, end)),
+    mutationFn: ({ from, to }: { from: string; to: string }) => unwrap(commands.backfillPullRequests(from, to)),
     onSuccess: () =>
       Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
@@ -687,14 +746,26 @@ export function useRunLog(runId: RunId | null) {
 
 /**
  * Starts Claude or Codex on the worktree of an `in_progress` task of a plain or tmux workspace,
- * with the task as its prompt. A launch that fails is still recorded as a failed run, so the runs
- * are refetched either way.
+ * with the task as its prompt; with `followUpOf`, an ended run, the agent resumes that run's
+ * session with `prompt` instead. A launch that fails is still recorded as a failed run, so the
+ * runs are refetched either way.
  */
 export function useStartPlainRun() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ taskId, adapter, mcp }: { taskId: TaskId; adapter: AgentAdapter; mcp: boolean }) =>
-      unwrap(commands.startPlainRun(taskId, adapter, null, mcp)),
+    mutationFn: ({
+      taskId,
+      adapter,
+      mcp,
+      prompt = null,
+      followUpOf = null,
+    }: {
+      taskId: TaskId;
+      adapter: AgentAdapter;
+      mcp: boolean;
+      prompt?: string | null;
+      followUpOf?: RunId | null;
+    }) => unwrap(commands.startPlainRun(taskId, adapter, prompt, mcp, followUpOf)),
     onSettled: (_run, _error, { taskId }) => queryClient.invalidateQueries({ queryKey: queryKeys.taskRuns(taskId) }),
   });
 }

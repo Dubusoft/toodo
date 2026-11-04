@@ -52,14 +52,15 @@ fn version_24_keeps_task_data_references_search_and_the_id_counter() {
         "pull_request_snapshots",
     ];
     // The herdr handle moves from `tasks` to the runtime workspaces (version 31); the
-    // agent options of version 39 and the archive time of version 42 are new columns that
-    // start out NULL.
+    // agent options of version 39, the archive time of version 42, and the event reason of
+    // version 43 are new columns that start out NULL.
     let skipped = [
         "herdr_workspace_id",
         "agent_model",
         "agent_permission_mode",
         "run_time_limit_minutes",
         "archived_at",
+        "reason",
     ];
     let rows = |conn: &Connection, table: &str| {
         let mut statement = conn

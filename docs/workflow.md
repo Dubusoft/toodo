@@ -63,7 +63,8 @@ one a pause recorded also ends once its prerequisites no longer block the task.
 Pausing ("Pause") an `in_progress` or `in_review` task moves it back to `planned`. It
 keeps its branch, worktree, herdr workspace, commit records, and pull request, so
 resuming it continues the same work (see step 3). Agents do the same through MCP:
-`pause_task` pauses a task with a required reason, recorded as a progress note, and
+`pause_task` pauses a task with a required reason, recorded in its status history and as
+a progress note, and
 `resume_task` resumes a paused task as "Resume" does, with an optional note. `done` is a
 final state. A task that is abandoned is deleted (step 8), which archives it; both a
 paused and an archived task stay in the reports.
@@ -378,6 +379,14 @@ The workspace's agent options set the model, permission mode (`read_only`, `edit
 with; a task can override each of them (`set_workspace_agent_options`,
 `set_task_agent_options`, or Agents and Runs with in the app). Runs started afterwards
 use the new values.
+
+To send more work to the agent of an ended run, such as review feedback, pass
+`followUpOf` with that run's id and the feedback as the prompt (required then). The
+agent resumes the session it reported (Claude session id, Codex thread id) instead of
+starting from zero, and the new run's `followUpOf` links it to the run it continues. A
+run that is still active, reported no session, ran another agent, or ran in another
+worktree cannot be followed up; start a new run instead. In the app, Follow up on the
+newest run of a conversation does the same.
 
 Each machine (the server, or an SSH host) can limit how many plain and tmux runs it runs
 at once (`set_machine_run_limit`, or Runs at once beside the worktree root in the app; no

@@ -79,15 +79,15 @@ describe("openBlocker", () => {
   it("ends the blocker a pause recorded once the task is resumed after it", () => {
     // The blocker note is at 0, written with the pause.
     const paused = [
-      { status: "in_progress" as const, at: -10, reopened: false },
-      { status: "planned" as const, at: 0, reopened: false },
+      { status: "in_progress" as const, at: -10, reopened: false, reason: null },
+      { status: "planned" as const, at: 0, reopened: false, reason: null },
     ];
     expect(openBlocker(task(1, "planned", ["blocker"], paused), new Map())?.kind).toBe("blocker");
     expect(
-      openBlocker(task(1, "in_progress", ["blocker"], [...paused, { status: "in_progress", at: 5, reopened: false }]), new Map()),
+      openBlocker(task(1, "in_progress", ["blocker"], [...paused, { status: "in_progress", at: 5, reopened: false, reason: null }]), new Map()),
     ).toBeNull();
     // A blocker reported while the task was already in progress stays open.
-    expect(openBlocker(task(2, "in_progress", ["blocker"], [{ status: "in_progress", at: -10, reopened: false }]), new Map())?.kind).toBe(
+    expect(openBlocker(task(2, "in_progress", ["blocker"], [{ status: "in_progress", at: -10, reopened: false, reason: null }]), new Map())?.kind).toBe(
       "blocker",
     );
   });

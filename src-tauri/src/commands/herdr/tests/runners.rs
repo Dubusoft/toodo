@@ -111,6 +111,7 @@ fn a_task_of_a_plain_workspace_starts_in_a_git_worktree_without_herdr() {
                 checkout_path: None,
                 runtime_workspace: None,
                 adapter_profile: None,
+                conversation: None,
             })
             .unwrap()
             .into_run();
@@ -359,6 +360,11 @@ fn a_task_of_a_workspace_without_a_runner_starts_without_git_or_herdr() {
     let again = start(&storage, &no_git(), &runtime, task.id).unwrap_err();
     assert_eq!(again.kind, CommandErrorKind::Rejected);
     assert_eq!(lock(&storage).list_task_runs(task.id).unwrap().len(), 1);
+
+    // The run has no process to stop, so it does not keep the workspace from being archived.
+    lock(&storage)
+        .archive_workspace(stored.workspace_id)
+        .unwrap();
 }
 
 #[test]

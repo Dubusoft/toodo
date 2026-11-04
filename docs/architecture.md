@@ -156,6 +156,7 @@ Every task keeps an append-only status history. Each entry is a `TaskEvent`:
 | `taskId` | Task the event belongs to. |
 | `status` | Status the task moved to. |
 | `at` | Time of the change, in seconds since the Unix epoch (UTC), from the clock of the machine running Toodo. Shown in the local time zone. |
+| `reason` | Why the work stopped, on a move back to `planned`: the reason given to `pause_task`, the prerequisites a task paused by a new dependency waits on, or why it was reopened. `null` for other changes and for the app's Pause, which asks for no reason. |
 
 - Creating a task records its initial status (`planned`). Every later status change
   records one event in the same transaction as the change itself. Dependency changes do
@@ -353,9 +354,21 @@ records, pull request snapshots) and the completion notes the user wrote; nothin
 generated or guessed by an agent.
 
 - The user picks a week (from any first day, by default the Monday of the current week),
-  a calendar month, quarter, or year, or a custom range of days. The period runs from
-  local midnight of its first day to local midnight after its last day, as the half-open
-  period `[start, end)` passed to the `review_period` command.
+  a calendar month, quarter, or year, or a custom range of days. The `review_period`
+  command takes the first and last day, and the server turns them into the half-open
+  period `[start, end)` from midnight of the first day to midnight after the last day in
+  its review time zone, so the same days give the same numbers on every device.
+- The review time zone is a server setting (`settings` table), changed from the Review
+  page (Change time zone) or with `set_review_time_zone`; until one is set, it is the
+  server's own time zone (UTC when that has no IANA name). The review's monthly counts are
+  in it too.
+- A review can be saved as a snapshot (Export > Save as snapshot, or
+  `save_review_snapshot`): the server stores its reviewed tasks as JSON, the names of
+  their workspaces, the time zone, and the Markdown and CSV reports in
+  `review_snapshots`. Reopening it from Saved reviews shows and exports exactly what was
+  saved, with durations and due dates judged at the time it was saved, however the tasks
+  change later (for example when a task is reopened). Snapshots are kept until deleted and
+  are not merged by `toodo-server import`.
 - The review can be narrowed to one workspace and to one label. Labels (such as a
   project or goal) are free text set on a task in the app or through MCP
   (`create_task`, `update_task`); each is trimmed, at most 40 characters, without commas,
@@ -373,7 +386,12 @@ generated or guessed by an agent.
 
 - Each task is listed once, under its outcome, with its workspace, the time of the
   outcome, its pull request (with its size and review count once merged), its completion
-  note, and the commits it got in the period.
+  note, and the commits it got in the period. A started task also shows its active time
+  (`in_progress` or `in_review`) against its waiting time (back in `planned` after its
+  first start: paused, blocked by a prerequisite, or reopened, until it was started
+  again), and each wait in the period with the `reason` its event recorded; time still
+  under way counts until now. The CSV export has both as `Active hours` and
+  `Waiting hours`.
 - Tasks without status history appear only through their commits.
 - The commits of a task are its commit records (recorded when its branch is refreshed,
   its pull request opens, and it completes) and the commits its git activity recorded
@@ -422,8 +440,8 @@ generated or guessed by an agent.
   time`, `Late`, `Overdue`, or `Not due yet`), the size and review count of its pull request, and its completion
   note; UTF-8 with a byte
   order mark). The server renders both reports with the `review_report` command, in the
-  IANA time zone the caller names (the web app sends the browser's, `toodo review` the
-  machine's, and the server's own is the default), and the browser downloads the file.
+  review time zone unless the caller names another IANA time zone (the web app and
+  `toodo review` name none unless asked), and the browser downloads the file.
   Agents get the same report from the MCP tool `review_report`, and the CLI prints it
   with `toodo review` (see [server.md](server.md)).
 - Printing the review (Export > Print or save as PDF, or the browser's print command)
@@ -556,6 +574,13 @@ an `in_progress` task of a plain or tmux workspace that has a worktree, local or
   plus
   `-c mcp_servers.toodo.url="<url>" -c mcp_servers.toodo.bearer_token_env_var="TOODO_MCP_TOKEN"`
   with MCP, then `-`.
+
+The session id (Claude) or thread id (Codex) a run's agent reports is kept in an
+`agent_conversations` row (`resume_kind` `exact_id`) that the run links to through
+`conversation_id`; a follow-up run (`start_plain_run` with `follow_up_of`) joins the same
+conversation and resumes its latest session with `--resume <id>` (Claude) or
+`resume <id>` before `-` (Codex). A run's `followUpOf` is the latest earlier run of its
+conversation.
 
 A workspace's pull request options (`set_workspace_pull_request_options`, stored in the
 `pull_request_draft`, `pull_request_reviewers`, and `pull_request_labels` columns of
@@ -951,6 +976,10 @@ path deletes journal history.
     without it the reply says what the change would do. `delete_task` deletes only
     `planned` tasks, through the app's Delete; `reopen_task` runs the app's Reopen with
     the same checks. Both are local-only.
+  - `archive_workspace` works the same way: without `confirm: true` it only describes
+    the change, and with it archives the workspace through the app's Remove. It is
+    rejected while a task of the workspace is `in_progress` or `in_review`, and it is
+    local-only.
   - Agent access in Settings copies an MCP client config with the URL and token
     (`mcp_server_info`), tests that the server accepts that token, and shows the server
     instance and the last request `/mcp` turned away with its reason. `401` bodies at

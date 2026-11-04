@@ -69,8 +69,12 @@ The server prints the same line when it starts. See "Releases and Updates" in th
 ### npm Packages
 
 The same version is published to npm as `@dubusoft/toodo` (the `toodo` launcher) with
-one platform package per target, `@dubusoft/toodo-linux-x64` and
-`@dubusoft/toodo-linux-arm64`, each carrying `toodo`, `toodo-server`, and the web app.
+one platform package per target, each carrying `toodo`, `toodo-server`, and the web app:
+`@dubusoft/toodo-linux-x64` and `@dubusoft/toodo-linux-arm64` (glibc),
+`@dubusoft/toodo-linux-x64-musl` and `@dubusoft/toodo-linux-arm64-musl` (statically linked
+against musl, for Alpine and other musl distributions), and `@dubusoft/toodo-darwin-x64`
+and `@dubusoft/toodo-darwin-arm64` (macOS). npm installs the package whose `os`, `cpu`,
+and `libc` match the machine, and the launcher runs it.
 The `npm` workflow (`.github/workflows/npm.yml`) publishes them:
 
 - On every push to `dev`, a prerelease `X.Y.Z-dev.N` (the next patch version of
@@ -82,12 +86,16 @@ The `npm` workflow (`.github/workflows/npm.yml`) publishes them:
 
 It publishes with the `NPM_TOKEN` secret when that is set, else through npm trusted
 publishing (OIDC). With neither set up it skips publishing with a notice instead of
-failing. Packages are staged with `scripts/package-npm.mjs`.
+failing. Under trusted publishing the musl and macOS packages are published only once
+trusted publishing is configured for them on npmjs.com, which npm allows only for a
+package that exists: publish the first version of a new platform package by hand, then
+configure it. Until then the workflow leaves that package out with a notice, and
+`@dubusoft/toodo` does not list it. Packages are staged with `scripts/package-npm.mjs`.
 
 ## Install with npm
 
-This is the recommended way to install and update Toodo. On Linux x64 or arm64 with glibc
-(Node.js 18 or later), as the user who runs herdr (if any):
+This is the recommended way to install and update Toodo. On Linux x64 or arm64 (glibc or
+musl) or macOS x64 or arm64 (Node.js 18 or later), as the user who runs herdr (if any):
 
 ```sh
 npm i -g @dubusoft/toodo
@@ -128,9 +136,10 @@ and runner `none` needs neither.
 
 The commands of a global install (`toodo COMMAND --help` shows the options of each):
 
-- `toodo start`, `toodo stop`: start or stop the server, through systemd once the service
-  is installed, else as a background process with `server.pid` and `server.log` in the
-  data directory.
+- `toodo start`, `toodo stop`: start or stop the server, through systemd or launchd once
+  the service is installed, else as a background process with `server.pid` and
+  `server.log` in the data directory. On macOS `toodo stop` unloads the launchd job; it
+  loads again at the next login or `toodo start`.
 - `toodo status`: whether the server runs and where its files are; exits `0` when it runs
   and `3` when it is stopped.
 - `toodo service install`: run the server as the systemd user service
@@ -139,13 +148,19 @@ The commands of a global install (`toodo COMMAND --help` shows the options of ea
   [systemd](#systemd)). It enables and restarts the service and turns on lingering with
   `loginctl enable-linger`, noting the `sudo` command when that is not allowed. With
   `--port N` or `--listen HOST:PORT` it saves a new listen address first, like `init`.
+  On macOS it installs the same files and writes the launchd agent
+  `~/Library/LaunchAgents/toodo-server.plist` instead, which runs the server in the
+  logged-in user's session (`gui/<uid>`), starts it at login, restarts it after a crash,
+  and logs to `~/Library/Logs/toodo-server.log`; it loads the job with
+  `launchctl bootstrap` and waits until the server accepts connections.
 - `toodo update [--channel dev|latest] [--allow-downgrade]`: update a global install and
   restart the server on it, see below.
 - `toodo review [--period week|month|quarter|year|custom] [--date DAY] [--from DAY]
   [--to DAY] [--format markdown|csv] [--workspace ID] [--label LABEL] [--time-zone ZONE]`:
   print the review of a period as the web app's Review exports it, rendered by the
   running server with the web access token of the data directory; days and times are in
-  this machine's time zone unless `--time-zone` names another. For example
+  the server's review time zone (see the Review section of
+  [architecture.md](architecture.md)) unless `--time-zone` names another. For example
   `toodo review --period year --format csv > review.csv`.
 - `toodo --version`, `toodo --help`. `--version` prints the version of the installed npm
   package (`toodo 1.3.2-dev.9 (commit 1c78b7a1a2b3)`). `toodo-server --version` and the
@@ -172,9 +187,11 @@ To update a global install, run `toodo update`. It:
    the new version, the way it runs: for the systemd user service `toodo-server.service`
    it copies the new `toodo-server` and web app over `~/.local/bin/toodo-server` and
    `~/.local/share/toodo-server-web` and runs `systemctl --user restart`; a server started
-   by `toodo start` is stopped and started again.
-   A server that is not running is left stopped; for the systemd service the new server and
-   web app are still copied, so the next `toodo start` runs the new version.
+   by `toodo start` is stopped and started again; on macOS the launchd agent `toodo-server`
+   (`~/Library/LaunchAgents/toodo-server.plist`) gets the same copies and is restarted with
+   `launchctl kickstart -k`. A server that is not running is left stopped; for the systemd
+   service and the launchd agent the new server and web app are still copied, so the next
+   `toodo start` runs the new version.
 4. Checks that the server answers (`POST /api/rpc/list_tasks` without a token is `401`).
 5. Prints the old and new version and the result.
 
@@ -516,7 +533,7 @@ agent. The tools that run things stay local: `current_task`, `start_task`, `resu
 `restore_worktree`, `set_worktree_root`, `list_machine_settings`, `complete_task`,
 `conclude_task`, `delete_task`, `reopen_task`, and the run tools (`start_run`, `run_status`, `run_log`, `stop_run`,
 `reconcile_run`) never appear in an app's tool list, and calling one is refused even with
-`toodo.write`. `check_criterion` checks a stored manual criterion and never runs a
+`toodo.write`; so do `update_workspace` and `archive_workspace`. `check_criterion` checks a stored manual criterion and never runs a
 criterion's command; `pause_task` keeps the worktree and herdr workspace. An app's
 `initialize` reply and `read_toodo_skill` carry planning instructions for a chat, not the
 worktree and pull request workflow.

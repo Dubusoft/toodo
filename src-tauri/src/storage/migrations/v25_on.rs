@@ -631,4 +631,37 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     ALTER TABLE workspaces ADD COLUMN archived_at INTEGER;
     ALTER TABLE tasks ADD COLUMN archived_at INTEGER;
     ",
+    // Version 43: why the work on a task stopped, on its move back to `planned`: the reason
+    // of a pause, the prerequisites it waits on, or why it was reopened.
+    r"
+    ALTER TABLE task_events ADD COLUMN reason TEXT;
+    ",
+    // Version 44: server-wide settings by key, such as the time zone reviews are judged
+    // in, and saved reviews: the reviewed entries as JSON (the shape the web app reads),
+    // the names of their workspaces, and the report rendered as Markdown and CSV, kept as
+    // they were when saved.
+    r"
+    CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+    CREATE TABLE review_snapshots (
+        id INTEGER PRIMARY KEY,
+        title TEXT NOT NULL,
+        period TEXT NOT NULL,
+        from_day TEXT NOT NULL,
+        to_day TEXT NOT NULL,
+        time_zone TEXT NOT NULL,
+        workspace_id INTEGER,
+        label TEXT,
+        start_at INTEGER NOT NULL,
+        end_at INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        entry_count INTEGER NOT NULL,
+        entries TEXT NOT NULL,
+        workspaces TEXT NOT NULL,
+        markdown TEXT NOT NULL,
+        csv TEXT NOT NULL
+    );
+    ",
 ];

@@ -348,13 +348,17 @@ impl From<&model::PullRequestSnapshot> for PullRequestSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskEvent {
     pub status: TaskStatus,
     pub at: Timestamp,
     /// The change reopened the task: it follows a move to `done`.
     pub reopened: bool,
+    /// Why the work stopped, on a move back to `planned`: the reason of a pause, the
+    /// prerequisites the task waits on, or why it was reopened; `null` for other changes
+    /// and for pauses without a reason.
+    pub reason: Option<String>,
 }
 
 /// Milestones derived from a task's status history (see `docs/architecture.md`, Task
@@ -439,6 +443,7 @@ impl From<&model::Task> for Task {
                     reopened: index > 0
                         && task.timeline[index - 1].status == status::TaskStatus::Done
                         && event.status != status::TaskStatus::Done,
+                    reason: event.reason.clone(),
                 })
                 .collect(),
             milestones: timeline::milestones(&task.timeline).into(),

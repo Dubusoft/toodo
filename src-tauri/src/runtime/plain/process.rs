@@ -581,8 +581,19 @@ pub(super) fn manage(managed: ManagedRun) {
             if run.state == RunState::Reserved {
                 storage.record_launch(run.id, &managed.receipt.provider_run_ref)?;
             }
+            // A stopped or failed run keeps its session, so a follow-up can resume it.
+            if let Some(session) = tracker.session_id() {
+                storage.record_run_session(run.id, session)?;
+            }
             if !run.state.is_active() {
                 return Ok(run);
+            }
+            if let Some(session) = tracker.session_id() {
+                storage.append_run_event(
+                    run.id,
+                    "agent_session",
+                    Some(&adapter::redact(session, &managed.secret)),
+                )?;
             }
             for (kind, payload) in outcome.events {
                 storage.append_run_event(

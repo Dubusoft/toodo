@@ -151,6 +151,9 @@ that way. The exact rules are in the shared fragments the agents read:
   with `reopen_task`: call once without `confirm`, read what the change would do, then
   call again with `"confirm": true`. Done tasks are deleted in the Toodo app only. A deleted
   task is archived: it stays in reviews, and only the user restores or purges it in the app.
+- Archive a workspace that is no longer used with `archive_workspace`, in the same two
+  calls. Its tasks are archived with it and stay in reviews; it is rejected while one of
+  them is `in_progress` or `in_review`.
 - When a call is rejected, read the error: it names the argument or step that succeeds.
 
 ## Example Session

@@ -13,14 +13,13 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use super::Var;
+use super::launchd;
 use super::process;
 use super::service;
 use super::settings::{self, Bundle, DataDir};
 
 const PACKAGE: &str = "@dubusoft/toodo";
 const PLATFORM_PACKAGE: &str = "@dubusoft/toodo-";
-/// The launchd job the server runs as on macOS, when one is set up.
-const LAUNCHD_LABEL: &str = "toodo-server";
 /// The API command the health check calls, as `scripts/install-server.sh` does.
 const HEALTH_PATH: &str = "/api/rpc/list_tasks";
 
@@ -98,7 +97,7 @@ pub(super) fn version() -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Runner {
     Systemd,
-    /// The launchd job [`LAUNCHD_LABEL`] on macOS.
+    /// The launchd agent [`launchd::LABEL`] on macOS.
     Launchd,
     /// `toodo start`, with a pid file.
     PidFile,
@@ -213,7 +212,7 @@ pub(super) fn update(
     if !running {
         // The unit runs copies of the server and the web app, so `toodo start` would
         // start the old version unless they are refreshed now.
-        if runner == Runner::Systemd {
+        if matches!(runner, Runner::Systemd | Runner::Launchd) {
             service::install_bundle(&bundle, var).map_err(|cause| {
                 format!(
                     "updated {changed}, but the service still has the old server: {cause}; \
@@ -304,33 +303,20 @@ fn install_root(package: &Path) -> Option<&Path> {
         .last()
 }
 
-fn launchd_plist(var: Var) -> Result<PathBuf, String> {
-    Ok(settings::home(var)?
-        .join("Library/LaunchAgents")
-        .join(format!("{LAUNCHD_LABEL}.plist")))
-}
-
 fn runner(data: &DataDir, var: Var) -> Result<Runner, String> {
     if service::manages(&service::unit_path(var)?, data) {
         return Ok(Runner::Systemd);
     }
-    if cfg!(target_os = "macos") && launchd_plist(var)?.is_file() {
+    if launchd::supported() && launchd::manages(&launchd::plist_path(var)?, data) {
         return Ok(Runner::Launchd);
     }
     Ok(Runner::PidFile)
 }
 
-fn launchd_target() -> Result<String, String> {
-    let uid = process::run("id", &["-u"], "rerun toodo update")?;
-    Ok(format!("gui/{}/{LAUNCHD_LABEL}", uid.trim()))
-}
-
 fn is_running(runner: Runner, data: &DataDir) -> bool {
     match runner {
         Runner::Systemd => service::is_active(),
-        Runner::Launchd => {
-            launchd_target().is_ok_and(|target| process::succeeds("launchctl", &["print", &target]))
-        }
+        Runner::Launchd => launchd::is_running(),
         Runner::PidFile => process::running_pid(data).is_some(),
     }
 }
@@ -338,7 +324,7 @@ fn is_running(runner: Runner, data: &DataDir) -> bool {
 fn describe(runner: Runner) -> String {
     match runner {
         Runner::Systemd => service::UNIT_NAME.to_owned(),
-        Runner::Launchd => format!("launchd job {LAUNCHD_LABEL}"),
+        Runner::Launchd => format!("launchd job {}", launchd::LABEL),
         Runner::PidFile => "toodo start".to_owned(),
     }
 }
@@ -360,18 +346,10 @@ fn restart(
             service::wait_until_up(listen)
         }
         Runner::Launchd => {
-            let target = launchd_target()?;
-            process::run(
-                "launchctl",
-                &["kickstart", "-k", &target],
-                &format!("check the job with: launchctl print {target}"),
-            )?;
-            match process::wait_until_up(listen, || None) {
-                process::Wait::Up => Ok(()),
-                _ => Err(format!(
-                    "{target} did not accept connections on {listen} in time"
-                )),
-            }
+            // The job runs copies of the server and the web app; refresh them first.
+            service::install_bundle(bundle, var)?;
+            launchd::kickstart(true)?;
+            launchd::wait_until_up(listen, var)
         }
         Runner::PidFile => {
             process::stop(data)?;
@@ -427,9 +405,10 @@ Or go back to {previous} with: {back} && toodo service install{flag}",
             unit = service::UNIT_NAME
         ),
         Runner::Launchd => format!(
-            "Find the cause with: launchctl print gui/$(id -u)/{LAUNCHD_LABEL}
-Fix it and restart with: launchctl kickstart -k gui/$(id -u)/{LAUNCHD_LABEL}
-Or go back to {previous} with: {back}, then restart it the same way"
+            "Find the cause in ~/Library/Logs/{label}.log and with: launchctl print gui/$(id -u)/{label}
+Fix it and restart with: launchctl kickstart -k gui/$(id -u)/{label}
+Or go back to {previous} with: {back} && toodo service install{flag}",
+            label = launchd::LABEL
         ),
         Runner::PidFile => format!(
             "Find the cause in the server log: toodo status{flag} shows where it is

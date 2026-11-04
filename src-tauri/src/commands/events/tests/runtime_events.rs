@@ -17,6 +17,7 @@ fn writer(storage: &mut Storage, task: &model::Task, key: &str) -> crate::domain
             checkout_path: task.worktree_path.as_ref().map(ToString::to_string),
             runtime_workspace: Some(open.id),
             adapter_profile: None,
+            conversation: None,
         })
         .unwrap()
         .into_run();

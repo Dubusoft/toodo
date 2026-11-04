@@ -14,8 +14,9 @@ use serde::de::DeserializeOwned;
 use super::Services;
 use crate::commands::types::{
     AgentAdapter, AgentOptions, BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost,
-    NewTask, NewWorkspace, OAuthGrantId, PullRequestOptions, ReviewReportRequest, RunId, TaskEdit,
-    TaskId, TaskListFilter, TaskResolution, Timestamp, Workspace, WorkspaceId, WorkspaceLocation,
+    NewTask, NewWorkspace, OAuthGrantId, PullRequestOptions, ReviewReportRequest, ReviewSnapshotId,
+    RunId, SaveReviewSnapshotRequest, TaskEdit, TaskId, TaskListFilter, TaskResolution, Workspace,
+    WorkspaceId, WorkspaceLocation,
 };
 use crate::commands::{
     CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, agent_options, backup,
@@ -211,6 +212,9 @@ pub const READ_COMMANDS: &[&str] = &[
     "review_period",
     "list_archive",
     "review_report",
+    "get_review_time_zone",
+    "list_review_snapshots",
+    "get_review_snapshot",
     "get_backup_settings",
     "list_backups",
 ];
@@ -336,8 +340,8 @@ commands!(s => {
         herdr::close_task_workspace(State(&s.storage), State(&s.herdr), id)
     );
 
-    "start_plain_run"(task_id: TaskId, adapter: AgentAdapter, prompt: Option<String>, mcp: bool) => sync Reply::result(
-        runs::start_plain_run(State(&s.storage), State(&s.plain), State(&s.tmux), task_id, adapter, prompt, mcp)
+    "start_plain_run"(task_id: TaskId, adapter: AgentAdapter, prompt: Option<String>, mcp: bool, follow_up_of: Option<RunId>) => sync Reply::result(
+        runs::start_plain_run(State(&s.storage), State(&s.plain), State(&s.tmux), task_id, adapter, prompt, mcp, follow_up_of)
     );
     "get_workspace_agent_options"(workspace_id: WorkspaceId) => sync Reply::result(
         agent_options::get_workspace_agent_options(State(s.reader()), workspace_id)
@@ -427,14 +431,28 @@ commands!(s => {
     "mcp_server_info"() => sync Reply::value(mcp::mcp_server_info(State(&s.mcp)));
     "list_mcp_tunnels"() => sync Reply::value(mcp::list_mcp_tunnels(State(&s.tunnels)));
 
-    "review_period"(start: Timestamp, end: Timestamp) => sync Reply::result(
-        review::review_period(State(s.reader()), start, end)
+    "review_period"(from: String, to: String) => sync Reply::result(
+        review::review_period(State(s.reader()), from, to)
     );
-    "backfill_pull_requests"(start: Timestamp, end: Timestamp) => sync Reply::result(
-        review::backfill_pull_requests(State(&s.storage), State(&s.git), State(&s.github), start, end)
+    "backfill_pull_requests"(from: String, to: String) => sync Reply::result(
+        review::backfill_pull_requests(State(&s.storage), State(&s.git), State(&s.github), from, to)
     );
     "review_report"(request: ReviewReportRequest) => sync Reply::result(
         review::review_report(State(s.reader()), request)
+    );
+    "get_review_time_zone"() => sync Reply::result(review::get_review_time_zone(State(s.reader())));
+    "set_review_time_zone"(time_zone: Option<String>) => sync Reply::result(
+        review::set_review_time_zone(State(&s.storage), time_zone)
+    );
+    "save_review_snapshot"(request: SaveReviewSnapshotRequest) => sync Reply::result(
+        review::save_review_snapshot(State(&s.storage), request)
+    );
+    "list_review_snapshots"() => sync Reply::result(review::list_review_snapshots(State(s.reader())));
+    "get_review_snapshot"(id: ReviewSnapshotId) => sync Reply::result(
+        review::get_review_snapshot(State(s.reader()), id)
+    );
+    "delete_review_snapshot"(id: ReviewSnapshotId) => sync Reply::result(
+        review::delete_review_snapshot(State(&s.storage), id)
     );
 
     "get_backup_settings"() => sync Reply::value(backup::get_backup_settings(State(&s.backups)));

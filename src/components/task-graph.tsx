@@ -60,7 +60,7 @@ import {
 import { useThemePreference } from "@/lib/theme";
 import { formatDuration } from "@/lib/review";
 import { When } from "@/components/when";
-import { activeSeconds, reachedMilestones } from "@/lib/timeline";
+import { activeSeconds, reachedMilestones, waitingSeconds } from "@/lib/timeline";
 import { dueState as dueStateOf, dueStateLabels, formatEstimate } from "@/lib/plan";
 import {
   barStyles,
@@ -990,6 +990,7 @@ function TimelineTooltip({
 }) {
   const milestones = reachedMilestones(task.milestones);
   const active = activeSeconds(task.timeline, now);
+  const waiting = waitingSeconds(task.timeline, now);
   const dueState = dueStateOf(task, now);
   // A bar may start far off screen; the card starts where the visible part of the bar does.
   const left = Math.max(
@@ -1032,6 +1033,12 @@ function TimelineTooltip({
             <>
               <dt className="text-muted-foreground">Active</dt>
               <dd className="tabular-nums">{formatDuration(active)}</dd>
+            </>
+          )}
+          {waiting !== null && waiting > 0 && (
+            <>
+              <dt className="text-muted-foreground">Waiting</dt>
+              <dd className="tabular-nums">{formatDuration(waiting)}</dd>
             </>
           )}
         </dl>

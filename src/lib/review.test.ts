@@ -2,10 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReviewEntry, Task, Workspace } from "@/lib/bindings";
 import {
   addDays,
+  dayIn,
   filterEntries,
   formatDuration,
   groupByOutcome,
-  periodBounds,
   periodContaining,
   periodLabel,
   planVsActual,
@@ -26,6 +26,8 @@ const reviewNow = new Date(2026, 11, 31).getTime() / 1000;
 const day = 24 * hour;
 const local = (year: number, month: number, date: number, hours = 0) =>
   new Date(year, month - 1, date, hours).getTime() / 1000;
+// The fixtures are built in this machine's time zone, so the summaries are judged in it too.
+const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<Task> = {}): ReviewEntry {
   return {
@@ -171,32 +173,13 @@ describe("shiftPeriod", () => {
   });
 });
 
-describe("periodBounds", () => {
-  it("runs from local midnight of the first day to local midnight after the last day", () => {
-    vi.stubEnv("TZ", "Asia/Seoul");
+describe("dayIn", () => {
+  it("names the day of a time in the given time zone, whatever this machine's is", () => {
+    const at = Date.UTC(2026, 2, 31, 20) / 1000;
 
-    expect(periodBounds(weekStarting("2026-10-12"))).toEqual({
-      start: Date.UTC(2026, 9, 11, 15) / 1000,
-      end: Date.UTC(2026, 9, 18, 15) / 1000,
-    });
-    expect(periodBounds(periodContaining("year", "2026-06-01"))).toEqual({
-      start: Date.UTC(2025, 11, 31, 15) / 1000,
-      end: Date.UTC(2026, 11, 31, 15) / 1000,
-    });
-    expect(periodBounds({ kind: "custom", from: "2026-10-14", to: "2026-10-14" })).toEqual({
-      start: Date.UTC(2026, 9, 13, 15) / 1000,
-      end: Date.UTC(2026, 9, 14, 15) / 1000,
-    });
-  });
-
-  it("keeps local midnights across a daylight saving change", () => {
-    vi.stubEnv("TZ", "Europe/Berlin");
-
-    const { start, end } = periodBounds(weekStarting("2026-10-19"));
-
-    expect(start).toBe(Date.UTC(2026, 9, 18, 22) / 1000);
-    expect(end).toBe(Date.UTC(2026, 9, 25, 23) / 1000);
-    expect(end - start).toBe(7 * day + hour);
+    expect(dayIn(at, "Asia/Seoul")).toBe("2026-04-01");
+    expect(dayIn(at, "UTC")).toBe("2026-03-31");
+    expect(dayIn(at, "America/Los_Angeles")).toBe("2026-03-31");
   });
 });
 
@@ -234,6 +217,7 @@ describe("summarize", () => {
       year,
       [completed(1, local(2026, 3, 1), {}), fix, completed(3, local(2026, 10, 1), {}), worked, entry(5, "started")],
       [toodo, herdr],
+      zone,
     );
 
     expect(summary.outcomes).toEqual([
@@ -271,6 +255,7 @@ describe("summarize", () => {
         }),
       ],
       [toodo],
+      zone,
     );
 
     expect(summary.leadTime).toEqual({ median: 6 * day, tasks: 3 });
@@ -280,12 +265,12 @@ describe("summarize", () => {
   });
 
   it("leaves out durations without data and months for a period inside one month", () => {
-    const summary = summarize(periodContaining("month", "2026-10-01"), [entry(1, "started")], [toodo]);
+    const summary = summarize(periodContaining("month", "2026-10-01"), [entry(1, "started")], [toodo], zone);
 
     expect(summary.leadTime).toBeNull();
     expect(summary.completedByType).toEqual([]);
     expect(summary.completedPerMonth).toBeNull();
-    expect(summarize({ kind: "custom", from: "2026-10-30", to: "2026-11-02" }, [], []).completedPerMonth).toEqual([
+    expect(summarize({ kind: "custom", from: "2026-10-30", to: "2026-11-02" }, [], [], zone).completedPerMonth).toEqual([
       { month: "2026-10", count: 0 },
       { month: "2026-11", count: 0 },
     ]);
@@ -295,19 +280,30 @@ describe("summarize", () => {
     const end = local(2026, 5, 20);
     const resumed = completed(1, end, { startedAt: end - 10 * day }, {
       timeline: [
-        { status: "planned", at: end - 20 * day, reopened: false },
-        { status: "in_progress", at: end - 10 * day, reopened: false },
-        { status: "planned", at: end - 9 * day, reopened: false },
-        { status: "in_progress", at: end - 2 * day, reopened: false },
-        { status: "in_review", at: end - day, reopened: false },
-        { status: "done", at: end, reopened: false },
+        { status: "planned", at: end - 20 * day, reopened: false, reason: null },
+        { status: "in_progress", at: end - 10 * day, reopened: false, reason: null },
+        { status: "planned", at: end - 9 * day, reopened: false, reason: null },
+        { status: "in_progress", at: end - 2 * day, reopened: false, reason: null },
+        { status: "in_review", at: end - day, reopened: false, reason: null },
+        { status: "done", at: end, reopened: false, reason: null },
       ],
     });
 
-    const summary = summarize(year, [resumed], [toodo]);
+    const summary = summarize(year, [resumed], [toodo], zone);
 
     expect(summary.cycleTime).toEqual({ median: 10 * day, tasks: 1 });
     expect(summary.activeTime).toEqual({ median: 3 * day, tasks: 1 });
+  });
+
+  it("counts completions per month in the time zone the period was judged in", () => {
+    const spring = { kind: "custom" as const, from: "2026-03-01", to: "2026-04-30" };
+    const lateOnMarch31 = completed(1, Date.UTC(2026, 2, 31, 20) / 1000, {});
+
+    const count = (timeZone: string) =>
+      summarize(spring, [lateOnMarch31], [toodo], timeZone).completedPerMonth?.find(({ count }) => count > 0)?.month;
+
+    expect(count("UTC")).toBe("2026-03");
+    expect(count("Asia/Seoul")).toBe("2026-04");
   });
 });
 
@@ -321,10 +317,10 @@ describe("formatDuration", () => {
 });
 
 describe("planVsActual", () => {
-  const week = weekStarting("2026-10-12");
+  const weekEnd = local(2026, 10, 19);
   const worked = (start: number, end: number): Task["timeline"] => [
-    { status: "in_progress", at: start, reopened: false },
-    { status: "done", at: end, reopened: false },
+    { status: "in_progress", at: start, reopened: false, reason: null },
+    { status: "done", at: end, reopened: false, reason: null },
   ];
 
   it("compares estimates in any unit with active time and rates due dates of completed tasks", () => {
@@ -346,7 +342,7 @@ describe("planVsActual", () => {
       completed(4, local(2026, 10, 16), {}, { estimate: { unit: "hours", amount: 1 } }),
     ];
 
-    const plan = planVsActual(week, entries, reviewNow);
+    const plan = planVsActual(weekEnd, entries, reviewNow);
 
     expect(plan?.time).toEqual({ tasks: 3, estimated: 18 * hour, actual: 16 * hour });
     expect(plan?.dueDates).toEqual({ tasks: 2, onTime: 1 });
@@ -368,14 +364,14 @@ describe("planVsActual", () => {
       }),
     ];
 
-    const late = planVsActual(week, entries, local(2026, 10, 16, 6))?.late;
+    const late = planVsActual(weekEnd, entries, local(2026, 10, 16, 6))?.late;
 
     expect(late?.map(({ task, done, secondsLate }) => [task.id, done, secondsLate])).toEqual([
       [3, false, 3 * day + 6 * hour],
       [1, false, day + 6 * hour],
     ]);
-    expect(planVsActual(week, entries, reviewNow)?.late.map(({ task }) => task.id)).toEqual([3, 1]);
-    expect(planVsActual(week, [entry(5, "started")], reviewNow)).toBeNull();
+    expect(planVsActual(weekEnd, entries, reviewNow)?.late.map(({ task }) => task.id)).toEqual([3, 1]);
+    expect(planVsActual(weekEnd, [entry(5, "started")], reviewNow)).toBeNull();
   });
 
 });
@@ -386,8 +382,8 @@ describe("yearInReview overruns", () => {
       completed(id, local(2026, 5, 1, 12), {}, {
         estimate: { unit: "hours", amount: estimate },
         timeline: [
-          { status: "in_progress", at: local(2026, 5, 1, 12) - activeHours * hour, reopened: false },
-          { status: "done", at: local(2026, 5, 1, 12), reopened: false },
+          { status: "in_progress", at: local(2026, 5, 1, 12) - activeHours * hour, reopened: false, reason: null },
+          { status: "done", at: local(2026, 5, 1, 12), reopened: false, reason: null },
         ],
       });
     const entries = [overran(1, 2, 3), overran(2, 1, 6), overran(3, 4, 2), overran(4, 1, 3), overran(5, 2, 4)];

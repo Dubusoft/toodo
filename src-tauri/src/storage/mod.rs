@@ -19,6 +19,7 @@ mod migrations;
 pub mod oauth;
 mod pull_request_options;
 mod push;
+mod reviews;
 mod runtime;
 mod search;
 mod tasks;
@@ -49,6 +50,7 @@ pub use criteria::{CriterionCheck, CriterionEdit};
 pub use devices::DeviceAuth;
 pub use import::ImportSummary;
 pub use push::NewPushSubscription;
+pub use reviews::{ReviewSnapshot, ReviewSnapshotInfo};
 pub use runtime::{
     HostCursor, NewRun, QueuedRun, QueuedStart, Reservation, RunEvent, RunOperation,
     RuntimeWorkspace, TaskRun,
@@ -272,7 +274,7 @@ impl fmt::Display for StorageError {
                 depends_on,
             } => write!(
                 f,
-                "workspace {} cannot be removed: task {task} of another workspace depends on its task {depends_on}",
+                "workspace {} cannot be removed: task {task} of another workspace depends on its task {depends_on}; remove that dependency first (in task {task}'s dependencies, or remove_dependency over MCP), then remove the workspace again",
                 workspace.0
             ),
             Self::BaseBranchInReview { workspace, task } => write!(

@@ -34,14 +34,14 @@ It installs the newest version of the channel with npm (`latest` for releases, `
 - `toodo start`: start the server.
 - `toodo stop`: stop the server.
 - `toodo status`: show whether the server is running and where its files are.
-- `toodo service install`: install the server as a systemd user service.
+- `toodo service install`: install the server as a user service (systemd on Linux, a launchd agent on macOS).
 - `toodo update`: update to the newest version and restart the server.
 
 `toodo COMMAND --help` shows the options of each. `--listen HOST:PORT` on `init` or `service install` changes the address; an address other than loopback lets other machines reach the server, so prefer a tunnel to it.
 
 ## Requirements
 
-- Linux x64 or arm64 (glibc) and Node.js 18 or later. Install with optional dependencies enabled (the default), because the binaries ship in the `@dubusoft/toodo-linux-<arch>` packages.
+- Linux x64 or arm64 (glibc or musl) or macOS x64 or arm64, with Node.js 18 or later. Install with optional dependencies enabled (the default), because the binaries ship in the platform packages `@dubusoft/toodo-linux-<arch>`, `@dubusoft/toodo-linux-<arch>-musl`, and `@dubusoft/toodo-darwin-<arch>`.
 - `git` and OpenSSH (`ssh`) on `PATH`.
 - For GitHub workspaces: the GitHub CLI `gh`, logged in with `gh auth login`.
 - Optional: [herdr](https://herdr.dev) for workspaces with runner `herdr` and remote SSH workspaces; runner `plain` needs `claude` or `codex` on `PATH`, and `tmux` runs need `tmux`.

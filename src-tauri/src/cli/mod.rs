@@ -2,11 +2,12 @@
 //! its MCP endpoint with coding agents. It is shipped next to `toodo-server` (and the web
 //! app in `../web`), see [`settings::Bundle`].
 //!
-//! The server runs either as the systemd user service `toodo-server.service`, once
-//! `toodo service install` wrote it for the data directory, or detached with a pid file
-//! in the data directory, started by `toodo start`.
+//! The server runs either as the systemd user service `toodo-server.service` (on macOS
+//! the launchd agent `toodo-server`), once `toodo service install` wrote it for the data
+//! directory, or detached with a pid file in the data directory, started by `toodo start`.
 
 mod agents;
+mod launchd;
 mod process;
 mod review;
 mod service;
@@ -47,13 +48,14 @@ Commands:
                    listen address, start the server, and register its MCP endpoint with
                    Claude Code and Codex where they are on PATH; then check git,
                    gh, ssh, herdr, tmux, and the agent CLIs and print what is missing
-  start            start the server in the background (through systemd once installed),
-                   and register its MCP endpoint again with the agents init registered it
-                   with, so they get a replaced token
+  start            start the server in the background (through systemd or launchd once
+                   installed), and register its MCP endpoint again with the agents init
+                   registered it with, so they get a replaced token
   stop             stop the server
   status           show whether the server runs and where its files are; exits 0 when
                    it runs and 3 when it is stopped
-  service install  run the server as the systemd user service toodo-server.service
+  service install  run the server as the systemd user service toodo-server.service, or
+                   on macOS as the launchd agent toodo-server, which starts at login
   update           install the newest @dubusoft/toodo of the channel with npm, restart
                    the server on it, check that it answers, and register its MCP
                    endpoint again like start; a failed install
@@ -107,13 +109,13 @@ and prints what is missing. Running it again keeps the database and tokens.",
         ),
         "start" => (
             "toodo start [--data-dir DIR]",
-            "Starts the server in the background: through systemd once toodo service install
-wrote the service, else as a process with server.pid and server.log in DIR.",
+            "Starts the server in the background: through systemd (launchd on macOS) once toodo
+service install wrote the service, else as a process with server.pid and server.log in DIR.",
             DATA_DIR_OPTION.to_owned(),
         ),
         "stop" => (
             "toodo stop [--data-dir DIR]",
-            "Stops the server, through systemd once the service is installed.",
+            "Stops the server, through systemd (launchd on macOS) once the service is installed.",
             DATA_DIR_OPTION.to_owned(),
         ),
         "status" => (
@@ -127,7 +129,8 @@ tokens, and log are. Exits 0 when it runs and 3 when it is stopped.",
             "Runs the server as the systemd user service toodo-server.service: copies
 toodo-server to ~/.local/bin and the web app to ~/.local/share/toodo-server-web, writes
 the unit, enables and restarts it, and turns on lingering. With --port or --listen it
-saves a new listen address first, like init.",
+saves a new listen address first, like init. On macOS it writes the launchd agent
+~/Library/LaunchAgents/toodo-server.plist instead, which starts at login.",
             format!("{LISTEN_OPTIONS}\n{DATA_DIR_OPTION}"),
         ),
         "review" => (
@@ -399,7 +402,16 @@ fn service_install(data: &DataDir, flag: Option<ListenFlag>, var: Var) -> Result
         })?;
         settings::save_listen(data, listen)?;
     }
-    service::install(data, listen, var)
+    install_service(data, listen, var)
+}
+
+/// `toodo service install`: a launchd agent on macOS, else a systemd user service.
+fn install_service(data: &DataDir, listen: SocketAddr, var: Var) -> Result<(), String> {
+    if launchd::supported() {
+        launchd::install(data, listen, var)
+    } else {
+        service::install(data, listen, var)
+    }
 }
 
 /// Who runs the server of a data directory.
@@ -407,6 +419,8 @@ fn service_install(data: &DataDir, flag: Option<ListenFlag>, var: Var) -> Result
 enum Manager {
     /// The systemd user service.
     Service,
+    /// The launchd agent on macOS.
+    Launchd,
     /// `toodo start`, with a pid file.
     PidFile,
 }
@@ -414,6 +428,8 @@ enum Manager {
 fn manager(data: &DataDir, var: Var) -> Result<Manager, String> {
     Ok(if service::manages(&service::unit_path(var)?, data) {
         Manager::Service
+    } else if launchd::supported() && launchd::manages(&launchd::plist_path(var)?, data) {
+        Manager::Launchd
     } else {
         Manager::PidFile
     })
@@ -422,6 +438,7 @@ fn manager(data: &DataDir, var: Var) -> Result<Manager, String> {
 fn is_running(manager: &Manager, data: &DataDir) -> bool {
     match manager {
         Manager::Service => service::is_active(),
+        Manager::Launchd => launchd::is_running(),
         Manager::PidFile => process::running_pid(data).is_some(),
     }
 }
@@ -467,10 +484,10 @@ fn init(args: &InitArgs, var: Var) -> Result<(), String> {
         }
         settings::save_listen(&data, listen)?;
         match manager {
-            Manager::Service => {
+            Manager::Service | Manager::Launchd => {
                 if listen != previous {
                     println!("The listen address changed to {listen}; rewriting the service.");
-                    service::install(&data, listen, var)?;
+                    install_service(&data, listen, var)?;
                 } else {
                     start(&data, var)?;
                 }
@@ -531,8 +548,13 @@ Next steps:
     );
     if let Manager::PidFile = manager {
         println!(
-            "  {:<22} keep the server running as a systemd user service",
-            format!("toodo service install{flag}")
+            "  {:<22} keep the server running as {}",
+            format!("toodo service install{flag}"),
+            if launchd::supported() {
+                "a launchd agent that starts at login"
+            } else {
+                "a systemd user service"
+            }
         );
     }
     if failed.is_empty() {
@@ -559,6 +581,19 @@ fn start(data: &DataDir, var: Var) -> Result<(), String> {
             println!(
                 "Started {} on {}",
                 service::UNIT_NAME,
+                settings::web_url(listen)
+            );
+        }
+        Manager::Launchd => {
+            if launchd::is_running() {
+                println!("launchd job {} is already running", launchd::LABEL);
+                return Ok(());
+            }
+            launchd::start(var)?;
+            launchd::wait_until_up(listen, var)?;
+            println!(
+                "Started launchd job {} on {}",
+                launchd::LABEL,
                 settings::web_url(listen)
             );
         }
@@ -604,6 +639,17 @@ fn stop(data: &DataDir, var: Var) -> Result<(), String> {
                 println!("{} is not running", service::UNIT_NAME);
             }
         }
+        Manager::Launchd => {
+            if launchd::stop()? {
+                println!(
+                    "Stopped launchd job {}; it starts again at login or with: toodo start{}",
+                    launchd::LABEL,
+                    settings::data_dir_flag(data, var)
+                );
+            } else {
+                println!("launchd job {} is not running", launchd::LABEL);
+            }
+        }
         Manager::PidFile => {
             if process::stop(data)? {
                 println!("Stopped toodo-server");
@@ -629,6 +675,11 @@ fn status(data: &DataDir, var: Var) -> Result<i32, String> {
                 "journalctl --user -u toodo-server".to_owned(),
             )
         }
+        Manager::Launchd => (
+            launchd::is_running(),
+            launchd::describe_state(),
+            launchd::log_path(var)?.display().to_string(),
+        ),
         Manager::PidFile => {
             let pid = process::running_pid(data);
             (
