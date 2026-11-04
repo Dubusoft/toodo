@@ -26,6 +26,7 @@ vi.mock("@/web/notification", () => ({
 vi.mock("@/lib/bindings", () => ({
   commands: {
     appInfo: vi.fn(),
+    checkUpdate: vi.fn(),
     listWorkspaces: vi.fn(),
     createWorkspace: vi.fn(),
     updateWorkspace: vi.fn(),
@@ -307,6 +308,7 @@ describe("App", () => {
       removeEventListener: () => {},
     }));
     mocked.appInfo.mockResolvedValue({ name: "toodo", version: "1.2.3" });
+    mocked.checkUpdate.mockResolvedValue({ current: "1.2.3", channel: "latest", latest: "1.2.3", newer: false, error: null });
     mocked.herdrStatus.mockResolvedValue({ status: "ok", data: { running: true, version: "0.9.3" } });
     mocked.runnerHealth.mockResolvedValue({ status: "ok", data: readyRunners });
     mocked.getMachineSettings.mockImplementation(async (machine) => ({
@@ -2022,6 +2024,17 @@ describe("App", () => {
     fireEvent.click(settings);
     fireEvent.click(document.querySelector("[aria-hidden].bg-black\\/40")!);
     expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
+  });
+
+  it("shows a newer version of the server in the general settings", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
+    mocked.checkUpdate.mockResolvedValue({ current: "1.2.3", channel: "latest", latest: "1.3.0", newer: true, error: null });
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: /^Settings/ }));
+    const general = within(screen.getByRole("dialog", { name: "Settings" })).getByRole("region", { name: "General" });
+    expect(await within(general).findByRole("status")).toHaveTextContent(
+      "v1.3.0 is available on the latest channel. Update the server with toodo update.",
+    );
   });
 
   it("warns while herdr is not running and blocks starting tasks", async () => {

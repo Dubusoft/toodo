@@ -131,6 +131,23 @@ pub(super) fn record_data_dir(data: &DataDir, var: Var) -> Result<(), String> {
     super::service::write_atomically(&path, text.as_bytes(), 0o644)
 }
 
+/// Removes the record of `toodo init` when it names `data`, and returns its path then.
+pub(super) fn forget_data_dir(data: &DataDir, var: Var) -> Result<Option<PathBuf>, String> {
+    let Some(path) = record_path(var) else {
+        return Ok(None);
+    };
+    if recorded_data_dir(var)?.as_deref() != Some(data.path()) {
+        return Ok(None);
+    }
+    fs::remove_file(&path).map_err(|error| {
+        format!(
+            "cannot remove {}: {error}; delete it yourself and rerun toodo uninstall",
+            path.display()
+        )
+    })?;
+    Ok(Some(path))
+}
+
 /// ` --data-dir DIR` for a command suggested to the user, or nothing when the command
 /// finds `data` without it.
 pub(super) fn data_dir_flag(data: &DataDir, var: Var) -> String {

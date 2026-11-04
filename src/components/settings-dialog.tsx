@@ -46,6 +46,12 @@ const sections: Section[] = [
 
 function GeneralSettings() {
   const appInfo = useQuery({ queryKey: ["app-info"], queryFn: () => commands.appInfo() });
+  // The server asks the npm registry; once in a while is enough.
+  const update = useQuery({
+    queryKey: ["update-check"],
+    queryFn: () => commands.checkUpdate(),
+    staleTime: 6 * 60 * 60 * 1000,
+  });
   return (
     <section aria-label="General" className="flex flex-col gap-5 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -57,6 +63,13 @@ function GeneralSettings() {
         <span className="ml-auto text-muted-foreground">
           {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
         </span>
+        {update.data?.newer && (
+          <p role="status" className="w-full text-muted-foreground">
+            v{update.data.latest} is available on the {update.data.channel} channel. Update the server with{" "}
+            <code>toodo update</code>.
+          </p>
+        )}
+        {update.data?.error && <p className="w-full text-muted-foreground">Update check: {update.data.error}</p>}
       </div>
     </section>
   );

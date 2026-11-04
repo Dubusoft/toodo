@@ -140,8 +140,28 @@ The commands of a global install (`toodo COMMAND --help` shows the options of ea
   the service is installed, else as a background process with `server.pid` and
   `server.log` in the data directory. On macOS `toodo stop` unloads the launchd job; it
   loads again at the next login or `toodo start`.
+- `toodo restart`: stop the server and start it again the same way, then register its MCP
+  endpoint again like `toodo start`.
 - `toodo status`: whether the server runs and where its files are; exits `0` when it runs
   and `3` when it is stopped.
+- `toodo doctor`: the versions of `toodo` and of the running server (asked with the web
+  access token of the data directory), whether the server runs and answers, the database
+  and tokens in the data directory, and git, gh, ssh, herdr, tmux, and the agent CLIs as
+  `toodo init` checks them. Each problem is printed with the command that fixes it; it
+  exits `0` when it finds none and `1` when it does. herdr, tmux, and the agent CLIs only
+  some runners need are shown but not counted as problems.
+- `toodo logs [--lines N] [--follow]`: print the last 50 (or `N`) lines of the server log,
+  and with `--follow` new lines until interrupted: through `journalctl --user -u
+  toodo-server` for the systemd service, else with `tail` of
+  `~/Library/Logs/toodo-server.log` for the launchd agent or of `server.log` in the data
+  directory.
+- `toodo uninstall [--delete-data]`: stop the server and remove what `toodo` set up for
+  it: the systemd service (disabled, its unit removed) or the launchd agent, the copies
+  of the server and web app they run, the MCP registrations of the server's URL with
+  Claude Code and Codex (a registration of another server stays), and the record of the
+  data directory in `~/.config/toodo/data-dir` when it names this one. The data directory
+  stays unless `--delete-data`, which deletes it only when it holds a Toodo database. The
+  `toodo` command itself stays; `npm rm -g @dubusoft/toodo` removes it.
 - `toodo service install`: run the server as the systemd user service
   `toodo-server.service`, in the same layout as `scripts/install-server.sh`
   (`~/.local/bin/toodo-server`, the web app in `~/.local/share/toodo-server-web`, see
@@ -153,8 +173,9 @@ The commands of a global install (`toodo COMMAND --help` shows the options of ea
   logged-in user's session (`gui/<uid>`), starts it at login, restarts it after a crash,
   and logs to `~/Library/Logs/toodo-server.log`; it loads the job with
   `launchctl bootstrap` and waits until the server accepts connections.
-- `toodo update [--channel dev|latest] [--allow-downgrade]`: update a global install and
-  restart the server on it, see below.
+- `toodo update [--channel dev|latest] [--allow-downgrade | --check]`: update a global
+  install and restart the server on it, see below. With `--check` it only prints whether
+  the channel has a newer version than the installed one, and changes nothing.
 - `toodo review [--period week|month|quarter|year|custom] [--date DAY] [--from DAY]
   [--to DAY] [--format markdown|csv] [--workspace ID] [--label LABEL] [--time-zone ZONE]`:
   print the review of a period as the web app's Review exports it, rendered by the
@@ -196,8 +217,16 @@ To update a global install, run `toodo update`. It:
 5. Prints the old and new version and the result.
 
 When npm fails, nothing is restarted and the running server keeps its version. When the
-server does not answer after the restart, `toodo update` exits `1` with the cause and the
-commands to find out why, restart it, or go back to the previous version.
+server does not answer after the restart, `toodo update` goes back by itself: it installs
+the previous version with `npm i -g @dubusoft/toodo@<previous> --include=optional`,
+restarts the server on it the same way, and checks that it answers. It then exits `1` with
+the cause and `toodo logs` to find out why; when going back fails too, it prints the
+commands to restart the server or go back by hand.
+
+The web app shows a newer version too: Settings > General names it under the version of
+the server. The server asks the npm registry for the dist-tags of `@dubusoft/toodo` (the
+`check_update` command), from `https://registry.npmjs.org` unless `TOODO_NPM_REGISTRY`
+names another registry, and compares the version on its own channel.
 
 Without `toodo update`, run `npm i -g @dubusoft/toodo` again, then `toodo service install`
 or `toodo stop` and `toodo start`.

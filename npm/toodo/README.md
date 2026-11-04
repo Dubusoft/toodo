@@ -33,9 +33,13 @@ It installs the newest version of the channel with npm (`latest` for releases, `
 - `toodo init`: set up Toodo on this machine and register MCP with coding agents.
 - `toodo start`: start the server.
 - `toodo stop`: stop the server.
+- `toodo restart`: stop the server and start it again.
 - `toodo status`: show whether the server is running and where its files are.
+- `toodo doctor`: check versions, server health, and the tools the server runs, with the fix of each problem.
+- `toodo logs`: print the end of the server log; `--follow` keeps printing.
 - `toodo service install`: install the server as a user service (systemd on Linux, a launchd agent on macOS).
-- `toodo update`: update to the newest version and restart the server.
+- `toodo update`: update to the newest version and restart the server; a server that does not come back goes back to the previous version. `toodo update --check` only reports a newer version.
+- `toodo uninstall`: stop the server and remove its service and MCP registrations; `--delete-data` deletes the data directory too.
 
 `toodo COMMAND --help` shows the options of each. `--listen HOST:PORT` on `init` or `service install` changes the address; an address other than loopback lets other machines reach the server, so prefer a tunnel to it.
 
