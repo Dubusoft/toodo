@@ -5,7 +5,8 @@
 //!
 //! - `POST /api/rpc/<command>` runs a command (see [`rpc`]).
 //! - `GET /api/events` streams `tasks-changed`, `agent-statuses-changed`, and
-//!   `pull-request-statuses-changed` events with JSON data.
+//!   `pull-request-statuses-changed` events with JSON data, each with an id; a client that
+//!   reconnects with `Last-Event-ID` gets the events it missed (see [`event_log`]).
 //! - `/api/backups/...` moves database files in and out (see [`files`]).
 //! - `/api/devices...` registers, lists, and revokes devices (see [`devices`]).
 //! - `/api/push...` subscribes the asking device to Web Push notifications and sets which
@@ -21,6 +22,7 @@
 //! first start.
 
 mod devices;
+mod event_log;
 mod files;
 mod panes;
 mod push;
@@ -37,8 +39,7 @@ use axum::http::StatusCode;
 use axum::middleware;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{any, get, post, put};
-use futures_util::Stream;
-use tokio::sync::broadcast;
+use futures_util::{Stream, StreamExt};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::adapters::git::{Git, ProcessRunner};
@@ -78,10 +79,6 @@ const RUNS_DIR: &str = "runs";
 /// The default port. The server forwards it to its SSH machines too, so agents there reach
 /// the MCP endpoint on the same port.
 pub const DEFAULT_PORT: u16 = 47616;
-
-/// Events kept for subscribers that read slower than they arrive; a subscriber that falls
-/// further behind skips the oldest.
-const EVENT_BUFFER: usize = 64;
 
 const USAGE: &str = "Usage: toodo-server [--version]
        toodo-server import FILE
@@ -158,13 +155,6 @@ impl Config {
     }
 }
 
-/// An event for the frontend: its name and JSON data.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ServerEvent {
-    name: &'static str,
-    data: String,
-}
-
 /// Everything the commands, the MCP server, and the background threads use.
 pub struct Services {
     storage: Arc<StorageState>,
@@ -184,7 +174,7 @@ pub struct Services {
     backups: Backups,
     mcp: ServerStatus,
     tunnels: TunnelsState,
-    events: broadcast::Sender<ServerEvent>,
+    events: Arc<event_log::EventLog>,
     /// The largest database file `POST /api/backups/restore` accepts, in bytes.
     restore_limit: u64,
     panes: panes::Panes,
@@ -195,7 +185,7 @@ impl Services {
     fn emit(&self, name: &'static str, payload: &impl serde::Serialize) {
         match serde_json::to_string(payload) {
             // No subscriber is the usual case while no browser is open.
-            Ok(data) => drop(self.events.send(ServerEvent { name, data })),
+            Ok(data) => self.events.send(name, data),
             Err(error) => eprintln!("toodo: failed to encode {name}: {error}"),
         }
     }
@@ -427,7 +417,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             rejections: mcp::Rejections::default(),
         },
         tunnels,
-        events: broadcast::channel(EVENT_BUFFER).0,
+        events: Arc::new(event_log::EventLog::new()?),
         restore_limit: files::RESTORE_LIMIT,
         push,
     });
@@ -617,28 +607,19 @@ fn router(
 
 async fn event_stream(
     axum::extract::State(services): axum::extract::State<Arc<Services>>,
+    headers: axum::http::HeaderMap,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    Sse::new(sent_events(services.events.subscribe())).keep_alive(KeepAlive::default())
-}
-
-/// The events of `events` as server-sent events. A subscriber that fell behind and missed
-/// some gets its stream ended instead, so the client reconnects and refetches everything.
-fn sent_events(
-    events: broadcast::Receiver<ServerEvent>,
-) -> impl Stream<Item = Result<Event, Infallible>> {
-    futures_util::stream::unfold(events, |mut events| async {
-        match events.recv().await {
-            Ok(event) => {
-                let sent = Event::default().event(event.name).data(event.data);
-                Some((Ok(sent), events))
-            }
-            Err(broadcast::error::RecvError::Lagged(missed)) => {
-                eprintln!("toodo-server: an event stream missed {missed} events; ending it");
-                None
-            }
-            Err(broadcast::error::RecvError::Closed) => None,
-        }
-    })
+    // An id that is not text is no id of ours, so the stream resyncs.
+    let last_event_id = headers
+        .get("last-event-id")
+        .map(|value| value.to_str().unwrap_or(""));
+    let events = services.events.stream(last_event_id).map(|event| {
+        Ok(Event::default()
+            .id(event.id)
+            .event(event.name)
+            .data(event.data))
+    });
+    Sse::new(events).keep_alive(KeepAlive::default())
 }
 
 async fn interrupted() {
@@ -890,7 +871,7 @@ mod tests {
                 rejections: mcp::Rejections::default(),
             },
             tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), 0))),
-            events: broadcast::channel(EVENT_BUFFER).0,
+            events: Arc::new(event_log::EventLog::new().unwrap()),
             restore_limit: TEST_RESTORE_LIMIT,
             push: push::tests::push(data_dir, push::tests::FakeTransport::default()),
         })
@@ -1405,26 +1386,6 @@ mod tests {
             let status = status(address, "POST", &format!("/api/rpc/{command}"), Some("web"));
             assert!(status.contains(" 404 "), "{command}: {status}");
         }
-    }
-
-    #[test]
-    fn an_event_stream_that_fell_behind_ends() {
-        use futures_util::StreamExt;
-        let (sender, receiver) = broadcast::channel(2);
-        let event = |data: &str| ServerEvent {
-            name: names::TASKS_CHANGED,
-            data: data.to_owned(),
-        };
-        drop(sender.send(event("1")));
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        let mut stream = Box::pin(sent_events(receiver));
-        assert!(runtime.block_on(stream.next()).is_some());
-        for data in ["2", "3", "4"] {
-            drop(sender.send(event(data)));
-        }
-        assert!(runtime.block_on(stream.next()).is_none());
     }
 
     #[cfg(unix)]
