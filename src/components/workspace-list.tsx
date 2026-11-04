@@ -541,6 +541,9 @@ const completionDescriptions: Record<CompletionMode, string> = {
   pr_merge: "Once its pull request is merged into the base branch.",
 };
 
+/** The guide that compares the runners, for the runner step of a new workspace. */
+const runnerGuideUrl = "https://github.com/dev-bokdong/toodo/blob/main/docs/runners.md";
+
 const runnerDescriptions: Record<Runner, string> = {
   herdr: "Opens agents in herdr on a worktree and branch of the task.",
   plain: "Runs Claude or Codex in the background in a worktree and branch of the task, without herdr.",
@@ -846,24 +849,37 @@ function NewWorkspaceDialog({ machine, onCreated, onClose }: NewWorkspaceDialogP
               />
             )}
             {step === 2 && (
-              <ChoiceGroup
-                legend="What does starting a task do?"
-                value={choice.runner}
-                autoFocus
-                choices={runners.map((runner) => ({
-                  value: runner,
-                  label: runnerLabels[runner],
-                  description: runnerDescriptions[runner],
-                  // Only a note: herdr can still be started before the first task is.
-                  note: runner === "herdr" ? herdrNote : null,
-                  // The machine is picked before the dialog opens, and the folder starts at its home,
-                  // whose path tells a Windows host apart, so its rule comes first.
-                  problem:
-                    runnerLocationProblem(runner, { kind: machine === null ? "local" : "ssh", path }) ??
-                    runnerProblem(choice.source, choice.completion, runner),
-                }))}
-                onChange={(runner) => choose({ runner })}
-              />
+              <div className="flex flex-col gap-2">
+                <ChoiceGroup
+                  legend="What does starting a task do?"
+                  value={choice.runner}
+                  autoFocus
+                  choices={runners.map((runner) => ({
+                    value: runner,
+                    label: runnerLabels[runner],
+                    description: runnerDescriptions[runner],
+                    // Only a note: herdr can still be started before the first task is.
+                    note: runner === "herdr" ? herdrNote : null,
+                    // The machine is picked before the dialog opens, and the folder starts at its home,
+                    // whose path tells a Windows host apart, so its rule comes first.
+                    problem:
+                      runnerLocationProblem(runner, { kind: machine === null ? "local" : "ssh", path }) ??
+                      runnerProblem(choice.source, choice.completion, runner),
+                  }))}
+                  onChange={(runner) => choose({ runner })}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Which one fits?{" "}
+                  <a
+                    href={runnerGuideUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary underline underline-offset-2 hover:no-underline"
+                  >
+                    Compare the runners
+                  </a>
+                </p>
+              </div>
             )}
             {last && (
               <div className="flex flex-col gap-3">

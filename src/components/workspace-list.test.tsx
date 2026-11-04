@@ -142,6 +142,18 @@ describe("New workspace", () => {
     expect(option(dialog, "No runner")).toBeChecked();
   });
 
+  it("links the runner step to the runner guide in this repository", () => {
+    const dialog = openNewWorkspace();
+    next(dialog);
+    next(dialog);
+
+    const guide = within(dialog).getByRole("link", { name: "Compare the runners" });
+    const href = guide.getAttribute("href")!;
+    const prefix = "https://github.com/dev-bokdong/toodo/blob/main/";
+    expect(href.startsWith(prefix)).toBe(true);
+    expect(Object.keys(import.meta.glob("/docs/*.md"))).toContain(`/${href.slice(prefix.length)}`);
+  });
+
   it("resets a later pick that an earlier change rules out to its default", () => {
     const dialog = openNewWorkspace();
     fireEvent.click(option(dialog, "Local git"));
