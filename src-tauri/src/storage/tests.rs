@@ -603,6 +603,14 @@ fn a_prerequisite_that_is_not_done_pauses_a_task_in_progress() {
         timeline(&storage, &a),
         [(Planned, 100), (InProgress, 200), (Planned, 300)]
     );
+    // The pause event records what the task waits on.
+    assert_eq!(
+        added.task.timeline.last().unwrap().reason,
+        Some(format!(
+            "Waiting on #{} Fix (planned), #{} Docs (planned)",
+            fix.id, docs.id
+        ))
+    );
     let cleared = storage.clear_task_herdr_workspace(a.id).unwrap();
     assert_eq!(cleared.herdr_workspace_id, None);
     assert_eq!(cleared.branch.as_deref(), Some("feat/a-1"));
@@ -2042,7 +2050,13 @@ fn herdr_workspaces_of_tasks_are_recorded_in_runtime_workspaces() {
     // Complete, then reopen with a new handle.
     storage.complete_task(task.id, Some(1), None, &[]).unwrap();
     assert_eq!(open_runtime(&storage, &task), None);
-    storage.reopen_task(task.id, "Needs more work").unwrap();
+    let reopened = storage
+        .reopen_task(task.id, "Missed a case", "Needs more work")
+        .unwrap();
+    assert_eq!(
+        reopened.timeline.last().unwrap().reason.as_deref(),
+        Some("Missed a case")
+    );
     storage.set_task_herdr_workspace(task.id, "w10").unwrap();
     assert_eq!(
         open_runtime(&storage, &task),

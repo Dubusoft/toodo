@@ -1379,6 +1379,12 @@ export type TaskEvent = {
 	at: Timestamp,
 	/**  The change reopened the task: it follows a move to `done`. */
 	reopened: boolean,
+	/**
+	 *  Why the work stopped, on a move back to `planned`: the reason of a pause, the
+	 *  prerequisites the task waits on, or why it was reopened; `null` for other changes
+	 *  and for pauses without a reason.
+	 */
+	reason: string | null,
 };
 
 export type TaskId = number;

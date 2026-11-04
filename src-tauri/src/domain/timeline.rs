@@ -4,11 +4,15 @@
 use super::status::TaskStatus;
 
 /// One status change of a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskEvent {
     pub status: TaskStatus,
     /// Time of the change in seconds since the Unix epoch (UTC).
     pub at: i64,
+    /// Why the work stopped, on a move back to `planned`: the reason of a pause, the
+    /// prerequisites the task waits on, or why it was reopened. `None` for other changes
+    /// and for pauses recorded without a reason.
+    pub reason: Option<String>,
 }
 
 /// Milestones of a task, in seconds since the Unix epoch. `None` when the task has not
@@ -92,7 +96,11 @@ mod tests {
 
     fn events(raw: &[(TaskStatus, i64)]) -> Vec<TaskEvent> {
         raw.iter()
-            .map(|&(status, at)| TaskEvent { status, at })
+            .map(|&(status, at)| TaskEvent {
+                status,
+                at,
+                reason: None,
+            })
             .collect()
     }
 

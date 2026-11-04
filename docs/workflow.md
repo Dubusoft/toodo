@@ -63,7 +63,8 @@ one a pause recorded also ends once its prerequisites no longer block the task.
 Pausing ("Pause") an `in_progress` or `in_review` task moves it back to `planned`. It
 keeps its branch, worktree, herdr workspace, commit records, and pull request, so
 resuming it continues the same work (see step 3). Agents do the same through MCP:
-`pause_task` pauses a task with a required reason, recorded as a progress note, and
+`pause_task` pauses a task with a required reason, recorded in its status history and as
+a progress note, and
 `resume_task` resumes a paused task as "Resume" does, with an optional note. `done` is a
 final state. A task that is abandoned is deleted (step 8), which archives it; both a
 paused and an archived task stay in the reports.

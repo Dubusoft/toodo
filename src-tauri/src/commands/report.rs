@@ -300,35 +300,83 @@ fn estimated_seconds(estimate: Option<Estimate>) -> Option<f64> {
     })
 }
 
-/// Seconds a task spent in progress or in review from its first start, leaving out its
-/// pauses; a stretch still under way counts until `now`. `None` when the history records
-/// no start.
-fn active_seconds(timeline: &[TaskEvent], now: i64) -> Option<i64> {
-    // (active, start, end) of each stretch of work or pause.
-    let mut segments: Vec<(bool, i64, Option<i64>)> = Vec::new();
+/// A stretch of a task's history from its first start: work (in progress or in review),
+/// or waiting (back in `planned`: paused, blocked by prerequisites, or reopened) with the
+/// reason recorded when it began. `end` is `None` while the task is still in it.
+struct Segment<'a> {
+    active: bool,
+    start: i64,
+    end: Option<i64>,
+    reason: Option<&'a str>,
+}
+
+impl Segment<'_> {
+    fn seconds(&self, now: i64) -> i64 {
+        (self.end.unwrap_or(now) - self.start).max(0)
+    }
+}
+
+/// The stretches of work and waiting of a task, oldest first; empty when the history
+/// records no start.
+fn segments(timeline: &[TaskEvent]) -> Vec<Segment<'_>> {
+    let mut segments: Vec<Segment<'_>> = Vec::new();
     for event in timeline {
         if let Some(last) = segments.last_mut() {
-            last.2.get_or_insert(event.at.0);
+            last.end.get_or_insert(event.at.0);
         }
-        match event.status {
-            TaskStatus::Done => {}
-            TaskStatus::Planned if segments.is_empty() => {}
-            TaskStatus::Planned => segments.push((false, event.at.0, None)),
-            TaskStatus::InProgress | TaskStatus::InReview => {
-                segments.push((true, event.at.0, None));
-            }
-        }
+        let active = match event.status {
+            TaskStatus::Done => continue,
+            TaskStatus::Planned if segments.is_empty() => continue,
+            TaskStatus::Planned => false,
+            TaskStatus::InProgress | TaskStatus::InReview => true,
+        };
+        segments.push(Segment {
+            active,
+            start: event.at.0,
+            end: None,
+            reason: event.reason.as_deref(),
+        });
     }
+    segments
+}
+
+/// Seconds a task spent working (`active`) or waiting from its first start; a stretch
+/// still under way counts until `now`. `None` when the history records no start.
+fn seconds_in(timeline: &[TaskEvent], now: i64, active: bool) -> Option<i64> {
+    let segments = segments(timeline);
     if segments.is_empty() {
         return None;
     }
     Some(
         segments
             .iter()
-            .filter(|(active, ..)| *active)
-            .map(|&(_, start, end)| (end.unwrap_or(now) - start).max(0))
+            .filter(|segment| segment.active == active)
+            .map(|segment| segment.seconds(now))
             .sum(),
     )
+}
+
+/// Seconds a task spent in progress or in review from its first start, leaving out its
+/// pauses; a stretch still under way counts until `now`. `None` when the history records
+/// no start.
+fn active_seconds(timeline: &[TaskEvent], now: i64) -> Option<i64> {
+    seconds_in(timeline, now, true)
+}
+
+/// Seconds a task spent waiting after its first start: paused, blocked by prerequisites,
+/// or reopened, until it was started again; a wait still under way counts until `now`.
+/// `None` when the history records no start.
+fn waiting_seconds(timeline: &[TaskEvent], now: i64) -> Option<i64> {
+    seconds_in(timeline, now, false)
+}
+
+/// [`format_duration`], with no time at all as `0h` rather than `<1h`.
+fn format_span(seconds: i64) -> String {
+    if seconds == 0 {
+        "0h".to_owned()
+    } else {
+        format_duration(seconds as f64)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -904,6 +952,34 @@ impl Report<'_> {
             let label = if not_adopted { "Conclusion" } else { "Note" };
             lines.push(format!("  - {label}: {}", one_line(note)));
         }
+        if let (Some(active), Some(waiting)) = (
+            active_seconds(&task.timeline, self.now),
+            waiting_seconds(&task.timeline, self.now),
+        ) {
+            lines.push(format!(
+                "  - Time: {} active, {} waiting",
+                format_span(active),
+                format_span(waiting)
+            ));
+        }
+        for wait in segments(&task.timeline) {
+            let end = wait.end.unwrap_or(self.now);
+            if wait.active || wait.start >= self.period.end || end <= self.period.start {
+                continue;
+            }
+            let still = if wait.end.is_none() {
+                ", still waiting"
+            } else {
+                ""
+            };
+            lines.push(format!(
+                "  - Waiting {} from {}{still}: {}",
+                format_span(wait.seconds(self.now)),
+                self.date(wait.start),
+                wait.reason
+                    .map_or("no reason recorded".to_owned(), one_line)
+            ));
+        }
         for note in &task.notes {
             if self.period.start <= note.at.0 && note.at.0 < self.period.end {
                 let label = match note.kind {
@@ -963,8 +1039,8 @@ impl Report<'_> {
             task.pull_request_url.clone(),
             task.issue.as_ref().map(|issue| issue.url.clone()),
             Some(entry.commits.len().to_string()),
-            active_seconds(&task.timeline, self.now)
-                .map(|seconds| ((seconds as f64 / 360.0).round() / 10.0).to_string()),
+            active_seconds(&task.timeline, self.now).map(hours),
+            waiting_seconds(&task.timeline, self.now).map(hours),
             task.estimate.map(|estimate| estimate.amount.to_string()),
             task.estimate.map(|estimate| {
                 match estimate.unit {
@@ -986,7 +1062,12 @@ impl Report<'_> {
     }
 }
 
-const CSV_COLUMNS: [&str; 25] = [
+/// Seconds as hours with one decimal, for CSV cells.
+fn hours(seconds: i64) -> String {
+    ((seconds as f64 / 360.0).round() / 10.0).to_string()
+}
+
+const CSV_COLUMNS: [&str; 26] = [
     "Task",
     "Workspace",
     "Type",
@@ -1003,6 +1084,7 @@ const CSV_COLUMNS: [&str; 25] = [
     "Issue",
     "Commits in period",
     "Active hours",
+    "Waiting hours",
     "Estimate",
     "Estimate unit",
     "Due date",
@@ -1148,6 +1230,7 @@ mod tests {
             status,
             at: Timestamp(at),
             reopened: false,
+            reason: None,
         }
     }
 
@@ -1399,6 +1482,63 @@ mod tests {
     }
 
     #[test]
+    fn shows_active_against_waiting_time_and_each_wait_in_the_period_with_its_reason() {
+        let mut waited = completed(1, local(2026, 10, 16, 12));
+        let wait = |at, reason: Option<&str>| TaskEvent {
+            reason: reason.map(str::to_owned),
+            ..event(TaskStatus::Planned, at)
+        };
+        waited.task.timeline = vec![
+            event(TaskStatus::Planned, local(2026, 10, 1, 0)),
+            event(TaskStatus::InProgress, local(2026, 10, 2, 0)),
+            wait(local(2026, 10, 2, 5), Some("Waiting on #2 API (planned)")),
+            event(TaskStatus::InProgress, local(2026, 10, 11, 0)),
+            wait(local(2026, 10, 13, 3), None),
+            event(TaskStatus::InProgress, local(2026, 10, 15, 3)),
+            event(TaskStatus::InReview, local(2026, 10, 16, 0)),
+            event(TaskStatus::Done, local(2026, 10, 16, 12)),
+        ];
+        let mut paused = entry(3, ReviewOutcome::Started);
+        paused.task.status = TaskStatus::Planned;
+        paused.task.timeline = vec![
+            event(TaskStatus::Planned, local(2026, 10, 12, 0)),
+            event(TaskStatus::InProgress, local(2026, 10, 12, 1)),
+            wait(local(2026, 12, 29, 0), Some("Waiting for the API design")),
+        ];
+        let mut never_started = entry(4, ReviewOutcome::Planned);
+        never_started.task.timeline = vec![event(TaskStatus::Planned, local(2026, 10, 12, 0))];
+
+        let text = markdown(&week(), &[waited, paused, never_started]);
+
+        // 5h + 51h + 21h + 12h active, 211h + 48h waiting; the first wait ended before the
+        // week, so it is only summed.
+        assert!(text.contains(
+            "- [feat] Task 1 (toodo, 2026-10-16)\n  - Time: 3.7d active, 10.8d waiting\n  - Waiting 2.0d from 2026-10-13: no reason recorded\n"
+        ), "{text}");
+        assert!(!text.contains("Waiting on #2"), "{text}");
+        // A wait still under way counts until now and is in every period it overlaps.
+        assert!(
+            text.contains(
+                "- [feat] Task 3 (toodo, 2026-10-13)\n  - Time: 78.0d active, 2.0d waiting\n"
+            ),
+            "{text}"
+        );
+        let task4 = text.split("Task 4").nth(1).unwrap();
+        assert!(!task4.contains("Time:"), "{text}");
+
+        let still_waiting = period(ReviewPeriodKind::Month, "2026-12-01");
+        let mut paused = entry(3, ReviewOutcome::Started);
+        paused.task.timeline = vec![
+            event(TaskStatus::Planned, local(2026, 10, 12, 0)),
+            event(TaskStatus::InProgress, local(2026, 10, 12, 1)),
+            wait(local(2026, 12, 29, 0), Some("Waiting for the API design")),
+        ];
+        assert!(markdown(&still_waiting, &[paused]).contains(
+            "  - Waiting 2.0d from 2026-12-29, still waiting: Waiting for the API design\n"
+        ));
+    }
+
+    #[test]
     fn lists_the_notes_left_on_a_task_during_the_period() {
         let mut working = entry(1, ReviewOutcome::Started);
         let note = |kind, body: &str, at| TaskNote {
@@ -1571,9 +1711,9 @@ mod tests {
             csv,
             "\u{feff}".to_owned()
                 + &[
-                    "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,Awaiting completion,Completed,Merged,Pull request,Issue,Commits in period,Active hours,Estimate,Estimate unit,Due date,Due status,Additions,Deletions,Changed files,Reviews,Completion note",
-                    "7,toodo,feat,\"Fix \"\"login\"\", then\nlogout\",Completed,2026-10-13 17:00,Not adopted,2026-10-01 11:00,,,2026-10-13 17:00,2026-10-13 16:00,https://github.com/acme/toodo/pull/3,https://github.com/acme/toodo/issues/12,0,3,2,hours,2026-10-12,Late,120,30,4,2,\"Cut login time in half, finally\"",
-                    "8,workspace 9,feat,Plan café,Planned,2026-10-13 17:00,,,,,,,,,0,0.5,,,,,,,,,",
+                    "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,Awaiting completion,Completed,Merged,Pull request,Issue,Commits in period,Active hours,Waiting hours,Estimate,Estimate unit,Due date,Due status,Additions,Deletions,Changed files,Reviews,Completion note",
+                    "7,toodo,feat,\"Fix \"\"login\"\", then\nlogout\",Completed,2026-10-13 17:00,Not adopted,2026-10-01 11:00,,,2026-10-13 17:00,2026-10-13 16:00,https://github.com/acme/toodo/pull/3,https://github.com/acme/toodo/issues/12,0,3,0,2,hours,2026-10-12,Late,120,30,4,2,\"Cut login time in half, finally\"",
+                    "8,workspace 9,feat,Plan café,Planned,2026-10-13 17:00,,,,,,,,,0,0.5,0,,,,,,,,,",
                 ]
                 .join("\r\n")
                 + "\r\n"
