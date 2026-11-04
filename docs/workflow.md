@@ -472,7 +472,11 @@ keeps the task `in_review` and is logged once until it changes; the next check t
 again. The task list refreshes when a task is completed this way. The next check starts a
 minute after the previous one finished, so a task whose pull request was just merged can
 still read `in_review` for up to about a minute; the MCP instructions and the toodo skill
-tell agents to read the task again after a minute instead of completing it by hand.
+tell agents to read the task again after a minute instead of completing it by hand. The
+tasks of each machine are checked on their own, so an SSH machine that does not answer
+only delays the checks of its own workspaces. Every git, `ssh`, and `gh` command is
+stopped when it runs too long (two minutes, fifteen for a clone, fetch, or push), and
+`ssh` gives up on a host that does not answer within ten seconds.
 
 In the same check, Toodo also looks up the pull request of the branch of every
 `in_progress` task that has a branch and a worktree (steps 2 and 3 of opening a pull

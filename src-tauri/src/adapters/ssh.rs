@@ -225,11 +225,11 @@ mod tests {
         let invocation = runner.invocations.lock().unwrap()[0].clone();
         assert_eq!(invocation.program, "ssh");
         assert_eq!(
-            invocation.args[..4],
-            ["-o", "BatchMode=yes", "--", "devbox"]
+            invocation.args[..invocation.args.len() - 1],
+            crate::adapters::git::fake::ssh_args("devbox")
         );
         assert_eq!(
-            invocation.args[4],
+            invocation.args.last().unwrap(),
             r#"sh -c 'pwd; for entry in * .*; do [ -d "$entry" ] && printf '\''%s\n'\'' "$entry"; done; exit 0'"#
         );
         assert_eq!(
@@ -257,7 +257,11 @@ mod tests {
         let ssh = Ssh::new(Box::new(runner.clone()));
         let path = HostPath::Posix(PosixPath::parse(root.to_str().unwrap()).unwrap());
         ssh.list_directories(&devbox(), Some(&path)).unwrap();
-        let remote = runner.invocations.lock().unwrap()[0].args[4].clone();
+        let remote = runner.invocations.lock().unwrap()[0]
+            .args
+            .last()
+            .unwrap()
+            .clone();
         let output = std::process::Command::new("sh")
             .args(["-c", &remote])
             .output()
@@ -278,7 +282,11 @@ mod tests {
         Ssh::new(Box::new(runner.clone()))
             .list_directories(&devbox(), Some(&missing))
             .unwrap_err();
-        let remote = runner.invocations.lock().unwrap()[0].args[4].clone();
+        let remote = runner.invocations.lock().unwrap()[0]
+            .args
+            .last()
+            .unwrap()
+            .clone();
         let status = std::process::Command::new("sh")
             .args(["-c", &remote])
             .output()
@@ -332,11 +340,11 @@ mod tests {
         );
 
         let invocations = runner.invocations.lock().unwrap();
-        assert!(invocations[0].args[4].starts_with("sh -c "));
-        let login = decode_powershell(&invocations[1].args[4]);
+        assert!(invocations[0].args.last().unwrap().starts_with("sh -c "));
+        let login = decode_powershell(invocations[1].args.last().unwrap());
         assert!(!login.contains("Set-Location"), "{login}");
         assert!(login.contains("Get-ChildItem -LiteralPath . -Directory -Force"));
-        let given = decode_powershell(&invocations[2].args[4]);
+        let given = decode_powershell(invocations[2].args.last().unwrap());
         assert!(
             given.contains(r"Set-Location -LiteralPath 'D:\dev\it''s'"),
             "{given}"

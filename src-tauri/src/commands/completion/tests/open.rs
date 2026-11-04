@@ -78,7 +78,7 @@ fn ssh_tasks_run_git_on_their_machine_and_gh_locally() {
     let push = &invocations(&git_runner)[3];
     assert_eq!(push.program, "ssh");
     assert_eq!(
-        push.args[4],
+        push.args.last().unwrap(),
         "git '-C' '/srv/toodo' 'push' '--set-upstream' 'origin' 'feat/add-login-1'"
     );
     assert_eq!(invocations(&gh_runner)[1].program, "gh");

@@ -766,8 +766,12 @@ path deletes journal history.
   - Events use the socket API (`src-tauri/src/adapters/herdr_events.rs`,
     `src-tauri/src/commands/events.rs`): newline-delimited JSON over the server socket
     that `herdr status --json` reports as `server.socket`, a Unix domain socket.
-    - The herdr server of an SSH machine is reached with `ssh -o BatchMode=yes -W
-      <socket path> -- <host>`, which forwards ssh's standard input and output to the
+    - The herdr server of an SSH machine is reached with `ssh -o BatchMode=yes -o
+      ConnectTimeout=10 -W <socket path> -- <host>` (with the other options of
+      `git::SSH_OPTIONS`), so an unreachable machine fails within seconds and is
+      recorded offline. Short `ssh` commands to a machine (git, directory listings,
+      remote herdr) share one connection through OpenSSH multiplexing
+      (`git::SSH_SHARED_CONNECTION`). The command forwards ssh's standard input and output to the
       remote socket. The socket path comes from running the remote herdr over SSH
       (`herdr --session <saved session> status --json`, looked up on `PATH`, then in
       `~/.local/bin`, Homebrew, `/usr/local/bin`, and the Nix profile), because
