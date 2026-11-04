@@ -242,14 +242,17 @@ export const commands = {
 	 *  the task's title, description, and criteria, and with `mcp` it also tells the agent to
 	 *  call the Toodo MCP `current_task` tool. With `mcp` the agent gets the server's MCP
 	 *  endpoint and token in its environment only; on an SSH machine it reaches the server
-	 *  through the machine's MCP tunnel, which must be open. Returns the run as recorded right
-	 *  after the launch. The agent runs with the model, permission mode, and time limit the
-	 *  task sets, or else its workspace (see `get_task_agent_options`). While the machine runs
-	 *  as many runs as its limit allows (see `set_machine_run_limit`), or earlier runs wait
-	 *  for it, the run is returned `queued` with its place in the queue, and starts on its
-	 *  own once a run slot frees.
+	 *  through the machine's MCP tunnel, which must be open. With `follow_up_of`, an ended run
+	 *  of the task, the agent resumes that run's session with `prompt` (required then)
+	 *  instead of starting a new one, and the new run joins the run's conversation. Returns
+	 *  the run as recorded right after the launch. The agent runs with the model, permission
+	 *  mode, and time limit the task sets, or else its workspace (see
+	 *  `get_task_agent_options`). While the machine runs as many runs as its limit allows (see
+	 *  `set_machine_run_limit`), or earlier runs wait for it, the run is returned `queued`
+	 *  with its place in the queue, and starts on its own once a run slot frees; a queued
+	 *  follow-up then resumes the latest session of its conversation.
 	 */
-	startPlainRun: (taskId: TaskId, adapter: AgentAdapter, prompt: string | null, mcp: boolean) => typedError<TaskRun, CommandError>(invoke("start_plain_run", { taskId, adapter, prompt, mcp })),
+	startPlainRun: (taskId: TaskId, adapter: AgentAdapter, prompt: string | null, mcp: boolean, followUpOf: number | null) => typedError<TaskRun, CommandError>(invoke("start_plain_run", { taskId, adapter, prompt, mcp, followUpOf })),
 	/**  The runs of a task, oldest first. */
 	listTaskRuns: (taskId: TaskId) => typedError<TaskRun[], CommandError>(invoke("list_task_runs", { taskId })),
 	/**  How many plain and tmux runs `machine` runs at once, and how many run or wait there. */
@@ -1629,6 +1632,13 @@ export type TaskRun = {
 	lastActivityAt: Timestamp | null,
 	/**  The tokens the agent reported using, once it reported them. */
 	usage: RunUsage | null,
+	/**  The earlier run this run follows up on: it resumed that run's agent session. */
+	followUpOf: RunId | null,
+	/**
+	 *  The agent session (Claude session id, Codex thread id) of this run's conversation,
+	 *  once the agent reported it: what a follow-up run (`follow_up_of` this run) resumes.
+	 */
+	agentSession: string | null,
 	/**
 	 *  For a queued run, where it is in its host's queue, from 1 for the run that starts
 	 *  next; `None` for any other run.

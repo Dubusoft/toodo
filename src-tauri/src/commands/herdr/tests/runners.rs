@@ -111,6 +111,7 @@ fn a_task_of_a_plain_workspace_starts_in_a_git_worktree_without_herdr() {
                 checkout_path: None,
                 runtime_workspace: None,
                 adapter_profile: None,
+                conversation: None,
             })
             .unwrap()
             .into_run();

@@ -424,6 +424,7 @@ impl TmuxRunner {
                 storage.record_run_activity(run, tracker.usage())?;
             }
             if let Some(id) = tracker.session_id() {
+                storage.record_run_session(run, id)?;
                 storage.append_run_event(
                     run,
                     "agent_session",
@@ -853,6 +854,7 @@ impl RunLauncher for TmuxRunner {
             Path::new(host::RUN_FILE_PREFIX),
             endpoint.as_ref(),
             &agent.options,
+            agent.resume.as_ref().map(|resume| resume.session.as_str()),
         );
         // Path::join preserves the {run}/ prefix for host-native resolution.
         if let Some(at) = invocation.args.iter().position(|arg| arg == "--mcp-config") {

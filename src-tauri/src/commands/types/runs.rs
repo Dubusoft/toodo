@@ -155,6 +155,11 @@ pub struct TaskRun {
     pub last_activity_at: Option<Timestamp>,
     /// The tokens the agent reported using, once it reported them.
     pub usage: Option<RunUsage>,
+    /// The earlier run this run follows up on: it resumed that run's agent session.
+    pub follow_up_of: Option<RunId>,
+    /// The agent session (Claude session id, Codex thread id) of this run's conversation,
+    /// once the agent reported it: what a follow-up run (`follow_up_of` this run) resumes.
+    pub agent_session: Option<String>,
     /// For a queued run, where it is in its host's queue, from 1 for the run that starts
     /// next; `None` for any other run.
     pub queue_position: Option<u32>,
@@ -214,6 +219,8 @@ impl From<&storage::TaskRun> for TaskRun {
             ended_at: run.ended_at.map(Timestamp),
             last_activity_at: run.last_activity_at.map(Timestamp),
             usage: run.usage.map(RunUsage::from),
+            follow_up_of: run.follows.map(RunId::from),
+            agent_session: run.session.clone(),
             queue_position: None,
         }
     }

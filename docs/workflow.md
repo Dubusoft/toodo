@@ -380,6 +380,14 @@ with; a task can override each of them (`set_workspace_agent_options`,
 `set_task_agent_options`, or Agents and Runs with in the app). Runs started afterwards
 use the new values.
 
+To send more work to the agent of an ended run, such as review feedback, pass
+`followUpOf` with that run's id and the feedback as the prompt (required then). The
+agent resumes the session it reported (Claude session id, Codex thread id) instead of
+starting from zero, and the new run's `followUpOf` links it to the run it continues. A
+run that is still active, reported no session, ran another agent, or ran in another
+worktree cannot be followed up; start a new run instead. In the app, Follow up on the
+newest run of a conversation does the same.
+
 Each machine (the server, or an SSH host) can limit how many plain and tmux runs it runs
 at once (`set_machine_run_limit`, or Runs at once beside the worktree root in the app; no
 limit by default). A run started while the machine is at its limit, or while earlier runs

@@ -100,6 +100,8 @@ function run(generation: number, state: TaskRun["state"], adapter = "claude"): T
     endedAt: state === "reserved" || state === "running" ? null : 1_791_970_600,
     lastActivityAt: null,
     usage: null,
+    followUpOf: null,
+    agentSession: null,
     queuePosition: null,
   };
 }
@@ -208,7 +210,7 @@ describe("RunsPanel", () => {
     fireEvent.click(within(form).getByRole("checkbox", { name: "Toodo MCP" }));
     fireEvent.click(within(form).getByRole("button", { name: "Start run of #7" }));
 
-    await waitFor(() => expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "codex", null, false));
+    await waitFor(() => expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "codex", null, false, null));
     expect(await screen.findByRole("button", { name: "Run 1, Codex, Running" })).toHaveAttribute(
       "aria-expanded",
       "true",
@@ -216,6 +218,38 @@ describe("RunsPanel", () => {
     await waitFor(() => expect(mocked.getRunLog).toHaveBeenCalledWith(41, null));
     // The new run holds the worktree, so no second run starts until it ends.
     expect(within(form).getByRole("button", { name: "Start run of #7" })).toBeDisabled();
+  });
+
+  it("sends a follow-up to the agent session of an ended run and links the new run to it", async () => {
+    const first: TaskRun = { ...run(1, "settled"), agentSession: "sess-1" };
+    const silent = run(2, "failed", "codex");
+    const followUp: TaskRun = { ...run(3, "running"), followUpOf: first.id, agentSession: "sess-1" };
+    mocked.listTaskRuns.mockResolvedValueOnce(ok([first, silent])).mockResolvedValue(ok([first, silent, followUp]));
+    mocked.startPlainRun.mockResolvedValue(ok(followUp));
+    mocked.getRunLog.mockImplementation(async (id) =>
+      ok(log(id === followUp.id ? followUp : first, launched(first))),
+    );
+    renderPanel();
+
+    await screen.findByRole("button", { name: "Run 1, Claude, Succeeded" });
+    // A run whose agent reported no session has nothing to resume.
+    expect(screen.queryByRole("button", { name: "Follow up run 2 of #7" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Follow up run 1 of #7" }));
+    const form = screen.getByRole("form", { name: "Follow up run 1 of #7" });
+    const send = within(form).getByRole("button", { name: "Send follow-up to run 1 of #7" });
+    expect(send).toBeDisabled();
+    fireEvent.change(within(form).getByRole("textbox"), { target: { value: "Address the review comments" } });
+    fireEvent.click(send);
+
+    await waitFor(() =>
+      expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "claude", "Address the review comments", true, first.id),
+    );
+    const row = await screen.findByRole("button", { name: "Run 3, Claude, Running" });
+    expect(within(row).getByLabelText("Follow-up of run 1")).toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Follow up run 1 of #7" })).not.toBeInTheDocument();
+    // The follow-up holds the worktree, and run 1 is no longer the newest of its conversation.
+    expect(screen.queryByRole("button", { name: "Follow up run 1 of #7" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Follow up run 3 of #7" })).not.toBeInTheDocument();
   });
 
   it("shows a queued run with its place in the queue and lets it leave the queue", async () => {
@@ -612,7 +646,7 @@ describe("RunsPanel", () => {
     expect(within(form).getByRole("button", { name: "Codex" })).toBeEnabled();
     fireEvent.click(within(form).getByRole("button", { name: "Start run of #7" }));
 
-    await waitFor(() => expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "codex", null, true));
+    await waitFor(() => expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "codex", null, true, null));
     expect(await screen.findByRole("button", { name: "Run 1, Codex, Running" })).toBeInTheDocument();
   });
 
@@ -631,7 +665,7 @@ describe("RunsPanel", () => {
     expect(screen.queryByRole("note", { name: "Why Claude is unavailable" })).not.toBeInTheDocument();
     fireEvent.click(within(form).getByRole("button", { name: "Start run of #7" }));
 
-    await waitFor(() => expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "claude", null, true));
+    await waitFor(() => expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "claude", null, true, null));
   });
 
   it("keeps Start run disabled while neither agent CLI is on the server, until Refresh finds one", async () => {

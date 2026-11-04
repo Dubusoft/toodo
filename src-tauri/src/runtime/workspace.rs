@@ -506,6 +506,7 @@ mod tests {
                 checkout_path: open.checkout_path,
                 runtime_workspace: Some(open.id),
                 adapter_profile: None,
+                conversation: None,
             })
             .unwrap()
             .into_run();

@@ -575,6 +575,13 @@ an `in_progress` task of a plain or tmux workspace that has a worktree, local or
   `-c mcp_servers.toodo.url="<url>" -c mcp_servers.toodo.bearer_token_env_var="TOODO_MCP_TOKEN"`
   with MCP, then `-`.
 
+The session id (Claude) or thread id (Codex) a run's agent reports is kept in an
+`agent_conversations` row (`resume_kind` `exact_id`) that the run links to through
+`conversation_id`; a follow-up run (`start_plain_run` with `follow_up_of`) joins the same
+conversation and resumes its latest session with `--resume <id>` (Claude) or
+`resume <id>` before `-` (Codex). A run's `followUpOf` is the latest earlier run of its
+conversation.
+
 A workspace's pull request options (`set_workspace_pull_request_options`, stored in the
 `pull_request_draft`, `pull_request_reviewers`, and `pull_request_labels` columns of
 `workspaces`, the lists as JSON arrays) set whether the pull requests Toodo opens for its
