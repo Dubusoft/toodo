@@ -1,6 +1,7 @@
-//! Backups of the database: consistent snapshots written with `VACUUM INTO`, restores
-//! that check and migrate a backup before it replaces the live data, and the backup
-//! directory Toodo keeps automatic and pre-restore backups in.
+//! Backups of the database: consistent snapshots written with `VACUUM INTO` and checked
+//! with `PRAGMA integrity_check`, restores that check and migrate a backup before it
+//! replaces the live data, and the backup directory Toodo keeps automatic, pre-restore,
+//! and pre-migration backups in.
 
 use std::fs;
 use std::io;
@@ -10,7 +11,7 @@ use std::time::Duration;
 use rusqlite::backup::Backup;
 use rusqlite::{Connection, OpenFlags};
 
-use super::{Result, Storage, StorageError, migrations};
+use super::{BUSY_TIMEOUT, Result, Storage, StorageError, migrations};
 use crate::domain::backup::{self, BackupKind};
 
 /// A backup Toodo wrote into its backup directory.
@@ -34,44 +35,134 @@ impl StagedBackup {
 }
 
 impl Storage {
-    /// Writes a consistent snapshot of the database to `path`, replacing any file there.
-    /// The snapshot is written next to `path` first, so a failed export never leaves a
-    /// truncated file in its place.
+    /// Writes a consistent snapshot of the database to `path`, replacing any file there
+    /// (see [`write_snapshot`]).
     pub fn export_to(&self, path: &Path) -> Result<()> {
-        let target = path.to_str().ok_or_else(|| {
-            StorageError::InvalidBackup(format!("{} is not a valid UTF-8 path", path.display()))
-        })?;
-        let partial = format!("{target}.partial");
-        remove_if_exists(Path::new(&partial))?;
-        self.conn.execute("VACUUM INTO ?1", [&partial])?;
-        fs::rename(&partial, path).map_err(|error| {
-            let _ = fs::remove_file(&partial);
-            StorageError::Io(error)
-        })
+        write_snapshot(&self.conn, path)
     }
 
-    /// Writes a backup of `kind` into `dir`, creating the directory if needed. Names carry
-    /// the time to the second; a backup never replaces an earlier one from the same second,
-    /// it takes the next free second instead.
+    /// Writes a backup of `kind` into `dir` through this connection (see [`backup_with`]).
+    /// Callers hold the storage lock for it, so no write lands between the backup and
+    /// what they do next, such as a restore.
     pub fn backup_into(&self, dir: &Path, kind: BackupKind) -> Result<BackupFile> {
-        fs::create_dir_all(dir)?;
-        let mut created_at = self.now();
-        while dir.join(backup::file_name(kind, created_at)).exists() {
-            created_at += 1;
-        }
-        let path = dir.join(backup::file_name(kind, created_at));
-        self.export_to(&path)?;
-        Ok(BackupFile {
-            size_bytes: fs::metadata(&path)?.len(),
-            path,
-            kind,
-            created_at,
-        })
+        backup_with(&self.conn, dir, kind, self.now())
+    }
+
+    /// The database file; `None` for an in-memory database.
+    pub fn database_path(&self) -> Option<PathBuf> {
+        self.conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
     }
 
     /// Replaces all data with a staged backup.
     pub fn restore(&mut self, staged: StagedBackup) -> Result<()> {
         copy_database(&staged.0, &mut self.conn)
+    }
+}
+
+/// Writes a backup of `kind` of the database file at `database` into `dir` at time `at`,
+/// through a connection of its own. The database is in WAL mode, so the backup reads the
+/// last committed data without waiting for the writes of other connections, and they do
+/// not wait for it.
+pub fn backup_database(
+    database: &Path,
+    dir: &Path,
+    kind: BackupKind,
+    at: i64,
+) -> Result<BackupFile> {
+    backup_with(&open_source(database)?, dir, kind, at)
+}
+
+/// Writes a consistent snapshot of the database file at `database` to `path` through a
+/// connection of its own, like [`backup_database`].
+pub fn export_database(database: &Path, path: &Path) -> Result<()> {
+    write_snapshot(&open_source(database)?, path)
+}
+
+/// Writes a pre-migration backup of the database file at `database` into `dir` when
+/// [`Storage::open`] would migrate it to a newer schema; `None` when there is nothing to
+/// migrate (no file yet, a new empty database, or the latest schema). A schema newer than
+/// this Toodo's is left to [`Storage::open`], which refuses it.
+pub fn backup_before_migration(database: &Path, dir: &Path, at: i64) -> Result<Option<BackupFile>> {
+    if !database.exists() {
+        return Ok(None);
+    }
+    let conn = open_source(database)?;
+    let version = migrations::schema_version(&conn)?;
+    if version == 0 || version >= migrations::LATEST_VERSION {
+        return Ok(None);
+    }
+    backup_with(&conn, dir, BackupKind::PreMigration, at).map(Some)
+}
+
+/// A connection to read a backup from the existing database file at `database`, without
+/// migrating it. It is not opened read-only: SQLite has to be able to create the WAL
+/// index of a database in WAL mode that no other connection has open.
+fn open_source(database: &Path) -> Result<Connection> {
+    let conn = Connection::open_with_flags(
+        database,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    Ok(conn)
+}
+
+/// Writes a backup of `kind` of the database of `conn` into `dir`, creating the directory
+/// if needed. Names carry the time `at` to the second; a backup never replaces an earlier
+/// one from the same second, it takes the next free second instead.
+fn backup_with(conn: &Connection, dir: &Path, kind: BackupKind, at: i64) -> Result<BackupFile> {
+    fs::create_dir_all(dir)?;
+    let mut created_at = at;
+    while dir.join(backup::file_name(kind, created_at)).exists() {
+        created_at += 1;
+    }
+    let path = dir.join(backup::file_name(kind, created_at));
+    write_snapshot(conn, &path)?;
+    Ok(BackupFile {
+        size_bytes: fs::metadata(&path)?.len(),
+        path,
+        kind,
+        created_at,
+    })
+}
+
+/// Writes a consistent snapshot of the database of `conn` to `path`, replacing any file
+/// there. The snapshot is written next to `path` first and checked with
+/// `PRAGMA integrity_check`, so a failed or damaged snapshot never takes its place.
+fn write_snapshot(conn: &Connection, path: &Path) -> Result<()> {
+    let target = path.to_str().ok_or_else(|| {
+        StorageError::InvalidBackup(format!("{} is not a valid UTF-8 path", path.display()))
+    })?;
+    let partial = format!("{target}.partial");
+    remove_if_exists(Path::new(&partial))?;
+    conn.execute("VACUUM INTO ?1", [&partial])?;
+    let result = check_integrity(Path::new(&partial))
+        .and_then(|()| fs::rename(&partial, path).map_err(StorageError::Io));
+    if result.is_err() {
+        let _ = fs::remove_file(&partial);
+    }
+    result
+}
+
+/// Runs `PRAGMA integrity_check` on the database file at `path`.
+fn check_integrity(path: &Path) -> Result<()> {
+    let failed = |reason: &dyn std::fmt::Display| {
+        StorageError::BackupCheckFailed(format!("{}: {reason}", path.display()))
+    };
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| failed(&error))?;
+    let result: String = conn
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(|error| failed(&error))?;
+    if result == "ok" {
+        Ok(())
+    } else {
+        Err(failed(&result))
     }
 }
 
@@ -374,6 +465,124 @@ mod tests {
             .restore(stage_backup(&first.path).unwrap())
             .unwrap();
         assert!(snapshot(&restored).is_empty());
+    }
+
+    #[test]
+    fn an_older_schema_is_backed_up_before_it_is_migrated() {
+        let dir = tempfile::tempdir().unwrap();
+        let backups = dir.path().join("backups");
+        let database = dir.path().join("toodo.sqlite3");
+        assert_eq!(
+            backup_before_migration(&database, &backups, 1_000).unwrap(),
+            None
+        );
+        assert!(!database.exists());
+        let conn = Connection::open(&database).unwrap();
+        conn.execute_batch(migrations::MIGRATIONS[0]).unwrap();
+        conn.execute_batch(
+            r"
+            PRAGMA user_version = 1;
+            INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', 'C:\dev\toodo', 'main');
+            ",
+        )
+        .unwrap();
+        drop(conn);
+
+        let saved = backup_before_migration(&database, &backups, 1_000)
+            .unwrap()
+            .expect("an older schema is backed up");
+
+        assert_eq!(saved.kind, BackupKind::PreMigration);
+        assert_eq!(
+            list_backups(&backups).unwrap(),
+            std::slice::from_ref(&saved)
+        );
+        let copy = Connection::open(&saved.path).unwrap();
+        assert_eq!(migrations::schema_version(&copy).unwrap(), 1);
+        let name: String = copy
+            .query_row("SELECT name FROM workspaces", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(name, "toodo");
+        drop(Storage::open(&database).unwrap());
+        assert_eq!(
+            backup_before_migration(&database, &backups, 2_000).unwrap(),
+            None
+        );
+        assert_eq!(list_backups(&backups).unwrap(), [saved]);
+    }
+
+    #[test]
+    fn a_damaged_snapshot_fails_the_integrity_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open(dir.path());
+        for index in 0..40 {
+            add_workspace(&mut storage, &format!("workspace-{index}"));
+        }
+        let export = dir.path().join("export.sqlite3");
+        storage.export_to(&export).unwrap();
+        check_integrity(&export).unwrap();
+
+        let mut bytes = fs::read(&export).unwrap();
+        let page = 4096;
+        assert!(bytes.len() > 4 * page, "{} bytes", bytes.len());
+        bytes[2 * page..3 * page].fill(0x5a);
+        fs::write(&export, bytes).unwrap();
+
+        let error = check_integrity(&export).unwrap_err();
+        assert!(
+            matches!(error, StorageError::BackupCheckFailed(_)),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_backup_reads_committed_data_without_waiting_for_an_open_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open(dir.path());
+        add_workspace(&mut storage, "committed");
+        let database = storage.database_path().unwrap();
+        let writer = Connection::open(&database).unwrap();
+        writer
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+                 INSERT INTO workspaces (name, kind, path, default_base_branch)
+                     VALUES ('pending', 'local', '/pending', 'main');",
+            )
+            .unwrap();
+
+        let started = std::time::Instant::now();
+        let saved = backup_database(
+            &database,
+            &dir.path().join("backups"),
+            BackupKind::Automatic,
+            1_000,
+        )
+        .unwrap();
+
+        assert!(started.elapsed() < BUSY_TIMEOUT, "{:?}", started.elapsed());
+        let mut restored = Storage::open_in_memory().unwrap();
+        restored
+            .restore(stage_backup(&saved.path).unwrap())
+            .unwrap();
+        let names: Vec<String> = restored
+            .list_workspaces()
+            .unwrap()
+            .into_iter()
+            .map(|workspace| workspace.name)
+            .collect();
+        assert_eq!(names, ["committed"]);
+        writer.execute_batch("COMMIT").unwrap();
+    }
+
+    #[test]
+    fn in_memory_databases_have_no_file() {
+        assert_eq!(Storage::open_in_memory().unwrap().database_path(), None);
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            open(dir.path()).database_path(),
+            Some(dir.path().join("toodo.sqlite3"))
+        );
     }
 
     #[test]

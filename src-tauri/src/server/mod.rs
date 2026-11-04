@@ -330,8 +330,11 @@ pub fn main() {
 /// [`backup::import_file`].
 fn import(config: &Config, source: &Path) -> Result<(), Box<dyn std::error::Error>> {
     create_private_dir(&config.data_dir)?;
-    let storage = Mutex::new(Storage::open(&config.data_dir.join(DATABASE_FILE))?);
     let backups = Backups::load(&config.data_dir);
+    let storage = Mutex::new(open_storage(
+        &config.data_dir.join(DATABASE_FILE),
+        &backups,
+    )?);
     let (safety, summary) = backup::import_file(&storage, &backups, source)?;
     println!(
         "Saved the data before the import as {}",
@@ -352,10 +355,23 @@ fn import(config: &Config, source: &Path) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
+/// Opens the database, see [`backup::open_storage`], and logs the pre-migration backup.
+pub(crate) fn open_storage(database: &Path, backups: &Backups) -> Result<Storage, String> {
+    let (storage, saved) = backup::open_storage(database, backups)?;
+    if let Some(saved) = saved {
+        println!(
+            "toodo-server: saved the data before migrating it as {}",
+            saved.path.display()
+        );
+    }
+    Ok(storage)
+}
+
 fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     create_private_dir(&config.data_dir)?;
     let database = config.data_dir.join(DATABASE_FILE);
-    let storage = Arc::new(Mutex::new(Storage::open(&database)?));
+    let backups = Backups::load(&config.data_dir);
+    let storage = Arc::new(Mutex::new(open_storage(&database, &backups)?));
     let reader = Mutex::new(Storage::open_reader(&database)?);
     // No plain run of an earlier server process still has a process this one manages.
     PlainRunner::recover_after_restart(&storage)?;
@@ -407,7 +423,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         tmux,
         agent_statuses: Mutex::default(),
         pull_request_statuses: Mutex::default(),
-        backups: Backups::load(&config.data_dir),
+        backups,
         mcp: ServerStatus {
             url: mcp_url,
             token: Some(mcp_token.clone()),

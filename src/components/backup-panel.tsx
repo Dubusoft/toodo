@@ -5,6 +5,7 @@ import { formatFull } from "@/lib/timeline";
 import { When } from "@/components/when";
 import {
   useBackupSettings,
+  useBackupStatus,
   useBackups,
   useDownloadBackup,
   useDownloadExport,
@@ -26,7 +27,26 @@ function formatSize(bytes: number): string {
 const kindLabels: Record<BackupEntry["kind"], string> = {
   automatic: "Automatic",
   preRestore: "Before restore",
+  preMigration: "Before update",
 };
+
+/** "Backup failed" while the latest automatic backup failed, for the Settings button and tab. */
+export function BackupStatusLabel() {
+  const status = useBackupStatus();
+  if (!status.data?.lastFailure) return null;
+  return <span className="text-destructive">Backup failed</span>;
+}
+
+function BackupFailureAlert() {
+  const status = useBackupStatus();
+  const failure = status.data?.lastFailure;
+  if (!failure) return null;
+  return (
+    <p role="alert" aria-label="Automatic backup failed" className="text-xs break-words text-destructive">
+      The automatic backup <When at={failure.at} /> failed: {failure.message}
+    </p>
+  );
+}
 
 /** What a confirmed restore replaces the data with. */
 type RestoreSource = { kind: "backup"; path: string } | { kind: "upload"; file: File };
@@ -122,6 +142,7 @@ export function BackupPanel() {
           {error.message}
         </p>
       )}
+      <BackupFailureAlert />
       <AutoBackupSettings />
       <ul aria-label="Saved backups" className="flex flex-col divide-y">
         {backups.data?.length === 0 && <li className="text-xs text-muted-foreground">No backups yet.</li>}
@@ -171,8 +192,8 @@ export function BackupPanel() {
 function AutoBackupSettings() {
   const settings = useBackupSettings();
   if (!settings.data) return null;
-  const { enabled, intervalHours, keep } = settings.data;
-  return <AutoBackupForm key={`${enabled}-${intervalHours}-${keep}`} initial={settings.data} />;
+  const { enabled, intervalHours, keep, directory } = settings.data;
+  return <AutoBackupForm key={`${enabled}-${intervalHours}-${keep}-${directory ?? ""}`} initial={settings.data} />;
 }
 
 function AutoBackupForm({ initial }: { initial: BackupSettings }) {
@@ -180,10 +201,11 @@ function AutoBackupForm({ initial }: { initial: BackupSettings }) {
   const [enabled, setEnabled] = useState(initial.enabled);
   const [intervalHours, setIntervalHours] = useState(String(initial.intervalHours));
   const [keep, setKeep] = useState(String(initial.keep));
+  const [directory, setDirectory] = useState(initial.directory ?? "");
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    save.mutate({ enabled, intervalHours: Number(intervalHours), keep: Number(keep) });
+    save.mutate({ enabled, intervalHours: Number(intervalHours), keep: Number(keep), directory: directory.trim() || null });
   }
 
   return (
@@ -222,13 +244,29 @@ function AutoBackupForm({ initial }: { initial: BackupSettings }) {
         />
         latest
       </label>
+      <label className="flex flex-col gap-1">
+        Save backups in
+        <input
+          className="h-7 w-full rounded-md border bg-background px-2 text-sm"
+          type="text"
+          spellCheck={false}
+          aria-label="Backup directory"
+          placeholder="the server's data directory"
+          value={directory}
+          onChange={(e) => setDirectory(e.target.value)}
+        />
+        <span className="text-muted-foreground">
+          An absolute path on the server, e.g. on another disk. Every backup goes there, including the one before an
+          update.
+        </span>
+      </label>
       {save.isError && (
         <p role="alert" className="text-destructive">
           {save.error.message}
         </p>
       )}
       <Button type="submit" size="xs" variant="outline" className="self-start" disabled={save.isPending}>
-        {save.isPending ? "Saving..." : "Save schedule"}
+        {save.isPending ? "Saving..." : "Save backup settings"}
       </Button>
     </form>
   );

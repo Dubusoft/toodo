@@ -86,6 +86,7 @@ export const queryKeys = {
   herdrMachines: ["herdr-machines"] as const,
   backups: ["backups"] as const,
   backupSettings: ["backup-settings"] as const,
+  backupStatus: ["backup-status"] as const,
   mcpServerInfo: ["mcp-server-info"] as const,
   mcpTunnels: ["mcp-tunnels"] as const,
   review: (start: Timestamp, end: Timestamp) => ["review", start, end] as const,
@@ -125,14 +126,29 @@ export function useBackupSettings() {
   });
 }
 
-/** Saving may write an automatic backup right away, so the backup list is refetched. */
+/**
+ * Whether the latest automatic backup failed. The server checks for a due backup every ten
+ * minutes, so this is refetched every minute.
+ */
+export function useBackupStatus() {
+  return useQuery({
+    queryKey: queryKeys.backupStatus,
+    queryFn: () => commands.getBackupStatus(),
+    refetchInterval: 60_000,
+  });
+}
+
+/** Saving may write an automatic backup right away, so the backup list and status are refetched. */
 export function useSaveBackupSettings() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (settings: BackupSettings) => unwrap(commands.saveBackupSettings(settings)),
     onSuccess: (settings) => {
       queryClient.setQueryData(queryKeys.backupSettings, settings);
-      return queryClient.invalidateQueries({ queryKey: queryKeys.backups });
+      return Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.backups }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.backupStatus }),
+      ]);
     },
   });
 }

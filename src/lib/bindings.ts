@@ -325,9 +325,11 @@ export const commands = {
 	 */
 	reviewPeriod: (start: Timestamp, end: Timestamp) => typedError<ReviewEntry[], CommandError>(invoke("review_period", { start, end })),
 	getBackupSettings: () => invoke<BackupSettings>("get_backup_settings"),
+	/**  Whether the latest automatic backup failed, and why. */
+	getBackupStatus: () => invoke<BackupStatus>("get_backup_status"),
 	/**
 	 *  Saves the automatic backup settings, then writes an automatic backup if one is now
-	 *  due.
+	 *  due. A backup directory in the settings is created if needed and must be writable.
 	 */
 	saveBackupSettings: (settings: BackupSettings) => typedError<BackupSettings, CommandError>(invoke("save_backup_settings", { settings })),
 	/**  Backups in Toodo's backup directory, newest first. */
@@ -413,13 +415,30 @@ export type BackupEntry = {
 	sizeBytes: number,
 };
 
-export type BackupKind = "automatic" | "preRestore";
+/**  An automatic backup that failed, and why. */
+export type BackupFailure = {
+	at: Timestamp,
+	message: string,
+};
+
+export type BackupKind = "automatic" | "preRestore" | "preMigration";
 
 export type BackupSettings = {
 	enabled: boolean,
 	intervalHours: number,
 	/**  Number of automatic backups kept; older ones are deleted. */
 	keep: number,
+	/**
+	 *  Absolute path of the directory backups are written to, e.g. on another disk;
+	 *  `null` (or empty) keeps them in the data directory.
+	 */
+	directory?: string | null,
+};
+
+/**  How automatic backups have gone since the server started. */
+export type BackupStatus = {
+	/**  The latest automatic backup failed; cleared once one succeeds again. */
+	lastFailure: BackupFailure | null,
 };
 
 /**
