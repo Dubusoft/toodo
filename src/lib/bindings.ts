@@ -445,8 +445,50 @@ export type ChecksStatus = "passing" | "failing" | "pending";
 
 export type CommandError = {
 	kind: CommandErrorKind,
+	code: CommandErrorCode,
 	message: string,
 };
+
+/**
+ *  What went wrong, as a stable machine-readable code. The RPC endpoint and the MCP tools
+ *  return the same codes, so the web app and agents can react to a code instead of the
+ *  message text. Each code belongs to one [`CommandErrorKind`]; the generic codes named
+ *  after a kind cover failures without a more specific code.
+ */
+export type CommandErrorCode = 
+/**  An argument is malformed. */
+"invalidInput" | 
+/**
+ *  The request body does not match the command's parameters, e.g. after the server
+ *  was updated and the web app was not reloaded.
+ */
+"invalidArguments" | 
+/**  A referenced object does not exist. */
+"notFound" | 
+/**  No command or tool has this name. */
+"unknownCommand" | "workspaceNotFound" | "taskNotFound" | "criterionNotFound" | "dependencyNotFound" | "relationNotFound" | "runNotFound" | 
+/**  The request breaks a rule. */
+"rejected" | 
+/**  The dependency would make the task DAG cyclic or make a task depend on itself. */
+"dependencyCycle" | 
+/**  The task cannot move to the requested status from its current one. */
+"invalidTransition" | 
+/**  A prerequisite of the task is not done yet. */
+"dependenciesNotDone" | 
+/**  The caller may not use this tool, e.g. a chat app connected over OAuth. */
+"notPermitted" | 
+/**  An external tool failed. */
+"external" | 
+/**  git reported an error. */
+"gitFailed" | 
+/**  herdr reported an error or is not running. */
+"herdrFailed" | 
+/**  The server failed. */
+"internal" | 
+/**  The database failed or holds data the server cannot read. */
+"storageFailed" | 
+/**  The command stopped unexpectedly on the server; the details are in the server log. */
+"commandPanicked";
 
 export type CommandErrorKind = 
 /**  An argument is malformed, e.g. a relative path or an empty title. */

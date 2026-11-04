@@ -103,7 +103,7 @@ describe("BackupPanel", () => {
   it("restores a listed backup by name and shows a rejected backup's error", async () => {
     mocked.restoreBackup.mockResolvedValue({
       status: "error",
-      error: { kind: "invalidInput", message: "invalid backup x: not a Toodo database" },
+      error: { kind: "invalidInput", code: "invalidInput", message: "invalid backup x: not a Toodo database" },
     });
     renderPanel();
 

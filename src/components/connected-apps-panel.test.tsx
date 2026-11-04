@@ -101,7 +101,7 @@ describe("ConnectedAppsPanel", () => {
   it("keeps an app listed and shows why the server refused to revoke it", async () => {
     mocked.revokeConnectedApp.mockResolvedValue({
       status: "error",
-      error: { kind: "notFound", message: "connected app 1 is gone; reopen Settings to see the current apps" },
+      error: { kind: "notFound", code: "notFound", message: "connected app 1 is gone; reopen Settings to see the current apps" },
     });
     renderPanel();
 

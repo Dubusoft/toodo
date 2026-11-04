@@ -202,7 +202,7 @@ describe("push on this device", () => {
     const { created } = installServiceWorker(null);
     serve({
       "PUT /api/push/subscription": () =>
-        json({ kind: "rejected", message: "sign in with a device token to get notifications" }, 403),
+        json({ kind: "rejected", code: "rejected", message: "sign in with a device token to get notifications" }, 403),
     });
     const push = await freshPush();
 

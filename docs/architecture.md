@@ -780,8 +780,9 @@ path deletes journal history.
     prerequisite of their task, added last, and to note decisions and blockers as they
     work; Toodo never prompts agents itself. Notes show in the task list (latest) and the
     task details (all), and period reviews list the notes left during the period. Tool
-    failures come back as tool errors whose text the agent sees; arguments a tool does
-    not know are rejected, naming the ones it accepts.
+    failures come back as tool errors whose text the agent sees, with the error's kind,
+    code, and message (the codes of `POST /api/rpc`) as structured content
+    `{ "error": { "kind", "code", "message" } }`; arguments a tool does not know are rejected, naming the ones it accepts.
   - `search_tasks` finds earlier tasks of all workspaces (or one, or one status) by words
     in their title, description, completion note and notes, branch, and pull request
     title and URL; every word must appear, and results come best match first with

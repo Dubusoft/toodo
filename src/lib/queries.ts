@@ -25,6 +25,7 @@ import {
   type WorkspaceId,
   type WorkspaceLocation,
 } from "@/lib/bindings";
+import { commandErrorMessage } from "@/lib/error-messages";
 import { downloadBackup, downloadExport, uploadRestore } from "@/web/files";
 import { agentAlerts, notify, pullRequestAlerts, taskStatusAlerts, type AgentAlert } from "@/lib/agent-alerts";
 
@@ -32,11 +33,13 @@ type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: Co
 
 export class CommandFailure extends Error {
   readonly kind: CommandError["kind"];
+  readonly code: CommandError["code"];
 
   constructor(error: CommandError) {
-    super(error.message);
+    super(commandErrorMessage(error));
     this.name = "CommandFailure";
     this.kind = error.kind;
+    this.code = error.code;
   }
 }
 

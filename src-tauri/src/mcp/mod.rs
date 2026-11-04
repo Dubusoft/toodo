@@ -48,7 +48,7 @@ use crate::adapters::herdr::Herdr;
 use crate::commands::events::Notifier;
 use crate::commands::tasks as task_commands;
 use crate::commands::types::Task;
-use crate::commands::{CommandResult, StorageState, lock};
+use crate::commands::{CommandError, CommandErrorCode, CommandResult, StorageState, lock};
 use crate::domain::model;
 use crate::oauth::{self, PublicUrl};
 
@@ -648,9 +648,9 @@ impl ToodoMcp {
         apply: impl FnOnce(&dyn Backend) -> CommandResult<T> + Send + 'static,
     ) -> Result<CommandResult<T>, ErrorData> {
         let backend = self.backend.clone();
-        tokio::task::spawn_blocking(move || apply(backend.as_ref()))
+        Ok(tokio::task::spawn_blocking(move || apply(backend.as_ref()))
             .await
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+            .unwrap_or_else(|error| Err(CommandError::panicked(error))))
     }
 
     /// Tells the frontend that the links of a task changed.
@@ -1087,7 +1087,9 @@ impl ServerHandler for ToodoMcp {
                     .then(|| "Add git workspaces in the Toodo app or through a local agent with the MCP token; retry with source: \"none\" and omit clone_url and init.".to_owned())
             });
             if let Some(message) = rejected {
-                return Ok(CallToolResult::error(vec![ContentBlock::text(message)]).into());
+                return Ok(
+                    tool_error(CommandError::new(CommandErrorCode::NotPermitted, message)).into(),
+                );
             }
             if request.name == "read_toodo_skill" {
                 return Ok(
@@ -1100,9 +1102,10 @@ impl ServerHandler for ToodoMcp {
             request.arguments.as_mut(),
         ) && let Err(message) = numbers_from_strings(&tool.input_schema, arguments)
         {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "InvalidInput: {message}"
-            ))])
+            return Ok(tool_error(CommandError::new(
+                CommandErrorCode::InvalidArguments,
+                message,
+            ))
             .into());
         }
         self.tool_router
@@ -1226,11 +1229,19 @@ fn reply<T: Serialize>(result: CommandResult<T>) -> Result<CallToolResult, Error
                 .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
             Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
         }
-        Err(error) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-            "{:?}: {}",
-            error.kind, error.message
-        ))])),
+        Err(error) => Ok(tool_error(error)),
     }
+}
+
+/// A failed tool call: the kind and message as text for the agent to read, and the error
+/// with its code (the codes of the RPC endpoint) as structured content `{"error": ...}`.
+fn tool_error(error: CommandError) -> CallToolResult {
+    let mut result = CallToolResult::error(vec![ContentBlock::text(format!(
+        "{:?}: {}",
+        error.kind, error.message
+    ))]);
+    result.structured_content = Some(serde_json::json!({ "error": error }));
+    result
 }
 
 #[cfg(test)]
@@ -2365,6 +2376,13 @@ mod tests {
             "{rejected}"
         );
         assert!(rejected.contains(r#""isError":true"#), "{rejected}");
+        assert!(
+            rejected.contains(r#""code":"invalidArguments""#),
+            "{rejected}"
+        );
+        let missing = get_task("999");
+        assert!(missing.contains(r#""code":"taskNotFound""#), "{missing}");
+        assert!(missing.contains(r#""kind":"notFound""#), "{missing}");
     }
 
     #[test]

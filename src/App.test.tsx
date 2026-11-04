@@ -976,7 +976,7 @@ describe("App", () => {
   it("shows command errors returned by the backend", async () => {
     mocked.listWorkspaces.mockResolvedValue({
       status: "error",
-      error: { kind: "internal", message: "database is locked" },
+      error: { kind: "internal", code: "internal", message: "database is locked" },
     });
     renderApp();
 
@@ -1044,7 +1044,7 @@ describe("App", () => {
       data: [task(1, 1, "Add storage"), task(3, 2, "Fix ssh")],
     });
     mocked.deleteWorkspace
-      .mockResolvedValueOnce({ status: "error", error: { kind: "internal", message: "database is locked" } })
+      .mockResolvedValueOnce({ status: "error", error: { kind: "internal", code: "internal", message: "database is locked" } })
       .mockResolvedValueOnce({ status: "ok", data: null });
     await renderWorkspace();
 
@@ -1075,7 +1075,7 @@ describe("App", () => {
     mocked.createWorkspace.mockResolvedValue({ status: "ok", data: opened });
     mocked.listDirectories.mockImplementation(async (_machine, path) =>
       path === "/nowhere/"
-        ? { status: "error", error: { kind: "notFound", message: "cannot list /nowhere/: No such file or directory" } }
+        ? { status: "error", error: { kind: "notFound", code: "notFound", message: "cannot list /nowhere/: No such file or directory" } }
         : {
             status: "ok",
             data:
@@ -1354,7 +1354,7 @@ describe("App", () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Fix login")] });
     mocked.linkIssue
-      .mockResolvedValueOnce({ status: "error", error: { kind: "external", message: "issue #9 not found" } })
+      .mockResolvedValueOnce({ status: "error", error: { kind: "external", code: "external", message: "issue #9 not found" } })
       .mockResolvedValue({ status: "ok", data: task(1, 1, "Fix login", { issue }) });
     await renderWorkspace();
 
@@ -1586,7 +1586,7 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(1, 1, "Add login")] });
     mocked.startTask.mockResolvedValue({
       status: "error",
-      error: { kind: "invalidInput", message: "worktree root is not set for machine local" },
+      error: { kind: "invalidInput", code: "invalidInput", message: "worktree root is not set for machine local" },
     });
     await renderWorkspace();
 
@@ -1808,7 +1808,7 @@ describe("App", () => {
       data: { names: ["dev", "main", "release"], fetchError: null },
     });
     mocked.updateWorkspace
-      .mockResolvedValueOnce({ status: "error", error: { kind: "rejected", message: "task 3 is in review" } })
+      .mockResolvedValueOnce({ status: "error", error: { kind: "rejected", code: "rejected", message: "task 3 is in review" } })
       .mockImplementation(async (workspace) => {
         saved = workspace;
         return { status: "ok", data: saved };
@@ -1847,7 +1847,7 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(7, 1, "Kept task")] });
     mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [savedMachine("winpc")] });
     mocked.moveWorkspace
-      .mockResolvedValueOnce({ status: "error", error: { kind: "external", message: "not a git repository" } })
+      .mockResolvedValueOnce({ status: "error", error: { kind: "external", code: "external", message: "not a git repository" } })
       .mockImplementation(async (_id, location) => {
         saved = { ...toodo, location, pathProblem: null };
         return { status: "ok", data: saved };
@@ -1879,7 +1879,7 @@ describe("App", () => {
     mocked.listWorkspaces.mockImplementation(async () => ({ status: "ok", data: [saved] }));
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     mocked.updateWorkspace
-      .mockResolvedValueOnce({ status: "error", error: { kind: "invalidInput", message: "database is locked" } })
+      .mockResolvedValueOnce({ status: "error", error: { kind: "invalidInput", code: "invalidInput", message: "database is locked" } })
       .mockImplementation(async (workspace) => {
         saved = workspace;
         return { status: "ok", data: saved };
@@ -2113,7 +2113,7 @@ describe("App", () => {
     });
     mocked.openPullRequest.mockResolvedValue({
       status: "error",
-      error: { kind: "rejected", message: "branch feat/add-login-1 has no commits that are not on main" },
+      error: { kind: "rejected", code: "rejected", message: "branch feat/add-login-1 has no commits that are not on main" },
     });
     await renderWorkspace();
 
@@ -2139,7 +2139,7 @@ describe("App", () => {
     });
     mocked.completeTask.mockResolvedValue({
       status: "error",
-      error: { kind: "rejected", message: "pull request https://github.com/acme/toodo/pull/12 is not merged yet" },
+      error: { kind: "rejected", code: "rejected", message: "pull request https://github.com/acme/toodo/pull/12 is not merged yet" },
     });
     await renderWorkspace();
 
@@ -2556,7 +2556,7 @@ describe("App", () => {
     });
     mocked.addDependency.mockResolvedValue({
       status: "error",
-      error: { kind: "rejected", message: "dependency would create a cycle: #1 -> #2 -> #1" },
+      error: { kind: "rejected", code: "rejected", message: "dependency would create a cycle: #1 -> #2 -> #1" },
     });
     await renderWorkspace();
 
@@ -3340,7 +3340,7 @@ describe("App", () => {
     mocked.deleteTask
       .mockResolvedValueOnce({
         status: "error",
-        error: { kind: "rejected", message: "the worktree of task 1 has modified or untracked files" },
+        error: { kind: "rejected", code: "rejected", message: "the worktree of task 1 has modified or untracked files" },
       })
       .mockResolvedValueOnce({ status: "ok", data: null });
     await renderWorkspace();
@@ -3424,7 +3424,7 @@ describe("App", () => {
     mocked.branchFreshness.mockImplementation((id) =>
       Promise.resolve(
         id === 1
-          ? { status: "error", error: { kind: "external", message: "git rev-list failed" } }
+          ? { status: "error", error: { kind: "external", code: "external", message: "git rev-list failed" } }
           : { status: "ok", data: null },
       ),
     );

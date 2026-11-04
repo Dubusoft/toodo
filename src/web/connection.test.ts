@@ -65,7 +65,7 @@ describe("reachability", () => {
 
   it("tells a proxy's error page from the server's own command errors", async () => {
     const connection = await freshConnection();
-    let answer = () => json({ kind: "external", message: "gh failed" }, 502);
+    let answer = () => json({ kind: "external", code: "external", message: "gh failed" }, 502);
     serve(() => answer(), () => html(530));
 
     await connection.serverFetch("/api/rpc/open_pull_request");
