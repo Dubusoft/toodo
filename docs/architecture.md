@@ -560,10 +560,25 @@ A missing CLI fails the launch with a message to install it on the server's `PAT
 the other adapter. Deleting a task through the app stops its live plain runs first;
 completing or concluding it stops them once the completion succeeded.
 
-When the server starts, plain runs still `reserved` or `running` from the previous
-process become `unknown` with event `server_restarted`. Since `unknown` still counts as
-an active writer, `stop_run` on such a run (which cancels it) frees the checkout for a new
-run.
+A local agent runs under a small `sh` wrapper in its own process group that ignores
+SIGHUP, records its PID and start time in `pid` and its exit code in `exit`, and writes the
+agent's stdout and stderr to `stdout.raw` and `stderr.raw` in the run directory. The
+server follows those files, so the agent neither needs nor notices the server process; the
+redacted `stdout.log` and `stderr.log` replace the raw files once the run ended. `launch`
+keeps the adapter and the timeout deadline.
+
+When the server starts, it appends `server_restarted` to plain runs still `reserved` or
+`running` from the previous process. A local run whose wrapper recorded its PID is
+reattached (event `reattached`): while the agent with the recorded start time runs, the
+server follows its output again (lines recorded before the restart are replayed without
+new events) and its timeout keeps the original deadline; once it exits, the run settles
+from its output and exit code with the outcome table above. An agent that is gone without
+an exit code becomes `failed` with `interrupted`. Any other run becomes `unknown`. Since
+`unknown` still counts as an active writer, `stop_run` on such a run (which cancels it)
+frees the checkout for a new run.
+
+The systemd unit from `toodo service install` sets `KillMode=process`, so stopping or
+restarting the service ends only the server process, not the agents of its runs.
 
 A second launch is guarded three ways: the request key (`plain-<task>-<n>`) makes
 `start_run` idempotent, `PlainRunner` returns the receipt of a live launch with the same
@@ -604,8 +619,11 @@ reconcile.
 A lost connection is never taken as the agent exiting. When `ssh` fails without durable
 exit evidence on the host, the run becomes `unknown` with `observation_lost` and keeps the
 checkout; nothing is relaunched. After a server restart, remote plain runs become
-`unknown` with `server_restarted` without contacting the host. `reconcile_run` settles
-such a run from the host's files: a recorded exit 0 becomes `exited`, another exit code
+`unknown` with `server_restarted` without contacting the host; once the server serves, a
+background pass reconciles every remote plain and tmux run that is `unknown`, the way
+`reconcile_run` does, and repeats for the runs it leaves `unknown` after 30 seconds,
+doubling the wait up to 30 minutes, until none is left. A repeated finding adds no event.
+`reconcile_run` settles such a run from the host's files: a recorded exit 0 becomes `exited`, another exit code
 `failed`, a live agent stays `unknown` with `remote_still_running`, a vanished agent
 becomes `failed` with `interrupted`, and a missing run directory stays `unknown` with
 `remote_missing`. An unreachable host leaves the run as it was.
@@ -650,8 +668,8 @@ run `cancelled`.
 Sessions outlive the server. On start, `TmuxRunner::recover_after_restart` checks local
 runs: a live session is observed again (the run goes back to `running` with `recovered`),
 an ended one settles from its exit file. Remote runs become `unknown` with
-`observation_lost` without contacting the host, and `reconcile_run` settles them the same
-way later. A lost connection leaves the run `unknown` rather than ending it.
+`observation_lost` without contacting the host, and the background pass described under
+Remote Plain Runs settles them the same way, as `reconcile_run` does. A lost connection leaves the run `unknown` rather than ending it.
 
 `commands/events.rs` translates herdr observations into neutral `RuntimeEvent` values
 and applies them through `RuntimeService`. Events carry the existing `OwnerKey`

@@ -452,6 +452,15 @@ impl TmuxRunner {
                 &receipt(&self.instance, run, &current.host).provider_run_ref,
             )?;
         }
+        // Reconciling again in the background must not repeat the same finding.
+        if current.state == RunState::Unknown
+            && storage
+                .run_events(run)?
+                .last()
+                .is_some_and(|last| last.kind == "observation_lost")
+        {
+            return Ok(current);
+        }
         storage.append_run_event(
             run,
             "observation_lost",
@@ -618,7 +627,8 @@ impl TmuxRunner {
     }
 
     /// Local sessions are probed immediately. Remote runs are marked Unknown without
-    /// SSH; callers reconcile them off the server's startup path.
+    /// SSH; the server reconciles them in the background, see
+    /// [`crate::runtime::reconcile_remote_runs`].
     pub fn recover_after_restart(&self, storage: &Mutex<Storage>) -> Result<(), RuntimeError> {
         let runs = {
             let storage = lock(storage);

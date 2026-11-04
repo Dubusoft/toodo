@@ -388,8 +388,6 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let backups = Backups::load(&config.data_dir);
     let storage = Arc::new(Mutex::new(open_storage(&database, &backups)?));
     let reader = Mutex::new(Storage::open_reader(&database)?);
-    // No plain run of an earlier server process still has a process this one manages.
-    PlainRunner::recover_after_restart(&storage)?;
     let mcp_token_path = config.data_dir.join(mcp::TOKEN_FILE);
     let mcp_token = mcp::load_token(&mcp_token_path)?;
     let web_token_path = config.data_dir.join(WEB_TOKEN_FILE);
@@ -413,11 +411,14 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let plain = PlainRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR), &instance)
         .with_mcp_provider(endpoint.clone())
         .with_tunnel_open_provider(tunnels::open_provider(&tunnels));
+    // Local plain agents outlive the server: follow the live ones again and settle the
+    // ended ones from their output. Remote ones become unknown without SSH, see below.
+    plain.recover_after_restart()?;
     let tmux = TmuxRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR), &instance)
         .with_mcp_provider(endpoint)
         .with_tunnel_open_provider(tunnels::open_provider(&tunnels));
     // Local tmux sessions outlive the server: observe the live ones again and settle the
-    // ended ones. Remote ones become unknown without SSH, for reconcile_run.
+    // ended ones. Remote ones become unknown without SSH, see below.
     if let Err(error) = tmux.recover_after_restart(&storage) {
         eprintln!(
             "toodo-server: could not recover tmux runs ({error}); settle them with \
@@ -469,6 +470,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
             }
         })?;
     tunnels::spawn(services.clone(), services.tunnels.clone())?;
+    spawn_remote_reconcile(services.clone())?;
 
     let fetcher = oauth::HttpClientMetadataFetcher::new().map_err(|error| {
         format!(
@@ -512,6 +514,46 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(PoisonError::into_inner)
         .shut_down();
     Ok(served?)
+}
+
+/// The first wait between background reconcile passes, doubled after each pass that
+/// leaves a remote run unknown, up to [`REMOTE_RECONCILE_MAX_WAIT`].
+const REMOTE_RECONCILE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+const REMOTE_RECONCILE_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Reconciles the remote runs a restart left unknown over SSH, off the startup path, until
+/// none is left.
+fn spawn_remote_reconcile(services: Arc<Services>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("remote-runs".to_owned())
+        .spawn(move || {
+            let mut wait = REMOTE_RECONCILE_WAIT;
+            loop {
+                let pass = match crate::runtime::reconcile_remote_runs(
+                    &services.storage,
+                    &services.plain,
+                    &services.tmux,
+                ) {
+                    Ok(pass) => pass,
+                    Err(error) => {
+                        eprintln!(
+                            "toodo-server: could not list remote runs to reconcile ({error}); \
+                             reconcile them with reconcile_run"
+                        );
+                        return;
+                    }
+                };
+                for workspace in pass.changed {
+                    services.tasks_changed(workspace);
+                }
+                if !pass.pending {
+                    return;
+                }
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(REMOTE_RECONCILE_MAX_WAIT);
+            }
+        })
+        .map(drop)
 }
 
 /// The runner namespace belongs to this data directory, not to a database backup.

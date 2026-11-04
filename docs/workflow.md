@@ -350,13 +350,16 @@ Only one run at a time can write to a worktree, and a run stops after 4 hours.
   `{"items":[{"text":"...","status":"pending|in_progress|completed"}]}`, so the latest
   `todo` event is the agent's current plan.
 - `stop_run` stops a live run (SIGTERM to its process group, SIGKILL after 5 seconds)
-  and marks it `cancelled`. After a server restart, unfinished runs show as `unknown`;
-  stop them before starting a new run on the same worktree.
+  and marks it `cancelled`. A server restart does not end a local run: the
+  server follows it again, or settles it from its output if it ended meanwhile. Remote
+  runs are reconciled in the background after the restart. A run Toodo can't settle shows
+  as `unknown`; stop it before starting a new run on the same worktree.
 - `reconcile_run` settles an `unknown` run from what is left on its host (exit file,
   process, or tmux session). It never starts the agent again.
 
 The same commands work on SSH workspaces with runner `plain`: the agent runs on the
-workspace's host, and a lost connection leaves the run `unknown` until you reconcile it.
+workspace's host, and a lost connection leaves the run `unknown` until it is reconciled, which the server
+retries in the background after a restart.
 SSH workspaces with runner `herdr` keep running agents in herdr; `start_plain_run`
 rejects them and points to opening the task in herdr.
 
