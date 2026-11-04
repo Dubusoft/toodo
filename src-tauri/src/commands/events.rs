@@ -35,7 +35,7 @@ use crate::adapters::herdr_events::{
     Connector, EventStreamError, Flow, LocalSocket, Message, SshSocket, subscribe,
 };
 use crate::domain::model::{self, HostPath, Machine, WorkspaceLocation};
-use crate::domain::runtime::{HostRef, OwnerKey};
+use crate::domain::runtime::{AgentState, HostRef, OwnerKey};
 use crate::runtime::RuntimeService;
 use crate::runtime::events::{HostState, translate};
 use crate::storage::{Storage, StorageError};
@@ -277,7 +277,14 @@ impl EventSync<'_> {
 
     /// Forgets all agent statuses, e.g. after herdr stopped.
     pub fn clear_agents(&self) {
-        self.publish(Vec::new());
+        let tasks = machine_tasks(&lock(self.storage), &self.machine).unwrap_or_else(|error| {
+            eprintln!(
+                "toodo: failed to list the tasks of {} to record their agents stopped: {error}",
+                self.machine
+            );
+            Vec::new()
+        });
+        self.publish(&tasks, Vec::new());
     }
 
     /// Reads the panes again, publishes the agent status of each task, and returns the
@@ -291,8 +298,9 @@ impl EventSync<'_> {
                 .or_insert(pane.status);
             *status = (*status).max(pane.status);
         }
-        let mut statuses: Vec<TaskAgentStatus> = machine_tasks(&lock(self.storage), &self.machine)?
-            .into_iter()
+        let tasks = machine_tasks(&lock(self.storage), &self.machine)?;
+        let mut statuses: Vec<TaskAgentStatus> = tasks
+            .iter()
             .filter_map(|task| {
                 let status = by_workspace.get(task.herdr_workspace_id.as_deref()?)?;
                 Some(TaskAgentStatus {
@@ -302,17 +310,51 @@ impl EventSync<'_> {
             })
             .collect();
         statuses.sort_by_key(|status| status.task_id.0);
-        self.publish(statuses);
+        self.publish(&tasks, statuses);
         Ok(panes.into_iter().map(|pane| pane.pane_id).collect())
     }
 
-    fn publish(&self, statuses: Vec<TaskAgentStatus>) {
+    /// Publishes the agent statuses of `tasks`, the tasks of the machine. When they changed,
+    /// or are published for the first time since the server started (a status may have
+    /// changed while it was down), the transitions are stored first, so the frontend
+    /// finds them once it hears of the change. The storage lock is only ever taken inside
+    /// the statuses lock, never the other way around.
+    fn publish(&self, tasks: &[model::Task], statuses: Vec<TaskAgentStatus>) {
         let mut current = lock_statuses(self.statuses);
+        let first = !current.contains_key(&self.machine);
         let machine = current.entry(self.machine.clone()).or_default();
-        if *machine != statuses {
-            *machine = statuses;
+        let changed = *machine != statuses;
+        if changed {
+            machine.clone_from(&statuses);
+        }
+        if changed || first {
+            self.record_transitions(tasks, &statuses);
+        }
+        if changed {
             self.notifier
                 .agent_statuses_changed(&all_statuses(&current));
+        }
+    }
+
+    /// Stores the agent status of each of `tasks` that differs from its last stored one.
+    /// A storage error is logged: the statuses are still published.
+    fn record_transitions(&self, tasks: &[model::Task], statuses: &[TaskAgentStatus]) {
+        let by_task: HashMap<_, _> = statuses
+            .iter()
+            .map(|status| (status.task_id.0, status.status))
+            .collect();
+        let transitions: Vec<_> = tasks
+            .iter()
+            .map(|task| {
+                let status = by_task.get(&task.id.0).copied().map(AgentState::from);
+                (task.id, status)
+            })
+            .collect();
+        if let Err(error) = lock(self.storage).record_agent_statuses(&transitions) {
+            eprintln!(
+                "toodo: failed to record the agent statuses of {}: {error}",
+                self.machine
+            );
         }
     }
 }
@@ -755,6 +797,56 @@ mod tests {
         let request = &connector.requests.lock().unwrap()[0];
         assert!(request.contains(r#""pane_id":"w1:p1""#));
         assert!(request.contains(r#""pane_id":"w7:p1""#));
+    }
+
+    #[test]
+    fn agent_status_transitions_are_stored_with_their_time_once_per_change() {
+        use crate::domain::runtime::AgentState;
+        let fixture = fixture();
+        let clock = Arc::new(std::sync::atomic::AtomicI64::new(100));
+        let now = clock.clone();
+        lock(&fixture.storage).set_clock(move || now.load(std::sync::atomic::Ordering::SeqCst));
+        let idle = pane("w1:p1", "w1", "idle");
+        let working = pane("w1:p1", "w1", "working");
+        let server = herdr(&[&idle, &idle, &working]);
+        let status = r#"{"data":{"agent":"claude","agent_status":"working","pane_id":"w1:p1","workspace_id":"w1"},"event":"pane.agent_status_changed"}"#;
+        let connector = FakeConnector::new([Ok(format!("{STARTED}\n{status}\n"))]);
+        let events = sync(&fixture, &server);
+        events.run_once(&connector);
+        clock.store(160, std::sync::atomic::Ordering::SeqCst);
+        events.clear_agents();
+        let stored = |id| {
+            lock(&fixture.storage)
+                .list_agent_status_transitions(id)
+                .unwrap()
+                .into_iter()
+                .map(|transition| (transition.status, transition.at))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            stored(fixture.local.id),
+            [
+                (Some(AgentState::Idle), 100),
+                (Some(AgentState::Working), 100),
+                (None, 160),
+            ]
+        );
+        // The task on another machine is not followed by this server's subscription.
+        assert_eq!(stored(fixture.remote.id), []);
+
+        // After a restart, the first status read is stored only when it differs from the
+        // last one stored.
+        clock.store(200, std::sync::atomic::Ordering::SeqCst);
+        for _restart in 0..2 {
+            lock_statuses(&fixture.statuses).clear();
+            let restarted = herdr(&[&working]);
+            sync(&fixture, &restarted).refresh_agents().unwrap();
+            clock.store(300, std::sync::atomic::Ordering::SeqCst);
+        }
+        assert_eq!(
+            stored(fixture.local.id)[3..],
+            [(Some(AgentState::Working), 200)]
+        );
     }
 
     fn list_statuses(fixture: &Fixture) -> Vec<TaskAgentStatus> {

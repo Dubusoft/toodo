@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import { CircleCheck, CircleX, GitCommitHorizontal, GitMerge, GitPullRequest, type LucideIcon } from "lucide-react";
-import type { ActivityKind, NoteKind, Task } from "@/lib/bindings";
-import { useTaskActivity } from "@/lib/queries";
+import type { ActivityKind, AgentStatus, AgentStatusTransition, NoteKind, Task } from "@/lib/bindings";
+import { useAgentStatusTransitions, useTaskActivity } from "@/lib/queries";
 import { pullRequestNumber } from "@/lib/review";
 import { isPaused } from "@/lib/task-graph";
 import { formatFull } from "@/lib/timeline";
@@ -96,6 +96,87 @@ export function TaskActivity({ task, capabilities }: { task: Task; capabilities:
             </li>
           );
         })}
+      </ol>
+    </DetailField>
+  );
+}
+
+/** How each agent status is named in the agent's history, in the tones of the status glossary. */
+const agentStates: Record<AgentStatus, { label: string; tone: Tone }> = {
+  idle: { label: "Idle", tone: "neutral" },
+  working: { label: "Working", tone: "info" },
+  blocked: { label: "Needs input", tone: "attention" },
+  done: { label: "Done", tone: "success" },
+};
+
+/** The most recent changes the agent history lists; the time worked counts all of them. */
+const shownTransitions = 20;
+
+/**
+ * How long the agent was working, in seconds: each working status lasts until the next change,
+ * the current one until `now`.
+ */
+export function workingSeconds(transitions: readonly AgentStatusTransition[], now: number): number {
+  return transitions.reduce((total, { status, at }, index) => {
+    if (status !== "working") return total;
+    const end = transitions[index + 1]?.at ?? now;
+    return total + Math.max(0, end - at);
+  }, 0);
+}
+
+/** A time an agent worked, e.g. `<1m`, `25m`, or `3h 5m`. */
+export function formatWorked(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+/**
+ * When the agent in the task's herdr workspace changed what it was doing, as herdr reported it,
+ * with the time it worked in all: when it stalled waiting for input, went idle, or was gone
+ * because its pane closed or herdr stopped. Only herdr workspaces report it.
+ */
+export function AgentActivity({ task, capabilities }: { task: Task; capabilities: WorkspaceCapabilities }) {
+  const tracked = capabilities.herdr;
+  const transitions = useAgentStatusTransitions(task.id, tracked && (task.status !== "planned" || isPaused(task)));
+
+  if (!tracked) {
+    return null;
+  }
+  if (transitions.isError) {
+    return (
+      <p role="alert" className="text-xs text-destructive">
+        Failed to load the agent's history: {transitions.error.message}
+      </p>
+    );
+  }
+  const all = transitions.data ?? [];
+  if (all.length === 0) {
+    return null;
+  }
+  const shown = all.slice(-shownTransitions);
+  const worked = formatWorked(workingSeconds(all, Date.now() / 1000));
+  return (
+    <DetailField label="Agent activity">
+      <p aria-label={`Time the agent of #${task.id} worked`} className="text-muted-foreground">
+        Worked {worked}
+        {all.length > shown.length && `; the last ${shown.length} of ${all.length} changes:`}
+      </p>
+      <ol
+        aria-label={`Agent activity of #${task.id}`}
+        className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 max-md:gap-y-1.5"
+      >
+        {shown.map(({ status, at }, index) => (
+          <li key={index} className="col-span-full grid grid-cols-subgrid items-baseline">
+            <When className="text-muted-foreground" at={at} />
+            {status === null ? (
+              <span className="text-muted-foreground">No agent</span>
+            ) : (
+              <span className={toneText[agentStates[status].tone]}>{agentStates[status].label}</span>
+            )}
+          </li>
+        ))}
       </ol>
     </DetailField>
   );

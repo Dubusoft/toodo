@@ -79,6 +79,8 @@ export const queryKeys = {
   taskActivity: (taskId: TaskId) => ["tasks", taskId, "activity"] as const,
   branchFreshness: (taskId: TaskId) => ["tasks", taskId, "branch-freshness"] as const,
   taskRuns: (taskId: TaskId) => ["tasks", taskId, "runs"] as const,
+  /** Not under "tasks": agent status changes refetch them, task changes do not. */
+  agentStatusTransitions: (taskId: TaskId) => ["agent-status-transitions", taskId] as const,
   /** Not under "tasks": a log can be large, so it is refetched only for its run. */
   runLog: (runId: RunId | null) => ["run-log", runId] as const,
   herdrMachines: ["herdr-machines"] as const,
@@ -463,9 +465,11 @@ export function useHerdrEvents() {
       events.workspacesChanged.listen(() =>
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
       ),
-      events.agentStatusesChanged.listen(({ payload }) =>
-        update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts),
-      ),
+      events.agentStatusesChanged.listen(({ payload }) => {
+        update<TaskAgentStatus>(queryKeys.agentStatuses, payload.statuses, agentAlerts);
+        // The server stored the transitions before it sent the change.
+        void queryClient.invalidateQueries({ queryKey: ["agent-status-transitions"] });
+      }),
       events.pullRequestStatusesChanged.listen(({ payload }) =>
         update<TaskPullRequestStatus>(queryKeys.pullRequestStatuses, payload.statuses, pullRequestAlerts),
       ),
@@ -531,6 +535,18 @@ export function useTaskActivity(taskId: TaskId, enabled: boolean) {
   return useQuery({
     queryKey: queryKeys.taskActivity(taskId),
     queryFn: () => unwrap(commands.listTaskActivity(taskId)),
+    enabled,
+  });
+}
+
+/**
+ * When the agent in a task's herdr workspace changed what it was doing, oldest first; agent
+ * status changes refetch it.
+ */
+export function useAgentStatusTransitions(taskId: TaskId, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.agentStatusTransitions(taskId),
+    queryFn: () => unwrap(commands.listAgentStatusTransitions(taskId)),
     enabled,
   });
 }

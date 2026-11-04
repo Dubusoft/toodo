@@ -8,6 +8,7 @@
 //! line with the dependencies after every change.
 
 mod activity;
+mod agent_status;
 mod backup;
 mod commits;
 mod criteria;
@@ -37,6 +38,7 @@ use crate::domain::model::{TaskId, TaskResolution, WorkspaceId};
 use crate::domain::runtime::{RunId, RunState};
 use crate::domain::status::TransitionError;
 
+pub use agent_status::AgentStatusTransition;
 pub use backup::{BackupFile, StagedBackup, list_backups, prune_backups, stage_backup};
 pub use criteria::{CriterionCheck, CriterionEdit};
 pub use devices::DeviceAuth;

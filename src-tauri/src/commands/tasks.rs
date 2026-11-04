@@ -3,8 +3,8 @@
 use super::State;
 
 use super::types::{
-    self, CommitRecord, CriterionId, DependencyOutcome, NewTask, Task, TaskActivity, TaskEdit,
-    TaskId, TaskRelation,
+    self, AgentStatusTransition, CommitRecord, CriterionId, DependencyOutcome, NewTask, Task,
+    TaskActivity, TaskEdit, TaskId, TaskRelation,
 };
 use super::{
     CommandError, CommandResult, GitState, HerdrState, PlainRunState, StorageState, TmuxRunState,
@@ -672,6 +672,18 @@ pub fn list_task_activity(
 ) -> CommandResult<Vec<TaskActivity>> {
     Ok(types::map_all(
         &lock(&storage).list_activity(task_id.into())?,
+    ))
+}
+
+/// When the agent in the task's herdr workspace changed what it was doing, oldest first.
+/// Empty for a task never opened in herdr.
+#[specta::specta]
+pub fn list_agent_status_transitions(
+    storage: State<'_, StorageState>,
+    task_id: TaskId,
+) -> CommandResult<Vec<AgentStatusTransition>> {
+    Ok(types::map_all(
+        &lock(&storage).list_agent_status_transitions(task_id.into())?,
     ))
 }
 

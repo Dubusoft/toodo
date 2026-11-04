@@ -11,8 +11,8 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::domain::model::TaskId;
 use crate::domain::runtime::{
-    HostRef, OperationKind, OperationState, OwnerKey, RunId, RunRole, RunState, RunnerKind,
-    RuntimeWorkspaceId,
+    HostRef, OperationKind, OperationState, OwnerKey, RunId, RunRole, RunState, RunUsage,
+    RunnerKind, RuntimeWorkspaceId,
 };
 
 use super::{Result, Storage, StorageError, invalid_data};
@@ -75,6 +75,10 @@ pub struct TaskRun {
     pub created_at: i64,
     pub started_at: Option<i64>,
     pub ended_at: Option<i64>,
+    /// When the agent last wrote output, as far as the runner follows it.
+    pub last_activity_at: Option<i64>,
+    /// The tokens the agent last reported using, if it reported any.
+    pub usage: Option<RunUsage>,
 }
 
 /// Something observed about a run. `sequence` increases from 1 per run.
@@ -122,7 +126,8 @@ pub struct RuntimeWorkspace {
 
 const RUN_COLUMNS: &str = "id, owner_key, task_id, runtime_workspace_id, conversation_id,
     request_key, generation, runner_kind, role, host_ref, checkout_path, adapter_profile,
-    state, provider_run_ref, created_at, started_at, ended_at";
+    state, provider_run_ref, created_at, started_at, ended_at, last_activity_at, input_tokens,
+    cached_input_tokens, output_tokens";
 
 /// Reads a run selected with [`RUN_COLUMNS`]. The outer result is the row access, the
 /// inner one the conversion of stored values.
@@ -161,6 +166,17 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Result<TaskRun>> {
         created_at: row.get(14)?,
         started_at: row.get(15)?,
         ended_at: row.get(16)?,
+        last_activity_at: row.get(17)?,
+        usage: match (row.get(18)?, row.get(19)?, row.get(20)?) {
+            (Some(input_tokens), Some(cached_input_tokens), Some(output_tokens)) => {
+                Some(RunUsage {
+                    input_tokens,
+                    cached_input_tokens,
+                    output_tokens,
+                })
+            }
+            _ => None,
+        },
     };
     Ok(Ok(run))
 }
@@ -516,6 +532,36 @@ impl Storage {
             payload: payload.map(str::to_owned),
             observed_at: at,
         })
+    }
+
+    /// Records that the agent of an active run wrote output now and, with `usage`, how
+    /// many tokens it reported using so far. Returns whether the run was active; an ended
+    /// run is left as it is.
+    pub fn record_run_activity(&mut self, run: RunId, usage: Option<RunUsage>) -> Result<bool> {
+        let at = self.now();
+        let current = existing_run(&self.conn, run)?;
+        if !current.state.is_active() {
+            return Ok(false);
+        }
+        match usage {
+            Some(usage) => self.conn.execute(
+                "UPDATE task_runs SET last_activity_at = ?2, input_tokens = ?3,
+                     cached_input_tokens = ?4, output_tokens = ?5
+                 WHERE id = ?1",
+                params![
+                    run.0,
+                    at,
+                    usage.input_tokens,
+                    usage.cached_input_tokens,
+                    usage.output_tokens
+                ],
+            )?,
+            None => self.conn.execute(
+                "UPDATE task_runs SET last_activity_at = ?2 WHERE id = ?1",
+                params![run.0, at],
+            )?,
+        };
+        Ok(true)
     }
 
     pub fn get_run(&self, run: RunId) -> Result<Option<TaskRun>> {

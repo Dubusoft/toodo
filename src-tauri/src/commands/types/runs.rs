@@ -146,6 +146,34 @@ pub struct TaskRun {
     pub created_at: Timestamp,
     pub started_at: Option<Timestamp>,
     pub ended_at: Option<Timestamp>,
+    /// When the agent last wrote output: while a plain run runs, every few seconds of its
+    /// output; for a tmux run, once its end was seen.
+    pub last_activity_at: Option<Timestamp>,
+    /// The tokens the agent reported using, once it reported them.
+    pub usage: Option<RunUsage>,
+}
+
+/// Tokens an agent reported using in a run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RunUsage {
+    /// Input tokens, including the cached ones.
+    #[specta(type = Number)]
+    pub input_tokens: i64,
+    #[specta(type = Number)]
+    pub cached_input_tokens: i64,
+    #[specta(type = Number)]
+    pub output_tokens: i64,
+}
+
+impl From<domain_runtime::RunUsage> for RunUsage {
+    fn from(usage: domain_runtime::RunUsage) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            cached_input_tokens: usage.cached_input_tokens,
+            output_tokens: usage.output_tokens,
+        }
+    }
 }
 
 impl From<&storage::TaskRun> for TaskRun {
@@ -164,6 +192,8 @@ impl From<&storage::TaskRun> for TaskRun {
             created_at: Timestamp(run.created_at),
             started_at: run.started_at.map(Timestamp),
             ended_at: run.ended_at.map(Timestamp),
+            last_activity_at: run.last_activity_at.map(Timestamp),
+            usage: run.usage.map(RunUsage::from),
         }
     }
 }

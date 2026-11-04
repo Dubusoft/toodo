@@ -412,7 +412,17 @@ SQLite keeps a record of what runs where in seven tables (migrations 29 and 32):
   optional `runtime_workspace_id`. A run with no checkout has no runtime workspace.
   Starting a task of a workspace with runner none records a `writer` run with
   `runner_kind` `none`, no checkout, and no runtime workspace, and ends the task's earlier
-  runs as `exited`.
+  runs as `exited`. `last_activity_at` is when the agent last wrote output: a plain run
+  stores it at most every 5 s while its stdout flows, a tmux run once its end is seen.
+  `input_tokens` (cached ones included), `cached_input_tokens`, and `output_tokens` hold
+  what the agent reported: Claude's `result.usage` (cache reads and writes count as
+  input) or the sum of Codex's `turn.completed.usage`. The run view shows a running run
+  as working while its last output is at most 2 minutes old, else as idle since then.
+- `agent_status_transitions`: when the agent in a task's herdr workspace changed what it
+  was doing (`idle`, `working`, `blocked`, `done`, or NULL once no agent was seen), with
+  the time. A status is stored only when it differs from the last one stored for the
+  task, so the first pane list after a restart adds nothing unless the agent changed
+  while the server was down. Imports keep them with their tasks.
 - `run_events`: the ordered history of a run, keyed by `run_id` and `sequence`.
 - `run_operations`: the ledger of `launch`, `input`, and `stop` requests against a run,
   each `pending`, `applied`, or `failed`, with a `receipt`.
@@ -739,7 +749,9 @@ path deletes journal history.
       instead of being patched from the event, as herdr recommends. The status of a task
       is the most urgent one among the panes of its herdr workspace (blocked, working,
       done, idle) and reaches the frontend through `list_agent_statuses` and the
-      `AgentStatusesChanged` event.
+      `AgentStatusesChanged` event. Each change is stored in `agent_status_transitions`
+      before the event goes out; `list_agent_status_transitions` reads a task's history,
+      which the task details show as its agent activity with the time worked.
     - When the subscription ends (herdr stopped, `events_lost`, `pane_not_found`), agent
       statuses are cleared and the thread subscribes again after 1 s, doubling up to
       30 s while the server stays unreachable.

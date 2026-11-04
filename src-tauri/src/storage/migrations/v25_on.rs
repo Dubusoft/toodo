@@ -539,4 +539,20 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     UPDATE devices SET expires_at = CAST(strftime('%s', 'now') AS INTEGER) + 90 * 86400
         WHERE revoked_at IS NULL;
     ",
+    // Version 38: when the agent of a task changed what it was doing, and when a run's
+    // agent last wrote output and how many tokens it reported using. A NULL status means
+    // no agent was seen in the task's herdr workspace any more.
+    r"
+    CREATE TABLE agent_status_transitions (
+        id INTEGER PRIMARY KEY,
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        status TEXT CHECK (status IN ('idle', 'working', 'blocked', 'done')),
+        at INTEGER NOT NULL
+    );
+    CREATE INDEX agent_status_transitions_by_task ON agent_status_transitions (task_id, id);
+    ALTER TABLE task_runs ADD COLUMN last_activity_at INTEGER;
+    ALTER TABLE task_runs ADD COLUMN input_tokens INTEGER;
+    ALTER TABLE task_runs ADD COLUMN cached_input_tokens INTEGER;
+    ALTER TABLE task_runs ADD COLUMN output_tokens INTEGER;
+    ",
 ];

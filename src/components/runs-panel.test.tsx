@@ -82,6 +82,8 @@ function run(generation: number, state: TaskRun["state"], adapter = "claude"): T
     createdAt: 1_791_970_000,
     startedAt: 1_791_970_001,
     endedAt: state === "reserved" || state === "running" ? null : 1_791_970_600,
+    lastActivityAt: null,
+    usage: null,
   };
 }
 
@@ -225,6 +227,36 @@ describe("RunsPanel", () => {
     expect(mocked.getRunLog).toHaveBeenCalledWith(42, null);
     expect(screen.queryByRole("button", { name: /^Stop run/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Attach in a terminal" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["working while it wrote output lately", 10, /^Working$/],
+    ["idle once it has been quiet for minutes", 600, /^Idle since /],
+  ])("shows the agent of a running run %s, with its last output and tokens", async (_, quiet, badge) => {
+    const running = {
+      ...run(1, "running"),
+      lastActivityAt: Math.floor(Date.now() / 1000) - quiet,
+      usage: { inputTokens: 12_400, cachedInputTokens: 9_000, outputTokens: 830 },
+    };
+    mocked.listTaskRuns.mockResolvedValue(ok([running]));
+    mocked.getRunLog.mockResolvedValue(ok(log(running, launched(running))));
+    renderPanel();
+
+    expect(await screen.findByLabelText("Agent of run 1")).toHaveTextContent(badge);
+    expect(screen.getByLabelText("Tokens of run 1")).toHaveTextContent("12,400 in (9,000 cached), 830 out");
+    expect(screen.getByText(/^Last output /)).toBeInTheDocument();
+  });
+
+  it("shows no working or idle state for an ended run or one without output times", async () => {
+    const ended = { ...run(1, "settled"), lastActivityAt: 1_791_970_500 };
+    const tmux = { ...run(2, "running"), runnerKind: "tmux" };
+    mocked.listTaskRuns.mockResolvedValue(ok([ended, tmux]));
+    mocked.getRunLog.mockResolvedValue(ok(log(tmux, launched(tmux))));
+    renderPanel();
+
+    await screen.findByRole("list", { name: "Runs of #7" });
+    expect(screen.queryByLabelText("Agent of run 1")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Agent of run 2")).not.toBeInTheDocument();
   });
 
   it("shows the command that attaches a terminal to an active tmux run and copies it", async () => {

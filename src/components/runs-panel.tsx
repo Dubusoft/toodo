@@ -17,10 +17,11 @@ import { PathLabel } from "@/components/path-label";
 import { Button } from "@/components/ui/button";
 import { When } from "@/components/when";
 import { escapeCloses } from "@/components/workspace-list";
-import type { AgentAdapter, RunEvent, RunId, RunnerHealth, RunState, Task, TaskRun } from "@/lib/bindings";
+import type { AgentAdapter, RunEvent, RunId, RunnerHealth, RunState, RunUsage, Task, TaskRun } from "@/lib/bindings";
 import { normalizePath, shortPath } from "@/lib/paths";
 import { useReconcileRun, useRunLog, useRunnerHealth, useStartPlainRun, useStopRun, useTaskRuns } from "@/lib/queries";
 import { toneChip, tonePanel, toneText, type Tone } from "@/lib/status-styles";
+import { formatFull, formatWhen } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
 /** How each run state is named and coloured, in the tones of the status glossary. */
@@ -33,6 +34,49 @@ const runStates: Record<RunState, { label: string; tone: Tone }> = {
   cancelled: { label: "Stopped", tone: "neutral" },
   unknown: { label: "Unknown", tone: "attention" },
 };
+
+/**
+ * How long, in seconds, a running agent may write no output and still count as working. A plain
+ * run stores its output time every few seconds; an agent waiting on a long command writes
+ * nothing meanwhile, so the margin is generous.
+ */
+const idleAfter = 120;
+
+/**
+ * Whether the agent of a running run is working or idle, from when it last wrote output, and
+ * since when it is idle; null for a run that is not running or whose output time is not known,
+ * e.g. a tmux run, whose output is read once it ended.
+ */
+export function runActivity(run: TaskRun, now: number): { working: boolean; since: number } | null {
+  if (run.state !== "running" || run.lastActivityAt === null) return null;
+  return { working: now - run.lastActivityAt <= idleAfter, since: run.lastActivityAt };
+}
+
+const tokens = new Intl.NumberFormat("en-US");
+
+/** The tokens a run's agent reported, e.g. `12,400 in (9,000 cached), 830 out`. */
+export function formatUsage(usage: RunUsage): string {
+  const cached = usage.cachedInputTokens > 0 ? ` (${tokens.format(usage.cachedInputTokens)} cached)` : "";
+  return `${tokens.format(usage.inputTokens)} in${cached}, ${tokens.format(usage.outputTokens)} out`;
+}
+
+/** Whether the agent of a running run is writing output, or since when it is quiet. */
+function ActivityBadge({ run, now }: { run: TaskRun; now: number }) {
+  const activity = runActivity(run, now);
+  if (activity === null) return null;
+  return (
+    <span
+      aria-label={`Agent of run ${run.generation}`}
+      title={`Last output ${formatFull(activity.since)}`}
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium",
+        toneChip[activity.working ? "info" : "attention"],
+      )}
+    >
+      {activity.working ? "Working" : `Idle since ${formatWhen(activity.since, now)}`}
+    </span>
+  );
+}
 
 /** A run in these states holds the task's worktree: it can be stopped, and no other run starts before it ends. */
 const activeStates: readonly RunState[] = ["reserved", "running", "unknown"];
@@ -219,6 +263,8 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
   // Only a refresh asked for shows as one: while a run is live, the runs also reload on their own.
   const [refreshing, setRefreshing] = useState(false);
   const newestFirst = [...(runs.data ?? [])].reverse();
+  // Runs reload every few seconds while one runs, which keeps working and idle current.
+  const now = Date.now() / 1000;
   const openId = picked === undefined ? (newestFirst[0]?.id ?? null) : picked;
   const log = useRunLog(openId);
   const inProgress = task.status === "in_progress";
@@ -379,6 +425,7 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
                       className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
                     />
                     <RunStateBadge state={run.state} />
+                    <ActivityBadge run={run} now={now} />
                     <span className="shrink-0 font-medium">Run {run.generation}</span>
                     <span className="min-w-0 truncate text-muted-foreground">{adapterName(run.adapter)}</span>
                     {/* A phone has no room for the time beside a Stop button: it goes under the state. */}
@@ -475,6 +522,12 @@ function RunDetails({ id, run, log }: { id: string; run: TaskRun; log: ReturnTyp
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground">
         {run.startedAt !== null && <When at={run.startedAt} prefix="Started " />}
         {run.endedAt !== null && <When at={run.endedAt} prefix="Ended " />}
+        {run.lastActivityAt !== null && <When at={run.lastActivityAt} prefix="Last output " />}
+        {run.usage !== null && (
+          <span aria-label={`Tokens of run ${run.generation}`} title="Tokens the agent reported using">
+            {formatUsage(run.usage)}
+          </span>
+        )}
         {run.providerRunRef !== null && <span className="font-mono">{run.providerRunRef}</span>}
         {run.checkoutPath !== null && (
           <PathLabel

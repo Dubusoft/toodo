@@ -15,7 +15,7 @@ use super::adapter::{
     MCP_TOKEN_ENV, MCP_URL_ENV,
 };
 use super::{Completion, LaunchReceipt, RunnerError, RuntimeError, io_error, lock};
-use crate::domain::runtime::{RunId, RunState};
+use crate::domain::runtime::{RunId, RunState, RunUsage};
 use crate::storage::{Storage, StorageError, TaskRun};
 
 pub(super) enum Signal {
@@ -161,6 +161,53 @@ fn record_todo(storage: &Arc<Mutex<Storage>>, run: RunId, payload: &str) {
     }
 }
 
+/// How often, at most, a run's last activity is stored while its agent keeps writing;
+/// a change of the reported usage is stored at once.
+const ACTIVITY_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Stores when the agent of a run last wrote output, at most every
+/// [`ACTIVITY_INTERVAL`] unless its usage changed.
+struct ActivityRecorder {
+    stored_at: Option<Instant>,
+    usage: Option<RunUsage>,
+    pending: bool,
+}
+
+impl ActivityRecorder {
+    fn new() -> Self {
+        Self {
+            stored_at: None,
+            usage: None,
+            pending: false,
+        }
+    }
+
+    fn line(&mut self, storage: &Arc<Mutex<Storage>>, run: RunId, usage: Option<RunUsage>) {
+        self.pending = true;
+        if usage != self.usage
+            || self
+                .stored_at
+                .is_none_or(|at| at.elapsed() >= ACTIVITY_INTERVAL)
+        {
+            self.usage = usage;
+            self.flush(storage, run);
+        }
+    }
+
+    /// Stores the activity not stored yet. A storage error is logged, never fatal: the
+    /// reader must keep draining stdout.
+    fn flush(&mut self, storage: &Arc<Mutex<Storage>>, run: RunId) {
+        if !self.pending {
+            return;
+        }
+        self.pending = false;
+        self.stored_at = Some(Instant::now());
+        if let Err(error) = lock(storage).record_run_activity(run, self.usage) {
+            eprintln!("toodo: failed to record the activity of run {run}: {error}");
+        }
+    }
+}
+
 pub(super) fn manage(mut managed: ManagedRun) {
     let pid = managed.child.id();
     let stdout = managed.child.stdout.take().unwrap();
@@ -172,14 +219,17 @@ pub(super) fn manage(mut managed: ManagedRun) {
     let run = managed.run;
     thread::spawn(move || {
         let mut tracker = EventTracker::new(adapter);
+        let mut activity = ActivityRecorder::new();
         let result = read_output(stdout, managed.stdout, &secret, true, |line| {
             if !line.truncated
                 && let Some(payload) = tracker.feed(&line.text)
             {
                 record_todo(&storage, run, &adapter::redact(&payload, &secret));
             }
-        })
-        .map(|_| tracker);
+            activity.line(&storage, run, tracker.usage());
+        });
+        activity.flush(&storage, run);
+        let result = result.map(|_| tracker);
         let _ = sender.send(Signal::Stdout(result));
     });
     let sender = managed.sender.clone();
