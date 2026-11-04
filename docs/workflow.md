@@ -178,6 +178,25 @@ criterion (met for tasks done as merged), followed by the `- [ ]` and `- [x]` it
 description itself stays as it was. A task of a workspace without `origin` that was
 created before can switch its merge criterion to `branch_merged_locally` by editing it.
 
+## GitHub Enterprise
+
+Workspaces with source `github` work with GitHub Enterprise Server and GitHub Enterprise
+Cloud (including `<subdomain>.ghe.com` hosts) as well as `github.com`. Toodo takes the
+host from the `origin` remote URL and passes it to every `gh` call as
+`--repo <host>/<owner>/<name>`, so no host setting or `GH_HOST` is needed. Setup:
+
+- Log `gh` in to the host as the user that runs `toodo-server`:
+  `gh auth login --hostname <host>`. Alternatively set `GH_ENTERPRISE_TOKEN` (GitHub
+  Enterprise Server) or `GH_TOKEN` (`*.ghe.com`) in the server's environment.
+- Make sure git on the server (or on the SSH machine of a remote workspace) can push to
+  the host: an SSH key or a credential helper, e.g. `gh auth setup-git --hostname <host>`.
+- Use an `origin` remote in one of the forms `https://<host>/<owner>/<name>(.git)`,
+  `ssh://[user@]<host>[:port]/<owner>/<name>(.git)`, or
+  `[user@]<host>:<owner>/<name>(.git)`. The host part may carry a user and an SSH port.
+  A remote whose path has more than `<owner>/<name>`, such as an instance served under a
+  path prefix (`https://<host>/github/<owner>/<name>`), is not recognized, and opening a
+  pull request is rejected; use a `local_git` workspace for it instead.
+
 ## Workspaces Without a Remote
 
 Every workspace is a git repository, but it does not need an `origin` remote. Without
@@ -407,7 +426,8 @@ When the user opens the pull request of an `in_progress` task ("Open PR"), Toodo
    branch is rejected, because there is nothing to open a pull request for, unless its
    pull request is already merged (step 3).
 2. Reads the `origin` remote URL and derives the GitHub repository (`host/owner/name`)
-   from it. A remote that is not a hosted repository URL is rejected.
+   from it; the host may be a GitHub Enterprise host (see GitHub Enterprise). A remote
+   that is not a hosted repository URL is rejected.
 3. Looks up the most recent pull request of the task branch in any state
    (`gh pr list --repo <repo> --head <branch> --state all`), which may have been opened
    outside Toodo, e.g. by an agent in herdr. An open or merged one whose base is not the

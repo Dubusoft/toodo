@@ -63,7 +63,9 @@ The web app lists these with `?`. Letter shortcuts do nothing while you type in 
   needs `claude` or `codex` on the server's `PATH`; runner `none` needs neither
 - Git and OpenSSH on the server's `PATH`
 - For workspaces with source `github`: the GitHub CLI (`gh`) on the server's `PATH`, logged
-  in with `gh auth login` as the user that runs the server. Workspaces with source `none` or
+  in with `gh auth login` as the user that runs the server. GitHub Enterprise hosts work
+  too: log in with `gh auth login --hostname <host>` (see "GitHub Enterprise" in
+  [docs/workflow.md](docs/workflow.md#github-enterprise)). Workspaces with source `none` or
   `local_git` do not need it
 - A current browser to use the web app
 - For runner `tmux`: tmux on the host that runs the agent. For runner `plain` on a POSIX
