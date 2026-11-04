@@ -132,6 +132,10 @@ pub struct CreateTask {
     /// The day the task should be done by, as YYYY-MM-DD, if the user gave one.
     #[serde(default)]
     pub due_date: Option<String>,
+    /// Labels such as a project or goal, e.g. ["search", "q4-goal"], that the user's
+    /// reviews filter by; each non-empty, at most 40 characters, without commas.
+    #[serde(default)]
+    pub labels: Vec<String>,
     /// Verifiable completion criteria in order (no `id`). Use `manual` for what a person
     /// or you check with evidence, and `url`, `command`, `pr_open_ci_green` for what
     /// Toodo can check itself.
@@ -168,6 +172,9 @@ pub struct UpdateTask {
     #[serde(default, deserialize_with = "present")]
     #[schemars(with = "Option<String>")]
     pub due_date: Option<Option<String>>,
+    /// The full new list of labels, replacing the current ones; unchanged when omitted,
+    /// [] removes them all.
+    pub labels: Option<Vec<String>>,
     /// The full new list of completion criteria, replacing the current one; unchanged when
     /// omitted. Criteria whose `id` is left out are deleted with their evidence. Keep an
     /// existing criterion by passing `{"id": N}`; given fields change it, omitted ones
@@ -906,6 +913,7 @@ fn insert_task(
             .get_task(linked.into())?
             .ok_or(StorageError::TaskNotFound(linked.into()))?;
     }
+    let labels = types::labels(&request.labels)?;
     let mut new: storage::NewTask = types::NewTask {
         workspace_id: request.workspace_id,
         task_type: request.task_type,
@@ -913,6 +921,7 @@ fn insert_task(
         description: request.description,
         estimate: request.estimate,
         due_date: request.due_date,
+        labels: Vec::new(),
         criteria: request.criteria,
         merge_criterion: false,
     }
@@ -921,13 +930,18 @@ fn insert_task(
         new.criteria.insert(0, merge);
     }
     let task = storage.create_task(&new)?;
-    let linked = request
-        .depends_on
-        .iter()
-        .try_for_each(|&prerequisite| {
-            storage
-                .add_dependency(task.id, prerequisite.into())
-                .map(drop)
+    let labelled = if labels.is_empty() {
+        Ok(())
+    } else {
+        storage.set_task_labels(task.id, &labels).map(drop)
+    };
+    let linked = labelled
+        .and_then(|()| {
+            request.depends_on.iter().try_for_each(|&prerequisite| {
+                storage
+                    .add_dependency(task.id, prerequisite.into())
+                    .map(drop)
+            })
         })
         .and_then(|()| {
             request
@@ -971,6 +985,7 @@ pub fn update_task(
             description: request.description.unwrap_or(current.description),
             estimate: request.estimate.unwrap_or(current.estimate),
             due_date: request.due_date.unwrap_or(current.due_date),
+            labels: request.labels,
             criteria: request.criteria,
             merge_criterion: false,
         },
@@ -1012,6 +1027,7 @@ pub fn add_criterion(
             description: None,
             estimate: None,
             due_date: None,
+            labels: None,
             criteria: Some(criteria),
             remove_merge_criterion: false,
         },
@@ -1044,6 +1060,7 @@ pub fn remove_criterion(storage: &mut Storage, request: RemoveCriterion) -> Comm
             description: None,
             estimate: None,
             due_date: None,
+            labels: None,
             criteria: Some(criteria),
             remove_merge_criterion: true,
         },
@@ -1823,6 +1840,7 @@ mod tests {
                 related: Vec::new(),
                 estimate: None,
                 due_date: None,
+                labels: Vec::new(),
                 criteria: Vec::new(),
                 merge_criterion: None,
                 request_id: None,
@@ -2093,6 +2111,7 @@ mod tests {
                 description: Some("Add tables".to_owned()),
                 estimate: None,
                 due_date: None,
+                labels: None,
                 criteria: None,
                 remove_merge_criterion: false,
             },
@@ -2469,6 +2488,51 @@ mod tests {
             Task::from(&storage.get_task(task.id.into()).unwrap().unwrap()),
             cleared
         );
+    }
+
+    #[test]
+    fn labels_are_set_kept_when_omitted_replaced_and_cleared() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let request: CreateTask = serde_json::from_value(serde_json::json!({
+            "workspace_id": workspace,
+            "task_type": "feat",
+            "title": "Schema",
+            "labels": [" search ", "q4-goal", "search"],
+        }))
+        .unwrap();
+        let task = insert_task(&mut storage, request, None).unwrap();
+        assert_eq!(task.labels, ["q4-goal", "search"]);
+
+        let update = |storage: &mut Storage, fields: serde_json::Value| {
+            let mut request = serde_json::json!({ "id": task.id });
+            request
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            update_task(storage, serde_json::from_value(request).unwrap(), None)
+        };
+        let kept = update(&mut storage, serde_json::json!({ "title": "Tables" })).unwrap();
+        assert_eq!(kept.labels, ["q4-goal", "search"]);
+        let replaced = update(&mut storage, serde_json::json!({ "labels": ["review"] })).unwrap();
+        assert_eq!(replaced.labels, ["review"]);
+
+        let error = update(&mut storage, serde_json::json!({ "labels": ["a,b"] })).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        assert!(error.message.contains("own list item"), "{error:?}");
+        let error = update(
+            &mut storage,
+            serde_json::json!({ "title": "Renamed", "labels": [""] }),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        let stored = Task::from(&storage.get_task(task.id.into()).unwrap().unwrap());
+        assert_eq!(
+            (stored.title.as_str(), stored.labels.as_slice()),
+            ("Tables", ["review".to_owned()].as_slice())
+        );
+
+        let cleared = update(&mut storage, serde_json::json!({ "labels": [] })).unwrap();
+        assert!(cleared.labels.is_empty());
     }
 
     #[test]

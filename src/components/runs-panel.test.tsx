@@ -46,6 +46,7 @@ const inProgress: Task = {
   issue: null,
   estimate: null,
   dueDate: null,
+  labels: [],
   pullRequestMergedAt: null,
   pullRequest: null,
   mergedWith: null,

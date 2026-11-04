@@ -3,7 +3,14 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
 
-@custom-variant dark (&:is(.dark *));
+/* Paper is light: printing uses the light theme whatever the screen shows. */
+@custom-variant dark {
+    @media not print {
+        &:is(.dark *) {
+            @slot;
+        }
+    }
+}
 
 @theme inline {
     --font-heading: var(--font-sans);
@@ -85,6 +92,7 @@
     --dependency-line: oklch(0.708 0 0);
 }
 
+@media not print {
 .dark {
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
@@ -119,6 +127,7 @@
     --sidebar-ring: oklch(0.556 0 0);
     --dependency-line: oklch(0.556 0 0);
 }
+}
 
 @layer base {
   * {
@@ -148,7 +157,7 @@
  * On a phone, the small print of the main pane (meta lines, chips, notes) is read at 14px.
  * Timeline bars and axis labels keep their size, since their layout is measured in pixels.
  */
-@media (width < 48rem) {
+@media screen and (width < 48rem) {
   main .text-xs:not(.react-flow__renderer *) {
     font-size: var(--text-sm);
     line-height: var(--text-sm--line-height);
@@ -189,4 +198,17 @@
 .react-flow.connecting .react-flow__handle,
 .react-flow .react-flow__handle.connectingfrom {
   opacity: 1;
+}
+/*
+ * Printing (or saving as PDF) shows the page content alone: elements marked `print:hidden`,
+ * such as the sidebar and the controls, are left out, and sections are not split across pages.
+ */
+@media print {
+  @page {
+    margin: 1.5cm;
+  }
+  main section > ul > li,
+  main section[aria-label="Summary"] {
+    break-inside: avoid;
+  }
 }

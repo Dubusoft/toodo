@@ -6,6 +6,7 @@ import { CollapsibleForm } from "@/components/collapsible-form";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import type { TaskType, Workspace } from "@/lib/bindings";
 import { IssueLinkFailure, useCreateTask } from "@/lib/queries";
+import { parseLabels } from "@/lib/plan";
 import { cn } from "@/lib/utils";
 import { workspaceCapabilities } from "@/lib/workspace-capabilities";
 import { taskTypes } from "@/components/task-common";
@@ -35,6 +36,7 @@ export const emptyDraft: TaskDraft = {
   estimate: "",
   estimateUnit: "hours",
   dueDate: "",
+  labels: "",
 };
 
 export function NewTaskForm({
@@ -63,7 +65,7 @@ export function NewTaskForm({
     event.preventDefault();
     if (estimate === undefined || criteriaInvalid) return;
     const added = () => {
-      onChange({ ...draft, title: "", description: "", issue: "", estimate: "", dueDate: "", criteria: [] });
+      onChange({ ...draft, title: "", description: "", issue: "", estimate: "", dueDate: "", labels: "", criteria: [] });
       setExpanded(false);
     };
     createTask.mutate(
@@ -74,6 +76,7 @@ export function NewTaskForm({
         description,
         estimate,
         dueDate: draft.dueDate || null,
+        labels: parseLabels(draft.labels),
         criteria: criterionInputs(draft.criteria),
         // Tasks completed without a merge get no merge criterion.
         mergeCriterion: capabilities.merge && draft.mergeCriterion,

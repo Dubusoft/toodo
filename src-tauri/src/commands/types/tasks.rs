@@ -143,6 +143,8 @@ pub struct Task {
     pub estimate: Option<Estimate>,
     /// The day the task should be done by, as `YYYY-MM-DD` in local time.
     pub due_date: Option<String>,
+    /// Labels such as a project or goal, sorted.
+    pub labels: Vec<String>,
     /// Merge time of the pull request reported by GitHub.
     pub pull_request_merged_at: Option<Timestamp>,
     /// The pull request as GitHub reported it when its merge completed the task; `null`
@@ -347,6 +349,7 @@ impl From<&model::Task> for Task {
             issue: task.issue.as_ref().map(LinkedIssue::from),
             estimate: task.estimate.map(Estimate::from),
             due_date: task.due_date.map(|due| due.to_string()),
+            labels: task.labels.clone(),
             pull_request_merged_at: task.pull_request_merged_at.map(Timestamp),
             pull_request: task.pull_request.as_ref().map(PullRequestSnapshot::from),
             merged_with: task.merged_with.as_ref().map(|merged| MergedWith {
@@ -419,6 +422,9 @@ pub struct NewTask {
     pub estimate: Option<Estimate>,
     /// `YYYY-MM-DD`; blank or `null` for none.
     pub due_date: Option<String>,
+    /// Labels such as a project or goal; none when omitted.
+    #[serde(default)]
+    pub labels: Vec<String>,
     /// Completion criteria in order; an `id` is not allowed here.
     pub criteria: Vec<CriterionInput>,
     /// Whether to put the merge criterion first: the task's pull request is merged, or,
@@ -472,6 +478,9 @@ pub struct TaskEdit {
     pub estimate: Option<Estimate>,
     /// `YYYY-MM-DD`; blank or `null` clears the due date.
     pub due_date: Option<String>,
+    /// The new labels, which replace the current ones; `null` or omitted keeps them.
+    #[serde(default)]
+    pub labels: Option<Vec<String>>,
     /// The new completion criteria in order, which replace the current ones; `null`
     /// keeps them. The criteria of a done task cannot change.
     pub criteria: Option<Vec<CriterionInput>>,

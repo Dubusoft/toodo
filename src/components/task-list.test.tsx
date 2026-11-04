@@ -109,6 +109,7 @@ function task(id: number, workspace: Workspace, title: string, overrides: Partia
     issue: null,
     estimate: null,
     dueDate: null,
+    labels: [],
     pullRequestMergedAt: null,
     pullRequest: null,
     mergedWith: null,
@@ -154,6 +155,7 @@ const newDraft: TaskDraft = {
   estimate: "",
   estimateUnit: "hours",
   dueDate: "",
+  labels: "",
 };
 
 /** Renders the tasks of `workspace`, with its new task form; returns the query cache. */

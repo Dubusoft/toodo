@@ -111,7 +111,8 @@ paths, and commands, fenced code blocks, and links; no raw HTML. \
 When you split work into tasks, set estimate to your expected size of each (hours, \
 days, weeks, or months of active work); the user's reviews compare it \
 with the time the task actually took. Set due_date (YYYY-MM-DD) only when the user named \
-a deadline.
+a deadline. Set labels to the project or goal the work belongs to when the user or \
+related tasks use them; reviews filter by label.
 5. Leave a record of your work on your task as you go; it feeds the user's reviews of \
 their work. Call add_progress_note at every milestone: when you start (your plan and \
 approach, right after current_task and before your first edit), when you take a decision worth remembering (the choice and why, e.g. a library \

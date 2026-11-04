@@ -96,3 +96,17 @@ export function useServerDown(): boolean {
   const reach = useSyncExternalStore(subscribeReachability, reachability);
   return reach === "unreachable" || reach === "retrying";
 }
+
+/** The labels of a task as chips. */
+export function TaskLabels({ task, className }: { task: Task; className?: string }) {
+  if (task.labels.length === 0) return null;
+  return (
+    <ul aria-label={`Labels of #${task.id}`} className={cn("flex flex-wrap gap-1", className)}>
+      {task.labels.map((label) => (
+        <li key={label} className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
+          {label}
+        </li>
+      ))}
+    </ul>
+  );
+}

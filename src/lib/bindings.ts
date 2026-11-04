@@ -709,6 +709,8 @@ export type NewTask = {
 	estimate: Estimate | null,
 	/**  `YYYY-MM-DD`; blank or `null` for none. */
 	dueDate: string | null,
+	/**  Labels such as a project or goal; none when omitted. */
+	labels?: string[],
 	/**  Completion criteria in order; an `id` is not allowed here. */
 	criteria: CriterionInput[],
 	/**
@@ -921,6 +923,8 @@ export type Task = {
 	estimate: Estimate | null,
 	/**  The day the task should be done by, as `YYYY-MM-DD` in local time. */
 	dueDate: string | null,
+	/**  Labels such as a project or goal, sorted. */
+	labels: string[],
 	/**  Merge time of the pull request reported by GitHub. */
 	pullRequestMergedAt: Timestamp | null,
 	/**
@@ -988,6 +992,8 @@ export type TaskEdit = {
 	estimate: Estimate | null,
 	/**  `YYYY-MM-DD`; blank or `null` clears the due date. */
 	dueDate: string | null,
+	/**  The new labels, which replace the current ones; `null` or omitted keeps them. */
+	labels?: string[] | null,
 	/**
 	 *  The new completion criteria in order, which replace the current ones; `null`
 	 *  keeps them. The criteria of a done task cannot change.

@@ -325,6 +325,10 @@ generated or guessed by an agent.
   a calendar month, quarter, or year, or a custom range of days. The period runs from
   local midnight of its first day to local midnight after its last day, as the half-open
   period `[start, end)` passed to the `review_period` command.
+- The review can be narrowed to one workspace and to one label. Labels (such as a
+  project or goal) are free text set on a task in the app or through MCP
+  (`create_task`, `update_task`); each is trimmed, at most 40 characters, without commas,
+  and a task has at most 20. The summary, plan, and exports cover the narrowed tasks.
 - A task is in the review when it reached a milestone or got a commit in the period.
   Its outcome is the most advanced milestone reached in the period, in this order:
 
@@ -376,6 +380,8 @@ generated or guessed by an agent.
   note; UTF-8 with a byte
   order mark). The frontend
   builds the file, since it knows the local time zone, and the browser downloads it.
+- Printing the review (Export > Print or save as PDF, or the browser's print command)
+  leaves out the sidebar, the controls, and banners, and uses the light theme.
 
 ## Runtime Context
 

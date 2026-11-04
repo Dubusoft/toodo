@@ -3,6 +3,7 @@ import { CalendarCheck, ChevronLeft, ChevronRight, Download } from "lucide-react
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/task-list";
+import { TaskLabels } from "@/components/task-common";
 import { inputClass } from "@/components/workspace-list";
 import type { ReviewEntry, ReviewOutcome, TaskId, Workspace } from "@/lib/bindings";
 import { useReview, useWorkspaces } from "@/lib/queries";
@@ -10,6 +11,7 @@ import {
   commitSubject,
   durationKeys,
   durationLabels,
+  filterEntries,
   formatChanges,
   formatDuration,
   formatDueRate,
@@ -17,6 +19,7 @@ import {
   formatReviews,
   groupByOutcome,
   lateDetails,
+  noReviewFilter,
   outcomeLabels,
   periodBounds,
   periodContaining,
@@ -28,12 +31,14 @@ import {
   pullRequestStats,
   reviewCsv,
   reviewFileName,
+  reviewLabels,
   reviewMarkdown,
   shiftPeriod,
   summarize,
   weekStarting,
   yearInReview,
   type PeriodKind,
+  type ReviewFilter,
   type ReviewPeriod,
 } from "@/lib/review";
 import { toneChip, toneFill, toneText } from "@/lib/status-styles";
@@ -121,10 +126,23 @@ function MenuItem({ onSelect, children }: { onSelect: () => void; children: Reac
 export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   const [period, setPeriod] = useState<ReviewPeriod>(() => periodContaining("week", formatDate(Date.now() / 1000)));
   const [notice, setNotice] = useState<string | null>(null);
+  const [filter, setFilter] = useState<ReviewFilter>(noReviewFilter);
   const { start, end } = periodBounds(period);
   const review = useReview(start, end);
   const workspaces = useWorkspaces();
   const names = new Map(workspaces.data?.map((workspace) => [workspace.id, workspace.name]));
+  const entries = review.data && filterEntries(review.data, filter);
+  // The chosen label stays listed when the period has no task with it.
+  const labels = reviewLabels(review.data ?? []);
+  if (filter.label !== null && !labels.includes(filter.label)) labels.push(filter.label);
+  const scope = [
+    filter.workspaceId === null
+      ? "across all workspaces"
+      : `in ${names.get(filter.workspaceId) ?? `workspace ${filter.workspaceId}`}`,
+    filter.label !== null && `labelled ${filter.label}`,
+  ]
+    .filter(Boolean)
+    .join(", ");
   const noun = periodNouns[period.kind];
 
   function moveTo(next: ReviewPeriod) {
@@ -165,11 +183,11 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           {periodTitles[period.kind]}
         </h2>
         <p className="text-sm text-muted-foreground">
-          Work recorded from {period.from} to {period.to} across all workspaces.
+          Work recorded from {period.from} to {period.to} {scope}.
         </p>
       </header>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2 print:hidden">
         <div role="group" aria-label="Review period" className="flex rounded-md border p-0.5 max-md:w-full">
           {periodKinds.map(({ kind, label }) => (
             <Button
@@ -258,13 +276,13 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           </Button>
         )}
         <div className="ml-auto">
-          <ExportMenu disabled={!review.data}>
+          <ExportMenu disabled={!entries}>
             {(close) => (
               <>
                 <MenuItem
                   onSelect={() => {
                     close();
-                    if (review.data) void copyMarkdown(review.data);
+                    if (entries) void copyMarkdown(entries);
                   }}
                 >
                   Copy as Markdown
@@ -272,7 +290,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                 <MenuItem
                   onSelect={() => {
                     close();
-                    if (review.data) void saveAs("md", review.data);
+                    if (entries) void saveAs("md", entries);
                   }}
                 >
                   Save as Markdown
@@ -280,10 +298,18 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                 <MenuItem
                   onSelect={() => {
                     close();
-                    if (review.data) void saveAs("csv", review.data);
+                    if (entries) void saveAs("csv", entries);
                   }}
                 >
                   Save as CSV
+                </MenuItem>
+                <MenuItem
+                  onSelect={() => {
+                    close();
+                    window.print();
+                  }}
+                >
+                  Print or save as PDF
                 </MenuItem>
               </>
             )}
@@ -291,8 +317,42 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
         </div>
       </div>
 
+      <div role="group" aria-label="Review filters" className="flex flex-wrap items-center gap-2 print:hidden">
+        <select
+          aria-label="Workspace"
+          className={cn(inputClass, "w-auto max-md:min-w-0 max-md:flex-1")}
+          value={filter.workspaceId ?? ""}
+          onChange={(e) => setFilter({ ...filter, workspaceId: e.target.value === "" ? null : Number(e.target.value) })}
+        >
+          <option value="">All workspaces</option>
+          {workspaces.data?.map((workspace) => (
+            <option key={workspace.id} value={workspace.id}>
+              {workspace.name}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="Label"
+          className={cn(inputClass, "w-auto max-md:min-w-0 max-md:flex-1")}
+          value={filter.label ?? ""}
+          onChange={(e) => setFilter({ ...filter, label: e.target.value === "" ? null : e.target.value })}
+        >
+          <option value="">{labels.length === 0 ? "No labels in this period" : "Any label"}</option>
+          {labels.map((label) => (
+            <option key={label} value={label}>
+              {label}
+            </option>
+          ))}
+        </select>
+        {(filter.workspaceId !== null || filter.label !== null) && (
+          <Button size="sm" variant="ghost" onClick={() => setFilter(noReviewFilter)}>
+            Clear filters
+          </Button>
+        )}
+      </div>
+
       {notice && (
-        <p role="status" className="text-xs text-muted-foreground">
+        <p role="status" className="text-xs text-muted-foreground print:hidden">
           {notice}
         </p>
       )}
@@ -301,8 +361,8 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
       <p role="status" className={cn("text-sm text-muted-foreground", !review.isPending && "sr-only")}>
         {review.isPending
           ? "Loading the review..."
-          : review.data
-            ? `Showing ${review.data.length} ${review.data.length === 1 ? "task" : "tasks"} with activity in this ${noun}.`
+          : entries
+            ? `Showing ${entries.length} ${entries.length === 1 ? "task" : "tasks"} with activity in this ${noun}.`
             : ""}
       </p>
       {review.isError && (
@@ -310,10 +370,14 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           Failed to load the review: {review.error.message}
         </p>
       )}
-      {review.data?.length === 0 && (
+      {entries?.length === 0 && (
         <EmptyState
-          title={`No recorded activity in this ${noun}.`}
-          hint="Pick another period to look at earlier work."
+          title={
+            review.data?.length === 0
+              ? `No recorded activity in this ${noun}.`
+              : `No recorded activity in this ${noun} matches the filters.`
+          }
+          hint="Pick another period or change the filters to look at other work."
           action={
             <Button size="sm" variant="outline" onClick={() => moveTo(shiftPeriod(period, -1))}>
               Show the {noun} before
@@ -321,13 +385,13 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           }
         />
       )}
-      {review.data && review.data.length > 0 && (
-        <ReviewSummaryPanel period={period} entries={review.data} workspaces={workspaces.data ?? []} />
+      {entries && entries.length > 0 && (
+        <ReviewSummaryPanel period={period} entries={entries} workspaces={workspaces.data ?? []} />
       )}
-      {review.data && <PlanPanel period={period} entries={review.data} />}
-      {period.kind === "year" && review.data && <YearInReviewPanel entries={review.data} />}
-      {review.data &&
-        groupByOutcome(review.data).map((group) => (
+      {entries && <PlanPanel period={period} entries={entries} />}
+      {period.kind === "year" && entries && <YearInReviewPanel entries={entries} />}
+      {entries &&
+        groupByOutcome(entries).map((group) => (
           <section key={group.outcome} aria-label={outcomeLabels[group.outcome]} className="flex flex-col gap-2">
             <h3 className={cn("text-sm font-semibold", outcomeStyles[group.outcome])}>
               {outcomeLabels[group.outcome]}{" "}
@@ -357,10 +421,11 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                     {task.pullRequestUrl && (
                       <PullRequestLink url={task.pullRequestUrl} stats={task.pullRequest} />
                     )}
-                    <span className="shrink-0 text-xs text-muted-foreground max-md:hidden">
+                    <span className="shrink-0 text-xs text-muted-foreground max-md:hidden print:inline">
                       {names.get(task.workspaceId) ?? `Workspace ${task.workspaceId}`} &middot; <When at={at} />
                     </span>
                   </div>
+                  <TaskLabels task={task} />
                   {task.completionNote && (
                     <p aria-label={`Completion note of #${task.id}`} className="whitespace-pre-line break-words-keep text-xs">
                       {task.completionNote}

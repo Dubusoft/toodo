@@ -223,6 +223,7 @@ impl TaskRow {
         timeline: Vec<TaskEvent>,
         notes: Vec<TaskNote>,
         criteria: Vec<crate::domain::criteria::Criterion>,
+        labels: Vec<String>,
     ) -> Result<Task> {
         let worktree_path = self
             .worktree_path
@@ -258,6 +259,7 @@ impl TaskRow {
                 .map(DueDate::parse)
                 .transpose()
                 .map_err(invalid_data)?,
+            labels,
             timeline,
             notes,
             criteria,
@@ -331,13 +333,33 @@ fn query_tasks(conn: &Connection, filter: &str, parameter: i64) -> Result<Vec<Ta
 
     let mut criteria = super::criteria::load(conn, filter, parameter)?;
 
+    let mut statement = conn.prepare_cached(&format!(
+        "SELECT l.task_id, l.label
+         FROM task_labels l JOIN tasks t ON t.id = l.task_id
+         WHERE {filter} ORDER BY l.label"
+    ))?;
+    let mut labels: HashMap<i64, Vec<String>> = HashMap::new();
+    for label in statement.query_map([parameter], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (task, label) = label?;
+        labels.entry(task).or_default().push(label);
+    }
+
     rows.into_iter()
         .map(|row| {
             let dependencies = depends_on.remove(&row.id).unwrap_or_default();
             let timeline = timelines.remove(&row.id).unwrap_or_default();
             let task_notes = notes.remove(&row.id).unwrap_or_default();
             let task_criteria = criteria.remove(&row.id).unwrap_or_default();
-            row.into_task(dependencies, timeline, task_notes, task_criteria)
+            let task_labels = labels.remove(&row.id).unwrap_or_default();
+            row.into_task(
+                dependencies,
+                timeline,
+                task_notes,
+                task_criteria,
+                task_labels,
+            )
         })
         .collect()
 }
@@ -513,6 +535,23 @@ impl Storage {
         set_herdr_workspace(&tx, task.id, task.herdr_workspace_id.as_deref(), at)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Replaces the labels of task `id` with `labels`, which
+    /// [`crate::domain::plan::labels`] checked.
+    pub fn set_task_labels(&mut self, id: TaskId, labels: &[String]) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.execute("DELETE FROM task_labels WHERE task_id = ?1", [id.0])?;
+        for label in labels {
+            tx.execute(
+                "INSERT OR IGNORE INTO task_labels (task_id, label) VALUES (?1, ?2)",
+                params![id.0, label],
+            )?;
+        }
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(task)
     }
 
     /// Rejects starting a task while one of its dependencies is not done; check this
