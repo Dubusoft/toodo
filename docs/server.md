@@ -412,6 +412,26 @@ Besides the regular task tools, two arguments help an agent wire and start a pla
 no merge tool: agents follow the workspace's agent merge policy, which never allows merging
 past the base branch.
 
+### Task and Run Resources
+
+Tasks and their runs are MCP resources, so an agent can wait for a change instead of
+calling `get_task` again and again:
+
+- `toodo://tasks/{task_id}`: the task as `get_task` returns it, including `ready` and
+  `blockedBy`, so a task's resource changes when a task it depends on is done.
+- `toodo://tasks/{task_id}/runs`: the task's runs, oldest first.
+
+`resources/list` lists the tasks that are not done, and `resources/templates/list` the
+two URI templates. The endpoint is stateless, so notifications need a client of protocol
+`2026-07-28`, which opens a `subscriptions/listen` stream with `resourceSubscriptions` (and
+optionally `resourcesListChanged`). The stream gets `notifications/resources/updated` for
+each watched resource whose content changed, and `notifications/resources/list_changed`
+when a task is added, is done, or comes back. The server reads the watched resources again
+after every change the app announces, and at least every 5 seconds for runs, which change
+without one. Clients of earlier protocols, which start with `initialize`, can read the
+resources, but the server does not offer them `resources/subscribe`: their notifications
+would need a session.
+
 ### Chat Apps over OAuth
 
 The ChatGPT and Claude apps can plan in Toodo as a remote MCP server. They can't hold the
@@ -434,7 +454,7 @@ on loopback as before and still see every tool.
 **What a chat app can do.** An app gets one or both scopes:
 
 - `toodo.read`: `read_toodo_skill`, `list_workspaces`, `list_tasks`, `search_tasks`,
-  `get_task`.
+  `get_task`, and the [task and run resources](#task-and-run-resources).
 - `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `update_task`,
   `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
   `add_criterion`, `remove_criterion`, `check_criterion`, `add_progress_note`,

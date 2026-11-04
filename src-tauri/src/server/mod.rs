@@ -175,6 +175,8 @@ pub struct Services {
     mcp: ServerStatus,
     tunnels: TunnelsState,
     events: Arc<event_log::EventLog>,
+    /// Marked on every announced change, for MCP resource subscriptions.
+    changes: tokio::sync::watch::Sender<()>,
     /// The largest database file `POST /api/backups/restore` accepts, in bytes.
     restore_limit: u64,
     panes: panes::Panes,
@@ -188,6 +190,7 @@ impl Services {
             Ok(data) => self.events.send(name, data),
             Err(error) => eprintln!("toodo: failed to encode {name}: {error}"),
         }
+        self.changes.send_replace(());
     }
 }
 
@@ -248,6 +251,10 @@ impl Backend for Services {
 
     fn server(&self) -> &ServerStatus {
         &self.mcp
+    }
+
+    fn changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changes.subscribe()
     }
 }
 
@@ -418,6 +425,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         },
         tunnels,
         events: Arc::new(event_log::EventLog::new()?),
+        changes: tokio::sync::watch::Sender::new(()),
         restore_limit: files::RESTORE_LIMIT,
         push,
     });
@@ -873,6 +881,7 @@ mod tests {
             },
             tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), 0))),
             events: Arc::new(event_log::EventLog::new().unwrap()),
+            changes: tokio::sync::watch::Sender::new(()),
             restore_limit: TEST_RESTORE_LIMIT,
             push: push::tests::push(data_dir, push::tests::FakeTransport::default()),
         })
