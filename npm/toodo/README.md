@@ -22,10 +22,10 @@ The development channel is `@dubusoft/toodo@dev`.
 - `toodo start`: start the server.
 - `toodo stop`: stop the server.
 - `toodo status`: show whether the server is running.
-- `toodo service install`: install the server as a user service.
+- `toodo service install`: install the server as a user service (systemd on Linux, a launchd agent on macOS).
 
 ## Requirements
 
-Linux x64 or arm64 (glibc) only. Install with optional dependencies enabled (the default), because the binaries ship in the `@dubusoft/toodo-linux-<arch>` packages.
+Linux x64 or arm64 (glibc or musl) or macOS x64 or arm64, with Node.js 18 or later. Install with optional dependencies enabled (the default), because the binaries ship in the platform packages `@dubusoft/toodo-linux-<arch>`, `@dubusoft/toodo-linux-<arch>-musl`, and `@dubusoft/toodo-darwin-<arch>`.
 
 See https://github.com/dev-bokdong/toodo for documentation.

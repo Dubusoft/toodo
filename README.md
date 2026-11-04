@@ -69,8 +69,8 @@ The web app lists these with `?`. Letter shortcuts do nothing while you type in 
 - For runner `tmux`: tmux on the host that runs the agent. For runner `plain` on a POSIX
   SSH host: util-linux `setsid` (with `--wait`) there
 
-See [docs/server.md](docs/server.md) to install it. On Linux x64 or arm64 (glibc) with
-Node.js, the quickest start is:
+See [docs/server.md](docs/server.md) to install it. On Linux x64 or arm64 (glibc or musl)
+or macOS with Node.js, the quickest start is:
 
 ```sh
 npx @dubusoft/toodo init
