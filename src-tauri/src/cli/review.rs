@@ -48,7 +48,7 @@ pub(super) const OPTIONS: &str =
   --workspace ID      only tasks of this workspace
   --label LABEL       only tasks with this label
   --time-zone ZONE    IANA time zone of the days and times, e.g. Europe/Berlin
-                      (default this machine's)";
+                      (default the server's review time zone)";
 
 /// Parses the options after `review`.
 pub(super) fn parse(options: &[String]) -> Result<ReviewArgs, String> {
@@ -120,10 +120,7 @@ pub(super) fn review(args: &ReviewArgs, data: &DataDir, var: Var) -> Result<(), 
             token_path.display()
         )
     })?;
-    let time_zone = args
-        .time_zone
-        .clone()
-        .or_else(|| jiff::tz::TimeZone::system().iana_name().map(str::to_owned));
+    let time_zone = args.time_zone.clone();
     let request = json!({
         "request": {
             "period": args.period,

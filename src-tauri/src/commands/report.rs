@@ -127,6 +127,11 @@ impl ReportPeriod {
         }
     }
 
+    /// The title of the period with its label, e.g. `Year review 2026`.
+    pub fn name(&self) -> String {
+        format!("{} {}", self.title(), self.label())
+    }
+
     fn label(&self) -> String {
         match self.kind {
             ReviewPeriodKind::Month => self.from.strftime("%Y-%m").to_string(),

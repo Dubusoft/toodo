@@ -19,6 +19,7 @@ mod migrations;
 pub mod oauth;
 mod pull_request_options;
 mod push;
+mod reviews;
 mod runtime;
 mod search;
 mod tasks;
@@ -49,6 +50,7 @@ pub use criteria::{CriterionCheck, CriterionEdit};
 pub use devices::DeviceAuth;
 pub use import::ImportSummary;
 pub use push::NewPushSubscription;
+pub use reviews::{ReviewSnapshot, ReviewSnapshotInfo};
 pub use runtime::{
     HostCursor, NewRun, QueuedRun, QueuedStart, Reservation, RunEvent, RunOperation,
     RuntimeWorkspace, TaskRun,

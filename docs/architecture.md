@@ -354,9 +354,21 @@ records, pull request snapshots) and the completion notes the user wrote; nothin
 generated or guessed by an agent.
 
 - The user picks a week (from any first day, by default the Monday of the current week),
-  a calendar month, quarter, or year, or a custom range of days. The period runs from
-  local midnight of its first day to local midnight after its last day, as the half-open
-  period `[start, end)` passed to the `review_period` command.
+  a calendar month, quarter, or year, or a custom range of days. The `review_period`
+  command takes the first and last day, and the server turns them into the half-open
+  period `[start, end)` from midnight of the first day to midnight after the last day in
+  its review time zone, so the same days give the same numbers on every device.
+- The review time zone is a server setting (`settings` table), changed from the Review
+  page (Change time zone) or with `set_review_time_zone`; until one is set, it is the
+  server's own time zone (UTC when that has no IANA name). The review's monthly counts are
+  in it too.
+- A review can be saved as a snapshot (Export > Save as snapshot, or
+  `save_review_snapshot`): the server stores its reviewed tasks as JSON, the names of
+  their workspaces, the time zone, and the Markdown and CSV reports in
+  `review_snapshots`. Reopening it from Saved reviews shows and exports exactly what was
+  saved, with durations and due dates judged at the time it was saved, however the tasks
+  change later (for example when a task is reopened). Snapshots are kept until deleted and
+  are not merged by `toodo-server import`.
 - The review can be narrowed to one workspace and to one label. Labels (such as a
   project or goal) are free text set on a task in the app or through MCP
   (`create_task`, `update_task`); each is trimmed, at most 40 characters, without commas,
@@ -428,8 +440,8 @@ generated or guessed by an agent.
   time`, `Late`, `Overdue`, or `Not due yet`), the size and review count of its pull request, and its completion
   note; UTF-8 with a byte
   order mark). The server renders both reports with the `review_report` command, in the
-  IANA time zone the caller names (the web app sends the browser's, `toodo review` the
-  machine's, and the server's own is the default), and the browser downloads the file.
+  review time zone unless the caller names another IANA time zone (the web app and
+  `toodo review` name none unless asked), and the browser downloads the file.
   Agents get the same report from the MCP tool `review_report`, and the CLI prints it
   with `toodo review` (see [server.md](server.md)).
 - Printing the review (Export > Print or save as PDF, or the browser's print command)

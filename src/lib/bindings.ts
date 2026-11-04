@@ -388,26 +388,48 @@ export const commands = {
 	/**  Disconnects an app by revoking its whole token family. */
 	revokeConnectedApp: (grantId: OAuthGrantId) => typedError<null, CommandError>(invoke("revoke_connected_app", { grantId })),
 	/**
-	 *  Tasks of every workspace that reached a milestone or got a commit in `[start, end)`,
-	 *  archived ones included, ordered by outcome, then by time. The caller picks the period, such as a week, a
-	 *  month, or a year in the local time zone.
+	 *  Tasks of every workspace that reached a milestone or got a commit from midnight of the
+	 *  day `from` to midnight after the day `to` (both `YYYY-MM-DD`) in the review time zone
+	 *  of the server, archived ones included, ordered by outcome, then by time. The caller
+	 *  picks the days, such as those of a week, a month, or a year.
 	 */
-	reviewPeriod: (start: Timestamp, end: Timestamp) => typedError<ReviewEntry[], CommandError>(invoke("review_period", { start, end })),
+	reviewPeriod: (from: string, to: string) => typedError<ReviewPeriodEntries, CommandError>(invoke("review_period", { from, to })),
 	/**
 	 *  Records the pull requests the signed-in `gh` user merged into the base branch of each
-	 *  GitHub workspace in `[start, end)` as tasks done as merged, each planned, started,
+	 *  GitHub workspace in the days `from` to `to` (judged as for [`review_period`]) as tasks
+	 *  done as merged, each planned, started,
 	 *  and in review from the opening of its pull request, so a review of that time shows
 	 *  work from before Toodo tracked it. A pull request a task already records, or whose
 	 *  branch a task of its workspace has, is skipped, so importing again adds nothing
 	 *  twice. A workspace whose pull requests cannot be read is reported in `failures`;
 	 *  the others are still imported.
 	 */
-	backfillPullRequests: (start: Timestamp, end: Timestamp) => typedError<BackfillSummary, CommandError>(invoke("backfill_pull_requests", { start, end })),
+	backfillPullRequests: (from: string, to: string) => typedError<BackfillSummary, CommandError>(invoke("backfill_pull_requests", { from, to })),
 	/**
 	 *  The review of a period rendered as Markdown or CSV, as the web app, the MCP tool
 	 *  `review_report`, and `toodo review` show it; see [`ReviewReportRequest`].
 	 */
 	reviewReport: (request: ReviewReportRequest) => typedError<ReviewReport, CommandError>(invoke("review_report", { request })),
+	/**  The time zone reviewed periods are judged in. */
+	getReviewTimeZone: () => typedError<ReviewTimeZone, CommandError>(invoke("get_review_time_zone")),
+	/**
+	 *  Sets the IANA time zone (e.g. `Europe/Berlin`) reviewed periods are judged in, on
+	 *  every device and for MCP and `toodo review`; `null` or blank goes back to the
+	 *  server's own.
+	 */
+	setReviewTimeZone: (timeZone: string | null) => typedError<ReviewTimeZone, CommandError>(invoke("set_review_time_zone", { timeZone })),
+	/**
+	 *  Saves the review of a period as it is now: its tasks, the names of their workspaces,
+	 *  and its report as Markdown and CSV, judged in the review time zone. Reopening it
+	 *  later shows the same, however the tasks change afterwards.
+	 */
+	saveReviewSnapshot: (request: SaveReviewSnapshotRequest) => typedError<ReviewSnapshotSummary, CommandError>(invoke("save_review_snapshot", { request })),
+	/**  The saved reviews, the most recently saved first. */
+	listReviewSnapshots: () => typedError<ReviewSnapshotSummary[], CommandError>(invoke("list_review_snapshots")),
+	/**  The saved review `id` exactly as it was saved. */
+	getReviewSnapshot: (id: ReviewSnapshotId) => typedError<ReviewSnapshot, CommandError>(invoke("get_review_snapshot", { id })),
+	/**  Deletes the saved review `id`. */
+	deleteReviewSnapshot: (id: ReviewSnapshotId) => typedError<null, CommandError>(invoke("delete_review_snapshot", { id })),
 	getBackupSettings: () => invoke<BackupSettings>("get_backup_settings"),
 	/**  Whether the latest automatic backup failed, and why. */
 	getBackupStatus: () => invoke<BackupStatus>("get_backup_status"),
@@ -1113,6 +1135,24 @@ export type ReviewEntry = {
  */
 export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "worked_on" | "planned";
 
+/**
+ *  The reviewed tasks of the days `from` to `to`, with the period the server judged
+ *  them by.
+ */
+export type ReviewPeriodEntries = {
+	/**  The first and last day, as `YYYY-MM-DD` in `timeZone`. */
+	from: string,
+	to: string,
+	/**
+	 *  The period as `[start, end)`: midnight of `from` to midnight after `to` in
+	 *  `timeZone`.
+	 */
+	start: Timestamp,
+	end: Timestamp,
+	timeZone: string,
+	entries: ReviewEntry[],
+};
+
 /**  The kind of a reviewed period. */
 export type ReviewPeriodKind = 
 /**  Seven days, from a Monday unless `from` names another first day. */
@@ -1156,7 +1196,8 @@ export type ReviewReportRequest = {
 	format: ReportFormat,
 	/**
 	 *  An IANA time zone such as `Europe/Berlin` that the days, the period, and the times
-	 *  in the report are in; the server's time zone when omitted.
+	 *  in the report are in; the review time zone of the server when omitted (see
+	 *  [`ReviewTimeZone`]).
 	 */
 	timeZone?: string | null,
 	/**  Only tasks of this workspace. */
@@ -1165,8 +1206,64 @@ export type ReviewReportRequest = {
 	label?: string | null,
 };
 
+/**
+ *  A saved review as it was when saved: its reviewed tasks, the names of their
+ *  workspaces, and its report as Markdown and CSV.
+ */
+export type ReviewSnapshot = {
+	summary: ReviewSnapshotSummary,
+	/**  Kept as the JSON it was saved as, so later changes to tasks do not touch it. */
+	entries: ReviewEntry[],
+	workspaces: ReviewWorkspaceName[],
+	/**  The report as `review_report` rendered it when saved. */
+	markdown: ReviewReport,
+	csv: ReviewReport,
+};
+
+/**  The ID of a saved review. */
+export type ReviewSnapshotId = number;
+
+/**  A saved review, without its contents. */
+export type ReviewSnapshotSummary = {
+	id: ReviewSnapshotId,
+	title: string,
+	period: ReviewPeriodKind,
+	/**  The first and last day, as `YYYY-MM-DD` in `timeZone`. */
+	from: string,
+	to: string,
+	timeZone: string,
+	workspaceId: WorkspaceId | null,
+	label: string | null,
+	/**  The period as `[start, end)`. */
+	start: Timestamp,
+	end: Timestamp,
+	/**  When it was saved; durations and due dates in it are judged at this time. */
+	savedAt: Timestamp,
+	entryCount: number,
+};
+
 /**  Where the reviews of a pull request stand. */
 export type ReviewStatus = "approved" | "changes_requested" | "pending";
+
+/**
+ *  The time zone the server judges reviewed periods in, so a period covers the same
+ *  time on every device.
+ */
+export type ReviewTimeZone = {
+	/**
+	 *  The IANA time zone in use: the one set, else the server's own (`UTC` when the
+	 *  server's has no IANA name).
+	 */
+	timeZone: string,
+	/**  The time zone set for reviews; `null` while the server's own is used. */
+	configured: string | null,
+};
+
+/**  The name of a workspace as a saved review shows it. */
+export type ReviewWorkspaceName = {
+	id: WorkspaceId,
+	name: string,
+};
 
 /**  Something observed about a run, e.g. its result or how it exited. */
 export type RunEvent = {
@@ -1237,6 +1334,27 @@ export type RunnerHealth = {
 	tmux: TmuxHealth,
 	/**  Claude, then Codex. */
 	agents: AgentHealth[],
+};
+
+/**
+ *  Which review to save as a snapshot: a period as for [`ReviewReportRequest`] (judged in
+ *  the review time zone of the server) and the tasks to keep.
+ */
+export type SaveReviewSnapshotRequest = {
+	period: ReviewPeriodKind,
+	/**
+	 *  The first day of a week or custom period, or a day inside a month, quarter, or
+	 *  year, as `YYYY-MM-DD`.
+	 */
+	from: string,
+	/**  The last day of a `custom` period, included. */
+	to?: string | null,
+	/**  Only tasks of this workspace. */
+	workspaceId?: WorkspaceId | null,
+	/**  Only tasks with this label. */
+	label?: string | null,
+	/**  A name for the snapshot; the period's, e.g. `Year review 2026`, when omitted. */
+	title?: string | null,
 };
 
 /**  What a workspace location holds. */
