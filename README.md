@@ -24,7 +24,8 @@ into a performance report.
   dependencies through the server's MCP endpoint; copy the client config from Agent
   access in Settings (the gear at the bottom of the sidebar). Agents on SSH machines use
   the same config, through a reverse SSH tunnel the server keeps open to each machine with
-  a workspace.
+  a workspace. A lead agent can also orchestrate the plan: start ready tasks for worker
+  sessions, watch them, and close out what shipped; see [docs/agents.md](docs/agents.md).
 - **Timeline**: every status change is timestamped; the dependency graph is drawn on a
   time axis showing when each task was planned, started, reviewed, and completed.
 
@@ -47,6 +48,8 @@ The web app lists these with `?`. Letter shortcuts do nothing while you type in 
 - [AGENTS.md](AGENTS.md): contributor and AI-agent guidelines, including the language policy.
 - [docs/architecture.md](docs/architecture.md): domain model and system components.
 - [docs/workflow.md](docs/workflow.md): task lifecycle from planning to pull request.
+- [docs/agents.md](docs/agents.md): using Toodo from coding agents, as an orchestrator or a
+  worker, and where their instructions come from.
 - [docs/server.md](docs/server.md): installing and running `toodo-server`, the web app, and
   its API.
 - [docs/migrate-desktop-data.md](docs/migrate-desktop-data.md): moving the data of the former

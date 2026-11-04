@@ -21,7 +21,7 @@ use std::fs;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{ConnectInfo, Request, State};
@@ -57,9 +57,33 @@ use crate::oauth::{self, PublicUrl};
 
 pub(crate) const TOKEN_FILE: &str = "mcp-token";
 
-const SKILL: &str = include_str!("toodo-skill.md");
+/// Instruction text that the `initialize` instructions, the chat instructions, and the
+/// skill share, kept in one file each so they cannot drift apart: [`render`] puts
+/// `shared/<name>.md` where a template says `{{name}}`.
+const SHARED: &[(&str, &str)] = &[
+    ("completion", include_str!("shared/completion.md")),
+    ("other-tasks", include_str!("shared/other-tasks.md")),
+    (
+        "task-description",
+        include_str!("shared/task-description.md"),
+    ),
+    ("review-timing", include_str!("shared/review-timing.md")),
+    ("merge-policy", include_str!("shared/merge-policy.md")),
+];
 
-const INSTRUCTIONS: &str = "Toodo plans tasks as a dependency DAG across workspaces; \
+fn render(template: &str) -> String {
+    SHARED
+        .iter()
+        .fold(template.to_owned(), |text, (name, fragment)| {
+            text.replace(&format!("{{{{{name}}}}}"), fragment.trim_end())
+        })
+}
+
+static SKILL: LazyLock<String> = LazyLock::new(|| render(include_str!("toodo-skill.md")));
+
+static INSTRUCTIONS: LazyLock<String> = LazyLock::new(|| render(INSTRUCTIONS_TEMPLATE));
+
+const INSTRUCTIONS_TEMPLATE: &str = "Toodo plans tasks as a dependency DAG across workspaces; \
 a task becomes ready only when all tasks it depends on are done.
 
 Before you work on a Toodo task or create tasks, read the toodo skill unless you \
@@ -102,16 +126,8 @@ create every task first, tell the user what you planned and why, make that \
 add_dependency call last, with all prerequisites in one call, and stop working on the \
 task after it. Use remove_dependency to drop an edge.
 4. Pick task_type by the kind of change (feat, fix, modify, refactor, docs, test, chore, \
-rnd), write a short imperative title, and put details in description. Write the \
-description in GitHub-flavored Markdown (Toodo renders it and uses it as the GitHub \
-issue body) with two sections: `## Purpose` (the outcome and why) and `## Background` \
-(context, what prompted it, related tasks, constraints). Put what has to hold for the \
-task to be done in criteria, not in the description: one verifiable item each, kind \
-manual for what is checked by hand, url or command (with target) or pr_open_ci_green \
-for what Toodo checks itself. The merge criterion comes first unless you set \
-merge_criterion false for work that ships no code. Use `-` lists, backticks for code, \
-paths, and commands, fenced code blocks, and links; no raw HTML. \
-When you split work into tasks, set estimate to your expected size of each (hours, \
+rnd), write a short imperative title, and put details in description. \
+{{task-description}} When you split work into tasks, set estimate to your expected size of each (hours, \
 days, weeks, or months of active work); the user's reviews compare it \
 with the time the task actually took. Set due_date (YYYY-MM-DD) only when the user named \
 a deadline. Set labels to the project or goal the work belongs to when the user or \
@@ -129,55 +145,19 @@ reason than a prerequisite (rule 3), call pause_task with the reason, which paus
 the app's Pause does, and resume_task to continue a paused task once the reason is gone.
 6. A tool error says what was rejected; change the arguments instead of retrying them \
 unchanged. Arguments a tool does not know are rejected with the ones it accepts.
-7. start_task, complete_task, and conclude_task act on other tasks, the way the user \
-would in the Toodo app: start a ready task (or resume a paused one) for another agent \
-session, complete a task whose completion criteria are met (which confirms one that \
-awaits completion), or conclude one that ends without a merge (research not adopted, a \
-duplicate, work no longer needed) with the reason. Never start, complete, or conclude \
-your own task, the one current_task finds: it was started for you, and meeting its \
-criteria completes it. conclude_task \
-never closes a pull request, so a task with an open one is rejected; the user concludes \
-it in the app. When one pull request ships the work of several tasks, complete each \
-extra task with complete_task and merged_with set to the task that owns the pull \
-request (or the pull request URL) once it is merged, never with conclude_task: \
-not_adopted means the work did not ship. A task already concluded that way can be \
-completed with merged_with too. For work shipped without any pull request, call \
-complete_task with without_pull_request: true and a non-empty note: the result is \
-completed, pr_merged uses that note as evidence, and every other criterion must hold.
+7. {{other-tasks}}
 8. start_task needs a worktree root, the directory that holds task worktrees, on the \
 machine of the task's workspace. list_machine_settings shows it for every machine. Set \
 a missing one with set_worktree_root to a directory the user named, or when start_task \
 reports it missing and the user tells you where worktrees go. Never change or clear a \
 root that is set unless the user asks.
-9. A task is done when its completion criteria are met. Toodo checks every kind but \
-manual itself, about once a minute: pr_merged and pr_open_ci_green from the task's pull \
-request, branch_merged_locally from the repository (for workspaces with completion local_merge, \
-where the task branch is merged into baseBranch locally and nothing is pushed), \
-url by fetching its target, and command by running its target in the task worktree once \
-every criterion but the merge criterion is met, so it can check the work before the \
-merge. Check a manual criterion of your task with \
-check_criterion once it holds, with evidence (a link, a command and its output, or what \
-you verified). Once every criterion is met, a task whose criteria are all automatic is \
-done at once; one with a manual criterion awaits completion (in_review) until the user \
-confirms it, so stop there. Add or delete one criterion with add_criterion or \
+9. {{completion}} Add or delete one criterion with add_criterion or \
 remove_criterion when the plan changes, never to make a task pass.
 
-Deleting tasks happens in the Toodo app only, not through these tools. A pull request \
-from the task branch into baseBranch moves the task to in_review, and its merge \
-completes the task. Toodo notices both at its next pull request check, which runs every \
-minute, so right after a merge the task can still read in_review for up to about a \
-minute; that is expected, not a miss. Read it again with get_task after a minute instead \
-of calling complete_task. Only a task still in_review after that needs a look: for \
-another task, complete_task says what blocks it; for your own, call report_blocker. \
-Whether you merge it yourself is set per workspace by agentMerge, \
-which current_task returns: with never (the default), stop once the pull request is \
-open and never merge it. With afterChecks, wait until every check on the pull request \
-has finished and passed (`gh pr checks <number> --watch`), fixing and pushing when one \
-fails, then merge it into baseBranch (`gh pr merge <number> --merge`, or the merge \
-method the repository allows). Even then, never merge while a check is failing or \
-pending or when the pull request has no checks, never bypass branch protection (no \
---admin), never merge a pull request into any other branch, and never release, tag, or \
-merge baseBranch onward (e.g. into main).";
+Deleting tasks happens in the Toodo app only, not through these tools. \
+{{review-timing}}
+
+{{merge-policy}}";
 
 /// What the app needs to serve the tools: the database, the adapters the app's commands
 /// run, and a way to announce changes.
@@ -522,12 +502,13 @@ impl Access {
     }
 }
 
-const CHAT_INSTRUCTIONS: &str = "Plan workspaces and tasks in Toodo. Call list_workspaces and \
+static CHAT_INSTRUCTIONS: LazyLock<String> = LazyLock::new(|| render(CHAT_TEMPLATE));
+
+const CHAT_TEMPLATE: &str = "Plan workspaces and tasks in Toodo. Call list_workspaces and \
 search_tasks before creating anything; reuse matching workspaces and open tasks, and read \
 get_task and its links for earlier decisions. Create only source none workspaces; add git \
-workspaces in the Toodo app or through a local agent. Write task descriptions in English \
-GitHub-flavored Markdown with ## Purpose and ## Background sections; put verifiable completion \
-conditions in criteria. Set estimates for split work and due dates only when the user gives \
+workspaces in the Toodo app or through a local agent. Write task descriptions in English. \
+{{task-description}} Set estimates for split work and due dates only when the user gives \
 a deadline. A dependency points from the dependent task to its prerequisites: task_id depends \
 on depends_on. Use related links for context that does not block work. Record decisions and \
 blockers in progress notes. Use the Toodo app or a local agent to implement tasks.";
@@ -698,7 +679,9 @@ impl ToodoMcp {
         description = "Return the toodo skill (Markdown): the workflow for working on a Toodo task. Read it before you work on a task or create tasks."
     )]
     fn read_toodo_skill(&self) -> Result<CallToolResult, ErrorData> {
-        Ok(CallToolResult::success(vec![ContentBlock::text(SKILL)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            SKILL.as_str(),
+        )]))
     }
 
     #[tool(description = "List Toodo workspaces (repositories) with their IDs.")]
@@ -1125,7 +1108,7 @@ impl ServerHandler for ToodoMcp {
         context.peer.set_peer_info(request.clone());
         let mut result = self.negotiate_initialize(&request)?;
         if matches!(Access::of(&context), Some(Access::OAuth(_))) {
-            result.instructions = Some(CHAT_INSTRUCTIONS.to_owned());
+            result.instructions = Some(CHAT_INSTRUCTIONS.clone());
         }
         Ok(result)
     }
@@ -1155,7 +1138,7 @@ impl ServerHandler for ToodoMcp {
                     format!("Toodo (server instance {})", self.backend.server().instance),
                 ),
             )
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(INSTRUCTIONS.as_str())
     }
 
     async fn call_tool(
@@ -1178,9 +1161,10 @@ impl ServerHandler for ToodoMcp {
                 );
             }
             if request.name == "read_toodo_skill" {
-                return Ok(
-                    CallToolResult::success(vec![ContentBlock::text(CHAT_INSTRUCTIONS)]).into(),
-                );
+                return Ok(CallToolResult::success(vec![ContentBlock::text(
+                    CHAT_INSTRUCTIONS.as_str(),
+                )])
+                .into());
             }
         }
         if let (Some(tool), Some(arguments)) = (
@@ -2527,13 +2511,29 @@ mod tests {
             assert!(!server.tool_router.has_route(tool), "{tool}");
         }
         let result = serde_json::to_value(server.read_toodo_skill().unwrap()).unwrap();
-        assert_eq!(result["content"][0]["text"], SKILL);
+        assert_eq!(result["content"][0]["text"], SKILL.as_str());
         // `lines` also drops the `\r` of a CRLF checkout on Windows.
         assert_eq!(
             SKILL.lines().take(2).collect::<Vec<_>>(),
             ["---", "name: toodo"]
         );
         assert_ne!(result["isError"], true);
+    }
+
+    #[test]
+    fn the_instructions_and_the_skill_share_each_fragment() {
+        for text in [&*SKILL, &*INSTRUCTIONS, &*CHAT_INSTRUCTIONS] {
+            assert!(!text.contains("{{"), "{text}");
+        }
+        for (name, fragment) in SHARED {
+            assert!(SKILL.contains(fragment.trim_end()), "{name}");
+            assert!(INSTRUCTIONS.contains(fragment.trim_end()), "{name}");
+        }
+        let (_, description) = SHARED
+            .iter()
+            .find(|(name, _)| *name == "task-description")
+            .unwrap();
+        assert!(CHAT_INSTRUCTIONS.contains(description.trim_end()));
     }
 
     #[test]
@@ -2744,7 +2744,7 @@ mod tests {
         let response = post_initialize(address, "Authorization: Bearer unknown\r\n");
         assert!(response.contains("error=\"invalid_token\""), "{response}");
         let response = post_initialize(address, "Authorization: Bearer read-access\r\n");
-        assert!(response.contains(CHAT_INSTRUCTIONS), "{response}");
+        assert!(response.contains(CHAT_INSTRUCTIONS.as_str()), "{response}");
         assert!(!response.contains("Call current_task"), "{response}");
 
         let list = |token| rpc_result(address, token, "tools/list", serde_json::json!({}));

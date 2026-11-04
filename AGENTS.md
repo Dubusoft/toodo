@@ -102,7 +102,9 @@ Layout:
   - `src-tauri/src/runtime/tmux/`: the tmux runner, which runs each agent in a detached
     tmux session locally or on a POSIX SSH host, and recovers sessions after a restart.
   - `src-tauri/src/mcp/`: MCP server for coding agents (rmcp over loopback HTTP with a
-    bearer token); `tools.rs` holds the tool logic over `Storage`.
+    bearer token); `tools.rs` holds the tool logic over `Storage`. Rules the `initialize`
+    instructions and the `toodo-skill.md` skill both state live once in `shared/` and are
+    filled in where a template says `{{name}}`; see `docs/agents.md`.
   - `src-tauri/src/oauth/`: OAuth authorization server for chat apps on `/mcp`, mounted
     only when `TOODO_PUBLIC_URL` is set (`routes.rs` endpoints, `clients.rs` client
     metadata documents).
