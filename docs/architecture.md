@@ -349,6 +349,10 @@ generated or guessed by an agent.
   outcome, its pull request (with its size and review count once merged), its completion
   note, and the commits it got in the period.
 - Tasks without status history appear only through their commits.
+- The commits of a task are its commit records (recorded when its branch is refreshed,
+  its pull request opens, and it completes) and the commits its git activity recorded
+  since, so a task in progress without a pull request shows its commits within a minute
+  of the background check reading its branch.
 - Work merged before Toodo tracked it can be imported from GitHub: "Import merged pull
   requests" on an empty review (`backfill_pull_requests`) records each pull request the
   signed-in `gh` user merged into the base branch of a GitHub workspace in the period as a

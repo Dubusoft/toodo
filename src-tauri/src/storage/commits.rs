@@ -39,12 +39,24 @@ impl Storage {
         Ok(records)
     }
 
-    /// Commit records of every task committed in `period`, oldest first.
+    /// Commits of every task committed in `period`, oldest first: its commit records,
+    /// and the commits its git activity recorded that are not among them yet, such as
+    /// the commits of a task in progress without a pull request. An activity commit
+    /// carries the first line of its message.
     pub fn list_commit_records_in(&self, period: Period) -> Result<Vec<CommitRecord>> {
         let mut statement = self.conn.prepare(
-            "SELECT task_id, sha, message, author, committed_at FROM commit_records
+            "SELECT task_id, sha, message, author, committed_at, 0 AS origin, position
+             FROM commit_records
              WHERE committed_at >= ?1 AND committed_at < ?2
-             ORDER BY committed_at, task_id, position",
+             UNION ALL
+             SELECT task_id, external_ref, title, COALESCE(author, ''), occurred_at, 1, id
+             FROM task_activity AS activity
+             WHERE kind = 'commit' AND occurred_at >= ?1 AND occurred_at < ?2
+               AND NOT EXISTS (
+                   SELECT 1 FROM commit_records AS record
+                   WHERE record.task_id = activity.task_id AND record.sha = activity.external_ref
+               )
+             ORDER BY committed_at, task_id, origin, position",
         )?;
         let records = statement
             .query_map([period.start(), period.end()], |row| {
