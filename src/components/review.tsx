@@ -361,8 +361,8 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
       <p role="status" className={cn("text-sm text-muted-foreground", !review.isPending && "sr-only")}>
         {review.isPending
           ? "Loading the review..."
-          : review.data
-            ? `Showing ${review.data.length} ${review.data.length === 1 ? "task" : "tasks"} with activity in this ${noun}.`
+          : entries
+            ? `Showing ${entries.length} ${entries.length === 1 ? "task" : "tasks"} with activity in this ${noun}.`
             : ""}
       </p>
       {review.isError && (
