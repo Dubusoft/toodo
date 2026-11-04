@@ -69,15 +69,17 @@ The web app lists these with `?`. Letter shortcuts do nothing while you type in 
 - For runner `tmux`: tmux on the host that runs the agent. For runner `plain` on a POSIX
   SSH host: util-linux `setsid` (with `--wait`) there
 
-See [docs/server.md](docs/server.md) to install it. On Linux x64 or arm64 (glibc) with
-Node.js, the quickest start is:
+The recommended install, on Linux x64 or arm64 (glibc) with Node.js 18 or later:
 
 ```sh
-npx @dubusoft/toodo init
+npm i -g @dubusoft/toodo
+toodo init
+toodo service install
 ```
 
-See [Install with npm](docs/server.md#install-with-npm). After `npm i -g @dubusoft/toodo`,
-`toodo update` installs the newest version and restarts the server on it.
+`toodo update` installs the newest version later and restarts the server on it. See
+[Install with npm](docs/server.md#install-with-npm), and [docs/server.md](docs/server.md)
+for installing without Node.js or from a checkout.
 
 ## End-to-End Tests
 
@@ -112,7 +114,8 @@ SQLite. See [AGENTS.md](AGENTS.md#platform-and-stack) for details.
 ## Releases
 
 A release ships `toodo-server` together with the web app; servers update with
-`scripts/install-server.sh --release latest` (see [docs/server.md](docs/server.md)).
+`toodo update`, or without npm with `scripts/install-server.sh --release latest` (see
+[docs/server.md](docs/server.md)).
 
 To publish a release:
 

@@ -86,11 +86,19 @@ failing. Packages are staged with `scripts/package-npm.mjs`.
 
 ## Install with npm
 
-On Linux x64 or arm64 with glibc (Node.js 18 or later), as the user who runs herdr (if any):
+This is the recommended way to install and update Toodo. On Linux x64 or arm64 with glibc
+(Node.js 18 or later), as the user who runs herdr (if any):
 
 ```sh
-npx @dubusoft/toodo init
+npm i -g @dubusoft/toodo
+toodo init
+toodo service install
 ```
+
+`toodo update` updates it later. To try Toodo without a global install, run
+`npx @dubusoft/toodo init`. The other ways, [from a release without npm](#install-and-update)
+and [from a checkout](#from-a-checkout), are for machines without Node.js and for
+development.
 
 `init` creates the data directory with its database and access tokens, saves the listen
 address in `cli.json` there, and starts `toodo-server` in the background. It prints the web
@@ -103,7 +111,10 @@ SSH workspaces) need it. Runner `plain` runs `claude` or `codex` from the server
 and runner `none` needs neither.
 
 - `--port N`: port to listen on, keeping the saved host (default `47616`).
-- `--listen HOST:PORT`: address to listen on (default `127.0.0.1:47616`).
+- `--listen HOST:PORT`: address to listen on (default `127.0.0.1:47616`). On an address
+  other than loopback (such as `0.0.0.0`), other machines can reach the server over plain
+  HTTP, and `init` and `service install` print a warning; keep it on loopback and reach it
+  through a tunnel instead (see [Off the Machine](#off-the-machine-cloudflare-tunnel-and-access)).
 - `--data-dir DIR`: data directory (default `$TOODO_DATA_DIR`, else the directory `init`
   recorded, else `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server`). `init`
   records the absolute path in `$XDG_CONFIG_HOME/toodo/data-dir` (`~/.config/toodo/data-dir`),
@@ -111,11 +122,7 @@ and runner `none` needs neither.
   option beats `$TOODO_DATA_DIR`, which beats the record.
 - `--no-mcp`: register the MCP endpoint with no agent.
 
-To have the `toodo` command at hand, install it globally:
-
-```sh
-npm i -g @dubusoft/toodo
-```
+The commands of a global install (`toodo COMMAND --help` shows the options of each):
 
 - `toodo start`, `toodo stop`: start or stop the server, through systemd once the service
   is installed, else as a background process with `server.pid` and `server.log` in the
@@ -171,7 +178,8 @@ or `toodo stop` and `toodo start`.
 
 ## Install and Update
 
-On a server, install and update from releases. As the user who runs herdr, if any (git, gh
+Without Node.js, install and update from releases instead of npm. As the user who runs
+herdr, if any (git, gh
 logged in, ssh, and curl installed; herdr only for runner `herdr`; no Rust toolchain needed):
 
 ```sh
