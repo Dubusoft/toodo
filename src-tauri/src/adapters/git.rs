@@ -4,7 +4,11 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::process::{Command, Stdio};
+use std::io::Read;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use base64::Engine;
 
@@ -40,33 +44,128 @@ impl fmt::Display for GitError {
 
 impl std::error::Error for GitError {}
 
+/// How long a command may run before it is stopped, unless its caller allows longer.
+pub const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How long a command that transfers a repository (`git clone`, `fetch`, `push`) may run.
+pub const TRANSFER_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+
 /// Runs an invocation and returns its standard output.
 pub trait Runner: Send + Sync {
+    /// Runs `invocation` within [`COMMAND_TIMEOUT`].
     fn run(&self, invocation: &Invocation) -> Result<String, GitError>;
+
+    /// Runs `invocation`, stopping it once it has run for `timeout`.
+    fn run_within(&self, invocation: &Invocation, timeout: Duration) -> Result<String, GitError> {
+        let _ = timeout;
+        self.run(invocation)
+    }
 }
 
 pub struct ProcessRunner;
 
 impl Runner for ProcessRunner {
     fn run(&self, invocation: &Invocation) -> Result<String, GitError> {
+        self.run_within(invocation, COMMAND_TIMEOUT)
+    }
+
+    fn run_within(&self, invocation: &Invocation, timeout: Duration) -> Result<String, GitError> {
+        let deadline = Instant::now() + timeout;
         let mut command = Command::new(invocation.program);
         command
             .args(&invocation.args)
             // Fail instead of waiting for input on a terminal the user cannot see.
             .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(Stdio::null());
-        let output = command.output().map_err(|error| GitError::Spawn {
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // Its own process group, so a timeout also stops what it started (e.g. the `ssh`
+        // of a `git fetch`), which would otherwise keep the output pipes open.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        let mut child = command.spawn().map_err(|error| GitError::Spawn {
             program: invocation.program.to_owned(),
             message: error.to_string(),
         })?;
-        if !output.status.success() {
+        let stdout = read_in_background(child.stdout.take());
+        let stderr = read_in_background(child.stderr.take());
+        let timed_out = |child: &mut Child| {
+            stop(child);
+            GitError::Failed {
+                command: describe(invocation),
+                stderr: format!(
+                    "stopped after {} seconds without finishing; check that the host it \
+                     runs on or connects to is reachable (for an SSH host, `ssh <host> true` \
+                     must succeed without a prompt), then retry",
+                    timeout.as_secs()
+                ),
+            }
+        };
+        // Both pipes close when the process and everything it started have exited.
+        let Some(stdout) = receive_until(&stdout, deadline) else {
+            return Err(timed_out(&mut child));
+        };
+        let Some(stderr) = receive_until(&stderr, deadline) else {
+            return Err(timed_out(&mut child));
+        };
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() >= deadline => return Err(timed_out(&mut child)),
+                // The output is closed, so the process is about to exit.
+                Ok(None) => thread::sleep(Duration::from_millis(5)),
+                Err(error) => {
+                    return Err(GitError::Spawn {
+                        program: invocation.program.to_owned(),
+                        message: error.to_string(),
+                    });
+                }
+            }
+        };
+        if !status.success() {
             return Err(GitError::Failed {
                 command: describe(invocation),
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+                stderr: String::from_utf8_lossy(&stderr).trim().to_owned(),
             });
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        Ok(String::from_utf8_lossy(&stdout).into_owned())
     }
+}
+
+/// Reads `pipe` to its end on another thread; the receiver gets everything it read.
+fn read_in_background(pipe: Option<impl Read + Send + 'static>) -> mpsc::Receiver<Vec<u8>> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            // A read error ends the output early; the exit status still tells the result.
+            let _ = pipe.read_to_end(&mut bytes);
+        }
+        let _ = sender.send(bytes);
+    });
+    receiver
+}
+
+/// What `receiver` gets before `deadline`, or `None` when nothing came in time.
+fn receive_until(receiver: &mpsc::Receiver<Vec<u8>>, deadline: Instant) -> Option<Vec<u8>> {
+    receiver
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .ok()
+}
+
+/// Kills `child` with the processes it started, and reaps it.
+fn stop(child: &mut Child) {
+    #[cfg(unix)]
+    if let Ok(group) = libc::pid_t::try_from(child.id()) {
+        // The child leads its own process group (see `run_within`) and is not reaped
+        // yet, so the group ID cannot belong to anything else.
+        // SAFETY: kill only sends a signal.
+        unsafe {
+            libc::kill(-group, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 pub(super) fn describe(invocation: &Invocation) -> String {
@@ -182,17 +281,43 @@ pub(crate) fn powershell_command(script: &str) -> String {
     )
 }
 
-/// `ssh` running `remote` on `machine` without prompting for passwords or host keys.
+/// Options of every `ssh` Toodo runs: never prompt for passwords or host keys, give up on
+/// a host that does not answer within 10 seconds, and drop a connection whose host stops
+/// answering for 45 seconds.
+pub(crate) const SSH_OPTIONS: [&str; 8] = [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=10",
+    "-o",
+    "ServerAliveInterval=15",
+    "-o",
+    "ServerAliveCountMax=3",
+];
+
+/// Options that make short `ssh` commands to one host share a single connection, which
+/// OpenSSH keeps for a minute after the last, so only the first pays for the handshake.
+pub(crate) const SSH_SHARED_CONNECTION: [&str; 6] = [
+    "-o",
+    "ControlMaster=auto",
+    "-o",
+    "ControlPath=~/.ssh/toodo-%C",
+    "-o",
+    "ControlPersist=60",
+];
+
+/// `ssh` running `remote` on `machine` over the connection shared by Toodo's commands to
+/// it, with [`SSH_OPTIONS`].
 pub(super) fn ssh_invocation(machine: &MachineLabel, remote: String) -> Invocation {
     Invocation {
         program: "ssh",
-        args: vec![
-            "-o".to_owned(),
-            "BatchMode=yes".to_owned(),
-            "--".to_owned(),
-            machine.as_str().to_owned(),
-            remote,
-        ],
+        args: SSH_OPTIONS
+            .iter()
+            .chain(&SSH_SHARED_CONNECTION)
+            .chain(&["--", machine.as_str()])
+            .map(|arg| (*arg).to_owned())
+            .chain([remote])
+            .collect(),
     }
 }
 
@@ -900,7 +1025,11 @@ impl Git {
                 ssh_invocation(machine, remote)
             }
         };
-        self.runner.run(&invocation)
+        let timeout = match args.first() {
+            Some(&("clone" | "fetch" | "push")) => TRANSFER_TIMEOUT,
+            _ => COMMAND_TIMEOUT,
+        };
+        self.runner.run_within(&invocation, timeout)
     }
 }
 
@@ -1031,6 +1160,26 @@ pub mod fake {
                 .pop_front()
                 .expect("unexpected git invocation")
         }
+    }
+
+    /// The arguments of [`ssh_invocation`] to `host` before the remote command.
+    pub fn ssh_args(host: &str) -> Vec<String> {
+        SSH_OPTIONS
+            .iter()
+            .chain(&SSH_SHARED_CONNECTION)
+            .chain(&["--", host])
+            .map(|arg| (*arg).to_owned())
+            .collect()
+    }
+
+    /// The arguments of an `ssh` to `host` with its own connection, as runs use, before
+    /// the remote command.
+    pub fn run_ssh_args(host: &str) -> Vec<String> {
+        SSH_OPTIONS
+            .iter()
+            .chain(&["--", host])
+            .map(|arg| (*arg).to_owned())
+            .collect()
     }
 
     pub fn failed() -> GitError {
@@ -1187,9 +1336,9 @@ mod tests {
         assert!(git.worktree_exists(&repo, &path).is_err());
         let calls = runner.invocations.lock().unwrap();
         assert_eq!(calls[0].program, "ssh");
-        assert_eq!(calls[0].args[3], "devbox");
+        assert_eq!(calls[0].args[calls[0].args.len() - 2], "devbox");
         assert_eq!(
-            calls[0].args[4],
+            calls[0].args.last().unwrap(),
             "git '-C' '/srv/repo' 'worktree' 'list' '--porcelain' '-z'"
         );
     }
@@ -1200,10 +1349,10 @@ mod tests {
         assert_eq!(invocations.len(), 1);
         assert_eq!(invocations[0].program, "ssh");
         assert_eq!(
-            invocations[0].args[..4],
-            ["-o", "BatchMode=yes", "--", "devbox"]
+            invocations[0].args[..invocations[0].args.len() - 1],
+            crate::adapters::git::fake::ssh_args("devbox")
         );
-        fake::decode_powershell(&invocations[0].args[4])
+        fake::decode_powershell(invocations[0].args.last().unwrap())
     }
 
     #[test]
@@ -1238,7 +1387,11 @@ mod tests {
         let (git, runner) = git(vec![Ok(String::new())]);
         git.clone_repository("git@host:o/a.git", &remote(r"D:\dev\it's here"))
             .unwrap();
-        let invocation = runner.invocations.lock().unwrap()[0].args[4].clone();
+        let invocation = runner.invocations.lock().unwrap()[0]
+            .args
+            .last()
+            .unwrap()
+            .clone();
         // Nothing a cmd.exe or PowerShell login shell would interpret.
         assert!(
             invocation
@@ -1423,13 +1576,10 @@ mod tests {
             runner.invocations.lock().unwrap()[0],
             Invocation {
                 program: "ssh",
-                args: args(&[
-                    "-o",
-                    "BatchMode=yes",
-                    "--",
-                    "devbox",
-                    r"git 'clone' '--' 'git@host:o/a.git' '/srv/it'\''s'",
-                ]),
+                args: fake::ssh_args("devbox")
+                    .into_iter()
+                    .chain([r"git 'clone' '--' 'git@host:o/a.git' '/srv/it'\''s'".to_owned()])
+                    .collect(),
             }
         );
     }
@@ -1699,11 +1849,11 @@ mod tests {
         );
         let invocations = runner.invocations.lock().unwrap();
         assert_eq!(
-            invocations[0].args[4],
+            invocations[0].args.last().unwrap(),
             "git '-C' '/wt/a/feat-x-1' 'push' '--set-upstream' 'origin' 'feat/x-1'"
         );
         assert_eq!(
-            invocations[1].args[4],
+            invocations[1].args.last().unwrap(),
             "git '-C' '/wt/a/feat-x-1' 'remote' 'get-url' 'origin'"
         );
     }
@@ -1824,7 +1974,7 @@ mod tests {
             Err(failed())
         );
         assert_eq!(
-            runner.invocations.lock().unwrap()[3].args[4],
+            runner.invocations.lock().unwrap()[3].args.last().unwrap(),
             "git '-C' '/srv/a' 'branch' '-D' 'release'"
         );
     }
@@ -1929,5 +2079,81 @@ mod tests {
             }
             other => panic!("expected a failed command, got {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_runner_stops_commands_that_run_past_the_timeout() {
+        // The background `sleep` keeps the output open after `sh` itself is stopped.
+        let invocation = Invocation {
+            program: "sh",
+            args: args(&["-c", "sleep 30 & sleep 30"]),
+        };
+        let started = std::time::Instant::now();
+        match ProcessRunner.run_within(&invocation, Duration::from_millis(300)) {
+            Err(GitError::Failed { command, stderr }) => {
+                assert_eq!(command, "sh -c sleep 30 & sleep 30");
+                assert!(stderr.contains("stopped after 0 seconds"), "{stderr}");
+                assert!(stderr.contains("then retry"), "{stderr}");
+            }
+            other => panic!("expected a stopped command, got {other:?}"),
+        }
+        assert!(started.elapsed() < Duration::from_secs(10));
+
+        let quick = Invocation {
+            program: "sh",
+            args: args(&["-c", "echo done"]),
+        };
+        assert_eq!(
+            ProcessRunner.run_within(&quick, Duration::from_secs(30)),
+            Ok("done\n".to_owned())
+        );
+    }
+
+    #[test]
+    fn ssh_commands_share_a_connection_and_give_up_on_unreachable_hosts() {
+        let invocation = ssh_invocation(&MachineLabel::parse("devbox").unwrap(), "true".into());
+        let options: Vec<_> = invocation
+            .args
+            .chunks(2)
+            .take_while(|pair| pair[0] == "-o")
+            .map(|pair| pair[1].as_str())
+            .collect();
+        for option in [
+            "BatchMode=yes",
+            "ConnectTimeout=10",
+            "ControlMaster=auto",
+            "ControlPath=~/.ssh/toodo-%C",
+        ] {
+            assert!(options.contains(&option), "{options:?}");
+        }
+        assert_eq!(
+            invocation.args[invocation.args.len() - 3..],
+            ["--", "devbox", "true"]
+        );
+    }
+
+    #[test]
+    fn transfers_get_the_longer_timeout() {
+        #[derive(Default)]
+        struct Timeouts(std::sync::Mutex<Vec<Duration>>);
+        impl Runner for Arc<Timeouts> {
+            fn run(&self, _: &Invocation) -> Result<String, GitError> {
+                unreachable!("git passes a timeout")
+            }
+            fn run_within(&self, _: &Invocation, timeout: Duration) -> Result<String, GitError> {
+                self.0.lock().unwrap().push(timeout);
+                Ok(String::new())
+            }
+        }
+        let timeouts = Arc::new(Timeouts::default());
+        let git = Git::new(Box::new(timeouts.clone()));
+        git.clone_repository("https://example.com/a.git", &remote("/srv/a"))
+            .unwrap();
+        git.has_origin(&local(r"C:\dev\a")).unwrap();
+        assert_eq!(
+            *timeouts.0.lock().unwrap(),
+            [TRANSFER_TIMEOUT, COMMAND_TIMEOUT]
+        );
     }
 }

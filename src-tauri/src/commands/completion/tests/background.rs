@@ -1,4 +1,10 @@
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
 use super::*;
+use crate::adapters::git::Runner;
+use crate::commands::completion::background::check_pull_requests_on;
 
 #[test]
 fn a_merged_pull_request_completes_its_task_automatically() {
@@ -529,4 +535,112 @@ fn a_herdr_failure_keeps_the_task_in_review() {
     after.criteria = before.criteria.clone();
     assert_eq!(after, before);
     assert!(!dependent_ready(&fixture));
+}
+
+/// Holds every command until `release` is dropped, then fails it; `entered` hears of
+/// each command.
+struct Stalled {
+    entered: Mutex<mpsc::Sender<()>>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl Runner for Arc<Stalled> {
+    fn run(&self, _: &Invocation) -> Result<String, GitError> {
+        let _ = self.entered.lock().unwrap().send(());
+        let _ = self.release.lock().unwrap().recv();
+        Err(failed())
+    }
+}
+
+#[test]
+fn a_stalled_machine_does_not_hold_up_the_checks_of_another() {
+    let fixture = in_review_fixture();
+    let remote = {
+        let mut storage = lock(&fixture.storage);
+        let workspace = storage
+            .create_workspace(&NewWorkspace {
+                name: "api".to_owned(),
+                location: WorkspaceLocation::Ssh {
+                    machine: MachineLabel::parse("devbox").unwrap(),
+                    path: PosixPath::parse("/srv/api").unwrap().into(),
+                },
+                default_base_branch: "main".to_owned(),
+                source: model::Source::GitHub,
+                completion: model::CompletionMode::PullRequestMerge,
+                runner: model::Runner::Herdr,
+                axes_detected: true,
+            })
+            .unwrap();
+        let task = storage
+            .create_task(&NewTask {
+                workspace_id: workspace.id,
+                task_type: TaskType::Feat,
+                title: "Add api".to_owned(),
+                description: String::new(),
+                estimate: None,
+                due_date: None,
+                criteria: vec![NewCriterion::merge(true)],
+            })
+            .unwrap();
+        let checkout = TaskCheckout {
+            path: PosixPath::parse("/wt/api/feat-add-api-3").unwrap().into(),
+            branch: "feat/add-api-3".to_owned(),
+        };
+        storage.start_task(task.id, &checkout, "w30").unwrap()
+    };
+    let (entered_sender, entered) = mpsc::channel();
+    let (release, released) = mpsc::channel::<()>();
+    let stalled = Arc::new(Stalled {
+        entered: Mutex::new(entered_sender),
+        release: Mutex::new(released),
+    });
+    let devbox = model::Machine::Ssh(MachineLabel::parse("devbox").unwrap());
+    let statuses = PullRequestStatusState::default();
+    let gh_runner = runner(vec![viewed("MERGED", "main"), merged_details(&[])]);
+    let (herdr, _) = closing_herdr();
+    let storage = &fixture.storage;
+    let statuses = &statuses;
+
+    let local_check = thread::scope(|scope| {
+        let remote_check = scope.spawn(|| {
+            check_pull_requests_on(
+                Some(&devbox),
+                storage,
+                &Git::new(Box::new(stalled.clone())),
+                &GhCli::new(Box::new(stalled.clone())),
+                &no_herdr(),
+                &Recorder::default(),
+                &mut HashMap::new(),
+                None,
+                statuses,
+            );
+        });
+        entered
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the check of devbox runs a command there");
+        let (finished, local_done) = mpsc::channel();
+        scope.spawn(move || {
+            check_pull_requests_on(
+                Some(&model::Machine::Local),
+                storage,
+                &worktree_git(),
+                &GhCli::new(Box::new(gh_runner.clone())),
+                &herdr,
+                &Recorder::default(),
+                &mut HashMap::new(),
+                None,
+                statuses,
+            );
+            let _ = finished.send(());
+        });
+        // Released before asserting, so a check that waits for the stalled one ends too.
+        let local_check = local_done.recv_timeout(Duration::from_secs(10));
+        drop(release);
+        remote_check.join().unwrap();
+        local_check
+    });
+
+    assert_eq!(local_check, Ok(()), "the local check waited for devbox");
+    assert_eq!(stored(&fixture, &fixture.task).status, TaskStatus::Done);
+    assert_eq!(stored(&fixture, &remote).status, TaskStatus::InProgress);
 }

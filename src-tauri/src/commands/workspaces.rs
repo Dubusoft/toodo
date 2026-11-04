@@ -1166,8 +1166,14 @@ mod tests {
         assert_eq!(moved.location, winpc(r"C:\dev\toodo"));
         assert_eq!(moved.path_problem, None);
         assert_eq!(invocations.len(), 1);
-        assert_eq!(invocations[0].args[3], "winpc");
-        assert!(invocations[0].args[4].starts_with("powershell "));
+        assert_eq!(invocations[0].args[invocations[0].args.len() - 2], "winpc");
+        assert!(
+            invocations[0]
+                .args
+                .last()
+                .unwrap()
+                .starts_with("powershell ")
+        );
         assert_eq!(
             herdr_invocations[2].args[..5],
             ["--machine", "m1", "workspace", "create", "--cwd"].map(str::to_owned)

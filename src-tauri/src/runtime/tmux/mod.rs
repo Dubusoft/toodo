@@ -735,13 +735,12 @@ fn script_invocation(host: &Host, script: String) -> Invocation {
         },
         Host::Ssh { target, .. } => Invocation {
             program: "ssh",
-            args: vec![
-                "-o".into(),
-                "BatchMode=yes".into(),
-                "--".into(),
-                target.as_str().into(),
-                format!("sh -c {}", shell_quote(&script)),
-            ],
+            args: crate::adapters::git::SSH_OPTIONS
+                .iter()
+                .chain(&["--", target.as_str()])
+                .map(|arg| (*arg).to_owned())
+                .chain([format!("sh -c {}", shell_quote(&script))])
+                .collect(),
         },
     }
 }
