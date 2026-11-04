@@ -1015,12 +1015,12 @@ fn invocation(args: &[&str]) -> Invocation {
 }
 
 /// The next step when `gh` cannot be started.
-const GH_MISSING: &str = "install the GitHub CLI (https://cli.github.com) on the PATH of the \
+pub(crate) const GH_MISSING: &str = "install the GitHub CLI (https://cli.github.com) on the PATH of the \
      user that runs toodo-server and run `gh auth login` as that user, then retry; or add the \
      repository as a workspace with source `local_git`, which does not need gh";
 
 /// The next step when `gh` runs but has no valid login.
-const GH_LOGGED_OUT: &str = "gh is not logged in: run `gh auth login` as the user that runs \
+pub(crate) const GH_LOGGED_OUT: &str = "gh is not logged in: run `gh auth login` as the user that runs \
      toodo-server (`gh auth login --hostname <host>` for a GitHub Enterprise host, or set \
      `GH_TOKEN` or `GH_ENTERPRISE_TOKEN` in its environment), then retry; or add the repository \
      as a workspace with source `local_git`, which does not need gh";

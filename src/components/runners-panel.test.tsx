@@ -19,6 +19,11 @@ function ok<T>(data: T) {
 const ready: RunnerHealth = {
   herdr: { installed: true, running: true, version: "0.9.5", message: null },
   tmux: { installed: true, version: "tmux 3.6", message: null },
+  tools: [
+    { tool: "git", installed: true, ready: true, version: "git version 2.43.0", message: null },
+    { tool: "gh", installed: true, ready: true, version: "gh version 2.83.0", message: null },
+    { tool: "ssh", installed: true, ready: true, version: "OpenSSH_9.6p1", message: null },
+  ],
   agents: [
     { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
     { adapter: "codex", installed: true, path: "/home/me/.local/bin/codex", message: null },
@@ -59,7 +64,12 @@ describe("RunnersPanel", () => {
       "tmux",
       "Claude",
       "Codex",
+      "git",
+      "gh",
+      "ssh",
     ]);
+    expect(within(row("git")).getByText("Ready")).toBeInTheDocument();
+    expect(row("git")).toHaveTextContent("git version 2.43.0");
     expect(within(row("herdr")).getByText("Running")).toBeInTheDocument();
     expect(row("herdr")).toHaveTextContent("v0.9.5");
     expect(within(row("tmux")).getByText("Installed")).toBeInTheDocument();
@@ -71,11 +81,31 @@ describe("RunnersPanel", () => {
     expect(screen.getByRole("region", { name: "Runners" })).toHaveTextContent("Runner plain works without herdr.");
   });
 
+  it("shows gh as not logged in with the step to log in", async () => {
+    const loggedOut = "gh is not logged in: run `gh auth login` as the user that runs toodo-server, then retry.";
+    mocked.runnerHealth.mockResolvedValue(
+      ok({
+        ...ready,
+        tools: ready.tools.map((tool) => (tool.tool === "gh" ? { ...tool, ready: false, message: loggedOut } : tool)),
+      }),
+    );
+    renderPanel();
+
+    await screen.findByRole("list", { name: "Runners on this server" });
+    expect(within(row("gh")).getByText("Not logged in")).toBeInTheDocument();
+    expect(row("gh")).toHaveTextContent(loggedOut);
+  });
+
   it("shows the server's next step for each runner that is not ready", async () => {
     mocked.runnerHealth.mockResolvedValue(
       ok({
         herdr: { installed: false, running: false, version: null, message: herdrMissing },
         tmux: { installed: true, version: "tmux 3.6", message: null },
+        tools: [
+          { tool: "git", installed: true, ready: true, version: "git version 2.43.0", message: null },
+          { tool: "gh", installed: true, ready: true, version: "gh version 2.83.0", message: null },
+          { tool: "ssh", installed: true, ready: true, version: "OpenSSH_9.6p1", message: null },
+        ],
         agents: [ready.agents[0], { adapter: "codex", installed: false, path: null, message: codexMissing }],
       }),
     );

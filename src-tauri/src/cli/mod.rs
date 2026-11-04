@@ -12,6 +12,7 @@ mod process;
 mod review;
 mod service;
 mod settings;
+mod tools;
 mod update;
 
 use std::net::SocketAddr;
@@ -45,7 +46,8 @@ to it.
 Commands:
   init             create the data directory, its database and access tokens, save the
                    listen address, start the server, and register its MCP endpoint with
-                   Claude Code and Codex where they are on PATH
+                   Claude Code and Codex where they are on PATH; then check git,
+                   gh, ssh, herdr, tmux, and the agent CLIs and print what is missing
   start            start the server in the background (through systemd or launchd once
                    installed), and register its MCP endpoint again with the agents init
                    registered it with, so they get a replaced token
@@ -98,7 +100,8 @@ fn command_help(command: &str) -> String {
             "toodo init [--port N | --listen HOST:PORT] [--data-dir DIR] [--no-mcp]",
             "Creates the data directory, its database and access tokens, saves the listen
 address, starts the server, and registers its MCP endpoint with Claude Code and Codex
-where they are on PATH. Running it again keeps the database and tokens.",
+where they are on PATH. Then it checks git, gh, ssh, herdr, tmux, and the agent CLIs
+and prints what is missing. Running it again keeps the database and tokens.",
             format!(
                 "{LISTEN_OPTIONS}\n{DATA_DIR_OPTION}\n  --no-mcp            do not register the MCP \
                  endpoint with coding agents"
@@ -516,6 +519,15 @@ fn init(args: &InitArgs, var: Var) -> Result<(), String> {
         }
     } else {
         println!("MCP: not registered with any agent (--no-mcp)");
+    }
+
+    println!(
+        "
+Tools on this machine (the web app shows the server's view in Settings > Runners):"
+    );
+    let herdr = crate::adapters::herdr::Herdr::new(Box::new(crate::adapters::git::ProcessRunner));
+    for line in tools::report(&crate::commands::runners::check(&herdr)) {
+        println!("{line}");
     }
 
     let web_token = data.web_token();

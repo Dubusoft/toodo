@@ -306,8 +306,9 @@ export const commands = {
 	 */
 	setWorkspacePullRequestOptions: (workspaceId: WorkspaceId, options: PullRequestOptions) => typedError<PullRequestOptions, CommandError>(invoke("set_workspace_pull_request_options", { workspaceId, options })),
 	/**
-	 *  Reports whether herdr is installed and running, whether tmux runs, and whether the
-	 *  `claude` and `codex` CLIs of plain and tmux runs are on the server's `PATH`.
+	 *  Reports whether herdr is installed and running, whether tmux runs, whether the
+	 *  `claude` and `codex` CLIs of plain and tmux runs are on the server's `PATH`, whether
+	 *  git and ssh run, and whether gh runs and is logged in.
 	 */
 	runnerHealth: () => typedError<RunnerHealth, CommandError>(invoke("runner_health")),
 	/**
@@ -1329,7 +1330,7 @@ export type Runner =
 
 /**
  *  What the server can run tasks with: herdr for herdr workspaces, and the agent CLIs of
- *  plain runs.
+ *  plain runs, together with the other tools it runs: git, gh, and ssh.
  */
 export type RunnerHealth = {
 	herdr: HerdrHealth,
@@ -1337,6 +1338,8 @@ export type RunnerHealth = {
 	tmux: TmuxHealth,
 	/**  Claude, then Codex. */
 	agents: AgentHealth[],
+	/**  git, then gh, then ssh. */
+	tools: ToolHealth[],
 };
 
 /**
@@ -1664,6 +1667,27 @@ export type TmuxHealth = {
 	/**  The version `tmux -V` printed, such as `tmux 3.4`. */
 	version: string | null,
 	/**  What to do next when tmux cannot run; `None` when it can. */
+	message: string | null,
+};
+
+/**  A command-line tool the server runs besides the runners. */
+export type Tool = 
+/**  git, for local workspaces with a repository. */
+"git" | 
+/**  The GitHub CLI, for the pull requests of workspaces with source `github`. */
+"gh" | 
+/**  OpenSSH, for workspaces on SSH machines. */
+"ssh";
+
+export type ToolHealth = {
+	tool: Tool,
+	/**  Whether the tool ran from the server's `PATH`. */
+	installed: boolean,
+	/**  Whether the tool can do its work: installed, and for gh also logged in. */
+	ready: boolean,
+	/**  The version the tool printed, such as `git version 2.43.0`. */
+	version: string | null,
+	/**  Why the tool is not ready and what to do next; `None` when it is ready. */
 	message: string | null,
 };
 

@@ -23,7 +23,7 @@ import { AgentAccessStatus } from "@/components/agent-access-panel";
 import { BackupStatusLabel } from "@/components/backup-panel";
 import { CommandPalette, ShortcutsDialog, type PaletteCommand } from "@/components/command-palette";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { HerdrBanner } from "@/components/herdr-banner";
+import { ToolHealthBanner } from "@/components/tool-health-banner";
 import { InstallBanner } from "@/components/install-banner";
 import { NeedsAttention } from "@/components/needs-attention";
 import { PrerequisiteChecklist } from "@/components/prerequisite-checklist";
@@ -327,7 +327,7 @@ export default function App() {
         <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6 print:block print:overflow-visible print:p-0">
           <div className="contents print:hidden">
             <InstallBanner />
-            <HerdrBanner />
+            <ToolHealthBanner />
           </div>
           <ErrorBoundary label="this view" resetKey={reviewing ? "review" : showingAll ? "all" : selected?.id}>
             {reviewing ? (

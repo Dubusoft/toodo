@@ -105,6 +105,11 @@ const mockedEvents = vi.mocked(events, { deep: true });
 const readyRunners: RunnerHealth = {
   herdr: { installed: true, running: true, version: "0.9.3", message: null },
   tmux: { installed: true, version: "tmux 3.6", message: null },
+  tools: [
+    { tool: "git", installed: true, ready: true, version: "git version 2.43.0", message: null },
+    { tool: "gh", installed: true, ready: true, version: "gh version 2.83.0", message: null },
+    { tool: "ssh", installed: true, ready: true, version: "OpenSSH_9.6p1", message: null },
+  ],
   agents: [
     { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
     { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
@@ -2048,6 +2053,40 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: "Start #1" })).toBeEnabled();
     await waitFor(() => expect(mocked.herdrStatus).toHaveBeenCalled());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("names a tool a workspace needs that is not ready, with its next step", async () => {
+    const loggedOut = "`gh auth status` failed (You are not logged into any GitHub hosts); gh is not logged in: run `gh auth login` as the user that runs toodo-server, then retry.";
+    const tools = readyRunners.tools.map((tool) =>
+      tool.tool === "gh" ? { ...tool, ready: false, message: loggedOut } : tool,
+    );
+    mocked.runnerHealth.mockResolvedValue({ status: "ok", data: { ...readyRunners, tools } });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    await renderWorkspace();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("gh is not available");
+    expect(alert).toHaveTextContent("run `gh auth login` as the user that runs toodo-server");
+
+    mocked.runnerHealth.mockResolvedValue({ status: "ok", data: readyRunners });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
+
+  it("lists every tool that is not ready and skips the ones no workspace needs", async () => {
+    const tools = readyRunners.tools.map((tool) => ({ ...tool, installed: false, ready: false, message: `install ${tool.tool}` }));
+    mocked.runnerHealth.mockResolvedValue({ status: "ok", data: { ...readyRunners, tools } });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    await renderWorkspace();
+
+    // toodo is a local GitHub workspace: it needs git and gh, but not ssh.
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("git, gh are not available");
+    expect(alert).toHaveTextContent("git: install git");
+    expect(alert).toHaveTextContent("gh: install gh");
+    expect(alert).not.toHaveTextContent("install ssh");
   });
 
   it("saves the worktree root for the machine of the workspace", async () => {
