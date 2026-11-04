@@ -42,6 +42,14 @@ whose pull request is merged. [docs/runners.md](docs/runners.md) helps you pick 
 of a workspace, and [docs/troubleshooting.md](docs/troubleshooting.md) covers the errors
 new setups run into most.
 
+## Plan
+
+**Plan** in the "All workspaces" view sums the estimates of tasks per quarter or year of
+their due dates. Set a capacity per quarter and every period that holds more work than
+it is highlighted as over capacity; tasks without an estimate or due date are listed so
+you can fill them in. [docs/architecture.md](docs/architecture.md#plan-view) has the
+rules.
+
 ## Review
 
 **Review** in the sidebar reports the work recorded in a week, month, quarter, year, or a

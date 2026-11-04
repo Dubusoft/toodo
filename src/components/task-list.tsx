@@ -37,6 +37,8 @@ import { AgentMergeSetting, BaseBranchForm, RunLimitForm, WorktreeRootForm } fro
 import { WorkspaceAgentOptions } from "@/components/agent-options";
 import { WorkspacePullRequestOptions } from "@/components/pull-request-options";
 import { type TaskDraft, emptyDraft, NewTaskForm } from "@/components/new-task-form";
+import { PlanView } from "@/components/plan-view";
+import type { AllView } from "@/lib/route";
 
 // The timeline pulls in React Flow, so it loads only when it is first shown.
 const TaskGraph = lazy(() => import("@/components/task-graph").then((module) => ({ default: module.TaskGraph })));
@@ -74,8 +76,8 @@ export function TaskList({
 }: {
   workspace: Workspace | null;
   /** The view of every workspace's tasks; a workspace only has the list. */
-  view?: "list" | "timeline";
-  onViewChange?: (view: "list" | "timeline") => void;
+  view?: AllView;
+  onViewChange?: (view: AllView) => void;
   /** The task whose details are open, owned by the caller so the address keeps it. */
   selectedTask: TaskId | null;
   onSelectTask: (id: TaskId | null) => void;
@@ -112,6 +114,9 @@ export function TaskList({
   const tasks =
     workspace === null ? allTasks.data : allTasks.data?.filter((task) => task.workspaceId === workspace.id);
   const showTimeline = workspace === null && view === "timeline";
+  const showPlan = workspace === null && view === "plan";
+  // The timeline and the plan can be narrowed to one workspace.
+  const narrowable = showTimeline || showPlan;
   const taskFilter = chosenFilter ?? (showTimeline ? defaultTaskFilter : emptyTaskFilter);
   // Workspaces the timeline can be narrowed to; a filter whose workspace has no tasks left falls back to all.
   const filterOptions = [...new Set(allTasks.data?.map((task) => task.workspaceId))].sort((a, b) =>
@@ -120,7 +125,7 @@ export function TaskList({
   const filter = timelineWorkspace !== null && filterOptions.includes(timelineWorkspace) ? timelineWorkspace : null;
   // Narrowings in effect, counted on the folded filters button: workspace, search, status, and type.
   const activeFilters = [
-    showTimeline && filter !== null,
+    narrowable && filter !== null,
     taskFilter.query.trim() !== "",
     taskFilter.statuses.length > 0,
     taskFilter.type !== null,
@@ -135,12 +140,12 @@ export function TaskList({
   const filtered = tasks?.filter(
     (task) =>
       task !== numbered &&
-      (!showTimeline || filter === null || task.workspaceId === filter) &&
+      (!narrowable || filter === null || task.workspaceId === filter) &&
       matchesFilter(task, taskFilter, context.byId),
   );
   const timelineTasks = numbered === undefined ? (filtered ?? []) : [numbered, ...(filtered ?? [])];
   // Older finished tasks load on request, offered wherever finished tasks are shown.
-  const finishedShown = showTimeline
+  const finishedShown = narrowable
     ? taskFilter.statuses.length === 0 || taskFilter.statuses.some((status) => status === "done" || status === "not_adopted")
     : (doneShown ?? isFilterActive(taskFilter));
   const shownTaskData = shownTask === null ? undefined : context.byId.get(shownTask.id);
@@ -240,7 +245,7 @@ export function TaskList({
           <div className="flex flex-wrap items-center gap-2">
             {workspace === null && (
               <div role="group" aria-label="Task view" className="flex gap-1 max-md:gap-2">
-                {(["timeline", "list"] as const).map((option) => (
+                {(["timeline", "list", "plan"] as const).map((option) => (
                   <Button
                     key={option}
                     size="xs"
@@ -248,7 +253,7 @@ export function TaskList({
                     aria-pressed={view === option}
                     onClick={() => onViewChange?.(option)}
                   >
-                    {option === "list" ? "List" : "Timeline"}
+                    {option === "list" ? "List" : option === "plan" ? "Plan" : "Timeline"}
                   </Button>
                 ))}
               </div>
@@ -271,9 +276,9 @@ export function TaskList({
               )}
             </Button>
             <div id="task-filters" className={cn("contents", !filtersOpen && "max-md:hidden")}>
-              {showTimeline && (
+              {narrowable && (
                 <select
-                  aria-label="Timeline workspace"
+                  aria-label={showPlan ? "Plan workspace" : "Timeline workspace"}
                   className={compactSelectClass}
                   value={filter ?? "all"}
                   onChange={(event) =>
@@ -299,6 +304,9 @@ export function TaskList({
             />
           ) : !showTimeline ? (
             <>
+            {showPlan ? (
+              <PlanView tasks={timelineTasks} onShowTask={setDetailId} />
+            ) : (
             <div role="region" aria-label="Tasks" className="flex flex-col gap-4">
               {numbered && (
                 <section aria-label="Task number match" className="flex flex-col gap-2">
@@ -363,6 +371,7 @@ export function TaskList({
                 );
               })}
             </div>
+            )}
               {detailId !== null && context.byId.has(detailId) && (
                 <Suspense fallback={<p className="text-sm text-muted-foreground">Loading details...</p>}>
                   <TaskDetailsSheet onClose={() => setDetailId(null)}>
