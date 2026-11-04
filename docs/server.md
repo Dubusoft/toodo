@@ -94,25 +94,39 @@ configure it. Until then the workflow leaves that package out with a notice, and
 
 ## Install with npm
 
-On Linux x64 or arm64 (glibc or musl) or macOS x64 or arm64 (Node.js 18 or later), as the
-user who runs herdr (if any):
+This is the recommended way to install and update Toodo. On Linux x64 or arm64 (glibc or
+musl) or macOS x64 or arm64 (Node.js 18 or later), as the user who runs herdr (if any):
 
 ```sh
-npx @dubusoft/toodo init
+npm i -g @dubusoft/toodo
+toodo init
+toodo service install
 ```
+
+`toodo update` updates it later. To try Toodo without a global install, run
+`npx @dubusoft/toodo init`. The other ways, [from a release without npm](#install-and-update)
+and [from a checkout](#from-a-checkout), are for machines without Node.js and for
+development.
 
 `init` creates the data directory with its database and access tokens, saves the listen
 address in `cli.json` there, and starts `toodo-server` in the background. It prints the web
 app URL and the file that holds the web access token (`cat` it to sign in), and the MCP
 URL with its token file. Where `claude` is on `PATH` it registers the MCP endpoint with
-`claude mcp add`; where `codex` is on `PATH` it writes the endpoint to
-`$CODEX_HOME/config.toml` (else `~/.codex/config.toml`). Running it again keeps the database
-and tokens. herdr is not needed to start the server; only workspaces with runner `herdr` (and remote
-SSH workspaces) need it. Runner `plain` runs `claude` or `codex` from the server's `PATH`,
+`claude mcp add-json` in the user scope, with a `headersHelper` that reads `mcp-token`
+each time Claude Code connects; where `codex` is on `PATH` it writes the endpoint and the
+token to `$CODEX_HOME/config.toml` (else `~/.codex/config.toml`), readable by the owner
+only. The token never appears on a command line. `toodo start` and `toodo update`
+register the endpoint again with the agents that have it registered already, so they
+pick up a replaced token. Running `init` again keeps the database and tokens. herdr is
+not needed to start the server; only workspaces with runner `herdr` (and remote SSH
+workspaces) need it. Runner `plain` runs `claude` or `codex` from the server's `PATH`,
 and runner `none` needs neither.
 
 - `--port N`: port to listen on, keeping the saved host (default `47616`).
-- `--listen HOST:PORT`: address to listen on (default `127.0.0.1:47616`).
+- `--listen HOST:PORT`: address to listen on (default `127.0.0.1:47616`). On an address
+  other than loopback (such as `0.0.0.0`), other machines can reach the server over plain
+  HTTP, and `init` and `service install` print a warning; keep it on loopback and reach it
+  through a tunnel instead (see [Off the Machine](#off-the-machine-cloudflare-tunnel-and-access)).
 - `--data-dir DIR`: data directory (default `$TOODO_DATA_DIR`, else the directory `init`
   recorded, else `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server`). `init`
   records the absolute path in `$XDG_CONFIG_HOME/toodo/data-dir` (`~/.config/toodo/data-dir`),
@@ -120,11 +134,7 @@ and runner `none` needs neither.
   option beats `$TOODO_DATA_DIR`, which beats the record.
 - `--no-mcp`: register the MCP endpoint with no agent.
 
-To have the `toodo` command at hand, install it globally:
-
-```sh
-npm i -g @dubusoft/toodo
-```
+The commands of a global install (`toodo COMMAND --help` shows the options of each):
 
 - `toodo start`, `toodo stop`: start or stop the server, through systemd or launchd once
   the service is installed, else as a background process with `server.pid` and
@@ -187,7 +197,8 @@ or `toodo stop` and `toodo start`.
 
 ## Install and Update
 
-On a server, install and update from releases. As the user who runs herdr, if any (git, gh
+Without Node.js, install and update from releases instead of npm. As the user who runs
+herdr, if any (git, gh
 logged in, ssh, and curl installed; herdr only for runner `herdr`; no Rust toolchain needed):
 
 ```sh
@@ -264,8 +275,9 @@ On first start the data directory gets two access tokens:
 
 The data directory is created readable by its owner only (`0700`) and the token files
 `0600`; the server tightens an existing directory and token files on start. To replace a
-token, delete its file and restart the server. Replacing `web-token` does not sign out
-registered devices; revoke them one by one. The server logs every token file it creates,
+token, delete its file and restart the server; for `mcp-token`, restart it with
+`toodo stop` and `toodo start`, which give the new token to the agents `init`
+registered. Replacing `web-token` does not sign out registered devices; revoke them one by one. The server logs every token file it creates,
 and its start line names both token files and the server's instance id.
 
 A request without a valid token gets `401` with `WWW-Authenticate: Bearer` and a

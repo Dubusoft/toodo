@@ -116,7 +116,8 @@ Layout:
     and Codex.
 - `npm/toodo/`: the `@dubusoft/toodo` npm package (launcher `bin/toodo.js`, README).
 - `scripts/package-npm.mjs`: stages the npm packages (main and per-platform) for
-  publishing.
+  publishing; `scripts/smoke-npm.mjs` installs the staged packages from a local registry
+  and checks that `toodo init` brings up a working server.
 
 ## Commands
 
@@ -141,6 +142,8 @@ Run from the repository root unless noted. Package manager is npm.
 - Package (npm): `node scripts/package-npm.mjs --version X.Y.Z --web dist-web --out dist-npm
   --binaries linux-x64=<dir with toodo and toodo-server>`; never run `npm publish` by hand,
   the `npm` workflow publishes
+- Smoke test (npm): `node scripts/smoke-npm.mjs dist-npm` on the staged packages, part of
+  the release checklist in `README.md`
 
 After changing a command signature, run `cargo test` in `src-tauri/` and commit the
 updated `src/lib/bindings.ts` together with the Rust change. A test in `server/rpc.rs`

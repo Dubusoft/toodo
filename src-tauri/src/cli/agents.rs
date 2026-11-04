@@ -1,13 +1,19 @@
 //! Registering the server's MCP endpoint with the coding agents on `PATH`: Claude Code
-//! through `claude mcp add`, Codex in its `config.toml`.
+//! through `claude mcp add-json`, Codex in its `config.toml`.
+//!
+//! The token never goes on a command line, where other users could read it in the process
+//! list: Claude Code gets a `headersHelper` that reads the token file each time it
+//! connects, and Codex gets the token in its config file, readable by the owner only.
 
 use std::fs;
 use std::io;
+use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use super::Var;
 use super::process;
+use super::settings::{self, DataDir};
 
 const SERVER_NAME: &str = "toodo";
 const CODEX_TABLE: &str = "[mcp_servers.toodo]";
@@ -31,7 +37,7 @@ pub(super) fn register(
     var: Var,
 ) -> Vec<(&'static str, Outcome)> {
     let claude = match process::find_on_path("claude", var) {
-        Some(_) => claude(url, token, token_file),
+        Some(_) => claude(url, token_file),
         None => Outcome::Skipped,
     };
     let codex = match process::find_on_path("codex", var) {
@@ -44,34 +50,84 @@ pub(super) fn register(
     vec![("claude", claude), ("codex", codex)]
 }
 
-fn claude(url: &str, token: &str, token_file: &Path) -> Outcome {
-    // A registration from an earlier init may have another port or token.
+/// Registers `url` again with the agents that have a registration of the server already,
+/// so they follow a new port or a replaced token, and prints what happened. Agents without
+/// one are left alone, as `toodo init --no-mcp` left them.
+pub(super) fn refresh(data: &DataDir, listen: SocketAddr, var: Var) {
+    let token_file = data.mcp_token();
+    let token = match fs::read_to_string(&token_file) {
+        Ok(token) if !token.trim().is_empty() => token.trim().to_owned(),
+        Ok(_) => {
+            println!(
+                "MCP: {} is empty, so no agent was registered again; register them with: \
+                 toodo init",
+                token_file.display()
+            );
+            return;
+        }
+        Err(error) => {
+            println!(
+                "MCP: cannot read {}: {error}, so no agent was registered again; register \
+                 them with: toodo init",
+                token_file.display()
+            );
+            return;
+        }
+    };
+    let url = settings::mcp_url(listen);
+    let claude = if process::find_on_path("claude", var).is_some()
+        && process::succeeds("claude", &["mcp", "get", SERVER_NAME])
+    {
+        claude(&url, &token_file)
+    } else {
+        Outcome::Skipped
+    };
+    let codex = match codex_config(var) {
+        Ok(path) => codex_refresh(&path, &url, &token),
+        Err(error) => Outcome::Failed(error),
+    };
+    for (agent, outcome) in [("claude", claude), ("codex", codex)] {
+        match outcome {
+            Outcome::Registered(place) => {
+                println!("MCP for {agent}: registered {url} again ({place})");
+            }
+            Outcome::Skipped => {}
+            Outcome::Failed(error) => println!("MCP for {agent}: failed: {error}"),
+        }
+    }
+}
+
+fn claude(url: &str, token_file: &Path) -> Outcome {
+    // A registration from an earlier init may have another port or header.
     drop(process::output(
         "claude",
         &["mcp", "remove", "--scope", "user", SERVER_NAME],
     ));
-    let header = format!("Authorization: Bearer {token}");
-    let args = [
-        "mcp",
-        "add",
-        "--transport",
-        "http",
-        "--scope",
-        "user",
-        SERVER_NAME,
-        url,
-        "--header",
-        &header,
-    ];
+    let entry = claude_entry(url, token_file);
+    let args = ["mcp", "add-json", "--scope", "user", SERVER_NAME, &entry];
     let next_step = format!(
-        "register it yourself with: claude mcp add --transport http --scope user {SERVER_NAME} \
-         {url} --header \"Authorization: Bearer $(cat {})\"",
-        token_file.display()
+        "register it yourself with: claude mcp add-json --scope user {SERVER_NAME} {}",
+        shell_quote(&entry)
     );
     match process::run("claude", &args, &next_step) {
         Ok(_) => Outcome::Registered("user scope of Claude Code".to_owned()),
         Err(error) => Outcome::Failed(error),
     }
+}
+
+/// The Claude Code server entry for `url`: its `headersHelper` prints the `Authorization`
+/// header with the token read from `token_file` whenever Claude Code connects.
+pub(super) fn claude_entry(url: &str, token_file: &Path) -> String {
+    let helper = format!(
+        "printf '{{\"Authorization\":\"Bearer %s\"}}' \"$(cat {})\"",
+        shell_quote(&token_file.display().to_string())
+    );
+    serde_json::json!({ "type": "http", "url": url, "headersHelper": helper }).to_string()
+}
+
+/// `text` as one POSIX shell word.
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// `$CODEX_HOME/config.toml`, else `~/.codex/config.toml`.
@@ -99,6 +155,19 @@ fn codex(path: &Path, url: &str, token: &str) -> Outcome {
     match write_private(path, &text) {
         Ok(()) => Outcome::Registered(path.display().to_string()),
         Err(error) => failed(error),
+    }
+}
+
+/// Rewrites the table of the server in the Codex config at `path` when it has one.
+fn codex_refresh(path: &Path, url: &str, token: &str) -> Outcome {
+    match fs::read_to_string(path) {
+        Ok(text) if text.lines().any(|line| line.trim() == CODEX_TABLE) => codex(path, url, token),
+        Ok(_) => Outcome::Skipped,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Outcome::Skipped,
+        Err(error) => Outcome::Failed(format!(
+            "cannot read {}: {error}; fix its permissions and rerun toodo init",
+            path.display()
+        )),
     }
 }
 
@@ -164,6 +233,73 @@ mod tests {
             codex_table("http://127.0.0.1:47616/mcp", "abc"),
             "[mcp_servers.toodo]\nurl = \"http://127.0.0.1:47616/mcp\"\n\
              http_headers = { \"Authorization\" = \"Bearer abc\" }\n"
+        );
+    }
+
+    #[test]
+    fn the_claude_helper_reads_the_token_file_on_each_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let token_file = dir.path().join("it's a dir/mcp-token");
+        fs::create_dir_all(token_file.parent().unwrap()).unwrap();
+        fs::write(&token_file, "abc\n").unwrap();
+        let entry: serde_json::Value =
+            serde_json::from_str(&claude_entry("http://127.0.0.1:1/mcp", &token_file)).unwrap();
+        assert_eq!(entry["type"], "http");
+        assert_eq!(entry["url"], "http://127.0.0.1:1/mcp");
+        assert!(entry.get("headers").is_none());
+        let helper = entry["headersHelper"].as_str().unwrap();
+        let headers = || {
+            let output = std::process::Command::new("sh")
+                .args(["-c", helper])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+        };
+        assert_eq!(
+            headers(),
+            serde_json::json!({ "Authorization": "Bearer abc" })
+        );
+        fs::write(&token_file, "def").unwrap();
+        assert_eq!(
+            headers(),
+            serde_json::json!({ "Authorization": "Bearer def" })
+        );
+    }
+
+    #[test]
+    fn a_refresh_rewrites_only_an_existing_codex_registration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert_eq!(
+            codex_refresh(&path, "http://127.0.0.1:1/mcp", "new"),
+            Outcome::Skipped
+        );
+        assert!(!path.exists());
+        fs::write(&path, "model = \"o3\"\n").unwrap();
+        assert_eq!(
+            codex_refresh(&path, "http://127.0.0.1:1/mcp", "new"),
+            Outcome::Skipped
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "model = \"o3\"\n");
+        fs::write(
+            &path,
+            format!(
+                "model = \"o3\"\n\n{}",
+                codex_table("http://127.0.0.1:1/mcp", "old")
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            codex_refresh(&path, "http://127.0.0.1:1/mcp", "new"),
+            Outcome::Registered(path.display().to_string())
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!(
+                "model = \"o3\"\n\n{}",
+                codex_table("http://127.0.0.1:1/mcp", "new")
+            )
         );
     }
 
