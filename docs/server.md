@@ -506,10 +506,18 @@ without the network. It never caches or answers `/api` or `/mcp`: everything the
 shows comes from the server. Each build has its own cache, which replaces the previous
 one once no window uses it any more.
 
+For reading offline, the app keeps the last loaded workspaces, task list, and what task
+details showed (commits, git activity, runs, related links, agent and pull request
+status) in the browser's IndexedDB, and shows them when it starts without the server.
+They are kept for the build that saved them and forgotten when the browser's access token
+is (sign-in again or a revoked device).
+
 When the server does not answer (it is down, the device is offline, or a proxy in front of
-it answers with its own 502-504 or 520-530 error page), the app shows an offline screen
+it answers with its own 502-504 or 520-530 error page), the app shows an offline banner
 over itself instead of a broken page, and the service worker starts the cached app instead
-of showing such an error page. The app checks again after 2 s, doubling up to 30 s, at
+of showing such an error page. What was loaded stays readable: the banner tells when the
+tasks shown were loaded, and buttons that change data are disabled until the server
+answers. The app checks again after 2 s, doubling up to 30 s, at
 once when the device comes back online or the app is shown again, and on *Try again*;
 once the server answers, the screen goes away and everything is loaded again.
 

@@ -810,6 +810,7 @@ function TaskRow({
   // What an agent reported blocks the work, or the prerequisites a pause waits on.
   const blocker = openBlocker(task, context.byId);
   const changingDependencies = addDependency.isPending || removeDependency.isPending;
+  const serverDown = useServerDown();
   const actionError =
     startTask.error ??
     openTask.error ??
@@ -1248,7 +1249,7 @@ function TaskRow({
               }
               className={cn(compactSelectClass, "max-w-48")}
               value=""
-              disabled={changingDependencies}
+              disabled={changingDependencies || serverDown}
               onChange={(e) => {
                 if (e.target.value) {
                   const prerequisite = Number(e.target.value);
@@ -2425,7 +2426,8 @@ function RelatedTasks({
   const groups = [...new Set([task.workspaceId, ...candidates.map((other) => other.workspaceId)])]
     .map((workspaceId) => ({ workspaceId, tasks: candidates.filter((other) => other.workspaceId === workspaceId) }))
     .filter((group) => group.tasks.length > 0);
-  const busy = addRelation.isPending || removeRelation.isPending;
+  const serverDown = useServerDown();
+  const busy = addRelation.isPending || removeRelation.isPending || serverDown;
   const failure = addRelation.error ?? removeRelation.error;
   if (related.length === 0 && groups.length === 0) {
     return null;
@@ -3339,8 +3341,15 @@ function TaskCriteria({ task, detailed }: { task: Task; detailed: boolean }) {
  * One criterion of a task. A manual one of a task that is not done is a checkbox: checking
  * asks for optional evidence before it is saved, unchecking saves right away.
  */
+/** Whether the server does not answer: controls that change data at once wait meanwhile, like buttons do. */
+function useServerDown(): boolean {
+  const reach = useSyncExternalStore(subscribeReachability, reachability);
+  return reach === "unreachable" || reach === "retrying";
+}
+
 function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: Criterion; detailed: boolean }) {
   const checkCriterion = useCheckCriterion();
+  const serverDown = useServerDown();
   // The evidence form of a check that is not saved yet.
   const [writing, setWriting] = useState(false);
   const [evidence, setEvidence] = useState("");
@@ -3386,7 +3395,7 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
                 type="checkbox"
                 aria-label={`Check criterion ${criterion.id} of #${task.id}`}
                 checked={criterion.state === "met" || writing}
-                disabled={checkCriterion.isPending}
+                disabled={checkCriterion.isPending || serverDown}
                 onChange={(e) => toggle(e.target.checked)}
               />
             </label>
