@@ -6,8 +6,8 @@
 //! worktree root of each machine, read tasks, search earlier tasks
 //! and read their history, create and edit tasks, connect dependencies and related
 //! links, leave progress and blocker notes in a task's history, and start, complete, or
-//! conclude tasks and restore a lost worktree through the app's own commands; deleting
-//! tasks stays
+//! conclude tasks and restore a lost worktree through the app's own commands, and start,
+//! follow, read the logs of, stop, and reconcile plain and tmux runs; deleting tasks stays
 //! in the app. The `toodo` skill, the
 //! workflow for working on a task, is served by the `read_toodo_skill` tool rather than
 //! as a resource, since not every client can read resources. Agents on SSH machines reach
@@ -49,7 +49,9 @@ use crate::adapters::herdr::Herdr;
 use crate::commands::events::Notifier;
 use crate::commands::tasks as task_commands;
 use crate::commands::types::Task;
-use crate::commands::{CommandError, CommandErrorCode, CommandResult, StorageState, lock};
+use crate::commands::{
+    CommandError, CommandErrorCode, CommandResult, PlainRunState, StorageState, TmuxRunState, lock,
+};
 use crate::domain::model;
 use crate::oauth::{self, PublicUrl};
 
@@ -192,6 +194,9 @@ pub trait Backend: Notifier + Send + Sync + 'static {
     fn git(&self) -> &Git;
     fn github(&self) -> &dyn GitHub;
     fn herdr(&self) -> &Herdr;
+    /// The runners of workspaces with runner plain and tmux.
+    fn plain(&self) -> &PlainRunState;
+    fn tmux(&self) -> &TmuxRunState;
     /// How agents reach this server.
     fn server(&self) -> &ServerStatus;
 }
@@ -1038,6 +1043,76 @@ impl ToodoMcp {
         let result = tools::remove_dependency(&mut lock(self.backend.storage()), request);
         self.announce_with(result, |reply| &reply.task.task)
     }
+
+    #[tool(
+        description = "Start an agent CLI (adapter claude or codex) for an in_progress task of a workspace with runner plain or tmux, as Start run in the Toodo app does, e.g. {\"task_id\": 5, \"adapter\": \"claude\"}: in the task's worktree, on the machine of its workspace, without a terminal. prompt goes to the agent on stdin; omitted or blank, the agent gets the task's title, description, and criteria. With mcp (default true) it gets this server's MCP endpoint and token, so it can call current_task. One writer run at a time per worktree. Returns the run; follow it with run_status and read its output with run_log. For a workspace with runner herdr, start the agent with start_task's agent_command instead. Never start a run for your own task."
+    )]
+    async fn start_run(
+        &self,
+        Parameters(request): Parameters<tools::StartAgentRun>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| {
+                tools::start_run(backend.storage(), backend.plain(), backend.tmux(), request)
+            })
+            .await?;
+        reply(result)
+    }
+
+    #[tool(
+        description = "Read the state of one run (run_id) or of every run of a task (task_id), oldest first: state (reserved, running, settled, exited, failed, cancelled, or unknown), runnerKind, adapter, and when it was created, started, and ended. active is true while the run may still be running (reserved, running, or unknown), and next says what to do with it. Poll it until active is false to wait for a run; unknown means its end was not observed, so call reconcile_run instead of polling."
+    )]
+    fn run_status(
+        &self,
+        Parameters(request): Parameters<tools::RunStatusRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(tools::run_status(&lock(self.backend.reader()), request))
+    }
+
+    #[tool(
+        description = "Read a plain or tmux run with its events (launch, result, exit, stop) and the end of its stdout and stderr, tail_bytes of each (default 65536, at most 4194304), with the MCP token redacted. For an active tmux run, attach is the shell command that opens its terminal session to watch it."
+    )]
+    async fn run_log(
+        &self,
+        Parameters(request): Parameters<tools::RunLogRequest>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| {
+                tools::run_log(backend.storage(), backend.plain(), backend.tmux(), request)
+            })
+            .await?;
+        reply(result)
+    }
+
+    #[tool(
+        description = "Stop a plain or tmux run, as Stop run in the Toodo app does: a plain run's process group is terminated (killed after a grace period), a tmux run's session is killed, and the run ends as cancelled. A run that already ended is returned as it is. Herdr runs are rejected; stop those in their herdr pane. Returns the run."
+    )]
+    async fn stop_run(
+        &self,
+        Parameters(request): Parameters<tools::RunRef>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| {
+                tools::stop_run(backend.storage(), backend.plain(), backend.tmux(), request)
+            })
+            .await?;
+        reply(result)
+    }
+
+    #[tool(
+        description = "Settle a plain or tmux run whose end was not observed (state unknown, e.g. after a server restart or an SSH disconnect), as Reconcile in the Toodo app does, from what its host recorded: its exit, a process or session that still runs (running again), or neither. It never starts the agent again. A run that is observed or already ended is returned as it is. Returns the run."
+    )]
+    async fn reconcile_run(
+        &self,
+        Parameters(request): Parameters<tools::RunRef>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| {
+                tools::reconcile_run(backend.storage(), backend.plain(), backend.tmux(), request)
+            })
+            .await?;
+        reply(result)
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -1296,11 +1371,15 @@ mod tests {
     }
 
     struct TestBackend {
-        storage: StorageState,
+        storage: Arc<StorageState>,
         public_url: Option<PublicUrl>,
         git: Git,
         github: GhCli,
         herdr: Herdr,
+        plain: PlainRunState,
+        tmux: TmuxRunState,
+        /// Where the runners keep their runs.
+        runs_dir: tempfile::TempDir,
         server: ServerStatus,
         changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
         workspaces_changed: std::sync::Mutex<usize>,
@@ -1317,8 +1396,13 @@ mod tests {
         fn scripted(storage: crate::storage::Storage, git: Scripted, herdr: Scripted) -> Self {
             use crate::adapters::git::fake::FakeRunner;
             let runner = |results: Scripted| Box::new(Arc::new(FakeRunner::new(results)));
+            let storage = Arc::new(std::sync::Mutex::new(storage));
+            let runs_dir = tempfile::tempdir().unwrap();
             Self {
-                storage: std::sync::Mutex::new(storage),
+                plain: PlainRunState::new(storage.clone(), runs_dir.path(), "0123456789ab"),
+                tmux: TmuxRunState::new(storage.clone(), runs_dir.path(), "0123456789ab"),
+                runs_dir,
+                storage,
                 public_url: None,
                 git: Git::new(runner(git)),
                 github: GhCli::new(runner(Vec::new())),
@@ -1373,9 +1457,163 @@ mod tests {
             &self.herdr
         }
 
+        fn plain(&self) -> &PlainRunState {
+            &self.plain
+        }
+
+        fn tmux(&self) -> &TmuxRunState {
+            &self.tmux
+        }
+
         fn server(&self) -> &ServerStatus {
             &self.server
         }
+    }
+
+    /// A backend with one in_progress task of a local workspace with runner plain, whose
+    /// plain runner runs the shell script `script` as Claude and Codex.
+    fn plain_backend(script: &str) -> (Arc<TestBackend>, model::TaskId) {
+        use crate::domain::model::{CompletionMode, Runner, Source, TaskType, WorkspaceLocation};
+        use crate::domain::naming::TaskCheckout;
+        use crate::domain::path::PosixPath;
+        use std::os::unix::fs::PermissionsExt;
+        let mut backend = TestBackend::new(crate::storage::Storage::open_in_memory().unwrap());
+        let dir = backend.runs_dir.path().to_owned();
+        let program = dir.join("agent");
+        fs::write(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
+        let worktree = dir.join("worktree");
+        fs::create_dir(&worktree).unwrap();
+        let posix = |path: &Path| PosixPath::parse(path.to_str().unwrap()).unwrap();
+        let task = {
+            let mut storage = lock(&backend.storage);
+            let workspace = storage
+                .create_workspace(&crate::storage::NewWorkspace {
+                    name: "toodo".to_owned(),
+                    location: WorkspaceLocation::Local {
+                        path: posix(&dir).into(),
+                    },
+                    default_base_branch: "main".to_owned(),
+                    source: Source::LocalGit,
+                    completion: CompletionMode::LocalMerge,
+                    runner: Runner::Plain,
+                    axes_detected: true,
+                })
+                .unwrap();
+            let task = storage
+                .create_task(&crate::storage::NewTask {
+                    workspace_id: workspace.id,
+                    task_type: TaskType::Feat,
+                    title: "Add login".to_owned(),
+                    description: String::new(),
+                    estimate: None,
+                    due_date: None,
+                    criteria: Vec::new(),
+                })
+                .unwrap()
+                .id;
+            storage
+                .start_task_plain(
+                    task,
+                    &TaskCheckout {
+                        path: posix(&worktree).into(),
+                        branch: "feat/add-login-1".to_owned(),
+                    },
+                )
+                .unwrap();
+            task
+        };
+        backend.plain =
+            PlainRunState::new(backend.storage.clone(), dir.join("runs"), "0123456789ab")
+                .with_programs(&program, &program);
+        (Arc::new(backend), task)
+    }
+
+    fn arguments<T: serde::de::DeserializeOwned>(value: Value) -> Parameters<T> {
+        Parameters(serde_json::from_value(value).unwrap())
+    }
+
+    /// The JSON reply of a tool call that succeeded.
+    fn succeeded(result: Result<CallToolResult, ErrorData>) -> Value {
+        let result = serde_json::to_value(result.unwrap()).unwrap();
+        assert_ne!(result["isError"], true, "{result}");
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+    }
+
+    /// The error text of a tool call that failed.
+    fn failed(result: Result<CallToolResult, ErrorData>) -> String {
+        let result = serde_json::to_value(result.unwrap()).unwrap();
+        assert_eq!(result["isError"], true, "{result}");
+        result["content"][0]["text"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn an_agent_starts_a_run_follows_it_to_its_end_and_reads_its_log_through_mcp() {
+        let (backend, task) = plain_backend(
+            r#"printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done"}'"#,
+        );
+        let server = ToodoMcp::new(backend.clone());
+        let runtime = runtime();
+
+        let started = succeeded(runtime.block_on(server.start_run(arguments(
+            serde_json::json!({"task_id": task.0, "adapter": "claude", "mcp": false}),
+        ))));
+        let id = started["id"].as_i64().unwrap();
+        backend
+            .plain
+            .wait_for_end(
+                crate::domain::runtime::RunId(id),
+                std::time::Duration::from_secs(15),
+            )
+            .unwrap();
+
+        let status = succeeded(server.run_status(arguments(serde_json::json!({"run_id": id}))));
+        assert_eq!(status["state"], "settled", "{status}");
+        assert_eq!(status["active"], false);
+        assert!(status["next"].as_str().unwrap().contains("run_log"));
+        let runs = succeeded(server.run_status(arguments(serde_json::json!({"task_id": task.0}))));
+        assert_eq!(runs["runs"][0]["id"], id, "{runs}");
+        let log = succeeded(
+            runtime.block_on(server.run_log(arguments(serde_json::json!({"run_id": id})))),
+        );
+        assert_eq!(log["run"]["state"], "settled");
+        assert!(
+            log["stdout"]
+                .as_str()
+                .unwrap()
+                .contains(r#""result":"done""#),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn an_agent_stops_and_reconciles_a_run_through_mcp() {
+        let (backend, task) = plain_backend("exec sleep 600");
+        let server = ToodoMcp::new(backend.clone());
+        let runtime = runtime();
+        let started = succeeded(runtime.block_on(server.start_run(arguments(
+            serde_json::json!({"task_id": task.0, "adapter": "codex", "mcp": false}),
+        ))));
+        let id = started["id"].as_i64().unwrap();
+        let status = succeeded(server.run_status(arguments(serde_json::json!({"run_id": id}))));
+        assert_eq!(status["active"], true, "{status}");
+        assert!(status["next"].as_str().unwrap().contains("stop_run"));
+
+        let stopped = succeeded(
+            runtime.block_on(server.stop_run(arguments(serde_json::json!({"run_id": id})))),
+        );
+        assert_eq!(stopped["state"], "cancelled", "{stopped}");
+        let reconciled = succeeded(
+            runtime.block_on(server.reconcile_run(arguments(serde_json::json!({"run_id": id})))),
+        );
+        assert_eq!(reconciled["state"], "cancelled");
+
+        let missing = failed(
+            runtime.block_on(server.reconcile_run(arguments(serde_json::json!({"run_id": 999})))),
+        );
+        assert!(missing.contains("run_status"), "{missing}");
+        let neither = failed(server.run_status(arguments(serde_json::json!({}))));
+        assert!(neither.contains("run_id"), "{neither}");
     }
 
     /// A database with one local workspace and one planned task, and the machine's

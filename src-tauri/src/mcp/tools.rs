@@ -12,13 +12,17 @@ use crate::adapters::github::GitHub;
 use crate::adapters::herdr::Herdr;
 use crate::commands::completion::{self, OpenPullRequest};
 use crate::commands::herdr as herdr_commands;
+use crate::commands::runs as run_commands;
 use crate::commands::tasks::{self as task_commands, edit_task};
 use crate::commands::types::{
     self, CommitRecord, Estimate, Task, TaskEdit, TaskId, TaskResolution, TaskStatus, TaskType,
     Workspace, WorkspaceId,
 };
 use crate::commands::workspaces;
-use crate::commands::{CommandError, CommandErrorKind, CommandResult, StorageState, lock};
+use crate::commands::{
+    CommandError, CommandErrorKind, CommandResult, PlainRunState, State, StorageState,
+    TmuxRunState, lock,
+};
 use crate::domain::criteria::{CheckedBy, NewCriterion};
 use crate::domain::model::{self, NoteKind};
 use crate::domain::runtime::{HostRef, OwnerKey, RunRole};
@@ -1858,6 +1862,194 @@ pub fn remove_related(storage: &mut Storage, request: Related) -> CommandResult<
             id: request.task_id,
         },
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct StartAgentRun {
+    /// An in_progress task of a workspace with runner plain or tmux, e.g. one start_task
+    /// started.
+    pub task_id: TaskId,
+    /// The agent CLI to run: `claude` or `codex`.
+    pub adapter: types::AgentAdapter,
+    /// What the agent is told to do, on its stdin. Omitted or blank: the task's title,
+    /// description, and criteria.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// Whether the agent gets this server's MCP endpoint and token in its environment, so
+    /// it can call current_task; `true` when omitted.
+    #[serde(default)]
+    pub mcp: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RunStatusRequest {
+    /// One run, e.g. the id start_run returned. Pass run_id or task_id, not both.
+    #[serde(default)]
+    pub run_id: Option<types::RunId>,
+    /// Every run of this task, oldest first.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RunLogRequest {
+    /// The run, e.g. the id start_run returned or one run_status lists.
+    pub run_id: types::RunId,
+    /// How much of the end of stdout and of stderr to return, in bytes (1 to 4194304);
+    /// the last 65536 bytes of each when omitted.
+    #[serde(default)]
+    pub tail_bytes: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RunRef {
+    /// A plain or tmux run, e.g. the id start_run returned or one run_status lists.
+    pub run_id: types::RunId,
+}
+
+/// A run with whether it may still be running and what to do next.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunStatus {
+    #[serde(flatten)]
+    pub run: types::TaskRun,
+    /// Whether the run may still be running: `reserved`, `running`, or `unknown` (its
+    /// end was not observed).
+    pub active: bool,
+    /// What to do next with the run.
+    pub next: String,
+}
+
+/// One run for `run_id`, or the runs of a task for `task_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum RunStatusReply {
+    Run(Box<RunStatus>),
+    Runs { runs: Vec<RunStatus> },
+}
+
+/// Starts an agent CLI for an `in_progress` task of a workspace with runner plain or
+/// tmux, as the app's Start run does; `mcp` defaults to `true`.
+pub fn start_run(
+    storage: &StorageState,
+    plain: &PlainRunState,
+    tmux: &TmuxRunState,
+    request: StartAgentRun,
+) -> CommandResult<types::TaskRun> {
+    run_commands::start_plain_run(
+        State(storage),
+        State(plain),
+        State(tmux),
+        request.task_id,
+        request.adapter,
+        request.prompt,
+        request.mcp.unwrap_or(true),
+    )
+}
+
+/// The run `run_id`, or every run of `task_id`, each with what to do next.
+pub fn run_status(storage: &Storage, request: RunStatusRequest) -> CommandResult<RunStatusReply> {
+    match (request.run_id, request.task_id) {
+        (Some(id), None) => {
+            let id = id.into();
+            let run = storage.get_run(id)?.ok_or(StorageError::RunNotFound(id))?;
+            Ok(RunStatusReply::Run(Box::new(run_status_of(&run))))
+        }
+        (None, Some(task)) => {
+            let task = task.into();
+            storage
+                .get_task(task)?
+                .ok_or(StorageError::TaskNotFound(task))?;
+            let runs = storage.list_task_runs(task)?;
+            Ok(RunStatusReply::Runs {
+                runs: runs.iter().map(run_status_of).collect(),
+            })
+        }
+        _ => Err(CommandError::invalid_input(
+            "pass exactly one of run_id (one run, e.g. {\"run_id\": 12}) or task_id (every run \
+             of a task, e.g. {\"task_id\": 5})",
+        )),
+    }
+}
+
+fn run_status_of(run: &storage::TaskRun) -> RunStatus {
+    use crate::domain::runtime::{RunState, RunnerKind};
+    let id = run.id;
+    let managed = matches!(run.runner_kind, RunnerKind::Plain | RunnerKind::Tmux);
+    let next = match (run.state, managed) {
+        (RunState::Reserved | RunState::Running, true) => format!(
+            "it is running; call run_status again later, run_log with run_id {id} for its \
+             output so far, or stop_run to stop it"
+        ),
+        (RunState::Unknown, true)
+            if run.runner_kind == RunnerKind::Plain && run.host == HostRef::Local =>
+        {
+            format!(
+                "its end was not observed, since the server restarted while it ran; a local \
+                 plain run cannot be settled from its host, so call stop_run with run_id {id} \
+                 to end it"
+            )
+        }
+        (RunState::Unknown, true) => format!(
+            "its end was not observed, e.g. after a server restart or an SSH disconnect; call \
+             reconcile_run with run_id {id} to settle it from what its host recorded, or \
+             stop_run to stop it"
+        ),
+        (_, true) => {
+            format!("it has ended; call run_log with run_id {id} to read its result and output")
+        }
+        (state, false) if state.is_active() => format!(
+            "it is a {} run, which Toodo does not run itself; follow it where it runs, e.g. \
+             in the task's herdr pane",
+            run.runner_kind
+        ),
+        (_, false) => "it has ended".to_owned(),
+    };
+    RunStatus {
+        run: run.into(),
+        active: run.state.is_active(),
+        next,
+    }
+}
+
+/// A plain or tmux run with its events and the ends of its stdout and stderr.
+pub fn run_log(
+    storage: &StorageState,
+    plain: &PlainRunState,
+    tmux: &TmuxRunState,
+    request: RunLogRequest,
+) -> CommandResult<types::RunLog> {
+    run_commands::get_run_log(
+        State(storage),
+        State(plain),
+        State(tmux),
+        request.run_id,
+        request.tail_bytes,
+    )
+}
+
+/// Stops a plain or tmux run, which ends as `cancelled`.
+pub fn stop_run(
+    storage: &StorageState,
+    plain: &PlainRunState,
+    tmux: &TmuxRunState,
+    request: RunRef,
+) -> CommandResult<types::TaskRun> {
+    run_commands::stop_run(State(storage), State(plain), State(tmux), request.run_id)
+}
+
+/// Settles a plain or tmux run whose end was not observed from what its host recorded.
+pub fn reconcile_run(
+    storage: &StorageState,
+    plain: &PlainRunState,
+    tmux: &TmuxRunState,
+    request: RunRef,
+) -> CommandResult<types::TaskRun> {
+    run_commands::reconcile_run(State(storage), State(plain), State(tmux), request.run_id)
 }
 
 pub(super) fn get_task(storage: &Storage, id: TaskId) -> CommandResult<Task> {

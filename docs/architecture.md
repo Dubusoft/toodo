@@ -778,7 +778,11 @@ path deletes journal history.
     prerequisites in one call; it pauses an `in_progress` task they block but leaves its
     herdr workspace open, and the app asks the user whether to close it),
     `remove_dependency`, `pause_task` / `resume_task` (the app's Pause and Resume; the
-    pause reason and an optional resume note become progress notes), and
+    pause reason and an optional resume note become progress notes), the run tools for
+    workspaces with runner plain or tmux (`start_run`, the app's Start run;
+    `run_status`, one run or every run of a task with whether it may still be running and
+    what to do next; `run_log`; `stop_run`; and `reconcile_run`, over the same commands
+    as the app's runs panel), and
     `add_progress_note` / `report_blocker`, which append a
     timestamped Markdown note (`progress` or `blocker`, table `task_notes`) to a task
     without changing its status. They reuse the storage rules, so cycles are rejected. The
