@@ -21,6 +21,7 @@ use crate::commands::{
     CommandError, CommandErrorKind, CommandResult, State, backup, completion, events, freshness,
     herdr, issues, machines, mcp, review, runners, runs, tasks, workspaces,
 };
+use crate::mcp::Backend as _;
 
 /// What running a command gave.
 #[derive(Debug)]
@@ -167,14 +168,14 @@ macro_rules! commands {
 commands!(s => {
     "app_info"() => sync Reply::value(crate::commands::app_info());
     "list_connected_apps"() => sync Reply::result(
-        mcp::list_connected_apps(State(&s.storage), State(&s.public_url))
+        mcp::list_connected_apps(State(s.reader()), State(&s.public_url))
     );
     "revoke_connected_app"(grant_id: OAuthGrantId) => sync Reply::result(
         mcp::revoke_connected_app(State(&s.storage), grant_id)
     );
 
-    "list_workspaces"() => sync Reply::result(workspaces::list_workspaces(State(&s.storage)));
-    "get_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::get_workspace(State(&s.storage), id));
+    "list_workspaces"() => sync Reply::result(workspaces::list_workspaces(State(s.reader())));
+    "get_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::get_workspace(State(s.reader()), id));
     "create_workspace"(workspace: NewWorkspace) => async Reply::result(
         workspaces::create_workspace(State(&s.storage), State(&s.git), State(&s.herdr), workspace).await
     );
@@ -192,7 +193,7 @@ commands!(s => {
     );
     "delete_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::delete_workspace(State(&s.storage), id));
     "get_machine_settings"(machine: Machine) => sync Reply::result(
-        workspaces::get_machine_settings(State(&s.storage), machine)
+        workspaces::get_machine_settings(State(s.reader()), machine)
     );
     "save_machine_settings"(settings: MachineSettings) => sync Reply::result(
         workspaces::save_machine_settings(State(&s.storage), settings)
@@ -208,15 +209,15 @@ commands!(s => {
         machines::list_directories(State(&s.ssh), machine, path).await
     );
 
-    "list_tasks"() => sync Reply::result(tasks::list_tasks(State(&s.storage)));
-    "list_task_relations"() => sync Reply::result(tasks::list_task_relations(State(&s.storage)));
+    "list_tasks"() => sync Reply::result(tasks::list_tasks(State(s.reader())));
+    "list_task_relations"() => sync Reply::result(tasks::list_task_relations(State(s.reader())));
     "add_task_relation"(task_id: TaskId, related_id: TaskId) => sync Reply::result(
         tasks::add_task_relation(State(&s.storage), task_id, related_id)
     );
     "remove_task_relation"(task_id: TaskId, related_id: TaskId) => sync Reply::result(
         tasks::remove_task_relation(State(&s.storage), task_id, related_id)
     );
-    "get_task"(id: TaskId) => sync Reply::result(tasks::get_task(State(&s.storage), id));
+    "get_task"(id: TaskId) => sync Reply::result(tasks::get_task(State(s.reader()), id));
     "create_task"(task: NewTask) => sync Reply::result(
         tasks::create_task(State(&s.storage), task)
     );
@@ -246,10 +247,10 @@ commands!(s => {
         tasks::remove_dependency(State(&s.storage), task_id, depends_on)
     );
     "list_commit_records"(task_id: TaskId) => sync Reply::result(
-        tasks::list_commit_records(State(&s.storage), task_id)
+        tasks::list_commit_records(State(s.reader()), task_id)
     );
     "list_task_activity"(task_id: TaskId) => sync Reply::result(
-        tasks::list_task_activity(State(&s.storage), task_id)
+        tasks::list_task_activity(State(s.reader()), task_id)
     );
 
     "herdr_status"() => sync Reply::result(herdr::herdr_status(State(&s.herdr)));
@@ -274,7 +275,7 @@ commands!(s => {
         runs::start_plain_run(State(&s.storage), State(&s.plain), State(&s.tmux), task_id, adapter, prompt, mcp)
     );
     "list_task_runs"(task_id: TaskId) => sync Reply::result(
-        runs::list_task_runs(State(&s.storage), task_id)
+        runs::list_task_runs(State(s.reader()), task_id)
     );
     "get_run_log"(run_id: RunId, tail_bytes: Option<u32>) => sync Reply::result(
         runs::get_run_log(State(&s.storage), State(&s.plain), State(&s.tmux), run_id, tail_bytes)
@@ -338,7 +339,7 @@ commands!(s => {
     "list_mcp_tunnels"() => sync Reply::value(mcp::list_mcp_tunnels(State(&s.tunnels)));
 
     "review_period"(start: Timestamp, end: Timestamp) => sync Reply::result(
-        review::review_period(State(&s.storage), start, end)
+        review::review_period(State(s.reader()), start, end)
     );
 
     "get_backup_settings"() => sync Reply::value(backup::get_backup_settings(State(&s.backups)));

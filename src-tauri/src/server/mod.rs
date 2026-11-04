@@ -168,6 +168,9 @@ struct ServerEvent {
 /// Everything the commands, the MCP server, and the background threads use.
 pub struct Services {
     storage: Arc<StorageState>,
+    /// A read-only connection to the database file for commands that only read, so they
+    /// do not wait for writes; `None` where the database is in memory.
+    reader: Option<StorageState>,
     public_url: Option<PublicUrl>,
     git: GitState,
     github: GitHubState,
@@ -235,6 +238,10 @@ impl Backend for Services {
 
     fn storage(&self) -> &StorageState {
         &self.storage
+    }
+
+    fn reader(&self) -> &StorageState {
+        self.reader.as_ref().unwrap_or(&self.storage)
     }
 
     fn git(&self) -> &Git {
@@ -357,9 +364,9 @@ fn import(config: &Config, source: &Path) -> Result<(), Box<dyn std::error::Erro
 
 fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     create_private_dir(&config.data_dir)?;
-    let storage = Arc::new(Mutex::new(Storage::open(
-        &config.data_dir.join(DATABASE_FILE),
-    )?));
+    let database = config.data_dir.join(DATABASE_FILE);
+    let storage = Arc::new(Mutex::new(Storage::open(&database)?));
+    let reader = Mutex::new(Storage::open_reader(&database)?);
     // No plain run of an earlier server process still has a process this one manages.
     PlainRunner::recover_after_restart(&storage)?;
     let mcp_token_path = config.data_dir.join(mcp::TOKEN_FILE);
@@ -398,6 +405,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     }
     let services = Arc::new(Services {
         storage,
+        reader: Some(reader),
         public_url: config.public_url.clone(),
         git: Arc::new(Git::new(Box::new(ProcessRunner))),
         github: Arc::new(GhCli::new(Box::new(ProcessRunner))),
@@ -862,6 +870,7 @@ mod tests {
             plain: PlainRunner::new(storage.clone(), data_dir.join(RUNS_DIR), "0123456789ab"),
             tmux: TmuxRunner::new(storage.clone(), data_dir.join(RUNS_DIR), "0123456789ab"),
             storage,
+            reader: None,
             public_url: None,
             git: Arc::new(Git::new(Box::new(ProcessRunner))),
             github: Arc::new(GhCli::new(Box::new(ProcessRunner))),

@@ -1874,3 +1874,48 @@ fn herdr_workspaces_of_tasks_are_recorded_in_runtime_workspaces() {
     storage.delete_task(task.id).unwrap();
     assert_eq!(row_count(&storage, "runtime_workspaces"), 0);
 }
+
+#[test]
+fn the_database_file_uses_write_ahead_logging_and_a_busy_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::open(&dir.path().join("toodo.sqlite3")).unwrap();
+
+    let mode: String = storage
+        .conn
+        .pragma_query_value(None, "journal_mode", |row| row.get(0))
+        .unwrap();
+    let timeout: u128 = storage
+        .conn
+        .pragma_query_value(None, "busy_timeout", |row| row.get::<_, i64>(0))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    assert_eq!(mode, "wal");
+    assert_eq!(timeout, BUSY_TIMEOUT.as_millis());
+}
+
+#[test]
+fn the_reader_reads_committed_data_while_a_write_is_in_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("toodo.sqlite3");
+    let mut storage = Storage::open(&path).unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let reader = Storage::open_reader(&path).unwrap();
+    // Without write-ahead logging the exclusive lock below would make the read fail at
+    // once with SQLITE_BUSY.
+    reader.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+
+    storage
+        .conn
+        .execute_batch("BEGIN EXCLUSIVE; UPDATE workspaces SET name = 'Renamed'")
+        .unwrap();
+    assert_eq!(
+        reader.list_workspaces().unwrap(),
+        std::slice::from_ref(&workspace)
+    );
+    storage.conn.execute_batch("COMMIT").unwrap();
+
+    let renamed = reader.get_workspace(workspace.id).unwrap().unwrap();
+    assert_eq!(renamed.name, "Renamed");
+    assert!(reader.conn.execute("DELETE FROM workspaces", []).is_err());
+}
