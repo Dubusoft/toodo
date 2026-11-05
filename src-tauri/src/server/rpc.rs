@@ -13,9 +13,9 @@ use serde::de::DeserializeOwned;
 
 use super::Services;
 use crate::commands::types::{
-    AgentAdapter, AgentOptions, BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost,
-    NewTask, NewWorkspace, OAuthGrantId, PullRequestOptions, ReviewReportRequest, ReviewSnapshotId,
-    RunId, SaveReviewSnapshotRequest, TaskEdit, TaskId, TaskListFilter, TaskResolution, Workspace,
+    AgentAdapter, AgentOptions, BackupSettings, CriterionId, Machine, MachineSettings, NewTask,
+    NewWorkspace, OAuthGrantId, PullRequestOptions, ReviewReportRequest, ReviewSnapshotId, RunId,
+    SaveReviewSnapshotRequest, TaskEdit, TaskId, TaskListFilter, TaskResolution, Workspace,
     WorkspaceId, WorkspaceLocation,
 };
 use crate::commands::{
@@ -188,8 +188,6 @@ pub const READ_COMMANDS: &[&str] = &[
     "list_workspace_branches",
     "get_machine_settings",
     "list_herdr_machines",
-    "list_ssh_hosts",
-    "test_ssh_machine",
     "list_remote_directories",
     "list_directories",
     "list_tasks",
@@ -259,13 +257,6 @@ commands!(s => {
     );
 
     "list_herdr_machines"() => sync Reply::result(machines::list_herdr_machines(State(&s.herdr)));
-    "list_ssh_hosts"() => sync Reply::result(machines::list_ssh_hosts(State(&s.ssh_config)));
-    "add_ssh_host"(host: NewSshHost) => async Reply::result(
-        machines::add_ssh_host(State(&s.ssh_config), State(&s.ssh), host).await
-    );
-    "test_ssh_machine"(machine: String) => async Reply::result(
-        machines::test_ssh_machine(State(&s.ssh), machine).await
-    );
     "list_remote_directories"(machine: String, path: Option<String>) => async Reply::result(
         machines::list_remote_directories(State(&s.ssh), machine, path).await
     );

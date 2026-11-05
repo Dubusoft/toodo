@@ -837,7 +837,8 @@ path deletes journal history.
     on every call, preferring an enabled profile on the `default` session.
   - The sidebar lists Local and the machines of `herdr machine list --json`. Machines are
     added with `herdr machine add <host>` in a terminal on the server, since herdr asks
-    questions there. Toodo never installs herdr itself.
+    questions there; the sidebar shows that command while it lists no remote machine.
+    Toodo never installs herdr itself.
   - Failures exit non-zero and print `{"error": {"code", "message"}}` on stderr.
   - Commands use the herdr CLI.
   - Events use the socket API (`src-tauri/src/adapters/herdr_events.rs`,

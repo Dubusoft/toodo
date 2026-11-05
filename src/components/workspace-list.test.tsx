@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceList } from "@/components/workspace-list";
-import type { HerdrHealth, RunnerHealth, SshMachineCheck, Workspace } from "@/lib/bindings";
+import type { HerdrHealth, RunnerHealth, Workspace } from "@/lib/bindings";
 import {
   completionLabels,
   completionProblem,
@@ -47,16 +47,6 @@ const missingHerdr: HerdrHealth = {
 };
 /** Why listing the machines saved in herdr fails; `null` while it succeeds. */
 let machinesError: Error | null = null;
-/** The connection test of the Add machine panel, as the last run left it. */
-const connectionTest = {
-  mutate: vi.fn(),
-  reset: vi.fn(),
-  isPending: false,
-  isError: false,
-  data: undefined as SshMachineCheck | undefined,
-  variables: undefined as string | undefined,
-};
-
 vi.mock("@/lib/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/queries")>()),
   useWorkspaces: () => query(workspaces),
@@ -67,7 +57,6 @@ vi.mock("@/lib/queries", async (importOriginal) => ({
   useRunnerHealth: () => (health === undefined ? { data: undefined, isPending: true, isError: false } : query(health)),
   useCreateWorkspace: () => mutation,
   useDeleteWorkspace: () => mutation,
-  useTestSshMachine: () => connectionTest,
 }));
 
 beforeEach(() => {
@@ -76,9 +65,6 @@ beforeEach(() => {
   health = ready;
   machinesError = null;
   mutation.mutate.mockClear();
-  connectionTest.mutate.mockClear();
-  connectionTest.data = undefined;
-  connectionTest.variables = undefined;
 });
 
 /** Renders the list and opens the new workspace dialog for this server. */
@@ -112,41 +98,15 @@ const option = (dialog: HTMLElement, name: string) => within(dialog).getByRole("
 const next = (dialog: HTMLElement) => fireEvent.click(within(dialog).getByRole("button", { name: "Next" }));
 const back = (dialog: HTMLElement) => fireEvent.click(within(dialog).getByRole("button", { name: "Back" }));
 
-describe("Add machine", () => {
-  it("tests the connection to the entered host and shows the next step of a failure", () => {
-    const { rerender } = render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
-    const testButton = screen.getByRole("button", { name: "Test connection" });
-    expect(testButton).toBeDisabled();
-
-    fireEvent.change(screen.getByLabelText("SSH host"), { target: { value: " devbox " } });
-    fireEvent.click(testButton);
-    expect(connectionTest.mutate).toHaveBeenCalledWith("devbox");
-    expect(screen.getByLabelText("Add machine command")).toHaveTextContent("herdr machine add devbox");
-
-    const problem = "devbox refused the server's SSH key. Add the server's public key (`ssh-copy-id devbox`).";
-    connectionTest.data = { gitVersion: null, problem };
-    connectionTest.variables = "devbox";
-    rerender(<WorkspaceList selectedId={null} onSelect={() => {}} />);
-    expect(screen.getByRole("alert")).toHaveTextContent(problem);
-
-    connectionTest.data = { gitVersion: "git version 2.43.0", problem: null };
-    rerender(<WorkspaceList selectedId={null} onSelect={() => {}} />);
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Connected to devbox without a prompt and found git version 2.43.0");
+describe("Remote machines", () => {
+  it("tells how to add a remote machine while there is none", () => {
+    render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+    expect(screen.getByText(/To add a remote machine, run/)).toHaveTextContent("herdr machine add <host>");
   });
 
-  it("shows the command to run on the server and copies it", () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
-
-    expect(screen.queryByRole("form", { name: "Add machine" })).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Add machine command")).toHaveTextContent("herdr machine add <host>");
-    fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
-    expect(writeText).toHaveBeenCalledWith("herdr machine add <host>");
+  it("drops the hint once a remote machine is listed", () => {
+    openNewWorkspaceOnDevbox();
+    expect(screen.queryByText(/To add a remote machine, run/)).not.toBeInTheDocument();
   });
 });
 
@@ -509,9 +469,6 @@ describe("Herdr machines that cannot be listed", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.queryByText(/Failed to list herdr machines/)).not.toBeInTheDocument();
     expect(screen.getByText(/^herdr is not installed on this server/)).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
-    expect(screen.getByRole("region", { name: "Add machine" })).toHaveTextContent(/^Install herdr on the server first/);
   });
 
   it("alerts while herdr is installed, or before the server has said whether it is", () => {

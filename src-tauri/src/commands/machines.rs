@@ -1,25 +1,15 @@
-//! Commands for the machines that host workspaces: machines saved in herdr, SSH hosts from
-//! the user's SSH config, and the remote folder browser.
+//! Commands for the machines that host workspaces: machines saved in herdr and the
+//! remote folder browser.
 
 use super::State;
 
 use std::io;
 use std::path::Path;
 
-use super::types::{
-    self, AddedSshHost, HerdrMachine, Machine, NewSshHost, RemoteDirectory, SshMachineCheck,
-};
-use super::{CommandError, CommandResult, HerdrState, SshConfigState, SshState};
-use crate::adapters::ssh::SshConfigFile;
+use super::types::{self, HerdrMachine, Machine, RemoteDirectory};
+use super::{CommandError, CommandResult, HerdrState, SshState};
 use crate::domain::model::{HostPath, MachineLabel};
 use crate::domain::path::PosixPath;
-use crate::domain::ssh_config::SshHost;
-
-fn config_file(config: &SshConfigState) -> CommandResult<&SshConfigFile> {
-    config.as_ref().ok_or_else(|| {
-        CommandError::internal("the home directory that holds the SSH config is unknown")
-    })
-}
 
 /// Machines saved in herdr; remote workspaces can only live on these.
 #[specta::specta]
@@ -29,57 +19,6 @@ pub fn list_herdr_machines(herdr: State<'_, HerdrState>) -> CommandResult<Vec<He
         .iter()
         .map(HerdrMachine::from)
         .collect())
-}
-
-/// Host aliases from `~/.ssh/config`, re-read on every call.
-#[specta::specta]
-pub fn list_ssh_hosts(config: State<'_, SshConfigState>) -> CommandResult<Vec<String>> {
-    Ok(config_file(&config)?.host_aliases()?)
-}
-
-/// Appends a `Host` block to `~/.ssh/config`, then tests the connection to the new host,
-/// so that a wrong setup shows up now rather than when a workspace is cloned there. The
-/// block stays when the test fails, so the user can fix what it reports and test again.
-#[specta::specta]
-pub async fn add_ssh_host(
-    config: State<'_, SshConfigState>,
-    ssh: State<'_, SshState>,
-    host: NewSshHost,
-) -> CommandResult<AddedSshHost> {
-    let alias = host.alias.clone();
-    let host: SshHost = host.try_into()?;
-    let machine = MachineLabel::parse(&alias)
-        .map_err(|error| CommandError::invalid_input(error.to_string()))?;
-    let file = config_file(&config)?;
-    file.add_host(&host)?;
-    let hosts = file.host_aliases()?;
-    let check = check_machine(&ssh, machine).await?;
-    Ok(AddedSshHost { hosts, check })
-}
-
-/// Tests that Toodo reaches the SSH host `machine` without a prompt and that git runs
-/// there, before `herdr machine add` saves it or a workspace is cloned on it. A failed test
-/// is a result with the next step that fixes it, not an error.
-#[specta::specta]
-pub async fn test_ssh_machine(
-    ssh: State<'_, SshState>,
-    machine: String,
-) -> CommandResult<SshMachineCheck> {
-    let machine = MachineLabel::parse(machine.trim()).map_err(|error| {
-        CommandError::invalid_input(format!(
-            "{error}; enter the Host alias from ~/.ssh/config on the server"
-        ))
-    })?;
-    check_machine(&ssh, machine).await
-}
-
-/// Runs the connection test on a blocking thread, since connecting can take seconds.
-async fn check_machine(ssh: &SshState, machine: MachineLabel) -> CommandResult<SshMachineCheck> {
-    let ssh = SshState::clone(ssh);
-    let check = tokio::task::spawn_blocking(move || ssh.check_machine(&machine))
-        .await
-        .map_err(|error| CommandError::internal(format!("connection test panicked: {error}")))?;
-    Ok(check.into())
 }
 
 /// Subdirectories of `path` on `machine`, or of the login directory when `path` is
