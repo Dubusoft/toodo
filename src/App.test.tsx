@@ -69,8 +69,6 @@ vi.mock("@/lib/bindings", () => ({
     linkIssue: vi.fn(),
     createIssue: vi.fn(),
     listHerdrMachines: vi.fn(),
-    listSshHosts: vi.fn(),
-    addSshHost: vi.fn(),
     listDirectories: vi.fn(),
     listAgentStatuses: vi.fn(),
     listPullRequestStatuses: vi.fn(),
@@ -322,7 +320,6 @@ describe("App", () => {
       status: "ok",
       data: { base: "origin/main", behind: 0, fetchError: null, mergeable: null, mergeableError: null },
     });
-    mocked.listSshHosts.mockResolvedValue({ status: "ok", data: [] });
     mocked.listHerdrMachines.mockResolvedValue({ status: "ok", data: [] });
     mocked.listAgentStatuses.mockResolvedValue([]);
     mocked.listPullRequestStatuses.mockResolvedValue([]);
@@ -1261,7 +1258,6 @@ describe("App", () => {
       status: "ok",
       data: [savedMachine("gpu"), savedMachine("lab", false)],
     });
-    mocked.listSshHosts.mockResolvedValue({ status: "ok", data: ["unsaved"] });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
     renderApp();
 
@@ -1274,7 +1270,6 @@ describe("App", () => {
     const devbox = screen.getByRole("region", { name: "Machine devbox" });
     expect(within(devbox).getByText("/srv/herdr")).toBeInTheDocument();
     expect(within(devbox).getByText("Not saved in herdr")).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Machine unsaved" })).toBeNull();
   });
 
   it("starts on All workspaces and keeps the timeline scale and task drafts while navigating", async () => {

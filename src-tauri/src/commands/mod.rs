@@ -33,10 +33,9 @@ use specta::Type;
 use crate::adapters::git::{Git, GitError};
 use crate::adapters::github::GitHub;
 use crate::adapters::herdr::{Herdr, HerdrError};
-use crate::adapters::ssh::{Ssh, SshConfigError, SshConfigFile};
+use crate::adapters::ssh::Ssh;
 use crate::domain::dag::DependencyError;
 use crate::domain::naming::NamingError;
-use crate::domain::ssh_config::SshHostError;
 use crate::storage::{Storage, StorageError};
 
 /// State a command takes: a reference to state the server owns. It dereferences to the
@@ -81,9 +80,6 @@ pub type PlainRunState = crate::runtime::plain::PlainRunner;
 /// The tmux runner, which runs agent CLIs in detached tmux sessions for tasks of
 /// workspaces with runner tmux.
 pub type TmuxRunState = crate::runtime::tmux::TmuxRunner;
-
-/// `None` when the home directory, and so the SSH config, cannot be found.
-pub type SshConfigState = Option<SshConfigFile>;
 
 pub type CommandResult<T> = Result<T, CommandError>;
 
@@ -255,17 +251,6 @@ impl From<HerdrError> for CommandError {
             | HerdrError::MachineNotSaved { .. }
             | HerdrError::MachineDisabled { .. } => CommandErrorCode::HerdrFailed,
             HerdrError::UnexpectedOutput { .. } => CommandErrorCode::Internal,
-        };
-        Self::new(code, error.to_string())
-    }
-}
-
-impl From<SshConfigError> for CommandError {
-    fn from(error: SshConfigError) -> Self {
-        let code = match &error {
-            SshConfigError::Io { .. } => CommandErrorCode::External,
-            SshConfigError::Host(SshHostError::AlreadyExists(_)) => CommandErrorCode::Rejected,
-            SshConfigError::Host(_) => CommandErrorCode::InvalidInput,
         };
         Self::new(code, error.to_string())
     }

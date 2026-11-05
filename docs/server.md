@@ -401,8 +401,7 @@ read-only, marks the current one, and revokes them. Devices live in the database
 devices of that backup: devices registered after it sign in again.
 
 **Treat `web-token` like a password to the server account.** It opens every command of
-the app, including ones that write `~/.ssh/config` (which can run commands through
-`ProxyCommand`), list the server's directories, and download or replace the whole
+the app, including ones that list the server's directories and download or replace the whole
 database. Whoever holds it can run code as that user. `mcp-token` gives the MCP
 tools only, but still lets an agent start, complete, and conclude tasks.
 

@@ -48,7 +48,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use crate::adapters::git::{Git, ProcessRunner};
 use crate::adapters::github::{GhCli, GitHub};
 use crate::adapters::herdr::Herdr;
-use crate::adapters::ssh::{Ssh, SshConfigFile};
+use crate::adapters::ssh::Ssh;
 use crate::adapters::ssh_tunnel::SshForwarder;
 use crate::commands::backup::{self, Backups};
 use crate::commands::completion::{self, PullRequestStatusState};
@@ -59,8 +59,7 @@ use crate::commands::events::{
 use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::workspaces;
 use crate::commands::{
-    GitHubState, GitState, HerdrState, PlainRunState, Runtime, SshConfigState, SshState,
-    StorageState, TmuxRunState,
+    GitHubState, GitState, HerdrState, PlainRunState, Runtime, SshState, StorageState, TmuxRunState,
 };
 use crate::domain::model;
 use crate::mcp::tunnels::{self, Tunnels, TunnelsState};
@@ -190,7 +189,6 @@ pub struct Services {
     git: GitState,
     github: GitHubState,
     ssh: SshState,
-    ssh_config: SshConfigState,
     herdr: HerdrState,
     plain: PlainRunState,
     tmux: TmuxRunState,
@@ -457,7 +455,6 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         git: Arc::new(Git::new(Box::new(ProcessRunner))),
         github: Arc::new(GhCli::new(Box::new(ProcessRunner))),
         ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
-        ssh_config: SshConfigFile::in_home(),
         panes: panes::Panes::new(Arc::new(panes::HerdrSockets(herdr.clone()))),
         herdr,
         plain,
@@ -1046,7 +1043,6 @@ mod tests {
             git: Arc::new(Git::new(Box::new(ProcessRunner))),
             github: Arc::new(GhCli::new(Box::new(ProcessRunner))),
             ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
-            ssh_config: SshConfigFile::in_home(),
             panes: panes::Panes::new(access),
             herdr,
             agent_statuses: Mutex::default(),

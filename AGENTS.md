@@ -96,8 +96,7 @@ Layout:
     slugs, worktree paths and branch names). Pure logic: no I/O or storage.
   - `src-tauri/src/adapters/`: thin wrappers around external tools (`git.rs` runs git
     locally or over `ssh`, `herdr.rs` drives the herdr CLI, `github.rs` opens pull
-    requests with `gh`, `ssh.rs` reads and appends hosts in `~/.ssh/config` and lists
-    remote directories), each behind a trait with a fake for tests.
+    requests with `gh`, `ssh.rs` lists remote directories), each behind a trait with a fake for tests.
   - `src-tauri/src/runtime/plain/`: the plain runner, which runs `claude` or `codex` as child processes in a task worktree, locally or on an SSH host.
   - `src-tauri/src/runtime/host.rs`: builds run commands for the local host or an SSH host
     (POSIX `sh` or Windows PowerShell): staging, wrapper, stop, probe, and tmux commands.

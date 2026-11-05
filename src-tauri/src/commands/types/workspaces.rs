@@ -5,7 +5,7 @@ use specta::Type;
 use super::{WorkspaceId, local_path, machine_label, remote_path, required};
 use crate::adapters::{git, github, herdr, ssh};
 use crate::commands::{CommandError, CommandResult};
-use crate::domain::{model, ssh_config};
+use crate::domain::model;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -430,66 +430,6 @@ impl TryFrom<MachineSettings> for model::MachineSettings {
             },
         })
     }
-}
-
-/// A remote machine to append to the user's SSH config.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct NewSshHost {
-    /// Name used by `ssh <alias>` and shown as the machine label.
-    pub alias: String,
-    pub host_name: String,
-    pub user: Option<String>,
-    pub port: Option<u16>,
-}
-
-impl TryFrom<NewSshHost> for ssh_config::SshHost {
-    type Error = CommandError;
-
-    fn try_from(host: NewSshHost) -> CommandResult<Self> {
-        Self::new(
-            &host.alias,
-            &host.host_name,
-            host.user.as_deref(),
-            host.port,
-        )
-        .map_err(|error| CommandError::invalid_input(error.to_string()))
-    }
-}
-
-/// What testing the connection to an SSH machine found: Toodo connects without a prompt and
-/// git runs there, or a problem.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct SshMachineCheck {
-    /// `git --version` on the machine, e.g. `git version 2.43.0`; `None` when the test failed.
-    pub git_version: Option<String>,
-    /// What failed and the next step that fixes it; `None` when the test passed.
-    pub problem: Option<String>,
-}
-
-impl From<ssh::MachineCheck> for SshMachineCheck {
-    fn from(check: ssh::MachineCheck) -> Self {
-        match check {
-            ssh::MachineCheck::Ready { git_version } => Self {
-                git_version: Some(git_version),
-                problem: None,
-            },
-            ssh::MachineCheck::Problem(problem) => Self {
-                git_version: None,
-                problem: Some(problem),
-            },
-        }
-    }
-}
-
-/// A host appended to the SSH config, and the connection test run on it right after.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct AddedSshHost {
-    /// Host aliases of the updated config.
-    pub hosts: Vec<String>,
-    pub check: SshMachineCheck,
 }
 
 /// A machine saved in herdr with `herdr machine add`.
