@@ -220,6 +220,11 @@ All repository content (docs, code, comments, commits, PRs) is written in Englis
 Outside contributions are accepted under the [Contributor License Agreement](CLA.md).
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for how to sign it in a pull request.
 
+## Sponsoring
+
+If Toodo is useful to you, you can support its development through
+[GitHub Sponsors](https://github.com/sponsors/dev-bokdong).
+
 ## License
 
 Copyright (C) 2026 dev-bokdong
