@@ -6,10 +6,10 @@ use std::collections::HashMap;
 
 use rusqlite::{Connection, params, params_from_iter};
 
-use super::tasks::{find_task, record_event};
+use super::tasks::find_task;
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::criteria::{
-    self, CheckKind, CheckedBy, Criterion, CriterionId, CriterionState, Decision, NewCriterion,
+    CheckKind, CheckedBy, Criterion, CriterionId, CriterionState, NewCriterion,
 };
 use crate::domain::model::{Task, TaskId};
 use crate::domain::status::TaskStatus;
@@ -115,24 +115,6 @@ fn open_task(conn: &Connection, id: TaskId) -> Result<Task> {
     Ok(task)
 }
 
-/// Moves an `in_progress` task whose criteria are all met, one of them manual, to
-/// `in_review`, where it awaits completion. Returns the task as it is afterwards.
-fn await_completion(conn: &Connection, id: TaskId, at: i64) -> Result<Task> {
-    let task = find_task(conn, id)?.ok_or(StorageError::TaskNotFound(id))?;
-    if task.status != TaskStatus::InProgress
-        || criteria::decide(&task.criteria) != Decision::AwaitConfirmation
-    {
-        return Ok(task);
-    }
-    let status = task.status.transition_to(TaskStatus::InReview)?;
-    conn.execute(
-        "UPDATE tasks SET status = ?2 WHERE id = ?1",
-        params![id.0, status.as_str()],
-    )?;
-    record_event(conn, id, status, at)?;
-    find_task(conn, id)?.ok_or(StorageError::TaskNotFound(id))
-}
-
 impl Storage {
     /// The task a criterion belongs to; criterion IDs are unique across tasks. `None`
     /// when no task has it.
@@ -149,7 +131,6 @@ impl Storage {
     /// left out are deleted; new ones start pending. A `branch_merged_locally` criterion
     /// keeps the start commit Toodo found.
     pub fn set_criteria(&mut self, id: TaskId, edits: &[CriterionEdit]) -> Result<Task> {
-        let at = self.now();
         let tx = self.conn.transaction()?;
         let task = open_task(&tx, id)?;
         for edit in edits {
@@ -180,11 +161,7 @@ impl Storage {
                 )?;
                 continue;
             };
-            let target = if new.kind == CheckKind::BranchMergedLocally {
-                known.target.as_ref().filter(|_| known.kind == new.kind)
-            } else {
-                new.target.as_ref()
-            };
+            let target = new.target.as_ref();
             if known.kind == new.kind && known.target.as_ref() == target {
                 tx.execute(
                     "UPDATE task_criteria SET position = ?2, text = ?3 WHERE id = ?1",
@@ -200,7 +177,7 @@ impl Storage {
                 )?;
             }
         }
-        let task = await_completion(&tx, id, at)?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(task)
     }
@@ -250,7 +227,7 @@ impl Storage {
                 checked_at
             ],
         )?;
-        let task = await_completion(&tx, id, at)?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(task)
     }
@@ -306,7 +283,7 @@ impl Storage {
             changed = true;
         }
         let before = task.status;
-        let task = await_completion(&tx, id, at)?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok((task.clone(), changed || task.status != before))
     }
@@ -355,9 +332,7 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::model::{TaskType, WorkspaceLocation};
-    use crate::domain::naming::TaskCheckout;
-    use crate::domain::path::WindowsPath;
+    use crate::domain::model::TaskType;
     use crate::storage::{NewTask, NewWorkspace};
 
     fn manual(text: &str) -> NewCriterion {
@@ -370,14 +345,8 @@ mod tests {
         let workspace = storage
             .create_workspace(&NewWorkspace {
                 name: "toodo".to_owned(),
-                location: WorkspaceLocation::Local {
-                    path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
-                },
-                default_base_branch: "main".to_owned(),
-                source: crate::domain::model::Source::GitHub,
-                completion: crate::domain::model::CompletionMode::PullRequestMerge,
-                runner: crate::domain::model::Runner::Herdr,
-                axes_detected: true,
+                description: None,
+                repository: None,
             })
             .unwrap();
         let task = storage
@@ -395,30 +364,28 @@ mod tests {
     }
 
     fn start(storage: &mut Storage, task: &Task) -> Task {
-        let checkout = TaskCheckout {
-            path: WindowsPath::parse(r"C:\wt\toodo\docs-write-the-guide-1")
-                .unwrap()
-                .into(),
-            branch: "docs/write-the-guide-1".to_owned(),
-        };
-        storage.start_task(task.id, &checkout, "w1").unwrap()
+        storage.start_task(task.id, None, &[]).unwrap()
     }
 
     #[test]
     fn criteria_are_created_in_order_and_pending() {
-        let (_, task) = storage_with(vec![NewCriterion::merge(false), manual("Reviewed")]);
+        let (_, task) = storage_with(vec![
+            NewCriterion::parse("URL responds", CheckKind::Url, Some("https://example.com"))
+                .unwrap(),
+            manual("Reviewed"),
+        ]);
         let kinds: Vec<_> = task.criteria.iter().map(|c| (c.kind, c.state)).collect();
         assert_eq!(
             kinds,
             vec![
-                (CheckKind::BranchMergedLocally, CriterionState::Pending),
+                (CheckKind::Url, CriterionState::Pending),
                 (CheckKind::Manual, CriterionState::Pending)
             ]
         );
     }
 
     #[test]
-    fn checking_the_last_manual_criterion_moves_a_started_task_to_await_completion() {
+    fn checking_criteria_keeps_status_until_an_explicit_transition() {
         let (mut storage, task) = storage_with(vec![manual("Guide written"), manual("Reviewed")]);
         let [first, second] = [task.criteria[0].id, task.criteria[1].id];
         // A planned task records the check but does not move.
@@ -438,16 +405,16 @@ mod tests {
         let awaiting = storage
             .check_criterion(task.id, second, true, Some("approved"), CheckedBy::Agent)
             .unwrap();
-        assert_eq!(awaiting.status, TaskStatus::InReview);
+        assert_eq!(awaiting.status, TaskStatus::InProgress);
         assert_eq!(
             awaiting.timeline.last().map(|event| event.status),
-            Some(TaskStatus::InReview)
+            Some(TaskStatus::InProgress)
         );
         // Unchecking keeps it awaiting completion; confirming needs every criterion met.
         let unchecked = storage
             .check_criterion(task.id, second, false, None, CheckedBy::User)
             .unwrap();
-        assert_eq!(unchecked.status, TaskStatus::InReview);
+        assert_eq!(unchecked.status, TaskStatus::InProgress);
         assert_eq!(unchecked.criteria[1].state, CriterionState::Pending);
         assert_eq!(unchecked.criteria[1].checked_by, None);
         assert_eq!(unchecked.criteria[1].checked_at, None);
@@ -455,7 +422,11 @@ mod tests {
 
     #[test]
     fn automatic_criteria_and_done_tasks_cannot_be_checked_by_hand() {
-        let (mut storage, task) = storage_with(vec![NewCriterion::merge(true), manual("Docs")]);
+        let (mut storage, task) = storage_with(vec![
+            NewCriterion::parse("URL responds", CheckKind::Url, Some("https://example.com"))
+                .unwrap(),
+            manual("Docs"),
+        ]);
         let merge = task.criteria[0].id;
         assert!(matches!(
             storage.check_criterion(task.id, merge, true, None, CheckedBy::User),
@@ -466,7 +437,7 @@ mod tests {
             Err(StorageError::CriterionNotFound { .. })
         ));
         start(&mut storage, &task);
-        storage.complete_task(task.id, None, None, &[]).unwrap();
+        storage.complete_task(task.id, None, &[]).unwrap();
         assert!(matches!(
             storage.check_criterion(task.id, task.criteria[1].id, true, None, CheckedBy::User),
             Err(StorageError::CriteriaOfDoneTask(_))
@@ -478,8 +449,11 @@ mod tests {
     }
 
     #[test]
-    fn automatic_checks_stay_met_and_keep_the_start_commit() {
-        let (mut storage, task) = storage_with(vec![NewCriterion::merge(false)]);
+    fn automatic_checks_stay_met_and_keep_the_url() {
+        let (mut storage, task) = storage_with(vec![
+            NewCriterion::parse("URL responds", CheckKind::Url, Some("https://example.com"))
+                .unwrap(),
+        ]);
         let id = task.criteria[0].id;
         start(&mut storage, &task);
         let check = |state, evidence: Option<&str>, target: Option<&str>| CriterionCheck {
@@ -491,11 +465,18 @@ mod tests {
         let (pending, changed) = storage
             .record_criterion_checks(
                 task.id,
-                &[check(CriterionState::Pending, None, Some("abc"))],
+                &[check(
+                    CriterionState::Pending,
+                    None,
+                    Some("https://example.com/check"),
+                )],
             )
             .unwrap();
         assert!(changed);
-        assert_eq!(pending.criteria[0].target.as_deref(), Some("abc"));
+        assert_eq!(
+            pending.criteria[0].target.as_deref(),
+            Some("https://example.com/check")
+        );
         let (_, changed) = storage
             .record_criterion_checks(task.id, &[check(CriterionState::Pending, None, None)])
             .unwrap();
@@ -505,7 +486,10 @@ mod tests {
             .unwrap();
         assert!(changed);
         assert_eq!(met.criteria[0].state, CriterionState::Met);
-        assert_eq!(met.criteria[0].target.as_deref(), Some("abc"));
+        assert_eq!(
+            met.criteria[0].target.as_deref(),
+            Some("https://example.com/check")
+        );
         assert_eq!(met.criteria[0].checked_by, Some(CheckedBy::Toodo));
         // Only automatic criteria: Toodo completes the task itself, it does not await one.
         assert_eq!(met.status, TaskStatus::InProgress);

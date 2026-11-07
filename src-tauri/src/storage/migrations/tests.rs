@@ -2,6 +2,32 @@ use rusqlite::params;
 
 use super::*;
 
+/// Exercises migrations that introduced execution fields before their removal.
+pub(super) fn migrate_legacy(conn: &mut Connection) -> Result<()> {
+    let version = schema_version(conn)?;
+    conn.pragma_update(None, "foreign_keys", false)?;
+    let tx = conn.transaction()?;
+    for (index, sql) in MIGRATIONS
+        .iter()
+        .enumerate()
+        .take(45)
+        .skip(version as usize)
+    {
+        tx.execute_batch(sql)?;
+        let version = index as i64 + 1;
+        for (_, step) in DATA_STEPS.iter().filter(|(after, _)| *after == version) {
+            step(&tx)?;
+        }
+        tx.pragma_update(None, "user_version", version)?;
+    }
+    let violation: Option<String> = tx
+        .query_row("PRAGMA foreign_key_check", [], |r| r.get(0))
+        .optional()?;
+    assert_eq!(violation, None);
+    tx.commit()?;
+    Ok(())
+}
+
 #[test]
 fn version_24_keeps_task_data_references_search_and_the_id_counter() {
     // Given a version-23 database with references, a deleted ID and searchable data.
@@ -86,11 +112,11 @@ fn version_24_keeps_task_data_references_search_and_the_id_counter() {
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
     // When the resolution constraint is upgraded.
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
     // Then every field and reference survives, and new resolutions and search work.
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     assert_eq!(tables.map(|table| rows(&conn, table)), before);
     let handle: String = conn
         .query_row(
@@ -176,10 +202,10 @@ fn version_2_keeps_tasks_their_references_and_the_id_counter() {
     .unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let count = |table: &str| -> i64 {
         conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
             row.get(0)
@@ -224,10 +250,10 @@ fn version_3_adds_an_empty_history_and_no_merge_time_to_existing_tasks() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let merged_at: Option<i64> = conn
         .query_row(
             "SELECT pull_request_merged_at FROM tasks WHERE id = 1",
@@ -284,7 +310,7 @@ fn version_4_turns_ready_and_cancelled_into_planned_and_drops_readiness_events()
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
     let statuses: Vec<String> = conn
         .prepare("SELECT status FROM tasks ORDER BY id")
@@ -341,10 +367,10 @@ fn version_5_adds_no_note_and_no_snapshot_to_existing_tasks() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let note: Option<String> = conn
         .query_row(
             "SELECT completion_note FROM tasks WHERE id = 1",
@@ -387,9 +413,9 @@ fn version_7_links_no_issue_to_existing_tasks() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let issue: (Option<i64>, Option<String>) = conn
         .query_row(
             "SELECT issue_number, issue_url FROM tasks WHERE id = 1",
@@ -429,10 +455,10 @@ fn version_8_adds_no_notes_and_drops_them_with_their_task() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let notes = |conn: &Connection| -> i64 {
         conn.query_row("SELECT count(*) FROM task_notes", [], |row| row.get(0))
             .unwrap()
@@ -470,9 +496,9 @@ fn version_9_plans_nothing_for_existing_tasks_and_checks_new_plans() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let plan: (Option<String>, Option<f64>, Option<String>) = conn
         .query_row(
             "SELECT estimate_unit, estimate_amount, due_date FROM tasks WHERE id = 1",
@@ -520,9 +546,9 @@ fn version_10_keeps_hour_estimates_clears_points_and_allows_time_units() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let mut statement = conn
         .prepare("SELECT estimate_unit, estimate_amount, due_date FROM tasks ORDER BY id")
         .unwrap();
@@ -584,10 +610,10 @@ fn version_11_indexes_existing_tasks_for_search_and_relates_none() {
     .unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let matches = |query: &str| -> Vec<i64> {
         conn.prepare("SELECT rowid FROM task_search WHERE task_search MATCH ?1 ORDER BY rowid")
             .unwrap()
@@ -651,10 +677,10 @@ fn version_6_marks_done_tasks_merged_keeps_their_data_and_allows_rnd() {
     .unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     // Status, resolution, completion note, and merge time.
     type Row = (String, Option<String>, Option<String>, Option<i64>);
     let rows: Vec<Row> = conn
@@ -740,9 +766,9 @@ fn version_12_lets_agents_of_existing_workspaces_never_merge() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let agent_merge = |conn: &Connection| -> String {
         conn.query_row(
             "SELECT agent_merge FROM workspaces WHERE id = 1",
@@ -781,10 +807,10 @@ fn version_13_keeps_tasks_and_links_only_merged_ones_to_another_pull_request() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let merged_with = |conn: &Connection| -> (Option<String>, Option<i64>) {
         conn.query_row(
             "SELECT merged_with_pull_request_url, merged_with_task_id FROM tasks WHERE id = 2",
@@ -852,10 +878,10 @@ fn version_16_turns_done_when_items_into_criteria_after_the_pull_request() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     type Row = (String, String, String, Option<String>, Option<i64>);
     let criteria = |task: i64| -> Vec<Row> {
         let mut statement = conn
@@ -951,7 +977,7 @@ fn version_36_keeps_subscriptions_without_a_failure() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
     let row: (String, Option<String>, Option<i64>) = conn
         .query_row(
@@ -982,7 +1008,7 @@ fn version_37_keeps_earlier_device_tokens_working_with_full_access_for_90_days()
         })
         .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
     let rows: Vec<(String, String, Option<i64>)> = conn
         .prepare("SELECT label, scope, expires_at FROM devices ORDER BY id")
@@ -1020,10 +1046,10 @@ fn version_17_keeps_devices_without_subscriptions_and_drops_them_with_the_device
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let count = |conn: &Connection| -> i64 {
         conn.query_row("SELECT count(*) FROM push_subscriptions", [], |row| {
             row.get(0)
@@ -1063,9 +1089,9 @@ fn version_18_starts_an_empty_chat_that_keeps_one_message_per_client_id() {
     }
     conn.pragma_update(None, "user_version", 17).unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let insert = |author: &str, body: &str, client_id: Option<&str>| {
         conn.execute(
             "INSERT INTO chat_messages (author, body, client_id, at) VALUES (?1, ?2, ?3, 1)",
@@ -1095,9 +1121,9 @@ fn version_19_counts_earlier_messages_delivered_and_answered_ones_seen() {
         .unwrap();
     }
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let rows: Vec<(Option<i64>, Option<i64>)> = conn
         .prepare("SELECT delivered_at, seen_at FROM chat_messages ORDER BY id")
         .unwrap()
@@ -1128,9 +1154,9 @@ fn version_20_counts_earlier_messages_and_events_taken_by_the_lead() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let taken: Vec<Option<i64>> = conn
         .prepare("SELECT taken_at FROM chat_messages ORDER BY id")
         .unwrap()
@@ -1171,10 +1197,10 @@ fn version_21_keeps_the_chat_and_lets_only_the_system_report_a_finish_once() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     type Kept = (i64, String, Option<String>, Option<i64>, Option<i64>);
     let kept: Vec<Kept> = conn
         .prepare("SELECT id, author, client_id, seen_at, taken_at FROM chat_messages ORDER BY id")
@@ -1245,10 +1271,10 @@ fn version_22_links_earlier_reports_and_never_counts_earlier_messages_handled() 
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let receipts: (Option<i64>, Option<i64>, Option<i64>) = conn
         .query_row(
             "SELECT due_at, acked_at, handled_at FROM chat_messages WHERE id = 1",
@@ -1296,9 +1322,9 @@ fn version_23_keeps_one_message_per_origin_and_only_of_people_and_the_lead() {
     conn.execute_batch("INSERT INTO chat_messages (author, body, at) VALUES ('user', 'Hi', 10)")
         .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let origin: Option<String> = conn
         .query_row("SELECT origin FROM chat_messages WHERE id = 1", [], |row| {
             row.get(0)
@@ -1343,10 +1369,10 @@ fn version_25_lets_a_task_ship_through_another_task_without_a_pull_request_url()
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let kept: (Option<String>, Option<i64>) = conn
         .query_row(
             "SELECT merged_with_pull_request_url, merged_with_task_id FROM tasks WHERE id = 2",
@@ -1401,9 +1427,9 @@ fn version_27_infers_workspace_axes_from_their_tasks() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let mut statement = conn
         .prepare("SELECT source, completion, runner, axes_detected FROM workspaces ORDER BY id")
         .unwrap();
@@ -1458,10 +1484,10 @@ fn version_26_drops_project_memory_and_keeps_workspaces_and_tasks() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let memory: i64 = conn
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE name LIKE 'memory_entries%'",
@@ -1497,10 +1523,10 @@ fn version_29_opens_one_runtime_workspace_per_herdr_handle_and_creates_no_runs()
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let mut statement = conn
         .prepare(
             "SELECT task_id, owner_key, host_ref, runner_kind, provider_instance,
@@ -1618,9 +1644,9 @@ fn version_31_keeps_herdr_handles_in_runtime_workspaces_and_drops_the_task_colum
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let handle_column: i64 = conn
         .query_row(
             "SELECT count(*) FROM pragma_table_info('tasks')
@@ -1825,7 +1851,7 @@ fn version_38_keeps_runs_without_activity_and_drops_transitions_with_their_task(
              VALUES (1, 'old', 1, 'plain', 'writer', 'local', 'settled', 10);",
     )
     .unwrap();
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
     let activity: (Option<i64>, Option<i64>) = conn
         .query_row(
@@ -1876,7 +1902,7 @@ fn version_40_keeps_runs_and_machine_settings_and_allows_queued_runs_and_run_lim
          INSERT INTO machine_settings (kind, label, worktree_root) VALUES ('local', '', '/wt');",
     )
     .unwrap();
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
     let kept: (String, Option<i64>, i64) = conn
         .query_row(
@@ -1959,10 +1985,10 @@ fn version_33_keeps_workspaces_their_tasks_and_the_id_counter_and_allows_runner_
         .is_err()
     );
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let kept: (
         String,
         String,
@@ -2043,10 +2069,10 @@ fn version_45_keeps_notes_and_search_and_adds_decision_notes_and_empty_refs() {
     )
     .unwrap();
 
-    migrate(&mut conn).unwrap();
+    migrate_legacy(&mut conn).unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     let refs: String = conn
         .query_row("SELECT refs FROM tasks WHERE id = 1", [], |row| row.get(0))
         .unwrap();
@@ -2075,4 +2101,131 @@ fn version_45_keeps_notes_and_search_and_adds_decision_notes_and_empty_refs() {
         .query_row("SELECT count(*) FROM task_notes", [], |row| row.get(0))
         .unwrap();
     assert_eq!(notes, 0);
+}
+
+#[test]
+fn version_46_preserves_references_criteria_and_historical_reports() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_legacy(&mut conn).unwrap();
+    conn.execute_batch(r#"INSERT INTO workspaces (id, name, kind, path, default_base_branch) VALUES (1, 'Planning', 'local', '/repo', 'main');
+        INSERT INTO tasks (id, workspace_id, type, title, status, branch, pull_request_url, refs) VALUES (1, 1, 'feat', 'Ship', 'in_review', 'feat/ship', 'https://example.com/pull/1', '["lane:ship","pr:https://example.com/pull/1"]');
+        INSERT INTO task_criteria (id, task_id, position, text, kind, state) VALUES (1, 1, 0, 'Merged', 'pr_merged', 'met'), (2, 1, 1, 'Await merge', 'pr_merged', 'pending');
+        INSERT INTO commit_records (task_id, position, sha, message, author, committed_at) VALUES (1, 0, 'abc', 'Ship', 'Ada', 10);
+        INSERT INTO pull_request_snapshots (task_id, number, title, additions, deletions, changed_files, review_count, reviewer_count) VALUES (1, 1, 'Historical PR', 4, 2, 1, 1, 1);
+        INSERT INTO task_activity (task_id, dedup_key, kind, source, external_ref, title, occurred_at, received_at, confirmed_at) VALUES (1, 'history', 'commit', 'git_poll', 'abc', 'Ship', 10, 10, 10);"#).unwrap();
+    super::migrate(&mut conn).unwrap();
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    let workspace: (String, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT name, description, repository FROM workspaces",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        workspace,
+        (
+            "Planning".into(),
+            Some("Former directory: `/repo`".into()),
+            None
+        )
+    );
+    let (status, refs): (String, String) = conn
+        .query_row("SELECT status, refs FROM tasks", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(status, "in_review");
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&refs).unwrap(),
+        [
+            "lane:ship",
+            "pr:https://example.com/pull/1",
+            "branch:feat/ship"
+        ]
+    );
+    let criteria = conn
+        .prepare("SELECT text, kind, state, target FROM task_criteria ORDER BY id")
+        .unwrap()
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        criteria,
+        [
+            (
+                "Merged (was pr_merged)".into(),
+                "manual".into(),
+                "met".into(),
+                None
+            ),
+            (
+                "Await merge (was pr_merged)".into(),
+                "manual".into(),
+                "pending".into(),
+                None
+            )
+        ]
+    );
+    for table in ["commit_records", "pull_request_snapshots", "task_activity"] {
+        assert_eq!(
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+    for table in [
+        "runtime_hosts",
+        "runtime_host_events",
+        "runtime_workspaces",
+        "task_runs",
+        "run_events",
+        "run_operations",
+        "queued_runs",
+        "agent_conversations",
+        "agent_status_transitions",
+        "machine_settings",
+    ] {
+        assert!(!conn.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)", [table], |r| r.get::<_, bool>(0)).unwrap());
+    }
+    assert!(conn.prepare("SELECT worktree_path FROM tasks").is_err());
+    assert!(conn.prepare("SELECT runner FROM workspaces").is_err());
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM task_search WHERE task_search MATCH 'ship'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    conn.execute(
+        r#"UPDATE tasks SET refs = '["lane:updated"]' WHERE id = 1"#,
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM task_search WHERE task_search MATCH 'updated'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert!(
+        conn.query_row("PRAGMA foreign_key_check", [], |r| r.get::<_, String>(0))
+            .optional()
+            .unwrap()
+            .is_none()
+    );
 }

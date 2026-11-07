@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { compactSelectClass } from "@/components/workspace-list";
 import { ErrorBoundary } from "@/components/error-boundary";
 import type { TaskId, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
-import { useAgentStatuses, usePullRequestStatuses, useTasks, useWorkspaces } from "@/lib/queries";
+import { useTasks, useWorkspaces } from "@/lib/queries";
 import { type TimelineScale } from "@/lib/task-graph";
 import {
   defaultTaskFilter,
@@ -23,7 +23,6 @@ import { needsAttention } from "@/lib/attention";
 import { statusNames, toneFill, toneOutline } from "@/lib/status-styles";
 import { singleKeyShortcut } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
-import { workspaceCapabilities } from "@/lib/workspace-capabilities";
 import {
   taskTypes,
   statusLabel,
@@ -33,9 +32,7 @@ import {
   type TaskContext,
 } from "@/components/task-common";
 import { TaskRow } from "@/components/task-row";
-import { AgentMergeSetting, BaseBranchForm, RunLimitForm, WorktreeRootForm } from "@/components/workspace-settings";
-import { WorkspaceAgentOptions } from "@/components/agent-options";
-import { WorkspacePullRequestOptions } from "@/components/pull-request-options";
+import { WorkspaceDetails } from "@/components/workspace-settings";
 import { type TaskDraft, emptyDraft, NewTaskForm } from "@/components/new-task-form";
 import { PlanView } from "@/components/plan-view";
 import type { AllView } from "@/lib/route";
@@ -100,16 +97,12 @@ export function TaskList({
   const allTasks = useTasks([shownTask?.id, detailId, taskNumber(chosenFilter?.query ?? "")]);
   // On a phone the filters fold behind a button so the view gets most of the screen.
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const agentStatuses = useAgentStatuses();
-  const pullRequestStatuses = usePullRequestStatuses();
   // Done tasks are folded away until asked for, or while a search or filter is narrowing the list.
   const [doneShown, setDoneShown] = useState<boolean | null>(null);
   const byWorkspace = new Map(workspaces.data?.map((entry) => [entry.id, entry]));
   const context: TaskContext = {
     byId: new Map(allTasks.data?.map((task) => [task.id, task])),
     workspaceName: (id) => byWorkspace.get(id)?.name ?? `Workspace ${id}`,
-    capabilities: (id) => workspaceCapabilities(byWorkspace.get(id)),
-    remote: (id) => byWorkspace.get(id)?.location.kind === "ssh",
   };
   const tasks =
     workspace === null ? allTasks.data : allTasks.data?.filter((task) => task.workspaceId === workspace.id);
@@ -199,21 +192,11 @@ export function TaskList({
           {workspace?.name ?? "All workspaces"}
         </h2>
         {workspace ? (
-          <>
-            <BaseBranchForm workspace={workspace} />
-            {workspaceCapabilities(workspace).merge && <AgentMergeSetting workspace={workspace} />}
-            {workspaceCapabilities(workspace).pullRequests && <WorkspacePullRequestOptions workspace={workspace} />}
-            {(workspace.runner === "plain" || workspace.runner === "tmux") && <WorkspaceAgentOptions workspace={workspace} />}
-          </>
+          <WorkspaceDetails key={workspace.id} workspace={workspace} />
         ) : (
           <p className="text-sm text-muted-foreground max-md:hidden">Tasks of every workspace and the dependencies between them.</p>
         )}
       </header>
-
-      {/* Every runner but none starts tasks in worktrees under the worktree root of the machine. */}
-      {workspace && workspace.runner !== "none" && <WorktreeRootForm workspace={workspace} />}
-      {/* Only plain and tmux runs are started by Toodo, so only they count against a limit. */}
-      {workspace && (workspace.runner === "plain" || workspace.runner === "tmux") && <RunLimitForm workspace={workspace} />}
 
       {workspace && onDraftChange && <NewTaskForm workspace={workspace} draft={draft} onChange={onDraftChange} />}
 
@@ -327,7 +310,7 @@ export function TaskList({
               {groupTasks(
                 filtered,
                 context.byId,
-                needsAttention(filtered, agentStatuses.data ?? [], pullRequestStatuses.data ?? [], context.byId).map(
+                needsAttention(filtered, Date.now() / 1000, context.byId).map(
                   (item) => item.task.id,
                 ),
               ).map(({ group, tasks: grouped }) => {

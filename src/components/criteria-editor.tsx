@@ -4,26 +4,19 @@ import { Button } from "@/components/ui/button";
 import { compactSelectClass, inputClass } from "@/components/workspace-list";
 import type { CheckKind, Criterion, CriterionId, CriterionInput, TaskId } from "@/lib/bindings";
 import { cn } from "@/lib/utils";
-import { type WorkspaceCapabilities } from "@/lib/workspace-capabilities";
 
 
 export const criterionKindLabels: Record<CheckKind, string> = {
   manual: "Manual",
   url: "URL responds",
-  command: "Command succeeds",
-  pr_open_ci_green: "PR open with green CI",
-  pr_merged: "PR merged",
-  branch_merged_locally: "Merged locally",
 };
 
-/** Kinds of the merge criterion, of which a task has at most one. */
-export function isMergeKind(kind: CheckKind): boolean {
-  return kind === "pr_merged" || kind === "branch_merged_locally";
-}
+/** The kinds a criterion can have, in the order the editor offers them. */
+const criterionKinds: CheckKind[] = ["manual", "url"];
 
-/** Kinds checked against a target their author gives: the URL to fetch or the command to run. */
+/** Kinds checked against a target their author gives: the URL to fetch. */
 export function takesTarget(kind: CheckKind): boolean {
-  return kind === "url" || kind === "command";
+  return kind === "url";
 }
 
 /** A row of the criteria editor; `id` is set for an existing criterion of the edited task. */
@@ -38,7 +31,6 @@ export function criterionDraft(criterion?: Criterion): CriterionDraft {
   if (criterion === undefined) {
     return { key: lastCriterionKey, id: null, text: "", kind: "manual", target: "" };
   }
-  // The target of a merged-locally criterion is the commit Toodo found, not one to edit.
   const target = takesTarget(criterion.kind) ? (criterion.target ?? "") : "";
   return { key: lastCriterionKey, id: criterion.id, text: criterion.text, kind: criterion.kind, target };
 }
@@ -60,28 +52,20 @@ export function targetProblem(draft: CriterionDraft): string | null {
   if (draft.text.trim() === "") return null;
   const target = draft.target.trim();
   if (draft.kind === "url" && !/^https?:\/\/\S*$/.test(target)) return "Enter an http:// or https:// URL";
-  if (draft.kind === "command" && target === "") return "Enter the command to run";
   return null;
 }
 
 /**
  * The completion criteria of a new or an edited task: one row per criterion with what has
- * to hold, how it is checked, and the URL or command a check runs against. In the edit form
+ * to hold, how it is checked, and the URL a check fetches. In the edit form
  * of a task, `taskId` ends the labels with ` of #id`.
  */
 export function CriteriaEditor({
   criteria,
-  capabilities,
   onChange,
   taskId,
 }: {
   criteria: CriterionDraft[];
-  /**
-   * What the task's workspace has, which decides the kinds offered. The merge criterion
-   * comes from "Done when merged" in the new and edit forms and keeps its kind when the
-   * task is edited.
-   */
-  capabilities: WorkspaceCapabilities;
   onChange: (criteria: CriterionDraft[]) => void;
   taskId?: TaskId;
 }) {
@@ -104,7 +88,6 @@ export function CriteriaEditor({
           {criteria.map((draft, index) => {
             const n = index + 1;
             const problem = targetProblem(draft);
-            const fixedKind = !capabilities.criterionKinds.includes(draft.kind);
             return (
               // Below md each criterion is a block: its text on the first line, kind and remove on the next.
               <li
@@ -126,11 +109,10 @@ export function CriteriaEditor({
                   aria-label={`Criterion ${n} kind${of}`}
                   className={cn(compactSelectClass, "h-7 max-md:col-start-2 max-md:row-start-2")}
                   value={draft.kind}
-                  disabled={fixedKind}
-                  title={fixedKind ? "The merge criterion keeps its kind" : "How the criterion is checked"}
+                  title="How the criterion is checked"
                   onChange={(e) => update(draft.key, { kind: e.target.value as CheckKind })}
                 >
-                  {(fixedKind ? [draft.kind] : capabilities.criterionKinds).map((kind) => (
+                  {criterionKinds.map((kind) => (
                     <option key={kind} value={kind}>
                       {criterionKindLabels[kind]}
                     </option>
@@ -144,15 +126,8 @@ export function CriteriaEditor({
                     )}
                     aria-label={`Criterion ${n} target${of}`}
                     aria-invalid={problem !== null}
-                    title={
-                      problem ??
-                      (draft.kind === "url"
-                        ? "Toodo checks that a GET of this URL succeeds"
-                        : capabilities.herdr
-                          ? "Toodo checks that this command exits with 0 in the task worktree"
-                          : "Toodo checks that this command exits with 0 in the workspace directory")
-                    }
-                    placeholder={draft.kind === "url" ? "https://example.com/health" : "npm test"}
+                    title={problem ?? "Toodo checks that a GET of this URL succeeds"}
+                    placeholder="https://example.com/health"
                     value={draft.target}
                     onChange={(e) => update(draft.key, { target: e.target.value })}
                   />

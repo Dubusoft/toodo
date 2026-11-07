@@ -7,8 +7,8 @@ fn version_32_adds_host_journal_constraints_and_cursor_defaults() {
         conn.execute_batch(sql).unwrap();
     }
     conn.pragma_update(None, "user_version", 31).unwrap();
-    migrate(&mut conn).unwrap();
-    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    tests::migrate_legacy(&mut conn).unwrap();
+    assert_eq!(schema_version(&conn).unwrap(), 45);
     conn.execute(
         "INSERT INTO runtime_hosts (host_ref, updated_at) VALUES ('local', 'now')",
         [],

@@ -4,7 +4,7 @@ use specta::Type;
 use specta_typescript::Number;
 
 use crate::commands::{CommandError, CommandResult};
-use crate::domain::{model, path, plan};
+use crate::domain::plan;
 
 pub(super) fn required(field: &str, value: String) -> CommandResult<String> {
     let trimmed = value.trim();
@@ -97,23 +97,4 @@ pub(crate) fn due_date(raw: Option<&str>) -> CommandResult<Option<plan::DueDate>
             .map(Some)
             .map_err(|error| CommandError::invalid_input(error.to_string())),
     }
-}
-
-pub(super) fn machine_label(raw: &str) -> CommandResult<model::MachineLabel> {
-    model::MachineLabel::parse(raw).map_err(|error| CommandError::invalid_input(error.to_string()))
-}
-
-/// A path on the machine Toodo runs on: a POSIX path on the server.
-pub(super) fn local_path(raw: &str) -> CommandResult<model::HostPath> {
-    posix_path(raw).map(model::HostPath::Posix)
-}
-
-pub(super) fn posix_path(raw: &str) -> CommandResult<path::PosixPath> {
-    path::PosixPath::parse(raw).map_err(|error| CommandError::invalid_input(error.to_string()))
-}
-
-/// A path on an SSH machine: a POSIX path, or a Windows drive or UNC path on a Windows
-/// host.
-pub(super) fn remote_path(raw: &str) -> CommandResult<model::HostPath> {
-    model::HostPath::parse(raw).map_err(|error| CommandError::invalid_input(error.to_string()))
 }

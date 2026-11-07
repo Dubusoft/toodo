@@ -363,8 +363,6 @@ pub fn spawn(app: Arc<dyn Runtime>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::model::WorkspaceLocation;
-    use crate::domain::path::WindowsPath;
     use crate::storage::{NewWorkspace, Storage};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicI64, Ordering};
@@ -402,16 +400,8 @@ mod tests {
             lock(&self.storage)
                 .create_workspace(&NewWorkspace {
                     name: name.to_owned(),
-                    location: WorkspaceLocation::Local {
-                        path: WindowsPath::parse(&format!("C:\\dev\\{name}"))
-                            .unwrap()
-                            .into(),
-                    },
-                    default_base_branch: "main".to_owned(),
-                    source: crate::domain::model::Source::GitHub,
-                    completion: crate::domain::model::CompletionMode::PullRequestMerge,
-                    runner: crate::domain::model::Runner::Herdr,
-                    axes_detected: true,
+                    description: None,
+                    repository: None,
                 })
                 .unwrap();
         }

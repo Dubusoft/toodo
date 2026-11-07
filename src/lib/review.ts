@@ -250,6 +250,14 @@ function durations(entries: ReviewEntry[], span: (entry: ReviewEntry) => [Timest
   });
 }
 
+/** The pull request URL a task references as `pr:<url>`, or `null` when it has none. */
+export function pullRequestRef(task: Pick<Task, "refs">): string | null {
+  for (const ref of task.refs) {
+    if (ref.startsWith("pr:") && /^https?:\/\//.test(ref.slice(3))) return ref.slice(3);
+  }
+  return null;
+}
+
 /**
  * Counts and durations of the reviewed period, from the recorded milestones of its entries;
  * completions are counted per month in `timeZone`, the one the period was judged in.
@@ -263,7 +271,7 @@ export function summarize(
   const names = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
   const completed = entries.filter((entry) => entry.outcome === "completed");
   const months = periodMonths(period);
-  const pullRequests = completed.flatMap(({ task }) => (task.pullRequest ? [task.pullRequest] : []));
+  const pullRequests = completed.flatMap(({ pullRequest }) => (pullRequest ? [pullRequest] : []));
   return {
     outcomes: groupByOutcome(entries).map((group) => ({ outcome: group.outcome, count: group.entries.length })),
     commits: entries.reduce((total, entry) => total + entry.commits.length, 0),
@@ -283,7 +291,7 @@ export function summarize(
       }),
     ),
     reviewTime: median(
-      durations(completed, ({ task, at }) => [task.milestones.reviewAt, task.pullRequestMergedAt ?? at]),
+      durations(completed, ({ task, at }) => [task.milestones.reviewAt, at]),
     ),
     completedPerMonth:
       months.length < 2
@@ -436,7 +444,7 @@ const largestOverruns = 3;
  */
 export function yearInReview(entries: ReviewEntry[]): YearInReview | null {
   const completed = entries.filter((entry) => entry.outcome === "completed");
-  const merged = completed.flatMap(({ task }) => (task.pullRequest ? [{ task, pullRequest: task.pullRequest }] : []));
+  const merged = completed.flatMap(({ task, pullRequest }) => (pullRequest ? [{ task, pullRequest }] : []));
   const research = completed
     .filter(({ task }) => task.taskType === "rnd")
     .map(({ task, at }) => ({ task, at, adopted: task.resolution !== "not_adopted" }))

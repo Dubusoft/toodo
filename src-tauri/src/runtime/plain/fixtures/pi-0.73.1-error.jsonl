@@ -1,6 +1,0 @@
-{"type":"session","version":3,"id":"01a1b4d1-5584-71e2-b412-80efb1bb7ed1","cwd":"/work/task-7"}
-{"type":"agent_end","messages":[{"role":"user","content":[{"type":"text","text":"x"}]},{"role":"assistant","content":[],"api":"openai-completions","provider":"probe","model":"probe-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"stopReason":"error","errorMessage":"Connection error."}]}
-{"type":"agent_end","messages":[{"role":"assistant","content":[],"api":"openai-completions","provider":"probe","model":"probe-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"stopReason":"error","errorMessage":"Connection error."}]}
-{"type":"agent_end","messages":[{"role":"assistant","content":[],"api":"openai-completions","provider":"probe","model":"probe-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"stopReason":"error","errorMessage":"Connection error."}]}
-{"type":"agent_end","messages":[{"role":"assistant","content":[],"api":"openai-completions","provider":"probe","model":"probe-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0},"stopReason":"error","errorMessage":"Connection error."}]}
-{"type":"auto_retry_end","success":false,"attempt":3,"finalError":"Connection error."}

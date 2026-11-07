@@ -1,14 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Archive, Bell, Bot, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, Plug, SlidersHorizontal, SquareTerminal, X } from "lucide-react";
-import { AgentAccessPanel, AgentAccessStatus } from "@/components/agent-access-panel";
+import { Archive, Bell, Bot, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, Plug, SlidersHorizontal, X } from "lucide-react";
+import { AgentAccessPanel } from "@/components/agent-access-panel";
 import { ArchivePanel } from "@/components/archive-panel";
 import { BackupPanel, BackupStatusLabel } from "@/components/backup-panel";
 import { ConnectedAppsPanel } from "@/components/connected-apps-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
-import { RunnersPanel } from "@/components/runners-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { commands } from "@/lib/bindings";
@@ -19,7 +18,6 @@ import { cn } from "@/lib/utils";
 export type SettingsSection =
   | "general"
   | "agents"
-  | "runners"
   | "apps"
   | "devices"
   | "notifications"
@@ -35,8 +33,7 @@ type Section = {
 
 const sections: Section[] = [
   { id: "general", label: "General", icon: <SlidersHorizontal /> },
-  { id: "agents", label: "Agent access", icon: <Bot />, status: <AgentAccessStatus /> },
-  { id: "runners", label: "Runners", icon: <SquareTerminal /> },
+  { id: "agents", label: "Agent access", icon: <Bot /> },
   { id: "apps", label: "Connected apps", icon: <Plug /> },
   { id: "devices", label: "Devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
   { id: "notifications", label: "Notifications", icon: <Bell />, status: <NotificationsStatus /> },
@@ -262,8 +259,6 @@ export function SettingsDialog({
                     <GeneralSettings />
                   ) : item.id === "agents" ? (
                     <AgentAccessPanel />
-                  ) : item.id === "runners" ? (
-                    <RunnersPanel />
                   ) : item.id === "apps" ? (
                     <ConnectedAppsPanel />
                   ) : item.id === "devices" ? (
