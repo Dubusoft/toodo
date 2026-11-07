@@ -807,7 +807,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Search tasks of all workspaces (or one) by words in their title, description, notes, completion note, branch, and pull request, best match first. Every word must appear, as a substring in any language; words are literal, not operators. A task number alone (431 or #431) returns that task first, in any workspace. Use it before planning or create_task to find earlier tasks on the same subject, then get_task to read what was decided. Each result lists its depends_on, dependents, and related task IDs."
+        description = "Search tasks of all workspaces (or one) by words in their title, description, notes, completion note, branch, refs, and pull request, best match first. Every word must appear, as a substring in any language; words are literal, not operators. A task number alone (431 or #431) returns that task first, in any workspace. Use it before planning or create_task to find earlier tasks on the same subject, then get_task to read what was decided. Each result lists its depends_on, dependents, and related task IDs."
     )]
     fn search_tasks(
         &self,
@@ -817,7 +817,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Read one task with its whole history: description, status timeline, progress and blocker notes, completion note (the conclusion of a task done as not_adopted), pull request, commits, and the tasks it depends on, that depend on it, and that are related to it (id, title, status). ready says whether it can start (or resume) now, and blockedBy which of the tasks it depends on keep it from that: not done yet, or done as not_adopted, which never unblocks it. Use it to learn what an earlier task decided, and follow its links with further get_task calls."
+        description = "Read one task with its whole history: description, refs, status timeline with the reasons given for starts, pauses, and completions, progress, decision, and blocker notes, completion note (the conclusion of a task done as not_adopted), pull request, commits, and the tasks it depends on, that depend on it, and that are related to it (id, title, status). ready says whether it can start (or resume) now, and blockedBy which of the tasks it depends on keep it from that: not done yet, or done as not_adopted, which never unblocks it. Use it to learn what an earlier task decided, and follow its links with further get_task calls."
     )]
     fn get_task(
         &self,
@@ -934,7 +934,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Change the type, title, description, estimate, due date, or completion criteria of a task; omitted fields stay unchanged. To add or delete one criterion, use add_criterion or remove_criterion instead. criteria replaces the whole list: criteria whose id is left out are deleted with their evidence. Send {\"id\": N} to keep criterion N as it is (add text, kind, or target to change it), and text and kind without id for a new one, e.g. [{\"id\": 1}, {\"text\": \"Docs updated\", \"kind\": \"manual\"}]. Each id appears once and must belong to the task. A list without the merge criterion (pr_merged or branch_merged_locally) is rejected unless remove_merge_criterion is true. A done task is rejected: its record stays as it was finished, so record a correction with add_progress_note, or ask the user to reopen it in the Toodo app."
+        description = "Change the type, title, description, estimate, due date, refs, or completion criteria of a task; omitted fields stay unchanged. refs appends references (one already there is skipped) and remove_refs removes them, e.g. {\"id\": 5, \"refs\": [\"pr:123\"], \"remove_refs\": [\"lane:old\"]}. To add or delete one criterion, use add_criterion or remove_criterion instead. criteria replaces the whole list: criteria whose id is left out are deleted with their evidence. Send {\"id\": N} to keep criterion N as it is (add text, kind, or target to change it), and text and kind without id for a new one, e.g. [{\"id\": 1}, {\"text\": \"Docs updated\", \"kind\": \"manual\"}]. Each id appears once and must belong to the task. A list without the merge criterion (pr_merged or branch_merged_locally) is rejected unless remove_merge_criterion is true. A done task is rejected: its record stays as it was finished, so record a correction with add_progress_note, or ask the user to reopen it in the Toodo app."
     )]
     async fn update_task(
         &self,
@@ -961,13 +961,14 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Record progress or a decision (what and why) on a task's history, e.g. your current task. Call it at every milestone of your task: when you start (your plan, before your first edit), when you take a decision, when you finish a meaningful step, and when you open the pull request (with its URL); use report_blocker for what stops you. task_id is a number, e.g. {\"task_id\": 5, \"note\": \"Plan: ...\"}; when the call is rejected, fix the arguments and call it again. Returns the task with its notes."
+        description = "Record progress or a decision (what and why) on a task's history, e.g. your current task. Call it at every milestone of your task: when you start (your plan, before your first edit), when you take a decision (kind \"decision\", which the app and reviews list apart as the task's decisions), when you finish a meaningful step, and when you open the pull request (with its URL); use report_blocker for what stops you. task_id is a number, e.g. {\"task_id\": 5, \"note\": \"Plan: ...\"} or {\"task_id\": 5, \"kind\": \"decision\", \"note\": \"Chose SQLite over files: ...\"}; kind is progress when omitted. When the call is rejected, fix the arguments and call it again. Returns the task with its notes."
     )]
     fn add_progress_note(
         &self,
-        Parameters(request): Parameters<tools::AddNote>,
+        Parameters(request): Parameters<tools::AddProgressNote>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::add_note(storage, model::NoteKind::Progress, request))
+        let (kind, note) = request.into_note();
+        self.change(|storage| tools::add_note(storage, kind, note))
     }
 
     #[tool(
@@ -1039,7 +1040,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Start a planned task whose prerequisites are all done, as Start (or Resume for a paused task) in the Toodo app does: create or reopen its worktree and herdr workspace and move it to in_progress. Use it to hand a ready task to a new agent session; never start your own task, the one current_task finds. With agent_command, Toodo then runs that command (e.g. the coding agent) in the first pane of the task's herdr workspace, with TOODO_MCP_URL and TOODO_MCP_TOKEN exported so the agent can reach Toodo. Returns the task with the panes of its herdr workspace, ranIn (the pane agent_command ran in), and paneError when the panes could not be listed or the command did not run. Rejected with the reason when the task is not ready, is not planned, or its machine has no worktree root (set it with set_worktree_root)."
+        description = "Start a planned task whose prerequisites are all done, as Start (or Resume for a paused task) in the Toodo app does: create or reopen its worktree and herdr workspace and move it to in_progress. Use it to hand a ready task to a new agent session; never start your own task, the one current_task finds. reason (why the task starts now) is recorded with the start in its status history, and refs are appended to the task's references, e.g. {\"id\": 5, \"reason\": \"Picked up by the search lane\", \"refs\": [\"lane:search\"]}. With agent_command, Toodo then runs that command (e.g. the coding agent) in the first pane of the task's herdr workspace, with TOODO_MCP_URL and TOODO_MCP_TOKEN exported so the agent can reach Toodo. Returns the task with the panes of its herdr workspace, ranIn (the pane agent_command ran in), and paneError when the panes could not be listed or the command did not run. Rejected with the reason when the task is not ready, is not planned, or its machine has no worktree root (set it with set_worktree_root)."
     )]
     async fn start_task(
         &self,
@@ -1064,7 +1065,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Complete an in_progress or in_review task whose criteria are met, including confirmation after manual checks. Toodo checks automatic criteria first and rejects with each unmet criterion and its next step. The task becomes done, its herdr workspace closes, and dependents can start. A merged pull request gives resolution merged; criteria met with nothing merged gives completed. With without_pull_request: true and a required non-empty note, complete work that shipped without any pull request: pr_merged is met with the note as evidence, all other criteria must still hold, branch commits are recorded, and the note becomes the completion note. Rejected if any branch pull request exists, even unrecorded or closed; for a merged PR call complete_task without optional arguments, otherwise wait for merge or conclude abandoned work. without_pull_request and merged_with cannot be combined. With merged_with, complete work shipped by another task's merged pull request: pass its task ID or PR URL; active tasks or ones done as not_adopted become done as merged. Rejected if that PR is not merged or the task has its own open or merged PR. Never complete your own task, the one current_task finds: meeting its criteria completes it."
+        description = "Complete an in_progress or in_review task whose criteria are met, including confirmation after manual checks. An optional note (what shipped and why it is complete) is recorded with the completion in its status history, and refs are appended to the task's references. Toodo checks automatic criteria first and rejects with each unmet criterion and its next step. The task becomes done, its herdr workspace closes, and dependents can start. A merged pull request gives resolution merged; criteria met with nothing merged gives completed. With without_pull_request: true and a required non-empty note, complete work that shipped without any pull request: pr_merged is met with the note as evidence, all other criteria must still hold, branch commits are recorded, and the note becomes the completion note. Rejected if any branch pull request exists, even unrecorded or closed; for a merged PR call complete_task without optional arguments, otherwise wait for merge or conclude abandoned work. without_pull_request and merged_with cannot be combined. With merged_with, complete work shipped by another task's merged pull request: pass its task ID or PR URL; active tasks or ones done as not_adopted become done as merged. Rejected if that PR is not merged or the task has its own open or merged PR. Never complete your own task, the one current_task finds: meeting its criteria completes it."
     )]
     async fn complete_task(
         &self,
@@ -1970,11 +1971,19 @@ mod tests {
     }
 
     fn start(server: &ToodoMcp, id: model::TaskId) -> serde_json::Value {
-        let request = tools::StartTask {
-            id: id.into(),
-            agent_command: None,
-            request_id: None,
-        };
+        start_with(
+            server,
+            tools::StartTask {
+                reason: None,
+                refs: Vec::new(),
+                id: id.into(),
+                agent_command: None,
+                request_id: None,
+            },
+        )
+    }
+
+    fn start_with(server: &ToodoMcp, request: tools::StartTask) -> serde_json::Value {
         let result = runtime()
             .block_on(server.start_task(Parameters(request)))
             .unwrap();
@@ -2001,13 +2010,27 @@ mod tests {
         ));
         let server = ToodoMcp::new(backend.clone());
 
-        let result = start(&server, task.id);
+        let result = start_with(
+            &server,
+            tools::StartTask {
+                reason: Some(" Picked up by the login lane ".to_owned()),
+                refs: vec!["lane:login".to_owned()],
+                id: task.id.into(),
+                agent_command: None,
+                request_id: None,
+            },
+        );
 
         assert_ne!(result["isError"], true, "{result}");
         let started: serde_json::Value =
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(started["status"], "in_progress");
         assert_eq!(started["herdrWorkspaceId"], "w27");
+        assert_eq!(started["refs"], serde_json::json!(["lane:login"]));
+        assert_eq!(
+            started["timeline"][1]["reason"],
+            "Picked up by the login lane"
+        );
         let stored = lock(&backend.storage).get_task(task.id).unwrap().unwrap();
         let statuses: Vec<_> = stored.timeline.iter().map(|event| event.status).collect();
         assert_eq!(

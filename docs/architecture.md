@@ -934,8 +934,14 @@ path deletes journal history.
     combined and per-check CI state, review decision and latest reviews, read time, and
     what to do next; it never runs `gh`), and
     `add_progress_note` / `report_blocker`, which append a
-    timestamped Markdown note (`progress` or `blocker`, table `task_notes`) to a task
-    without changing its status. They reuse the storage rules, so cycles are rejected. The
+    timestamped Markdown note (`progress`, `decision` with `kind: "decision"`, or
+    `blocker`, table `task_notes`) to a task without changing its status. A task's `refs`
+    (a JSON array of strings in `tasks.refs`, in the order they were added and searched
+    with its branch) say where its work is tracked or discussed; `create_task`,
+    `update_task`, `start_task`, and `complete_task` append to them and `update_task`
+    `remove_refs` drops some. The `reason` of `start_task` and the `note` of
+    `complete_task` are kept with the status change in `task_events.reason`, as pause
+    reasons are, and the task details list them under Timeline. They reuse the storage rules, so cycles are rejected. The
     server instructions tell agents that work their task needs before it can finish is a
     prerequisite of their task, added last, and to note decisions and blockers as they
     work; Toodo never prompts agents itself. Notes show in the task list (latest) and the

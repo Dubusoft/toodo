@@ -182,7 +182,8 @@ export function AgentActivity({ task, capabilities }: { task: Task; capabilities
   );
 }
 
-const noteKindLabels: Record<NoteKind, string> = { progress: "Progress", blocker: "Blocker" };
+const noteKindLabels: Record<NoteKind, string> = { progress: "Progress", blocker: "Blocker", decision: "Decision" };
+const noteKindTones: Record<NoteKind, Tone> = { progress: "neutral", blocker: "attention", decision: "info" };
 
 function NoteKindBadge({ kind }: { kind: NoteKind }) {
   return (
@@ -190,7 +191,7 @@ function NoteKindBadge({ kind }: { kind: NoteKind }) {
       data-note-kind={kind}
       className={cn(
         "shrink-0 rounded-md px-1.5 font-medium",
-        kind === "blocker" ? toneChip.attention : toneChip.neutral,
+        toneChip[noteKindTones[kind]],
       )}
     >
       {noteKindLabels[kind]}

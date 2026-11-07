@@ -79,6 +79,16 @@ pub(crate) fn labels(raw: &[String]) -> CommandResult<Vec<String>> {
     plan::labels(raw).map_err(|error| CommandError::invalid_input(error.to_string()))
 }
 
+/// The references of a task after appending `add` to `current` and dropping `remove`.
+pub(crate) fn merge_refs(
+    current: &[String],
+    add: &[String],
+    remove: &[String],
+) -> CommandResult<Vec<String>> {
+    plan::merge_refs(current, add, remove)
+        .map_err(|error| CommandError::invalid_input(error.to_string()))
+}
+
 /// A due date as `YYYY-MM-DD`; blank means none.
 pub(crate) fn due_date(raw: Option<&str>) -> CommandResult<Option<plan::DueDate>> {
     match raw.map(str::trim) {

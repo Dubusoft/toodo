@@ -167,6 +167,7 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     estimate: null,
     dueDate: null,
     labels: [],
+    refs: [],
     pullRequestMergedAt: null,
     pullRequest: null,
     mergedWith: null,

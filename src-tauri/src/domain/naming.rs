@@ -107,6 +107,7 @@ mod tests {
 
     fn task(task_type: TaskType, title: &str) -> Task {
         Task {
+            refs: Vec::new(),
             id: TaskId(42),
             workspace_id: WorkspaceId(1),
             task_type,

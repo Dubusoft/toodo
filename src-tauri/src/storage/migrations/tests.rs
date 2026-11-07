@@ -53,7 +53,8 @@ fn version_24_keeps_task_data_references_search_and_the_id_counter() {
     ];
     // The herdr handle moves from `tasks` to the runtime workspaces (version 31); the
     // agent options of version 39, the archive time of version 42, and the event reason of
-    // version 43 are new columns that start out NULL.
+    // version 43 are new columns that start out NULL, and the refs of version 45 start
+    // out empty.
     let skipped = [
         "herdr_workspace_id",
         "agent_model",
@@ -61,6 +62,7 @@ fn version_24_keeps_task_data_references_search_and_the_id_counter() {
         "run_time_limit_minutes",
         "archived_at",
         "reason",
+        "refs",
     ];
     let rows = |conn: &Connection, table: &str| {
         let mut statement = conn
@@ -2024,4 +2026,53 @@ fn version_33_keeps_workspaces_their_tasks_and_the_id_counter_and_allows_runner_
         .query_row("SELECT count(*) FROM tasks", [], |row| row.get(0))
         .unwrap();
     assert_eq!(tasks, 0);
+}
+
+#[test]
+fn version_45_keeps_notes_and_search_and_adds_decision_notes_and_empty_refs() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    for sql in &MIGRATIONS[..44] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 44).unwrap();
+    conn.execute_batch(
+        "INSERT INTO workspaces (name, kind, path, default_base_branch)
+                VALUES ('toodo', 'local', '/repo', 'main');
+             INSERT INTO tasks (workspace_id, type, title, status) VALUES (1, 'feat', 'Login', 'planned');
+             INSERT INTO task_notes (task_id, kind, body, at) VALUES (1, 'progress', 'Drafted tables', 5);",
+    )
+    .unwrap();
+
+    migrate(&mut conn).unwrap();
+    conn.pragma_update(None, "foreign_keys", true).unwrap();
+
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    let refs: String = conn
+        .query_row("SELECT refs FROM tasks WHERE id = 1", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(refs, "[]");
+    let found = |query: &str| -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM task_search WHERE task_search MATCH ?1",
+            [query],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(found("Drafted"), 1);
+    let set = |sql: &str| conn.execute(sql, []);
+    set("INSERT INTO task_notes (task_id, kind, body, at) VALUES (1, 'decision', 'Chose SQLite', 6)")
+        .unwrap();
+    assert!(
+        set("INSERT INTO task_notes (task_id, kind, body, at) VALUES (1, 'idea', 'x', 7)").is_err()
+    );
+    assert_eq!(found("SQLite"), 1);
+    set(r#"UPDATE tasks SET refs = '["lane:alpha-lane"]' WHERE id = 1"#).unwrap();
+    assert_eq!(found("alpha"), 1);
+    set("DELETE FROM tasks WHERE id = 1").unwrap();
+    assert_eq!(found("Drafted"), 0);
+    let notes: i64 = conn
+        .query_row("SELECT count(*) FROM task_notes", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(notes, 0);
 }

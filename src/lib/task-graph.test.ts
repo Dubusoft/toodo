@@ -32,6 +32,7 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
     estimate: null,
     dueDate: null,
     labels: [],
+    refs: [],
     pullRequestMergedAt: null,
     pullRequest: null,
     mergedWith: null,

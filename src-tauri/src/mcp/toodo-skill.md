@@ -77,13 +77,18 @@ continue the work that needs no Toodo tool.
   task's details. Call `add_progress_note` with one or two Markdown sentences:
   - when you start (section 1, step 5),
   - when you take a decision worth remembering (the choice and why, e.g. one approach
-    over another),
+    over another), with `"kind": "decision"` so it is listed with the task's decisions,
   - when you finish a meaningful step or change course,
   - when you open the pull request (section 4, step 3), with its URL.
 
   `task_id` is a number, e.g. `{"task_id": 5, "note": "Plan: ..."}`. When a note call is
   rejected, fix the arguments and call it again: a milestone counts only once its note is
   recorded, so never move on with a note that failed.
+
+  Where the work is tracked or discussed outside Toodo (a lane, a chat thread, a pull
+  request), add it to the task's `refs` with `update_task`, e.g.
+  `{"id": 5, "refs": ["discord:123/456"]}`; `start_task` and `complete_task` take
+  `refs` too, and a `reason` (start) or `note` (completion) saying why.
 
   Call `report_blocker` instead when something stops you that needs the user or someone
   else, saying what you need. Skip routine steps such as running tests or small edits.

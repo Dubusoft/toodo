@@ -200,9 +200,114 @@ impl fmt::Display for InvalidLabels {
 
 impl std::error::Error for InvalidLabels {}
 
+/// The most characters a reference has.
+pub const MAX_REF_CHARS: usize = 500;
+/// The most references a task has.
+pub const MAX_REFS: usize = 50;
+
+/// The references of a task after appending `add` to `current` and then dropping
+/// `remove`. Toodo keeps references in order and shows them without interpreting them; by
+/// convention one reads `<kind>:<value>`, e.g. `lane:search-api` or `pr:123`, or is a URL.
+/// Each added reference is trimmed, non-empty, at most [`MAX_REF_CHARS`] characters, and on
+/// one line; one the task already has is not added again, and removing one it does not have
+/// changes nothing.
+pub fn merge_refs(
+    current: &[String],
+    add: &[String],
+    remove: &[String],
+) -> Result<Vec<String>, InvalidRefs> {
+    let mut refs = current.to_vec();
+    for reference in add {
+        let reference = reference.trim();
+        if reference.is_empty() {
+            return Err(InvalidRefs::Empty);
+        }
+        if reference.contains(['\n', '\r']) {
+            return Err(InvalidRefs::LineBreak(reference.to_owned()));
+        }
+        if reference.chars().count() > MAX_REF_CHARS {
+            return Err(InvalidRefs::TooLong(reference.to_owned()));
+        }
+        if !refs.iter().any(|existing| existing == reference) {
+            refs.push(reference.to_owned());
+        }
+    }
+    refs.retain(|existing| !remove.iter().any(|gone| gone.trim() == existing));
+    if refs.len() > MAX_REFS {
+        return Err(InvalidRefs::TooMany(refs.len()));
+    }
+    Ok(refs)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvalidRefs {
+    Empty,
+    LineBreak(String),
+    TooLong(String),
+    TooMany(usize),
+}
+
+impl fmt::Display for InvalidRefs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "refs must not be blank; leave out the empty reference"),
+            Self::LineBreak(reference) => write!(
+                f,
+                "reference {reference:?} has a line break; pass each reference as its own list item"
+            ),
+            Self::TooLong(reference) => write!(
+                f,
+                "reference {reference:?} is longer than {MAX_REF_CHARS} characters; shorten it, e.g. to `pr:<number>` or a URL"
+            ),
+            Self::TooMany(count) => write!(
+                f,
+                "a task has at most {MAX_REFS} references, got {count}; drop old ones with update_task remove_refs"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InvalidRefs {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refs_keep_their_order_skip_repeats_and_are_bounded() {
+        let raw = |items: &[&str]| {
+            items
+                .iter()
+                .map(|&item| item.to_owned())
+                .collect::<Vec<_>>()
+        };
+        let current = raw(&["lane:a", "pr:1"]);
+        assert_eq!(
+            merge_refs(&current, &raw(&[" discord:9 ", "lane:a", "discord:9"]), &[]),
+            Ok(raw(&["lane:a", "pr:1", "discord:9"]))
+        );
+        assert_eq!(
+            merge_refs(&current, &raw(&["pr:2"]), &raw(&[" lane:a", "gone"])),
+            Ok(raw(&["pr:1", "pr:2"]))
+        );
+        assert_eq!(
+            merge_refs(&current, &raw(&[" "]), &[]),
+            Err(InvalidRefs::Empty)
+        );
+        assert!(matches!(
+            merge_refs(&current, &raw(&["a\nb"]), &[]),
+            Err(InvalidRefs::LineBreak(_))
+        ));
+        assert!(matches!(
+            merge_refs(&current, &["x".repeat(MAX_REF_CHARS + 1)], &[]),
+            Err(InvalidRefs::TooLong(_))
+        ));
+        let many: Vec<String> = (0..MAX_REFS).map(|index| format!("r:{index}")).collect();
+        assert_eq!(
+            merge_refs(&current, &many, &[]),
+            Err(InvalidRefs::TooMany(MAX_REFS + 2))
+        );
+    }
 
     #[test]
     fn labels_are_trimmed_sorted_unique_and_bounded() {

@@ -278,7 +278,8 @@ mod tests {
 
     /// A database like the desktop app's: a Windows workspace whose second task waits on
     /// the first, with history, notes, a related link, and a device, saved at schema
-    /// version 25, which still kept project memory entries.
+    /// version 25, which still kept project memory entries. Its search view and triggers
+    /// are stand-ins, since the migration to version 45 rebuilds them without reading them.
     fn desktop_database(path: &Path) {
         let mut desktop = Storage::open(path).unwrap();
         let workspace = add_workspace(
@@ -351,6 +352,28 @@ mod tests {
                  ALTER TABLE task_events DROP COLUMN reason;
                  DROP TABLE settings;
                  DROP TABLE review_snapshots;
+                 DROP TRIGGER task_search_task_inserted;
+                 DROP TRIGGER task_search_task_updated;
+                 DROP TRIGGER task_search_task_deleted;
+                 DROP TRIGGER task_search_note_inserted;
+                 DROP TRIGGER task_search_note_deleted;
+                 DROP TRIGGER task_search_pull_request_inserted;
+                 DROP TRIGGER task_search_pull_request_updated;
+                 DROP TRIGGER task_search_pull_request_deleted;
+                 DROP VIEW task_search_source;
+                 ALTER TABLE tasks DROP COLUMN refs;
+                 CREATE VIEW task_search_source AS SELECT 1;
+                 CREATE TRIGGER task_search_task_inserted AFTER INSERT ON tasks BEGIN SELECT 1; END;
+                 CREATE TRIGGER task_search_task_updated AFTER UPDATE ON tasks BEGIN SELECT 1; END;
+                 CREATE TRIGGER task_search_task_deleted AFTER DELETE ON tasks BEGIN SELECT 1; END;
+                 CREATE TRIGGER task_search_note_inserted AFTER INSERT ON task_notes BEGIN SELECT 1; END;
+                 CREATE TRIGGER task_search_note_deleted AFTER DELETE ON task_notes BEGIN SELECT 1; END;
+                 CREATE TRIGGER task_search_pull_request_inserted
+                     AFTER INSERT ON pull_request_snapshots BEGIN SELECT 1; END;
+                 CREATE TRIGGER task_search_pull_request_updated
+                     AFTER UPDATE ON pull_request_snapshots BEGIN SELECT 1; END;
+                 CREATE TRIGGER task_search_pull_request_deleted
+                     AFTER DELETE ON pull_request_snapshots BEGIN SELECT 1; END;
                  PRAGMA user_version = 25;",
             )
             .unwrap();

@@ -180,6 +180,11 @@ pub struct CreateTask {
     /// reviews filter by; each non-empty, at most 40 characters, without commas.
     #[serde(default)]
     pub labels: Vec<String>,
+    /// References to where the work is tracked or discussed, in order, e.g.
+    /// ["lane:search-api", "discord:123/456", "https://example.com/spec"]: by convention
+    /// `<kind>:<value>` or a URL, each on one line.
+    #[serde(default)]
+    pub refs: Vec<String>,
     /// Verifiable completion criteria in order (no `id`). Use `manual` for what a person
     /// or you check with evidence, and `url`, `command`, `pr_open_ci_green` for what
     /// Toodo can check itself.
@@ -241,6 +246,9 @@ pub struct PlanTask {
     /// Labels, as in create_task.
     #[serde(default)]
     pub labels: Vec<String>,
+    /// References, as in create_task.
+    #[serde(default)]
+    pub refs: Vec<String>,
     /// Verifiable completion criteria in order (no `id`), as in create_task.
     #[serde(default)]
     pub criteria: Vec<types::CriterionInput>,
@@ -287,6 +295,12 @@ pub struct UpdateTask {
     /// The full new list of labels, replacing the current ones; unchanged when omitted,
     /// [] removes them all.
     pub labels: Option<Vec<String>>,
+    /// References to append after the task's references, e.g. ["pr:123"]; one the task
+    /// already has is not added again.
+    pub refs: Option<Vec<String>>,
+    /// References to remove from the task, given as they are listed in its refs; removed
+    /// after `refs` is appended.
+    pub remove_refs: Option<Vec<String>>,
     /// The full new list of completion criteria, replacing the current one; unchanged when
     /// omitted. Criteria whose `id` is left out are deleted with their evidence. Keep an
     /// existing criterion by passing `{"id": N}`; given fields change it, omitted ones
@@ -422,6 +436,46 @@ pub struct AddNote {
     pub note: String,
 }
 
+/// What add_progress_note records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProgressNoteKind {
+    /// Progress made, e.g. a finished step or the pull request opened.
+    Progress,
+    /// A decision taken, e.g. a design choice, and why.
+    Decision,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct AddProgressNote {
+    /// The task the note is about, usually your current task.
+    pub task_id: TaskId,
+    /// What happened, in GitHub-flavored Markdown.
+    pub note: String,
+    /// progress when omitted, or decision for a decision and why it was taken.
+    #[serde(default)]
+    pub kind: Option<ProgressNoteKind>,
+}
+
+impl AddProgressNote {
+    /// The kind of note and the note to add.
+    pub fn into_note(self) -> (NoteKind, AddNote) {
+        let request = self;
+        let kind = match request.kind {
+            None | Some(ProgressNoteKind::Progress) => NoteKind::Progress,
+            Some(ProgressNoteKind::Decision) => NoteKind::Decision,
+        };
+        (
+            kind,
+            AddNote {
+                task_id: request.task_id,
+                note: request.note,
+            },
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct PauseTask {
@@ -491,6 +545,13 @@ pub struct StartTask {
     /// workspaces on the machine Toodo runs on.
     #[serde(default)]
     pub agent_command: Option<String>,
+    /// Why the task is started now, e.g. who picked it up and for what; recorded with the
+    /// start in its status history.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// References to append to the task's refs, e.g. the lane or thread that works on it.
+    #[serde(default)]
+    pub refs: Vec<String>,
     /// Ignored: agents started before the lead was removed may still send it, and other
     /// unknown arguments are rejected.
     #[serde(default)]
@@ -528,8 +589,13 @@ pub struct CompleteTask {
     /// cannot be combined with merged_with.
     #[serde(default)]
     pub without_pull_request: bool,
-    /// What shipped without a pull request, required with without_pull_request.
+    /// What shipped and why the task is complete, recorded with the completion in its
+    /// status history; required with without_pull_request, where it also becomes the
+    /// completion note.
     pub note: Option<String>,
+    /// References to append to the task's refs, e.g. ["pr:123"].
+    #[serde(default)]
+    pub refs: Vec<String>,
 }
 
 /// A task ID or a pull request URL.
@@ -564,7 +630,7 @@ impl MergedWithRef {
 pub struct SearchTasks {
     /// Words to look for in any language, e.g. `deploy server`; short words such as
     /// two-character Korean ones work too. Every word must appear in the
-    /// task's title, description, notes, completion note, branch, or pull request, as a
+    /// task's title, description, notes, completion note, branch, refs, or pull request, as a
     /// case-insensitive substring; words are taken literally, not as operators. Use a few
     /// distinctive words and search again with others to widen the search. A task number
     /// alone, e.g. `431` or `#431`, also finds that task first, in any workspace.
@@ -1438,6 +1504,7 @@ fn plan_task(storage: &StorageState, item: &PlanTask) -> CommandResult<storage::
         item.merge_criterion.unwrap_or(true),
     )?;
     let labels = types::labels(&item.labels)?;
+    let refs = types::merge_refs(&[], &item.refs, &[])?;
     let mut task: storage::NewTask = types::NewTask {
         workspace_id: item.workspace_id,
         task_type: item.task_type,
@@ -1456,6 +1523,7 @@ fn plan_task(storage: &StorageState, item: &PlanTask) -> CommandResult<storage::
     Ok(storage::NewPlanTask {
         task,
         labels,
+        refs,
         depends_on: Vec::new(),
         related: Vec::new(),
     })
@@ -1474,6 +1542,7 @@ fn insert_task(
             .ok_or(StorageError::TaskNotFound(linked.into()))?;
     }
     let labels = types::labels(&request.labels)?;
+    let refs = types::merge_refs(&[], &request.refs, &[])?;
     let mut new: storage::NewTask = types::NewTask {
         workspace_id: request.workspace_id,
         task_type: request.task_type,
@@ -1494,7 +1563,14 @@ fn insert_task(
         Ok(())
     } else {
         storage.set_task_labels(task.id, &labels).map(drop)
-    };
+    }
+    .and_then(|()| {
+        if refs.is_empty() {
+            Ok(())
+        } else {
+            storage.set_task_refs(task.id, &refs).map(drop)
+        }
+    });
     let linked = labelled
         .and_then(|()| {
             request.depends_on.iter().try_for_each(|&prerequisite| {
@@ -1536,7 +1612,16 @@ pub fn update_task(
             request.id.0, request.id.0
         )));
     }
-    edit_task(
+    let id = request.id;
+    let refs = match (&request.refs, &request.remove_refs) {
+        (None, None) => None,
+        (add, remove) => Some(types::merge_refs(
+            &current.refs,
+            add.as_deref().unwrap_or_default(),
+            remove.as_deref().unwrap_or_default(),
+        )?),
+    };
+    let edited = edit_task(
         storage,
         TaskEdit {
             id: request.id,
@@ -1551,7 +1636,12 @@ pub fn update_task(
         },
         request.remove_merge_criterion,
         completion,
-    )
+    )?;
+    let Some(refs) = refs else {
+        return Ok(edited);
+    };
+    storage.set_task_refs(id.into(), &refs)?;
+    get_task(storage, id)
 }
 
 /// The criterion `request` adds to the end of its task's criteria, as an edit input.
@@ -1581,6 +1671,8 @@ pub fn add_criterion(
     update_task(
         storage,
         UpdateTask {
+            refs: None,
+            remove_refs: None,
             id: request.task_id,
             task_type: None,
             title: None,
@@ -1614,6 +1706,8 @@ pub fn remove_criterion(storage: &mut Storage, request: RemoveCriterion) -> Comm
     update_task(
         storage,
         UpdateTask {
+            refs: None,
+            remove_refs: None,
             id: owner.into(),
             task_type: None,
             title: None,
@@ -1726,6 +1820,29 @@ pub fn remove_dependency(
         paused: false,
         task,
     })
+}
+
+/// The trimmed `reason` of a start or completion; blank is rejected, naming `field`.
+fn event_reason(reason: Option<&str>, field: &str) -> CommandResult<Option<String>> {
+    match reason.map(str::trim) {
+        Some("") => Err(CommandError::invalid_input(format!(
+            "{field} is blank; say why in a sentence, or leave {field} out"
+        ))),
+        reason => Ok(reason.map(str::to_owned)),
+    }
+}
+
+/// The refs of task `id` with `add` appended, or `None` when `add` is empty.
+fn appended_refs(
+    storage: &StorageState,
+    id: TaskId,
+    add: &[String],
+) -> CommandResult<Option<Vec<String>>> {
+    if add.is_empty() {
+        return Ok(None);
+    }
+    let current = get_task(&lock(storage), id)?;
+    types::merge_refs(&current.refs, add, &[]).map(Some)
 }
 
 /// Appends a note of `kind` to the task's history and returns the task with its notes.
@@ -1975,6 +2092,8 @@ pub fn start_task(
         }
         command => command,
     };
+    let reason = event_reason(request.reason.as_deref(), "reason")?;
+    let refs = appended_refs(storage, request.id, &request.refs)?;
     if command.is_some() {
         let task = get_task(&lock(storage), request.id)?;
         let workspace = lock(storage)
@@ -1988,10 +2107,24 @@ pub fn start_task(
             ));
         }
     }
-    let task: Task = match herdr_commands::start(storage, git, herdr, id) {
-        Ok(task) => (&task).into(),
+    let mut task = match herdr_commands::start(storage, git, herdr, id) {
+        Ok(task) => task,
         Err(error) => return Err(with_worktree_root_hint(&lock(storage), id, error)),
     };
+    {
+        let mut storage = lock(storage);
+        if let Some(reason) = &reason {
+            task = storage.set_latest_event_reason(
+                id,
+                crate::domain::status::TaskStatus::InProgress,
+                reason,
+            )?;
+        }
+        if let Some(refs) = &refs {
+            task = storage.set_task_refs(id, refs)?;
+        }
+    }
+    let task: Task = (&task).into();
     let mut started = TaskStart {
         task,
         panes: Vec::new(),
@@ -2134,39 +2267,72 @@ pub fn complete_task(
     request: CompleteTask,
 ) -> CommandResult<Task> {
     let id = request.id.into();
-    if request.without_pull_request {
+    let refs = appended_refs(storage, request.id, &request.refs)?;
+    let task = if request.without_pull_request {
         if request.merged_with.is_some() {
             return Err(CommandError::invalid_input(
                 "without_pull_request cannot be combined with merged_with; call complete_task with merged_with only for a merged PR, or with without_pull_request: true and note when no PR exists",
             ));
         }
-        return Ok((&completion::complete_without_pull_request(
+        let task = completion::complete_without_pull_request(
             storage,
             git,
             github,
             herdr,
             id,
             request.note.as_deref().unwrap_or(""),
-        )?)
-            .into());
-    }
-    if request.note.is_some() {
-        return Err(CommandError::invalid_input(
-            "note requires without_pull_request: true; call complete_task with both arguments for work shipped without a pull request",
-        ));
-    }
-    let task = match request.merged_with {
-        None => completion::complete(storage, git, github, herdr, id)?,
-        Some(merged_with) => completion::complete_merged_with(
-            storage,
-            git,
-            github,
-            herdr,
-            id,
-            merged_with.target()?,
-        )?,
+        )?;
+        match task.completion_note.clone() {
+            Some(note) => record_completion_note(storage, task, &note)?,
+            None => task,
+        }
+    } else {
+        let note = event_reason(request.note.as_deref(), "note")?;
+        let task =
+            complete_with_pull_request(storage, git, github, herdr, id, request.merged_with)?;
+        match note {
+            Some(note) => record_completion_note(storage, task, &note)?,
+            None => task,
+        }
+    };
+    let task = match refs {
+        Some(refs) => lock(storage).set_task_refs(id, &refs)?,
+        None => task,
     };
     Ok((&task).into())
+}
+
+/// Records `note` with the completion of `task`: with the move to `done` in its status
+/// history, or as a progress note when the task did not become done.
+fn record_completion_note(
+    storage: &StorageState,
+    task: model::Task,
+    note: &str,
+) -> CommandResult<model::Task> {
+    let mut storage = lock(storage);
+    if task.status == crate::domain::status::TaskStatus::Done {
+        storage.set_latest_event_reason(task.id, crate::domain::status::TaskStatus::Done, note)
+    } else {
+        storage.add_task_note(task.id, NoteKind::Progress, note)
+    }
+    .map_err(Into::into)
+}
+
+/// Completes a task with its own merged pull request, or with `merged_with`'s.
+fn complete_with_pull_request(
+    storage: &StorageState,
+    git: &Git,
+    github: &dyn GitHub,
+    herdr: &Herdr,
+    id: model::TaskId,
+    merged_with: Option<MergedWithRef>,
+) -> CommandResult<model::Task> {
+    match merged_with {
+        None => completion::complete(storage, git, github, herdr, id),
+        Some(merged_with) => {
+            completion::complete_merged_with(storage, git, github, herdr, id, merged_with.target()?)
+        }
+    }
 }
 
 /// A task concluded without merging, with the tasks that its conclusion leaves blocked.
@@ -2890,6 +3056,7 @@ mod tests {
         insert_task(
             storage,
             CreateTask {
+                refs: Vec::new(),
                 workspace_id: workspace,
                 task_type: TaskType::Feat,
                 title: title.to_owned(),
@@ -3163,6 +3330,8 @@ mod tests {
         let updated = update_task(
             &mut storage,
             UpdateTask {
+                refs: None,
+                remove_refs: None,
                 id: task.id,
                 task_type: None,
                 title: None,
@@ -3853,6 +4022,7 @@ mod tests {
             criteria: Vec::new(),
         };
         let item = |task, depends_on| crate::storage::NewPlanTask {
+            refs: Vec::new(),
             task,
             labels: vec!["search".to_owned()],
             depends_on,
@@ -3914,6 +4084,76 @@ mod tests {
 
         let cleared = update(&mut storage, serde_json::json!({ "labels": [] })).unwrap();
         assert!(cleared.labels.is_empty());
+    }
+
+    #[test]
+    fn refs_are_kept_in_order_appended_removed_and_searched() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let request: CreateTask = serde_json::from_value(serde_json::json!({
+            "workspace_id": workspace,
+            "task_type": "feat",
+            "title": "Schema",
+            "refs": [" lane:schema-lane ", "discord:42", "lane:schema-lane"],
+        }))
+        .unwrap();
+        let task = insert_task(&mut storage, request, None).unwrap();
+        assert_eq!(task.refs, ["lane:schema-lane", "discord:42"]);
+
+        let update = |storage: &mut Storage, fields: serde_json::Value| {
+            let mut request = serde_json::json!({ "id": task.id });
+            request
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            update_task(storage, serde_json::from_value(request).unwrap(), None)
+        };
+        let kept = update(&mut storage, serde_json::json!({ "title": "Tables" })).unwrap();
+        assert_eq!(kept.refs, ["lane:schema-lane", "discord:42"]);
+        let changed = update(
+            &mut storage,
+            serde_json::json!({ "refs": ["pr:7", "discord:42"], "remove_refs": ["lane:schema-lane"] }),
+        )
+        .unwrap();
+        assert_eq!(changed.refs, ["discord:42", "pr:7"]);
+        let error = update(
+            &mut storage,
+            serde_json::json!({ "title": "Renamed", "refs": ["a\nb"] }),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+        assert_eq!(get_task(&storage, task.id).unwrap(), changed);
+
+        let hits = search(&storage, "pr:7").unwrap();
+        assert_eq!(hits.iter().map(|hit| hit.id).collect::<Vec<_>>(), [task.id]);
+        update(&mut storage, serde_json::json!({ "remove_refs": ["pr:7"] })).unwrap();
+        assert!(search(&storage, "pr:7").unwrap().is_empty());
+    }
+
+    #[test]
+    fn decision_notes_are_kept_apart_from_progress_notes() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Schema", vec![]).unwrap();
+        let mut note = |arguments: serde_json::Value| {
+            let request: AddProgressNote = serde_json::from_value(arguments).unwrap();
+            let (kind, note) = request.into_note();
+            add_note(&mut storage, kind, note).unwrap()
+        };
+
+        note(serde_json::json!({ "task_id": task.id, "note": "Drafted tables" }));
+        let noted = note(serde_json::json!({
+            "task_id": task.id, "kind": "decision", "note": "Chose SQLite over files"
+        }));
+        let kinds: Vec<_> = noted.notes.iter().map(|note| note.kind).collect();
+        assert_eq!(
+            kinds,
+            [types::NoteKind::Progress, types::NoteKind::Decision]
+        );
+        assert!(
+            serde_json::from_value::<AddProgressNote>(serde_json::json!({
+                "task_id": task.id, "kind": "blocker", "note": "x"
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -4590,6 +4830,8 @@ mod tests {
             &herdr,
             &server_status(),
             StartTask {
+                reason: None,
+                refs: Vec::new(),
                 id: dependent.id,
                 agent_command: None,
                 request_id: None,
@@ -4608,6 +4850,8 @@ mod tests {
             &herdr,
             &server_status(),
             StartTask {
+                reason: None,
+                refs: Vec::new(),
                 id: task.id,
                 agent_command: None,
                 request_id: None,
@@ -4708,8 +4952,19 @@ mod tests {
             vec![viewed("MERGED"), Ok(MERGED_DETAILS.to_owned())],
         );
         let (herdr, herdr_runner) = fake(Herdr::new, vec![Ok(CLOSED.to_owned())]);
-        let done = complete_task(&storage, &no_git, &merged, &herdr, own(task.id)).unwrap();
+        let request = CompleteTask {
+            note: Some(" Login form shipped ".to_owned()),
+            refs: vec!["pr:12".to_owned()],
+            ..own(task.id)
+        };
+        let done = complete_task(&storage, &no_git, &merged, &herdr, request).unwrap();
         assert_eq!(done.status, types::TaskStatus::Done);
+        assert_eq!(
+            done.timeline.last().unwrap().reason.as_deref(),
+            Some("Login form shipped")
+        );
+        assert_eq!(done.refs, ["pr:12"]);
+        assert_eq!(done.completion_note, None);
         assert_eq!(done.resolution, Some(types::TaskResolution::Merged));
         assert_eq!(last_status(&done), Some(types::TaskStatus::Done));
         assert_eq!(done.herdr_workspace_id, None);
@@ -4741,6 +4996,7 @@ mod tests {
 
     fn own(id: TaskId) -> CompleteTask {
         CompleteTask {
+            refs: Vec::new(),
             id,
             merged_with: None,
             without_pull_request: false,
@@ -4764,6 +5020,10 @@ mod tests {
         assert_eq!(done.resolution, Some(types::TaskResolution::Completed));
         assert_eq!(done.completion_note.as_deref(), Some("Deployed directly"));
         assert_eq!(done.criteria[0].evidence, done.completion_note);
+        assert_eq!(
+            done.timeline.last().unwrap().reason.as_deref(),
+            Some("Deployed directly")
+        );
         crate::commands::lock(&storage)
             .ensure_ready(dependent.id.into())
             .unwrap();
@@ -4779,7 +5039,8 @@ mod tests {
             serde_json::json!({"id": task.id, "without_pull_request": true}),
             serde_json::json!({"id": task.id, "without_pull_request": true, "note": "  "}),
             serde_json::json!({"id": task.id, "without_pull_request": true, "note": "Shipped", "merged_with": 2}),
-            serde_json::json!({"id": task.id, "note": "Shipped"}),
+            serde_json::json!({"id": task.id, "note": "  "}),
+            serde_json::json!({"id": task.id, "refs": [""]}),
         ] {
             let request = serde_json::from_value(arguments).unwrap();
 
@@ -4792,6 +5053,7 @@ mod tests {
 
     fn merged_with(id: TaskId, target: MergedWithRef) -> CompleteTask {
         CompleteTask {
+            refs: Vec::new(),
             id,
             merged_with: Some(target),
             without_pull_request: false,

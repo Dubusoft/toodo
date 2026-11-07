@@ -51,6 +51,8 @@ pub struct NewPlanTask {
     pub task: NewTask,
     /// Labels [`crate::domain::plan::labels`] checked.
     pub labels: Vec<String>,
+    /// References [`crate::domain::plan::merge_refs`] checked.
+    pub refs: Vec<String>,
     pub depends_on: Vec<PlanLink>,
     pub related: Vec<PlanLink>,
 }
@@ -189,7 +191,8 @@ const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.descr
         t.pull_request_merged_at, t.completion_note, s.number, s.title, s.additions,
         s.deletions, s.changed_files, s.merge_commit_sha, s.review_count, s.reviewer_count,
         s.first_reviewed_at, t.resolution, t.issue_number, t.issue_url, t.estimate_unit,
-        t.estimate_amount, t.due_date, t.merged_with_pull_request_url, t.merged_with_task_id
+        t.estimate_amount, t.due_date, t.merged_with_pull_request_url, t.merged_with_task_id,
+        t.refs
     FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
         LEFT JOIN pull_request_snapshots s ON s.task_id = t.id";
 
@@ -213,6 +216,8 @@ struct TaskRow {
     estimate_amount: Option<f64>,
     due_date: Option<String>,
     merged_with: Option<MergedWith>,
+    /// The JSON array of the task's references.
+    refs: String,
 }
 
 impl TaskRow {
@@ -265,6 +270,7 @@ impl TaskRow {
                     pull_request_url,
                 }),
             },
+            refs: row.get(29)?,
         })
     }
 
@@ -281,6 +287,12 @@ impl TaskRow {
             .map(|raw| HostPath::parse_stored(&raw))
             .transpose()
             .map_err(invalid_data)?;
+        let refs = serde_json::from_str(&self.refs).map_err(|_| {
+            StorageError::InvalidData(format!(
+                "task {} has refs that are not a JSON array of strings: {}",
+                self.id, self.refs
+            ))
+        })?;
         Ok(Task {
             id: TaskId(self.id),
             workspace_id: WorkspaceId(self.workspace_id),
@@ -311,6 +323,7 @@ impl TaskRow {
                 .transpose()
                 .map_err(invalid_data)?,
             labels,
+            refs,
             timeline,
             notes,
             criteria,
@@ -476,6 +489,16 @@ fn record_event_with_reason(
     conn.execute(
         "INSERT INTO task_events (task_id, status, at, reason) VALUES (?1, ?2, ?3, ?4)",
         params![task.0, status.as_str(), at, reason],
+    )?;
+    Ok(())
+}
+
+/// Stores `refs` as the references of `task`.
+fn write_refs(conn: &Connection, task: TaskId, refs: &[String]) -> Result<()> {
+    let json = serde_json::to_string(refs).expect("a list of strings serializes to JSON");
+    conn.execute(
+        "UPDATE tasks SET refs = ?2 WHERE id = ?1",
+        params![task.0, json],
     )?;
     Ok(())
 }
@@ -665,6 +688,9 @@ impl Storage {
                     params![id.0, label],
                 )?;
             }
+            if !item.refs.is_empty() {
+                write_refs(&tx, id, &item.refs)?;
+            }
             ids.push(id);
         }
         let resolve = |link: &PlanLink| match *link {
@@ -821,6 +847,43 @@ impl Storage {
                 "INSERT OR IGNORE INTO task_labels (task_id, label) VALUES (?1, ?2)",
                 params![id.0, label],
             )?;
+        }
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(task)
+    }
+
+    /// Replaces the references of task `id` with `refs`, which
+    /// [`crate::domain::plan::merge_refs`] checked.
+    pub fn set_task_refs(&mut self, id: TaskId, refs: &[String]) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        write_refs(&tx, id, refs)?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(task)
+    }
+
+    /// Records `reason` with the latest status change of task `id`, which must be a move to
+    /// `status`, e.g. why it was started right after starting it.
+    pub fn set_latest_event_reason(
+        &mut self,
+        id: TaskId,
+        status: TaskStatus,
+        reason: &str,
+    ) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        let updated = tx.execute(
+            "UPDATE task_events SET reason = ?3
+             WHERE id = (SELECT max(id) FROM task_events WHERE task_id = ?1) AND status = ?2",
+            params![id.0, status.as_str(), reason],
+        )?;
+        if updated == 0 {
+            find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+            return Err(StorageError::InvalidData(format!(
+                "the latest status change of task {id} is not a move to {}",
+                status.as_str()
+            )));
         }
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;

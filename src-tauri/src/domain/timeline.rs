@@ -9,9 +9,9 @@ pub struct TaskEvent {
     pub status: TaskStatus,
     /// Time of the change in seconds since the Unix epoch (UTC).
     pub at: i64,
-    /// Why the work stopped, on a move back to `planned`: the reason of a pause, the
-    /// prerequisites the task waits on, or why it was reopened. `None` for other changes
-    /// and for pauses recorded without a reason.
+    /// Why the change happened: on a move back to `planned`, the reason of a pause, the
+    /// prerequisites the task waits on, or why it was reopened; on a start or completion,
+    /// the reason or note given with it. `None` when none was recorded.
     pub reason: Option<String>,
 }
 

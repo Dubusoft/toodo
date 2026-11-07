@@ -20,6 +20,7 @@ function task(overrides: Partial<Task> = {}): Task {
     estimate: null,
     dueDate: null,
     labels: [],
+    refs: [],
     pullRequestMergedAt: null,
     pullRequest: null,
     mergedWith: null,
