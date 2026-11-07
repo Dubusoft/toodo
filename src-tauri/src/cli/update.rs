@@ -8,6 +8,7 @@ use std::cmp::Ordering;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -79,6 +80,93 @@ impl Package {
         let version = manifest.get("version")?.as_str()?.to_owned();
         Some(Self { dir, name, version })
     }
+}
+
+/// Under `npx` the CLI runs from npm's cache, which npm may clean at any time, and no
+/// `toodo` is left on `PATH`. Then this installs the same version globally and runs `args`
+/// with that install instead, so the server it starts and the commands it suggests outlive
+/// the cache. Returns `Ok` without doing anything when the CLI does not run from npx.
+pub(super) fn leave_npx_cache(args: &[String], var: Var) -> Result<(), String> {
+    let Ok(exe) = std::env::current_exe() else {
+        return Ok(());
+    };
+    if !in_npx_cache(&exe) {
+        return Ok(());
+    }
+    let Some(installed) = Package::of(&exe) else {
+        return Ok(());
+    };
+    let spec = format!("{PACKAGE}@{}", installed.version);
+    let rerun = format!("npx {spec} {}", args.join(" "));
+    let npm = process::find_on_path("npm", var).ok_or_else(|| {
+        format!(
+            "npm is not on PATH; nothing was set up; add the bin directory of Node.js to PATH \
+             and rerun {rerun}"
+        )
+    })?;
+    println!(
+        "npx runs toodo from npm's cache, which npm may clean; installing {spec} globally \
+         first..."
+    );
+    let status = Command::new(&npm)
+        .args(["i", "-g", &spec, "--include=optional"])
+        .stdin(Stdio::null())
+        .status()
+        .map_err(|error| {
+            format!(
+                "cannot run {}: {error}; nothing was set up; check your npm and rerun {rerun}",
+                npm.display()
+            )
+        })?;
+    if !status.success() {
+        return Err(format!(
+            "`npm i -g {spec} --include=optional` failed ({status}); nothing was set up; fix \
+             the npm error above (for EACCES, give npm a prefix you own: npm config set \
+             prefix ~/.local, with ~/.local/bin on PATH) and rerun {rerun}"
+        ));
+    }
+    let root = process::run(
+        &npm.display().to_string(),
+        &["root", "-g"],
+        &format!("check your npm and rerun {rerun}"),
+    )?;
+    let global = global_cli(Path::new(root.trim()), &installed.name)
+        .filter(|cli| Package::of(cli).is_some_and(|package| package.version == installed.version))
+        .ok_or_else(|| {
+            format!(
+                "npm installed {spec}, but {} holds no {} {}; reinstall it with: npm i -g \
+                 {spec} --include=optional, then run: toodo {}",
+                root.trim(),
+                installed.name,
+                installed.version,
+                args.join(" ")
+            )
+        })?;
+    let error = Command::new(&global).args(args).exec();
+    Err(format!(
+        "cannot run {}: {error}; run it yourself: {} {}",
+        global.display(),
+        global.display(),
+        args.join(" ")
+    ))
+}
+
+/// Whether `exe` runs from npm's npx cache (`~/.npm/_npx/<hash>/node_modules/...`).
+fn in_npx_cache(exe: &Path) -> bool {
+    exe.components()
+        .any(|component| component.as_os_str() == "_npx")
+}
+
+/// The CLI of the platform package `platform` in npm's global root `root`: inside
+/// [`PACKAGE`], where npm puts it, else hoisted beside it.
+fn global_cli(root: &Path, platform: &str) -> Option<PathBuf> {
+    [
+        root.join(PACKAGE).join("node_modules").join(platform),
+        root.join(platform),
+    ]
+    .into_iter()
+    .map(|dir| dir.join("bin/toodo"))
+    .find(|cli| cli.is_file())
 }
 
 /// The version `toodo --version` prints: the npm package's when the CLI came from npm,
@@ -573,6 +661,43 @@ mod tests {
             Some(Path::new("/p/lib/node_modules"))
         );
         assert_eq!(install_root(Path::new("/opt/toodo")), None);
+    }
+
+    #[test]
+    fn only_a_cli_under_npx_runs_from_its_cache() {
+        assert!(in_npx_cache(Path::new(
+            "/home/a/.npm/_npx/0f1e/node_modules/@dubusoft/toodo-linux-x64/bin/toodo"
+        )));
+        assert!(!in_npx_cache(Path::new(
+            "/usr/lib/node_modules/@dubusoft/toodo/node_modules/@dubusoft/toodo-linux-x64/bin/toodo"
+        )));
+        assert!(!in_npx_cache(Path::new("/home/a/my_npx/bin/toodo")));
+    }
+
+    #[test]
+    fn the_global_cli_is_found_inside_the_package_or_hoisted() {
+        let root = tempfile::tempdir().unwrap();
+        let platform = "@dubusoft/toodo-linux-x64";
+        assert_eq!(global_cli(root.path(), platform), None);
+        let hoisted = root.path().join(platform).join("bin");
+        fs::create_dir_all(&hoisted).unwrap();
+        fs::write(hoisted.join("toodo"), "").unwrap();
+        assert_eq!(
+            global_cli(root.path(), platform),
+            Some(hoisted.join("toodo"))
+        );
+        let nested = root
+            .path()
+            .join(PACKAGE)
+            .join("node_modules")
+            .join(platform)
+            .join("bin");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("toodo"), "").unwrap();
+        assert_eq!(
+            global_cli(root.path(), platform),
+            Some(nested.join("toodo"))
+        );
     }
 
     #[test]

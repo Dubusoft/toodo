@@ -14,7 +14,7 @@ toodo service install
 
 `toodo init` creates the data directory with its database and access tokens, starts the server on `127.0.0.1:47616`, and prints the web app URL and the file that holds the web access token. `toodo service install` keeps the server running as the systemd user service `toodo-server.service`.
 
-To try Toodo without a global install, run `npx @dubusoft/toodo init`. The development channel is `@dubusoft/toodo@dev`.
+`npx @dubusoft/toodo init` works too: it installs the same version globally first, so the server and the `toodo` command do not depend on npm's npx cache. The development channel is `@dubusoft/toodo@dev`.
 
 ## Update
 

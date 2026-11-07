@@ -483,7 +483,9 @@ pub fn main() {
             );
             Ok(0)
         }
-        Command::Init(args) => init(&args, &var).map(|()| 0),
+        Command::Init(init_args) => update::leave_npx_cache(&args, &var)
+            .and_then(|()| init(&init_args, &var))
+            .map(|()| 0),
         Command::Start(dir) => data_dir(dir.as_deref(), &var).and_then(|data| {
             start(&data, &var)?;
             // The server may have created a new token, see `docs/server.md`.
@@ -527,6 +529,30 @@ pub fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// How the commands this CLI suggests run it: `toodo` when that is this install on
+/// `PATH`, else the path of this executable.
+fn program(var: Var) -> String {
+    let Ok(exe) = std::env::current_exe().and_then(std::fs::canonicalize) else {
+        return "toodo".to_owned();
+    };
+    let found = find_on_path("toodo", var).and_then(|path| std::fs::canonicalize(path).ok());
+    if found.is_some_and(|found| runs(&found, &exe)) {
+        "toodo".to_owned()
+    } else {
+        exe.display().to_string()
+    }
+}
+
+/// Whether `found`, the resolved `toodo` on `PATH`, runs `exe`: it is `exe`, or the npm
+/// launcher (`<package>/bin/toodo.js`) of the package that holds `exe`.
+fn runs(found: &Path, exe: &Path) -> bool {
+    found == exe
+        || found
+            .parent()
+            .and_then(Path::parent)
+            .is_some_and(|package| exe.starts_with(package.join("node_modules")))
 }
 
 fn data_dir(flag: Option<&Path>, var: Var) -> Result<DataDir, String> {
@@ -609,6 +635,14 @@ fn init(args: &InitArgs, var: Var) -> Result<(), String> {
     }
     let manager = manager(&data, var)?;
     let running = is_running(&manager, &data);
+    // A server left running from another install, such as npm's npx cache, is restarted
+    // on this one.
+    let foreign = match manager {
+        Manager::PidFile if running => Bundle::find()
+            .ok()
+            .and_then(|bundle| process::foreign_server(&data, &bundle)),
+        _ => None,
+    };
     // A busy port stops init before it creates anything.
     if !running {
         process::ensure_port_free(listen, &settings::data_dir_flag(&data, var))?;
@@ -621,7 +655,7 @@ fn init(args: &InitArgs, var: Var) -> Result<(), String> {
     settings::record_data_dir(&data, var)?;
     let flag = settings::data_dir_flag(&data, var);
 
-    if running && listen == previous {
+    if running && listen == previous && foreign.is_none() {
         println!(
             "toodo-server is already running on {}; keeping it",
             settings::web_url(listen)
@@ -642,7 +676,13 @@ fn init(args: &InitArgs, var: Var) -> Result<(), String> {
                 }
             }
             Manager::PidFile => {
-                if running {
+                if let Some(old) = &foreign {
+                    println!(
+                        "toodo-server runs {}; restarting it on this install.",
+                        old.display()
+                    );
+                    stop(&data, var)?;
+                } else if running {
                     println!("The listen address changed to {listen}; restarting toodo-server.");
                     stop(&data, var)?;
                 }
@@ -680,6 +720,11 @@ Tools on this machine (the web app shows the server's view in Settings > Runners
     }
 
     let web_token = data.web_token();
+    let program = program(var);
+    let status = format!("{program} status{flag}");
+    let service_install = format!("{program} service install{flag}");
+    // The commands line up in a column, also when they start with a long path.
+    let width = 22.max(service_install.len() + 1);
     println!(
         "
 Toodo is running.
@@ -688,8 +733,7 @@ Toodo is running.
   MCP:      {mcp} (token in {mcp_token})
 
 Next steps:
-  {status:<22} check the server and where its files are",
-        status = format!("toodo status{flag}"),
+  {status:<width$} check the server and where its files are",
         web = settings::web_url(listen),
         token = web_token.display(),
         mcp = settings::mcp_url(listen),
@@ -697,8 +741,7 @@ Next steps:
     );
     if let Manager::PidFile = manager {
         println!(
-            "  {:<22} keep the server running as {}",
-            format!("toodo service install{flag}"),
+            "  {service_install:<width$} keep the server running as {}",
             if launchd::supported() {
                 "a launchd agent that starts at login"
             } else {
@@ -969,7 +1012,8 @@ fn status(data: &DataDir, var: Var) -> Result<i32, String> {
         Ok(0)
     } else {
         println!(
-            "Start it with: toodo start{}",
+            "Start it with: {} start{}",
+            program(var),
             settings::data_dir_flag(data, var)
         );
         Ok(STOPPED)
@@ -1212,5 +1256,16 @@ mod tests {
         );
         assert!(warning("[::]:80").is_some());
         assert!(warning("192.168.1.5:47616").is_some());
+    }
+
+    #[test]
+    fn the_toodo_on_path_runs_this_cli_directly_or_through_its_npm_launcher() {
+        let package = Path::new("/p/lib/node_modules/@dubusoft/toodo");
+        let exe = package.join("node_modules/@dubusoft/toodo-linux-x64/bin/toodo");
+        assert!(runs(&exe, &exe));
+        assert!(runs(&package.join("bin/toodo.js"), &exe));
+        let npx = Path::new("/h/.npm/_npx/1a/node_modules/@dubusoft/toodo-linux-x64/bin/toodo");
+        assert!(!runs(&package.join("bin/toodo.js"), npx));
+        assert!(!runs(Path::new("/usr/local/bin/toodo"), &exe));
     }
 }
