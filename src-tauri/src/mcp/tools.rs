@@ -2632,14 +2632,17 @@ pub struct StartAgentRun {
     /// An in_progress task of a workspace with runner plain or tmux, e.g. one start_task
     /// started.
     pub task_id: TaskId,
-    /// The agent CLI to run: `claude` or `codex`.
+    /// The agent CLI to run: `claude`, `codex`, `pi`, `omo`, `opencode`, or `gemini`. A
+    /// run the agent cannot serve (mcp for pi, omo, or gemini; a model for omo; a
+    /// permission mode it lacks) is rejected with the next step.
     pub adapter: types::AgentAdapter,
     /// What the agent is told to do, on its stdin. Omitted or blank: the task's title,
     /// description, and criteria.
     #[serde(default)]
     pub prompt: Option<String>,
     /// Whether the agent gets this server's MCP endpoint and token in its environment, so
-    /// it can call current_task; `true` when omitted.
+    /// it can call current_task. Omitted: `true` for claude, codex, and opencode, `false`
+    /// for the adapters that cannot take it.
     #[serde(default)]
     pub mcp: Option<bool>,
     /// An ended run of the task whose agent session to resume with prompt (required
@@ -2866,7 +2869,8 @@ fn polled_status(
 }
 
 /// Starts an agent CLI for an `in_progress` task of a workspace with runner plain or
-/// tmux, as the app's Start run does; `mcp` defaults to `true`.
+/// tmux, as the app's Start run does; `mcp` defaults to whether the adapter can take the
+/// Toodo MCP server.
 pub fn start_run(
     storage: &StorageState,
     plain: &PlainRunState,
@@ -2880,7 +2884,11 @@ pub fn start_run(
         request.task_id,
         request.adapter,
         request.prompt,
-        request.mcp.unwrap_or(true),
+        request.mcp.unwrap_or_else(|| {
+            crate::runtime::plain::adapter::AgentAdapter::from(request.adapter)
+                .capabilities()
+                .mcp
+        }),
         request.follow_up_of,
     )
 }

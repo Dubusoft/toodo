@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"0190c0de-0000-7000-8000-000000000001","cwd":"/work/task-7"}
+{"type":"agent_start","runId":"run-1"}
+{"type":"tool_execution_start","toolCallId":"toolu_probe_1","toolName":"todo","args":{"op":"init","items":["Probe step"]}}
+{"type":"tool_execution_end","toolCallId":"toolu_probe_1","toolName":"todo","result":{"content":[{"type":"text","text":"(todo list)"}],"details":{"op":"init","phases":[{"name":"Tasks","tasks":[{"content":"Probe step","status":"in_progress"}]}]}},"isError":false}
+{"type":"agent_end","messages":[{"role":"user","content":[{"type":"text","text":"Call the todo tool once with op init and items [\"Probe step\"], then reply with exactly PROBE_OK."}]},{"role":"assistant","content":[{"type":"toolCall","id":"toolu_probe_1","name":"todo","arguments":{"op":"init","items":["Probe step"]}}],"usage":{"input":2,"cacheRead":100,"cacheWrite":50,"output":8},"stopReason":"toolUse"},{"role":"assistant","content":[{"type":"text","text":"PROBE_OK","index":1}],"usage":{"input":1,"cacheRead":150,"cacheWrite":10,"output":4},"stopReason":"stop"}]}

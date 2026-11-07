@@ -62,7 +62,7 @@ fn task_run(storage: &storage::Storage, run: &storage::TaskRun) -> CommandResult
     Ok(wire)
 }
 
-/// Starts `adapter` (Claude or Codex) as a writer run in the worktree of an `in_progress`
+/// Starts `adapter` (an agent CLI, see `docs/runners.md`) as a writer run in the worktree of an `in_progress`
 /// task of a workspace with runner plain or tmux, on the server or on the workspace's SSH
 /// machine. Runner plain runs the agent as a child process (over `ssh` for an SSH
 /// workspace); runner tmux runs it in a detached tmux session that `get_run_log` tells how
@@ -558,6 +558,7 @@ fn start(
         };
         (prepared, request_key, limit.is_some(), queue, resume)
     };
+    supported(agent, mcp, resume.is_some(), &prepared.options)?;
     if queue {
         let conversation = resume.as_ref().map(|resume| resume.conversation);
         let new = new_run(&prepared, request_key, agent, conversation);
@@ -582,6 +583,55 @@ fn start(
     );
     drop(admission);
     launched
+}
+
+/// Rejects a run that needs what `agent` does not support (see
+/// [`adapter::AgentAdapter::capabilities`]): the Toodo MCP server, resuming a session, the
+/// permission mode, or a model.
+fn supported(
+    agent: adapter::AgentAdapter,
+    mcp: bool,
+    resuming: bool,
+    options: &model::AgentOptions,
+) -> CommandResult<()> {
+    let name = agent.as_wire();
+    let can = agent.capabilities();
+    if mcp && !can.mcp {
+        return Err(CommandError::invalid_input(format!(
+            "the {name} adapter cannot be handed the Toodo MCP server for a run; start the run \
+             with mcp false, or with adapter {}",
+            adapter::AgentAdapter::names_with(|can| can.mcp)
+        )));
+    }
+    if resuming && !can.resume {
+        return Err(CommandError::invalid_input(format!(
+            "the {name} adapter cannot resume a session; leave follow_up_of out to start a new \
+             session"
+        )));
+    }
+    let mode = options
+        .permission_mode
+        .unwrap_or_else(|| agent.default_permission_mode());
+    if !can.permission_modes.contains(&mode) {
+        let modes: Vec<&str> = can.permission_modes.iter().map(|m| m.as_str()).collect();
+        return Err(CommandError::invalid_input(format!(
+            "the {name} adapter cannot run with permission mode {}; set permission_mode to {} \
+             (set_task_agent_options, or set_workspace_agent_options), or start the run with \
+             adapter {}",
+            mode.as_str(),
+            modes.join(" or "),
+            adapter::AgentAdapter::names_with(|can| can.permission_modes.contains(&mode))
+        )));
+    }
+    if options.model.is_some() && !can.model {
+        return Err(CommandError::invalid_input(format!(
+            "the {name} adapter cannot be given a model; clear the model of the task and its \
+             workspace (set_task_agent_options, set_workspace_agent_options), or start the run \
+             with adapter {}",
+            adapter::AgentAdapter::names_with(|can| can.model)
+        )));
+    }
+    Ok(())
 }
 
 /// The record of a writer run of `prepared` for `request_key`.
@@ -619,6 +669,8 @@ fn launch(
     mcp: bool,
     resume: Option<AgentResume>,
 ) -> CommandResult<storage::TaskRun> {
+    // A queued run is checked again: the task's agent options may have changed meanwhile.
+    supported(agent, mcp, resume.is_some(), &prepared.options)?;
     let brief = match prompt.filter(|prompt| !prompt.trim().is_empty()) {
         Some(prompt) => prompt,
         None => default_brief(&prepared.task, &prepared.worktree, mcp),
@@ -714,8 +766,9 @@ fn start_queued(
         .ok_or_else(|| {
             CommandError::rejected(format!(
                 "queued run {} names no agent Toodo knows; start a new run (start_plain_run) \
-                 with adapter claude or codex",
-                run.id
+                 with adapter {}",
+                run.id,
+                adapter::AgentAdapter::names_with(|_| true)
             ))
         })?;
     let prepared = {
@@ -1831,5 +1884,42 @@ exec sh -c "$1"
         assert_eq!(error.kind, CommandErrorKind::Rejected);
         assert!(error.message.contains("herdr pane"), "{error:?}");
         assert!(error.message.contains("reconcile_run"), "{error:?}");
+    }
+
+    #[test]
+    fn a_run_needing_what_its_agent_lacks_is_rejected_with_the_next_step() {
+        use adapter::AgentAdapter::{Claude, Gemini, Omo, OpenCode, Pi};
+        let none = model::AgentOptions::default();
+        let with = |model: Option<&str>, mode: Option<model::PermissionMode>| model::AgentOptions {
+            model: model.map(str::to_owned),
+            permission_mode: mode,
+            time_limit_minutes: None,
+        };
+        assert!(supported(Claude, true, true, &none).is_ok());
+        assert!(supported(OpenCode, true, true, &none).is_ok());
+        assert!(supported(Pi, false, true, &with(Some("openai/gpt-5"), None)).is_ok());
+
+        let mcp = supported(Pi, true, false, &none).unwrap_err();
+        assert_eq!(mcp.kind, CommandErrorKind::InvalidInput);
+        assert!(mcp.message.contains("mcp false"), "{mcp:?}");
+        assert!(
+            mcp.message.contains("claude, codex, or opencode"),
+            "{mcp:?}"
+        );
+        assert!(supported(Gemini, true, false, &none).is_err());
+
+        let edit = supported(
+            Pi,
+            false,
+            false,
+            &with(None, Some(model::PermissionMode::Edit)),
+        )
+        .unwrap_err();
+        assert!(edit.message.contains("read_only or bypass"), "{edit:?}");
+        assert!(edit.message.contains("set_task_agent_options"), "{edit:?}");
+
+        let model = supported(Omo, false, false, &with(Some("sonnet"), None)).unwrap_err();
+        assert!(model.message.contains("clear the model"), "{model:?}");
+        assert!(supported(Omo, false, true, &none).is_ok());
     }
 }

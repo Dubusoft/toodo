@@ -3,7 +3,23 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { useState } from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskList, type TaskDraft } from "@/components/task-list";
-import { commands, type Task, type TaskActivity, type TaskId, type Workspace } from "@/lib/bindings";
+import {
+  commands,
+  type AgentCapabilities,
+  type Task,
+  type TaskActivity,
+  type TaskId,
+  type Workspace,
+} from "@/lib/bindings";
+/** What Claude and Codex can do in runs, as `runner_health` reports it. */
+const agentCapabilities: AgentCapabilities = {
+  mcp: true,
+  resume: true,
+  todo: true,
+  model: true,
+  permissionModes: ["read_only", "edit", "bypass"],
+};
+
 import { queryKeys } from "@/lib/queries";
 import { formatWhen } from "@/lib/timeline";
 
@@ -238,8 +254,8 @@ describe("TaskList by workspace source, completion, and runner", () => {
           { tool: "ssh", installed: true, ready: true, version: "OpenSSH_9.6p1", message: null },
         ],
         agents: [
-          { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
-          { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
+          { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null, capabilities: agentCapabilities },
+          { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null, capabilities: agentCapabilities },
         ],
       }),
     );

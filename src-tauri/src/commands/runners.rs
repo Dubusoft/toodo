@@ -88,9 +88,9 @@ fn health(herdr: &Herdr, probe: Probe<'_>, var: &dyn Fn(&str) -> Option<String>)
     RunnerHealth {
         herdr: herdr_health(herdr.server_status()),
         tmux: tmux_health(probe("tmux", &["-V"])),
-        agents: [AgentAdapter::Claude, AgentAdapter::Codex]
+        agents: adapter::AgentAdapter::ALL
             .into_iter()
-            .map(|adapter| agent_health(adapter, var))
+            .map(|adapter| agent_health(adapter.into(), var))
             .collect(),
         tools: vec![git_health(probe), gh_health(probe), ssh_health(probe)],
     }
@@ -271,17 +271,20 @@ fn tmux_health(output: std::io::Result<std::process::Output>) -> TmuxHealth {
 
 /// Looks up the CLI by the name the plain runner launches it with.
 fn agent_health(adapter: AgentAdapter, var: &dyn Fn(&str) -> Option<String>) -> AgentHealth {
-    let program = adapter::AgentAdapter::from(adapter).as_wire();
+    let agent = adapter::AgentAdapter::from(adapter);
+    let program = agent.as_wire();
     let other = match adapter {
         AgentAdapter::Claude => "codex",
-        AgentAdapter::Codex => "claude",
+        _ => "claude",
     };
+    let capabilities = agent.capabilities().into();
     match find_on_path(program, var) {
         Some(path) => AgentHealth {
             adapter,
             installed: true,
             path: Some(path.display().to_string()),
             message: None,
+            capabilities,
         },
         None => AgentHealth {
             adapter,
@@ -291,6 +294,7 @@ fn agent_health(adapter: AgentAdapter, var: &dyn Fn(&str) -> Option<String>) -> 
                 "{program} was not found on the server's PATH; install {program} on the \
                  server's PATH, or start the run with the {other} adapter."
             )),
+            capabilities,
         },
     }
 }
@@ -416,14 +420,16 @@ mod tests {
             &nothing,
             &var,
         );
+        let capabilities = |agent: adapter::AgentAdapter| agent.capabilities().into();
         assert_eq!(
-            health.agents,
-            vec![
+            health.agents[..2],
+            [
                 AgentHealth {
                     adapter: AgentAdapter::Claude,
                     installed: true,
                     path: Some(claude.display().to_string()),
                     message: None,
+                    capabilities: capabilities(adapter::AgentAdapter::Claude),
                 },
                 AgentHealth {
                     adapter: AgentAdapter::Codex,
@@ -434,8 +440,30 @@ mod tests {
                          server's PATH, or start the run with the claude adapter."
                             .to_owned()
                     ),
+                    capabilities: capabilities(adapter::AgentAdapter::Codex),
                 },
             ]
+        );
+        let listed: Vec<AgentAdapter> = health.agents.iter().map(|a| a.adapter).collect();
+        assert_eq!(
+            listed,
+            [
+                AgentAdapter::Claude,
+                AgentAdapter::Codex,
+                AgentAdapter::Pi,
+                AgentAdapter::Omo,
+                AgentAdapter::OpenCode,
+                AgentAdapter::Gemini
+            ]
+        );
+        let opencode = &health.agents[4];
+        assert!(!opencode.installed);
+        assert!(
+            opencode
+                .message
+                .as_deref()
+                .unwrap()
+                .starts_with("opencode was not found on the server's PATH")
         );
     }
 

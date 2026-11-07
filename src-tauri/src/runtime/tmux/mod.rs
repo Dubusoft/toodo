@@ -106,6 +106,16 @@ impl TmuxRunner {
         self
     }
 
+    /// The program run for `adapter`: Claude and Codex as set (by tests), the others by
+    /// their wire name on `PATH`.
+    fn program(&self, adapter: AgentAdapter) -> PathBuf {
+        match adapter {
+            AgentAdapter::Claude => self.claude.clone(),
+            AgentAdapter::Codex => self.codex.clone(),
+            other => other.as_wire().into(),
+        }
+    }
+
     #[cfg(test)]
     pub fn with_programs(mut self, claude: impl Into<PathBuf>, codex: impl Into<PathBuf>) -> Self {
         self.claude = claude.into();
@@ -886,10 +896,7 @@ impl RunLauncher for TmuxRunner {
             let _ = self.cleanup(&host, spec.run);
             return Err(error);
         }
-        let program = match agent.adapter {
-            AgentAdapter::Claude => &self.claude,
-            AgentAdapter::Codex => &self.codex,
-        };
+        let program = &self.program(agent.adapter);
         let mut argv = vec![program.to_string_lossy().into_owned()];
         argv.extend(invocation.args);
         let secret_env = if endpoint.is_some() {

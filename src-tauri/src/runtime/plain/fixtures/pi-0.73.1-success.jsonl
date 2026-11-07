@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"01a1b4d1-227b-746f-8cc3-70c35dda9fa6","cwd":"/work/task-7"}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Say PROBE_OK"}]}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"PROBE_OK"}],"api":"openai-completions","provider":"probe","model":"probe-model","usage":{"input":11,"output":3,"cacheRead":0,"cacheWrite":0,"totalTokens":14},"stopReason":"stop"}}
+{"type":"agent_end","messages":[{"role":"user","content":[{"type":"text","text":"Say PROBE_OK"}]},{"role":"assistant","content":[{"type":"text","text":"PROBE_OK"}],"api":"openai-completions","provider":"probe","model":"probe-model","usage":{"input":11,"output":3,"cacheRead":0,"cacheWrite":0,"totalTokens":14},"stopReason":"stop"}]}

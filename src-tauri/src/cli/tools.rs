@@ -1,7 +1,7 @@
 //! What `toodo init` prints about the tools the server runs: the checks of the
 //! `runner_health` command, each with its next step when the tool is not ready.
 
-use crate::commands::types::{AgentAdapter, RunnerHealth, Tool};
+use crate::commands::types::{RunnerHealth, Tool};
 
 /// One line per tool: its name, whether it is ready, and its version or where it was
 /// found, else what to do next.
@@ -39,10 +39,7 @@ pub(super) fn report(health: &RunnerHealth) -> Vec<String> {
         detail(tmux.installed, &tmux.version, &tmux.message),
     ));
     for agent in &health.agents {
-        let name = match agent.adapter {
-            AgentAdapter::Claude => "claude",
-            AgentAdapter::Codex => "codex",
-        };
+        let name = crate::runtime::plain::adapter::AgentAdapter::from(agent.adapter).as_wire();
         rows.push((
             name,
             agent.installed,
@@ -53,8 +50,8 @@ pub(super) fn report(health: &RunnerHealth) -> Vec<String> {
         .map(|(name, ready, detail)| {
             let state = if ready { "ready" } else { "not ready" };
             match detail {
-                Some(detail) => format!("  {name:<7}{state:<11}{detail}"),
-                None => format!("  {name:<7}{state}"),
+                Some(detail) => format!("  {name:<10}{state:<11}{detail}"),
+                None => format!("  {name:<10}{state}"),
             }
         })
         .collect()
@@ -67,7 +64,7 @@ fn detail(ready: bool, found: &Option<String>, message: &Option<String>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::types::{AgentHealth, HerdrHealth, TmuxHealth, ToolHealth};
+    use crate::commands::types::{AgentAdapter, AgentHealth, HerdrHealth, TmuxHealth, ToolHealth};
 
     #[test]
     fn each_tool_gets_a_line_with_its_version_or_next_step() {
@@ -88,6 +85,9 @@ mod tests {
                 installed: true,
                 path: Some("/usr/bin/codex".to_owned()),
                 message: None,
+                capabilities: crate::runtime::plain::adapter::AgentAdapter::Codex
+                    .capabilities()
+                    .into(),
             }],
             tools: vec![
                 ToolHealth {
@@ -109,11 +109,11 @@ mod tests {
         assert_eq!(
             report(&health),
             vec![
-                "  git    ready      git version 2.43.0",
-                "  gh     not ready  run `gh auth login`",
-                "  herdr  ready      v0.9.5",
-                "  tmux   not ready  install tmux",
-                "  codex  ready      /usr/bin/codex",
+                "  git       ready      git version 2.43.0",
+                "  gh        not ready  run `gh auth login`",
+                "  herdr     ready      v0.9.5",
+                "  tmux      not ready  install tmux",
+                "  codex     ready      /usr/bin/codex",
             ]
         );
     }

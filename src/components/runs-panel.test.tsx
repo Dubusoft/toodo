@@ -10,6 +10,8 @@ import {
   type AgentOptions,
   type RunEvent,
   type RunLog,
+  type AgentCapabilities,
+  type AgentHealth,
   type RunnerHealth,
   type Task,
   type TaskRun,
@@ -117,6 +119,15 @@ function log(of: TaskRun, events: RunEvent[], stdout = "", stderr = "", attach: 
 
 const launched = (of: TaskRun) => [event(1, "reserved"), event(2, "launched", of.providerRunRef)];
 
+/** What Claude and Codex can do in runs, as `runner_health` reports it. */
+const agentCapabilities: AgentCapabilities = {
+  mcp: true,
+  resume: true,
+  todo: true,
+  model: true,
+  permissionModes: ["read_only", "edit", "bypass"],
+};
+
 /** The server's message for an agent CLI it did not find, as `runner_health` words it. */
 const notFound = (adapter: AgentAdapter) =>
   `${adapter} was not found on the server's PATH; install ${adapter} on the server's PATH, or start the run with ` +
@@ -134,8 +145,8 @@ function health(missing: AgentAdapter[] = []): RunnerHealth {
     ],
     agents: (["claude", "codex"] as const).map((adapter) =>
       missing.includes(adapter)
-        ? { adapter, installed: false, path: null, message: notFound(adapter) }
-        : { adapter, installed: true, path: `/usr/local/bin/${adapter}`, message: null },
+        ? { adapter, installed: false, path: null, message: notFound(adapter), capabilities: agentCapabilities }
+        : { adapter, installed: true, path: `/usr/local/bin/${adapter}`, message: null, capabilities: agentCapabilities },
     ),
   };
 }
@@ -224,6 +235,42 @@ describe("RunsPanel", () => {
     await waitFor(() => expect(mocked.getRunLog).toHaveBeenCalledWith(41, null));
     // The new run holds the worktree, so no second run starts until it ends.
     expect(within(form).getByRole("button", { name: "Start run of #7" })).toBeDisabled();
+  });
+
+  it("offers other agents once installed and holds back Toodo MCP where the agent cannot take it", async () => {
+    const pi: AgentHealth = {
+      adapter: "pi",
+      installed: true,
+      path: "/usr/local/bin/pi",
+      message: null,
+      capabilities: { ...agentCapabilities, mcp: false, todo: false, permissionModes: ["read_only", "bypass"] },
+    };
+    const gemini: AgentHealth = {
+      adapter: "gemini",
+      installed: false,
+      path: null,
+      message: notFound("gemini"),
+      capabilities: { ...agentCapabilities, mcp: false },
+    };
+    mocked.runnerHealth.mockResolvedValue(ok({ ...health(), agents: [...health().agents, pi, gemini] }));
+    const started = run(1, "running", "pi");
+    mocked.listTaskRuns.mockResolvedValueOnce(ok([])).mockResolvedValue(ok([started]));
+    mocked.startPlainRun.mockResolvedValue(ok(started));
+    mocked.getRunLog.mockResolvedValue(ok(log(started, launched(started))));
+    renderPanel();
+
+    expect(await screen.findByText("No runs yet.")).toBeInTheDocument();
+    const form = screen.getByRole("form", { name: "New run of #7" });
+    fireEvent.click(await within(form).findByRole("button", { name: "pi" }));
+    expect(within(form).queryByRole("button", { name: "Gemini" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("note", { name: "Why Gemini is unavailable" })).not.toBeInTheDocument();
+    const box = within(form).getByRole("checkbox", { name: "Toodo MCP" });
+    expect(box).toBeDisabled();
+    expect(box).not.toBeChecked();
+    fireEvent.click(within(form).getByRole("button", { name: "Start run of #7" }));
+
+    await waitFor(() => expect(mocked.startPlainRun).toHaveBeenCalledWith(7, "pi", null, false, null));
+    expect(await screen.findByRole("button", { name: "Run 1, pi, Running" })).toBeInTheDocument();
   });
 
   it("sends a follow-up to the agent session of an ended run and links the new run to it", async () => {
@@ -680,7 +727,8 @@ describe("RunsPanel", () => {
     renderPanel();
 
     expect(await screen.findByRole("note", { name: "Why no run of #7 starts" })).toHaveTextContent(
-      "Neither claude nor codex was found on the server's PATH; install one of them there, then press Refresh",
+      "No agent CLI Toodo runs (claude, codex, pi, omo, opencode, or gemini) was found on the server's PATH; install " +
+        "one of them there, then press Refresh",
     );
     const form = screen.getByRole("form", { name: "New run of #7" });
     for (const [name, adapter] of [

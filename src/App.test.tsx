@@ -12,10 +12,20 @@ import {
   type HerdrMachine,
   type ReviewEntry,
   type RunnerHealth,
+  type AgentCapabilities,
   type Task,
   type TaskAgentStatus,
   type Workspace,
 } from "@/lib/bindings";
+/** What Claude and Codex can do in runs, as `runner_health` reports it. */
+const agentCapabilities: AgentCapabilities = {
+  mcp: true,
+  resume: true,
+  todo: true,
+  model: true,
+  permissionModes: ["read_only", "edit", "bypass"],
+};
+
 
 vi.mock("@/web/notification", () => ({
   isPermissionGranted: vi.fn(),
@@ -110,8 +120,8 @@ const readyRunners: RunnerHealth = {
     { tool: "ssh", installed: true, ready: true, version: "OpenSSH_9.6p1", message: null },
   ],
   agents: [
-    { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
-    { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
+    { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null, capabilities: agentCapabilities },
+    { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null, capabilities: agentCapabilities },
   ],
 };
 const machineZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -361,8 +371,8 @@ describe("App", () => {
         ...readyRunners,
         herdr: { installed: false, running: false, version: null, message: "herdr is not installed" },
         agents: [
-          { adapter: "claude", installed: false, path: null, message: "Install claude" },
-          { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
+          { adapter: "claude", installed: false, path: null, message: "Install claude", capabilities: agentCapabilities },
+          { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null, capabilities: agentCapabilities },
         ],
       },
     });

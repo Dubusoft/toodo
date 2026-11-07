@@ -8,7 +8,14 @@ import { cn } from "@/lib/utils";
 /** Whether a runner can start agents, named and coloured in the tones of the status glossary. */
 type Readiness = { label: string; tone: Tone };
 
-export const agentNames: Record<AgentAdapter, string> = { claude: "Claude", codex: "Codex" };
+export const agentNames: Record<AgentAdapter, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  pi: "pi",
+  omo: "omo",
+  opencode: "OpenCode",
+  gemini: "Gemini",
+};
 
 function herdrReadiness(herdr: HerdrHealth): Readiness {
   if (herdr.running) return { label: "Running", tone: "success" };
@@ -83,7 +90,7 @@ function RunnerRow({
 
 /**
  * What the server starts agents with: herdr for workspaces with runner herdr, tmux for local
- * workspaces with runner tmux, and the Claude and Codex CLIs of runner plain and tmux. A tool
+ * workspaces with runner tmux, and the agent CLIs of runner plain and tmux. A tool
  * that is not ready shows the server's next step.
  */
 export function RunnersPanel() {
@@ -94,7 +101,8 @@ export function RunnersPanel() {
     <section aria-label="Runners" className="flex flex-col gap-3 text-sm">
       <p className="text-muted-foreground">
         The tools this server starts agents with: herdr for workspaces with runner herdr, tmux for local workspaces
-        with runner tmux, and the Claude or Codex CLI for runner plain and tmux. Runner plain works without herdr. SSH
+        with runner tmux, and an agent CLI (Claude, Codex, pi, omo, OpenCode, or Gemini) for runner plain and tmux.
+        Runner plain works without herdr. SSH
         workspaces use the tmux and agent CLIs of their host. The server also runs git for local repositories, gh for the
         pull requests of GitHub workspaces, and ssh for SSH workspaces.
       </p>
