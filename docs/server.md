@@ -103,10 +103,14 @@ toodo init
 toodo service install
 ```
 
-`toodo update` updates it later. To try Toodo without a global install, run
-`npx @dubusoft/toodo init`. The other ways, [from a release without npm](#install-and-update)
-and [from a checkout](#from-a-checkout), are for machines without Node.js and for
-development.
+`toodo update` updates it later. `npx @dubusoft/toodo init` works too: run through `npx`,
+`init` first installs the same version globally with
+`npm i -g @dubusoft/toodo@<version> --include=optional` and goes on from that install, so the
+server does not run from npm's npx cache (which npm may clean) and the `toodo` command stays
+on `PATH`. When npm cannot install globally (`EACCES`), nothing is set up; give npm a prefix
+you own (`npm config set prefix ~/.local`, with `~/.local/bin` on `PATH`) and rerun it. The
+other ways, [from a release without npm](#install-and-update) and
+[from a checkout](#from-a-checkout), are for machines without Node.js and for development.
 
 `init` creates the data directory with its database and access tokens, saves the listen
 address in `cli.json` there, and starts `toodo-server` in the background. It prints the web
@@ -117,9 +121,11 @@ each time Claude Code connects; where `codex` is on `PATH` it writes the endpoin
 token to `$CODEX_HOME/config.toml` (else `~/.codex/config.toml`), readable by the owner
 only. The token never appears on a command line. `toodo start` and `toodo update`
 register the endpoint again with the agents that have it registered already, so they
-pick up a replaced token. Running `init` again keeps the database and tokens. herdr is
-not needed to start the server; only workspaces with runner `herdr` (and remote SSH
-workspaces) need it. Runner `plain` runs `claude` or `codex` from the server's `PATH`,
+pick up a replaced token. Running `init` again keeps the database and tokens; a server
+that `toodo start` left running from another install (such as the npx cache) is restarted
+on this one. The next steps it prints name `toodo` when the `toodo` on `PATH` is this
+install, else the full path of the CLI. herdr is not needed to start the server; only
+workspaces with runner `herdr` (and remote SSH workspaces) need it. Runner `plain` runs `claude` or `codex` from the server's `PATH`,
 and runner `none` needs neither.
 
 - `--port N`: port to listen on, keeping the saved host (default `47616`).

@@ -138,6 +138,15 @@ pub(super) fn running_pid(data: &DataDir) -> Option<u32> {
     is_server(pid).then_some(pid)
 }
 
+/// The program of the server started by `toodo start` when it is not the server of
+/// `bundle`, e.g. one npx started from npm's cache.
+pub(super) fn foreign_server(data: &DataDir, bundle: &Bundle) -> Option<PathBuf> {
+    let pid = running_pid(data)?;
+    let program = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    let ours = fs::canonicalize(&bundle.server).unwrap_or_else(|_| bundle.server.clone());
+    (program != ours).then_some(program)
+}
+
 /// Starts `toodo-server` detached from this process, logging to `server.log`, and waits
 /// until it accepts connections. Returns its pid.
 pub(super) fn spawn(
