@@ -225,7 +225,7 @@ export const commands = {
 	 */
 	closeTaskWorkspace: (id: TaskId) => typedError<Task, CommandError>(invoke("close_task_workspace", { id })),
 	/**
-	 *  Starts `adapter` (Claude or Codex) as a writer run in the worktree of an `in_progress`
+	 *  Starts `adapter` (an agent CLI, see `docs/runners.md`) as a writer run in the worktree of an `in_progress`
 	 *  task of a workspace with runner plain or tmux, on the server or on the workspace's SSH
 	 *  machine. Runner plain runs the agent as a child process (over `ssh` for an SSH
 	 *  workspace); runner tmux runs it in a detached tmux session that `get_run_log` tells how
@@ -463,7 +463,32 @@ export type AgentAdapter =
 /**  Claude Code in print mode (`claude -p`). */
 "claude" | 
 /**  Codex in exec mode (`codex exec`). */
-"codex";
+"codex" | 
+/**  pi in print mode (`pi -p --mode json`). */
+"pi" | 
+/**  omo in print mode (`omo -p --mode json`). */
+"omo" | 
+/**  OpenCode (`opencode run --format json`). */
+"opencode" | 
+/**  Gemini CLI in headless mode (`gemini -p --output-format stream-json`). */
+"gemini";
+
+/**
+ *  What Toodo can rely on an agent CLI for, as its contract probe confirmed; a run that
+ *  needs a capability that is `false` is rejected.
+ */
+export type AgentCapabilities = {
+	/**  The run can be handed the Toodo MCP server (`mcp` of `start_plain_run`). */
+	mcp: boolean,
+	/**  A follow-up run can resume the agent's session (`follow_up_of`). */
+	resume: boolean,
+	/**  The agent's todo list is mirrored into the run's `todo` events. */
+	todo: boolean,
+	/**  The model of the task's agent options is passed to the agent. */
+	model: boolean,
+	/**  The permission modes the agent can run with. */
+	permissionModes: PermissionMode[],
+};
 
 export type AgentHealth = {
 	adapter: AgentAdapter,
@@ -473,6 +498,8 @@ export type AgentHealth = {
 	path: string | null,
 	/**  What to do next when the CLI is missing; `None` when it is installed. */
 	message: string | null,
+	/**  What runs of the adapter can use. */
+	capabilities: AgentCapabilities,
 };
 
 /**  Whether agents merge the pull request of their own task. Toodo itself never merges. */
@@ -1313,7 +1340,7 @@ export type RunnerHealth = {
 	herdr: HerdrHealth,
 	/**  tmux for local workspaces with runner tmux. */
 	tmux: TmuxHealth,
-	/**  Claude, then Codex. */
+	/**  Claude, Codex, pi, omo, OpenCode, then Gemini CLI. */
 	agents: AgentHealth[],
 	/**  git, then gh, then ssh. */
 	tools: ToolHealth[],
@@ -1591,7 +1618,7 @@ export type TaskRun = {
 	runnerKind: string,
 	/**  `writer` or `observer`. */
 	role: string,
-	/**  The agent CLI of a plain run: `claude` or `codex`. */
+	/**  The agent CLI of a plain run, such as `claude` or `codex` (see `AgentAdapter`). */
 	adapter: string | null,
 	checkoutPath: string | null,
 	state: RunState,

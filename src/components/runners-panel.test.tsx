@@ -2,7 +2,16 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RunnersPanel } from "@/components/runners-panel";
-import { commands, type RunnerHealth } from "@/lib/bindings";
+import { commands, type AgentCapabilities, type RunnerHealth } from "@/lib/bindings";
+/** What Claude and Codex can do in runs, as `runner_health` reports it. */
+const agentCapabilities: AgentCapabilities = {
+  mcp: true,
+  resume: true,
+  todo: true,
+  model: true,
+  permissionModes: ["read_only", "edit", "bypass"],
+};
+
 
 vi.mock("@/lib/bindings", () => ({
   commands: {
@@ -25,8 +34,8 @@ const ready: RunnerHealth = {
     { tool: "ssh", installed: true, ready: true, version: "OpenSSH_9.6p1", message: null },
   ],
   agents: [
-    { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
-    { adapter: "codex", installed: true, path: "/home/me/.local/bin/codex", message: null },
+    { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null, capabilities: agentCapabilities },
+    { adapter: "codex", installed: true, path: "/home/me/.local/bin/codex", message: null, capabilities: agentCapabilities },
   ],
 };
 
@@ -106,7 +115,7 @@ describe("RunnersPanel", () => {
           { tool: "gh", installed: true, ready: true, version: "gh version 2.83.0", message: null },
           { tool: "ssh", installed: true, ready: true, version: "OpenSSH_9.6p1", message: null },
         ],
-        agents: [ready.agents[0], { adapter: "codex", installed: false, path: null, message: codexMissing }],
+        agents: [ready.agents[0], { adapter: "codex", installed: false, path: null, message: codexMissing, capabilities: agentCapabilities }],
       }),
     );
     renderPanel();

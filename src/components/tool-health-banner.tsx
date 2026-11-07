@@ -36,7 +36,7 @@ export function toolProblems(health: RunnerHealth, workspaces: Workspace[]): Too
     problems.push({
       tool: "claude / codex",
       message:
-        "Neither claude nor codex was found on the server's PATH; install one of them on the PATH of the user that runs toodo-server, or set the workspace runner to herdr or none.",
+        "No agent CLI (claude, codex, pi, omo, opencode, or gemini) was found on the server's PATH; install one of them on the PATH of the user that runs toodo-server, or set the workspace runner to herdr or none.",
     });
   }
   return problems;

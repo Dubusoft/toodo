@@ -1,7 +1,14 @@
-//! The Claude print and Codex exec adapters of the plain runner: the command line,
-//! environment, and files of one agent process, the stream of its stdout split into
-//! lines and tracked as events, and the mapping of how the process ended to a run state
-//! with its run events. Everything here is pure: no process, file, or storage access.
+//! The agent adapters of the plain runner (Claude print, Codex exec, pi, omo, OpenCode
+//! run, and Gemini CLI headless mode): the command line, environment, and files of one
+//! agent process, what each agent is known to support, the stream of its stdout split
+//! into lines and tracked as events, and the mapping of how the process ended to a run
+//! state with its run events. Everything here is pure: no process, file, or storage
+//! access.
+//!
+//! Each adapter after Claude and Codex was added once a contract probe against a pinned
+//! release of its CLI confirmed the command line and the JSON events parsed here (see
+//! `docs/runners.md`, Agent profiles). A capability the probe did not confirm is off in
+//! [`AgentCapabilities`], and the server refuses a run that needs it.
 // The plain runner will use this module once it spawns agent processes.
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -32,40 +39,147 @@ pub const MCP_TOKEN_ENV: &str = "TOODO_MCP_TOKEN";
 
 const CLAUDE_MCP_CONFIG: &str = r#"{"mcpServers":{"toodo":{"type":"http","url":"${TOODO_MCP_URL}","headers":{"Authorization":"Bearer ${TOODO_MCP_TOKEN}"}}}}"#;
 
+/// Name of the OpenCode configuration file inside the run directory; it only adds the
+/// Toodo MCP server and is merged over the user's own OpenCode configuration.
+pub const OPENCODE_CONFIG_FILE: &str = "opencode.json";
+/// Environment variable naming an extra OpenCode configuration file.
+pub const OPENCODE_CONFIG_ENV: &str = "OPENCODE_CONFIG";
+
+/// The read-only tool set pi runs with in permission mode `read_only`.
+const PI_READ_ONLY_TOOLS: &str = "read,grep,find,ls";
+
 /// Which agent CLI a plain run drives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AgentAdapter {
     Claude,
     Codex,
+    /// pi in print mode with JSON events (`pi -p --mode json`).
+    Pi,
+    /// omo, a pi-based agent, in print mode with JSON events (`omo -p --mode json`).
+    Omo,
+    /// OpenCode with JSON events (`opencode run --format json`).
+    OpenCode,
+    /// Gemini CLI in headless mode with JSON events (`gemini -p --output-format
+    /// stream-json`).
+    Gemini,
 }
 
+/// What Toodo can rely on an agent CLI for, as its contract probe confirmed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentCapabilities {
+    /// The agent can be handed the Toodo MCP server for one run without changing the
+    /// user's own configuration.
+    pub mcp: bool,
+    /// A follow-up run can resume the agent's session by its id.
+    pub resume: bool,
+    /// The agent reports its todo list, mirrored into the run's `todo` events.
+    pub todo: bool,
+    /// The model can be chosen on the command line.
+    pub model: bool,
+    /// The permission modes the agent's command line can express.
+    pub permission_modes: &'static [PermissionMode],
+}
+
+const ALL_PERMISSION_MODES: &[PermissionMode] = &[
+    PermissionMode::ReadOnly,
+    PermissionMode::Edit,
+    PermissionMode::Bypass,
+];
+
 impl AgentAdapter {
-    pub const ALL: [AgentAdapter; 2] = [AgentAdapter::Claude, AgentAdapter::Codex];
+    /// Claude and Codex first, then the others in the order their contract probes passed.
+    pub const ALL: [AgentAdapter; 6] = [
+        AgentAdapter::Claude,
+        AgentAdapter::Codex,
+        AgentAdapter::Pi,
+        AgentAdapter::Omo,
+        AgentAdapter::OpenCode,
+        AgentAdapter::Gemini,
+    ];
 
     pub fn as_wire(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::Codex => "codex",
+            Self::Pi => "pi",
+            Self::Omo => "omo",
+            Self::OpenCode => "opencode",
+            Self::Gemini => "gemini",
         }
     }
 
     pub fn parse(value: &str) -> Result<Self, UnknownWireValue> {
-        match value {
-            "claude" => Ok(Self::Claude),
-            "codex" => Ok(Self::Codex),
-            other => Err(UnknownWireValue {
+        Self::ALL
+            .into_iter()
+            .find(|adapter| adapter.as_wire() == value)
+            .ok_or_else(|| UnknownWireValue {
                 kind: "agent adapter",
-                value: other.to_owned(),
-            }),
+                value: value.to_owned(),
+            })
+    }
+
+    /// The adapters whose capabilities include `wanted`, as a list for messages such as
+    /// "claude, codex, or opencode".
+    pub fn names_with(wanted: impl Fn(&AgentCapabilities) -> bool) -> String {
+        let names: Vec<&str> = Self::ALL
+            .into_iter()
+            .filter(|adapter| wanted(&adapter.capabilities()))
+            .map(Self::as_wire)
+            .collect();
+        match names.as_slice() {
+            [] => String::new(),
+            [one] => (*one).to_owned(),
+            [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
+        }
+    }
+
+    /// What the adapter supports. pi has no MCP client and no todo tool, and runs every
+    /// tool without asking, so it offers only `read_only` (a read-only tool set) and
+    /// `bypass`. omo takes neither a model nor a permission mode on its command line.
+    /// Gemini CLI reads MCP servers only from its settings files, which a run must not
+    /// change.
+    pub fn capabilities(self) -> AgentCapabilities {
+        match self {
+            Self::Claude | Self::Codex | Self::OpenCode => AgentCapabilities {
+                mcp: true,
+                resume: true,
+                todo: true,
+                model: true,
+                permission_modes: ALL_PERMISSION_MODES,
+            },
+            Self::Pi => AgentCapabilities {
+                mcp: false,
+                resume: true,
+                todo: false,
+                model: true,
+                permission_modes: &[PermissionMode::ReadOnly, PermissionMode::Bypass],
+            },
+            Self::Omo => AgentCapabilities {
+                mcp: false,
+                resume: true,
+                todo: true,
+                model: false,
+                permission_modes: &[PermissionMode::Bypass],
+            },
+            Self::Gemini => AgentCapabilities {
+                mcp: false,
+                resume: true,
+                todo: true,
+                model: true,
+                permission_modes: ALL_PERMISSION_MODES,
+            },
         }
     }
 
     /// The permission mode of a run whose task and workspace set none, as runs had before
     /// it could be set: Claude bypasses its permission checks, Codex runs `--full-auto`.
+    /// pi and omo never ask before a tool runs; OpenCode keeps its own permission
+    /// settings; Gemini CLI auto-approves every tool, since nobody can answer its prompts
+    /// in headless mode.
     pub fn default_permission_mode(self) -> PermissionMode {
         match self {
-            Self::Claude => PermissionMode::Bypass,
-            Self::Codex => PermissionMode::Edit,
+            Self::Claude | Self::Pi | Self::Omo | Self::Gemini => PermissionMode::Bypass,
+            Self::Codex | Self::OpenCode => PermissionMode::Edit,
         }
     }
 
@@ -149,6 +263,75 @@ impl AgentAdapter {
                 }
                 args.push("-".to_owned());
             }
+            Self::Pi | Self::Omo => {
+                args.extend(["-p", "--mode", "json"].map(str::to_owned));
+                if *self == Self::Pi {
+                    if permission_mode == PermissionMode::ReadOnly {
+                        args.push("--tools".to_owned());
+                        args.push(PI_READ_ONLY_TOOLS.to_owned());
+                    }
+                    if let Some(model) = &options.model {
+                        args.push("--model".to_owned());
+                        args.push(model.clone());
+                    }
+                }
+                if let Some(session) = resume {
+                    args.push("--session".to_owned());
+                    args.push(session.to_owned());
+                }
+            }
+            Self::OpenCode => {
+                args.extend(["run", "--format", "json"].map(str::to_owned));
+                match permission_mode {
+                    PermissionMode::ReadOnly => {
+                        args.extend(["--agent", "plan"].map(str::to_owned));
+                    }
+                    PermissionMode::Edit => {}
+                    PermissionMode::Bypass => args.push("--auto".to_owned()),
+                }
+                if let Some(model) = &options.model {
+                    args.push("--model".to_owned());
+                    args.push(model.clone());
+                }
+                if let Some(session) = resume {
+                    args.push("--session".to_owned());
+                    args.push(session.to_owned());
+                }
+                if let Some(mcp) = mcp {
+                    let config = run_dir.join(OPENCODE_CONFIG_FILE);
+                    env.push((
+                        OPENCODE_CONFIG_ENV.to_owned(),
+                        config.to_string_lossy().into_owned(),
+                    ));
+                    files.push((
+                        OPENCODE_CONFIG_FILE.to_owned(),
+                        opencode_mcp_config(&mcp.url),
+                    ));
+                }
+            }
+            Self::Gemini => {
+                // `-p` with an empty prompt runs headless on the prompt from stdin, and
+                // `--skip-trust` keeps Gemini CLI from dropping the approval mode in a
+                // worktree it has not been told to trust.
+                args.extend(
+                    ["-p", "", "--output-format", "stream-json", "--skip-trust"].map(str::to_owned),
+                );
+                let mode = match permission_mode {
+                    PermissionMode::ReadOnly => "plan",
+                    PermissionMode::Edit => "auto_edit",
+                    PermissionMode::Bypass => "yolo",
+                };
+                args.push("--approval-mode".to_owned());
+                args.push(mode.to_owned());
+                if let Some(model) = &options.model {
+                    args.push("--model".to_owned());
+                    args.push(model.clone());
+                }
+                if let Some(session) = resume {
+                    args.push("--resume".to_owned());
+                    args.push(session.to_owned());
+                }
+            }
         }
         if let Some(mcp) = mcp {
             env.push((MCP_URL_ENV.to_owned(), mcp.url.clone()));
@@ -161,6 +344,21 @@ impl AgentAdapter {
             files,
         }
     }
+}
+
+/// The OpenCode configuration that adds the Toodo MCP server at `url`; OpenCode reads
+/// the bearer token from the environment, so the file never holds it.
+fn opencode_mcp_config(url: &str) -> String {
+    serde_json::json!({
+        "mcp": {
+            "toodo": {
+                "type": "remote",
+                "url": url,
+                "headers": { "Authorization": format!("Bearer {{env:{MCP_TOKEN_ENV}}}") },
+            }
+        }
+    })
+    .to_string()
 }
 
 /// The model and permission mode an agent is launched with; `None` keeps the agent CLI's
@@ -190,7 +388,7 @@ impl std::fmt::Debug for McpEndpoint {
 /// What to spawn for one run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Invocation {
-    /// Names the program to look up for the adapter: `claude` or `codex`.
+    /// Names the program to look up for the adapter: its wire name, such as `claude`.
     pub program_key: &'static str,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
@@ -278,7 +476,8 @@ impl TodoStatus {
         }
     }
 
-    /// Parses a Claude todo status; an unknown status is `pending`.
+    /// Parses a todo status as Claude, omo, OpenCode, and Gemini CLI write it; an
+    /// unknown status is `pending`.
     fn parse_lossy(value: &str) -> Self {
         match value {
             "in_progress" => Self::InProgress,
@@ -368,6 +567,9 @@ impl EventTracker {
         let todos = match self.adapter {
             AgentAdapter::Claude => self.feed_claude(&value),
             AgentAdapter::Codex => self.feed_codex(&value),
+            AgentAdapter::Pi | AgentAdapter::Omo => self.feed_pi(&value),
+            AgentAdapter::OpenCode => self.feed_opencode(&value),
+            AgentAdapter::Gemini => self.feed_gemini(&value),
         }?;
         if self.todos.as_ref() == Some(&todos) {
             return None;
@@ -488,6 +690,182 @@ impl EventTracker {
             }
             Some("error") => {
                 self.set_error(str_field(event, "message").unwrap_or("error"));
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// pi and omo: the `session` header line carries the session id, and `agent_end`
+    /// carries the messages of this run, whose last assistant message is the result.
+    /// After a failed request the agent retries and ends again, so the last `agent_end`
+    /// decides the outcome. omo's `todo` tool returns its whole list, by phase, in the
+    /// result details.
+    fn feed_pi(&mut self, event: &Value) -> Option<Vec<TodoItem>> {
+        match str_field(event, "type") {
+            Some("session") => {
+                if let Some(id) = str_field(event, "id") {
+                    self.session_id = Some(id.to_owned());
+                }
+            }
+            Some("tool_execution_end") if str_field(event, "toolName") == Some("todo") => {
+                let phases = event.get("result")?.get("details")?.get("phases")?;
+                let tasks: Vec<Value> = phases
+                    .as_array()?
+                    .iter()
+                    .filter_map(|phase| phase.get("tasks")?.as_array())
+                    .flatten()
+                    .cloned()
+                    .collect();
+                return Some(todo_items(&tasks, |task| TodoItem {
+                    text: str_field(task, "content").unwrap_or("").to_owned(),
+                    status: TodoStatus::parse_lossy(str_field(task, "status").unwrap_or("")),
+                }));
+            }
+            Some("agent_end") => {
+                let messages = event.get("messages")?.as_array()?;
+                let assistant: Vec<&Value> = messages
+                    .iter()
+                    .filter(|message| str_field(message, "role") == Some("assistant"))
+                    .collect();
+                for message in &assistant {
+                    if let Some(usage) = message.get("usage") {
+                        let cached = token_count(usage, "cacheRead");
+                        let total = self.usage.get_or_insert_default();
+                        total.input_tokens +=
+                            token_count(usage, "input") + token_count(usage, "cacheWrite") + cached;
+                        total.cached_input_tokens += cached;
+                        total.output_tokens += token_count(usage, "output");
+                    }
+                }
+                let last = assistant.last()?;
+                self.success = None;
+                self.error = None;
+                if matches!(str_field(last, "stopReason"), Some("error" | "aborted")) {
+                    self.set_error(
+                        str_field(last, "errorMessage")
+                            .or(str_field(last, "stopReason"))
+                            .unwrap_or("error"),
+                    );
+                } else {
+                    let text: Vec<&str> = last
+                        .get("content")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter(|block| str_field(block, "type") == Some("text"))
+                        .filter_map(|block| str_field(block, "text"))
+                        .collect();
+                    self.success = Some(truncate(&text.join(""), MAX_SUMMARY_BYTES));
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// OpenCode: every event carries the session id; a step that finishes for any reason
+    /// but more tool calls ends the turn with the last text part as its result.
+    fn feed_opencode(&mut self, event: &Value) -> Option<Vec<TodoItem>> {
+        if let Some(id) = str_field(event, "sessionID") {
+            self.session_id = Some(id.to_owned());
+        }
+        let part = event.get("part");
+        match str_field(event, "type") {
+            Some("text") => {
+                if let Some(text) = part.and_then(|part| str_field(part, "text")) {
+                    self.last_message = Some(truncate(text, MAX_SUMMARY_BYTES));
+                }
+            }
+            Some("tool_use") => {
+                let part = part?;
+                if str_field(part, "tool") != Some("todowrite") {
+                    return None;
+                }
+                let todos = part.get("state")?.get("input")?.get("todos")?.as_array()?;
+                return Some(todo_items(todos, |todo| TodoItem {
+                    text: str_field(todo, "content").unwrap_or("").to_owned(),
+                    status: TodoStatus::parse_lossy(str_field(todo, "status").unwrap_or("")),
+                }));
+            }
+            Some("step_finish") => {
+                let part = part?;
+                if let Some(tokens) = part.get("tokens") {
+                    let cache = tokens.get("cache");
+                    let read = cache.map_or(0, |cache| token_count(cache, "read"));
+                    let write = cache.map_or(0, |cache| token_count(cache, "write"));
+                    let total = self.usage.get_or_insert_default();
+                    total.input_tokens += token_count(tokens, "input") + read + write;
+                    total.cached_input_tokens += read;
+                    total.output_tokens += token_count(tokens, "output");
+                }
+                if str_field(part, "reason") != Some("tool-calls") {
+                    self.success = Some(self.last_message.clone().unwrap_or_default());
+                }
+            }
+            Some("error") => {
+                let error = event.get("error");
+                let message = error
+                    .and_then(|error| error.get("data"))
+                    .and_then(|data| str_field(data, "message"))
+                    .or_else(|| error.and_then(|error| str_field(error, "name")))
+                    .unwrap_or("error");
+                self.set_error(message);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Gemini CLI: `init` carries the session id, assistant `message` events stream the
+    /// answer in deltas, and `result` ends the run.
+    fn feed_gemini(&mut self, event: &Value) -> Option<Vec<TodoItem>> {
+        match str_field(event, "type") {
+            Some("init") => {
+                if let Some(id) = str_field(event, "session_id") {
+                    self.session_id = Some(id.to_owned());
+                }
+            }
+            Some("message") if str_field(event, "role") == Some("assistant") => {
+                let content = str_field(event, "content").unwrap_or("");
+                let delta = event.get("delta").and_then(Value::as_bool) == Some(true);
+                let text = match (&self.last_message, delta) {
+                    (Some(previous), true) => format!("{previous}{content}"),
+                    _ => content.to_owned(),
+                };
+                self.last_message = Some(truncate(&text, MAX_SUMMARY_BYTES));
+            }
+            Some("tool_use") => {
+                // A tool call ends the text before it; the answer is the text after the
+                // last one.
+                self.last_message = None;
+                if str_field(event, "tool_name") == Some("write_todos") {
+                    let todos = event.get("parameters")?.get("todos")?.as_array()?;
+                    return Some(todo_items(todos, |todo| TodoItem {
+                        text: str_field(todo, "description").unwrap_or("").to_owned(),
+                        status: TodoStatus::parse_lossy(str_field(todo, "status").unwrap_or("")),
+                    }));
+                }
+            }
+            Some("result") => {
+                if let Some(stats) = event.get("stats") {
+                    let cached = token_count(stats, "cached");
+                    self.usage = Some(RunUsage {
+                        input_tokens: token_count(stats, "input_tokens"),
+                        cached_input_tokens: cached,
+                        output_tokens: token_count(stats, "output_tokens"),
+                    });
+                }
+                if str_field(event, "status") == Some("success") {
+                    self.success = Some(self.last_message.clone().unwrap_or_default());
+                } else {
+                    let message = event
+                        .get("error")
+                        .and_then(|error| str_field(error, "message"))
+                        .or(str_field(event, "status"))
+                        .unwrap_or("error");
+                    self.set_error(message);
+                }
             }
             _ => {}
         }
@@ -672,7 +1050,31 @@ mod tests {
         for adapter in AgentAdapter::ALL {
             assert_eq!(AgentAdapter::parse(adapter.as_wire()), Ok(adapter));
         }
-        assert!(AgentAdapter::parse("gemini").is_err());
+        assert!(AgentAdapter::parse("aider").is_err());
+        assert!(AgentAdapter::parse("open_code").is_err());
+    }
+
+    #[test]
+    fn names_with_lists_the_adapters_of_a_capability() {
+        assert_eq!(
+            AgentAdapter::names_with(|can| can.mcp),
+            "claude, codex, or opencode"
+        );
+        assert_eq!(AgentAdapter::names_with(|can| !can.model), "omo");
+        assert_eq!(AgentAdapter::names_with(|_| false), "");
+    }
+
+    #[test]
+    fn every_default_permission_mode_is_supported() {
+        for adapter in AgentAdapter::ALL {
+            assert!(
+                adapter
+                    .capabilities()
+                    .permission_modes
+                    .contains(&adapter.default_permission_mode()),
+                "{adapter:?}"
+            );
+        }
     }
 
     #[test]
@@ -1166,6 +1568,27 @@ mod tests {
                 &[
                     r#"{"type":"item.completed","item":{"type":"agent_message","text":"all good"}}"#,
                     r#"{"type":"turn.completed"}"#,
+                ],
+            ),
+            AgentAdapter::Pi | AgentAdapter::Omo => tracked(
+                adapter,
+                &[
+                    r#"{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"all good"}],"stopReason":"stop"}]}"#,
+                ],
+            ),
+            AgentAdapter::OpenCode => tracked(
+                adapter,
+                &[
+                    r#"{"type":"text","sessionID":"s","part":{"type":"text","text":"all good"}}"#,
+                    r#"{"type":"step_finish","sessionID":"s","part":{"reason":"stop"}}"#,
+                ],
+            ),
+            AgentAdapter::Gemini => tracked(
+                adapter,
+                &[
+                    r#"{"type":"message","role":"assistant","content":"all ","delta":true}"#,
+                    r#"{"type":"message","role":"assistant","content":"good","delta":true}"#,
+                    r#"{"type":"result","status":"success"}"#,
                 ],
             ),
         }

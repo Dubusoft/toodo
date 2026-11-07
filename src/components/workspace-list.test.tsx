@@ -1,7 +1,16 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceList } from "@/components/workspace-list";
-import type { HerdrHealth, RunnerHealth, Workspace } from "@/lib/bindings";
+import type { AgentCapabilities, HerdrHealth, RunnerHealth, Workspace } from "@/lib/bindings";
+/** What Claude and Codex can do in runs, as `runner_health` reports it. */
+const agentCapabilities: AgentCapabilities = {
+  mcp: true,
+  resume: true,
+  todo: true,
+  model: true,
+  permissionModes: ["read_only", "edit", "bypass"],
+};
+
 import {
   completionLabels,
   completionProblem,
@@ -26,8 +35,8 @@ const ready: RunnerHealth = {
     { tool: "ssh", installed: true, ready: true, version: "OpenSSH_9.6p1", message: null },
   ],
   agents: [
-    { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null },
-    { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null },
+    { adapter: "claude", installed: true, path: "/usr/local/bin/claude", message: null, capabilities: agentCapabilities },
+    { adapter: "codex", installed: true, path: "/usr/local/bin/codex", message: null, capabilities: agentCapabilities },
   ],
 };
 /** What the server said about its runners; `undefined` while it has not answered yet. */

@@ -32,6 +32,44 @@ pub enum AgentAdapter {
     Claude,
     /// Codex in exec mode (`codex exec`).
     Codex,
+    /// pi in print mode (`pi -p --mode json`).
+    Pi,
+    /// omo in print mode (`omo -p --mode json`).
+    Omo,
+    /// OpenCode (`opencode run --format json`).
+    #[serde(rename = "opencode")]
+    OpenCode,
+    /// Gemini CLI in headless mode (`gemini -p --output-format stream-json`).
+    Gemini,
+}
+
+/// What Toodo can rely on an agent CLI for, as its contract probe confirmed; a run that
+/// needs a capability that is `false` is rejected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentCapabilities {
+    /// The run can be handed the Toodo MCP server (`mcp` of `start_plain_run`).
+    pub mcp: bool,
+    /// A follow-up run can resume the agent's session (`follow_up_of`).
+    pub resume: bool,
+    /// The agent's todo list is mirrored into the run's `todo` events.
+    pub todo: bool,
+    /// The model of the task's agent options is passed to the agent.
+    pub model: bool,
+    /// The permission modes the agent can run with.
+    pub permission_modes: Vec<super::PermissionMode>,
+}
+
+impl From<plain::adapter::AgentCapabilities> for AgentCapabilities {
+    fn from(can: plain::adapter::AgentCapabilities) -> Self {
+        Self {
+            mcp: can.mcp,
+            resume: can.resume,
+            todo: can.todo,
+            model: can.model,
+            permission_modes: can.permission_modes.iter().map(|&m| m.into()).collect(),
+        }
+    }
 }
 
 /// What the server can run tasks with: herdr for herdr workspaces, and the agent CLIs of
@@ -42,7 +80,7 @@ pub struct RunnerHealth {
     pub herdr: HerdrHealth,
     /// tmux for local workspaces with runner tmux.
     pub tmux: TmuxHealth,
-    /// Claude, then Codex.
+    /// Claude, Codex, pi, omo, OpenCode, then Gemini CLI.
     pub agents: Vec<AgentHealth>,
     /// git, then gh, then ssh.
     pub tools: Vec<ToolHealth>,
@@ -107,6 +145,8 @@ pub struct AgentHealth {
     pub path: Option<String>,
     /// What to do next when the CLI is missing; `None` when it is installed.
     pub message: Option<String>,
+    /// What runs of the adapter can use.
+    pub capabilities: AgentCapabilities,
 }
 
 impl From<AgentAdapter> for plain::adapter::AgentAdapter {
@@ -114,6 +154,24 @@ impl From<AgentAdapter> for plain::adapter::AgentAdapter {
         match adapter {
             AgentAdapter::Claude => Self::Claude,
             AgentAdapter::Codex => Self::Codex,
+            AgentAdapter::Pi => Self::Pi,
+            AgentAdapter::Omo => Self::Omo,
+            AgentAdapter::OpenCode => Self::OpenCode,
+            AgentAdapter::Gemini => Self::Gemini,
+        }
+    }
+}
+
+impl From<plain::adapter::AgentAdapter> for AgentAdapter {
+    fn from(adapter: plain::adapter::AgentAdapter) -> Self {
+        use plain::adapter::AgentAdapter as Plain;
+        match adapter {
+            Plain::Claude => Self::Claude,
+            Plain::Codex => Self::Codex,
+            Plain::Pi => Self::Pi,
+            Plain::Omo => Self::Omo,
+            Plain::OpenCode => Self::OpenCode,
+            Plain::Gemini => Self::Gemini,
         }
     }
 }
@@ -169,7 +227,7 @@ pub struct TaskRun {
     pub runner_kind: String,
     /// `writer` or `observer`.
     pub role: String,
-    /// The agent CLI of a plain run: `claude` or `codex`.
+    /// The agent CLI of a plain run, such as `claude` or `codex` (see `AgentAdapter`).
     pub adapter: Option<String>,
     pub checkout_path: Option<String>,
     pub state: RunState,

@@ -18,10 +18,11 @@ import {
 } from "lucide-react";
 import { TaskAgentOptions } from "@/components/agent-options";
 import { PathLabel } from "@/components/path-label";
+import { agentNames } from "@/components/runners-panel";
 import { Button } from "@/components/ui/button";
 import { When } from "@/components/when";
 import { escapeCloses } from "@/components/workspace-list";
-import type { AgentAdapter, RunEvent, RunId, RunnerHealth, RunState, RunUsage, Task, TaskRun } from "@/lib/bindings";
+import type { AgentAdapter, AgentCapabilities, RunEvent, RunId, RunnerHealth, RunState, RunUsage, Task, TaskRun } from "@/lib/bindings";
 import { normalizePath, shortPath } from "@/lib/paths";
 import { useReconcileRun, useRunLog, useRunnerHealth, useStartPlainRun, useStopRun, useTaskRuns } from "@/lib/queries";
 import { toneChip, tonePanel, toneText, type Tone } from "@/lib/status-styles";
@@ -88,9 +89,20 @@ function ActivityBadge({ run, now }: { run: TaskRun; now: number }) {
 /** A run in these states holds the task's worktree: it can be stopped, and no other run starts before it ends. */
 const activeStates: readonly RunState[] = ["queued", "reserved", "running", "unknown"];
 
-const adapters: readonly AgentAdapter[] = ["claude", "codex"];
+const adapters: readonly AgentAdapter[] = ["claude", "codex", "pi", "omo", "opencode", "gemini"];
 
-const adapterLabels: Record<AgentAdapter, string> = { claude: "Claude", codex: "Codex" };
+/**
+ * Agents offered even while the server lacks their CLI, with a note on how to install it; the others show once the
+ * server found them. On an SSH machine, whose CLIs the server does not check, every agent is offered.
+ */
+const alwaysOffered: readonly AgentAdapter[] = ["claude", "codex"];
+
+const adapterLabels = agentNames;
+
+/** What runs of `adapter` can use, as the server reports it; `undefined` until the server answered. */
+function capabilitiesOf(health: RunnerHealth | undefined, adapter: AgentAdapter): AgentCapabilities | undefined {
+  return health?.agents.find((agent) => agent.adapter === adapter)?.capabilities;
+}
 
 /** What the server says about each agent CLI it did not find on its `PATH`; empty while that is not known. */
 function missingAgents(health: RunnerHealth | undefined): Map<AgentAdapter, string> {
@@ -108,11 +120,11 @@ function missingAgents(health: RunnerHealth | undefined): Map<AgentAdapter, stri
 
 /** The agent CLI a run drove, by name. */
 function adapterName(adapter: string | null): string {
-  return adapter === "claude" || adapter === "codex" ? adapterLabels[adapter] : (adapter ?? "Agent");
+  return isAdapter(adapter) ? adapterLabels[adapter] : (adapter ?? "Agent");
 }
 
 function isAdapter(adapter: string | null): adapter is AgentAdapter {
-  return adapter === "claude" || adapter === "codex";
+  return adapters.some((value) => value === adapter);
 }
 
 /**
@@ -300,8 +312,14 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
   const failure = startRun.error ?? stopRun.error ?? reconcileRun.error;
   const missing = missingAgents(remote ? undefined : health.data);
   // A picked agent whose CLI the server lacks gives way to one it has; without both, none is picked.
-  const installed = adapters.filter((value) => !missing.has(value));
+  const found = (value: AgentAdapter) =>
+    remote || (health.data?.agents.some((agent) => agent.adapter === value && agent.installed) ?? false);
+  const offered = adapters.filter((value) => alwaysOffered.includes(value) || found(value));
+  const installed = offered.filter((value) => !missing.has(value));
   const chosen = installed.includes(adapter) ? adapter : (installed[0] ?? null);
+  // The server rejects what an agent cannot do; until it answered, nothing is held back.
+  const canMcp = (value: AgentAdapter) => capabilitiesOf(health.data, value)?.mcp ?? true;
+  const chosenMcp = chosen === null || canMcp(chosen);
 
   // Runs start only while the task is in progress; later the panel keeps showing the ones it had.
   if (!inProgress && runs.isSuccess && newestFirst.length === 0) {
@@ -312,14 +330,17 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
     event.preventDefault();
     if (chosen === null) return;
     // The new run, or the launch that failed, is the newest one now: open it.
-    startRun.mutate({ taskId: task.id, adapter: chosen, mcp }, { onSettled: () => setPicked(undefined) });
+    startRun.mutate(
+      { taskId: task.id, adapter: chosen, mcp: mcp && chosenMcp },
+      { onSettled: () => setPicked(undefined) },
+    );
   }
 
   function followUp(event: FormEvent<HTMLFormElement>, run: TaskRun) {
     event.preventDefault();
     if (!isAdapter(run.adapter) || feedback.trim() === "") return;
     startRun.mutate(
-      { taskId: task.id, adapter: run.adapter, mcp, prompt: feedback, followUpOf: run.id },
+      { taskId: task.id, adapter: run.adapter, mcp: mcp && canMcp(run.adapter), prompt: feedback, followUpOf: run.id },
       {
         onSuccess: () => {
           setFollowing(null);
@@ -369,7 +390,7 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
           </p>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <div role="group" aria-label="Agent" className="flex gap-0.5 max-md:gap-2">
-              {adapters.map((value) => (
+              {offered.map((value) => (
                 <Button
                   key={value}
                   type="button"
@@ -385,10 +406,19 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
               ))}
             </div>
             <label
-              className="flex items-center gap-1.5 max-md:min-h-11"
-              title="Give the agent Toodo's MCP tools, e.g. to read the task and leave notes; the token is only in the agent's environment"
+              className={cn("flex items-center gap-1.5 max-md:min-h-11", !chosenMcp && "text-muted-foreground")}
+              title={
+                chosenMcp
+                  ? "Give the agent Toodo's MCP tools, e.g. to read the task and leave notes; the token is only in the agent's environment"
+                  : `${chosen === null ? "This agent" : adapterLabels[chosen]} cannot be handed Toodo's MCP tools for a run; pick Claude, Codex, or OpenCode for them`
+              }
             >
-              <input type="checkbox" checked={mcp} onChange={(event) => setMcp(event.target.checked)} />
+              <input
+                type="checkbox"
+                checked={mcp && chosenMcp}
+                disabled={!chosenMcp}
+                onChange={(event) => setMcp(event.target.checked)}
+              />
               Toodo MCP
             </label>
             <Button
@@ -419,23 +449,25 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
             >
               <TriangleAlert aria-hidden className="mt-0.5 size-3 shrink-0" />
               <span>
-                Neither claude nor codex was found on the server's PATH; install one of them there, then press Refresh
-                to start a run.
+                No agent CLI Toodo runs (claude, codex, pi, omo, opencode, or gemini) was found on the server's PATH;
+                install one of them there, then press Refresh to start a run.
               </span>
             </p>
           )}
           {chosen !== null &&
-            [...missing].map(([value, message]) => (
-              <p
-                key={value}
-                role="note"
-                aria-label={`Why ${adapterLabels[value]} is unavailable`}
-                className={cn("flex items-start gap-1.5", toneText.attention)}
-              >
-                <TriangleAlert aria-hidden className="mt-0.5 size-3 shrink-0" />
-                <span>{message}</span>
-              </p>
-            ))}
+            [...missing]
+              .filter(([value]) => offered.includes(value))
+              .map(([value, message]) => (
+                <p
+                  key={value}
+                  role="note"
+                  aria-label={`Why ${adapterLabels[value]} is unavailable`}
+                  className={cn("flex items-start gap-1.5", toneText.attention)}
+                >
+                  <TriangleAlert aria-hidden className="mt-0.5 size-3 shrink-0" />
+                  <span>{message}</span>
+                </p>
+              ))}
         </form>
       )}
       {failure && (
@@ -461,7 +493,8 @@ export function RunsPanel({ task, remote = false }: { task: Task; remote?: boole
               holding === undefined &&
               canFollowUp(run, newestFirst) &&
               isAdapter(run.adapter) &&
-              !missing.has(run.adapter);
+              !missing.has(run.adapter) &&
+              capabilitiesOf(health.data, run.adapter)?.resume !== false;
             return (
               <li key={run.id} className="flex min-w-0 flex-col">
                 <div className="flex min-w-0 items-center gap-1 p-1">

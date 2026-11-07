@@ -1,10 +1,14 @@
-//! The plain runner: runs the Claude print and Codex exec CLIs directly in a task's
+//! The plain runner: runs agent CLIs (see [`adapter::AgentAdapter`]) directly in a task's
 //! worktree, without herdr.
 
 pub mod adapter;
 
 #[cfg(unix)]
 mod process;
+#[cfg(test)]
+mod profile_fixtures;
+#[cfg(all(test, unix))]
+mod profile_smoke;
 #[cfg(unix)]
 mod remote;
 #[cfg(all(test, unix))]
@@ -130,6 +134,16 @@ impl PlainRunner {
             mcp: None,
             tunnel_open: None,
             ssh: "ssh".into(),
+        }
+    }
+
+    /// The program run for `adapter`: Claude and Codex as set (by tests), the others by
+    /// their wire name on `PATH`.
+    fn program(&self, adapter: AgentAdapter) -> PathBuf {
+        match adapter {
+            AgentAdapter::Claude => self.claude.clone(),
+            AgentAdapter::Codex => self.codex.clone(),
+            other => other.as_wire().into(),
         }
     }
 
@@ -591,10 +605,7 @@ impl RunLauncher for PlainRunner {
         for (name, contents) in &invocation.files {
             private_file(&dir.join(name), contents.as_bytes())?;
         }
-        let program = match agent.adapter {
-            AgentAdapter::Claude => &self.claude,
-            AgentAdapter::Codex => &self.codex,
-        };
+        let program = &self.program(agent.adapter);
         let (watch, sender, receiver) = if let Some(remote) = &remote {
             remote.stage(spec.run, "brief.md", agent.brief.as_bytes())?;
             for (name, contents) in &invocation.files {
