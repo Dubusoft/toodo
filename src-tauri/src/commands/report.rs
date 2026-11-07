@@ -990,6 +990,7 @@ impl Report<'_> {
                 let label = match note.kind {
                     NoteKind::Blocker => "Blocker",
                     NoteKind::Progress => "Progress",
+                    NoteKind::Decision => "Decision",
                 };
                 lines.push(format!("  - {label}: {}", one_line(&note.body)));
             }
@@ -1165,6 +1166,7 @@ mod tests {
     fn entry(id: i64, outcome: ReviewOutcome) -> ReviewEntry {
         ReviewEntry {
             task: Task {
+                refs: Vec::new(),
                 id: TaskId(id),
                 workspace_id: WorkspaceId(1),
                 task_type: TaskType::Feat,

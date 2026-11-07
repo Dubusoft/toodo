@@ -110,6 +110,7 @@ function task(id: number, workspace: Workspace, title: string, overrides: Partia
     estimate: null,
     dueDate: null,
     labels: [],
+    refs: [],
     pullRequestMergedAt: null,
     pullRequest: null,
     mergedWith: null,

@@ -997,10 +997,12 @@ export type NewWorkspace = {
 
 /**  What a note left on a task records. */
 export type NoteKind = 
-/**  Progress made or a decision taken. */
+/**  Progress made. */
 "progress" | 
 /**  Something that stops the work until someone acts on it. */
-"blocker";
+"blocker" | 
+/**  A decision taken, and why. */
+"decision";
 
 /**  An OAuth app with an unrevoked grant and a live token. */
 export type OAuthGrantId = number;
@@ -1372,6 +1374,12 @@ export type Task = {
 	dueDate: string | null,
 	/**  Labels such as a project or goal, sorted. */
 	labels: string[],
+	/**
+	 *  References to where the work is tracked or discussed, in the order they were added,
+	 *  e.g. `lane:search-api`, `discord:<thread>`, `pr:<number>`, or a URL. Toodo does not
+	 *  interpret them.
+	 */
+	refs: string[],
 	/**  Merge time of the pull request reported by GitHub. */
 	pullRequestMergedAt: Timestamp | null,
 	/**
@@ -1468,9 +1476,9 @@ export type TaskEvent = {
 	/**  The change reopened the task: it follows a move to `done`. */
 	reopened: boolean,
 	/**
-	 *  Why the work stopped, on a move back to `planned`: the reason of a pause, the
-	 *  prerequisites the task waits on, or why it was reopened; `null` for other changes
-	 *  and for pauses without a reason.
+	 *  Why the change happened: on a move back to `planned`, the reason of a pause, the
+	 *  prerequisites the task waits on, or why it was reopened; on a start or completion,
+	 *  the reason or note given with it; `null` when none was recorded.
 	 */
 	reason: string | null,
 };

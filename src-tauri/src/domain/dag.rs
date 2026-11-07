@@ -225,6 +225,7 @@ mod tests {
 
     fn task(id: i64, status: TaskStatus, depends_on: &[i64]) -> Task {
         Task {
+            refs: Vec::new(),
             id: TaskId(id),
             workspace_id: WorkspaceId(1),
             task_type: TaskType::Feat,

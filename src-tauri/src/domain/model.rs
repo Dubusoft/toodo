@@ -558,19 +558,22 @@ pub struct MergedWith {
 /// What a note left on a task records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NoteKind {
-    /// Progress made or a decision taken while working on the task.
+    /// Progress made while working on the task.
     Progress,
     /// Something that stops the work until someone acts on it.
     Blocker,
+    /// A decision taken while working on the task, and why.
+    Decision,
 }
 
 impl NoteKind {
-    pub const ALL: [Self; 2] = [Self::Progress, Self::Blocker];
+    pub const ALL: [Self; 3] = [Self::Progress, Self::Blocker, Self::Decision];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Progress => "progress",
             Self::Blocker => "blocker",
+            Self::Decision => "decision",
         }
     }
 }
@@ -610,6 +613,10 @@ pub struct Task {
     /// Labels such as a project or goal, sorted and unique (see
     /// [`crate::domain::plan::labels`]).
     pub labels: Vec<String>,
+    /// References to where the work is tracked or discussed, e.g. `lane:search-api`,
+    /// `discord:<thread>`, `pr:<number>`, or a URL, in the order they were added (see
+    /// [`crate::domain::plan::merge_refs`]).
+    pub refs: Vec<String>,
     /// Merge time of the pull request reported by GitHub, in seconds since the Unix
     /// epoch.
     pub pull_request_merged_at: Option<i64>,

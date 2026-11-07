@@ -664,4 +664,85 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
         csv TEXT NOT NULL
     );
     ",
+    // Version 45: decision notes next to progress and blocker notes, and the references of
+    // a task (where its work is tracked or discussed) as a JSON array of strings in the
+    // order they were added. `task_notes` is rebuilt for its kind CHECK, so the search
+    // view and triggers are rebuilt around it; references are searched with the branch.
+    r"
+    DROP TRIGGER task_search_task_inserted;
+    DROP TRIGGER task_search_task_updated;
+    DROP TRIGGER task_search_task_deleted;
+    DROP TRIGGER task_search_note_inserted;
+    DROP TRIGGER task_search_note_deleted;
+    DROP TRIGGER task_search_pull_request_inserted;
+    DROP TRIGGER task_search_pull_request_updated;
+    DROP TRIGGER task_search_pull_request_deleted;
+    DROP VIEW task_search_source;
+    CREATE TABLE task_notes_new (
+        id INTEGER PRIMARY KEY,
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('progress', 'blocker', 'decision')),
+        body TEXT NOT NULL CHECK (body <> ''),
+        at INTEGER NOT NULL
+    );
+    INSERT INTO task_notes_new (id, task_id, kind, body, at)
+        SELECT id, task_id, kind, body, at FROM task_notes;
+    DROP TABLE task_notes;
+    ALTER TABLE task_notes_new RENAME TO task_notes;
+    CREATE INDEX task_notes_task_id ON task_notes (task_id);
+    ALTER TABLE tasks ADD COLUMN refs TEXT NOT NULL DEFAULT '[]';
+    CREATE VIEW task_search_source (id, title, description, notes, branch, pull_request) AS
+    SELECT t.id, t.title, t.description,
+        trim(coalesce(t.completion_note, '') || char(10) || coalesce(
+            (SELECT group_concat(n.body, char(10)) FROM task_notes n WHERE n.task_id = t.id),
+            ''), char(10)),
+        trim(coalesce(t.branch, '') || ' ' || coalesce(
+            (SELECT group_concat(r.value, ' ') FROM json_each(t.refs) r), '')),
+        trim(coalesce((SELECT s.title FROM pull_request_snapshots s WHERE s.task_id = t.id), '')
+            || ' ' || coalesce(t.pull_request_url, ''))
+    FROM tasks t;
+    CREATE TRIGGER task_search_task_inserted AFTER INSERT ON tasks BEGIN
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER task_search_task_updated
+        AFTER UPDATE OF title, description, completion_note, branch, pull_request_url, refs
+        ON tasks
+    BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = NEW.id;
+    END;
+    CREATE TRIGGER task_search_task_deleted AFTER DELETE ON tasks BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.id;
+    END;
+    CREATE TRIGGER task_search_note_inserted AFTER INSERT ON task_notes BEGIN
+        DELETE FROM task_search WHERE rowid = NEW.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = NEW.task_id;
+    END;
+    CREATE TRIGGER task_search_note_deleted AFTER DELETE ON task_notes BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = OLD.task_id;
+    END;
+    CREATE TRIGGER task_search_pull_request_inserted AFTER INSERT ON pull_request_snapshots
+    BEGIN
+        DELETE FROM task_search WHERE rowid = NEW.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = NEW.task_id;
+    END;
+    CREATE TRIGGER task_search_pull_request_updated AFTER UPDATE ON pull_request_snapshots
+    BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = OLD.task_id;
+    END;
+    CREATE TRIGGER task_search_pull_request_deleted AFTER DELETE ON pull_request_snapshots
+    BEGIN
+        DELETE FROM task_search WHERE rowid = OLD.task_id;
+        INSERT INTO task_search (rowid, title, description, notes, branch, pull_request)
+            SELECT * FROM task_search_source WHERE id = OLD.task_id;
+    END;
+    ",
 ];

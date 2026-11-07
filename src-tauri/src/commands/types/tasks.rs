@@ -217,6 +217,10 @@ pub struct Task {
     pub due_date: Option<String>,
     /// Labels such as a project or goal, sorted.
     pub labels: Vec<String>,
+    /// References to where the work is tracked or discussed, in the order they were added,
+    /// e.g. `lane:search-api`, `discord:<thread>`, `pr:<number>`, or a URL. Toodo does not
+    /// interpret them.
+    pub refs: Vec<String>,
     /// Merge time of the pull request reported by GitHub.
     pub pull_request_merged_at: Option<Timestamp>,
     /// The pull request as GitHub reported it when its merge completed the task; `null`
@@ -255,10 +259,12 @@ pub struct MergedWith {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum NoteKind {
-    /// Progress made or a decision taken.
+    /// Progress made.
     Progress,
     /// Something that stops the work until someone acts on it.
     Blocker,
+    /// A decision taken, and why.
+    Decision,
 }
 
 impl From<model::NoteKind> for NoteKind {
@@ -266,6 +272,7 @@ impl From<model::NoteKind> for NoteKind {
         match kind {
             model::NoteKind::Progress => Self::Progress,
             model::NoteKind::Blocker => Self::Blocker,
+            model::NoteKind::Decision => Self::Decision,
         }
     }
 }
@@ -355,9 +362,9 @@ pub struct TaskEvent {
     pub at: Timestamp,
     /// The change reopened the task: it follows a move to `done`.
     pub reopened: bool,
-    /// Why the work stopped, on a move back to `planned`: the reason of a pause, the
-    /// prerequisites the task waits on, or why it was reopened; `null` for other changes
-    /// and for pauses without a reason.
+    /// Why the change happened: on a move back to `planned`, the reason of a pause, the
+    /// prerequisites the task waits on, or why it was reopened; on a start or completion,
+    /// the reason or note given with it; `null` when none was recorded.
     pub reason: Option<String>,
 }
 
@@ -426,6 +433,7 @@ impl From<&model::Task> for Task {
             estimate: task.estimate.map(Estimate::from),
             due_date: task.due_date.map(|due| due.to_string()),
             labels: task.labels.clone(),
+            refs: task.refs.clone(),
             pull_request_merged_at: task.pull_request_merged_at.map(Timestamp),
             pull_request: task.pull_request.as_ref().map(PullRequestSnapshot::from),
             merged_with: task.merged_with.as_ref().map(|merged| MergedWith {
