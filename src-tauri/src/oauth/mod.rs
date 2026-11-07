@@ -56,7 +56,15 @@ fn valid_web_url(url: &reqwest::Url) -> bool {
                 && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))))
 }
 
-pub use crate::domain::runtime::OwnerKey;
+/// The single-user identity attached to OAuth grants.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OwnerKey(pub String);
+
+impl OwnerKey {
+    pub fn implicit() -> Self {
+        Self("implicit".to_owned())
+    }
+}
 
 /// The owner who approves consent on this single-user server: the implicit owner the
 /// runtime records use until tenants exist. This is the only owner resolver; grant and token

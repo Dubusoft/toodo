@@ -5,10 +5,7 @@ import type { TaskId } from "@/lib/bindings";
 import { tonePanel } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
-/**
- * Asks before adding a prerequisite that pauses the started task `taskId`: pausing closes its
- * herdr workspace, which stops its agent whatever state it is in.
- */
+/** Asks before adding a prerequisite that pauses the started task `taskId`. */
 export function PrerequisiteConfirmation({
   taskId,
   prerequisite,
@@ -17,7 +14,7 @@ export function PrerequisiteConfirmation({
   onCancel,
 }: {
   taskId: TaskId;
-  /** How the prerequisite is shown, e.g. "#3" or "herdr #3". */
+  /** How the prerequisite is shown, e.g. "#3". */
   prerequisite: string;
   pending: boolean;
   onConfirm: () => void;
@@ -31,8 +28,7 @@ export function PrerequisiteConfirmation({
       onKeyDown={escapeCloses(onCancel, pending)}
     >
       <span className="min-w-0 flex-1">
-        Adding {prerequisite} as a prerequisite pauses #{taskId} and closes its herdr workspace, which stops its
-        agent; the worktree is kept.
+        Adding {prerequisite} as a prerequisite pauses #{taskId} until {prerequisite} is done.
       </span>
       <Button size="xs" variant="destructive" disabled={pending} onClick={onConfirm}>
         <Pause />

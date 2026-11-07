@@ -23,19 +23,11 @@ function task(id: number, overrides: Partial<Task> = {}): Task {
     description: "",
     status: "planned",
     dependsOn: [],
-    branch: null,
-    worktreePath: null,
-    worktreeMissing: false,
-    herdrWorkspaceId: null,
-    pullRequestUrl: null,
     issue: null,
     estimate: null,
     dueDate: null,
     labels: [],
     refs: [],
-    pullRequestMergedAt: null,
-    pullRequest: null,
-    mergedWith: null,
     resolution: null,
     completionNote: null,
     notes: [],
@@ -225,7 +217,6 @@ describe("layoutTimeline", () => {
 
   it("fixes a paused task from its start to its pause", () => {
     const paused = task(5, {
-      branch: "feat/task-5-5",
       milestones: milestones({ plannedAt: jan(1), startedAt: jan(3), pausedAt: jan(5) }),
     });
 
@@ -245,7 +236,6 @@ describe("layoutTimeline", () => {
   it("cuts the bar of a resumed task at its pauses, between its stretches of work", () => {
     const resumed = task(6, {
       status: "done",
-      branch: "feat/task-6-6",
       timeline: [
         { status: "planned", at: jan(1), reopened: false, reason: null },
         { status: "in_progress", at: jan(2), reopened: false, reason: null },
@@ -275,7 +265,6 @@ describe("layoutTimeline", () => {
   it("keeps a bar whole across a pause too short to see at its scale", () => {
     const resumed = task(7, {
       status: "done",
-      branch: "feat/task-7-7",
       timeline: [
         { status: "in_progress", at: jan(2), reopened: false, reason: null },
         { status: "planned", at: jan(3), reopened: false, reason: null },

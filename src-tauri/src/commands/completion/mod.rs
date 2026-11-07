@@ -1,149 +1,125 @@
-//! Commands that finish a task (see `docs/workflow.md`): recording the commits of its
-//! branch, opening its pull request, which pushes the branch, opens (or reuses) a pull
-//! request with `gh`, and moves the task to `in_review`, and completing it once that
-//! pull request is merged, which closes its herdr workspace (keeping the worktree), moves
-//! it to `done`, and releases its dependents.
-//!
-//! They run on the async runtime because git and gh can take seconds. The database lock
-//! is not held while they run.
-//!
-//! A background thread also moves tasks on its own every minute, telling the frontend
-//! through [`TasksChanged`]: it looks up the pull request of the branch of each
-//! `in_progress` task and moves the task to `in_review` when one was opened outside
-//! Toodo (e.g. by an agent in herdr), then checks the pull requests of `in_review` tasks
-//! and completes each task whose pull request was merged, as the `complete_task` command
-//! would. Each round reads a pull request at most once and lists the open pull requests
-//! of a repository with several at once, and skips `gh` while GitHub's rate limit backs
-//! off. For each pull request still open, it keeps the CI and review state and tells
-//! the frontend through [`PullRequestStatusesChanged`] when one changes. Before settling,
-//! it also records the git activity (see [`crate::domain::activity`]) of each task being
-//! worked on in a workspace that tracks it: the commits of its branch and what its pull
-//! request shows (opened, CI result, merged).
-//!
-//! [`TasksChanged`]: super::events::TasksChanged
-//! [`PullRequestStatusesChanged`]: super::events::PullRequestStatusesChanged
-
-mod background;
+//! Completion records and criterion checks, without execution side effects.
 mod conclude;
-mod polling;
-mod pull_request;
-mod settle;
 #[cfg(test)]
 mod tests;
 
-use super::State;
-use super::types::{self, CommitRecord, Task, TaskId};
-use super::{CommandError, CommandResult, GitHubState, GitState, HerdrState, StorageState};
+use super::types::{self, Task, TaskId};
+use super::{CommandError, CommandResult, State, StorageState, lock};
+use crate::domain::criteria::{CheckKind, CriterionState};
+use crate::domain::model;
+use crate::storage::{CriterionCheck, StorageError};
 
-pub(crate) use background::lock_statuses;
-pub use background::{PolledPullRequest, PullRequestStatusState, spawn};
-pub(crate) use conclude::{MergedWithTarget, OpenPullRequest, complete_merged_with, conclude};
-pub(super) use pull_request::{checkout, clear_missing_worktree, ensure_closing_reference};
-pub(crate) use settle::{complete, complete_without_pull_request};
+pub use conclude::ConcludeOutcome;
+pub(crate) use conclude::conclude;
 
-use background::all_statuses;
-use pull_request::{open, refresh};
-
-/// Reads the commits of an `in_progress` or `in_review` task's branch that are not on
-/// the base branch and stores them as its commit records.
-#[specta::specta]
-pub fn refresh_commit_records(
-    storage: State<'_, StorageState>,
-    git: State<'_, GitState>,
-    task_id: TaskId,
-) -> CommandResult<Vec<CommitRecord>> {
-    Ok(types::map_all(&refresh(&storage, &git, task_id.into())?))
-}
-
-/// Records the commits of an `in_progress` or `in_review` task, pushes its branch, opens
-/// a pull request into the base branch, and moves the task to `in_review`. A pull request
-/// of the branch opened elsewhere (e.g. from herdr) is adopted instead: an open one gets
-/// the push, a merged one is recorded without pushing. Run it again after more commits
-/// to push them to the pull request.
-#[specta::specta]
-pub fn open_pull_request(
-    storage: State<'_, StorageState>,
-    git: State<'_, GitState>,
-    github: State<'_, GitHubState>,
-    id: TaskId,
-) -> CommandResult<Task> {
-    Ok((&open(&storage, &git, &**github, id.into())?).into())
-}
-
-/// Moves an `in_progress` or `in_review` task to `done` once its completion criteria are
-/// met, which also confirms a task with a manual criterion and may make its dependents
-/// ready. Toodo checks its automatic criteria first; a merged pull request's size,
-/// reviews, and commits are recorded for reviews. Its herdr workspace is closed; the
-/// worktree stays on disk. Rejected with the criteria that are not met.
+/// Completes a task after its manual criteria and URL checks succeed.
 #[specta::specta]
 pub fn complete_task(
     storage: State<'_, StorageState>,
-    git: State<'_, GitState>,
-    github: State<'_, GitHubState>,
-    herdr: State<'_, HerdrState>,
     id: TaskId,
+    note: Option<String>,
+    refs: Option<Vec<String>>,
 ) -> CommandResult<Task> {
-    Ok((&complete(&storage, &git, &**github, &herdr, id.into())?).into())
-}
-
-/// Concludes an `in_progress` or `in_review` task without merging, e.g. research whose
-/// result is not adopted: the task becomes `done` as `not_adopted` with `note`, the
-/// conclusion, as its completion note. The commits of its branch are recorded, an open
-/// pull request of its branch, recorded or not, is closed with the conclusion as a
-/// comment and recorded, and its herdr workspace is closed. The branch and worktree stay,
-/// and its dependents keep waiting.
-#[specta::specta]
-pub fn conclude_task(
-    storage: State<'_, StorageState>,
-    git: State<'_, GitState>,
-    github: State<'_, GitHubState>,
-    herdr: State<'_, HerdrState>,
-    id: TaskId,
-    note: String,
-) -> CommandResult<Task> {
-    Ok((&conclude(
+    Ok((&complete(
         &storage,
-        &git,
-        &**github,
-        &herdr,
         id.into(),
-        &note,
-        OpenPullRequest::Close,
+        note.as_deref(),
+        refs.as_deref().unwrap_or_default(),
     )?)
         .into())
 }
 
-/// Completes a task whose work shipped through another task, `merged_with_task`, or a
-/// merged pull request into the base branch, `pull_request_url`; exactly one of the two.
-/// An `in_progress` or `in_review` task, or one done as `not_adopted`, becomes done as
-/// merged (completed when the other task was completed without a pull request), and its
-/// dependents can start. See `complete_merged_with` for the checks.
-#[specta::specta]
-pub fn complete_task_merged_with(
-    storage: State<'_, StorageState>,
-    git: State<'_, GitState>,
-    github: State<'_, GitHubState>,
-    herdr: State<'_, HerdrState>,
-    id: TaskId,
-    merged_with_task: Option<TaskId>,
-    pull_request_url: Option<String>,
-) -> CommandResult<Task> {
-    let pull_request_url = pull_request_url.filter(|url| !url.trim().is_empty());
-    let target = match (merged_with_task, pull_request_url) {
-        (Some(task), None) => MergedWithTarget::Task(task.into()),
-        (None, Some(url)) => MergedWithTarget::PullRequest(url),
-        _ => {
-            return Err(CommandError::invalid_input(
-                "name either the task that shipped the work or the URL of its merged pull request, not both or neither",
-            ));
+pub(crate) fn complete(
+    storage: &StorageState,
+    id: model::TaskId,
+    note: Option<&str>,
+    refs: &[String],
+) -> CommandResult<model::Task> {
+    let note = note.map(str::trim);
+    if note == Some("") {
+        return Err(CommandError::invalid_input(
+            "note is blank; call complete_task with a non-empty note or omit note",
+        ));
+    }
+    let task = lock(storage)
+        .get_task(id)?
+        .ok_or(StorageError::TaskNotFound(id))?;
+    task.status.complete().map_err(StorageError::from)?;
+    let refs = types::merge_refs(&task.refs, refs, &[])?;
+    let mut checks = Vec::new();
+    for criterion in &task.criteria {
+        if criterion.kind != CheckKind::Url {
+            continue;
         }
-    };
-    Ok((&complete_merged_with(&storage, &git, &**github, &herdr, id.into(), target)?).into())
+        let target = criterion
+            .target
+            .as_deref()
+            .expect("URL criteria have a target");
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let result = tokio::runtime::Builder::new_current_thread().enable_all().build()
+            .map_err(|error| CommandError::internal(format!("cannot check URL ({error}); call complete_task again after fixing the server runtime")))?
+            .block_on(async {
+                reqwest::Client::builder().timeout(std::time::Duration::from_secs(15)).build()?.get(target).send().await?.error_for_status()
+            });
+        let (state, evidence) = match result {
+            Ok(response) => (
+                CriterionState::Met,
+                format!("GET {target}: {}", response.status()),
+            ),
+            Err(error) => (
+                CriterionState::Failed,
+                format!(
+                    "GET {target}: {error}; fix the URL target with update_task, then call complete_task again"
+                ),
+            ),
+        };
+        checks.push(CriterionCheck {
+            id: criterion.id,
+            state,
+            evidence: Some(evidence),
+            target: None,
+        });
+    }
+    let mut storage = lock(storage);
+    storage.record_criterion_rechecks(id, &checks)?;
+    let (task, _) = storage.record_criterion_checks(id, &checks)?;
+    let pending: Vec<String> = task
+        .criteria
+        .iter()
+        .filter(|criterion| !criterion.is_met())
+        .map(|criterion| match criterion.kind {
+            CheckKind::Manual => format!(
+                "criterion {}: {}; call check_criterion with criterion_id {} and met true",
+                criterion.id, criterion.text, criterion.id
+            ),
+            CheckKind::Url => format!(
+                "criterion {}: {}; fix its URL with update_task, then call complete_task again",
+                criterion.id,
+                criterion.evidence.as_deref().unwrap_or("URL check failed")
+            ),
+        })
+        .collect();
+    if !pending.is_empty() {
+        return Err(CommandError::rejected(pending.join("; ")));
+    }
+    Ok(storage.complete_task(id, note, &refs)?)
 }
 
+/// Records the conclusion of work or identifies the completed task that shipped it.
 #[specta::specta]
-pub fn list_pull_request_statuses(
-    statuses: State<'_, PullRequestStatusState>,
-) -> Vec<types::TaskPullRequestStatus> {
-    all_statuses(&lock_statuses(&statuses))
+pub fn conclude_task(
+    storage: State<'_, StorageState>,
+    id: TaskId,
+    note: String,
+    outcome: Option<ConcludeOutcome>,
+    shipped_with: Option<TaskId>,
+) -> CommandResult<Task> {
+    Ok((&conclude(
+        &storage,
+        id.into(),
+        &note,
+        outcome.unwrap_or_default(),
+        shipped_with.map(Into::into),
+    )?)
+        .into())
 }

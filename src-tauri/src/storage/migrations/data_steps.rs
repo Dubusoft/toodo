@@ -56,7 +56,7 @@ fn import_criteria(tx: &Transaction<'_>) -> Result<()> {
             id,
             0,
             "Pull request merged into the base branch",
-            CheckKind::PullRequestMerged.as_str(),
+            "pr_merged",
             state.as_str(),
             evidence,
             checked_by,

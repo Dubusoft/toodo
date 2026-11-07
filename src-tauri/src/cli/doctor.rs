@@ -1,5 +1,5 @@
 //! `toodo doctor`: the versions of the CLI and the running server, whether the server
-//! runs and answers, the files of its data directory, and the tools it runs.
+//! runs and answers, and the files of its data directory.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -7,8 +7,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
 use super::settings::{self, DataDir};
-use super::{Var, review, server_state, tools, update};
-use crate::commands::types::{RunnerHealth, Tool};
+use super::{Var, review, server_state, update};
 
 /// Prints the report; the exit status is 0 without problems, else 1.
 pub(super) fn doctor(data: &DataDir, var: Var) -> Result<i32, String> {
@@ -78,16 +77,6 @@ pub(super) fn doctor(data: &DataDir, var: Var) -> Result<i32, String> {
         }
     }
 
-    println!(
-        "\nTools on this machine (the web app shows the server's view in Settings > Runners):"
-    );
-    let herdr = crate::adapters::herdr::Herdr::new(Box::new(crate::adapters::git::ProcessRunner));
-    let health = crate::commands::runners::check(&herdr);
-    for line in tools::report(&health) {
-        println!("{line}");
-    }
-    problems.extend(required_tools(&health));
-
     if problems.is_empty() {
         println!("\nNo problems found.");
         Ok(0)
@@ -98,28 +87,6 @@ pub(super) fn doctor(data: &DataDir, var: Var) -> Result<i32, String> {
         }
         Ok(1)
     }
-}
-
-/// A problem for each of git, gh, and ssh that is not ready; herdr, tmux, and the agent
-/// CLIs are needed by some runners only, so the report above shows them as information.
-fn required_tools(health: &RunnerHealth) -> Vec<String> {
-    health
-        .tools
-        .iter()
-        .filter(|tool| !tool.ready)
-        .map(|tool| {
-            let next = tool
-                .message
-                .clone()
-                .unwrap_or_else(|| "install it and rerun toodo doctor".to_owned());
-            let name = match tool.tool {
-                Tool::Git => "git",
-                Tool::Gh => "gh",
-                Tool::Ssh => "ssh",
-            };
-            format!("{name} is not ready: {next}")
-        })
-        .collect()
 }
 
 /// The version the running server reports through its `app_info` command.
@@ -153,48 +120,5 @@ fn server_version(data: &DataDir, listen: SocketAddr) -> Result<String, String> 
             "app_info answered {status}; the server on {address} may use another data directory"
         )),
         None => Err(format!("app_info on {address} got no HTTP response")),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::commands::types::{HerdrHealth, TmuxHealth, ToolHealth};
-
-    #[test]
-    fn only_git_gh_and_ssh_that_are_not_ready_are_problems() {
-        let tool = |tool, ready, message: Option<&str>| ToolHealth {
-            tool,
-            installed: true,
-            ready,
-            version: None,
-            message: message.map(str::to_owned),
-        };
-        let health = RunnerHealth {
-            herdr: HerdrHealth {
-                installed: false,
-                running: false,
-                version: None,
-                message: Some("install herdr".to_owned()),
-            },
-            tmux: TmuxHealth {
-                installed: false,
-                version: None,
-                message: Some("install tmux".to_owned()),
-            },
-            agents: Vec::new(),
-            tools: vec![
-                tool(Tool::Git, true, None),
-                tool(Tool::Gh, false, Some("run `gh auth login`")),
-                tool(Tool::Ssh, false, None),
-            ],
-        };
-        assert_eq!(
-            required_tools(&health),
-            vec![
-                "gh is not ready: run `gh auth login`",
-                "ssh is not ready: install it and rerun toodo doctor",
-            ]
-        );
     }
 }

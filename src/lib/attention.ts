@@ -1,4 +1,4 @@
-import type { AgentStatus, Task, TaskAgentStatus, TaskId, TaskNote, TaskPullRequestStatus } from "@/lib/bindings";
+import type { Task, TaskId, TaskNote, Timestamp } from "@/lib/bindings";
 import { prerequisitesResolved } from "@/lib/task-graph";
 
 /**
@@ -19,49 +19,52 @@ export function openBlocker(task: Task, byId: ReadonlyMap<TaskId, Task>): TaskNo
 }
 
 /** Why a task waits on the user, most urgent first. */
-export const attentionReasons = ["agent_blocked", "blocker_note", "ci_failed", "changes_requested"] as const;
+export const attentionReasons = ["blocker_note", "stalled"] as const;
 
 export type AttentionReason = (typeof attentionReasons)[number];
 
 export type AttentionItem = {
   task: Task;
   reasons: AttentionReason[];
-  agentStatus: AgentStatus | null;
 };
 
+/** How long an `in_progress` task may go without a status change or note before it counts as stalled. */
+export const stalledAfterSeconds = 7 * 24 * 60 * 60;
+
+/** When `task` last started, changed status, or got a note; `null` when none was recorded. */
+function lastActivity(task: Task): Timestamp | null {
+  const times = [
+    ...(task.milestones.startedAt === null ? [] : [task.milestones.startedAt]),
+    ...task.timeline.map((event) => event.at),
+    ...task.notes.map((note) => note.at),
+  ];
+  return times.length === 0 ? null : Math.max(...times);
+}
+
 /**
- * Tasks that wait on the user: an agent asking for input, a blocker an agent reported as its
- * latest note, or a pull request whose CI failed or that got changes requested. The most
- * urgent come first, then by task ID.
+ * Tasks that wait on the user: a blocker reported as the task's latest note, or an
+ * `in_progress` task without a status change or note for `stalledAfterSeconds` before `now`.
+ * The most urgent come first, then by task ID.
  */
 export function needsAttention(
   tasks: Task[],
-  agentStatuses: TaskAgentStatus[],
-  pullRequestStatuses: TaskPullRequestStatus[],
+  now: Timestamp,
   byId: ReadonlyMap<TaskId, Task> = new Map(tasks.map((task) => [task.id, task])),
 ): AttentionItem[] {
-  const agents = new Map(agentStatuses.map((entry) => [entry.taskId, entry.status]));
-  const pullRequests = new Map(pullRequestStatuses.map((entry) => [entry.taskId, entry]));
   const rank = (item: AttentionItem) => attentionReasons.indexOf(item.reasons[0]);
   return tasks
     .flatMap((task) => {
-      const active = task.status === "in_progress" || task.status === "in_review";
-      const agentStatus = active ? (agents.get(task.id) ?? null) : null;
-      // Statuses are only checked while the pull request is open.
-      const pullRequest = task.status === "in_review" ? pullRequests.get(task.id) : undefined;
       const reasons = attentionReasons.filter((reason) => {
         switch (reason) {
-          case "agent_blocked":
-            return agentStatus === "blocked";
           case "blocker_note":
             return openBlocker(task, byId) !== null;
-          case "ci_failed":
-            return pullRequest?.checks === "failing";
-          case "changes_requested":
-            return pullRequest?.review === "changes_requested";
+          case "stalled": {
+            const last = lastActivity(task);
+            return task.status === "in_progress" && last !== null && now - last > stalledAfterSeconds;
+          }
         }
       });
-      return reasons.length > 0 ? [{ task, reasons, agentStatus }] : [];
+      return reasons.length > 0 ? [{ task, reasons }] : [];
     })
     .sort((a, b) => rank(a) - rank(b) || a.task.id - b.task.id);
 }

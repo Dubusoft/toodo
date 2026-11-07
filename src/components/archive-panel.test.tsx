@@ -19,13 +19,9 @@ const mocked = vi.mocked(commands);
 const workspace: Workspace = {
   id: 2,
   name: "herdr",
-  location: { kind: "ssh", machine: "devbox", path: "/srv/herdr" },
-  defaultBaseBranch: "main",
-  agentMerge: "never",
-  pathProblem: null,
-  source: "github",
-  completion: "pr_merge",
-  runner: "herdr",
+  description: null,
+  repository: "dev-bokdong/herdr",
+  archivedAt: null,
 };
 
 const task = { id: 7, workspaceId: 1, title: "Drop the old parser", status: "done" } as Task;

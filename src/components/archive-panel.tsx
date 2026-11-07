@@ -65,7 +65,7 @@ export function ArchivePanel() {
           <ArchiveItem
             key={workspace.id}
             name={workspace.name}
-            detail={workspace.location.path}
+            detail={workspace.repository ?? ""}
             busy={busy}
             onRestore={() => {
               reset();

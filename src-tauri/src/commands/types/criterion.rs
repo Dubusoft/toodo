@@ -23,28 +23,15 @@ impl From<CriterionId> for criteria::CriterionId {
 pub enum CheckKind {
     /// Checked by the user or an agent, with evidence.
     Manual,
-    /// The task's pull request is merged into the workspace base branch.
-    PrMerged,
-    /// The task's pull request is open and all its checks passed.
-    PrOpenCiGreen,
-    /// The task branch is merged into the base branch in the repository itself, for
-    /// workspaces without an `origin` remote.
-    BranchMergedLocally,
     /// A GET of `target`, an http(s) URL, succeeds.
     Url,
-    /// `target`, a shell command, exits with status 0 in the task worktree.
-    Command,
 }
 
 impl From<CheckKind> for criteria::CheckKind {
     fn from(kind: CheckKind) -> Self {
         match kind {
             CheckKind::Manual => Self::Manual,
-            CheckKind::PrMerged => Self::PullRequestMerged,
-            CheckKind::PrOpenCiGreen => Self::PullRequestOpenChecksPassed,
-            CheckKind::BranchMergedLocally => Self::BranchMergedLocally,
             CheckKind::Url => Self::Url,
-            CheckKind::Command => Self::Command,
         }
     }
 }
@@ -53,11 +40,7 @@ impl From<criteria::CheckKind> for CheckKind {
     fn from(kind: criteria::CheckKind) -> Self {
         match kind {
             criteria::CheckKind::Manual => Self::Manual,
-            criteria::CheckKind::PullRequestMerged => Self::PrMerged,
-            criteria::CheckKind::PullRequestOpenChecksPassed => Self::PrOpenCiGreen,
-            criteria::CheckKind::BranchMergedLocally => Self::BranchMergedLocally,
             criteria::CheckKind::Url => Self::Url,
-            criteria::CheckKind::Command => Self::Command,
         }
     }
 }
@@ -67,8 +50,7 @@ impl From<criteria::CheckKind> for CheckKind {
 pub enum CriterionState {
     Pending,
     Met,
-    /// The last automatic check failed, e.g. a command exited with an error; Toodo checks
-    /// it again.
+    /// The last HTTP check failed; completion checks it again.
     Failed,
 }
 
@@ -108,8 +90,7 @@ pub struct Criterion {
     pub id: CriterionId,
     pub text: String,
     pub kind: CheckKind,
-    /// The URL or command to check; for `branch_merged_locally`, the commit the branch
-    /// started from once Toodo knows it.
+    /// The HTTP URL to check; absent for manual criteria.
     pub target: Option<String>,
     pub state: CriterionState,
     /// What showed the last check's result, or why it failed.

@@ -8,9 +8,6 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
-use crate::commands::types::{
-    AgentStatus, ChecksStatus, ReviewStatus, TaskAgentStatus, TaskPullRequestStatus,
-};
 use crate::domain::model::TaskId;
 use crate::domain::push::PushKind;
 use crate::domain::status::TaskStatus;
@@ -80,8 +77,6 @@ fn shorten(text: &str) -> String {
 #[derive(Debug, Default)]
 pub struct Watch {
     tasks: Option<HashMap<TaskId, (TaskStatus, String)>>,
-    agents: HashMap<TaskId, AgentStatus>,
-    pull_requests: Option<HashMap<TaskId, TaskPullRequestStatus>>,
 }
 
 impl Watch {
@@ -120,113 +115,11 @@ impl Watch {
         self.tasks = Some(next);
         alerts
     }
-
-    fn title(&self, task: TaskId) -> Option<&str> {
-        self.tasks
-            .as_ref()?
-            .get(&task)
-            .map(|(_, title)| title.as_str())
-    }
-
-    /// An agent that started waiting for input, or that stopped working.
-    pub fn agents(&mut self, statuses: &[TaskAgentStatus]) -> Vec<Alert> {
-        let alerts = statuses
-            .iter()
-            .filter_map(|entry| {
-                let task = TaskId(entry.task_id.0);
-                let was = *self.agents.get(&task)?;
-                let (title, urgent) = match (was, entry.status) {
-                    (was, AgentStatus::Blocked) if was != AgentStatus::Blocked => {
-                        ("Agent needs input", true)
-                    }
-                    (AgentStatus::Working, AgentStatus::Done | AgentStatus::Idle) => {
-                        ("Agent finished", false)
-                    }
-                    _ => return None,
-                };
-                Some(Alert::task(
-                    PushKind::Agent,
-                    urgent,
-                    title,
-                    task,
-                    self.title(task),
-                ))
-            })
-            .collect();
-        self.agents = statuses
-            .iter()
-            .map(|entry| (TaskId(entry.task_id.0), entry.status))
-            .collect();
-        alerts
-    }
-
-    /// CI checks that finished (passed or failed) and reviews that approved or requested
-    /// changes.
-    pub fn pull_requests(&mut self, statuses: &[TaskPullRequestStatus]) -> Vec<Alert> {
-        let mut alerts = Vec::new();
-        let next = statuses
-            .iter()
-            .map(|entry| (TaskId(entry.task_id.0), entry.clone()))
-            .collect();
-        let Some(before) = self.pull_requests.replace(next) else {
-            return alerts;
-        };
-        for entry in statuses {
-            let task = TaskId(entry.task_id.0);
-            let unseen = TaskPullRequestStatus {
-                task_id: entry.task_id,
-                checks: None,
-                review: ReviewStatus::Pending,
-            };
-            let was = before.get(&task).unwrap_or(&unseen);
-            let name = self.title(task);
-            if entry.checks != was.checks {
-                match entry.checks {
-                    Some(ChecksStatus::Failing) => alerts.push(Alert::task(
-                        PushKind::PullRequests,
-                        true,
-                        "CI failed",
-                        task,
-                        name,
-                    )),
-                    Some(ChecksStatus::Passing) => alerts.push(Alert::task(
-                        PushKind::PullRequests,
-                        false,
-                        "CI passed",
-                        task,
-                        name,
-                    )),
-                    Some(ChecksStatus::Pending) | None => {}
-                }
-            }
-            if entry.review != was.review {
-                match entry.review {
-                    ReviewStatus::ChangesRequested => alerts.push(Alert::task(
-                        PushKind::PullRequests,
-                        true,
-                        "Changes requested",
-                        task,
-                        name,
-                    )),
-                    ReviewStatus::Approved => alerts.push(Alert::task(
-                        PushKind::PullRequests,
-                        false,
-                        "Pull request approved",
-                        task,
-                        name,
-                    )),
-                    ReviewStatus::Pending => {}
-                }
-            }
-        }
-        alerts
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::types;
 
     fn tasks(list: &[(i64, TaskStatus)]) -> Vec<(TaskId, TaskStatus, String)> {
         list.iter()
@@ -240,28 +133,6 @@ mod tests {
             list.iter()
                 .map(|(id, status, title)| (*id, *status, title.as_str())),
         )
-    }
-
-    fn agent(id: i64, status: AgentStatus) -> TaskAgentStatus {
-        TaskAgentStatus {
-            task_id: types::TaskId(id),
-            status,
-        }
-    }
-
-    fn pr(id: i64, checks: Option<ChecksStatus>, review: ReviewStatus) -> TaskPullRequestStatus {
-        TaskPullRequestStatus {
-            task_id: types::TaskId(id),
-            checks,
-            review,
-        }
-    }
-
-    fn titles(alerts: &[Alert]) -> Vec<(&str, &str)> {
-        alerts
-            .iter()
-            .map(|alert| (alert.title.as_str(), alert.body.as_str()))
-            .collect()
     }
 
     #[test]
@@ -282,117 +153,17 @@ mod tests {
                 (3, TaskStatus::InReview),
             ],
         );
-        assert_eq!(titles(&alerts), [("Task awaiting completion", "#2 Task 2")]);
+        assert_eq!(
+            alerts
+                .iter()
+                .map(|alert| (alert.title.as_str(), alert.body.as_str()))
+                .collect::<Vec<_>>(),
+            [("Task awaiting completion", "#2 Task 2")]
+        );
         assert_eq!(alerts[0].kind, Some(PushKind::Completion));
         assert_eq!(alerts[0].task_id, Some(2));
         assert_eq!(alerts[0].tag, "task-2-completion");
         assert!(seen(&mut watch, &[(2, TaskStatus::Done)]).is_empty());
-    }
-
-    #[test]
-    fn agents_that_need_input_or_finish_raise_alerts() {
-        let mut watch = Watch::default();
-        seen(
-            &mut watch,
-            &[(1, TaskStatus::InProgress), (2, TaskStatus::InProgress)],
-        );
-        assert!(
-            watch
-                .agents(&[
-                    agent(1, AgentStatus::Working),
-                    agent(2, AgentStatus::Working)
-                ])
-                .is_empty()
-        );
-        let alerts = watch.agents(&[
-            agent(1, AgentStatus::Blocked),
-            agent(2, AgentStatus::Idle),
-            agent(3, AgentStatus::Blocked),
-        ]);
-        assert_eq!(
-            titles(&alerts),
-            [
-                ("Agent needs input", "#1 Task 1"),
-                ("Agent finished", "#2 Task 2")
-            ]
-        );
-        assert!(alerts[0].urgent);
-        assert!(!alerts[1].urgent);
-        assert!(watch.agents(&[agent(1, AgentStatus::Blocked)]).is_empty());
-        assert!(watch.agents(&[agent(1, AgentStatus::Done)]).is_empty());
-        assert!(watch.agents(&[agent(1, AgentStatus::Working)]).is_empty());
-        assert_eq!(
-            titles(&watch.agents(&[agent(1, AgentStatus::Blocked)])),
-            [("Agent needs input", "#1 Task 1")]
-        );
-    }
-
-    #[test]
-    fn a_vanished_agent_starts_over_as_first_seen() {
-        let mut watch = Watch::default();
-        watch.agents(&[agent(1, AgentStatus::Working)]);
-        watch.agents(&[]);
-        assert!(watch.agents(&[agent(1, AgentStatus::Blocked)]).is_empty());
-    }
-
-    #[test]
-    fn finished_checks_and_reviews_raise_alerts() {
-        let mut watch = Watch::default();
-        assert!(
-            watch
-                .pull_requests(&[pr(1, Some(ChecksStatus::Failing), ReviewStatus::Pending)])
-                .is_empty()
-        );
-        assert!(
-            watch
-                .pull_requests(&[pr(1, Some(ChecksStatus::Pending), ReviewStatus::Pending)])
-                .is_empty()
-        );
-        let alerts = watch.pull_requests(&[pr(
-            1,
-            Some(ChecksStatus::Passing),
-            ReviewStatus::ChangesRequested,
-        )]);
-        assert_eq!(
-            titles(&alerts),
-            [("CI passed", "#1"), ("Changes requested", "#1")]
-        );
-        let alerts =
-            watch.pull_requests(&[pr(1, Some(ChecksStatus::Failing), ReviewStatus::Approved)]);
-        assert_eq!(
-            titles(&alerts),
-            [("CI failed", "#1"), ("Pull request approved", "#1")]
-        );
-        assert!(
-            alerts
-                .iter()
-                .all(|alert| alert.kind == Some(PushKind::PullRequests))
-        );
-        assert!(
-            watch
-                .pull_requests(&[pr(1, Some(ChecksStatus::Failing), ReviewStatus::Approved)])
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn a_pull_request_first_seen_after_the_baseline_with_failed_ci_raises_alerts() {
-        let mut watch = Watch::default();
-        assert!(watch.pull_requests(&[]).is_empty());
-        let alerts = watch.pull_requests(&[
-            pr(
-                1,
-                Some(ChecksStatus::Failing),
-                ReviewStatus::ChangesRequested,
-            ),
-            pr(2, Some(ChecksStatus::Pending), ReviewStatus::Pending),
-            pr(3, None, ReviewStatus::Pending),
-        ]);
-        assert_eq!(
-            titles(&alerts),
-            [("CI failed", "#1"), ("Changes requested", "#1")]
-        );
-        assert!(alerts.iter().all(|alert| alert.urgent));
     }
 
     #[test]

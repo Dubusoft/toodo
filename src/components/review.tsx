@@ -8,7 +8,6 @@ import { TaskEditForm } from "@/components/task-edit-form";
 import { inputClass } from "@/components/workspace-list";
 import {
   commands,
-  type BackfillSummary,
   type ReportFormat,
   type ReviewEntry,
   type ReviewOutcome,
@@ -22,7 +21,6 @@ import {
 import {
   unwrap,
   useArchive,
-  useBackfillPullRequests,
   useDeleteReviewSnapshot,
   useReview,
   useReviewSnapshot,
@@ -52,6 +50,7 @@ import {
   periodTitles,
   planVsActual,
   pullRequestNumber,
+  pullRequestRef,
   pullRequestStats,
   reviewLabels,
   shiftPeriod,
@@ -64,7 +63,6 @@ import {
 } from "@/lib/review";
 import { type MissingPlanField, missingPlan } from "@/lib/plan";
 import { toneChip, toneFill, toneText } from "@/lib/status-styles";
-import { workspaceCapabilities } from "@/lib/workspace-capabilities";
 import { When } from "@/components/when";
 import { activeSeconds, formatDate, formatFull, waitingSeconds, workSegments } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
@@ -135,16 +133,6 @@ function ExportMenu({ disabled, children }: { disabled: boolean; children: (clos
 
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
-
-/** What importing merged pull requests added, for the status line. */
-export function backfillNotice(summary: BackfillSummary, noun: string): string {
-  const skipped =
-    summary.skipped > 0 ? ` Left out ${plural(summary.skipped, "pull request")} a task already records.` : "";
-  if (summary.imported === 0) {
-    return `Found no new pull requests you merged in this ${noun}.${skipped}`;
-  }
-  return `Imported ${plural(summary.imported, "merged pull request")} as done tasks.${skipped}`;
 }
 
 function MenuItem({ onSelect, children }: { onSelect: () => void; children: React.ReactNode }) {
@@ -271,9 +259,6 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   const review = viewing ? snapshot : live;
   const workspaces = useWorkspaces();
   const archive = useArchive();
-  const backfill = useBackfillPullRequests();
-  const [backfillFailures, setBackfillFailures] = useState<string[]>([]);
-  const onGitHub = workspaces.data?.some((workspace) => workspace.source === "github") ?? false;
   // Reviews keep the work of deleted workspaces, so they are named too; a saved review
   // names them as they were named when it was saved.
   const workspaceList: Pick<Workspace, "id" | "name">[] = viewing
@@ -314,13 +299,11 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
 
   function moveTo(next: ReviewPeriod) {
     setNotice(null);
-    setBackfillFailures([]);
     setPeriod(next);
   }
 
   function openSnapshot(id: ReviewSnapshotId | null) {
     setNotice(null);
-    setBackfillFailures([]);
     setEditingPlan(null);
     setSnapshotId(id);
   }
@@ -351,17 +334,6 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
     }
   }
 
-  async function importPullRequests() {
-    setNotice(null);
-    setBackfillFailures([]);
-    try {
-      const summary = await backfill.mutateAsync({ from: period.from, to: period.to });
-      setNotice(backfillNotice(summary, noun));
-      setBackfillFailures(summary.failures);
-    } catch (error) {
-      setNotice(`Could not import pull requests: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
 
   function switchKind(kind: PeriodKind) {
     if (kind === period.kind) return;
@@ -653,13 +625,6 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           {notice}
         </p>
       )}
-      {backfillFailures.length > 0 && (
-        <ul role="alert" aria-label="Pull requests not imported" className="text-xs text-destructive print:hidden">
-          {backfillFailures.map((failure) => (
-            <li key={failure}>{failure}</li>
-          ))}
-        </ul>
-      )}
 
       {/* Stays mounted so screen readers hear loading start and finish for each period. */}
       <p role="status" className={cn("text-sm text-muted-foreground", !review.isPending && "sr-only")}>
@@ -685,21 +650,12 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
             viewing
               ? "This saved review keeps the tasks it had when it was saved."
               : shown?.entries.length === 0
-              ? `Toodo records each task as it is planned, started, opened for review, and completed, with the commits of its branch, so reviews fill up as you work. Work merged before Toodo tracked it is not here: ${
-                  onGitHub
-                    ? `import the pull requests you merged in this ${noun} to add it.`
-                    : "add a workspace with a GitHub repository to import the pull requests you merged."
-                }`
+              ? "Toodo records each task as it is planned, started, moved to review, and completed, so reviews fill up as you work."
               : "Pick another period or change the filters to look at other work."
           }
           action={
             viewing ? undefined : (
             <div className="flex flex-wrap justify-center gap-2 print:hidden">
-              {shown?.entries.length === 0 && onGitHub && (
-                <Button size="sm" disabled={backfill.isPending} onClick={() => void importPullRequests()}>
-                  {backfill.isPending ? "Importing..." : "Import merged pull requests"}
-                </Button>
-              )}
               <Button size="sm" variant="outline" onClick={() => moveTo(shiftPeriod(period, -1))}>
                 Show the {noun} before
               </Button>
@@ -721,7 +677,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
               <span className="font-normal text-muted-foreground">({group.entries.length})</span>
             </h3>
             <ul className="flex flex-col divide-y rounded-lg border">
-              {group.entries.map(({ task, at, commits, archived }) => (
+              {group.entries.map(({ task, at, commits, archived, pullRequest }) => (
                 <li key={task.id} className="flex flex-col gap-1 px-3 py-2">
                   <div className="flex min-w-0 items-center gap-2">
                     <TaskTypeBadge type={task.taskType} />
@@ -742,9 +698,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                     {task.resolution === "completed" && (
                       <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", toneChip.success)}>Completed</span>
                     )}
-                    {task.pullRequestUrl && (
-                      <PullRequestLink url={task.pullRequestUrl} stats={task.pullRequest} />
-                    )}
+                    {pullRequestRef(task) && <PullRequestLink url={pullRequestRef(task)!} stats={pullRequest} />}
                     <span className="shrink-0 text-xs text-muted-foreground max-md:hidden print:inline">
                       {names.get(task.workspaceId) ?? `Workspace ${task.workspaceId}`} &middot; <When at={at} />
                     </span>
@@ -753,7 +707,6 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                   {archived || viewing ? null : editingPlan?.id === task.id ? (
                     <TaskEditForm
                       task={task}
-                      capabilities={workspaceCapabilities(workspaces.data?.find(({ id }) => id === task.workspaceId))}
                       focusPlan={editingPlan.field}
                       onDone={() => setEditingPlan(null)}
                     />
@@ -824,7 +777,7 @@ function TaskTime({ task, shown }: { task: Task; shown: Shown }) {
   );
 }
 
-function PullRequestLink({ url, stats }: { url: string; stats: ReviewEntry["task"]["pullRequest"] }) {
+function PullRequestLink({ url, stats }: { url: string; stats: ReviewEntry["pullRequest"] }) {
   const number = pullRequestNumber(url);
   const open = (event: { preventDefault: () => void }) => {
     event.preventDefault();

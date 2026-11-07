@@ -19,21 +19,18 @@ import {
   SunMoon,
   X,
 } from "lucide-react";
-import { AgentAccessStatus } from "@/components/agent-access-panel";
 import { BackupStatusLabel } from "@/components/backup-panel";
 import { CommandPalette, ShortcutsDialog, type PaletteCommand } from "@/components/command-palette";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { ToolHealthBanner } from "@/components/tool-health-banner";
 import { InstallBanner } from "@/components/install-banner";
 import { NeedsAttention } from "@/components/needs-attention";
-import { PrerequisiteChecklist } from "@/components/prerequisite-checklist";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
 import { SettingsDialog, type SettingsSection } from "@/components/settings-dialog";
 import { Button } from "@/components/ui/button";
 import { NewWorkspaceDialog, WorkspaceList } from "@/components/workspace-list";
 import type { Task, TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
-import { useHerdrEvents, useTasks, useWorkspaces } from "@/lib/queries";
+import { useServerEvents, useTasks, useWorkspaces } from "@/lib/queries";
 import { useRoute, type Route } from "@/lib/route";
 import { isPaletteKey, singleKeyShortcut } from "@/lib/shortcuts";
 import { setThemePreference } from "@/lib/theme";
@@ -52,7 +49,7 @@ function searchField(): HTMLInputElement | null {
 
 export default function App() {
   const workspaces = useWorkspaces();
-  useHerdrEvents();
+  useServerEvents();
   // A task to select on the All workspaces timeline, until the timeline shows it.
   const [shownTask, setShownTask] = useState<ShownTask | null>(null);
   // An address opened or returned to brings its task out on the timeline, as a shown task does.
@@ -306,7 +303,6 @@ export default function App() {
           <Settings />
           Settings
           <span className="ml-auto flex flex-col items-end text-xs font-normal">
-            <AgentAccessStatus />
             <BackupStatusLabel />
           </span>
         </Button>
@@ -327,7 +323,6 @@ export default function App() {
         <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6 print:block print:overflow-visible print:p-0">
           <div className="contents print:hidden">
             <InstallBanner />
-            <ToolHealthBanner />
           </div>
           <ErrorBoundary label="this view" resetKey={reviewing ? "review" : showingAll ? "all" : selected?.id}>
             {reviewing ? (
@@ -364,15 +359,12 @@ export default function App() {
                 <EmptyState
                   icon={<FolderPlus />}
                   title="Create a workspace to start planning tasks."
-                  hint={`Clone a repository, open one already cloned, or make a folder a new repository, on the server or a saved herdr machine.`}
+                  hint="A workspace groups tasks, e.g. those of one repository or project."
                   action={
-                    <div className="flex flex-col items-center gap-6">
-                      <Button ref={addFirstButton} aria-haspopup="dialog" onClick={() => setAddingFirst(true)}>
-                        <Plus />
-                        Add workspace
-                      </Button>
-                      <PrerequisiteChecklist />
-                    </div>
+                    <Button ref={addFirstButton} aria-haspopup="dialog" onClick={() => setAddingFirst(true)}>
+                      <Plus />
+                      Add workspace
+                    </Button>
                   }
                 />
               )
@@ -389,7 +381,6 @@ export default function App() {
       />
       {addingFirst && (
         <NewWorkspaceDialog
-          machine={null}
           onCreated={(workspace) => {
             setAddingFirst(false);
             openPage({ page: "workspace", workspace: workspace.id, task: null });

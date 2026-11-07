@@ -13,7 +13,6 @@ mod process;
 mod review;
 mod service;
 mod settings;
-mod tools;
 mod uninstall;
 mod update;
 
@@ -63,7 +62,7 @@ Commands:
   status           show whether the server runs and where its files are; exits 0 when
                    it runs and 3 when it is stopped
   doctor           check the versions of toodo and the running server, whether the
-                   server runs and answers, its data files, and the tools it runs;
+                   server runs and answers, and its data files;
                    exits 0 when it finds no problem and 1 when it does
   logs             print the end of the server log (of journalctl for the service)
   service install  run the server as the systemd user service toodo-server.service, or
@@ -149,10 +148,8 @@ Then it registers the MCP endpoint again with the agents init registered it with
         "doctor" => (
             "toodo doctor [--data-dir DIR]",
             "Checks the versions of toodo and the running server, whether the server runs and
-answers, the database and tokens in DIR, and git, gh, ssh, herdr, tmux, and the agent
-CLIs, and prints each problem with what to do about it. Exits 0 when it finds no
-problem and 1 when it does; herdr, tmux, and the agent CLIs only some runners need are
-shown but not counted as problems.",
+answers, and the database and tokens in DIR. Prints each problem with its next step.
+Exits 0 when it finds no problem and 1 when it does.",
             DATA_DIR_OPTION.to_owned(),
         ),
         "logs" => (
@@ -708,15 +705,6 @@ fn init(args: &InitArgs, var: Var) -> Result<(), String> {
         }
     } else {
         println!("MCP: not registered with any agent (--no-mcp)");
-    }
-
-    println!(
-        "
-Tools on this machine (the web app shows the server's view in Settings > Runners):"
-    );
-    let herdr = crate::adapters::herdr::Herdr::new(Box::new(crate::adapters::git::ProcessRunner));
-    for line in tools::report(&crate::commands::runners::check(&herdr)) {
-        println!("{line}");
     }
 
     let web_token = data.web_token();

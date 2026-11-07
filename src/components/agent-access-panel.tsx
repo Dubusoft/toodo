@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import type { McpRejectionReason, McpServerInfo, McpTunnel, McpTunnelState } from "@/lib/bindings";
-import { useMcpServerInfo, useMcpTunnels } from "@/lib/queries";
+import type { McpRejectionReason, McpServerInfo } from "@/lib/bindings";
+import { useMcpServerInfo } from "@/lib/queries";
 import { formatFull, formatWhen } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
-import { toneFill } from "@/lib/status-styles";
 import { serverFetch } from "@/web/connection";
 
 export function mcpConfig(info: McpServerInfo): string {
@@ -73,46 +72,8 @@ function breakableUrl(url: string) {
   ));
 }
 
-const tunnelStates: Record<McpTunnelState, { label: string; className: string }> = {
-  open: { label: "Connected", className: toneFill.success },
-  connecting: { label: "Connecting", className: toneFill.attention },
-  retrying: { label: "Retrying", className: "bg-destructive" },
-};
-
-function TunnelList({ tunnels }: { tunnels: McpTunnel[] }) {
-  if (tunnels.length === 0) return null;
-  return (
-    <ul aria-label="Remote machines" className="flex flex-col gap-1">
-      {tunnels.map((tunnel) => {
-        const state = tunnelStates[tunnel.state];
-        return (
-          <li key={tunnel.machine} aria-label={`Tunnel to ${tunnel.machine}`} className="flex flex-col gap-0.5">
-            <span className="flex items-center gap-1.5">
-              <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", state.className)} />
-              <span className="truncate font-medium">{tunnel.machine}</span>
-              <span className="text-muted-foreground">{state.label}</span>
-            </span>
-            {tunnel.error && <span className="break-words text-destructive">{tunnel.error}</span>}
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-/** How many tunnels to SSH machines are retrying, shown next to the Agent access settings; nothing while none is. */
-export function AgentAccessStatus() {
-  const tunnels = useMcpTunnels();
-  const retrying = (tunnels.data ?? []).filter((tunnel) => tunnel.state === "retrying").length;
-  if (retrying === 0) return null;
-  return (
-    <span className="text-destructive">{retrying === 1 ? "1 tunnel retrying" : `${retrying} tunnels retrying`}</span>
-  );
-}
-
 export function AgentAccessPanel() {
   const info = useMcpServerInfo();
-  const tunnels = useMcpTunnels();
   const [notice, setNotice] = useState<string | null>(null);
   const [test, setTest] = useState<ConnectionTest | "testing" | null>(null);
 
@@ -193,14 +154,6 @@ export function AgentAccessPanel() {
               : {rejectionReasons[rejection.reason]}
               {rejection.count > 1 && ` (${rejection.count} since the server started)`}.
             </p>
-          )}
-          {!data.error && (
-            <>
-              <p className="text-muted-foreground">
-                Agents on SSH machines use the same config: the server forwards its port to each machine with a workspace.
-              </p>
-              <TunnelList tunnels={tunnels.data ?? []} />
-            </>
           )}
         </>
       )}

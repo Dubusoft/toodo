@@ -40,7 +40,6 @@ use self::crypto::VapidKey;
 use super::Services;
 use super::devices::{Caller, blocking};
 use super::rpc::{Reply, json};
-use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
 use crate::commands::{CommandError, StorageState, lock};
 use crate::domain::device::DeviceId;
 use crate::domain::push::{
@@ -175,8 +174,6 @@ enum Change {
     Tasks,
     /// The tasks changed through the app; the baseline moves without notifications.
     TasksSeen,
-    Agents(Vec<TaskAgentStatus>),
-    PullRequests(Vec<TaskPullRequestStatus>),
 }
 
 pub struct Push {
@@ -228,14 +225,6 @@ impl Push {
 
     pub fn tasks_seen(&self) {
         self.changed(Change::TasksSeen);
-    }
-
-    pub fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]) {
-        self.changed(Change::Agents(statuses.to_vec()));
-    }
-
-    pub fn pull_request_statuses_changed(&self, statuses: &[TaskPullRequestStatus]) {
-        self.changed(Change::PullRequests(statuses.to_vec()));
     }
 
     /// Encrypts `alert` for `subscription` and posts it.
@@ -400,8 +389,6 @@ pub fn spawn(services: Arc<Services>) -> io::Result<()> {
                         watch_tasks(&services, &mut watch);
                         Vec::new()
                     }
-                    Change::Agents(statuses) => watch.agents(&statuses),
-                    Change::PullRequests(statuses) => watch.pull_requests(&statuses),
                 };
                 deliver(&services.storage, &services.push, &runtime, &alerts);
             }
@@ -920,7 +907,7 @@ pub(crate) mod tests {
             "Laptop",
             "https://push.example/laptop",
             PushSettings {
-                agent: false,
+                completion: false,
                 ..PushSettings::default()
             },
         );
@@ -929,23 +916,27 @@ pub(crate) mod tests {
             .build()
             .unwrap();
         let mut watch = Watch::default();
-        let agent = |status| TaskAgentStatus {
-            task_id: crate::commands::types::TaskId(4),
-            status,
-        };
-        watch.agents(&[agent(crate::commands::types::AgentStatus::Working)]);
-        let alerts = watch.agents(&[agent(crate::commands::types::AgentStatus::Blocked)]);
+        watch.tasks([(
+            crate::domain::model::TaskId(4),
+            crate::domain::status::TaskStatus::InProgress,
+            "Task",
+        )]);
+        let alerts = watch.tasks([(
+            crate::domain::model::TaskId(4),
+            crate::domain::status::TaskStatus::InReview,
+            "Task",
+        )]);
 
         assert_eq!(deliver(&storage, &push, &runtime, &alerts), 1);
         let request = requests.lock().unwrap().remove(0);
         assert_eq!(request.endpoint, "https://push.example/phone");
-        assert_eq!(request.urgency, "high");
+        assert_eq!(request.urgency, "normal");
         assert_eq!(request.ttl, 86_400);
         assert!(request.authorization.starts_with("vapid t="));
         assert_eq!(
             phone.decrypt(&request.body),
             serde_json::json!({
-                "title": "Agent needs input", "body": "#4", "tag": "task-4-agent", "taskId": 4
+                "title": "Task awaiting completion", "body": "#4 Task", "tag": "task-4-completion", "taskId": 4
             })
         );
 

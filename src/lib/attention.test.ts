@@ -10,7 +10,6 @@ function task(id: number, status: TaskStatus, notes: TaskNote["kind"][] = [], ti
     notes: notes.map((kind, at) => ({ kind, body: kind, at })),
     timeline,
     dependsOn: [],
-    branch: null,
     milestones: { plannedAt: null, startedAt: null, reviewAt: null, completedAt: null, pausedAt: null },
   } as unknown as Task;
 }
@@ -19,57 +18,42 @@ const summary = (items: ReturnType<typeof needsAttention>) =>
   items.map((item) => ({ id: item.task.id, reasons: item.reasons }));
 
 describe("needsAttention", () => {
-  it("collects blocked agents, blocker notes, failed CI and requested changes, most urgent first", () => {
-    const tasks = [
-      task(1, "in_review"),
-      task(2, "in_progress", ["progress", "blocker"]),
-      task(3, "in_review"),
-      task(4, "in_progress"),
-      task(5, "in_review", ["blocker"]),
-    ];
-    const items = needsAttention(
-      tasks,
-      [
-        { taskId: 4, status: "blocked" },
-        { taskId: 5, status: "blocked" },
-      ],
-      [
-        { taskId: 1, checks: "passing", review: "changes_requested" },
-        { taskId: 3, checks: "failing", review: "pending" },
-        { taskId: 5, checks: "failing", review: "approved" },
-      ],
-    );
-    expect(summary(items)).toEqual([
-      { id: 4, reasons: ["agent_blocked"] },
-      { id: 5, reasons: ["agent_blocked", "blocker_note", "ci_failed"] },
+  const day = 24 * 60 * 60;
+  const started = (at: number): TaskEvent[] => [{ status: "in_progress", at, reopened: false, reason: null }];
+
+  it("collects blocker notes and stalled in-progress tasks, blockers first", () => {
+    const now = 30 * day;
+    const blocked = (id: number, at: number) =>
+      ({ ...task(id, "in_progress", [], started(at - day)), notes: [{ kind: "blocker", body: "", at }] }) as Task;
+    const tasks = [task(1, "in_progress", [], started(now - 8 * day)), blocked(2, now - day), blocked(3, now - 10 * day)];
+    expect(summary(needsAttention(tasks, now))).toEqual([
       { id: 2, reasons: ["blocker_note"] },
-      { id: 3, reasons: ["ci_failed"] },
-      { id: 1, reasons: ["changes_requested"] },
+      { id: 3, reasons: ["blocker_note", "stalled"] },
+      { id: 1, reasons: ["stalled"] },
     ]);
-    expect(items[0].agentStatus).toBe("blocked");
   });
 
-  it("leaves out resolved blockers, finished tasks, and stale statuses", () => {
+  it("leaves out resolved blockers, finished tasks, recent activity, and tasks that are not in progress", () => {
+    const now = 30 * day;
     const tasks = [
-      task(1, "in_progress", ["blocker", "progress"]),
+      task(1, "in_progress", ["blocker", "progress"], started(now - day)),
       task(2, "done", ["blocker"]),
-      task(3, "planned"),
-      task(4, "in_progress"),
-      task(5, "in_progress"),
+      task(3, "planned", [], started(now - 20 * day)),
+      task(4, "in_review", [], started(now - 20 * day)),
+      task(5, "in_progress", [], started(now - 6 * day)),
+      task(6, "in_progress"),
     ];
-    const items = needsAttention(
-      tasks,
-      [
-        { taskId: 3, status: "blocked" },
-        { taskId: 5, status: "working" },
-      ],
-      [{ taskId: 4, checks: "failing", review: "changes_requested" }],
-    );
-    expect(items).toEqual([]);
+    expect(needsAttention(tasks, now)).toEqual([]);
+  });
+
+  it("counts a recent note as activity", () => {
+    const now = 30 * day;
+    const noted = { ...task(1, "in_progress", [], started(now - 20 * day)), notes: [{ kind: "progress", body: "", at: now - day }] } as Task;
+    expect(needsAttention([noted], now)).toEqual([]);
   });
 
   it("keeps a paused task whose latest note is a blocker", () => {
-    expect(summary(needsAttention([task(1, "planned", ["blocker"])], [], []))).toEqual([
+    expect(summary(needsAttention([task(1, "planned", ["blocker"])], 0))).toEqual([
       { id: 1, reasons: ["blocker_note"] },
     ]);
   });

@@ -1,40 +1,17 @@
-//! The headless server (`toodo-server`) for a Linux machine that runs herdr itself: the
-//! commands over HTTP for the web app (the PWA), its events as a server-sent event
-//! stream, and the MCP server for agents, all on one port. Workspaces on "Local" are on
-//! the server, with POSIX paths.
-//!
-//! - `POST /api/rpc/<command>` runs a command (see [`rpc`]).
-//! - `GET /api/events` streams `tasks-changed`, `agent-statuses-changed`, and
-//!   `pull-request-statuses-changed` events with JSON data, each with an id; a client that
-//!   reconnects with `Last-Event-ID` gets the events it missed (see [`event_log`]).
-//! - `/api/backups/...` moves database files in and out (see [`files`]).
-//! - `GET /api/runs/{id}/log...` streams the logs of a plain or tmux run, or sends one
-//!   whole (see [`run_logs`]).
-//! - `/api/devices...` registers, lists, and revokes devices (see [`devices`]).
-//! - `/api/push...` subscribes the asking device to Web Push notifications and sets which
-//!   ones it gets (see [`push`]).
-//! - `POST /api/stream-tickets` and `GET /api/panes/stream` mirror a pane of a task's herdr
-//!   workspace over a WebSocket (see [`panes`]); the stream takes a ticket instead of the
-//!   token.
-//! - `/mcp` is the MCP endpoint.
-//! - Anything else is served from the web build of the frontend, when one is configured.
-//!
-//! `/api` requires the shared web access token or a device's token, and `/mcp` the MCP
-//! access token, as a bearer token; the shared tokens are created in the data directory on
-//! first start.
+//! The HTTP server for task commands, events, MCP, backups, devices and Web Push.
+//! API requests require a shared access token or device token. MCP uses its own token.
+//! The configured web build serves the app on the same port.
 
 mod devices;
 mod event_log;
 mod files;
-mod panes;
 mod push;
 mod rpc;
-mod run_logs;
 
 use std::convert::Infallible;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
@@ -45,41 +22,19 @@ use axum::routing::{any, get, post, put};
 use futures_util::{Stream, StreamExt};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::adapters::git::{Git, ProcessRunner};
-use crate::adapters::github::{GhCli, GitHub};
-use crate::adapters::herdr::Herdr;
-use crate::adapters::ssh::Ssh;
-use crate::adapters::ssh_tunnel::SshForwarder;
 use crate::commands::backup::{self, Backups};
-use crate::commands::completion::{self, PullRequestStatusState};
-use crate::commands::events::{
-    self, AgentStatusState, AgentStatusesChanged, Notifier, PullRequestStatusesChanged,
-    TasksChanged, WorkspacesChanged, names,
-};
-use crate::commands::types::{TaskAgentStatus, TaskPullRequestStatus};
-use crate::commands::workspaces;
-use crate::commands::{
-    GitHubState, GitState, HerdrState, PlainRunState, Runtime, SshState, StorageState, TmuxRunState,
-};
+use crate::commands::events::{Notifier, TasksChanged, WorkspacesChanged, names};
+use crate::commands::{Runtime, StorageState};
 use crate::domain::model;
-use crate::mcp::tunnels::{self, Tunnels, TunnelsState};
 use crate::mcp::{self, Backend, ServerStatus};
 use crate::oauth::{self, PublicUrl};
-use crate::runtime::plain::adapter::McpEndpoint;
-use crate::runtime::plain::{McpProvider, PlainRunner};
-use crate::runtime::tmux::TmuxRunner;
 use crate::storage::Storage;
 
 pub(crate) const DATABASE_FILE: &str = "toodo.sqlite3";
 
 pub(crate) const WEB_TOKEN_FILE: &str = "web-token";
 
-/// The directory in the data directory with one private directory per plain or local
-/// tmux run.
-const RUNS_DIR: &str = "runs";
-
-/// The default port. The server forwards it to its SSH machines too, so agents there reach
-/// the MCP endpoint on the same port.
+/// The default port for the API, app, and MCP endpoint.
 pub const DEFAULT_PORT: u16 = 47616;
 
 const USAGE: &str = "Usage: toodo-server [--version]
@@ -104,12 +59,7 @@ Environment:
   TOODO_PUSH_SUBJECT
                   contact for push services in notifications, a mailto: or https: URL
                   (default https://github.com/dev-bokdong/toodo)
-  TOODO_RUN_RETENTION_DAYS
-                  days after which the directory of an ended plain or tmux run, with
-                  its logs, is removed; 0 keeps them (default 30)";
-
-/// How long the directory of an ended run is kept by default, in days.
-const DEFAULT_RUN_RETENTION_DAYS: u32 = 30;
+";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -119,8 +69,6 @@ pub struct Config {
     pub public_url: Option<PublicUrl>,
     /// The contact push services see in the VAPID token of every notification.
     pub push_subject: String,
-    /// Days after which the directory of an ended run is removed; `None` keeps them.
-    pub run_retention_days: Option<u32>,
 }
 
 impl Config {
@@ -155,26 +103,12 @@ impl Config {
             }
             None => push::DEFAULT_SUBJECT.to_owned(),
         };
-        let run_retention_days = match var("TOODO_RUN_RETENTION_DAYS") {
-            Some(days) => match days.trim().parse::<u32>() {
-                Ok(0) => None,
-                Ok(days) => Some(days),
-                Err(_) => {
-                    return Err(format!(
-                        "TOODO_RUN_RETENTION_DAYS {days:?} is not a number of days; set it to \
-                         a whole number such as 30, or to 0 to keep the files of runs"
-                    ));
-                }
-            },
-            None => Some(DEFAULT_RUN_RETENTION_DAYS),
-        };
         Ok(Self {
             listen,
             data_dir,
             web_dir,
             public_url,
             push_subject,
-            run_retention_days,
         })
     }
 }
@@ -186,23 +120,13 @@ pub struct Services {
     /// do not wait for writes; `None` where the database is in memory.
     reader: Option<StorageState>,
     public_url: Option<PublicUrl>,
-    git: GitState,
-    github: GitHubState,
-    ssh: SshState,
-    herdr: HerdrState,
-    plain: PlainRunState,
-    tmux: TmuxRunState,
-    agent_statuses: AgentStatusState,
-    pull_request_statuses: PullRequestStatusState,
     backups: Backups,
     mcp: ServerStatus,
-    tunnels: TunnelsState,
     events: Arc<event_log::EventLog>,
     /// Marked on every announced change, for MCP resource subscriptions.
     changes: tokio::sync::watch::Sender<()>,
     /// The largest database file `POST /api/backups/restore` accepts, in bytes.
     restore_limit: u64,
-    panes: panes::Panes,
     push: push::Push,
 }
 
@@ -229,22 +153,6 @@ impl Notifier for Services {
     fn workspaces_changed(&self) {
         self.emit(names::WORKSPACES_CHANGED, &WorkspacesChanged);
     }
-
-    fn agent_statuses_changed(&self, statuses: &[TaskAgentStatus]) {
-        let event = AgentStatusesChanged {
-            statuses: statuses.to_vec(),
-        };
-        self.emit(names::AGENT_STATUSES_CHANGED, &event);
-        self.push.agent_statuses_changed(statuses);
-    }
-
-    fn pull_request_statuses_changed(&self, statuses: &[TaskPullRequestStatus]) {
-        let event = PullRequestStatusesChanged {
-            statuses: statuses.to_vec(),
-        };
-        self.emit(names::PULL_REQUEST_STATUSES_CHANGED, &event);
-        self.push.pull_request_statuses_changed(statuses);
-    }
 }
 
 impl Backend for Services {
@@ -260,26 +168,6 @@ impl Backend for Services {
         self.reader.as_ref().unwrap_or(&self.storage)
     }
 
-    fn git(&self) -> &Git {
-        &self.git
-    }
-
-    fn github(&self) -> &dyn GitHub {
-        &*self.github
-    }
-
-    fn herdr(&self) -> &Herdr {
-        &self.herdr
-    }
-
-    fn plain(&self) -> &PlainRunState {
-        &self.plain
-    }
-
-    fn tmux(&self) -> &TmuxRunState {
-        &self.tmux
-    }
-
     fn server(&self) -> &ServerStatus {
         &self.mcp
     }
@@ -287,17 +175,9 @@ impl Backend for Services {
     fn changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.changes.subscribe()
     }
-
-    fn pull_request_statuses(&self) -> &PullRequestStatusState {
-        &self.pull_request_statuses
-    }
 }
 
 impl Runtime for Services {
-    fn agent_statuses(&self) -> &AgentStatusState {
-        &self.agent_statuses
-    }
-
     fn backups(&self) -> &Backups {
         &self.backups
     }
@@ -418,85 +298,26 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let push = push::Push::load(&config.data_dir, config.push_subject.clone())?;
     let listener = mcp::bind(config.listen)?;
     let port = listener.local_addr()?.port();
-    let herdr = Arc::new(Herdr::new(Box::new(ProcessRunner)));
     let mcp_url = mcp::url(port);
-    let endpoint: McpProvider = Arc::new({
-        let (url, token) = (mcp_url.clone(), mcp_token.clone());
-        move || {
-            Some(McpEndpoint {
-                url: url.clone(),
-                token: token.clone(),
-            })
-        }
-    });
-    let tunnels: TunnelsState = Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), port)));
-    let instance = load_instance_id(&config.data_dir.join("instance-id"))?;
-    let plain = PlainRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR), &instance)
-        .with_mcp_provider(endpoint.clone())
-        .with_tunnel_open_provider(tunnels::open_provider(&tunnels));
-    // Local plain agents outlive the server: follow the live ones again and settle the
-    // ended ones from their output. Remote ones become unknown without SSH, see below.
-    plain.recover_after_restart()?;
-    let tmux = TmuxRunner::new(storage.clone(), config.data_dir.join(RUNS_DIR), &instance)
-        .with_mcp_provider(endpoint)
-        .with_tunnel_open_provider(tunnels::open_provider(&tunnels));
-    // Local tmux sessions outlive the server: observe the live ones again and settle the
-    // ended ones. Remote ones become unknown without SSH, see below.
-    if let Err(error) = tmux.recover_after_restart(&storage) {
-        eprintln!(
-            "toodo-server: could not recover tmux runs ({error}); settle them with \
-             reconcile_run once tmux works"
-        );
-    }
     let services = Arc::new(Services {
         storage,
         reader: Some(reader),
         public_url: config.public_url.clone(),
-        git: Arc::new(Git::new(Box::new(ProcessRunner))),
-        github: Arc::new(GhCli::new(Box::new(ProcessRunner))),
-        ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
-        panes: panes::Panes::new(Arc::new(panes::HerdrSockets(herdr.clone()))),
-        herdr,
-        plain,
-        tmux,
-        agent_statuses: Mutex::default(),
-        pull_request_statuses: Mutex::default(),
         backups,
         mcp: ServerStatus {
             url: mcp_url,
             token: Some(mcp_token.clone()),
-            token_file: Some(mcp_token_path.clone()),
             instance: mcp::new_instance()?,
             error: None,
             rejections: mcp::Rejections::default(),
         },
-        tunnels,
         events: Arc::new(event_log::EventLog::new()?),
         changes: tokio::sync::watch::Sender::new(()),
         restore_limit: files::RESTORE_LIMIT,
         push,
     });
     push::spawn(services.clone())?;
-    events::spawn(services.clone())?;
     backup::spawn(services.clone())?;
-    completion::spawn(services.clone())?;
-    // Detecting workspace axes may run git over ssh; startup does not wait for it.
-    std::thread::Builder::new()
-        .name("workspace-axes".to_owned())
-        .spawn({
-            let services = services.clone();
-            move || {
-                if workspaces::detect_axes(&services.storage, &services.git) > 0 {
-                    services.workspaces_changed();
-                }
-            }
-        })?;
-    tunnels::spawn(services.clone(), services.tunnels.clone())?;
-    spawn_remote_reconcile(services.clone())?;
-    if let Some(days) = config.run_retention_days {
-        spawn_run_retention(services.clone(), days)?;
-    }
-    spawn_run_queue(services.clone())?;
 
     let fetcher = oauth::HttpClientMetadataFetcher::new().map_err(|error| {
         format!(
@@ -534,150 +355,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
                 () = interrupted() => Ok(()),
             }
         });
-    services
-        .tunnels
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .shut_down();
     Ok(served?)
-}
-
-/// The first wait between background reconcile passes, doubled after each pass that
-/// leaves a remote run unknown, up to [`REMOTE_RECONCILE_MAX_WAIT`].
-const REMOTE_RECONCILE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-const REMOTE_RECONCILE_MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
-
-/// Reconciles the remote runs a restart left unknown over SSH, off the startup path, until
-/// none is left.
-fn spawn_remote_reconcile(services: Arc<Services>) -> std::io::Result<()> {
-    std::thread::Builder::new()
-        .name("remote-runs".to_owned())
-        .spawn(move || {
-            let mut wait = REMOTE_RECONCILE_WAIT;
-            loop {
-                let pass = match crate::runtime::reconcile_remote_runs(
-                    &services.storage,
-                    &services.plain,
-                    &services.tmux,
-                ) {
-                    Ok(pass) => pass,
-                    Err(error) => {
-                        eprintln!(
-                            "toodo-server: could not list remote runs to reconcile ({error}); \
-                             reconcile them with reconcile_run"
-                        );
-                        return;
-                    }
-                };
-                for workspace in pass.changed {
-                    services.tasks_changed(workspace);
-                }
-                if !pass.pending {
-                    return;
-                }
-                std::thread::sleep(wait);
-                wait = (wait * 2).min(REMOTE_RECONCILE_MAX_WAIT);
-            }
-        })
-        .map(drop)
-}
-
-/// How often the directories of runs that ended before the retention period are removed.
-const RUN_RETENTION_PASS: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
-
-/// Removes the directories of runs that ended more than `days` days ago, at startup and then
-/// every few hours, so old run logs do not fill the disk.
-fn spawn_run_retention(services: Arc<Services>, days: u32) -> std::io::Result<()> {
-    std::thread::Builder::new()
-        .name("run-retention".to_owned())
-        .spawn(move || {
-            loop {
-                match crate::commands::run_logs::remove_old_run_files(
-                    &services.storage,
-                    &services.plain,
-                    &services.tmux,
-                    days,
-                ) {
-                    Ok(0) => {}
-                    Ok(removed) => println!(
-                        "toodo-server: removed the directories of {removed} runs that ended \
-                         more than {days} days ago"
-                    ),
-                    Err(error) => eprintln!(
-                        "toodo-server: could not remove the directories of old runs ({}); \
-                         the next pass tries again, or set TOODO_RUN_RETENTION_DAYS=0 to keep them",
-                        error.message
-                    ),
-                }
-                std::thread::sleep(RUN_RETENTION_PASS);
-            }
-        })
-        .map(drop)
-}
-
-/// The longest wait between passes over the run queue. Runs that end on their own wake no
-/// pass, so a queued run starts at most this long after a run slot frees.
-const RUN_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
-
-/// Starts queued runs as run slots of their machines free, for as long as the server runs.
-fn spawn_run_queue(services: Arc<Services>) -> std::io::Result<()> {
-    std::thread::Builder::new()
-        .name("run-queue".to_owned())
-        .spawn(move || {
-            loop {
-                match crate::commands::runs::start_queued_runs(
-                    &services.storage,
-                    &services.plain,
-                    &services.tmux,
-                ) {
-                    Ok(changed) => {
-                        for workspace in changed {
-                            services.tasks_changed(workspace);
-                        }
-                    }
-                    Err(error) => eprintln!(
-                        "toodo-server: could not start queued runs ({}); the server tries \
-                         again shortly, or stop them with stop_run",
-                        error.message
-                    ),
-                }
-                crate::commands::runs::wait_for_queue_change(RUN_QUEUE_WAIT);
-            }
-        })
-        .map(drop)
-}
-
-/// The runner namespace belongs to this data directory, not to a database backup.
-/// Never replace even an invalid existing id: that could orphan live runs.
-fn load_instance_id(path: &Path) -> std::io::Result<String> {
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    match options.open(path) {
-        Ok(mut file) => {
-            let id = mcp::new_instance()?;
-            file.write_all(id.as_bytes())?;
-            file.sync_all()?;
-            Ok(id)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let id = std::fs::read_to_string(path)?;
-            if id.len() != 12
-                || !id
-                    .bytes()
-                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-            {
-                return Err(std::io::Error::other(format!(
-                    "invalid server instance id in {}; restore the original instance-id file before starting the server",
-                    path.display()
-                )));
-            }
-            Ok(id)
-        }
-        Err(error) => Err(error),
-    }
 }
 
 /// Creates the data directory, which holds the access tokens, so that on Unix only the
@@ -719,8 +397,6 @@ fn router(
             post(files::restore).layer(DefaultBodyLimit::disable()),
         )
         .route("/api/backups/{name}", get(files::download))
-        .route("/api/runs/{id}/log", get(run_logs::stream))
-        .route("/api/runs/{id}/log/{stream}", get(run_logs::download))
         .route("/api/devices", get(devices::list).post(devices::register))
         .route("/api/devices/{id}/revoke", post(devices::revoke))
         .route("/api/push", get(push::state))
@@ -730,7 +406,6 @@ fn router(
         )
         .route("/api/push/settings", put(push::save_settings))
         .route("/api/push/test", post(push::send_test))
-        .route("/api/stream-tickets", post(panes::issue_ticket))
         .route("/api/{*path}", any(|| async { StatusCode::NOT_FOUND }))
         .route_layer(middleware::from_fn_with_state(
             devices::Gate {
@@ -742,11 +417,7 @@ fn router(
             devices::require_access,
         ))
         .with_state(services.clone());
-    // Browsers cannot send the token on a WebSocket; the stream checks its ticket instead.
-    let streams = Router::new()
-        .route("/api/panes/stream", get(panes::stream))
-        .with_state(services.clone());
-    let mut app = api.merge(streams).merge(mcp::router(
+    let mut app = api.merge(mcp::router(
         services.clone(),
         mcp_token,
         Some(web_token.clone()),
@@ -821,35 +492,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runner_instance_is_persisted_and_never_replaced() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("instance-id");
-        let id = load_instance_id(&path).unwrap();
-        assert_eq!(id.len(), 12);
-        assert!(
-            id.bytes()
-                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
-        );
-        assert_eq!(load_instance_id(&path).unwrap(), id);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-        std::fs::write(&path, "invalid").unwrap();
-        assert!(
-            load_instance_id(&path)
-                .unwrap_err()
-                .to_string()
-                .contains("restore the original instance-id")
-        );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "invalid");
-    }
-
-    #[test]
     fn the_default_config_listens_on_loopback_and_keeps_data_in_home() {
         let config =
             Config::from_env(|name| (name == "HOME").then(|| "/home/me".to_owned())).unwrap();
@@ -862,25 +504,6 @@ mod tests {
             PathBuf::from("/home/me/.local/share/toodo-server")
         );
         assert_eq!(config.public_url, None);
-        assert_eq!(config.run_retention_days, Some(30));
-    }
-
-    #[test]
-    fn run_retention_is_a_number_of_days_and_zero_keeps_runs() {
-        let config = |days: &str| {
-            Config::from_env(|name| match name {
-                "HOME" => Some("/home/me".to_owned()),
-                "TOODO_RUN_RETENTION_DAYS" => Some(days.to_owned()),
-                _ => None,
-            })
-        };
-        assert_eq!(config("7").unwrap().run_retention_days, Some(7));
-        assert_eq!(config("0").unwrap().run_retention_days, None);
-        assert!(
-            config("a week")
-                .unwrap_err()
-                .contains("TOODO_RUN_RETENTION_DAYS")
-        );
     }
 
     #[test]
@@ -1023,40 +646,19 @@ mod tests {
     const TEST_RESTORE_LIMIT: u64 = 1024 * 1024;
 
     fn services(data_dir: &Path) -> Arc<Services> {
-        let herdr = Arc::new(Herdr::new(Box::new(ProcessRunner)));
-        let access = Arc::new(panes::HerdrSockets(herdr.clone()));
-        services_with(data_dir, herdr, access)
-    }
-
-    pub(super) fn services_with(
-        data_dir: &Path,
-        herdr: HerdrState,
-        access: Arc<dyn panes::PaneAccess>,
-    ) -> Arc<Services> {
         let storage = Arc::new(Mutex::new(Storage::open_in_memory().unwrap()));
         Arc::new(Services {
-            plain: PlainRunner::new(storage.clone(), data_dir.join(RUNS_DIR), "0123456789ab"),
-            tmux: TmuxRunner::new(storage.clone(), data_dir.join(RUNS_DIR), "0123456789ab"),
             storage,
             reader: None,
             public_url: None,
-            git: Arc::new(Git::new(Box::new(ProcessRunner))),
-            github: Arc::new(GhCli::new(Box::new(ProcessRunner))),
-            ssh: Arc::new(Ssh::new(Box::new(ProcessRunner))),
-            panes: panes::Panes::new(access),
-            herdr,
-            agent_statuses: Mutex::default(),
-            pull_request_statuses: Mutex::default(),
             backups: Backups::load(data_dir),
             mcp: ServerStatus {
                 url: mcp::url(0),
                 token: None,
-                token_file: None,
-                instance: "0123456789ab".to_owned(),
+                instance: "0123456789ab".into(),
                 error: None,
                 rejections: mcp::Rejections::default(),
             },
-            tunnels: Arc::new(Mutex::new(Tunnels::new(Box::new(SshForwarder), 0))),
             events: Arc::new(event_log::EventLog::new().unwrap()),
             changes: tokio::sync::watch::Sender::new(()),
             restore_limit: TEST_RESTORE_LIMIT,
@@ -1210,19 +812,11 @@ mod tests {
     }
 
     fn add_workspace(services: &Services, name: &str) {
-        use crate::domain::model::WorkspaceLocation;
-        use crate::domain::path::PosixPath;
         crate::commands::lock(&services.storage)
             .create_workspace(&crate::storage::NewWorkspace {
                 name: name.to_owned(),
-                location: WorkspaceLocation::Local {
-                    path: PosixPath::parse(&format!("/srv/{name}")).unwrap().into(),
-                },
-                default_base_branch: "main".to_owned(),
-                source: crate::domain::model::Source::GitHub,
-                completion: crate::domain::model::CompletionMode::PullRequestMerge,
-                runner: crate::domain::model::Runner::Herdr,
-                axes_detected: true,
+                description: None,
+                repository: None,
             })
             .unwrap();
     }

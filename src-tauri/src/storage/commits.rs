@@ -1,22 +1,14 @@
 //! Commit records of a task.
 
-use rusqlite::{Connection, OptionalExtension, params};
-
-use super::{Result, Storage, StorageError};
-use crate::domain::model::{CommitRecord, TaskId};
+use super::{Result, Storage};
+use crate::domain::model::{CommitRecord, PullRequestSnapshot, TaskId};
 use crate::domain::review::Period;
+use rusqlite::OptionalExtension;
 
 impl Storage {
-    /// Replaces the commit records of `task` with `records`, keeping their order. Every
-    /// record must belong to `task`.
-    pub fn replace_commit_records(&mut self, task: TaskId, records: &[CommitRecord]) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        tx.query_row("SELECT 1 FROM tasks WHERE id = ?1", [task.0], |_| Ok(()))
-            .optional()?
-            .ok_or(StorageError::TaskNotFound(task))?;
-        write_commit_records(&tx, task, records)?;
-        tx.commit()?;
-        Ok(())
+    /// Reads the historical pull request snapshot without collecting new records.
+    pub fn historical_pull_request(&self, task: TaskId) -> Result<Option<PullRequestSnapshot>> {
+        Ok(self.conn.query_row("SELECT number, title, additions, deletions, changed_files, merge_commit_sha, review_count, reviewer_count, first_reviewed_at FROM pull_request_snapshots WHERE task_id = ?1", [task.0], |row| Ok(PullRequestSnapshot { number: row.get(0)?, title: row.get(1)?, additions: row.get(2)?, deletions: row.get(3)?, changed_files: row.get(4)?, merge_commit_sha: row.get(5)?, review_count: row.get(6)?, reviewer_count: row.get(7)?, first_reviewed_at: row.get(8)? })).optional()?)
     }
 
     /// Commit records of `task` in the order they were stored.
@@ -73,33 +65,16 @@ impl Storage {
     }
 }
 
-/// Replaces the commit records of the existing task `task` with `records`, keeping
-/// their order. Every record must belong to `task`.
-pub(super) fn write_commit_records(
-    conn: &Connection,
-    task: TaskId,
-    records: &[CommitRecord],
-) -> Result<()> {
-    if let Some(record) = records.iter().find(|record| record.task_id != task) {
-        return Err(StorageError::CommitTaskMismatch {
-            expected: task,
-            found: record.task_id,
-        });
+#[cfg(test)]
+impl Storage {
+    pub(crate) fn seed_commit_records(
+        &mut self,
+        task: TaskId,
+        records: &[CommitRecord],
+    ) -> Result<()> {
+        for (position, record) in records.iter().enumerate() {
+            self.conn.execute("INSERT INTO commit_records (task_id, position, sha, message, author, committed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", rusqlite::params![task.0, position as i64, record.sha, record.message, record.author, record.committed_at])?;
+        }
+        Ok(())
     }
-    conn.execute("DELETE FROM commit_records WHERE task_id = ?1", [task.0])?;
-    let mut insert = conn.prepare(
-        "INSERT INTO commit_records (task_id, position, sha, message, author, committed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-    )?;
-    for (position, record) in records.iter().enumerate() {
-        insert.execute(params![
-            task.0,
-            position as i64,
-            record.sha,
-            record.message,
-            record.author,
-            record.committed_at
-        ])?;
-    }
-    Ok(())
 }
