@@ -10,9 +10,9 @@ helps you pick one; [workflow.md](workflow.md) has the details of each.
 | | herdr | Plain | tmux | No runner |
 | --- | --- | --- | --- | --- |
 | Starting a task | Creates the task branch and worktree and opens them as a herdr workspace | Creates the task branch and worktree (`git worktree add`) | Same as Plain | Only moves the task to `in_progress` |
-| Where agents work | In herdr panes you open and steer yourself ("Open in herdr") | As a background `claude` or `codex` process, started with "Start run" in the task's Runs | As `claude` or `codex` in a detached tmux session, started with "Start run" | Wherever you work; Toodo starts nothing |
+| Where agents work | In herdr panes you open and steer yourself ("Open in herdr") | As a background agent CLI process (see [Agent Profiles](#agent-profiles)), started with "Start run" in the task's Runs | As an agent CLI in a detached tmux session, started with "Start run" | Wherever you work; Toodo starts nothing |
 | Interactive | Yes, in a terminal | No: the prompt goes in on stdin, the app streams the logs | Attach to the session with the command the run shows | - |
-| Needs on the host | herdr installed and running | `claude` or `codex` on `PATH`; on a POSIX SSH host also util-linux `setsid --wait` | tmux and `claude` or `codex` on `PATH` | Nothing |
+| Needs on the host | herdr installed and running | An agent CLI on `PATH`; on a POSIX SSH host also util-linux `setsid --wait` | tmux and an agent CLI on `PATH` | Nothing |
 | Hosts | Local; SSH (POSIX or Windows) | Local; SSH (POSIX or Windows) | Local; SSH on a POSIX host | Any |
 | Server restart | The agents keep running in herdr | A local run is followed again; a remote run is reconciled in the background | The tmux session survives and the server picks it up again | - |
 | Run queue and time limit | - | Yes | Yes | - |
@@ -47,7 +47,7 @@ Host notes:
   herdr or tmux there.
 - A Windows SSH host takes herdr or Plain.
 - Settings > Runners shows whether herdr is installed and running on the server and
-  whether tmux, `claude`, and `codex` are on its `PATH`. A runner whose tool is missing
+  whether tmux and each agent CLI are on its `PATH`. A runner whose tool is missing
   can still be picked; install the tool before you start the first task.
 
 Plain and tmux runs share the same controls: one run at a time can write to a worktree,
@@ -55,6 +55,62 @@ each run stops after its time limit (4 hours unless the workspace or task sets a
 and each machine can limit how many runs it runs at once, queueing the rest (Runs at
 once, beside the worktree root). The workspace's agent options set the model and
 permission mode of its runs. See steps 4b and 4c in [workflow.md](workflow.md).
+
+## Agent Profiles
+
+Plain and tmux runs start one of these agent CLIs, looked up by name on the host's
+`PATH`. Claude and Codex are always offered in a task's Runs; the others show there once
+the server finds them. Each profile after Claude and Codex was added once a contract
+probe against the pinned release below confirmed its command line and JSON events.
+What a probe did not confirm is off: the app disables it, and `start_plain_run` rejects
+a run that needs it with the next step.
+
+| Agent | Command | Pinned | Toodo MCP | Follow-ups | Todo list | Model | Permission modes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Claude | `claude -p --output-format stream-json` | - | Yes | Yes | Yes | Yes | all |
+| Codex | `codex exec --json` | - | Yes | Yes | Yes | Yes | all |
+| pi | `pi -p --mode json` | 0.73.1 | No | Yes | No | Yes | `read_only` (`--tools read,grep,find,ls`), `bypass` |
+| omo | `omo -p --mode json` | 5.1.61 | No | Yes | Yes | No | `bypass` |
+| OpenCode | `opencode run --format json` | 1.19.5 | Yes | Yes | Yes | Yes | `read_only` (`--agent plan`), `edit` (its own settings), `bypass` (`--auto`) |
+| Gemini | `gemini -p "" --output-format stream-json --skip-trust` | 0.67.0 | No | Yes | Yes | Yes | `read_only` (`plan`), `edit` (`auto_edit`), `bypass` (`yolo`) |
+
+Notes:
+
+- The prompt always goes in on stdin, and a follow-up resumes the session id the agent
+  reported (`--session` for pi, omo, and OpenCode, `--resume` for Gemini).
+- OpenCode gets the Toodo MCP server from a file in the run directory named by
+  `OPENCODE_CONFIG`, merged over the user's configuration; the bearer token stays in
+  the environment, and the file only holds the placeholder `{env:TOODO_MCP_TOKEN}`. pi
+  has no MCP client. omo takes no MCP server on its command line, and Gemini CLI reads
+  MCP servers only from settings files (its system settings path is accepted only in a
+  root-owned directory), which a run must not change.
+- pi and omo never ask before running a tool, so they have no `edit` mode, and their
+  default is `bypass`. Gemini also defaults to `bypass`: nobody can answer its approval
+  prompts in headless mode. `--skip-trust` keeps Gemini CLI from dropping the approval
+  mode in the new task worktree.
+- omo takes no model on its command line; a task or workspace model makes its runs fail
+  to start, so clear it or pick another agent.
+- Gemini CLI writes its todo list only for Gemini 2 models.
+
+The parsing is pinned by fixture tests (`src-tauri/src/runtime/plain/profile_fixtures.rs`,
+fixtures in `fixtures/`), which run in `cargo test --lib`. Smoke tests in
+`profile_smoke.rs` run the installed CLIs and are ignored by default. To run them,
+install the pinned releases, start the fake model server, and name each CLI:
+
+```sh
+bun scripts/agent-smoke/fake-model.mjs 47901 /tmp/requests.jsonl probe-token &
+cd src-tauri
+TOODO_AGENT_SMOKE_URL=http://127.0.0.1:47901 \
+  TOODO_AGENT_SMOKE_PI=/path/to/pi TOODO_AGENT_SMOKE_OPENCODE=/path/to/opencode \
+  TOODO_AGENT_SMOKE_GEMINI=/path/to/gemini TOODO_AGENT_SMOKE_OMO=/path/to/omo \
+  cargo test --lib profile_smoke -- --ignored
+```
+
+The fake server answers as an OpenAI-compatible API (pi, OpenCode), the Gemini API, and
+an MCP server; each test gives its CLI an isolated `HOME`. omo has no provider setting
+on its command line, so its test runs against the signed-in account. To add another
+agent, confirm from its official documentation how it runs headless with JSON output,
+run the same probe against a pinned release, and record the fixtures it wrote.
 
 ## Changing the Runner Later
 
