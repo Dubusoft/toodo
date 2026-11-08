@@ -671,7 +671,7 @@ impl Report<'_> {
         if let Some(changes) = Changes::sum(
             completed
                 .iter()
-                .filter_map(|entry| entry.task.pull_request.as_ref()),
+                .filter_map(|entry| entry.pull_request.as_ref()),
         ) {
             lines.push(format!(
                 "- Changes in completed pull requests: {}",
@@ -710,12 +710,7 @@ impl Report<'_> {
                 "Median review time (awaiting completion to merged)",
                 span(
                     |task| task.milestones.review_at.map(|at| at.0),
-                    |entry| {
-                        entry
-                            .task
-                            .pull_request_merged_at
-                            .map_or(entry.at.0, |at| at.0)
-                    },
+                    |entry| entry.at.0,
                 ),
             ),
         ];
@@ -784,7 +779,7 @@ impl Report<'_> {
         let completed: Vec<&ReviewEntry> = self.completed().collect();
         let merged: Vec<(&Task, &PullRequestSnapshot)> = completed
             .iter()
-            .filter_map(|entry| entry.task.pull_request.as_ref().map(|pr| (&entry.task, pr)))
+            .filter_map(|entry| entry.pull_request.as_ref().map(|pr| (&entry.task, pr)))
             .collect();
         let mut research: Vec<&ReviewEntry> = completed
             .iter()
@@ -941,10 +936,13 @@ impl Report<'_> {
         if let Some(issue) = &task.issue {
             details.push(issue.url.clone());
         }
-        if let Some(url) = non_empty(&task.pull_request_url) {
-            details.push(url.to_owned());
-        }
-        if let Some(pull_request) = &task.pull_request {
+        details.extend(
+            task.refs
+                .iter()
+                .filter_map(|r| r.strip_prefix("pr:"))
+                .map(str::to_owned),
+        );
+        if let Some(pull_request) = &entry.pull_request {
             details.push(pull_request_stats(pull_request));
         }
         lines.push(format!(
@@ -990,6 +988,7 @@ impl Report<'_> {
                 let label = match note.kind {
                     NoteKind::Blocker => "Blocker",
                     NoteKind::Progress => "Progress",
+                    NoteKind::Decision => "Decision",
                 };
                 lines.push(format!("  - {label}: {}", one_line(&note.body)));
             }
@@ -1018,7 +1017,7 @@ impl Report<'_> {
         let task = &entry.task;
         let time = |at: Option<super::types::Timestamp>| at.map(|at| self.date_time(at.0));
         let milestones = &task.milestones;
-        let pull_request = task.pull_request.as_ref();
+        let pull_request = entry.pull_request.as_ref();
         let due_status = self.due_state(task).map(|state| {
             match state {
                 DueState::OnTime => "On time",
@@ -1040,8 +1039,10 @@ impl Report<'_> {
             time(milestones.started_at),
             time(milestones.review_at),
             time(milestones.completed_at),
-            time(task.pull_request_merged_at),
-            task.pull_request_url.clone(),
+            None,
+            task.refs
+                .iter()
+                .find_map(|r| r.strip_prefix("pr:").map(str::to_owned)),
             task.issue.as_ref().map(|issue| issue.url.clone()),
             Some(entry.commits.len().to_string()),
             active_seconds(&task.timeline, self.now).map(hours),
@@ -1164,7 +1165,9 @@ mod tests {
 
     fn entry(id: i64, outcome: ReviewOutcome) -> ReviewEntry {
         ReviewEntry {
+            pull_request: None,
             task: Task {
+                refs: Vec::new(),
                 id: TaskId(id),
                 workspace_id: WorkspaceId(1),
                 task_type: TaskType::Feat,
@@ -1173,18 +1176,12 @@ mod tests {
                 status: TaskStatus::InProgress,
                 resolution: None,
                 depends_on: Vec::new(),
-                branch: None,
-                worktree_path: None,
-                worktree_missing: false,
-                herdr_workspace_id: None,
-                pull_request_url: None,
+
                 issue: None,
                 estimate: None,
                 due_date: None,
                 labels: Vec::new(),
-                pull_request_merged_at: None,
-                pull_request: None,
-                merged_with: None,
+
                 completion_note: None,
                 timeline: Vec::new(),
                 milestones: TaskMilestones {
@@ -1384,7 +1381,10 @@ mod tests {
     fn leads_with_a_summary_then_lists_each_outcome_with_its_tasks_and_commits() {
         let mut done = entry(1, ReviewOutcome::Completed);
         done.task.title = "Add login".to_owned();
-        done.task.pull_request_url = Some("https://github.com/acme/toodo/pull/3".to_owned());
+        done.task.refs.push(format!(
+            "pr:{}",
+            "https://github.com/acme/toodo/pull/3".to_owned()
+        ));
         done.task.milestones.planned_at = Some(Timestamp(done.at.0 - 2 * DAY));
         done.task.milestones.completed_at = Some(done.at);
         done.commits = vec![CommitRecord {
@@ -1452,10 +1452,10 @@ mod tests {
     fn adds_pull_request_sizes_completion_notes_and_conclusions() {
         let at = local(2026, 10, 13, 15);
         let mut shipped = completed(1, at);
-        shipped.task.pull_request = Some(snapshot(12));
+        shipped.pull_request = Some(snapshot(12));
         shipped.task.completion_note = Some("Sign-in is twice as fast\n  for everyone".to_owned());
         let mut small = completed(2, at);
-        small.task.pull_request = Some(PullRequestSnapshot {
+        small.pull_request = Some(PullRequestSnapshot {
             changed_files: 1,
             review_count: 1,
             ..snapshot(13)
@@ -1463,7 +1463,10 @@ mod tests {
         let mut research = completed(3, at);
         research.task.task_type = TaskType::Rnd;
         research.task.resolution = Some(TaskResolution::NotAdopted);
-        research.task.pull_request_url = Some("https://github.com/acme/toodo/pull/5".to_owned());
+        research.task.refs.push(format!(
+            "pr:{}",
+            "https://github.com/acme/toodo/pull/5".to_owned()
+        ));
         research.task.completion_note = Some("Twice as slow\nas the current cache".to_owned());
 
         let markdown = markdown(&week(), &[shipped, small, research]);
@@ -1615,7 +1618,7 @@ mod tests {
         let at = local(2026, 5, 1, 12);
         let mut login = completed(1, at);
         login.task.title = "Add login".to_owned();
-        login.task.pull_request = Some(PullRequestSnapshot {
+        login.pull_request = Some(PullRequestSnapshot {
             additions: 50,
             deletions: 10,
             changed_files: 2,
@@ -1682,13 +1685,15 @@ mod tests {
         let mut done = completed(7, at);
         done.task.milestones.planned_at = Some(Timestamp(local(2026, 10, 1, 9)));
         done.task.title = "Fix \"login\", then\nlogout".to_owned();
-        done.task.pull_request_url = Some("https://github.com/acme/toodo/pull/3".to_owned());
+        done.task.refs.push(format!(
+            "pr:{}",
+            "https://github.com/acme/toodo/pull/3".to_owned()
+        ));
         done.task.issue = Some(LinkedIssue {
             number: 12,
             url: "https://github.com/acme/toodo/issues/12".to_owned(),
         });
-        done.task.pull_request_merged_at = Some(Timestamp(at - HOUR));
-        done.task.pull_request = Some(snapshot(3));
+        done.pull_request = Some(snapshot(3));
         done.task.completion_note = Some("Cut login time\n  in half, finally".to_owned());
         done.task.resolution = Some(TaskResolution::NotAdopted);
         done.task.estimate = Some(Estimate {
@@ -1717,7 +1722,7 @@ mod tests {
             "\u{feff}".to_owned()
                 + &[
                     "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,Awaiting completion,Completed,Merged,Pull request,Issue,Commits in period,Active hours,Waiting hours,Estimate,Estimate unit,Due date,Due status,Additions,Deletions,Changed files,Reviews,Completion note",
-                    "7,toodo,feat,\"Fix \"\"login\"\", then\nlogout\",Completed,2026-10-13 17:00,Not adopted,2026-10-01 11:00,,,2026-10-13 17:00,2026-10-13 16:00,https://github.com/acme/toodo/pull/3,https://github.com/acme/toodo/issues/12,0,3,0,2,hours,2026-10-12,Late,120,30,4,2,\"Cut login time in half, finally\"",
+                    "7,toodo,feat,\"Fix \"\"login\"\", then\nlogout\",Completed,2026-10-13 17:00,Not adopted,2026-10-01 11:00,,,2026-10-13 17:00,,https://github.com/acme/toodo/pull/3,https://github.com/acme/toodo/issues/12,0,3,0,2,hours,2026-10-12,Late,120,30,4,2,\"Cut login time in half, finally\"",
                     "8,workspace 9,feat,Plan café,Planned,2026-10-13 17:00,,,,,,,,,0,0.5,0,,,,,,,,,",
                 ]
                 .join("\r\n")

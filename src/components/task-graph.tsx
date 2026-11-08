@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ChevronLeft, ChevronRight, ChevronsLeft, Crosshair, TriangleAlert } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, TriangleAlert } from "lucide-react";
 import { EmptyState } from "@/components/task-list";
 import { compactSelectClass } from "@/components/workspace-list";
 import {
@@ -20,18 +20,13 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { AgentBadge } from "@/components/agent-badge";
 import { DetailsSheet } from "@/components/details-sheet";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button } from "@/components/ui/button";
-import type { AgentStatus, Task, TaskId, Timestamp } from "@/lib/bindings";
+import type { Task, TaskId, Timestamp } from "@/lib/bindings";
 import {
   useAddDependency,
-  useAgentStatuses,
-  useBranchFreshness,
-  useFocusAgentPane,
-  useHerdrStatus,
   useRemoveDependency,
 } from "@/lib/queries";
 import {
@@ -39,7 +34,6 @@ import {
   canAddDependency,
   dependencyEdges,
   dependencyEditableStatuses,
-  freshnessWarning,
   isNotAdopted,
   isPaused,
   layoutTimeline,
@@ -84,12 +78,9 @@ type BarNode = Node<
     ready: boolean;
     workspace: string | null;
     dimmed: boolean;
-    agentStatus: AgentStatus | null;
     /** Prerequisites the task waits on, and those concluded without merging that block it. */
     waitingOn: TaskId[];
     notAdopted: TaskId[];
-    /** Whether the task has a worktree whose branch can fall behind its base. */
-    checkFreshness: boolean;
   },
   "bar"
 >;
@@ -224,9 +215,6 @@ export function TaskGraph({
   );
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
-  const focusAgent = useFocusAgentPane();
-  const herdr = useHerdrStatus();
-  const agentStatuses = useAgentStatuses();
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
   // A dependency drawn onto a started task that it would pause, waiting for confirmation.
   const [confirmingEdge, setConfirmingEdge] = useState<{ id: TaskId; dependsOn: TaskId } | null>(null);
@@ -288,12 +276,9 @@ export function TaskGraph({
       ready: ready(bar.task),
       workspace: workspaceLabel(bar.task),
       dimmed: dimmed.has(bar.task.id) || !inChain(bar.task.id),
-      agentStatus: agentStatusOf(bar.task),
       waitingOn: waitingPrerequisites(bar.task, byId),
       notAdopted:
         bar.task.status === "planned" ? bar.task.dependsOn.filter((id) => isNotAdopted(byId.get(id))) : [],
-      checkFreshness:
-        (bar.task.status === "in_progress" || bar.task.status === "in_review") && bar.task.worktreePath !== null,
     },
     selected: bar.task.id === selectedTask?.id,
     deletable: false,
@@ -317,12 +302,6 @@ export function TaskGraph({
       style: highlighted ? highlightedEdgeStyle : related ? undefined : { opacity: 0.2 },
     };
   });
-  function agentStatusOf(task: Task): AgentStatus | null {
-    if (task.status !== "in_progress" && task.status !== "in_review") {
-      return null;
-    }
-    return agentStatuses.data?.find((entry) => entry.taskId === task.id)?.status ?? null;
-  }
 
   // A shown task hidden by the selected year brings back the whole timeline.
   const shownPlaced = shownTaskId !== null && placed.has(shownTaskId);
@@ -715,9 +694,9 @@ export function TaskGraph({
           onCancel={() => setConfirmingEdge(null)}
         />
       )}
-      {(addDependency.error ?? removeDependency.error ?? focusAgent.error) && (
+      {(addDependency.error ?? removeDependency.error) && (
         <p role="alert" className="text-xs text-destructive">
-          {(addDependency.error ?? removeDependency.error ?? focusAgent.error)?.message}
+          {(addDependency.error ?? removeDependency.error)?.message}
         </p>
       )}
       <div
@@ -800,16 +779,7 @@ export function TaskGraph({
             workspace={workspaceLabel(hoveredBar.task)}
             statusLabel={statusLabel(hoveredBar.task)}
             statusStyle={statusStyle(hoveredBar.task)}
-            agentStatus={agentStatusOf(hoveredBar.task)}
             now={now}
-            focusAgent={
-              agentStatusOf(hoveredBar.task) !== null && hoveredBar.task.herdrWorkspaceId !== null
-                ? {
-                    disabled: herdr.data?.running !== true || focusAgent.isPending,
-                    run: () => focusAgent.mutate(hoveredBar.task.id),
-                  }
-                : null
-            }
             onMouseEnter={keepTooltip}
             onMouseLeave={() => setHovered(null)}
           />
@@ -968,9 +938,7 @@ function TimelineTooltip({
   workspace,
   statusLabel,
   statusStyle,
-  agentStatus,
   now,
-  focusAgent,
   onMouseEnter,
   onMouseLeave,
 }: {
@@ -980,10 +948,7 @@ function TimelineTooltip({
   workspace: string | null;
   statusLabel: string;
   statusStyle: string;
-  agentStatus: AgentStatus | null;
   now: Timestamp;
-  /** Focuses the task's agent pane in herdr; `null` when the task has no agent. */
-  focusAgent: { disabled: boolean; run: () => void } | null;
   /** Mouse, not pointer, events: they come after the bar's `mouseleave`, which starts the hiding. */
   onMouseEnter: () => void;
   onMouseLeave: () => void;
@@ -1016,7 +981,6 @@ function TimelineTooltip({
         <TaskTypeBadge type={task.taskType} className="px-1 leading-4" />
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
         <span className={cn("ml-auto shrink-0 rounded-full px-1.5 font-medium", statusStyle)}>{statusLabel}</span>
-        {agentStatus !== null && <AgentBadge taskId={task.id} status={agentStatus} className="px-1.5 py-0" />}
       </div>
       <p className="break-words-keep font-semibold">{task.title}</p>
       {milestones.length > 0 && (
@@ -1066,21 +1030,7 @@ function TimelineTooltip({
           )}
         </dl>
       )}
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-muted-foreground">Click for details</p>
-        {focusAgent !== null && (
-          <Button
-            size="xs"
-            variant="outline"
-            aria-label={`Focus agent pane of #${task.id}`}
-            disabled={focusAgent.disabled}
-            onClick={focusAgent.run}
-          >
-            <Crosshair />
-            Focus agent pane
-          </Button>
-        )}
-      </div>
+      <p className="text-muted-foreground">Click for details</p>
     </div>
   );
 }
@@ -1098,7 +1048,7 @@ function TimelineEdge({ sourceX, sourceY, targetX, targetY, markerEnd, style, in
 }
 
 function TimelineBarView({
-  data: { bar, statusLabel, statusStyle, ready, workspace, dimmed, agentStatus, waitingOn, notAdopted, checkFreshness },
+  data: { bar, statusLabel, statusStyle, ready, workspace, dimmed, waitingOn, notAdopted },
   selected,
   positionAbsoluteX,
 }: NodeProps<BarNode>) {
@@ -1106,19 +1056,14 @@ function TimelineBarView({
   // How far the bar reaches left of the panel's edge; it changes, and re-renders the bar, only
   // while the bar starts off screen.
   const offScreen = useStore((state) => Math.max(0, pinnedLabelInset - positionAbsoluteX - state.transform[0]));
-  // Shares the cached check of the task row, so the bar warns about the same base freshness.
-  const freshness = useBranchFreshness(task.id, checkFreshness);
-  const behindBase = checkFreshness && freshness.data ? freshnessWarning(freshness.data) : null;
-  const conflicting = checkFreshness && freshness.data?.mergeable === "conflicting";
   const refs = (ids: TaskId[]) => ids.map((id) => `#${id}`).join(", ");
   const warnings = [
     notAdopted.length > 0 && `${refs(notAdopted)} not adopted`,
     waitingOn.length > 0 && `Waiting on ${refs(waitingOn)}`,
-    behindBase,
   ].filter((warning): warning is string => typeof warning === "string");
-  const severe = notAdopted.length > 0 || conflicting;
-  // Waiting alone is nothing to act on, so only a branch behind its base warns in amber.
-  const warningTone: Tone = severe ? "danger" : behindBase !== null ? "attention" : "neutral";
+  const severe = notAdopted.length > 0;
+  // Waiting alone is nothing to act on, so it stays neutral.
+  const warningTone: Tone = severe ? "danger" : "neutral";
   // A paused task whose new prerequisite is done is ready again and drawn like a ready one.
   const faded = isPaused(task) && !ready;
   const behindDue = dueState === "late" || dueState === "overdue";
@@ -1140,7 +1085,7 @@ function TimelineBarView({
     element.style.minWidth = minWidth;
     element.style.maxWidth = maxWidth;
     setLabelOutside(natural > bar.width);
-  }, [bar.width, task.title, workspace, statusLabel, agentStatus]);
+  }, [bar.width, task.title, workspace, statusLabel]);
   const labelLeft = labelOutside ? drawnWidth + labelGap - 6 : 0;
   // A label that would start off screen is pinned to the panel's left edge, behind a chevron
   // saying that the bar goes on to the left.
@@ -1261,7 +1206,6 @@ function TimelineBarView({
           </TriangleAlert>
         )}
         <span className={cn("ml-auto shrink-0 rounded-full px-1.5 font-medium", statusStyle)}>{statusLabel}</span>
-        {agentStatus !== null && <AgentBadge taskId={task.id} status={agentStatus} className="px-1.5 py-0" />}
       </div>
       <Handle type="source" position={Position.Right} />
     </div>

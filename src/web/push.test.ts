@@ -232,10 +232,10 @@ describe("push on this device", () => {
   it("leaves to the server only the alerts it pushes for this device's settings", async () => {
     const browser = browserSubscription("https://push.example/a");
     installServiceWorker(browser);
-    const all = { ...settings, pullRequests: true };
+    const off = { ...settings, completion: false };
     serve({
       "GET /api/push": () => json({ publicKey, subscription: { endpoint: browser.endpoint, settings } }),
-      "PUT /api/push/settings": () => json({ endpoint: browser.endpoint, settings: all }),
+      "PUT /api/push/settings": () => json({ endpoint: browser.endpoint, settings: off }),
       "DELETE /api/push/subscription": () => json(null),
     });
     const push = await freshPush();
@@ -244,9 +244,9 @@ describe("push on this device", () => {
 
     expect(covered(...titles)).toEqual([false, false, false, false, false]);
     await push.getPushState();
-    expect(covered(...titles)).toEqual([true, false, true, false, false]);
-    await push.saveSettings(all);
-    expect(covered(...titles)).toEqual([true, true, true, false, false]);
+    expect(covered(...titles)).toEqual([false, false, true, false, false]);
+    await push.saveSettings(off);
+    expect(covered(...titles)).toEqual([false, false, false, false, false]);
     await push.disablePush();
     expect(covered(...titles)).toEqual([false, false, false, false, false]);
   });

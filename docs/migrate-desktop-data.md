@@ -8,7 +8,7 @@ the file it reads, and the server's existing data stays.
 ## Steps
 
 1. **Finish or pause running work.** In the desktop app, finish or pause the tasks that are
-   in progress. After the move, the server can't reach the PC's worktrees.
+   in progress, so their status history is complete before the copy.
 2. **Make a copy of the database.** The desktop app keeps it in
    `%APPDATA%\dev.toodo.app\toodo.sqlite3`, with its automatic backups in
    `%APPDATA%\dev.toodo.app\backups\`. Either quit the app and copy the file, or use
@@ -47,14 +47,13 @@ the file it reads, and the server's existing data stays.
 
 ## What Changes for Imported Data
 
-- **Local workspaces keep their Windows paths**: the server can't reach the PC's folders.
-  To keep working on such a repository with its tasks, save the PC as a herdr SSH machine
-  and move the workspace there with **Move** in the workspace header (see "Windows Hosts"
-  in [server.md](server.md)), or clone it on the server as a new workspace.
-- **Tasks lose their herdr workspace link**, since herdr IDs of the PC mean nothing on the
-  server.
-- **Worktree roots aren't imported.** Set them again per machine in the web app.
-- **Devices, push subscriptions, and chat messages aren't imported.** Browsers sign in to
+- **Workspace paths, runners, and worktree settings are dropped.** A workspace is now a
+  group of tasks with a name, an optional description, and an optional repository name;
+  the server keeps no paths or machines.
+- **Execution records aren't imported**: herdr workspace links, runs, and machine
+  settings belonged to the PC.
+- **Devices, push subscriptions, connected OAuth apps, settings, saved reviews, and chat
+  messages aren't imported.** Browsers sign in to
   the server on their own.
 
 ## Undo

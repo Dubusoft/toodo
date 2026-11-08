@@ -1,29 +1,18 @@
-import { BellRing, Crosshair } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { BellRing } from "lucide-react";
 import { needsAttention, type AttentionReason } from "@/lib/attention";
 import type { TaskId } from "@/lib/bindings";
-import {
-  useAgentStatuses,
-  useFocusAgentPane,
-  useHerdrStatus,
-  usePullRequestStatuses,
-  useTasks,
-} from "@/lib/queries";
+import { useTasks } from "@/lib/queries";
 import { toneChip, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 
 const reasonLabels: Record<AttentionReason, string> = {
-  agent_blocked: "Agent needs input",
   blocker_note: "Blocker",
-  ci_failed: "CI failed",
-  changes_requested: "Changes requested",
+  stalled: "Stalled",
 };
 
 const reasonStyles: Record<AttentionReason, string> = {
-  agent_blocked: toneChip.attention,
   blocker_note: toneChip.attention,
-  ci_failed: toneChip.danger,
-  changes_requested: toneChip.attention,
+  stalled: toneChip.neutral,
 };
 
 /**
@@ -32,11 +21,7 @@ const reasonStyles: Record<AttentionReason, string> = {
  */
 export function NeedsAttention({ onShow }: { onShow: (id: TaskId) => void }) {
   const tasks = useTasks();
-  const agentStatuses = useAgentStatuses();
-  const pullRequestStatuses = usePullRequestStatuses();
-  const herdr = useHerdrStatus();
-  const focusAgent = useFocusAgentPane();
-  const items = needsAttention(tasks.data ?? [], agentStatuses.data ?? [], pullRequestStatuses.data ?? []);
+  const items = needsAttention(tasks.data ?? [], Date.now() / 1000);
   if (items.length === 0) {
     return null;
   }
@@ -53,7 +38,7 @@ export function NeedsAttention({ onShow }: { onShow: (id: TaskId) => void }) {
         </span>
       </h2>
       <ul aria-label="Tasks needing attention" className="flex max-h-60 flex-col gap-0.5 overflow-y-auto">
-        {items.map(({ task, reasons, agentStatus }) => (
+        {items.map(({ task, reasons }) => (
           <li key={task.id} className="flex items-start gap-0.5 rounded-md hover:bg-sidebar-accent">
             <button
               type="button"
@@ -77,27 +62,9 @@ export function NeedsAttention({ onShow }: { onShow: (id: TaskId) => void }) {
                 ))}
               </span>
             </button>
-            {agentStatus !== null && task.herdrWorkspaceId !== null && (
-              <Button
-                size="icon-xs"
-                variant="ghost"
-                className="mt-0.5"
-                aria-label={`Focus agent pane of #${task.id}`}
-                title="Focus agent pane"
-                disabled={herdr.data?.running !== true || focusAgent.isPending}
-                onClick={() => focusAgent.mutate(task.id)}
-              >
-                <Crosshair />
-              </Button>
-            )}
           </li>
         ))}
       </ul>
-      {focusAgent.error && (
-        <p role="alert" className="px-1 text-xs text-destructive">
-          {focusAgent.error.message}
-        </p>
-      )}
     </section>
   );
 }

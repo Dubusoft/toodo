@@ -124,6 +124,7 @@ mod tests {
 
     fn task(id: i64, history: &[(TaskStatus, i64)]) -> Task {
         Task {
+            refs: Vec::new(),
             id: TaskId(id),
             workspace_id: WorkspaceId(1),
             task_type: TaskType::Feat,
@@ -131,14 +132,8 @@ mod tests {
             description: String::new(),
             status: history.last().map_or(Planned, |&(status, _)| status),
             depends_on: BTreeSet::new(),
-            branch: None,
-            worktree_path: None,
-            herdr_workspace_id: None,
-            pull_request_url: None,
-            pull_request_merged_at: None,
-            pull_request: None,
             resolution: None,
-            merged_with: None,
+
             completion_note: None,
             estimate: None,
             due_date: None,

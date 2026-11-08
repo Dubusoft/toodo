@@ -7,9 +7,6 @@
 //! are checked with [`crate::domain::dag`], and `planned`/`ready` statuses are brought in
 //! line with the dependencies after every change.
 
-mod activity;
-mod agent_options;
-mod agent_status;
 mod backup;
 mod commits;
 mod criteria;
@@ -17,10 +14,8 @@ mod devices;
 mod import;
 mod migrations;
 pub mod oauth;
-mod pull_request_options;
 mod push;
 mod reviews;
-mod runtime;
 mod search;
 mod tasks;
 mod workspaces;
@@ -38,10 +33,8 @@ use crate::domain::criteria::{CheckKind, CriterionId};
 use crate::domain::dag::{BlockingDependency, DependencyError};
 use crate::domain::device::DeviceId;
 use crate::domain::model::{TaskId, TaskResolution, WorkspaceId};
-use crate::domain::runtime::{RunId, RunState};
 use crate::domain::status::TransitionError;
 
-pub use agent_status::AgentStatusTransition;
 pub use backup::{
     BackupFile, StagedBackup, backup_before_migration, backup_database, export_database,
     list_backups, prune_backups, stage_backup,
@@ -51,14 +44,9 @@ pub use devices::DeviceAuth;
 pub use import::ImportSummary;
 pub use push::NewPushSubscription;
 pub use reviews::{ReviewSnapshot, ReviewSnapshotInfo};
-pub use runtime::{
-    HostCursor, NewRun, QueuedRun, QueuedStart, Reservation, RunEvent, RunOperation,
-    RuntimeWorkspace, TaskRun,
-};
 pub use search::TaskSearch;
 pub use tasks::{
-    AddedDependencies, DependencyChange, MergedPullRequestTask, NewPlanTask, NewTask, PauseRule,
-    PlanLink, TaskQuery,
+    AddedDependencies, DependencyChange, NewPlanTask, NewTask, PauseRule, PlanLink, TaskQuery,
 };
 pub use workspaces::NewWorkspace;
 
@@ -156,12 +144,6 @@ pub enum StorageError {
         task: TaskId,
         depends_on: TaskId,
     },
-    /// The base branch of a workspace cannot change while one of its tasks is in review,
-    /// because the task's pull request targets the current branch.
-    BaseBranchInReview {
-        workspace: WorkspaceId,
-        task: TaskId,
-    },
     TaskNotFound(TaskId),
     /// Only an archived task can be restored or purged.
     TaskNotArchived(TaskId),
@@ -171,12 +153,6 @@ pub enum StorageError {
     WorkspaceArchived {
         workspace: WorkspaceId,
         task: TaskId,
-    },
-    /// A workspace cannot be archived while `run` of its task `task` is queued or active.
-    WorkspaceHasActiveRun {
-        workspace: WorkspaceId,
-        task: TaskId,
-        run: RunId,
     },
     /// Restoring would bring back dependencies that close this loop (see
     /// [`DependencyError::Cycle`]) with edges added while the tasks were archived.
@@ -226,30 +202,6 @@ pub enum StorageError {
     DeviceNotFound(DeviceId),
     /// The device has not subscribed to push notifications.
     PushSubscriptionNotFound(DeviceId),
-    /// The worktree path is not the kind of path (Windows or POSIX) of the repository path
-    /// of the task's workspace.
-    WorktreePathMismatch(TaskId),
-    CommitTaskMismatch {
-        expected: TaskId,
-        found: TaskId,
-    },
-    ActivityTaskMismatch {
-        expected: TaskId,
-        found: TaskId,
-    },
-    RunNotFound(RunId),
-    /// Only one writer run is active per checkout; `run` of `task` is it.
-    CheckoutHasActiveWriter {
-        checkout: String,
-        run: RunId,
-        task: TaskId,
-    },
-    /// A run cannot move from its state to the requested one.
-    RunTransition {
-        run: RunId,
-        from: RunState,
-        to: RunState,
-    },
     /// A stored value cannot be converted back into the domain model.
     InvalidData(String),
     /// A file to restore from is not a readable Toodo database.
@@ -277,11 +229,6 @@ impl fmt::Display for StorageError {
                 "workspace {} cannot be removed: task {task} of another workspace depends on its task {depends_on}; remove that dependency first (in task {task}'s dependencies, or remove_dependency over MCP), then remove the workspace again",
                 workspace.0
             ),
-            Self::BaseBranchInReview { workspace, task } => write!(
-                f,
-                "base branch of workspace {} cannot change while task {task} is in review",
-                workspace.0
-            ),
             Self::TaskNotFound(id) => write!(f, "task {id} does not exist"),
             Self::TaskNotArchived(id) => write!(
                 f,
@@ -296,15 +243,6 @@ impl fmt::Display for StorageError {
                 f,
                 "task {task} belongs to archived workspace {}; restore workspace {} instead, which brings its tasks back",
                 workspace.0, workspace.0
-            ),
-            Self::WorkspaceHasActiveRun {
-                workspace,
-                task,
-                run,
-            } => write!(
-                f,
-                "workspace {} cannot be removed while run {run} of its task {task} is queued or active; stop run {run} first (Stop in the task's runs, or stop_run over MCP), then remove the workspace again",
-                workspace.0
             ),
             Self::RestoreClosesCycle(path) => {
                 let ids: Vec<String> = path.iter().map(TaskId::to_string).collect();
@@ -323,13 +261,17 @@ impl fmt::Display for StorageError {
                         let id = blocker.id;
                         match blocker.resolution {
                             Some(TaskResolution::NotAdopted) => format!(
-                                "#{id} is done as not_adopted (remove_dependency task_id {task} depends_on {id} to unblock, or complete #{id} with merged_with)"
+                                "#{id} is done as not_adopted (remove_dependency task_id {task} depends_on {id} to unblock, or conclude_task id {id} with outcome shipped_with and shipped_with set to the completed task id)"
                             ),
                             _ => format!("#{id} is {} (wait for it)", blocker.status),
                         }
                     })
                     .collect();
-                write!(f, "task {task} cannot start yet: {}", blockers.join("; "))
+                write!(
+                    f,
+                    "task {task} cannot start yet: {}; call complete_task for those prerequisite ids first",
+                    blockers.join("; ")
+                )
             }
             Self::PrerequisiteOfDoneTask { task, depends_on } => {
                 let ids: Vec<String> = depends_on.iter().map(TaskId::to_string).collect();
@@ -373,35 +315,6 @@ impl fmt::Display for StorageError {
             Self::PushSubscriptionNotFound(id) => {
                 write!(f, "device {id} has not subscribed to push notifications")
             }
-            Self::WorktreePathMismatch(id) => write!(
-                f,
-                "worktree path of task {id} does not match the machine of its workspace"
-            ),
-            Self::CommitTaskMismatch { expected, found } => write!(
-                f,
-                "commit record of task {found} cannot be stored for task {expected}"
-            ),
-            Self::ActivityTaskMismatch { expected, found } => write!(
-                f,
-                "activity of task {found} cannot be stored for task {expected}; record it for task {found}"
-            ),
-            Self::RunNotFound(id) => write!(
-                f,
-                "run {id} does not exist; list the runs of its task (run_status with its \
-                 task_id over MCP, or the task's runs in the Toodo app) to find the run to use"
-            ),
-            Self::CheckoutHasActiveWriter {
-                checkout,
-                run,
-                task,
-            } => write!(
-                f,
-                "checkout {checkout} already has an active writer, run {run} of task {task}; stop or finish run {run} of task {task} first, or start this run as an observer or in its own checkout"
-            ),
-            Self::RunTransition { run, from, to } => write!(
-                f,
-                "run {run} is {from} and cannot become {to}; read it with its current state before changing it"
-            ),
             Self::InvalidData(message) => write!(f, "stored data is invalid: {message}"),
             Self::InvalidBackup(message) => write!(f, "invalid backup {message}"),
             Self::BackupCheckFailed(message) => write!(

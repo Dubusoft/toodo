@@ -11,18 +11,11 @@ function task(overrides: Partial<Task> = {}): Task {
     description: "",
     status: "planned",
     dependsOn: [],
-    branch: null,
-    worktreePath: null,
-    worktreeMissing: false,
-    herdrWorkspaceId: null,
-    pullRequestUrl: null,
     issue: null,
     estimate: null,
     dueDate: null,
     labels: [],
-    pullRequestMergedAt: null,
-    pullRequest: null,
-    mergedWith: null,
+    refs: [],
     resolution: null,
     completionNote: null,
     notes: [],
@@ -42,7 +35,7 @@ describe("groupTasks", () => {
       task({ id: 2, status: "done", resolution: "not_adopted" }),
       task({ id: 3, status: "planned" }),
       task({ id: 4, status: "planned", dependsOn: [6] }),
-      task({ id: 5, status: "planned", branch: "feat/paused-5", dependsOn: [6] }),
+      task({ id: 5, status: "planned", dependsOn: [6], milestones: { ...task().milestones, startedAt: 1 } }),
       task({ id: 6, status: "in_progress" }),
       task({ id: 7, status: "in_review" }),
       task({ id: 8, status: "in_progress" }),
@@ -74,7 +67,7 @@ describe("matchesFilter", () => {
   });
 
   it("tells paused and not adopted tasks apart from their stored status", () => {
-    const paused = task({ branch: "feat/add-storage-1" });
+    const paused = task({ milestones: { ...task().milestones, startedAt: 1 } });
     const notAdopted = task({ status: "done", resolution: "not_adopted" });
     expect(matchesFilter(paused, { ...emptyTaskFilter, statuses: ["paused"] }, noTasks)).toBe(true);
     expect(matchesFilter(paused, { ...emptyTaskFilter, statuses: ["planned"] }, noTasks)).toBe(false);
@@ -103,7 +96,7 @@ describe("matchesFilter", () => {
   it("shows a task paused by a new prerequisite as ready once that prerequisite is done", () => {
     const milestones = { plannedAt: 10, startedAt: 20, reviewAt: null, completedAt: null, reopenedAt: null, pausedAt: 30, lastReviewAt: null, activeSeconds: 10, pauseCount: 1 };
     const pausedTask = (dependsOn: number[]) =>
-      task({ id: 9, branch: "feat/add-storage-9", dependsOn, milestones });
+      task({ id: 9, dependsOn, milestones });
     const doneAt = (id: number, at: number) =>
       task({ id, status: "done", resolution: "merged", milestones: { ...milestones, completedAt: at, reopenedAt: null, pausedAt: null } });
     const byId = new Map([doneAt(1, 5), doneAt(2, 40), task({ id: 3, status: "in_progress" })].map((each) => [each.id, each]));
@@ -124,7 +117,7 @@ describe("matchesFilter", () => {
     const milestones = { plannedAt: 10, startedAt: 20, reviewAt: null, completedAt: null, pausedAt: 30, reopenedAt: null, lastReviewAt: null, activeSeconds: 10, pauseCount: 1 };
     // The server records the prerequisites a pause waits on as a blocker note at the pause.
     const pausedTask = (kind: "blocker" | "progress") =>
-      task({ id: 9, branch: "feat/add-storage-9", milestones, notes: [{ kind, body: "Paused: waiting on #3", at: 30 }] });
+      task({ id: 9, milestones, notes: [{ kind, body: "Paused: waiting on #3", at: 30 }] });
     const ready: TaskFilter = { ...emptyTaskFilter, statuses: ["ready"] };
     const paused: TaskFilter = { ...emptyTaskFilter, statuses: ["paused"] };
 

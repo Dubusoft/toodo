@@ -5,38 +5,24 @@
 //! they take by reference, see [`State`]. Each is annotated with `#[specta::specta]` so
 //! that `bindings.rs` can generate the frontend's typed bindings from its signature.
 
-pub mod agent_options;
 pub mod backup;
 pub mod completion;
 pub mod events;
-pub mod freshness;
-pub mod herdr;
 pub mod issues;
-pub mod machines;
 pub mod mcp;
-pub mod pull_request_options;
 pub mod report;
 pub mod review;
-pub mod run_logs;
-pub mod runners;
-pub mod runs;
 pub mod tasks;
 pub mod types;
 pub mod updates;
 pub mod workspaces;
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::Serialize;
 use specta::Type;
 
-use crate::adapters::git::{Git, GitError};
-use crate::adapters::github::GitHub;
-use crate::adapters::herdr::{Herdr, HerdrError};
-use crate::adapters::ssh::{Ssh, SshConfigError, SshConfigFile};
 use crate::domain::dag::DependencyError;
-use crate::domain::naming::NamingError;
-use crate::domain::ssh_config::SshHostError;
 use crate::storage::{Storage, StorageError};
 
 /// State a command takes: a reference to state the server owns. It dereferences to the
@@ -61,29 +47,10 @@ impl<T> std::ops::Deref for State<'_, T> {
 /// What the background threads use besides what the MCP server does: the state the
 /// server keeps in memory.
 pub trait Runtime: crate::mcp::Backend {
-    fn agent_statuses(&self) -> &events::AgentStatusState;
     fn backups(&self) -> &backup::Backups;
 }
 
 pub type StorageState = Mutex<Storage>;
-
-pub type GitState = Arc<Git>;
-
-pub type HerdrState = Arc<Herdr>;
-
-pub type GitHubState = Arc<dyn GitHub>;
-
-pub type SshState = Arc<Ssh>;
-
-/// The plain runner, which runs agent CLIs for tasks of workspaces with runner plain.
-pub type PlainRunState = crate::runtime::plain::PlainRunner;
-
-/// The tmux runner, which runs agent CLIs in detached tmux sessions for tasks of
-/// workspaces with runner tmux.
-pub type TmuxRunState = crate::runtime::tmux::TmuxRunner;
-
-/// `None` when the home directory, and so the SSH config, cannot be found.
-pub type SshConfigState = Option<SshConfigFile>;
 
 pub type CommandResult<T> = Result<T, CommandError>;
 
@@ -235,56 +202,6 @@ impl CommandError {
     }
 }
 
-impl From<GitError> for CommandError {
-    fn from(error: GitError) -> Self {
-        let code = match &error {
-            GitError::Failed { .. } => CommandErrorCode::GitFailed,
-            GitError::Spawn { .. } | GitError::UnexpectedOutput { .. } => {
-                CommandErrorCode::Internal
-            }
-        };
-        Self::new(code, error.to_string())
-    }
-}
-
-impl From<HerdrError> for CommandError {
-    fn from(error: HerdrError) -> Self {
-        let code = match &error {
-            HerdrError::Spawn { .. }
-            | HerdrError::Failed { .. }
-            | HerdrError::MachineNotSaved { .. }
-            | HerdrError::MachineDisabled { .. } => CommandErrorCode::HerdrFailed,
-            HerdrError::UnexpectedOutput { .. } => CommandErrorCode::Internal,
-        };
-        Self::new(code, error.to_string())
-    }
-}
-
-impl From<SshConfigError> for CommandError {
-    fn from(error: SshConfigError) -> Self {
-        let code = match &error {
-            SshConfigError::Io { .. } => CommandErrorCode::External,
-            SshConfigError::Host(SshHostError::AlreadyExists(_)) => CommandErrorCode::Rejected,
-            SshConfigError::Host(_) => CommandErrorCode::InvalidInput,
-        };
-        Self::new(code, error.to_string())
-    }
-}
-
-impl From<NamingError> for CommandError {
-    fn from(error: NamingError) -> Self {
-        let code = match &error {
-            NamingError::WorktreeRootNotSet(_) | NamingError::PathKindMismatch(_) => {
-                CommandErrorCode::InvalidInput
-            }
-            NamingError::TaskNotInWorkspace | NamingError::MachineMismatch { .. } => {
-                CommandErrorCode::Internal
-            }
-        };
-        Self::new(code, error.to_string())
-    }
-}
-
 impl From<StorageError> for CommandError {
     fn from(error: StorageError) -> Self {
         let code = match &error {
@@ -296,7 +213,6 @@ impl From<StorageError> for CommandError {
             StorageError::CriterionNotFound { .. } => CommandErrorCode::CriterionNotFound,
             StorageError::DependencyNotFound { .. } => CommandErrorCode::DependencyNotFound,
             StorageError::RelationNotFound { .. } => CommandErrorCode::RelationNotFound,
-            StorageError::RunNotFound(_) => CommandErrorCode::RunNotFound,
             StorageError::DeviceNotFound(_) | StorageError::PushSubscriptionNotFound(_) => {
                 CommandErrorCode::NotFound
             }
@@ -309,20 +225,14 @@ impl From<StorageError> for CommandError {
             | StorageError::TaskNotArchived(_)
             | StorageError::WorkspaceNotArchived(_)
             | StorageError::WorkspaceArchived { .. }
-            | StorageError::WorkspaceHasActiveRun { .. }
             | StorageError::RestoreClosesCycle(_)
-            | StorageError::BaseBranchInReview { .. }
             | StorageError::PrerequisiteOfDoneTask { .. }
             | StorageError::DependencyOfDoneTask { .. }
             | StorageError::CriteriaOfDoneTask(_)
-            | StorageError::AutomaticCriterion { .. }
-            | StorageError::CheckoutHasActiveWriter { .. }
-            | StorageError::RunTransition { .. } => CommandErrorCode::Rejected,
-            StorageError::WorktreePathMismatch(_)
-            | StorageError::SelfRelation(_)
-            | StorageError::CommitTaskMismatch { .. }
-            | StorageError::ActivityTaskMismatch { .. }
-            | StorageError::InvalidBackup(_) => CommandErrorCode::InvalidInput,
+            | StorageError::AutomaticCriterion { .. } => CommandErrorCode::Rejected,
+            StorageError::SelfRelation(_) | StorageError::InvalidBackup(_) => {
+                CommandErrorCode::InvalidInput
+            }
             StorageError::Io(_) => CommandErrorCode::External,
             StorageError::Sqlite(_)
             | StorageError::BackupCheckFailed(_)
@@ -393,11 +303,6 @@ mod tests {
                 }),
                 CommandErrorKind::Rejected,
                 CommandErrorCode::InvalidTransition,
-            ),
-            (
-                StorageError::WorktreePathMismatch(TaskId(1)),
-                CommandErrorKind::InvalidInput,
-                CommandErrorCode::InvalidInput,
             ),
             (
                 StorageError::InvalidData("bad".to_owned()),

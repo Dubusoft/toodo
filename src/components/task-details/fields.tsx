@@ -1,22 +1,99 @@
-import { GitMerge, RefreshCw, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { X } from "lucide-react";
 import { compactSelectClass } from "@/components/workspace-list";
 import type { SheetNavigation } from "@/components/task-graph";
-import type { MergedWith, Task, TaskId } from "@/lib/bindings";
-import {
-  useAddRelation,
-  useBranchFreshness,
-  useCommitRecords,
-  useRemoveRelation,
-  useTaskRelations,
-} from "@/lib/queries";
-import { freshnessWarning, isPaused } from "@/lib/task-graph";
+import type { Task, TaskEvent } from "@/lib/bindings";
+import { useAddRelation, useRemoveRelation, useTaskRelations } from "@/lib/queries";
 import { reachedMilestones } from "@/lib/timeline";
 import { When } from "@/components/when";
 import { formatEstimate } from "@/lib/plan";
-import { toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 import { type TaskContext, taskRef, DueDate, DetailField, TaskLabels, useServerDown } from "@/components/task-common";
+import { openUrl } from "@/web/opener";
+
+/** What a status change with a reason did, e.g. `Started` or `Paused`. */
+function eventLabel(event: TaskEvent): string {
+  switch (event.status) {
+    case "in_progress":
+      return "Started";
+    case "in_review":
+      return "In review";
+    case "done":
+      return "Completed";
+    case "planned":
+      return event.reopened ? "Reopened" : "Paused";
+  }
+}
+
+/** The status changes of `task` that were recorded with a reason, oldest first. */
+function TaskReasons({ task }: { task: Task }) {
+  const reasons = task.timeline.filter((event) => event.reason !== null);
+  if (reasons.length === 0) {
+    return null;
+  }
+  return (
+    <ol aria-label={`Reasons of #${task.id}`} className="mt-1 flex flex-col gap-0.5">
+      {reasons.map((event, index) => (
+        <li key={index} className="flex min-w-0 items-baseline gap-2 max-md:flex-wrap max-md:gap-y-0">
+          <When className="shrink-0 text-muted-foreground" at={event.at} />
+          <span className="shrink-0 font-medium">{eventLabel(event)}</span>
+          <span className="min-w-0 whitespace-pre-line break-words-keep max-md:basis-full">{event.reason}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** The prefixes of references Toodo names, e.g. `lane:search` as Lane `search`. */
+const refKinds: Record<string, string> = { lane: "Lane", discord: "Discord", pr: "PR" };
+
+/** One reference of a task: a URL as a link, a known `<kind>:<value>` with its kind as a label. */
+function TaskRef({ value }: { value: string }) {
+  if (/^https?:\/\//i.test(value)) {
+    const open = (event: { preventDefault: () => void }) => {
+      event.preventDefault();
+      openUrl(value).catch((error: unknown) => console.error(`Failed to open ${value}`, error));
+    };
+    return (
+      <a
+        href={value}
+        onClick={open}
+        onAuxClick={open}
+        className="min-w-0 break-all text-primary underline underline-offset-2 hover:no-underline"
+      >
+        {value}
+      </a>
+    );
+  }
+  const separator = value.indexOf(":");
+  const kind = separator > 0 ? refKinds[value.slice(0, separator)] : undefined;
+  if (kind === undefined) {
+    return <code className="min-w-0 break-all">{value}</code>;
+  }
+  return (
+    <span className="flex min-w-0 items-baseline gap-1">
+      <span className="shrink-0 text-muted-foreground">{kind}</span>
+      <code className="min-w-0 break-all">{value.slice(separator + 1)}</code>
+    </span>
+  );
+}
+
+/** Where the work of a task is tracked or discussed, in the order the references were added. */
+export function TaskRefs({ task }: { task: Task }) {
+  if (task.refs.length === 0) {
+    return null;
+  }
+  return (
+    <DetailField label="Refs">
+      <ul aria-label={`Refs of #${task.id}`} className="flex flex-col gap-0.5">
+        {task.refs.map((value) => (
+          <li key={value} className="flex min-w-0">
+            <TaskRef value={value} />
+          </li>
+        ))}
+      </ul>
+    </DetailField>
+  );
+}
 
 
 export function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean }) {
@@ -37,6 +114,7 @@ export function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean
             </div>
           ))}
         </dl>
+        <TaskReasons task={task} />
       </DetailField>
     );
   }
@@ -45,118 +123,6 @@ export function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean
       {milestones.map(({ label, at }) => (
         <When key={label} at={at} prefix={`${label} `} />
       ))}
-    </p>
-  );
-}
-
-/** The status of `task` as a pill with a colored dot. */
-/** Warns when a started task's branch is behind its base, e.g. after a prerequisite was merged. */
-export function BranchFreshnessNote({ taskId }: { taskId: TaskId }) {
-  const freshness = useBranchFreshness(taskId, true);
-  const label = `Base freshness of #${taskId}`;
-  // After syncing the branch outside Toodo, the warning is checked again right away.
-  const recheck = (
-    <Button
-      type="button"
-      variant="ghost"
-      size="xs"
-      className="ml-1.5 h-5 px-1.5 align-middle"
-      aria-label={`Recheck base freshness of #${taskId}`}
-      title="Check again whether the branch is behind its base"
-      disabled={freshness.isFetching}
-      onClick={() => void freshness.refetch()}
-    >
-      <RefreshCw className={cn("size-3", freshness.isFetching && "animate-spin")} />
-      Recheck
-    </Button>
-  );
-  if (freshness.error) {
-    return (
-      <p role="note" aria-label={label} className="text-xs text-muted-foreground" title={freshness.error.message}>
-        Could not check whether the branch is behind its base
-        {recheck}
-      </p>
-    );
-  }
-  const data = freshness.data;
-  const warning = data ? freshnessWarning(data) : null;
-  if (!data || warning === null) {
-    return null;
-  }
-  const conflicting = data.mergeable === "conflicting";
-  return (
-    <p
-      role="note"
-      aria-label={label}
-      data-conflicting={conflicting || undefined}
-      className={cn(
-        "text-xs",
-        conflicting ? toneText.danger : toneText.attention,
-      )}
-      title={
-        [data.fetchError && `Fetching origin failed: ${data.fetchError}`, data.mergeableError]
-          .filter(Boolean)
-          .join("\n") || undefined
-      }
-    >
-      {warning}
-      {data.fetchError && " (not up to date: fetching origin failed)"}
-      {recheck}
-    </p>
-  );
-}
-
-/** A labeled block of the task details sheet. */
-/**
- * The pull request, or the other task without a recorded one, that shipped a task done
- * without a pull request of its own.
- */
-export function ShippedWith({
-  task,
-  mergedWith,
-  through,
-  detailed,
-}: {
-  task: Task;
-  mergedWith: MergedWith;
-  through: string | null;
-  detailed: boolean;
-}) {
-  const url = mergedWith.pullRequestUrl;
-  if (url === null) {
-    // The other task shipped the work without a pull request Toodo recorded.
-    const label = `Shipped with task of #${task.id}`;
-    return detailed ? (
-      <DetailField label="Shipped with">
-        <span aria-label={label}>{through ?? "A deleted task"}</span>
-      </DetailField>
-    ) : (
-      <p className="flex min-w-0 items-center gap-1 text-xs">
-        <GitMerge aria-hidden className="size-3 shrink-0 text-muted-foreground" />
-        <span className="shrink-0 text-muted-foreground">Shipped with</span>
-        <span aria-label={label}>{through ?? "a deleted task"}</span>
-      </p>
-    );
-  }
-  const label = `Shipped with pull request of #${task.id}`;
-  if (detailed) {
-    return (
-      <DetailField label="Shipped with">
-        <span aria-label={label} className="break-all font-mono select-all">
-          {url}
-        </span>
-        {through && <span className="text-muted-foreground">Pull request of {through}</span>}
-      </DetailField>
-    );
-  }
-  return (
-    <p className="flex min-w-0 items-center gap-1 text-xs">
-      <GitMerge aria-hidden className="size-3 shrink-0 text-muted-foreground" />
-      <span className="shrink-0 text-muted-foreground">Shipped with</span>
-      <span aria-label={label} className="truncate select-all font-mono">
-        {url}
-      </span>
-      {through && <span className="shrink-0 text-muted-foreground">of {through}</span>}
     </p>
   );
 }
@@ -267,33 +233,6 @@ export function RelatedTasks({
   );
 }
 
-export function CommitList({ task, detailed }: { task: Task; detailed: boolean }) {
-  const recorded = task.status !== "planned" || isPaused(task);
-  const commits = useCommitRecords(task.id, recorded);
-
-  if (commits.isError) {
-    return (
-      <p role="alert" className="text-xs text-destructive">
-        Failed to load commits: {commits.error.message}
-      </p>
-    );
-  }
-  if (!commits.data || commits.data.length === 0) {
-    return null;
-  }
-  const list = (
-    <ul aria-label={`Commits of #${task.id}`} className={cn("flex flex-col gap-0.5", !detailed && "mt-1")}>
-      {commits.data.map((commit) => (
-        <li key={commit.sha} className="flex gap-2 text-xs" title={commit.author}>
-          <code className="shrink-0 text-muted-foreground">{commit.sha.slice(0, 7)}</code>
-          <span className={detailed ? "min-w-0 break-words-keep" : "truncate"}>{commit.message.split("\n", 1)[0]}</span>
-        </li>
-      ))}
-    </ul>
-  );
-  return detailed ? <DetailField label={`Commits (${commits.data.length})`}>{list}</DetailField> : list;
-}
-
 /** A task's estimate and due date, the due date in red once it is missed. */
 export function TaskPlan({ task }: { task: Task }) {
   return (
@@ -305,6 +244,7 @@ export function TaskPlan({ task }: { task: Task }) {
         </p>
       )}
       <TaskLabels task={task} />
+      <TaskRefs task={task} />
     </>
   );
 }

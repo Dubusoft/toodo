@@ -4,7 +4,6 @@ import { shownStatus, type ShownStatus } from "@/lib/task-filter";
 import { dueState, dueStateLabels, type MissingPlanField, missingPlan, missingPlanLabel } from "@/lib/plan";
 import { statusNames, toneChip, toneText, type Tone } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
-import { type WorkspaceCapabilities } from "@/lib/workspace-capabilities";
 import { reachability, subscribeReachability } from "@/web/connection";
 
 export const Markdown = lazy(() => import("@/components/markdown"));
@@ -50,15 +49,11 @@ export function statusStyle(task: Task, byId: ReadonlyMap<TaskId, Task>): string
   return shownStatusStyle(shownStatus(task, byId));
 }
 
-/** What the task list needs to name tasks of other workspaces and to know what their workspaces have. */
+/** What the task list needs to name tasks of other workspaces. */
 export type TaskContext = {
   /** Tasks of every workspace, by ID. */
   byId: ReadonlyMap<TaskId, Task>;
   workspaceName: (id: WorkspaceId) => string;
-  /** What the tasks of a workspace have, such as pull requests or herdr. */
-  capabilities: (id: WorkspaceId) => WorkspaceCapabilities;
-  /** Whether the workspace is on an SSH machine, whose agent CLIs the server does not check. */
-  remote: (id: WorkspaceId) => boolean;
 };
 
 /** `#id`, prefixed with the workspace name when the task belongs to another workspace than `of`. */

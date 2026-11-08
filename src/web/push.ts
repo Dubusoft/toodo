@@ -8,7 +8,9 @@ import { isAppleMobile, runsInstalled } from "@/web/install";
 import { apiRequest } from "@/web/session";
 
 export interface PushSettings {
+  /** Kept in the stored settings; the server no longer sends agent alerts. */
   readonly agent: boolean;
+  /** Kept in the stored settings; the server no longer sends pull request alerts. */
   readonly pullRequests: boolean;
   readonly completion: boolean;
 }
@@ -60,8 +62,8 @@ export function pushActive(): boolean {
  * (see `src-tauri/src/server/push/alerts.rs`). Every other alert only the page shows.
  */
 const pushedTitles: Record<keyof PushSettings, readonly string[]> = {
-  agent: ["Agent needs input", "Agent finished"],
-  pullRequests: ["CI failed", "CI passed", "Changes requested", "Pull request approved"],
+  agent: [],
+  pullRequests: [],
   completion: ["Task awaiting completion"],
 };
 

@@ -7,11 +7,9 @@ import type { Task, TaskType } from "@/lib/bindings";
 import { useUpdateTask } from "@/lib/queries";
 import { formatLabels, type MissingPlanField, parseLabels } from "@/lib/plan";
 import { cn } from "@/lib/utils";
-import { type WorkspaceCapabilities } from "@/lib/workspace-capabilities";
 import { taskTypes } from "@/components/task-common";
 import { type PlanDraft, planEstimate, PlanFields } from "@/components/plan-fields";
 import {
-  isMergeKind,
   type CriterionDraft,
   criterionDraft,
   criterionInputs,
@@ -22,12 +20,10 @@ import {
 
 export function TaskEditForm({
   task,
-  capabilities,
   focusPlan,
   onDone,
 }: {
   task: Task;
-  capabilities: WorkspaceCapabilities;
   /** The plan field that takes the focus instead of the title, e.g. when adding a missing estimate. */
   focusPlan?: MissingPlanField;
   onDone: () => void;
@@ -46,9 +42,6 @@ export function TaskEditForm({
   const labelsChanged = formatLabels(parseLabels(plan.labels)) !== formatLabels(task.labels);
   const [initialCriteria] = useState(() => task.criteria.map((criterion) => criterionDraft(criterion)));
   const [criteria, setCriteria] = useState<CriterionDraft[]>(initialCriteria);
-  // Checking "Done when merged" without a merge criterion asks the backend for the one of the repository.
-  const [addMerge, setAddMerge] = useState(false);
-  const hasMerge = criteria.some((draft) => isMergeKind(draft.kind));
   const estimate = planEstimate(plan);
   // Unchanged criteria are not sent, so a save never touches the ones checked so far.
   const criteriaChanged =
@@ -63,8 +56,7 @@ export function TaskEditForm({
     plan.estimateUnit !== initialPlan.estimateUnit ||
     plan.dueDate !== initialPlan.dueDate ||
     plan.labels !== initialPlan.labels ||
-    criteriaChanged ||
-    addMerge;
+    criteriaChanged;
   const guard = useDiscardGuard(dirty, onDone, updateTask.isPending);
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -72,6 +64,7 @@ export function TaskEditForm({
     if (estimate === undefined || criteriaInvalid) return;
     updateTask.mutate(
       {
+        status: null,
         id: task.id,
         taskType,
         title: title.trim(),
@@ -81,7 +74,6 @@ export function TaskEditForm({
         labels: labelsChanged ? parseLabels(plan.labels) : null,
         // The criteria of a done task cannot change.
         criteria: criteriaChanged && task.status !== "done" ? criterionInputs(criteria) : null,
-        mergeCriterion: addMerge && !hasMerge && task.status !== "done",
       },
       { onSuccess: onDone },
     );
@@ -128,25 +120,8 @@ export function TaskEditForm({
         <div className="flex flex-col gap-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
             <span className="font-medium text-muted-foreground">Completion criteria</span>
-            {capabilities.merge && (
-              <label
-                className="flex items-center gap-1.5 max-md:min-h-11"
-                title="Keep or add the criterion that its pull request is merged, or its branch merged locally in a repository without origin"
-              >
-                <input
-                  type="checkbox"
-                  aria-label={`Done when merged, #${task.id}`}
-                  checked={hasMerge || addMerge}
-                  onChange={(e) => {
-                    setAddMerge(e.target.checked && !hasMerge);
-                    if (!e.target.checked) setCriteria(criteria.filter((draft) => !isMergeKind(draft.kind)));
-                  }}
-                />
-                Done when merged
-              </label>
-            )}
           </div>
-          <CriteriaEditor taskId={task.id} capabilities={capabilities} criteria={criteria} onChange={setCriteria} />
+          <CriteriaEditor taskId={task.id} criteria={criteria} onChange={setCriteria} />
         </div>
       )}
       {guard.asking ? (

@@ -1,12 +1,4 @@
-//! Tasks and their runs as MCP resources, and what a `subscriptions/listen` stream over
-//! them reports.
-//!
-//! `toodo://tasks/{id}` is a task as get_task returns it, with its links, and
-//! `toodo://tasks/{id}/runs` its runs, oldest first. `resources/list` lists the tasks that
-//! are not done. A listen stream reads its resources again whenever the app announces a
-//! change ([`super::Backend::changes`]) and at least every [`POLL`], since runs change
-//! without an announcement, and reports each resource whose content changed, e.g. a task
-//! it depends on that was completed.
+//! Task resources and subscriptions to task record changes.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -16,39 +8,31 @@ use tokio::sync::watch;
 
 use super::Backend;
 use super::tools::{self, GetTask};
-use crate::commands::types;
 use crate::commands::{CommandError, CommandErrorCode, CommandResult, lock};
 use crate::domain::model;
 use crate::domain::status::TaskStatus;
-use crate::storage::{Storage, StorageError};
+use crate::storage::Storage;
 
 /// How often a listen stream reads its resources again without an announced change.
 pub(super) const POLL: Duration = Duration::from_secs(5);
 
 const TASKS: &str = "toodo://tasks/";
-const RUNS: &str = "/runs";
 const JSON: &str = "application/json";
 
 /// A resource this server serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Uri {
     Task(model::TaskId),
-    Runs(model::TaskId),
 }
 
 impl Uri {
-    /// Reads `toodo://tasks/{id}` or `toodo://tasks/{id}/runs`.
+    /// Reads a task resource URI.
     pub(super) fn parse(uri: &str) -> Option<Self> {
-        let rest = uri.strip_prefix(TASKS)?;
-        let (id, runs) = match rest.strip_suffix(RUNS) {
-            Some(id) => (id, true),
-            None => (rest, false),
-        };
+        let id = uri.strip_prefix(TASKS)?;
         if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
             return None;
         }
-        let id = model::TaskId(id.parse().ok()?);
-        Some(if runs { Self::Runs(id) } else { Self::Task(id) })
+        Some(Self::Task(model::TaskId(id.parse().ok()?)))
     }
 
     fn task(id: model::TaskId) -> String {
@@ -66,14 +50,6 @@ pub(super) fn templates() -> Vec<ResourceTemplate> {
                  commits, and the tasks it depends on (ready and blockedBy), that depend on \
                  it, and that are related to it. Subscribe to it to learn when it changes, \
                  e.g. when a task it depends on is done.",
-            )
-            .with_mime_type(JSON),
-        ResourceTemplate::new(format!("{TASKS}{{task_id}}{RUNS}"), "task-runs")
-            .with_title("Runs of a Toodo task")
-            .with_description(
-                "The agent runs of a task, oldest first: state, exit code, activity, and \
-                 token usage. Subscribe to it to learn when a run starts, ends, or reports \
-                 activity.",
             )
             .with_mime_type(JSON),
     ]
@@ -100,13 +76,6 @@ pub(super) fn read(storage: &Storage, uri: Uri) -> CommandResult<String> {
         Uri::Task(id) => {
             serde_json::to_value(tools::task_details(storage, GetTask { id: id.into() })?)
         }
-        Uri::Runs(id) => {
-            storage
-                .get_task(id)?
-                .ok_or(StorageError::TaskNotFound(id))?;
-            let runs: Vec<types::TaskRun> = types::map_all(&storage.list_task_runs(id)?);
-            serde_json::to_value(runs)
-        }
     };
     let value =
         value.map_err(|error| CommandError::new(CommandErrorCode::Internal, error.to_string()))?;
@@ -116,8 +85,7 @@ pub(super) fn read(storage: &Storage, uri: Uri) -> CommandResult<String> {
 /// Why `uri` names no resource of this server, with the URIs it does serve.
 pub(super) fn unknown(uri: &str) -> String {
     format!(
-        "{uri} is not a Toodo resource; read toodo://tasks/{{task_id}} or \
-         toodo://tasks/{{task_id}}/runs with a task ID that search_tasks or list_tasks finds"
+        "{uri} is not a Toodo resource; read toodo://tasks/{{task_id}} with a task ID that search_tasks or list_tasks finds"
     )
 }
 
@@ -192,15 +160,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn uris_name_a_task_or_its_runs() {
+    fn uris_name_a_task_and_reject_removed_run_resources() {
         assert_eq!(
             Uri::parse("toodo://tasks/12"),
             Some(Uri::Task(model::TaskId(12)))
         );
-        assert_eq!(
-            Uri::parse("toodo://tasks/12/runs"),
-            Some(Uri::Runs(model::TaskId(12)))
-        );
+        assert_eq!(Uri::parse("toodo://tasks/12/runs"), None);
         for other in [
             "toodo://tasks/",
             "toodo://tasks//runs",

@@ -4,15 +4,12 @@ use std::collections::{BTreeSet, HashMap};
 
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
-use super::runtime::set_herdr_workspace;
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::criteria::NewCriterion;
 use crate::domain::dag;
 use crate::domain::model::{
-    CommitRecord, HostPath, LinkedIssue, MergedWith, NoteKind, PullRequestSnapshot, Task, TaskId,
-    TaskNote, TaskResolution, TaskType, WorkspaceId,
+    LinkedIssue, NoteKind, Task, TaskId, TaskNote, TaskResolution, TaskType, WorkspaceId,
 };
-use crate::domain::naming::TaskCheckout;
 use crate::domain::plan::{DueDate, Estimate, EstimateUnit};
 use crate::domain::status::TaskStatus;
 use crate::domain::timeline::TaskEvent;
@@ -51,25 +48,10 @@ pub struct NewPlanTask {
     pub task: NewTask,
     /// Labels [`crate::domain::plan::labels`] checked.
     pub labels: Vec<String>,
+    /// References [`crate::domain::plan::merge_refs`] checked.
+    pub refs: Vec<String>,
     pub depends_on: Vec<PlanLink>,
     pub related: Vec<PlanLink>,
-}
-
-/// A pull request merged before Toodo tracked its work, which
-/// [`Storage::record_merged_pull_request`] records as a `done` task.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MergedPullRequestTask {
-    pub workspace_id: WorkspaceId,
-    pub task_type: TaskType,
-    pub title: String,
-    pub description: String,
-    /// The head branch of the pull request.
-    pub branch: String,
-    pub pull_request_url: String,
-    /// When the pull request was opened: the task counts as planned, started, and in
-    /// review from then.
-    pub opened_at: i64,
-    pub merged_at: i64,
 }
 
 /// A task a task of a plan links to: one that exists, or another task of the plan.
@@ -182,17 +164,7 @@ fn parse_note_kind(raw: &str) -> Result<NoteKind> {
         .ok_or_else(|| StorageError::InvalidData(format!("unknown note kind {raw:?}")))
 }
 
-const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.description, t.status,
-        t.branch, t.worktree_path,
-        (SELECT r.provider_workspace_ref FROM runtime_workspaces r
-         WHERE r.task_id = t.id AND r.state = 'open'), t.pull_request_url,
-        t.pull_request_merged_at, t.completion_note, s.number, s.title, s.additions,
-        s.deletions, s.changed_files, s.merge_commit_sha, s.review_count, s.reviewer_count,
-        s.first_reviewed_at, t.resolution, t.issue_number, t.issue_url, t.estimate_unit,
-        t.estimate_amount, t.due_date, t.merged_with_pull_request_url, t.merged_with_task_id
-    FROM tasks t JOIN workspaces w ON w.id = t.workspace_id
-        LEFT JOIN pull_request_snapshots s ON s.task_id = t.id";
-
+const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.description, t.status, t.completion_note, t.resolution, t.issue_number, t.issue_url, t.estimate_unit, t.estimate_amount, t.due_date, t.refs FROM tasks t JOIN workspaces w ON w.id = t.workspace_id";
 struct TaskRow {
     id: i64,
     workspace_id: i64,
@@ -200,21 +172,15 @@ struct TaskRow {
     title: String,
     description: String,
     status: String,
-    branch: Option<String>,
-    worktree_path: Option<String>,
-    herdr_workspace_id: Option<String>,
-    pull_request_url: Option<String>,
-    pull_request_merged_at: Option<i64>,
     completion_note: Option<String>,
-    pull_request: Option<PullRequestSnapshot>,
     resolution: Option<String>,
-    issue: Option<LinkedIssue>,
+    issue_number: Option<i64>,
+    issue_url: Option<String>,
     estimate_unit: Option<String>,
     estimate_amount: Option<f64>,
     due_date: Option<String>,
-    merged_with: Option<MergedWith>,
+    refs: String,
 }
-
 impl TaskRow {
     fn read(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
@@ -224,50 +190,16 @@ impl TaskRow {
             title: row.get(3)?,
             description: row.get(4)?,
             status: row.get(5)?,
-            branch: row.get(6)?,
-            worktree_path: row.get(7)?,
-            herdr_workspace_id: row.get(8)?,
-            pull_request_url: row.get(9)?,
-            pull_request_merged_at: row.get(10)?,
-            completion_note: row.get(11)?,
-            pull_request: match row.get::<_, Option<i64>>(12)? {
-                None => None,
-                Some(number) => Some(PullRequestSnapshot {
-                    number,
-                    title: row.get(13)?,
-                    additions: row.get(14)?,
-                    deletions: row.get(15)?,
-                    changed_files: row.get(16)?,
-                    merge_commit_sha: row.get(17)?,
-                    review_count: row.get(18)?,
-                    reviewer_count: row.get(19)?,
-                    first_reviewed_at: row.get(20)?,
-                }),
-            },
-            resolution: row.get(21)?,
-            issue: match row.get::<_, Option<i64>>(22)? {
-                None => None,
-                Some(number) => Some(LinkedIssue {
-                    number,
-                    url: row.get(23)?,
-                }),
-            },
-            estimate_unit: row.get(24)?,
-            estimate_amount: row.get(25)?,
-            due_date: row.get(26)?,
-            merged_with: match (
-                row.get::<_, Option<String>>(27)?,
-                row.get::<_, Option<i64>>(28)?,
-            ) {
-                (None, None) => None,
-                (pull_request_url, task_id) => Some(MergedWith {
-                    task_id: task_id.map(TaskId),
-                    pull_request_url,
-                }),
-            },
+            completion_note: row.get(6)?,
+            resolution: row.get(7)?,
+            issue_number: row.get(8)?,
+            issue_url: row.get(9)?,
+            estimate_unit: row.get(10)?,
+            estimate_amount: row.get(11)?,
+            due_date: row.get(12)?,
+            refs: row.get(13)?,
         })
     }
-
     fn into_task(
         self,
         depends_on: BTreeSet<TaskId>,
@@ -276,11 +208,12 @@ impl TaskRow {
         criteria: Vec<crate::domain::criteria::Criterion>,
         labels: Vec<String>,
     ) -> Result<Task> {
-        let worktree_path = self
-            .worktree_path
-            .map(|raw| HostPath::parse_stored(&raw))
-            .transpose()
-            .map_err(invalid_data)?;
+        let refs = serde_json::from_str(&self.refs).map_err(|_| {
+            StorageError::InvalidData(format!(
+                "task {} has refs that are not a JSON array of strings: {}",
+                self.id, self.refs
+            ))
+        })?;
         Ok(Task {
             id: TaskId(self.id),
             workspace_id: WorkspaceId(self.workspace_id),
@@ -294,15 +227,11 @@ impl TaskRow {
                 .map(parse_task_resolution)
                 .transpose()?,
             depends_on,
-            branch: self.branch,
-            worktree_path,
-            herdr_workspace_id: self.herdr_workspace_id,
-            pull_request_url: self.pull_request_url,
-            pull_request_merged_at: self.pull_request_merged_at,
-            pull_request: self.pull_request,
-            merged_with: self.merged_with,
             completion_note: self.completion_note,
-            issue: self.issue,
+            issue: self.issue_number.map(|number| LinkedIssue {
+                number,
+                url: self.issue_url.unwrap_or_default(),
+            }),
             estimate: parse_estimate(self.estimate_unit, self.estimate_amount)?,
             due_date: self
                 .due_date
@@ -311,6 +240,7 @@ impl TaskRow {
                 .transpose()
                 .map_err(invalid_data)?,
             labels,
+            refs,
             timeline,
             notes,
             criteria,
@@ -480,6 +410,16 @@ fn record_event_with_reason(
     Ok(())
 }
 
+/// Stores `refs` as the references of `task`.
+fn write_refs(conn: &Connection, task: TaskId, refs: &[String]) -> Result<()> {
+    let json = serde_json::to_string(refs).expect("a list of strings serializes to JSON");
+    conn.execute(
+        "UPDATE tasks SET refs = ?2 WHERE id = ?1",
+        params![task.0, json],
+    )?;
+    Ok(())
+}
+
 /// Appends a note of `kind` to `task` at `at`.
 fn add_note(conn: &Connection, task: TaskId, kind: NoteKind, body: &str, at: i64) -> Result<()> {
     let inserted = conn.execute(
@@ -557,37 +497,9 @@ fn queried_tasks(conn: &Connection, query: &TaskQuery) -> Result<Vec<Task>> {
     query_tasks(conn, &filter, &parameters)
 }
 
-fn task_workspace(conn: &Connection, id: TaskId) -> Result<Option<WorkspaceId>> {
-    Ok(conn
-        .query_row(
-            "SELECT workspace_id FROM tasks WHERE id = ?1",
-            [id.0],
-            |row| row.get(0).map(WorkspaceId),
-        )
-        .optional()?)
-}
-
 /// The kind of paths on the machine of workspace `w`, told by its repository path: only
 /// POSIX paths start with `/`. `windows` for SSH workspaces on Windows hosts and for local
 /// ones kept from the desktop app.
-const WORKSPACE_PATH_STYLE: &str =
-    "CASE WHEN substr(w.path, 1, 1) = '/' THEN 'posix' ELSE 'windows' END";
-
-/// The stored form of a worktree path, which must be of the path kind of the machine of
-/// the task's workspace (see [`WORKSPACE_PATH_STYLE`]).
-fn stored_worktree_path<'a>(
-    task: TaskId,
-    path_style: &str,
-    path: Option<&'a HostPath>,
-) -> Result<Option<&'a str>> {
-    match (path, path_style) {
-        (None, _) => Ok(None),
-        (Some(HostPath::Windows(path)), "windows") => Ok(Some(path.as_str())),
-        (Some(HostPath::Posix(path)), "posix") => Ok(Some(path.as_str())),
-        (Some(_), _) => Err(StorageError::WorktreePathMismatch(task)),
-    }
-}
-
 /// Rejects live dependencies that loop, e.g. after a restore brought back edges that close
 /// a cycle with edges added in the meantime.
 pub(super) fn ensure_acyclic(conn: &Connection) -> Result<()> {
@@ -665,6 +577,9 @@ impl Storage {
                     params![id.0, label],
                 )?;
             }
+            if !item.refs.is_empty() {
+                write_refs(&tx, id, &item.refs)?;
+            }
             ids.push(id);
         }
         let resolve = |link: &PlanLink| match *link {
@@ -691,61 +606,6 @@ impl Storage {
         Ok(created)
     }
 
-    /// Records `merged` as a task `done` as merged, with a status history from the opening
-    /// of its pull request to its merge, so reviews of that time include the work. Writes
-    /// nothing and returns `None` when a task already records the pull request, or one of
-    /// the same workspace has its branch (its pull request is adopted there instead).
-    pub fn record_merged_pull_request(
-        &mut self,
-        merged: &MergedPullRequestTask,
-    ) -> Result<Option<Task>> {
-        let tx = self.conn.transaction()?;
-        let known: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM tasks
-                 WHERE pull_request_url = ?1 OR (workspace_id = ?2 AND branch = ?3))",
-            params![
-                merged.pull_request_url,
-                merged.workspace_id.0,
-                merged.branch
-            ],
-            |row| row.get(0),
-        )?;
-        if known {
-            return Ok(None);
-        }
-        let opened_at = merged.opened_at.min(merged.merged_at);
-        let new = NewTask {
-            workspace_id: merged.workspace_id,
-            task_type: merged.task_type,
-            title: merged.title.clone(),
-            description: merged.description.clone(),
-            estimate: None,
-            due_date: None,
-            criteria: Vec::new(),
-        };
-        let id = insert_task(&tx, &new, opened_at)?;
-        tx.execute(
-            "UPDATE tasks
-             SET status = ?2, resolution = ?3, branch = ?4, pull_request_url = ?5,
-                 pull_request_merged_at = ?6
-             WHERE id = ?1",
-            params![
-                id.0,
-                TaskStatus::Done.as_str(),
-                TaskResolution::Merged.as_str(),
-                merged.branch,
-                merged.pull_request_url,
-                merged.merged_at
-            ],
-        )?;
-        record_event(&tx, id, TaskStatus::InProgress, opened_at)?;
-        record_event(&tx, id, TaskStatus::InReview, opened_at)?;
-        record_event(&tx, id, TaskStatus::Done, merged.merged_at)?;
-        let recorded = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        tx.commit()?;
-        Ok(Some(recorded))
-    }
-
     pub fn get_task(&self, id: TaskId) -> Result<Option<Task>> {
         find_task(&self.conn, id)
     }
@@ -766,47 +626,10 @@ impl Storage {
         queried_tasks(&self.conn, query)
     }
 
-    /// Saves the editable fields of `task`: type, title, description, estimate, due date,
-    /// branch, worktree path, herdr workspace, and pull request URL. Status, dependencies, and workspace
-    /// are changed through their own methods and are ignored here.
+    /// Saves the editable task fields; lifecycle and references use their own methods.
     pub fn update_task(&mut self, task: &Task) -> Result<()> {
-        let at = self.now();
-        let tx = self.conn.transaction()?;
-        let path_style: String = tx
-            .query_row(
-                &format!(
-                    "SELECT {WORKSPACE_PATH_STYLE} FROM tasks t
-                     JOIN workspaces w ON w.id = t.workspace_id WHERE t.id = ?1"
-                ),
-                [task.id.0],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::TaskNotFound(task.id))?;
-        let worktree_path =
-            stored_worktree_path(task.id, &path_style, task.worktree_path.as_ref())?;
-        let (estimate_unit, estimate_amount) = estimate_columns(task.estimate);
-        tx.execute(
-            "UPDATE tasks
-             SET type = ?2, title = ?3, description = ?4, branch = ?5, worktree_path = ?6,
-                 pull_request_url = ?7, estimate_unit = ?8, estimate_amount = ?9,
-                 due_date = ?10
-             WHERE id = ?1",
-            params![
-                task.id.0,
-                task.task_type.as_str(),
-                task.title,
-                task.description,
-                task.branch,
-                worktree_path,
-                task.pull_request_url,
-                estimate_unit,
-                estimate_amount,
-                task.due_date.map(|due| due.to_string())
-            ],
-        )?;
-        set_herdr_workspace(&tx, task.id, task.herdr_workspace_id.as_deref(), at)?;
-        tx.commit()?;
+        let (unit, amount) = estimate_columns(task.estimate);
+        if self.conn.execute("UPDATE tasks SET type = ?2, title = ?3, description = ?4, estimate_unit = ?5, estimate_amount = ?6, due_date = ?7 WHERE id = ?1", params![task.id.0, task.task_type.as_str(), task.title, task.description, unit, amount, task.due_date.map(|d| d.to_string())])? == 0 { return Err(StorageError::TaskNotFound(task.id)); }
         Ok(())
     }
 
@@ -827,256 +650,145 @@ impl Storage {
         Ok(task)
     }
 
-    /// Rejects starting a task while one of its dependencies is not done; check this
-    /// before preparing its worktree.
+    /// Replaces the references of task `id` with `refs`, which
+    /// [`crate::domain::plan::merge_refs`] checked.
+    pub fn set_task_refs(&mut self, id: TaskId, refs: &[String]) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        write_refs(&tx, id, refs)?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(task)
+    }
+
+    /// Records `reason` with the latest status change of task `id`, which must be a move to
+    /// `status`, e.g. why it was started right after starting it.
+    pub fn set_latest_event_reason(
+        &mut self,
+        id: TaskId,
+        status: TaskStatus,
+        reason: &str,
+    ) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        let updated = tx.execute(
+            "UPDATE task_events SET reason = ?3
+             WHERE id = (SELECT max(id) FROM task_events WHERE task_id = ?1) AND status = ?2",
+            params![id.0, status.as_str(), reason],
+        )?;
+        if updated == 0 {
+            find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+            return Err(StorageError::InvalidData(format!(
+                "the latest status change of task {id} is not a move to {}",
+                status.as_str()
+            )));
+        }
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(task)
+    }
+
+    /// Rejects starting a task while one of its dependencies is not done.
     pub fn ensure_ready(&self, id: TaskId) -> Result<()> {
         ensure_ready(&self.conn, id)
     }
 
-    /// Records the worktree of a `planned` task whose dependencies are done and moves it
-    /// to `in_progress` in one transaction, so a task is never in progress without its
-    /// worktree.
+    /// Starts a ready task and records its reason and references in one transaction.
     pub fn start_task(
         &mut self,
         id: TaskId,
-        checkout: &TaskCheckout,
-        herdr_workspace_id: &str,
-    ) -> Result<Task> {
-        self.start_task_in(id, checkout, Some(herdr_workspace_id))
-    }
-
-    /// Starts a task like [`Storage::start_task`] in a worktree that no herdr workspace
-    /// has open, as runner plain does; a herdr workspace still recorded for the task is
-    /// forgotten.
-    pub fn start_task_plain(&mut self, id: TaskId, checkout: &TaskCheckout) -> Result<Task> {
-        self.start_task_in(id, checkout, None)
-    }
-
-    fn start_task_in(
-        &mut self,
-        id: TaskId,
-        checkout: &TaskCheckout,
-        herdr_workspace_id: Option<&str>,
+        reason: Option<&str>,
+        refs: &[String],
     ) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        let status = task.status.transition_to(TaskStatus::InProgress)?;
+        task.status.transition_to(TaskStatus::InProgress)?;
         ensure_ready(&tx, id)?;
-        let path_style: String = tx.query_row(
-            &format!("SELECT {WORKSPACE_PATH_STYLE} FROM workspaces w WHERE w.id = ?1"),
-            [task.workspace_id.0],
-            |row| row.get(0),
-        )?;
-        let worktree_path = stored_worktree_path(id, &path_style, Some(&checkout.path))?;
         tx.execute(
-            "UPDATE tasks
-             SET status = ?2, branch = ?3, worktree_path = ?4
-             WHERE id = ?1",
-            params![id.0, status.as_str(), checkout.branch, worktree_path],
+            "UPDATE tasks SET status = 'in_progress' WHERE id = ?1",
+            [id.0],
         )?;
-        set_herdr_workspace(&tx, id, herdr_workspace_id, at)?;
-        record_event(&tx, id, status, at)?;
-        let started = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        write_refs(&tx, id, refs)?;
+        record_event_with_reason(&tx, id, TaskStatus::InProgress, at, reason)?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
-        Ok(started)
+        Ok(task)
     }
 
-    /// Moves an `in_progress` or `in_review` task whose criteria are met to `done` as
-    /// merged, or completed when nothing merged (see [`TaskStatus::complete`]), stores
-    /// the merge time and PR snapshot, and forgets its closed herdr workspace in one
-    /// transaction. Non-empty `commits` (those of the merged pull request) replace its
-    /// commit records. The worktree path stays: the checkout is kept on disk until its
-    /// worktree is removed. Dependents whose other dependencies are done can then start.
+    /// Completes a task without collecting execution records.
     pub fn complete_task(
         &mut self,
         id: TaskId,
-        merged_at: Option<i64>,
-        pull_request: Option<&PullRequestSnapshot>,
-        commits: &[CommitRecord],
-    ) -> Result<Task> {
-        self.finish_task(id, merged_at, pull_request, commits, None)
-    }
-
-    /// Completes shipped work without a pull request, keeping its explanation and commits.
-    /// The command layer first verifies PR absence and all completion criteria.
-    pub fn complete_task_without_pull_request(
-        &mut self,
-        id: TaskId,
-        note: &str,
-        commits: &[CommitRecord],
-    ) -> Result<Task> {
-        self.finish_task(id, None, None, commits, Some(note))
-    }
-
-    fn finish_task(
-        &mut self,
-        id: TaskId,
-        merged_at: Option<i64>,
-        pull_request: Option<&PullRequestSnapshot>,
-        commits: &[CommitRecord],
         note: Option<&str>,
+        refs: &[String],
     ) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        let status = task.status.complete()?;
-        let merged = task.pull_request_url.is_some()
-            || task.merged_with.is_some()
-            || merged_at.is_some()
-            || pull_request.is_some()
-            || task.criteria.iter().any(|criterion| {
-                criterion.kind == crate::domain::criteria::CheckKind::BranchMergedLocally
-                    && criterion.is_met()
-            });
-        let resolution = if note.is_none() && merged {
-            TaskResolution::Merged
-        } else {
-            TaskResolution::Completed
-        };
-        if let Some(note) = note {
-            tx.execute(
-                "UPDATE task_criteria
-                 SET state = 'met', evidence = ?2, checked_by = 'toodo', checked_at = ?3
-                 WHERE task_id = ?1 AND kind = 'pr_merged'",
-                params![id.0, note, at],
-            )?;
-        }
-        tx.execute(
-            "UPDATE tasks
-             SET status = ?2, resolution = ?3,
-                 pull_request_merged_at = coalesce(?4, pull_request_merged_at),
-                 completion_note = coalesce(?5, completion_note)
-             WHERE id = ?1",
-            params![id.0, status.as_str(), resolution.as_str(), merged_at, note],
-        )?;
-        set_herdr_workspace(&tx, id, None, at)?;
-        if let Some(snapshot) = pull_request {
-            tx.execute(
-                "INSERT OR REPLACE INTO pull_request_snapshots (task_id, number, title,
-                     additions, deletions, changed_files, merge_commit_sha, review_count,
-                     reviewer_count, first_reviewed_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                params![
-                    id.0,
-                    snapshot.number,
-                    snapshot.title,
-                    snapshot.additions,
-                    snapshot.deletions,
-                    snapshot.changed_files,
-                    snapshot.merge_commit_sha,
-                    snapshot.review_count,
-                    snapshot.reviewer_count,
-                    snapshot.first_reviewed_at
-                ],
-            )?;
-        }
-        if !commits.is_empty() {
-            super::commits::write_commit_records(&tx, id, commits)?;
-        }
-        record_event(&tx, id, status, at)?;
-        let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        task.status.complete()?;
+        tx.execute("UPDATE tasks SET status = 'done', resolution = 'completed', completion_note = COALESCE(?2, completion_note) WHERE id = ?1", params![id.0, note])?;
+        write_refs(&tx, id, refs)?;
+        record_event_with_reason(&tx, id, TaskStatus::Done, at, note)?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
-        Ok(done)
+        Ok(task)
     }
 
-    /// Moves an `in_progress` or `in_review` task to `done` without merging, as
-    /// `not_adopted`, in one transaction: stores `note`, the conclusion, as its completion
-    /// note and forgets its herdr workspace, which was closed. Non-empty `commits` replace
-    /// its commit records, and `pull_request_url`, a pull request closed with the
-    /// conclusion, replaces its pull request URL. The branch and worktree path stay, and
-    /// its dependents keep waiting: work that was not adopted is not there to build on.
+    /// Records a conclusion, optionally identifying the completed task that shipped it.
     pub fn conclude_task(
         &mut self,
         id: TaskId,
         note: &str,
-        commits: &[CommitRecord],
-        pull_request_url: Option<&str>,
+        shipped_with: Option<TaskId>,
     ) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        let status = task.status.conclude()?;
-        tx.execute(
-            "UPDATE tasks
-             SET status = ?2, resolution = ?3, completion_note = ?4,
-                 pull_request_url = COALESCE(?5, pull_request_url)
-             WHERE id = ?1",
-            params![
-                id.0,
-                status.as_str(),
-                TaskResolution::NotAdopted.as_str(),
-                note,
-                pull_request_url
-            ],
-        )?;
-        set_herdr_workspace(&tx, id, None, at)?;
-        if !commits.is_empty() {
-            super::commits::write_commit_records(&tx, id, commits)?;
+        let changes_status = task.status != TaskStatus::Done
+            || task.resolution != Some(TaskResolution::NotAdopted)
+            || shipped_with.is_none();
+        if changes_status {
+            task.status.conclude()?;
         }
-        record_event(&tx, id, status, at)?;
-        let concluded = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        tx.commit()?;
-        Ok(concluded)
-    }
-
-    /// Moves an `in_progress` or `in_review` task to `done` as `resolution` (merged, or
-    /// completed for work shipped by a task completed without a pull request) through
-    /// another task or its pull request, `merged_with`, merged at `merged_at`, and forgets
-    /// its herdr workspace, which was closed. A task `done` as `not_adopted` keeps its
-    /// status history and only changes its resolution: the work did ship. Non-empty
-    /// `commits` replace its commit records. Its dependents can then start.
-    pub fn complete_task_merged_with(
-        &mut self,
-        id: TaskId,
-        merged_with: &MergedWith,
-        resolution: TaskResolution,
-        merged_at: Option<i64>,
-        commits: &[CommitRecord],
-    ) -> Result<Task> {
-        let at = self.now();
-        let tx = self.conn.transaction()?;
-        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        let changes_status = match (task.status, task.resolution) {
-            (TaskStatus::Done, Some(TaskResolution::NotAdopted)) => false,
-            (status, _) => {
-                status.conclude()?;
-                true
+        let resolution = if let Some(other) = shipped_with {
+            let target = find_task(&tx, other)?.ok_or(StorageError::TaskNotFound(other))?;
+            if other == id
+                || (target.status != TaskStatus::Done
+                    || target.resolution == Some(TaskResolution::NotAdopted))
+            {
+                return Err(StorageError::InvalidData(format!(
+                    "task {other} has not shipped this work; call complete_task for that task first, then conclude_task with shipped_with {other}"
+                )));
             }
+            TaskResolution::Completed
+        } else {
+            TaskResolution::NotAdopted
         };
         tx.execute(
-            "UPDATE tasks
-             SET status = ?2, resolution = ?3,
-                 pull_request_merged_at = ?4, merged_with_pull_request_url = ?5,
-                 merged_with_task_id = ?6
-             WHERE id = ?1",
-            params![
-                id.0,
-                TaskStatus::Done.as_str(),
-                resolution.as_str(),
-                merged_at,
-                merged_with.pull_request_url,
-                merged_with.task_id.map(|task| task.0)
-            ],
+            "UPDATE tasks SET status = 'done', resolution = ?2, completion_note = ?3 WHERE id = ?1",
+            params![id.0, resolution.as_str(), note],
         )?;
-        set_herdr_workspace(&tx, id, None, at)?;
-        if !commits.is_empty() {
-            super::commits::write_commit_records(&tx, id, commits)?;
+        if let Some(other) = shipped_with {
+            let reference = format!("task:{other}");
+            let mut refs = task.refs;
+            if !refs.contains(&reference) {
+                refs.push(reference);
+            }
+            write_refs(&tx, id, &refs)?;
         }
         if changes_status {
-            record_event(&tx, id, TaskStatus::Done, at)?;
+            record_event_with_reason(&tx, id, TaskStatus::Done, at, Some(note))?;
         }
-        let done = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
-        Ok(done)
+        Ok(task)
     }
 
     /// Reopens a `done` task in one transaction (see [`TaskStatus::reopen`]): it becomes
-    /// `planned` without a resolution, completion note, or `merged_with`, the reopening is
+    /// `planned` without a resolution or completion note. The reopening is
     /// recorded in its status history with `reason`, and `note`, which says why and keeps
-    /// the earlier outcome, is added as a progress note. Branch, worktree path, commit
-    /// records, pull request, and criteria stay. Whether its dependents allow it is up to
-    /// the caller.
+    /// the earlier outcome, is added as a progress note. References and criteria stay.
+    /// Whether its dependents allow it is up to the caller.
     pub fn reopen_task(&mut self, id: TaskId, reason: &str, note: &str) -> Result<Task> {
         let at = self.now();
         let tx = self.conn.transaction()?;
@@ -1084,8 +796,7 @@ impl Storage {
         let status = task.status.reopen()?;
         tx.execute(
             "UPDATE tasks
-             SET status = ?2, resolution = NULL, completion_note = NULL,
-                 merged_with_pull_request_url = NULL, merged_with_task_id = NULL
+             SET status = ?2, resolution = NULL, completion_note = NULL
              WHERE id = ?1",
             params![id.0, status.as_str()],
         )?;
@@ -1098,9 +809,8 @@ impl Storage {
 
     /// Corrects how a `done` task ended to `resolution` in one transaction: `completion_note`
     /// becomes its completion note, and `note`, the record of the change, is added as a
-    /// progress note. Its status history stays: the task did finish then. Any other
-    /// resolution than merged or completed forgets `merged_with`. Whether the task and
-    /// `resolution` allow it is up to the caller.
+    /// progress note. Its status history stays: the task did finish then. Whether the task
+    /// and `resolution` allow it is up to the caller.
     pub fn set_task_outcome(
         &mut self,
         id: TaskId,
@@ -1117,23 +827,9 @@ impl Storage {
                 task.status
             )));
         }
-        let keeps_merged_with = matches!(
-            resolution,
-            TaskResolution::Merged | TaskResolution::Completed
-        );
         tx.execute(
-            "UPDATE tasks
-             SET resolution = ?2, completion_note = ?3,
-                 merged_with_pull_request_url = CASE WHEN ?4 AND ?2 = 'merged'
-                     THEN merged_with_pull_request_url END,
-                 merged_with_task_id = CASE WHEN ?4 THEN merged_with_task_id END
-             WHERE id = ?1",
-            params![
-                id.0,
-                resolution.as_str(),
-                completion_note,
-                keeps_merged_with
-            ],
+            "UPDATE tasks SET resolution = ?2, completion_note = ?3 WHERE id = ?1",
+            params![id.0, resolution.as_str(), completion_note],
         )?;
         add_note(&tx, id, NoteKind::Progress, note, at)?;
         let corrected = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
@@ -1186,103 +882,6 @@ impl Storage {
         let linked = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(linked)
-    }
-
-    /// Forgets the worktree and herdr workspace of a task after its worktree was removed.
-    /// The branch, status, commit records, and pull request stay.
-    pub fn clear_task_worktree(&mut self, id: TaskId) -> Result<Task> {
-        let at = self.now();
-        let tx = self.conn.transaction()?;
-        let updated = tx.execute(
-            "UPDATE tasks SET worktree_path = NULL WHERE id = ?1",
-            [id.0],
-        )?;
-        if updated == 0 {
-            return Err(StorageError::TaskNotFound(id));
-        }
-        set_herdr_workspace(&tx, id, None, at)?;
-        let cleared = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        tx.commit()?;
-        Ok(cleared)
-    }
-
-    /// Records the worktree a task got back after its previous one was removed, and the
-    /// herdr workspace it is open in. Status, branch, and history are unchanged.
-    pub fn restore_task_worktree(
-        &mut self,
-        id: TaskId,
-        path: &HostPath,
-        herdr_workspace_id: &str,
-    ) -> Result<Task> {
-        let at = self.now();
-        let tx = self.conn.transaction()?;
-        let path_style: String = tx
-            .query_row(
-                &format!(
-                    "SELECT {WORKSPACE_PATH_STYLE} FROM tasks t
-                     JOIN workspaces w ON w.id = t.workspace_id WHERE t.id = ?1"
-                ),
-                [id.0],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or(StorageError::TaskNotFound(id))?;
-        let worktree_path = stored_worktree_path(id, &path_style, Some(path))?;
-        tx.execute(
-            "UPDATE tasks SET worktree_path = ?2 WHERE id = ?1",
-            params![id.0, worktree_path],
-        )?;
-        set_herdr_workspace(&tx, id, Some(herdr_workspace_id), at)?;
-        let restored = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        tx.commit()?;
-        Ok(restored)
-    }
-
-    /// Records the herdr workspace a task's worktree was opened again in.
-    pub fn set_task_herdr_workspace(&mut self, id: TaskId, herdr_workspace_id: &str) -> Result<()> {
-        let at = self.now();
-        let tx = self.conn.transaction()?;
-        task_workspace(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        set_herdr_workspace(&tx, id, Some(herdr_workspace_id), at)?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Records the pull request of an `in_progress` or `in_review` task in one
-    /// transaction: replaces its commit records, stores the pull request URL and its
-    /// merge time (`None` until merged), and moves it to (or keeps it in) `in_review`.
-    /// Dependents stay waiting until it is `done`.
-    pub fn open_pull_request(
-        &mut self,
-        id: TaskId,
-        records: &[CommitRecord],
-        pull_request_url: &str,
-        merged_at: Option<i64>,
-    ) -> Result<Task> {
-        let at = self.now();
-        let tx = self.conn.transaction()?;
-        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        let moved = task.status != TaskStatus::InReview;
-        if moved {
-            task.status.transition_to(TaskStatus::InReview)?;
-        }
-        super::commits::write_commit_records(&tx, id, records)?;
-        tx.execute(
-            "UPDATE tasks SET status = ?2, pull_request_url = ?3, pull_request_merged_at = ?4
-             WHERE id = ?1",
-            params![
-                id.0,
-                TaskStatus::InReview.as_str(),
-                pull_request_url,
-                merged_at
-            ],
-        )?;
-        if moved {
-            record_event(&tx, id, TaskStatus::InReview, at)?;
-        }
-        let in_review = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        tx.commit()?;
-        Ok(in_review)
     }
 
     /// Moves a task to `status` if its current status allows it, recording the change;
@@ -1430,7 +1029,7 @@ impl Storage {
     /// Makes `task` depend on every task of `depends_on` in one transaction, with the
     /// rules of [`Self::add_dependency`]; one rejected edge writes nothing. An
     /// `in_progress` task that is no longer ready afterwards is paused (moved back to
-    /// `planned`, keeping its branch and worktree) until its new prerequisites are done.
+    /// `planned`) until its new prerequisites are done.
     pub fn add_dependencies(
         &mut self,
         task: TaskId,
@@ -1509,17 +1108,6 @@ impl Storage {
             task,
             paused,
         })))
-    }
-
-    /// Forgets the herdr workspace of a task after it was closed; the worktree stays.
-    pub fn clear_task_herdr_workspace(&mut self, id: TaskId) -> Result<Task> {
-        let at = self.now();
-        let tx = self.conn.transaction()?;
-        task_workspace(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        set_herdr_workspace(&tx, id, None, at)?;
-        let cleared = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
-        tx.commit()?;
-        Ok(cleared)
     }
 
     /// Removes the edge `task -> depends_on`; rejects an edge that does not exist and a

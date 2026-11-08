@@ -42,16 +42,13 @@ impl TaskStatus {
         )
     }
 
-    /// Concludes a task that is being worked on without merging it, e.g. research that
-    /// is not adopted. Both concluding and completing allow `in_progress` and
-    /// `in_review` tasks; completing requires their completion criteria to be met.
+    /// Concludes a task without completing it, e.g. research that is not adopted. A
+    /// `planned` task can be concluded too, so an idea is dropped without starting it
+    /// first.
     pub fn conclude(self) -> Result<Self, TransitionError> {
         match self {
-            Self::InProgress | Self::InReview => Ok(Self::Done),
-            from => Err(TransitionError {
-                from,
-                to: Self::Done,
-            }),
+            Self::Planned => Ok(Self::Done),
+            from => from.complete(),
         }
     }
 
@@ -59,7 +56,13 @@ impl TaskStatus {
     /// task whose criteria Toodo checks on its own can be done straight from
     /// `in_progress`, e.g. a branch merged locally.
     pub fn complete(self) -> Result<Self, TransitionError> {
-        self.conclude()
+        match self {
+            Self::InProgress | Self::InReview => Ok(Self::Done),
+            from => Err(TransitionError {
+                from,
+                to: Self::Done,
+            }),
+        }
     }
 
     /// Reopens a `done` task, e.g. one completed or concluded by mistake: it becomes
@@ -133,13 +136,24 @@ mod tests {
     }
 
     #[test]
-    fn only_a_task_being_worked_on_can_be_concluded() {
+    fn only_an_unfinished_task_can_be_concluded() {
         for from in ALL {
-            let expected = matches!(from, InProgress | InReview);
-            assert_eq!(from.conclude().is_ok(), expected, "{from}");
+            assert_eq!(from.conclude().is_ok(), from != Done, "{from}");
         }
         assert_eq!(
-            Planned.conclude().unwrap_err().to_string(),
+            Done.conclude().unwrap_err().to_string(),
+            "a done task cannot become done"
+        );
+    }
+
+    #[test]
+    fn only_a_task_being_worked_on_can_be_completed() {
+        for from in ALL {
+            let expected = matches!(from, InProgress | InReview);
+            assert_eq!(from.complete().is_ok(), expected, "{from}");
+        }
+        assert_eq!(
+            Planned.complete().unwrap_err().to_string(),
             "a planned task cannot become done"
         );
     }

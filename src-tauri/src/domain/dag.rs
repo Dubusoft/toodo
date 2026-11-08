@@ -225,6 +225,7 @@ mod tests {
 
     fn task(id: i64, status: TaskStatus, depends_on: &[i64]) -> Task {
         Task {
+            refs: Vec::new(),
             id: TaskId(id),
             workspace_id: WorkspaceId(1),
             task_type: TaskType::Feat,
@@ -232,14 +233,8 @@ mod tests {
             description: String::new(),
             status,
             depends_on: depends_on.iter().copied().map(TaskId).collect(),
-            branch: None,
-            worktree_path: None,
-            herdr_workspace_id: None,
-            pull_request_url: None,
-            pull_request_merged_at: None,
-            pull_request: None,
             resolution: None,
-            merged_with: None,
+
             completion_note: None,
             estimate: None,
             due_date: None,

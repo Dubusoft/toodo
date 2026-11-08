@@ -1,29 +1,14 @@
-//! MCP server for coding agents, embedded in the app so it shares the database lock and
-//! tells the frontend about changes like any command.
-//!
-//! It serves Streamable HTTP on a fixed loopback port and requires the bearer token kept
-//! in the app data directory. Agents can read and add workspaces, read and set the
-//! worktree root of each machine, read tasks, search earlier tasks
-//! and read their history, create and edit tasks, connect dependencies and related
-//! links, leave progress and blocker notes in a task's history, and start, complete, or
-//! conclude tasks and restore a lost worktree through the app's own commands, and start,
-//! follow, read the logs of, stop, and reconcile plain and tmux runs; deleting a planned
-//! task and reopening a done one take a second call with `confirm`. The `toodo` skill, the
-//! workflow for working on a task, is served by the `read_toodo_skill` tool rather than
-//! as a resource, since not every client can read resources. Tasks and their runs are
-//! resources too, which clients of protocol 2026-07-28 can watch through
-//! `subscriptions/listen` (see [`resources`]). Agents on SSH machines reach the server
-//! through the reverse tunnels of [`tunnels`].
+//! MCP access to task records, dependencies, notes, references, and status history.
+//! Tools share storage and announce record changes to connected clients.
 
 pub(crate) mod attempts;
 mod resources;
 mod tools;
-pub mod tunnels;
 
 use std::fs;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -48,16 +33,9 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::adapters::git::Git;
-use crate::adapters::github::GitHub;
-use crate::adapters::herdr::Herdr;
-use crate::commands::completion::{PullRequestStatusState, lock_statuses};
 use crate::commands::events::Notifier;
-use crate::commands::tasks as task_commands;
 use crate::commands::types::Task;
-use crate::commands::{
-    CommandError, CommandErrorCode, CommandResult, PlainRunState, StorageState, TmuxRunState, lock,
-};
+use crate::commands::{CommandError, CommandErrorCode, CommandResult, StorageState, lock};
 use crate::domain::model;
 use crate::oauth::{self, PublicUrl};
 
@@ -89,106 +67,19 @@ static SKILL: LazyLock<String> = LazyLock::new(|| render(include_str!("toodo-ski
 
 static INSTRUCTIONS: LazyLock<String> = LazyLock::new(|| render(INSTRUCTIONS_TEMPLATE));
 
-const INSTRUCTIONS_TEMPLATE: &str = "Toodo plans tasks as a dependency DAG across workspaces; \
-a task becomes ready only when all tasks it depends on are done.
+const INSTRUCTIONS_TEMPLATE: &str = "Toodo records tasks, dependencies, notes, references, and status history. Read read_toodo_skill before managing tasks.\n\nCall current_task with ref to find a task by one of its refs, or get_task with id. Call list_workspaces and search_tasks before creating work; reuse matching records and read related tasks for context.\n\nDependencies point from task_id to the prerequisite ids in depends_on. Reject cycles, complete prerequisites first, and use related links for context that does not block work. Adding an unfinished prerequisite pauses active work; resume_task when it becomes ready.\n\n{{task-description}}\n\n{{other-tasks}}\n\n{{completion}}\n\n{{review-timing}}\n\n{{merge-policy}}";
 
-Before you work on a Toodo task or create tasks, read the toodo skill unless you \
-already have it: call the read_toodo_skill tool. It is the workflow from the task description to a pull \
-request into the workspace base branch, including when to stop for prerequisite tasks, \
-and the format of task descriptions.
-
-How to use these tools:
-1. Call current_task with your absolute working directory first. Use its workspaceId \
-for new tasks in the same repository and its baseBranch as the base of your pull \
-request. If it finds no task and you were asked to work on a Toodo task, tell the \
-user and ask for its id, then read it with get_task; to plan new work outside a task, \
-pick the workspace with list_workspaces. If its worktree directory is gone \
-(worktreeMissing true), call restore_worktree with the task id. Add a \
-workspace with create_workspace only when the user asks for a repository that \
-list_workspaces does not have yet; fix the settings of one that exists, or its path \
-after the repository moved (pathProblem), with update_workspace.
-2. Before you plan work or call create_task, call search_tasks with a few distinctive \
-words of the work (all workspaces unless the work clearly belongs to one) to find \
-earlier tasks about it, and get_task on the relevant ones to read what was decided \
-then: description, notes, completion note (why research was not adopted), pull \
-request, and commits. Follow their depends_on, dependents, and related links with \
-get_task to understand the history. Reuse a matching open task instead of creating a \
-duplicate. When a new task builds on earlier context but does not have to wait for it, \
-link them with add_related; use add_dependency only for a real prerequisite (rule 3). \
-Related links never block starting a task; remove_related drops one.
-3. A dependency points from a task to the tasks that must be done before it: task_id is \
-the dependent task and depends_on its prerequisites; self and cyclic dependencies are \
-rejected. Decide the direction by what has to finish first:
-   - Work that builds on your task once it is done (a follow-up feature, the next \
-step): create_task with depends_on set to your task's id.
-   - Work your task needs before it can be finished (e.g. fixes found while verifying \
-it): create those tasks without depending on your task, then call add_dependency with \
-task_id = your task and depends_on = all of the new task ids. Never make them depend on \
-your task: your task could then never finish.
-   Adding a prerequisite that is not done to an in_progress task pauses it. Its herdr \
-workspace stays open, and the Toodo app asks the user whether to close it, which ends \
-your session; the user resumes the task in the app once its prerequisites are done. So \
-create every task first, tell the user what you planned and why, make that \
-add_dependency call last, with all prerequisites in one call, and stop working on the \
-task after it. Use remove_dependency to drop an edge.
-4. Pick task_type by the kind of change (feat, fix, modify, refactor, docs, test, chore, \
-rnd), write a short imperative title, and put details in description. \
-{{task-description}} When you split work into tasks, set estimate to your expected size of each (hours, \
-days, weeks, or months of active work); the user's reviews compare it \
-with the time the task actually took. Set due_date (YYYY-MM-DD) only when the user named \
-a deadline. Set labels to the project or goal the work belongs to when the user or \
-related tasks use them; reviews filter by label.
-5. Leave a record of your work on your task as you go; it feeds the user's reviews of \
-their work. Call add_progress_note at every milestone: when you start (your plan and \
-approach, right after current_task and before your first edit), when you take a decision worth remembering (the choice and why, e.g. a library \
-or approach over its alternatives), when you finish a meaningful step or change course, \
-and when you open the pull request (with its URL). When a note call is rejected, fix the \
-arguments and call it again; a milestone counts only once its note is recorded. Call report_blocker when something stops you that needs the user or someone else (missing \
-access, an unclear requirement, a failing dependency), saying what you need. Write one \
-or two Markdown sentences per note; skip routine steps such as running tests or small \
-edits. Neither tool changes the task's status. To stop work on a task for another \
-reason than a prerequisite (rule 3), call pause_task with the reason, which pauses it as \
-the app's Pause does, and resume_task to continue a paused task once the reason is gone.
-6. A tool error says what was rejected; change the arguments instead of retrying them \
-unchanged. Arguments a tool does not know are rejected with the ones it accepts.
-7. {{other-tasks}}
-8. start_task needs a worktree root, the directory that holds task worktrees, on the \
-machine of the task's workspace. list_machine_settings shows it for every machine. Set \
-a missing one with set_worktree_root to a directory the user named, or when start_task \
-reports it missing and the user tells you where worktrees go. Never change or clear a \
-root that is set unless the user asks.
-9. {{completion}} Add or delete one criterion with add_criterion or \
-remove_criterion when the plan changes, never to make a task pass.
-
-Deleting tasks happens in the Toodo app only, not through these tools. \
-{{review-timing}}
-
-{{merge-policy}}";
-
-/// What the app needs to serve the tools: the database, the adapters the app's commands
-/// run, and a way to announce changes.
+/// Storage, connection metadata, and change notifications for MCP tools.
 pub trait Backend: Notifier + Send + Sync + 'static {
     fn public_url(&self) -> Option<&PublicUrl> {
         None
     }
     fn storage(&self) -> &StorageState;
-    /// The database for tools that only read: a separate read-only connection where the
-    /// database is a file, so reads do not wait for writes.
     fn reader(&self) -> &StorageState {
         self.storage()
     }
-    fn git(&self) -> &Git;
-    fn github(&self) -> &dyn GitHub;
-    fn herdr(&self) -> &Herdr;
-    /// The runners of workspaces with runner plain and tmux.
-    fn plain(&self) -> &PlainRunState;
-    fn tmux(&self) -> &TmuxRunState;
-    /// How agents reach this server.
     fn server(&self) -> &ServerStatus;
-    /// Marked whenever a change is announced through [`Notifier`].
     fn changes(&self) -> tokio::sync::watch::Receiver<()>;
-    /// The open pull requests of `in_review` tasks as the background check last read them.
-    fn pull_request_statuses(&self) -> &PullRequestStatusState;
 }
 
 /// How agents reach the server, shown in the app; `error` tells why it is not running.
@@ -196,9 +87,6 @@ pub trait Backend: Notifier + Send + Sync + 'static {
 pub struct ServerStatus {
     pub url: String,
     pub token: Option<String>,
-    /// The file that keeps `token`; `start_task` reads it into the agent command's
-    /// environment.
-    pub token_file: Option<PathBuf>,
     /// Tells this server apart from other Toodo servers, e.g. the one a tunnel or an old
     /// config reached instead; new on every start.
     pub instance: String,
@@ -489,12 +377,7 @@ impl Access {
         };
         let scopes = grant.scopes;
         let allowed = match name {
-            "read_toodo_skill"
-            | "list_workspaces"
-            | "list_tasks"
-            | "search_tasks"
-            | "get_task"
-            | "pull_request_status"
+            "read_toodo_skill" | "list_workspaces" | "list_tasks" | "search_tasks" | "get_task"
             | "review_report" => scopes.can_read(),
             "create_workspace" | "create_task" | "create_plan" | "update_task"
             | "add_dependency" | "remove_dependency" | "add_related" | "remove_related"
@@ -518,14 +401,7 @@ impl Access {
 
 static CHAT_INSTRUCTIONS: LazyLock<String> = LazyLock::new(|| render(CHAT_TEMPLATE));
 
-const CHAT_TEMPLATE: &str = "Plan workspaces and tasks in Toodo. Call list_workspaces and \
-search_tasks before creating anything; reuse matching workspaces and open tasks, and read \
-get_task and its links for earlier decisions. Create only source none workspaces; add git \
-workspaces in the Toodo app or through a local agent. Write task descriptions in English. \
-{{task-description}} Set estimates for split work and due dates only when the user gives \
-a deadline. A dependency points from the dependent task to its prerequisites: task_id depends \
-on depends_on. Use related links for context that does not block work. Record decisions and \
-blockers in progress notes. Use the Toodo app or a local agent to implement tasks.";
+const CHAT_TEMPLATE: &str = "Plan tasks and record progress, decisions and blockers in Toodo. Use list_workspaces, search_tasks and get_task before creating records. {{task-description}}";
 
 /// The bearer token of a request's `Authorization` header; the scheme is matched without
 /// regard to case, as HTTP defines it.
@@ -708,7 +584,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Return the toodo skill (Markdown): the workflow for working on a Toodo task. Read it before you work on a task or create tasks."
+        description = "Read instructions for managing tasks, notes, dependencies, references, and status."
     )]
     fn read_toodo_skill(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -716,22 +592,20 @@ impl ToodoMcp {
         )]))
     }
 
-    #[tool(description = "List Toodo workspaces (repositories) with their IDs.")]
+    #[tool(description = "List workspace records.")]
     fn list_workspaces(&self) -> Result<CallToolResult, ErrorData> {
         reply(tools::list_workspaces(&lock(self.backend.reader())))
     }
 
     #[tool(
-        description = "Register a repository on the machine Toodo runs on as a new workspace, as Clone or Open in the Toodo app does: clone clone_url into path, or, without clone_url, open the repository already cloned at path; then open it in herdr (runner herdr). source (github, local_git, or none for a plain directory without git or herdr), completion (pr_merge, local_merge, or manual), and runner (herdr or none) default from the repository: github + pr_merge + herdr with an origin remote, else local_git + local_merge + herdr (plain instead of herdr when herdr is not running on the server); combinations that cannot work are rejected naming one that does. Returns the workspace with its id. Call list_workspaces first and reuse a workspace that already has the repository; a path another workspace uses is rejected. Only for repositories the user asked to add to Toodo."
+        description = "Create a workspace record using its supplied settings. Call list_workspaces first to reuse an existing workspace."
     )]
     async fn create_workspace(
         &self,
         Parameters(request): Parameters<tools::CreateWorkspace>,
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
-            .blocking(move |backend| {
-                tools::create_workspace(backend.storage(), backend.git(), backend.herdr(), request)
-            })
+            .blocking(move |backend| tools::create_workspace(backend.storage(), request))
             .await?;
         if result.is_ok() {
             self.backend.workspaces_changed();
@@ -739,17 +613,13 @@ impl ToodoMcp {
         reply(result)
     }
 
-    #[tool(
-        description = "Change an existing workspace, as its settings and Move in the Toodo app do: name, default_base_branch, agent_merge (never or afterChecks), completion, runner, and path, the new absolute path of its repository on the same machine, e.g. after the repository moved or when list_workspaces reports a pathProblem. Omitted fields are kept. A base branch must exist in the repository (locally or as origin/<branch>) and cannot change while a task is in review; a path must be inside a git repository no other workspace uses (any directory for source none), whose root becomes the workspace path, and the tasks stay with the workspace; the runner cannot change while a task is in progress or in review; completion and runner must work with the source, as in create_workspace. The repository is opened in herdr when the workspace moves or switches to runner herdr. Returns the updated workspace."
-    )]
+    #[tool(description = "Update supplied workspace settings while keeping omitted values.")]
     async fn update_workspace(
         &self,
         Parameters(request): Parameters<tools::UpdateWorkspace>,
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
-            .blocking(move |backend| {
-                tools::update_workspace(backend.storage(), backend.git(), backend.herdr(), request)
-            })
+            .blocking(move |backend| tools::update_workspace(backend.storage(), request))
             .await?;
         if result.is_ok() {
             self.backend.workspaces_changed();
@@ -758,7 +628,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Archive a workspace that is no longer used, as Remove in the Toodo app does: it leaves list_workspaces and the task lists with its tasks, whose history, notes, criteria, and commits stay in review_report, and only the user can restore it or delete it for good in the app. Its repository, worktrees, and branches are not touched. It takes two calls: without confirm nothing changes and the reply (confirmed false) says what archiving does; then call again with {\"id\": 2, \"confirm\": true}. Rejected while a task of the workspace is in_progress or in_review (finish it or pause_task it first), while a planned task of another workspace depends on one of its tasks (remove_dependency first), and while a run of its tasks is queued or active (stop_run first). Returns {confirmed, workspace, message}."
+        description = "Archive a workspace and its tasks with confirm true after inspecting the confirmation response. Finish or pause active tasks first."
     )]
     async fn archive_workspace(
         &self,
@@ -774,29 +644,6 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "List the settings of the machine Toodo runs on (machine kind local) and of every known SSH machine (kind ssh with its label, the SSH host): saved in herdr, hosting a workspace, or with saved settings. worktreeRoot is the directory that holds task worktrees there; start_task is rejected for tasks on a machine whose worktreeRoot is null. herdrError tells why herdr's saved machines could not be read."
-    )]
-    async fn list_machine_settings(&self) -> Result<CallToolResult, ErrorData> {
-        let result = self
-            .blocking(|backend| tools::list_machine_settings(backend.storage(), backend.herdr()))
-            .await?;
-        reply(result)
-    }
-
-    #[tool(
-        description = "Set or clear the worktree root of one machine, as the worktree root setting in the Toodo app does: the absolute directory in which Toodo creates the worktrees of tasks on that machine, as <root>/<workspace>/<type>-<title>-<id>. Omit ssh_host for the machine Toodo runs on. Set it when start_task reports a missing worktree root or the user asks; use the directory the user named, and never change or clear a root that is already set unless the user asks. Only later starts use the new root. Returns the machine's settings."
-    )]
-    fn set_worktree_root(
-        &self,
-        Parameters(request): Parameters<tools::SetWorktreeRoot>,
-    ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::set_worktree_root(
-            &mut lock(self.backend.storage()),
-            request,
-        ))
-    }
-
-    #[tool(
         description = "List tasks with status and depends_on, of one workspace or of all workspaces, by ascending ID. Each task has ready (planned and nothing blocks it, so start_task or resume_task can begin it now) and blockedBy: the tasks it depends on that are not done yet, or done as not_adopted, which never unblocks it. Narrow the list to keep it short: status (e.g. [\"planned\", \"in_progress\"]), ready (true for tasks to start now), and limit (the newest matching tasks). When a page holds limit tasks, pass its first ID as before_id to read older ones."
     )]
     fn list_tasks(
@@ -807,7 +654,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Search tasks of all workspaces (or one) by words in their title, description, notes, completion note, branch, and pull request, best match first. Every word must appear, as a substring in any language; words are literal, not operators. A task number alone (431 or #431) returns that task first, in any workspace. Use it before planning or create_task to find earlier tasks on the same subject, then get_task to read what was decided. Each result lists its depends_on, dependents, and related task IDs."
+        description = "Search tasks of all workspaces (or one) by words in their title, description, notes, completion note, branch, refs, and pull request, best match first. Every word must appear, as a substring in any language; words are literal, not operators. A task number alone (431 or #431) returns that task first, in any workspace. Use it before planning or create_task to find earlier tasks on the same subject, then get_task to read what was decided. Each result lists its depends_on, dependents, and related task IDs."
     )]
     fn search_tasks(
         &self,
@@ -817,7 +664,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Read one task with its whole history: description, status timeline, progress and blocker notes, completion note (the conclusion of a task done as not_adopted), pull request, commits, and the tasks it depends on, that depend on it, and that are related to it (id, title, status). ready says whether it can start (or resume) now, and blockedBy which of the tasks it depends on keep it from that: not done yet, or done as not_adopted, which never unblocks it. Use it to learn what an earlier task decided, and follow its links with further get_task calls."
+        description = "Read one task with its whole history: description, refs, status timeline with the reasons given for starts, pauses, and completions, progress, decision, and blocker notes, completion note (the conclusion of a task done as not_adopted), pull request, commits, and the tasks it depends on, that depend on it, and that are related to it (id, title, status). ready says whether it can start (or resume) now, and blockedBy which of the tasks it depends on keep it from that: not done yet, or done as not_adopted, which never unblocks it. Use it to learn what an earlier task decided, and follow its links with further get_task calls."
     )]
     fn get_task(
         &self,
@@ -851,7 +698,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Find the Toodo task whose worktree contains the given directory, with its workspace's baseBranch, agentMerge, and machine. Paths are compared after resolving . and .. by their text. Pass machine (local, or the SSH host of a remote machine) when the same path may exist on several machines; without it, a directory inside worktrees on several machines is rejected, naming them."
+        description = "Find a task by ref, a stored reference string. Omit ref only to receive instructions to use ref or get_task with id."
     )]
     fn current_task(
         &self,
@@ -907,24 +754,20 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Add one completion criterion after the criteria of a task that is not done, which stay as they are, e.g. {\"task_id\": 5, \"text\": \"Tests pass\", \"kind\": \"command\", \"target\": \"npm test\"}. target is the URL of a url criterion or the shell command of a command criterion. Rejects a second merge criterion and kinds the workspace completion rules out: pr_merged and pr_open_ci_green need completion pr_merge, branch_merged_locally needs local_merge, and completion manual takes only manual, url, and command criteria. Returns the task with its criteria."
+        description = "Add a completion criterion to an unfinished task. Use manual or url with target."
     )]
     async fn add_criterion(
         &self,
         Parameters(request): Parameters<tools::AddCriterion>,
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
-            .blocking(move |backend| {
-                let completion =
-                    task_commands::edit_completion(backend.storage(), request.task_id)?;
-                tools::add_criterion(&mut lock(backend.storage()), request, completion)
-            })
+            .blocking(move |backend| tools::add_criterion(&mut lock(backend.storage()), request))
             .await?;
         self.announce(result)
     }
 
     #[tool(
-        description = "Delete one completion criterion of a task that is not done with its evidence, e.g. {\"criterion_id\": 7}; the other criteria stay as they are. criterion_id (or id) alone finds its task; task_id is optional and must be that task when given. Naming the merge criterion removes it, e.g. for work that ships no code. Returns the task with its criteria."
+        description = "Remove a criterion from an unfinished task with criterion_id. Read get_task first to inspect its criteria."
     )]
     fn remove_criterion(
         &self,
@@ -934,23 +777,20 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Change the type, title, description, estimate, due date, or completion criteria of a task; omitted fields stay unchanged. To add or delete one criterion, use add_criterion or remove_criterion instead. criteria replaces the whole list: criteria whose id is left out are deleted with their evidence. Send {\"id\": N} to keep criterion N as it is (add text, kind, or target to change it), and text and kind without id for a new one, e.g. [{\"id\": 1}, {\"text\": \"Docs updated\", \"kind\": \"manual\"}]. Each id appears once and must belong to the task. A list without the merge criterion (pr_merged or branch_merged_locally) is rejected unless remove_merge_criterion is true. A done task is rejected: its record stays as it was finished, so record a correction with add_progress_note, or ask the user to reopen it in the Toodo app."
+        description = "Change supplied task fields and append or remove refs. Set status in_review when work awaits review. Use lifecycle tools for other status changes."
     )]
     async fn update_task(
         &self,
         Parameters(request): Parameters<tools::UpdateTask>,
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
-            .blocking(move |backend| {
-                let completion = task_commands::edit_completion(backend.storage(), request.id)?;
-                tools::update_task(&mut lock(backend.storage()), request, completion)
-            })
+            .blocking(move |backend| tools::update_task(&mut lock(backend.storage()), request))
             .await?;
         self.announce(result)
     }
 
     #[tool(
-        description = "Make task_id depend on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": [3, 4]}. Rejects self and cyclic dependencies and a done task_id (create a follow-up task instead); one rejected prerequisite adds none. If task_id is in_progress and a prerequisite is not done, the task is paused and a blocker note names what it waits on; the user then decides in the Toodo app whether to close its herdr workspace, which ends your session. An in_review task is not paused; call pause_task if it must wait. Returns {task, paused, message}: task is task_id's details with each prerequisite's title and status, and message says what the change means and what to do next."
+        description = "Make task_id depend on depends_on. Cycles are rejected. An unfinished prerequisite pauses an in_progress task; resume_task when ready."
     )]
     fn add_dependency(
         &self,
@@ -961,13 +801,14 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Record progress or a decision (what and why) on a task's history, e.g. your current task. Call it at every milestone of your task: when you start (your plan, before your first edit), when you take a decision, when you finish a meaningful step, and when you open the pull request (with its URL); use report_blocker for what stops you. task_id is a number, e.g. {\"task_id\": 5, \"note\": \"Plan: ...\"}; when the call is rejected, fix the arguments and call it again. Returns the task with its notes."
+        description = "Record progress or a decision (what and why) on a task's history, e.g. your current task. Call it at every milestone of your task: when you start (your plan, before your first edit), when you take a decision (kind \"decision\", which the app and reviews list apart as the task's decisions), when you finish a meaningful step, and when you open the pull request (with its URL); use report_blocker for what stops you. task_id is a number, e.g. {\"task_id\": 5, \"note\": \"Plan: ...\"} or {\"task_id\": 5, \"kind\": \"decision\", \"note\": \"Chose SQLite over files: ...\"}; kind is progress when omitted. When the call is rejected, fix the arguments and call it again. Returns the task with its notes."
     )]
     fn add_progress_note(
         &self,
-        Parameters(request): Parameters<tools::AddNote>,
+        Parameters(request): Parameters<tools::AddProgressNote>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::add_note(storage, model::NoteKind::Progress, request))
+        let (kind, note) = request.into_note();
+        self.change(|storage| tools::add_note(storage, kind, note))
     }
 
     #[tool(
@@ -981,7 +822,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Pause an in_progress or in_review task, as Pause in the Toodo app does, with a required non-empty reason, e.g. {\"id\": 5, \"reason\": \"Waiting for the API design\"}. The task moves back to planned and shows as paused; it keeps its branch, worktree, herdr workspace, commits, and pull request, and the reason is recorded as a progress note. Your own task may be paused; stop working on it afterwards. To wait for other tasks, use add_dependency instead, which pauses the task until they are done. Returns the task with its notes."
+        description = "Pause an in_progress or in_review task with a required non-empty reason, e.g. {\"id\": 5, \"reason\": \"Waiting for the API design\"}. The task moves back to planned and shows as paused; the reason is recorded in its status history and notes. To wait for other tasks, use add_dependency, then resume_task when its prerequisites are done. Returns the task with its notes."
     )]
     fn pause_task(
         &self,
@@ -991,44 +832,33 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Resume a paused task (planned after it was started) whose prerequisites are all done, as Resume in the Toodo app does: reopen its worktree and herdr workspace and move it back to in_progress. An optional note is recorded as a progress note. Rejected for a task that was never started (call start_task) or is not paused. Returns the task with its notes."
+        description = "Resume a previously started planned task whose prerequisites are complete. An optional note records why work resumes."
     )]
     async fn resume_task(
         &self,
         Parameters(request): Parameters<tools::ResumeTask>,
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
-            .blocking(move |backend| {
-                tools::resume_task(backend.storage(), backend.git(), backend.herdr(), request)
-            })
+            .blocking(move |backend| tools::resume_task(backend.storage(), request))
             .await?;
         self.announce(result)
     }
 
     #[tool(
-        description = "Delete a planned task, e.g. one you created by mistake, as Delete in the Toodo app does. Deleting archives the task: it leaves the task lists and stops holding back its dependents, but stays in the reports, and only the user can restore it or delete it for good in the app. It takes two calls: without confirm nothing changes and the reply (confirmed false) says what deleting does (a worktree and its herdr workspace are removed; the branch is kept); then call again with {\"id\": 5, \"confirm\": true}. force: true also removes a worktree with modified or untracked files. Rejected for an in_progress or in_review task (pause_task it first) and a done task (reopen_task it, or the user deletes it in the app). Returns {confirmed, task, message}; task is the task as it was."
+        description = "Archive a planned task with confirm true after inspecting the confirmation response. Pause active work first."
     )]
     async fn delete_task(
         &self,
         Parameters(request): Parameters<tools::DeleteTask>,
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
-            .blocking(move |backend| {
-                tools::delete_task(
-                    backend.storage(),
-                    backend.git(),
-                    backend.herdr(),
-                    backend.plain(),
-                    backend.tmux(),
-                    request,
-                )
-            })
+            .blocking(move |backend| tools::delete_task(backend.storage(), request))
             .await?;
         self.announce_confirmed(result)
     }
 
     #[tool(
-        description = "Reopen a done task that was completed or concluded by mistake, as Reopen in the Toodo app does, with a required non-empty reason. It takes two calls: without confirm nothing changes and the reply (confirmed false) says what reopening would do; then call again with the same reason and confirm: true, e.g. {\"id\": 5, \"reason\": \"The fix missed a case\", \"confirm\": true}. The task becomes planned again, paused if it was started, so resume_task continues it on its branch; its resolution and completion note are cleared and kept with the reason as a progress note. Rejected while a task that depends on it has started; remove_dependency those first or create a follow-up task. Returns {confirmed, task, message}."
+        description = "Reopen a done task with a reason and confirm true. Earlier outcomes remain in its notes."
     )]
     fn reopen_task(
         &self,
@@ -1039,85 +869,54 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Start a planned task whose prerequisites are all done, as Start (or Resume for a paused task) in the Toodo app does: create or reopen its worktree and herdr workspace and move it to in_progress. Use it to hand a ready task to a new agent session; never start your own task, the one current_task finds. With agent_command, Toodo then runs that command (e.g. the coding agent) in the first pane of the task's herdr workspace, with TOODO_MCP_URL and TOODO_MCP_TOKEN exported so the agent can reach Toodo. Returns the task with the panes of its herdr workspace, ranIn (the pane agent_command ran in), and paneError when the panes could not be listed or the command did not run. Rejected with the reason when the task is not ready, is not planned, or its machine has no worktree root (set it with set_worktree_root)."
+        description = "Record the start of a ready planned task: move it to in_progress, record reason in its status history, and append refs. Unfinished prerequisites must be completed with complete_task first."
     )]
     async fn start_task(
         &self,
         Parameters(request): Parameters<tools::StartTask>,
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
-            .blocking(move |backend| {
-                tools::start_task(
-                    backend.storage(),
-                    backend.git(),
-                    backend.herdr(),
-                    backend.server(),
-                    request,
-                )
-            })
+            .blocking(move |backend| tools::start_task(backend.storage(), request))
             .await?;
-        if let Ok(started) = &result {
+        if let Ok(task) = &result {
             self.backend
-                .tasks_changed(model::WorkspaceId(started.task.workspace_id.0));
+                .tasks_changed(model::WorkspaceId(task.workspace_id.0));
         }
+        let result = result.map(|task| {
+            let mut value = serde_json::to_value(task).expect("task serializes");
+            value
+                .as_object_mut()
+                .expect("task is an object")
+                .remove("worktreePath");
+            value
+        });
         reply(result)
     }
 
     #[tool(
-        description = "Complete an in_progress or in_review task whose criteria are met, including confirmation after manual checks. Toodo checks automatic criteria first and rejects with each unmet criterion and its next step. The task becomes done, its herdr workspace closes, and dependents can start. A merged pull request gives resolution merged; criteria met with nothing merged gives completed. With without_pull_request: true and a required non-empty note, complete work that shipped without any pull request: pr_merged is met with the note as evidence, all other criteria must still hold, branch commits are recorded, and the note becomes the completion note. Rejected if any branch pull request exists, even unrecorded or closed; for a merged PR call complete_task without optional arguments, otherwise wait for merge or conclude abandoned work. without_pull_request and merged_with cannot be combined. With merged_with, complete work shipped by another task's merged pull request: pass its task ID or PR URL; active tasks or ones done as not_adopted become done as merged. Rejected if that PR is not merged or the task has its own open or merged PR. Never complete your own task, the one current_task finds: meeting its criteria completes it."
+        description = "Complete an active task after manual criteria and URL checks succeed. Record an optional note and append refs."
     )]
     async fn complete_task(
         &self,
         Parameters(request): Parameters<tools::CompleteTask>,
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
-            .blocking(move |backend| {
-                tools::complete_task(
-                    backend.storage(),
-                    backend.git(),
-                    backend.github(),
-                    backend.herdr(),
-                    request,
-                )
-            })
+            .blocking(move |backend| tools::complete_task(backend.storage(), request))
             .await?;
         self.announce(result)
     }
 
     #[tool(
-        description = "Conclude an in_progress or in_review task whose work was not shipped: research not adopted, a duplicate, or work no longer needed. This means concluded, not completed as shipped: the task becomes done (not_adopted) with a required non-empty note as its conclusion, its herdr workspace closes, and dependents stay blocked; the reply lists them as blockedDependents with what to do for each. For work shipped without a pull request, call complete_task with without_pull_request: true and note instead; for work shipped in another task's merged PR use merged_with. Rejected if its branch has a merged PR (call complete_task without optional arguments) or an open PR, even unrecorded, which only the user closes by concluding in the app. Never conclude your own task, the one current_task finds."
+        description = "Record an outcome with a required note, also for a planned task that was never started. Use not_adopted to leave dependents blocked, or shipped_with and a completed task id in shipped_with."
     )]
     async fn conclude_task(
         &self,
         Parameters(request): Parameters<tools::ConcludeTask>,
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
-            .blocking(move |backend| {
-                tools::conclude_task(
-                    backend.storage(),
-                    backend.git(),
-                    backend.github(),
-                    backend.herdr(),
-                    request,
-                )
-            })
+            .blocking(move |backend| tools::conclude_task(backend.storage(), request))
             .await?;
         self.announce_with(result, |concluded| &concluded.task)
-    }
-
-    #[tool(
-        description = "Restore the worktree of an in_progress or in_review task whose worktree directory is gone (worktreeMissing true, or no worktreePath), as Restore worktree in the Toodo app does: check out the task's branch, taken from origin when the repository no longer has it, into a new worktree and open it in herdr. Your own task may be restored too. Rejected with the reason when the worktree still exists, the task is not active, or its branch is gone everywhere. Returns the task with its new worktreePath."
-    )]
-    async fn restore_worktree(
-        &self,
-        Parameters(request): Parameters<tools::RestoreWorktree>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let result = self
-            .blocking(move |backend| {
-                tools::restore_worktree(backend.storage(), backend.git(), backend.herdr(), request)
-            })
-            .await?;
-        self.announce(result)
     }
 
     #[tool(
@@ -1132,46 +931,6 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Start an agent CLI (adapter claude or codex) for an in_progress task of a workspace with runner plain or tmux, as Start run in the Toodo app does, e.g. {\"task_id\": 5, \"adapter\": \"claude\"}: in the task's worktree, on the machine of its workspace, without a terminal. prompt goes to the agent on stdin; omitted or blank, the agent gets the task's title, description, and criteria. With mcp (default true) it gets this server's MCP endpoint and token, so it can call current_task. To send follow-up work such as review feedback to the agent of an ended run, pass follow_up_of with that run's id and the feedback as prompt: the agent resumes its session instead of starting from zero, and the new run's followUpOf links it to that run. One writer run at a time per worktree. Returns the run, in state queued (with queuePosition) while the machine runs as many runs as its limit allows; a queued run starts on its own when a slot frees. Follow it with run_status and read its output with run_log. For a workspace with runner herdr, start the agent with start_task's agent_command instead. Never start a run for your own task."
-    )]
-    async fn start_run(
-        &self,
-        Parameters(request): Parameters<tools::StartAgentRun>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let result = self
-            .blocking(move |backend| {
-                tools::start_run(backend.storage(), backend.plain(), backend.tmux(), request)
-            })
-            .await?;
-        reply(result)
-    }
-
-    #[tool(
-        description = "Read the state of one run (run_id) or of every run of a task (task_id), oldest first: state (queued, reserved, running, settled, exited, failed, cancelled, or unknown), runnerKind, adapter, and when it was created, started, and ended. active is true while the run has not ended (queued, reserved, running, or unknown), and next says what to do with it. Poll it until active is false to wait for a run; unknown means its end was not observed, so call reconcile_run instead of polling."
-    )]
-    fn run_status(
-        &self,
-        Parameters(request): Parameters<tools::RunStatusRequest>,
-    ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::run_status(&lock(self.backend.reader()), request))
-    }
-
-    #[tool(
-        description = "Read the pull request of an in_review task (task_id), or of every in_review task when omitted, as Toodo's background check last read it (every minute), without running gh: url, state, base, headSha, checks (all checks combined: failing, pending, passing, or null without checks), review (approved, changes_requested, or pending), checkRuns (name, state, conclusion, url of each check), reviews (the latest review of each reviewer), checkedAt, and next, what to do now. Use it instead of gh pr checks or gh pr view to follow CI and reviews of your pull request; call it again after a minute for newer state."
-    )]
-    fn pull_request_status(
-        &self,
-        Parameters(request): Parameters<tools::PullRequestStatusRequest>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let polled = lock_statuses(self.backend.pull_request_statuses()).clone();
-        reply(tools::pull_request_status(
-            &lock(self.backend.reader()),
-            &polled,
-            request,
-        ))
-    }
-
-    #[tool(
         description = "Render the review of a period across all workspaces (or one workspace or label) as Markdown (the default) or CSV, the same report the Toodo app's Review exports: a summary of outcomes, commits, durations, plan vs actual, late tasks, a Year in review for a year, and each task under its outcome with its pull request, notes, and commits. period is week (from its Monday, or from from), month, quarter, year, or custom (from and to, both included); date (YYYY-MM-DD) picks the period containing that day, today when omitted. Days and times are in time_zone (IANA, e.g. Europe/Berlin), the server's when omitted. e.g. {\"period\": \"week\"} or {\"period\": \"year\", \"date\": \"2026-01-01\", \"format\": \"csv\"}. Returns {fileName, mediaType, from, to, contents}."
     )]
     fn review_report(
@@ -1179,51 +938,6 @@ impl ToodoMcp {
         Parameters(request): Parameters<tools::ReviewReportRequest>,
     ) -> Result<CallToolResult, ErrorData> {
         reply(tools::review_report(&lock(self.backend.reader()), request))
-    }
-
-    #[tool(
-        description = "Read a plain or tmux run with its events (launch, result, exit, stop) and the end of its stdout and stderr, tail_bytes of each (default 65536, at most 4194304), with the MCP token redacted. For an active tmux run, attach is the shell command that opens its terminal session to watch it."
-    )]
-    async fn run_log(
-        &self,
-        Parameters(request): Parameters<tools::RunLogRequest>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let result = self
-            .blocking(move |backend| {
-                tools::run_log(backend.storage(), backend.plain(), backend.tmux(), request)
-            })
-            .await?;
-        reply(result)
-    }
-
-    #[tool(
-        description = "Stop a plain or tmux run, as Stop run in the Toodo app does: a plain run's process group is terminated (killed after a grace period), a tmux run's session is killed, and the run ends as cancelled. A run that already ended is returned as it is. Herdr runs are rejected; stop those in their herdr pane. Returns the run."
-    )]
-    async fn stop_run(
-        &self,
-        Parameters(request): Parameters<tools::RunRef>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let result = self
-            .blocking(move |backend| {
-                tools::stop_run(backend.storage(), backend.plain(), backend.tmux(), request)
-            })
-            .await?;
-        reply(result)
-    }
-
-    #[tool(
-        description = "Settle a plain or tmux run whose end was not observed (state unknown, e.g. after a server restart or an SSH disconnect), as Reconcile in the Toodo app does, from what its host recorded: its exit, a process or session that still runs (running again), or neither. It never starts the agent again. A run that is observed or already ended is returned as it is. Returns the run."
-    )]
-    async fn reconcile_run(
-        &self,
-        Parameters(request): Parameters<tools::RunRef>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let result = self
-            .blocking(move |backend| {
-                tools::reconcile_run(backend.storage(), backend.plain(), backend.tmux(), request)
-            })
-            .await?;
-        reply(result)
     }
 }
 
@@ -1387,14 +1101,7 @@ impl ServerHandler for ToodoMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         if let Some(access @ Access::OAuth(_)) = Access::of(&context) {
-            let rejected = access.check_tool(&request.name).err().or_else(|| {
-                let args = request.arguments.as_ref();
-                (request.name == "create_workspace"
-                    && (args.and_then(|a| a.get("source")).and_then(Value::as_str) != Some("none")
-                        || args.and_then(|a| a.get("clone_url")).is_some_and(|value| !value.is_null())
-                        || args.and_then(|a| a.get("init")).is_some_and(|value| value != &Value::Bool(false))))
-                    .then(|| "Add git workspaces in the Toodo app or through a local agent with the MCP token; retry with source: \"none\" and omit clone_url and init.".to_owned())
-            });
+            let rejected = access.check_tool(&request.name).err();
             if let Some(message) = rejected {
                 return Ok(
                     tool_error(CommandError::new(CommandErrorCode::NotPermitted, message)).into(),
@@ -1573,7 +1280,6 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
-    use crate::adapters::github::GhCli;
 
     #[test]
     fn the_token_is_created_once_and_then_reused() {
@@ -1611,58 +1317,29 @@ mod tests {
     struct TestBackend {
         storage: Arc<StorageState>,
         public_url: Option<PublicUrl>,
-        git: Git,
-        github: GhCli,
-        herdr: Herdr,
-        plain: PlainRunState,
-        tmux: TmuxRunState,
-        /// Where the runners keep their runs.
-        runs_dir: tempfile::TempDir,
         server: ServerStatus,
-        pull_request_statuses: PullRequestStatusState,
         changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
         workspaces_changed: std::sync::Mutex<usize>,
         changes: tokio::sync::watch::Sender<()>,
     }
-
-    type Scripted = Vec<Result<String, crate::adapters::git::GitError>>;
-
     impl TestBackend {
         fn new(storage: crate::storage::Storage) -> Self {
-            Self::scripted(storage, Vec::new(), Vec::new())
-        }
-
-        /// Git and herdr return `git` and `herdr` in order; gh must not run.
-        fn scripted(storage: crate::storage::Storage, git: Scripted, herdr: Scripted) -> Self {
-            use crate::adapters::git::fake::FakeRunner;
-            let runner = |results: Scripted| Box::new(Arc::new(FakeRunner::new(results)));
-            let storage = Arc::new(std::sync::Mutex::new(storage));
-            let runs_dir = tempfile::tempdir().unwrap();
             Self {
-                plain: PlainRunState::new(storage.clone(), runs_dir.path(), "0123456789ab"),
-                tmux: TmuxRunState::new(storage.clone(), runs_dir.path(), "0123456789ab"),
-                runs_dir,
-                storage,
+                storage: Arc::new(std::sync::Mutex::new(storage)),
                 public_url: None,
-                git: Git::new(runner(git)),
-                github: GhCli::new(runner(Vec::new())),
-                herdr: Herdr::new(runner(herdr)),
                 server: ServerStatus {
-                    url: url(47617),
-                    token: Some("secret".to_owned()),
-                    token_file: Some(PathBuf::from("/data/toodo/mcp-token")),
-                    instance: "0123456789ab".to_owned(),
+                    url: url(0),
+                    token: Some("secret".into()),
+                    instance: "0123456789ab".into(),
                     error: None,
                     rejections: Rejections::default(),
                 },
-                pull_request_statuses: PullRequestStatusState::default(),
                 changed: std::sync::Mutex::default(),
                 workspaces_changed: std::sync::Mutex::default(),
                 changes: tokio::sync::watch::Sender::new(()),
             }
         }
     }
-
     impl Notifier for TestBackend {
         fn tasks_changed(&self, workspace: model::WorkspaceId) {
             self.changed.lock().unwrap().push(workspace);
@@ -1671,1052 +1348,170 @@ mod tests {
         fn workspaces_changed(&self) {
             *self.workspaces_changed.lock().unwrap() += 1;
         }
-        fn agent_statuses_changed(&self, _: &[crate::commands::types::TaskAgentStatus]) {}
-        fn pull_request_statuses_changed(
-            &self,
-            _: &[crate::commands::types::TaskPullRequestStatus],
-        ) {
-        }
     }
-
     impl Backend for TestBackend {
         fn public_url(&self) -> Option<&PublicUrl> {
             self.public_url.as_ref()
         }
-
         fn storage(&self) -> &StorageState {
             &self.storage
         }
-
-        fn git(&self) -> &Git {
-            &self.git
-        }
-
-        fn github(&self) -> &dyn GitHub {
-            &self.github
-        }
-
-        fn herdr(&self) -> &Herdr {
-            &self.herdr
-        }
-
-        fn plain(&self) -> &PlainRunState {
-            &self.plain
-        }
-
-        fn tmux(&self) -> &TmuxRunState {
-            &self.tmux
-        }
-
         fn server(&self) -> &ServerStatus {
             &self.server
         }
-
         fn changes(&self) -> tokio::sync::watch::Receiver<()> {
             self.changes.subscribe()
         }
-
-        fn pull_request_statuses(&self) -> &PullRequestStatusState {
-            &self.pull_request_statuses
-        }
     }
 
-    /// A backend with one in_progress task of a local workspace with runner plain, whose
-    /// plain runner runs the shell script `script` as Claude and Codex.
-    fn plain_backend(script: &str) -> (Arc<TestBackend>, model::TaskId) {
-        use crate::domain::model::{CompletionMode, Runner, Source, TaskType, WorkspaceLocation};
-        use crate::domain::naming::TaskCheckout;
-        use crate::domain::path::PosixPath;
-        use std::os::unix::fs::PermissionsExt;
-        let mut backend = TestBackend::new(crate::storage::Storage::open_in_memory().unwrap());
-        let dir = backend.runs_dir.path().to_owned();
-        let program = dir.join("agent");
-        fs::write(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
-        fs::set_permissions(&program, fs::Permissions::from_mode(0o700)).unwrap();
-        let worktree = dir.join("worktree");
-        fs::create_dir(&worktree).unwrap();
-        let posix = |path: &Path| PosixPath::parse(path.to_str().unwrap()).unwrap();
-        let task = {
-            let mut storage = lock(&backend.storage);
-            let workspace = storage
-                .create_workspace(&crate::storage::NewWorkspace {
-                    name: "toodo".to_owned(),
-                    location: WorkspaceLocation::Local {
-                        path: posix(&dir).into(),
-                    },
-                    default_base_branch: "main".to_owned(),
-                    source: Source::LocalGit,
-                    completion: CompletionMode::LocalMerge,
-                    runner: Runner::Plain,
-                    axes_detected: true,
-                })
-                .unwrap();
-            let task = storage
-                .create_task(&crate::storage::NewTask {
-                    workspace_id: workspace.id,
-                    task_type: TaskType::Feat,
-                    title: "Add login".to_owned(),
-                    description: String::new(),
-                    estimate: None,
-                    due_date: None,
-                    criteria: Vec::new(),
-                })
-                .unwrap()
-                .id;
-            storage
-                .start_task_plain(
-                    task,
-                    &TaskCheckout {
-                        path: posix(&worktree).into(),
-                        branch: "feat/add-login-1".to_owned(),
-                    },
-                )
-                .unwrap();
-            task
-        };
-        backend.plain =
-            PlainRunState::new(backend.storage.clone(), dir.join("runs"), "0123456789ab")
-                .with_programs(&program, &program);
-        (Arc::new(backend), task)
-    }
-
-    fn arguments<T: serde::de::DeserializeOwned>(value: Value) -> Parameters<T> {
-        Parameters(serde_json::from_value(value).unwrap())
-    }
-
-    /// The JSON reply of a tool call that succeeded.
-    fn succeeded(result: Result<CallToolResult, ErrorData>) -> Value {
-        let result = serde_json::to_value(result.unwrap()).unwrap();
-        assert_ne!(result["isError"], true, "{result}");
-        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
-    }
-
-    /// The error text of a tool call that failed.
-    fn failed(result: Result<CallToolResult, ErrorData>) -> String {
-        let result = serde_json::to_value(result.unwrap()).unwrap();
-        assert_eq!(result["isError"], true, "{result}");
-        result["content"][0]["text"].as_str().unwrap().to_owned()
-    }
-
-    #[test]
-    fn an_agent_starts_a_run_follows_it_to_its_end_and_reads_its_log_through_mcp() {
-        let (backend, task) = plain_backend(
-            r#"printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"result":"done"}'"#,
-        );
-        let server = ToodoMcp::new(backend.clone());
-        let runtime = runtime();
-
-        let started = succeeded(runtime.block_on(server.start_run(arguments(
-            serde_json::json!({"task_id": task.0, "adapter": "claude", "mcp": false}),
-        ))));
-        let id = started["id"].as_i64().unwrap();
-        backend
-            .plain
-            .wait_for_end(
-                crate::domain::runtime::RunId(id),
-                std::time::Duration::from_secs(15),
-            )
-            .unwrap();
-
-        let status = succeeded(server.run_status(arguments(serde_json::json!({"run_id": id}))));
-        assert_eq!(status["state"], "settled", "{status}");
-        assert_eq!(status["active"], false);
-        assert!(status["next"].as_str().unwrap().contains("run_log"));
-        let runs = succeeded(server.run_status(arguments(serde_json::json!({"task_id": task.0}))));
-        assert_eq!(runs["runs"][0]["id"], id, "{runs}");
-        let log = succeeded(
-            runtime.block_on(server.run_log(arguments(serde_json::json!({"run_id": id})))),
-        );
-        assert_eq!(log["run"]["state"], "settled");
-        assert!(
-            log["stdout"]
-                .as_str()
-                .unwrap()
-                .contains(r#""result":"done""#),
-            "{log}"
-        );
-    }
-
-    #[test]
-    fn an_agent_stops_and_reconciles_a_run_through_mcp() {
-        let (backend, task) = plain_backend("exec sleep 600");
-        let server = ToodoMcp::new(backend.clone());
-        let runtime = runtime();
-        let started = succeeded(runtime.block_on(server.start_run(arguments(
-            serde_json::json!({"task_id": task.0, "adapter": "codex", "mcp": false}),
-        ))));
-        let id = started["id"].as_i64().unwrap();
-        let status = succeeded(server.run_status(arguments(serde_json::json!({"run_id": id}))));
-        assert_eq!(status["active"], true, "{status}");
-        assert!(status["next"].as_str().unwrap().contains("stop_run"));
-
-        let stopped = succeeded(
-            runtime.block_on(server.stop_run(arguments(serde_json::json!({"run_id": id})))),
-        );
-        assert_eq!(stopped["state"], "cancelled", "{stopped}");
-        let reconciled = succeeded(
-            runtime.block_on(server.reconcile_run(arguments(serde_json::json!({"run_id": id})))),
-        );
-        assert_eq!(reconciled["state"], "cancelled");
-
-        let missing = failed(
-            runtime.block_on(server.reconcile_run(arguments(serde_json::json!({"run_id": 999})))),
-        );
-        assert!(missing.contains("run_status"), "{missing}");
-        let neither = failed(server.run_status(arguments(serde_json::json!({}))));
-        assert!(neither.contains("run_id"), "{neither}");
-    }
-
-    #[test]
-    fn pull_request_status_returns_the_polled_state_without_gh() {
-        use crate::adapters::github::{
-            CheckRun, ChecksState, PullRequest, PullRequestState, PullRequestStatus, Review,
-            ReviewState, ViewedPullRequest,
-        };
-        use crate::commands::completion::PolledPullRequest;
-        let (storage, task) = storage_with_task(None);
-        let backend = Arc::new(TestBackend::new(storage));
-        let server = ToodoMcp::new(backend.clone());
-        let id = task.id.0;
-
-        let missing =
-            failed(server.pull_request_status(arguments(serde_json::json!({"task_id": id}))));
-        assert!(missing.contains("gh pr create"), "{missing}");
-
-        let url = "https://github.com/acme/toodo/pull/7";
-        lock_statuses(&backend.pull_request_statuses).insert(
-            task.id,
-            PolledPullRequest {
-                viewed: ViewedPullRequest {
-                    pull_request: PullRequest {
-                        url: url.to_owned(),
-                        state: PullRequestState::Open,
-                        base: "main".to_owned(),
-                        merged_at: None,
-                    },
-                    status: PullRequestStatus {
-                        checks: Some(ChecksState::Failing),
-                        review: ReviewState::ChangesRequested,
-                    },
-                    head_sha: Some("abc1234".to_owned()),
-                    check_runs: vec![CheckRun {
-                        name: "rust".to_owned(),
-                        state: ChecksState::Failing,
-                        conclusion: Some("failure".to_owned()),
-                        url: Some("https://github.com/acme/toodo/actions/runs/1".to_owned()),
-                    }],
-                    reviews: vec![Review {
-                        author: Some("octo".to_owned()),
-                        state: "changes_requested".to_owned(),
-                    }],
-                },
-                checked_at: 1_800_000_000,
-            },
-        );
-        let one =
-            succeeded(server.pull_request_status(arguments(serde_json::json!({"task_id": id}))));
-        assert_eq!(one["taskId"], id, "{one}");
-        assert_eq!(one["url"], url);
-        assert_eq!(one["state"], "open");
-        assert_eq!(one["checks"], "failing");
-        assert_eq!(one["review"], "changes_requested");
-        assert_eq!(one["checkRuns"][0]["name"], "rust");
-        assert_eq!(one["checkRuns"][0]["conclusion"], "failure");
-        assert_eq!(one["reviews"][0]["author"], "octo");
-        assert_eq!(one["checkedAt"], 1_800_000_000);
-        assert!(one["next"].as_str().unwrap().contains("fix"), "{one}");
-
-        let all = succeeded(server.pull_request_status(arguments(serde_json::json!({}))));
-        assert_eq!(all["pullRequests"].as_array().unwrap().len(), 1, "{all}");
-        assert_eq!(all["pullRequests"][0]["url"], url);
-    }
-
-    /// A database with one local workspace and one planned task, and the machine's
-    /// worktree root if `root` is given.
-    fn storage_with_task(root: Option<&str>) -> (crate::storage::Storage, model::Task) {
-        use crate::domain::model::{MachineSettings, TaskType, WorkspaceLocation};
-        use crate::domain::path::WindowsPath;
+    fn storage_with_task(_: Option<&str>) -> (crate::storage::Storage, model::Task) {
         let mut storage = crate::storage::Storage::open_in_memory().unwrap();
         let workspace = storage
             .create_workspace(&crate::storage::NewWorkspace {
-                name: "toodo".to_owned(),
-                location: WorkspaceLocation::Local {
-                    path: WindowsPath::parse(r"C:\dev\toodo").unwrap().into(),
-                },
-                default_base_branch: "main".to_owned(),
-                source: crate::domain::model::Source::GitHub,
-                completion: crate::domain::model::CompletionMode::PullRequestMerge,
-                runner: crate::domain::model::Runner::Herdr,
-                axes_detected: true,
-            })
-            .unwrap();
-        storage
-            .save_machine_settings(&MachineSettings::Local {
-                worktree_root: root.map(|root| WindowsPath::parse(root).unwrap().into()),
+                name: "Tasks".into(),
+                description: None,
+                repository: None,
             })
             .unwrap();
         let task = storage
             .create_task(&crate::storage::NewTask {
                 workspace_id: workspace.id,
-                task_type: TaskType::Feat,
-                title: "Add login".to_owned(),
+                task_type: model::TaskType::Feat,
+                title: "Add login".into(),
                 description: String::new(),
                 estimate: None,
                 due_date: None,
-                criteria: Vec::new(),
+                criteria: vec![],
             })
             .unwrap();
         (storage, task)
     }
 
-    fn start(server: &ToodoMcp, id: model::TaskId) -> serde_json::Value {
-        let request = tools::StartTask {
-            id: id.into(),
-            agent_command: None,
-            request_id: None,
-        };
-        let result = runtime()
-            .block_on(server.start_task(Parameters(request)))
-            .unwrap();
-        serde_json::to_value(result).unwrap()
-    }
-
     #[test]
-    fn starting_a_ready_task_moves_it_in_progress_and_announces_it() {
-        let (storage, task) = storage_with_task(Some(r"D:\wt"));
-        let created =
-            r#"{"id":"cli:worktree:create","result":{"workspace":{"workspace_id":"w27"}}}"#;
-        let backend = Arc::new(TestBackend::scripted(
-            storage,
-            vec![
-                Ok("abc\n".to_owned()),
-                Ok(String::new()),
-                Err(crate::adapters::git::fake::failed()),
-                Ok(String::new()),
-            ],
-            vec![
-                Ok(created.to_owned()),
-                Ok(r#"{"id":"cli:pane:list","result":{"panes":[]}}"#.to_owned()),
-            ],
-        ));
-        let server = ToodoMcp::new(backend.clone());
-
-        let result = start(&server, task.id);
-
-        assert_ne!(result["isError"], true, "{result}");
-        let started: serde_json::Value =
-            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(started["status"], "in_progress");
-        assert_eq!(started["herdrWorkspaceId"], "w27");
-        let stored = lock(&backend.storage).get_task(task.id).unwrap().unwrap();
-        let statuses: Vec<_> = stored.timeline.iter().map(|event| event.status).collect();
-        assert_eq!(
-            statuses,
-            [
-                crate::domain::status::TaskStatus::Planned,
-                crate::domain::status::TaskStatus::InProgress
-            ]
-        );
-        assert_eq!(*backend.changed.lock().unwrap(), [task.workspace_id]);
-    }
-
-    #[test]
-    fn a_rejected_start_returns_the_reason_as_tool_error_text_and_announces_nothing() {
-        let (storage, task) = storage_with_task(None);
-        let backend = Arc::new(TestBackend::new(storage));
-        let server = ToodoMcp::new(backend.clone());
-
-        let result = start(&server, task.id);
-
-        assert_eq!(result["isError"], true);
-        assert_eq!(
-            result["content"][0]["text"],
-            "InvalidInput: worktree root is not set for machine local; ask the user where task \
-             worktrees go on that machine, call set_worktree_root with worktree_root set to \
-             that absolute directory, then start the task again"
-        );
-        assert!(backend.changed.lock().unwrap().is_empty());
-        let stored = lock(&backend.storage).get_task(task.id).unwrap().unwrap();
-        assert_eq!(stored, task);
-    }
-
-    fn create_workspace(server: &ToodoMcp, arguments: serde_json::Value) -> serde_json::Value {
-        let request = serde_json::from_value(arguments).unwrap();
-        let result = runtime()
-            .block_on(server.create_workspace(Parameters(request)))
-            .unwrap();
-        serde_json::to_value(result).unwrap()
-    }
-
-    /// The local path for POSIX `posix`: local paths are the server's own.
-    fn host(posix: &str) -> String {
-        posix.to_owned()
-    }
-
-    /// What `git rev-parse --show-toplevel` prints for `posix`.
-    fn toplevel(posix: &str) -> Result<String, crate::adapters::git::GitError> {
-        Ok(format!("{posix}\n"))
-    }
-
-    /// `herdr status --json` of a running server, then `herdr workspace list` without the
-    /// repository, then `herdr workspace create`.
-    fn herdr_opens_a_new_workspace() -> Scripted {
-        vec![
-            Ok(r#"{"server":{"running":true}}"#.to_owned()),
-            Ok(r#"{"id":"cli:workspace:list","result":{"workspaces":[]}}"#.to_owned()),
-            Ok(
-                r#"{"id":"cli:workspace:create","result":{"workspace":{"workspace_id":"w9"}}}"#
-                    .to_owned(),
-            ),
-        ]
-    }
-
-    fn created_workspace(result: &serde_json::Value) -> serde_json::Value {
-        assert_ne!(result["isError"], true, "{result}");
-        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
-    }
-
-    fn error_text(result: &serde_json::Value) -> &str {
-        assert_eq!(result["isError"], true, "{result}");
-        result["content"][0]["text"].as_str().unwrap()
-    }
-
-    /// A server whose database has the workspace "site" at /dev/site, opened through the
-    /// tool; git and herdr then return `git` and `herdr`.
-    fn server_with_site(git: Scripted, herdr: Scripted) -> (Arc<TestBackend>, ToodoMcp) {
-        let (storage, _) = storage_with_task(None);
-        let mut git_results = vec![toplevel("/dev/site"), Ok("origin\n".to_owned())];
-        git_results.extend(git);
-        let mut herdr_results = herdr_opens_a_new_workspace();
-        herdr_results.extend(herdr);
-        let backend = Arc::new(TestBackend::scripted(storage, git_results, herdr_results));
-        let server = ToodoMcp::new(backend.clone());
-        let result = create_workspace(
-            &server,
-            serde_json::json!({
-                "name": "site",
-                "path": host("/dev/site/src"),
-                "default_base_branch": "dev",
-            }),
-        );
-        created_workspace(&result);
-        (backend, server)
-    }
-
-    fn workspace_count(backend: &TestBackend) -> usize {
-        lock(&backend.storage).list_workspaces().unwrap().len()
-    }
-
-    #[test]
-    fn creating_a_workspace_opens_an_existing_clone_at_its_root() {
-        let (storage, _) = storage_with_task(None);
-        let backend = Arc::new(TestBackend::scripted(
-            storage,
-            vec![toplevel("/dev/site"), Ok("origin\n".to_owned())],
-            herdr_opens_a_new_workspace(),
-        ));
-        let server = ToodoMcp::new(backend.clone());
-
-        let result = create_workspace(
-            &server,
-            serde_json::json!({
-                "name": "site",
-                "path": host("/dev/site/src"),
-                "default_base_branch": "dev",
-            }),
-        );
-
-        let workspace = created_workspace(&result);
-        assert_eq!(workspace["name"], "site");
-        assert_eq!(
-            (
-                &workspace["source"],
-                &workspace["completion"],
-                &workspace["runner"]
-            ),
-            (
-                &serde_json::json!("github"),
-                &serde_json::json!("pr_merge"),
-                &serde_json::json!("herdr")
-            )
-        );
-        assert_eq!(
-            workspace["location"],
-            serde_json::json!({"kind": "local", "path": host("/dev/site")})
-        );
-        assert_eq!(workspace["defaultBaseBranch"], "dev");
-        let id = model::WorkspaceId(workspace["id"].as_i64().unwrap());
-        let stored = lock(&backend.storage).get_workspace(id).unwrap().unwrap();
-        assert_eq!(stored.name, "site");
-        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
-    }
-
-    #[test]
-    fn creating_a_workspace_clones_the_url_and_detects_the_base_branch() {
-        let (storage, _) = storage_with_task(None);
-        let git_runner = Arc::new(crate::adapters::git::fake::FakeRunner::new(vec![
-            Ok(String::new()),
-            Ok("origin/main\n".to_owned()),
-        ]));
-        let mut backend = TestBackend::scripted(storage, Vec::new(), herdr_opens_a_new_workspace());
-        backend.git = Git::new(Box::new(git_runner.clone()));
-        let backend = Arc::new(backend);
-        let server = ToodoMcp::new(backend.clone());
-
-        let result = create_workspace(
-            &server,
-            serde_json::json!({
-                "name": "site",
-                "path": host("/dev/site"),
-                "clone_url": "git@github.com:me/site.git",
-            }),
-        );
-
-        let workspace = created_workspace(&result);
-        assert_eq!(workspace["location"]["path"], host("/dev/site"));
-        assert_eq!(workspace["defaultBaseBranch"], "main");
-        let invocations = git_runner.invocations.lock().unwrap();
-        assert_eq!(invocations[0].args[0], "clone");
-        assert!(
-            invocations[0]
-                .args
-                .contains(&"git@github.com:me/site.git".to_owned())
-        );
-        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
-    }
-
-    #[test]
-    fn creating_a_workspace_without_a_repository_runs_neither_git_nor_herdr() {
-        let (storage, _) = storage_with_task(None);
-        // Neither git nor herdr may run: their scripts are empty.
-        let backend = Arc::new(TestBackend::scripted(storage, Vec::new(), Vec::new()));
-        let server = ToodoMcp::new(backend.clone());
-
-        let rejected = create_workspace(
-            &server,
-            serde_json::json!({
-                "name": "notes",
-                "path": host("/dev/notes"),
-                "source": "none",
-                "init": true,
-            }),
-        );
-        assert_eq!(
-            error_text(&rejected),
-            "InvalidInput: source none is a plain directory without a repository; omit \
-             clone_url and init, or choose source local_git or github to clone or init one"
-        );
-
-        let result = create_workspace(
-            &server,
-            serde_json::json!({
-                "name": "notes",
-                "path": host("/dev/notes"),
-                "source": "none",
-            }),
-        );
-        let workspace = created_workspace(&result);
-        assert_eq!(workspace["location"]["path"], host("/dev/notes"));
-        assert_eq!(workspace["defaultBaseBranch"], "");
-        assert_eq!(
-            (
-                &workspace["source"],
-                &workspace["completion"],
-                &workspace["runner"]
-            ),
-            (
-                &serde_json::json!("none"),
-                &serde_json::json!("manual"),
-                &serde_json::json!("none")
-            )
-        );
-        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
-    }
-
-    #[test]
-    fn creating_a_workspace_takes_its_completion_and_runner() {
-        let (storage, _) = storage_with_task(None);
-        // A local_git source needs no remote check, and runner none no herdr.
-        let backend = Arc::new(TestBackend::scripted(
-            storage,
-            vec![toplevel("/dev/site")],
-            Vec::new(),
-        ));
-        let server = ToodoMcp::new(backend.clone());
-
-        let invalid = create_workspace(
-            &server,
-            serde_json::json!({
-                "name": "site",
-                "path": host("/dev/site"),
-                "source": "local_git",
-                "runner": "none",
-            }),
-        );
-        assert!(
-            error_text(&invalid).starts_with(
-                "InvalidInput: completion local_merge merges the task branch that only a runner"
-            ),
-            "{invalid}"
-        );
-
-        let result = create_workspace(
-            &server,
-            serde_json::json!({
-                "name": "site",
-                "path": host("/dev/site"),
-                "default_base_branch": "main",
-                "source": "local_git",
-                "completion": "manual",
-                "runner": "none",
-            }),
-        );
-        let workspace = created_workspace(&result);
-        assert_eq!(
-            (
-                &workspace["source"],
-                &workspace["completion"],
-                &workspace["runner"]
-            ),
-            (
-                &serde_json::json!("local_git"),
-                &serde_json::json!("manual"),
-                &serde_json::json!("none")
-            )
-        );
-    }
-
-    #[test]
-    fn a_path_another_workspace_uses_is_rejected_before_anything_runs() {
-        // Neither git nor herdr may run again: their scripts end after the first workspace.
-        let (backend, server) = server_with_site(Vec::new(), Vec::new());
-
-        let result = create_workspace(
-            &server,
-            serde_json::json!({
-                "name": "again",
-                "path": host("/dev/site"),
-                "clone_url": "git@github.com:me/site.git",
-            }),
-        );
-
-        assert_eq!(
-            error_text(&result),
-            format!(
-                "Rejected: workspace site (2) already uses {}",
-                host("/dev/site")
-            )
-        );
-        assert_eq!(workspace_count(&backend), 2);
-        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
-    }
-
-    #[test]
-    fn opening_another_folder_of_a_workspace_repository_is_rejected_before_herdr_runs() {
-        let (backend, server) = server_with_site(vec![toplevel("/dev/site")], Vec::new());
-
-        let result = create_workspace(
-            &server,
-            serde_json::json!({
-                "name": "again",
-                "path": host("/dev/site/docs"),
-                "default_base_branch": "main",
-            }),
-        );
-
-        assert_eq!(
-            error_text(&result),
-            format!(
-                "Rejected: workspace site (2) already uses {}",
-                host("/dev/site")
-            )
-        );
-        assert_eq!(workspace_count(&backend), 2);
-    }
-
-    #[test]
-    fn an_invalid_path_or_a_folder_outside_a_repository_creates_no_workspace() {
-        let (storage, _) = storage_with_task(None);
-        let backend = Arc::new(TestBackend::scripted(
-            storage,
-            vec![Err(crate::adapters::git::GitError::Failed {
-                command: format!("git -C {} rev-parse --show-toplevel", host("/dev/notes")),
-                stderr: "fatal: not a git repository (or any of the parent directories): .git"
-                    .to_owned(),
-            })],
-            Vec::new(),
-        ));
-        let server = ToodoMcp::new(backend.clone());
-
-        let relative = create_workspace(
-            &server,
-            serde_json::json!({"name": "notes", "path": "notes"}),
-        );
-        assert_eq!(
-            error_text(&relative),
-            r#"InvalidInput: path is not absolute: "notes""#
-        );
-
-        let outside = create_workspace(
-            &server,
-            serde_json::json!({"name": "notes", "path": host("/dev/notes")}),
-        );
-        let message = error_text(&outside);
-        assert!(message.starts_with("External: "), "{message}");
-        assert!(message.contains("not a git repository"), "{message}");
-
-        assert_eq!(workspace_count(&backend), 1);
-        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 0);
-    }
-
-    fn update_workspace(server: &ToodoMcp, arguments: serde_json::Value) -> serde_json::Value {
-        let request = serde_json::from_value(arguments).unwrap();
-        let result = runtime()
-            .block_on(server.update_workspace(Parameters(request)))
-            .unwrap();
-        serde_json::to_value(result).unwrap()
-    }
-
-    fn listed_workspaces(server: &ToodoMcp) -> serde_json::Value {
-        created_workspace(&serde_json::to_value(server.list_workspaces().unwrap()).unwrap())
-    }
-
-    #[test]
-    fn updating_a_workspace_saves_every_setting_and_list_workspaces_shows_them() {
-        let (storage, task) = storage_with_task(None);
-        // `git rev-parse --verify` finds the new base branch locally.
-        let backend = Arc::new(TestBackend::scripted(
-            storage,
-            vec![Ok("abc\n".to_owned())],
-            Vec::new(),
-        ));
-        let server = ToodoMcp::new(backend.clone());
-
-        let result = update_workspace(
-            &server,
-            serde_json::json!({
-                "id": task.workspace_id.0,
-                "name": "toodo-app",
-                "default_base_branch": "release",
-                "agent_merge": "afterChecks",
-                "completion": "manual",
-                "runner": "plain",
-            }),
-        );
-
-        let updated = created_workspace(&result);
-        assert_eq!(updated["name"], "toodo-app");
-        assert_eq!(updated["defaultBaseBranch"], "release");
-        assert_eq!(updated["agentMerge"], "afterChecks");
-        assert_eq!(updated["completion"], "manual");
-        assert_eq!(updated["runner"], "plain");
-        assert_eq!(updated["source"], "github");
-        assert_eq!(updated["location"]["path"], r"C:\dev\toodo");
-        assert_eq!(listed_workspaces(&server), serde_json::json!([updated]));
-        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 1);
-    }
-
-    #[test]
-    fn updating_a_workspace_rejects_a_missing_base_branch_a_path_outside_a_repository_and_axes_that_do_not_work()
-     {
-        let (storage, task) = storage_with_task(None);
-        let backend = Arc::new(TestBackend::scripted(
-            storage,
-            vec![
-                // Neither refs/heads/gone nor refs/remotes/origin/gone exists.
-                Err(crate::adapters::git::fake::failed()),
-                Err(crate::adapters::git::fake::failed()),
-                Err(crate::adapters::git::GitError::Failed {
-                    command: format!("git -C {} rev-parse --show-toplevel", host("/dev/notes")),
-                    stderr: "fatal: not a git repository (or any of the parent directories): .git"
-                        .to_owned(),
-                }),
-            ],
-            Vec::new(),
-        ));
-        let server = ToodoMcp::new(backend.clone());
-        let before = listed_workspaces(&server);
-        let id = task.workspace_id.0;
-
-        let branch = update_workspace(
-            &server,
-            serde_json::json!({"id": id, "default_base_branch": "gone"}),
-        );
-        assert_eq!(
-            error_text(&branch),
-            r"InvalidInput: branch gone does not exist in the repository at C:\dev\toodo, neither locally nor as origin/gone; set default_base_branch to a branch that exists there, such as the repository's default branch, or push gone first"
-        );
-
-        let outside = update_workspace(
-            &server,
-            serde_json::json!({"id": id, "path": host("/dev/notes")}),
-        );
-        let message = error_text(&outside);
-        assert!(
-            message.starts_with(
-                "External: could not open a git repository at /dev/notes; choose the directory \
-                 of the workspace's repository clone. git said: "
-            ),
-            "{message}"
-        );
-        assert!(message.contains("not a git repository"), "{message}");
-
-        let axes = update_workspace(
-            &server,
-            serde_json::json!({"id": id, "completion": "local_merge"}),
-        );
-        assert!(
-            error_text(&axes).starts_with("InvalidInput: source github completes tasks"),
-            "{axes}"
-        );
-
-        assert_eq!(listed_workspaces(&server), before);
-        assert_eq!(*backend.workspaces_changed.lock().unwrap(), 0);
-    }
-
-    #[test]
-    fn moving_a_workspace_with_a_path_problem_to_its_repository_clears_the_problem() {
-        let (storage, task) = storage_with_task(None);
-        // An existing directory on this machine, standing in for the moved repository.
-        let path = env!("CARGO_MANIFEST_DIR");
-        let backend = Arc::new(TestBackend::scripted(
-            storage,
-            // The repository root, then the base branch main found there.
-            vec![toplevel(path), Ok("abc\n".to_owned())],
-            // `herdr workspace list` without the repository, then `herdr workspace create`.
-            herdr_opens_a_new_workspace().split_off(1),
-        ));
-        let server = ToodoMcp::new(backend.clone());
-        assert_eq!(listed_workspaces(&server)[0]["pathProblem"], "foreign");
-
-        let result = update_workspace(
-            &server,
-            serde_json::json!({"id": task.workspace_id.0, "path": path}),
-        );
-
-        let moved = created_workspace(&result);
-        assert_eq!(
-            moved["location"],
-            serde_json::json!({"kind": "local", "path": path})
-        );
-        assert_eq!(moved["pathProblem"], serde_json::Value::Null);
-        assert_eq!(listed_workspaces(&server), serde_json::json!([moved]));
-        let tasks = lock(&backend.storage)
-            .list_tasks(task.workspace_id)
-            .unwrap();
-        assert_eq!(tasks, [task]);
-    }
-
-    #[test]
-    fn the_runner_of_a_workspace_cannot_change_while_a_task_is_in_progress() {
-        let (storage, task) = storage_with_task(Some(r"D:\wt"));
-        let created =
-            r#"{"id":"cli:worktree:create","result":{"workspace":{"workspace_id":"w27"}}}"#;
-        let backend = Arc::new(TestBackend::scripted(
-            storage,
-            vec![
-                Ok("abc\n".to_owned()),
-                Ok(String::new()),
-                Err(crate::adapters::git::fake::failed()),
-                Ok(String::new()),
-            ],
-            vec![
-                Ok(created.to_owned()),
-                Ok(r#"{"id":"cli:pane:list","result":{"panes":[]}}"#.to_owned()),
-            ],
-        ));
-        let server = ToodoMcp::new(backend.clone());
-        assert_ne!(start(&server, task.id)["isError"], true);
-        let before = listed_workspaces(&server);
-
-        let result = update_workspace(
-            &server,
-            serde_json::json!({"id": task.workspace_id.0, "runner": "plain"}),
-        );
-
-        assert_eq!(
-            error_text(&result),
-            "Rejected: the runner of workspace 1 cannot change from herdr to plain while task 1 \
-             is being worked on with it; complete or conclude that task first, or keep runner \
-             herdr and change the other settings"
-        );
-        assert_eq!(listed_workspaces(&server), before);
-    }
-
-    /// Adds the workspace "site" on the SSH machine devbox with one planned task.
-    fn add_devbox_task(storage: &mut crate::storage::Storage) -> model::Task {
-        use crate::domain::model::{MachineLabel, TaskType, WorkspaceLocation};
-        use crate::domain::path::PosixPath;
-        let workspace = storage
-            .create_workspace(&crate::storage::NewWorkspace {
-                name: "site".to_owned(),
-                location: WorkspaceLocation::Ssh {
-                    machine: MachineLabel::parse("devbox").unwrap(),
-                    path: PosixPath::parse("/srv/site").unwrap().into(),
-                },
-                default_base_branch: "main".to_owned(),
-                source: crate::domain::model::Source::GitHub,
-                completion: crate::domain::model::CompletionMode::PullRequestMerge,
-                runner: crate::domain::model::Runner::Herdr,
-                axes_detected: true,
-            })
-            .unwrap();
-        storage
-            .create_task(&crate::storage::NewTask {
-                workspace_id: workspace.id,
-                task_type: TaskType::Fix,
-                title: "Fix footer".to_owned(),
-                description: String::new(),
-                estimate: None,
-                due_date: None,
-                criteria: Vec::new(),
-            })
-            .unwrap()
-    }
-
-    /// `herdr machine list --json` with the given SSH targets.
-    fn saved_machines(targets: &[&str]) -> Result<String, crate::adapters::git::GitError> {
-        let rows: Vec<_> = targets
+    fn the_tool_list_contains_only_task_record_operations() {
+        let server = ToodoMcp::new(Arc::new(TestBackend::new(
+            crate::storage::Storage::open_in_memory().unwrap(),
+        )));
+        let names: std::collections::BTreeSet<_> = server
+            .tool_router
+            .list_all()
             .iter()
-            .enumerate()
-            .map(|(index, target)| {
-                serde_json::json!({"id": format!("m{index}"), "label": target, "target": target,
-                    "session": "default", "enabled": true, "selected": false})
-            })
+            .map(|tool| tool.name.to_string())
             .collect();
-        Ok(serde_json::Value::Array(rows).to_string())
-    }
-
-    fn list_machine_settings(server: &ToodoMcp) -> serde_json::Value {
-        let result = runtime().block_on(server.list_machine_settings()).unwrap();
-        created_workspace(&serde_json::to_value(result).unwrap())
-    }
-
-    fn set_worktree_root(server: &ToodoMcp, arguments: serde_json::Value) -> serde_json::Value {
-        let request = serde_json::from_value(arguments).unwrap();
-        serde_json::to_value(server.set_worktree_root(Parameters(request)).unwrap()).unwrap()
-    }
-
-    fn local(root: Option<&str>) -> serde_json::Value {
-        serde_json::json!({"machine": {"kind": "local"}, "worktreeRoot": root.map(host)})
-    }
-
-    fn ssh(label: &str, root: Option<&str>) -> serde_json::Value {
-        serde_json::json!({"machine": {"kind": "ssh", "label": label}, "worktreeRoot": root})
-    }
-
-    #[test]
-    fn worktree_roots_of_local_and_ssh_machines_are_listed_set_and_cleared() {
-        let (mut storage, _) = storage_with_task(None);
-        add_devbox_task(&mut storage);
-        let backend = Arc::new(TestBackend::scripted(
-            storage,
-            Vec::new(),
-            vec![
-                saved_machines(&["gpu", "devbox"]),
-                saved_machines(&["gpu"]),
-                Err(crate::adapters::git::fake::failed()),
-            ],
-        ));
-        let server = ToodoMcp::new(backend.clone());
-
-        assert_eq!(
-            list_machine_settings(&server),
-            serde_json::json!({"machines": [local(None), ssh("devbox", None), ssh("gpu", None)]})
-        );
-
-        let saved = set_worktree_root(&server, serde_json::json!({"worktree_root": host("/wt")}));
-        assert_eq!(created_workspace(&saved), local(Some("/wt")));
-        let saved = set_worktree_root(
-            &server,
-            serde_json::json!({"ssh_host": "devbox", "worktree_root": "/srv/wt/"}),
-        );
-        assert_eq!(created_workspace(&saved), ssh("devbox", Some("/srv/wt")));
-        // A machine known only by its saved settings is listed too.
-        set_worktree_root(
-            &server,
-            serde_json::json!({"ssh_host": "lab", "worktree_root": "/lab"}),
-        );
-        assert_eq!(
-            list_machine_settings(&server),
-            serde_json::json!({"machines": [
-                local(Some("/wt")),
-                ssh("devbox", Some("/srv/wt")),
-                ssh("gpu", None),
-                ssh("lab", Some("/lab")),
-            ]})
-        );
-
-        let cleared = set_worktree_root(&server, serde_json::json!({}));
-        assert_eq!(created_workspace(&cleared), local(None));
-        let cleared = set_worktree_root(
-            &server,
-            serde_json::json!({"ssh_host": "devbox", "worktree_root": null}),
-        );
-        assert_eq!(created_workspace(&cleared), ssh("devbox", None));
-        // Without herdr's saved machines, the others are still listed.
-        let listed = list_machine_settings(&server);
-        assert!(listed["herdrError"].is_string(), "{listed}");
-        assert_eq!(
-            listed["machines"],
-            serde_json::json!([local(None), ssh("devbox", None), ssh("lab", Some("/lab"))])
-        );
-    }
-
-    #[test]
-    fn invalid_worktree_roots_and_hosts_are_rejected_and_save_nothing() {
-        let (mut storage, _) = storage_with_task(None);
-        add_devbox_task(&mut storage);
-        let backend = Arc::new(TestBackend::scripted(
-            storage,
-            Vec::new(),
-            vec![saved_machines(&[])],
-        ));
-        let server = ToodoMcp::new(backend.clone());
-
-        for arguments in [
-            serde_json::json!({"worktree_root": "worktrees"}),
-            serde_json::json!({"worktree_root": ""}),
-            serde_json::json!({"ssh_host": "devbox", "worktree_root": r"D:wt"}),
-            serde_json::json!({"ssh_host": "devbox", "worktree_root": "srv/wt"}),
-            serde_json::json!({"ssh_host": " ", "worktree_root": "/wt"}),
-        ] {
-            let result = set_worktree_root(&server, arguments.clone());
-            let message = error_text(&result);
-            assert!(
-                message.starts_with("InvalidInput: "),
-                "{arguments}: {message}"
-            );
-        }
-
-        assert_eq!(
-            list_machine_settings(&server),
-            serde_json::json!({"machines": [local(None), ssh("devbox", None)]})
-        );
+        let expected: std::collections::BTreeSet<_> = [
+            "read_toodo_skill",
+            "list_workspaces",
+            "create_workspace",
+            "update_workspace",
+            "archive_workspace",
+            "list_tasks",
+            "search_tasks",
+            "get_task",
+            "add_related",
+            "remove_related",
+            "current_task",
+            "create_task",
+            "create_plan",
+            "check_criterion",
+            "add_criterion",
+            "remove_criterion",
+            "update_task",
+            "add_dependency",
+            "remove_dependency",
+            "add_progress_note",
+            "report_blocker",
+            "pause_task",
+            "resume_task",
+            "delete_task",
+            "reopen_task",
+            "start_task",
+            "complete_task",
+            "conclude_task",
+            "review_report",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        assert_eq!(names, expected);
+        let start = server.tool_router.get("start_task").unwrap();
         assert!(
-            lock(&backend.storage)
-                .ssh_machines_with_settings()
-                .unwrap()
-                .is_empty()
+            start.input_schema["properties"]
+                .get("agent_command")
+                .is_none()
         );
     }
 
     #[test]
-    fn a_start_without_the_worktree_root_of_an_ssh_machine_names_the_host_to_set() {
-        let (mut storage, _) = storage_with_task(Some(r"D:\wt"));
-        let task = add_devbox_task(&mut storage);
+    fn a_ready_start_records_reason_refs_and_announces_without_execution_fields() {
+        let (storage, task) = storage_with_task(None);
         let backend = Arc::new(TestBackend::new(storage));
         let server = ToodoMcp::new(backend.clone());
-
-        let result = start(&server, task.id);
-
+        let result = runtime().block_on(server.start_task(Parameters(serde_json::from_value(serde_json::json!({"id": task.id.0, "reason": "Ready", "refs": ["lane:test"]})).unwrap()))).unwrap();
+        let result = serde_json::to_value(result).unwrap();
+        assert_ne!(result["isError"], true);
+        let task: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(task["status"], "in_progress");
+        assert_eq!(task["refs"], serde_json::json!(["lane:test"]));
+        assert_eq!(task["timeline"][1]["reason"], "Ready");
+        for field in ["panes", "ranIn", "paneError", "worktreePath"] {
+            assert!(task.get(field).is_none(), "{field}");
+        }
         assert_eq!(
-            error_text(&result),
-            "InvalidInput: worktree root is not set for machine devbox; ask the user where \
-             task worktrees go on that machine, call set_worktree_root with ssh_host \
-             \"devbox\" and worktree_root set to that absolute directory, then start the task \
-             again"
+            *backend.changed.lock().unwrap(),
+            [model::WorkspaceId(task["workspaceId"].as_i64().unwrap())]
         );
+        let found = tools::current_task(
+            &lock(backend.storage()),
+            tools::CurrentTask {
+                r#ref: Some("lane:test".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(found.task.id.0, task["id"].as_i64().unwrap());
+        let error =
+            tools::current_task(&lock(backend.storage()), tools::CurrentTask { r#ref: None })
+                .unwrap_err();
+        assert!(error.message.contains("get_task") && error.message.contains("ref"));
+    }
+
+    #[test]
+    fn update_records_review_status_and_pause_resume_uses_history() {
+        let (storage, task) = storage_with_task(None);
+        let storage = StorageState::new(storage);
+        tools::start_task(
+            &storage,
+            serde_json::from_value(serde_json::json!({"id": task.id.0})).unwrap(),
+        )
+        .unwrap();
+        let reviewed = tools::update_task(&mut lock(&storage), serde_json::from_value(serde_json::json!({"id": task.id.0, "status": "in_review", "refs": ["review:ready"]})).unwrap()).unwrap();
+        assert_eq!(
+            reviewed.status,
+            crate::commands::types::TaskStatus::InReview
+        );
+        assert!(reviewed.milestones.review_at.is_some());
+        tools::pause_task(
+            &mut lock(&storage),
+            tools::PauseTask {
+                id: task.id.into(),
+                reason: "Waiting".into(),
+            },
+        )
+        .unwrap();
+        let resumed = tools::resume_task(
+            &storage,
+            tools::ResumeTask {
+                id: task.id.into(),
+                note: Some("Ready again".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            resumed.status,
+            crate::commands::types::TaskStatus::InProgress
+        );
+        assert_eq!(resumed.refs, ["review:ready"]);
+        assert_eq!(resumed.notes.last().unwrap().body, "Resumed: Ready again");
     }
 
     fn runtime() -> tokio::runtime::Runtime {
@@ -2922,12 +1717,6 @@ mod tests {
                 "{argument}: {checked:?}"
             );
         }
-
-        // merged_with also takes a pull request URL, so a string stays one.
-        let complete = server.tool_router.get("complete_task").unwrap();
-        let mut arguments = JsonObject::from_iter([("merged_with".to_owned(), "#178".into())]);
-        numbers_from_strings(&complete.input_schema, &mut arguments).unwrap();
-        assert_eq!(arguments["merged_with"], "#178");
     }
 
     #[test]
@@ -3070,10 +1859,7 @@ mod tests {
             .iter()
             .map(|template| template["uriTemplate"].as_str().unwrap())
             .collect();
-        assert_eq!(
-            templates,
-            ["toodo://tasks/{task_id}", "toodo://tasks/{task_id}/runs"]
-        );
+        assert_eq!(templates, ["toodo://tasks/{task_id}"]);
 
         let read = |uri: &str| -> Value {
             let result = rpc_result(
@@ -3095,10 +1881,6 @@ mod tests {
         assert_eq!(
             read(&dependent_uri),
             serde_json::to_value(expected).unwrap()
-        );
-        assert_eq!(
-            read(&format!("{dependent_uri}/runs")),
-            serde_json::json!([])
         );
 
         let body = r#"{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"toodo://tasks/999"}}"#;
@@ -3191,7 +1973,7 @@ mod tests {
                 .set_task_status(task.id, crate::domain::status::TaskStatus::InProgress)
                 .unwrap();
             storage
-                .complete_task_without_pull_request(task.id, "Shipped", &[])
+                .complete_task(task.id, Some("Shipped"), &[])
                 .unwrap();
         }
         backend.tasks_changed(task.workspace_id);
@@ -3284,7 +2066,6 @@ mod tests {
                 "list_tasks",
                 "search_tasks",
                 "get_task",
-                "pull_request_status",
                 "review_report"
             ]
             .into_iter()
@@ -3331,9 +2112,6 @@ mod tests {
             "current_task",
             "start_task",
             "resume_task",
-            "restore_worktree",
-            "set_worktree_root",
-            "list_machine_settings",
             "update_workspace",
             "archive_workspace",
             "complete_task",
@@ -3379,8 +2157,7 @@ mod tests {
             serde_json::json!({"init":true}),
             serde_json::json!({"source":"github"}),
         ] {
-            let mut args =
-                serde_json::json!({"name":"Planning", "path":"/planning", "source":"none"});
+            let mut args = serde_json::json!({"name":"Planning"});
             args.as_object_mut()
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());
@@ -3390,7 +2167,7 @@ mod tests {
                 refused["content"][0]["text"]
                     .as_str()
                     .unwrap()
-                    .contains("retry with source"),
+                    .contains("name"),
                 "{refused}"
             );
         }
@@ -3398,7 +2175,7 @@ mod tests {
             "write-access",
             "create_workspace",
             serde_json::json!({
-                "name":"Planning", "path":"/planning", "source":"none",
+                "name":"Planning",
             }),
         );
         assert_ne!(created["isError"], true, "{created}");

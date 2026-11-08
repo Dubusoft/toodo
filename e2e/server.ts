@@ -1,9 +1,8 @@
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 
 const root = path.resolve(import.meta.dirname, "..");
 
@@ -26,7 +25,7 @@ export type ServerOptions = {
   env?: Record<string, string>;
 };
 
-/** Workspaces the scratch database starts with; `herdr` is needed to create more. */
+/** Workspaces the scratch server starts with, created in this order (IDs 1, 2, ...). */
 export const workspaces = ["alpha", "beta"];
 
 async function freePort(): Promise<number> {
@@ -95,26 +94,11 @@ async function answers(port: number): Promise<boolean> {
 
 /**
  * Starts `toodo-server` on a free loopback port with a data directory of its own, so a run
- * never touches the data of a real server. The first start creates the database, which is
- * then seeded with workspaces (creating one through the API needs herdr) before the real start.
+ * never touches the data of a real server, and creates its workspaces through the API.
  */
 export async function startServer(options: ServerOptions = {}): Promise<ScratchServer> {
   const dataDir = mkdtempSync(path.join(tmpdir(), "toodo-e2e-"));
   const port = await freePort();
-
-  const first = launch(dataDir, port);
-  await until("creating the database", () => answers(port), first.child, first.output);
-  await stopProcess(first.child);
-
-  const db = new DatabaseSync(path.join(dataDir, "toodo.sqlite3"));
-  for (const name of workspaces) {
-    execFileSync("git", ["init", "--quiet", "--initial-branch=main", path.join(dataDir, "repos", name)]);
-    db.prepare("INSERT INTO workspaces (name, kind, path, default_base_branch) VALUES (?, 'local', ?, 'main')").run(
-      name,
-      path.join(dataDir, "repos", name),
-    );
-  }
-  db.close();
 
   const running = launch(dataDir, port, options.env);
   await until("starting", () => answers(port), running.child, running.output);
@@ -132,6 +116,10 @@ export async function startServer(options: ServerOptions = {}): Promise<ScratchS
     });
     if (!response.ok) throw new Error(`${target} answered ${response.status}: ${await response.text()}`);
     return (await response.json()) as T;
+  }
+
+  for (const name of workspaces) {
+    await post("/api/rpc/create_workspace", webToken, { workspace: { name, description: null, repository: null } });
   }
 
   return {
@@ -167,6 +155,6 @@ export async function startServer(options: ServerOptions = {}): Promise<ScratchS
 
 export function createTask(server: ScratchServer, task: { workspaceId: number; title: string; taskType?: string }) {
   return server.rpc<{ id: number; title: string }>("create_task", {
-    task: { taskType: "feat", description: "", estimate: null, dueDate: null, criteria: [], mergeCriterion: false, ...task },
+    task: { taskType: "feat", description: "", estimate: null, dueDate: null, criteria: [], ...task },
   });
 }

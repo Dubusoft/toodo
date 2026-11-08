@@ -29,8 +29,14 @@ const local = (year: number, month: number, date: number, hours = 0) =>
 // The fixtures are built in this machine's time zone, so the summaries are judged in it too.
 const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<Task> = {}): ReviewEntry {
+function entry(
+  id: number,
+  outcome: ReviewEntry["outcome"],
+  overrides: Partial<Task> = {},
+  pullRequest: ReviewEntry["pullRequest"] = null,
+): ReviewEntry {
   return {
+    pullRequest,
     task: {
       id,
       workspaceId: 1,
@@ -39,18 +45,11 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
       description: "",
       status: "in_progress",
       dependsOn: [],
-      branch: null,
-      worktreePath: null,
-      worktreeMissing: false,
-      herdrWorkspaceId: null,
-      pullRequestUrl: null,
       issue: null,
       estimate: null,
       dueDate: null,
       labels: [],
-      pullRequestMergedAt: null,
-      pullRequest: null,
-      mergedWith: null,
+      refs: [],
       resolution: null,
       completionNote: null,
       notes: [],
@@ -76,14 +75,20 @@ function entry(id: number, outcome: ReviewEntry["outcome"], overrides: Partial<T
   };
 }
 
-function completed(id: number, at: number, milestones: Partial<Task["milestones"]>, overrides: Partial<Task> = {}) {
-  const base = entry(id, "completed", { status: "done", ...overrides });
+function completed(
+  id: number,
+  at: number,
+  milestones: Partial<Task["milestones"]>,
+  overrides: Partial<Task> = {},
+  pullRequest: ReviewEntry["pullRequest"] = null,
+) {
+  const base = entry(id, "completed", { status: "done", ...overrides }, pullRequest);
   base.task.milestones = { ...base.task.milestones, ...milestones, completedAt: at };
   base.at = at;
   return base;
 }
 
-function snapshot(number: number): NonNullable<Task["pullRequest"]> {
+function snapshot(number: number): NonNullable<ReviewEntry["pullRequest"]> {
   return {
     number,
     title: `Pull request ${number}`,
@@ -100,13 +105,9 @@ function snapshot(number: number): NonNullable<Task["pullRequest"]> {
 const toodo: Workspace = {
   id: 1,
   name: "toodo",
-  location: { kind: "local", path: "C:\\dev\\toodo" },
-  defaultBaseBranch: "main",
-  agentMerge: "never",
-  source: "github",
-  completion: "pr_merge",
-  runner: "herdr",
-  pathProblem: null,
+  description: null,
+  repository: null,
+  archivedAt: null,
 };
 const herdr: Workspace = { ...toodo, id: 2, name: "herdr" };
 
@@ -246,9 +247,7 @@ describe("summarize", () => {
       year,
       [
         completed(1, end, { plannedAt: end - 10 * day, startedAt: end - 4 * day, reviewAt: end - day }),
-        completed(2, end, { plannedAt: end - 2 * day, startedAt: end - 2 * day, reviewAt: end - 3 * hour }, {
-          pullRequestMergedAt: end - hour,
-        }),
+        completed(2, end, { plannedAt: end - 2 * day, startedAt: end - 2 * day, reviewAt: end - 3 * hour }),
         completed(3, end, { plannedAt: end - 6 * day }),
         entry(4, "started", {
           milestones: { ...entry(4, "started").task.milestones, plannedAt: end - 100 * day, startedAt: end },
@@ -261,7 +260,7 @@ describe("summarize", () => {
     expect(summary.leadTime).toEqual({ median: 6 * day, tasks: 3 });
     expect(summary.cycleTime).toEqual({ median: 3 * day, tasks: 2 });
     expect(summary.activeTime).toBeNull();
-    expect(summary.reviewTime).toEqual({ median: (day + 2 * hour) / 2, tasks: 2 });
+    expect(summary.reviewTime).toEqual({ median: (day + 3 * hour) / 2, tasks: 2 });
   });
 
   it("leaves out durations without data and months for a period inside one month", () => {
@@ -410,11 +409,11 @@ describe("yearInReview", () => {
 
   it("sums pull request snapshots and ranks the largest of completed tasks only", () => {
     const entries = [
-      completed(1, at, {}, { pullRequest: sized(11, 50, 2) }),
-      completed(2, at, {}, { pullRequest: sized(12, 500, 0) }),
-      completed(3, at, {}, { pullRequest: sized(13, 90, 1) }),
-      completed(4, at, {}, { pullRequest: sized(14, 5, 3) }),
-      entry(5, "opened_for_review", { pullRequest: sized(15, 9000, 9) }),
+      completed(1, at, {}, {}, sized(11, 50, 2)),
+      completed(2, at, {}, {}, sized(12, 500, 0)),
+      completed(3, at, {}, {}, sized(13, 90, 1)),
+      completed(4, at, {}, {}, sized(14, 5, 3)),
+      entry(5, "opened_for_review", {}, sized(15, 9000, 9)),
     ];
 
     const year = yearInReview(entries);

@@ -13,15 +13,13 @@ use serde::de::DeserializeOwned;
 
 use super::Services;
 use crate::commands::types::{
-    AgentAdapter, AgentOptions, BackupSettings, CriterionId, Machine, MachineSettings, NewSshHost,
-    NewTask, NewWorkspace, OAuthGrantId, PullRequestOptions, ReviewReportRequest, ReviewSnapshotId,
-    RunId, SaveReviewSnapshotRequest, TaskEdit, TaskId, TaskListFilter, TaskResolution, Workspace,
-    WorkspaceId, WorkspaceLocation,
+    BackupSettings, CriterionId, NewTask, NewWorkspace, OAuthGrantId, ReviewReportRequest,
+    ReviewSnapshotId, SaveReviewSnapshotRequest, TaskEdit, TaskId, TaskListFilter, TaskResolution,
+    Workspace, WorkspaceId,
 };
 use crate::commands::{
-    CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, agent_options, backup,
-    completion, events, freshness, herdr, issues, machines, mcp, pull_request_options, review,
-    runners, runs, tasks, workspaces,
+    CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, backup, completion,
+    issues, mcp, review, tasks, workspaces,
 };
 use crate::mcp::Backend as _;
 
@@ -185,31 +183,9 @@ pub const READ_COMMANDS: &[&str] = &[
     "list_connected_apps",
     "list_workspaces",
     "get_workspace",
-    "list_workspace_branches",
-    "get_machine_settings",
-    "list_herdr_machines",
-    "list_ssh_hosts",
-    "test_ssh_machine",
-    "list_remote_directories",
-    "list_directories",
     "list_tasks",
     "list_task_relations",
     "get_task",
-    "list_commit_records",
-    "list_task_activity",
-    "list_agent_status_transitions",
-    "herdr_status",
-    "list_task_runs",
-    "get_machine_runs",
-    "get_run_log",
-    "get_workspace_agent_options",
-    "get_task_agent_options",
-    "get_workspace_pull_request_options",
-    "runner_health",
-    "list_pull_request_statuses",
-    "branch_freshness",
-    "list_agent_statuses",
-    "list_mcp_tunnels",
     "review_period",
     "list_archive",
     "review_report",
@@ -232,47 +208,16 @@ commands!(s => {
 
     "list_workspaces"() => sync Reply::result(workspaces::list_workspaces(State(s.reader())));
     "get_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::get_workspace(State(s.reader()), id));
-    "create_workspace"(workspace: NewWorkspace) => async Reply::result(
-        workspaces::create_workspace(State(&s.storage), State(&s.git), State(&s.herdr), workspace).await
+    "create_workspace"(workspace: NewWorkspace) => sync Reply::result(
+        workspaces::create_workspace(State(&s.storage), workspace)
     );
     "update_workspace"(workspace: Workspace) => sync Reply::result(
         workspaces::update_workspace(State(&s.storage), workspace)
-    );
-    "move_workspace"(id: WorkspaceId, location: WorkspaceLocation) => async Reply::result(
-        workspaces::move_workspace(State(&s.storage), State(&s.git), State(&s.herdr), id, location).await
-    );
-    "list_workspace_branches"(id: WorkspaceId) => sync Reply::result(
-        workspaces::list_workspace_branches(State(&s.storage), State(&s.git), id)
-    );
-    "create_workspace_base_branch"(id: WorkspaceId, name: String, from: String) => sync Reply::result(
-        workspaces::create_workspace_base_branch(State(&s.storage), State(&s.git), id, name, from)
     );
     "delete_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::delete_workspace(State(&s.storage), id));
     "restore_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::restore_workspace(State(&s.storage), id));
     "purge_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::purge_workspace(State(&s.storage), id));
     "list_archive"() => sync Reply::result(workspaces::list_archive(State(s.reader())));
-    "get_machine_settings"(machine: Machine) => sync Reply::result(
-        workspaces::get_machine_settings(State(s.reader()), machine)
-    );
-    "save_machine_settings"(settings: MachineSettings) => sync Reply::result(
-        workspaces::save_machine_settings(State(&s.storage), settings)
-    );
-
-    "list_herdr_machines"() => sync Reply::result(machines::list_herdr_machines(State(&s.herdr)));
-    "list_ssh_hosts"() => sync Reply::result(machines::list_ssh_hosts(State(&s.ssh_config)));
-    "add_ssh_host"(host: NewSshHost) => async Reply::result(
-        machines::add_ssh_host(State(&s.ssh_config), State(&s.ssh), host).await
-    );
-    "test_ssh_machine"(machine: String) => async Reply::result(
-        machines::test_ssh_machine(State(&s.ssh), machine).await
-    );
-    "list_remote_directories"(machine: String, path: Option<String>) => async Reply::result(
-        machines::list_remote_directories(State(&s.ssh), machine, path).await
-    );
-    "list_directories"(machine: Machine, path: Option<String>) => async Reply::result(
-        machines::list_directories(State(&s.ssh), machine, path).await
-    );
-
     "list_tasks"(filter: Option<TaskListFilter>) => sync Reply::result(
         tasks::list_tasks(State(s.reader()), filter)
     );
@@ -303,141 +248,25 @@ commands!(s => {
     "set_task_outcome"(id: TaskId, resolution: TaskResolution, note: String) => sync Reply::result(
         tasks::set_task_outcome(State(&s.storage), id, resolution, note)
     );
-    "delete_task"(id: TaskId, force: bool) => sync Reply::result(
-        tasks::delete_task(State(&s.storage), State(&s.git), State(&s.herdr), State(&s.plain), State(&s.tmux), id, force)
+    "delete_task"(id: TaskId) => sync Reply::result(
+        tasks::delete_task(State(&s.storage), id)
     );
     "restore_task"(id: TaskId) => sync Reply::result(tasks::restore_task(State(&s.storage), id));
     "purge_task"(id: TaskId) => sync Reply::result(tasks::purge_task(State(&s.storage), id));
     "add_dependency"(task_id: TaskId, depends_on: TaskId, confirm_pause: bool) => sync Reply::result(
-        tasks::add_dependency(State(&s.storage), State(&s.herdr), task_id, depends_on, confirm_pause)
+        tasks::add_dependency(State(&s.storage), task_id, depends_on, confirm_pause)
     );
     "remove_dependency"(task_id: TaskId, depends_on: TaskId) => sync Reply::result(
         tasks::remove_dependency(State(&s.storage), task_id, depends_on)
     );
-    "list_commit_records"(task_id: TaskId) => sync Reply::result(
-        tasks::list_commit_records(State(s.reader()), task_id)
-    );
-    "list_task_activity"(task_id: TaskId) => sync Reply::result(
-        tasks::list_task_activity(State(s.reader()), task_id)
-    );
-    "list_agent_status_transitions"(task_id: TaskId) => sync Reply::result(
-        tasks::list_agent_status_transitions(State(s.reader()), task_id)
-    );
-
-    "herdr_status"() => sync Reply::result(herdr::herdr_status(State(&s.herdr)));
-    "start_task"(id: TaskId) => sync Reply::result(herdr::start_task(State(&s.storage), State(&s.git), State(&s.herdr), id));
-    "ensure_task_workspace"(id: TaskId) => sync Reply::result(
-        herdr::ensure_task_workspace(State(&s.storage), State(&s.herdr), id)
-    );
-    "open_task_in_herdr"(id: TaskId) => sync Reply::result(
-        herdr::open_task_in_herdr(State(&s.storage), State(&s.herdr), id)
-    );
-    "focus_agent_pane"(id: TaskId) => sync Reply::result(
-        herdr::focus_agent_pane(State(&s.storage), State(&s.herdr), id)
-    );
-    "restore_task_worktree"(id: TaskId) => sync Reply::result(
-        herdr::restore_task_worktree(State(&s.storage), State(&s.git), State(&s.herdr), id)
-    );
-    "close_task_workspace"(id: TaskId) => sync Reply::result(
-        herdr::close_task_workspace(State(&s.storage), State(&s.herdr), id)
-    );
-
-    "start_plain_run"(task_id: TaskId, adapter: AgentAdapter, prompt: Option<String>, mcp: bool, follow_up_of: Option<RunId>) => sync Reply::result(
-        runs::start_plain_run(State(&s.storage), State(&s.plain), State(&s.tmux), task_id, adapter, prompt, mcp, follow_up_of)
-    );
-    "get_workspace_agent_options"(workspace_id: WorkspaceId) => sync Reply::result(
-        agent_options::get_workspace_agent_options(State(s.reader()), workspace_id)
-    );
-    "set_workspace_agent_options"(workspace_id: WorkspaceId, options: AgentOptions) => sync Reply::result(
-        agent_options::set_workspace_agent_options(State(&s.storage), workspace_id, options)
-    );
-    "get_task_agent_options"(task_id: TaskId) => sync Reply::result(
-        agent_options::get_task_agent_options(State(s.reader()), task_id)
-    );
-    "set_task_agent_options"(task_id: TaskId, options: AgentOptions) => sync Reply::result(
-        agent_options::set_task_agent_options(State(&s.storage), task_id, options)
-    );
-    "get_workspace_pull_request_options"(workspace_id: WorkspaceId) => sync Reply::result(
-        pull_request_options::get_workspace_pull_request_options(State(s.reader()), workspace_id)
-    );
-    "set_workspace_pull_request_options"(workspace_id: WorkspaceId, options: PullRequestOptions) => sync Reply::result(
-        pull_request_options::set_workspace_pull_request_options(State(&s.storage), workspace_id, options)
-    );
-    "get_machine_runs"(machine: Machine) => sync Reply::result(
-        runs::get_machine_runs(State(s.reader()), machine)
-    );
-    "set_machine_run_limit"(machine: Machine, max_concurrent_runs: Option<u32>) => sync Reply::result(
-        runs::set_machine_run_limit(State(&s.storage), machine, max_concurrent_runs)
-    );
-    "list_task_runs"(task_id: TaskId) => sync Reply::result(
-        runs::list_task_runs(State(s.reader()), task_id)
-    );
-    "get_run_log"(run_id: RunId, tail_bytes: Option<u32>) => sync Reply::result(
-        runs::get_run_log(State(&s.storage), State(&s.plain), State(&s.tmux), run_id, tail_bytes)
-    );
-    "stop_run"(run_id: RunId) => sync Reply::result(
-        runs::stop_run(State(&s.storage), State(&s.plain), State(&s.tmux), run_id)
-    );
-    "reconcile_run"(run_id: RunId) => sync Reply::result(
-        runs::reconcile_run(State(&s.storage), State(&s.plain), State(&s.tmux), run_id)
-    );
-    "runner_health"() => sync Reply::result(runners::runner_health(State(&s.herdr)));
-
-    "refresh_commit_records"(task_id: TaskId) => sync Reply::result(
-        completion::refresh_commit_records(State(&s.storage), State(&s.git), task_id)
-    );
-    "open_pull_request"(id: TaskId) => sync Reply::result(
-        completion::open_pull_request(State(&s.storage), State(&s.git), State(&s.github), id)
-    );
-    "complete_task"(id: TaskId) => sync {
-        Reply::result(runs::stop_live_runs_after(
-            completion::complete_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id),
-            &s.storage,
-            &s.plain,
-            &s.tmux,
-            id.into(),
-        ))
-    };
-    "conclude_task"(id: TaskId, note: String) => sync {
-        Reply::result(runs::stop_live_runs_after(
-            completion::conclude_task(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, note),
-            &s.storage,
-            &s.plain,
-            &s.tmux,
-            id.into(),
-        ))
-    };
-    "complete_task_merged_with"(id: TaskId, merged_with_task: Option<TaskId>, pull_request_url: Option<String>) => sync {
-        Reply::result(runs::stop_live_runs_after(
-            completion::complete_task_merged_with(State(&s.storage), State(&s.git), State(&s.github), State(&s.herdr), id, merged_with_task, pull_request_url),
-            &s.storage,
-            &s.plain,
-            &s.tmux,
-            id.into(),
-        ))
-    };
-    "list_pull_request_statuses"() => sync Reply::value(
-        completion::list_pull_request_statuses(State(&s.pull_request_statuses))
-    );
-    "branch_freshness"(id: TaskId) => sync Reply::result(
-        freshness::branch_freshness(State(&s.storage), State(&s.git), State(&s.github), id)
-    );
-    "link_issue"(id: TaskId, number: Option<u32>) => sync Reply::result(
-        issues::link_issue(State(&s.storage), State(&s.git), State(&s.github), id, number)
-    );
-    "create_issue"(id: TaskId) => sync Reply::result(
-        issues::create_issue(State(&s.storage), State(&s.git), State(&s.github), id)
-    );
-    "list_agent_statuses"() => sync Reply::value(events::list_agent_statuses(State(&s.agent_statuses)));
+    "start_task"(id: TaskId, reason: Option<String>, refs: Option<Vec<String>>) => sync Reply::result(tasks::start_task(State(&s.storage), id, reason, refs));
+    "complete_task"(id: TaskId, note: Option<String>, refs: Option<Vec<String>>) => sync Reply::result(completion::complete_task(State(&s.storage), id, note, refs));
+    "conclude_task"(id: TaskId, note: String, outcome: Option<completion::ConcludeOutcome>, shipped_with: Option<TaskId>) => sync Reply::result(completion::conclude_task(State(&s.storage), id, note, outcome, shipped_with));
+    "link_issue"(id: TaskId, reference: String) => sync Reply::result(issues::link_issue(State(&s.storage), id, reference));
 
     "mcp_server_info"() => sync Reply::value(mcp::mcp_server_info(State(&s.mcp)));
-    "list_mcp_tunnels"() => sync Reply::value(mcp::list_mcp_tunnels(State(&s.tunnels)));
-
     "review_period"(from: String, to: String) => sync Reply::result(
         review::review_period(State(s.reader()), from, to)
-    );
-    "backfill_pull_requests"(from: String, to: String) => sync Reply::result(
-        review::backfill_pull_requests(State(&s.storage), State(&s.git), State(&s.github), from, to)
     );
     "review_report"(request: ReviewReportRequest) => sync Reply::result(
         review::review_report(State(s.reader()), request)

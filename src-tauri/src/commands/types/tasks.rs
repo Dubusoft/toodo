@@ -8,7 +8,7 @@ use super::{
     map_all, required,
 };
 use crate::commands::{CommandError, CommandResult};
-use crate::domain::{activity, criteria, model, review, status, timeline};
+use crate::domain::{criteria, model, review, status, timeline};
 use crate::storage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
@@ -203,12 +203,6 @@ pub struct Task {
     pub resolution: Option<TaskResolution>,
     /// Tasks this task depends on, in ascending ID order.
     pub depends_on: Vec<TaskId>,
-    pub branch: Option<String>,
-    pub worktree_path: Option<String>,
-    /// An active task has a branch but no checkout; restore it in the Toodo app.
-    pub worktree_missing: bool,
-    pub herdr_workspace_id: Option<String>,
-    pub pull_request_url: Option<String>,
     /// The GitHub issue this task works on; its pull request closes it on merge.
     pub issue: Option<LinkedIssue>,
     /// The expected size of the task, if estimated.
@@ -217,14 +211,10 @@ pub struct Task {
     pub due_date: Option<String>,
     /// Labels such as a project or goal, sorted.
     pub labels: Vec<String>,
-    /// Merge time of the pull request reported by GitHub.
-    pub pull_request_merged_at: Option<Timestamp>,
-    /// The pull request as GitHub reported it when its merge completed the task; `null`
-    /// for tasks completed before Toodo recorded it.
-    pub pull_request: Option<PullRequestSnapshot>,
-    /// The merged pull request of another task that shipped this task's work, for a task
-    /// `done` as merged without a pull request of its own.
-    pub merged_with: Option<MergedWith>,
+    /// References to where the work is tracked or discussed, in the order they were added,
+    /// e.g. `lane:search-api`, `discord:<thread>`, `pr:<number>`, or a URL. Toodo does not
+    /// interpret them.
+    pub refs: Vec<String>,
     /// What the user wrote about the outcome of a `done` task; for a `not_adopted` one,
     /// why it was not adopted.
     pub completion_note: Option<String>,
@@ -238,27 +228,16 @@ pub struct Task {
     pub criteria: Vec<Criterion>,
 }
 
-/// The merged pull request or the other task that shipped the work of a task; at least
-/// one of the two is set.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct MergedWith {
-    /// The task that shipped the work; `null` once that task is deleted or for a pull
-    /// request no task records.
-    pub task_id: Option<TaskId>,
-    /// The merged pull request; `null` when the task that shipped the work has no
-    /// recorded pull request.
-    pub pull_request_url: Option<String>,
-}
-
 /// What a note left on a task records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum NoteKind {
-    /// Progress made or a decision taken.
+    /// Progress made.
     Progress,
     /// Something that stops the work until someone acts on it.
     Blocker,
+    /// A decision taken, and why.
+    Decision,
 }
 
 impl From<model::NoteKind> for NoteKind {
@@ -266,6 +245,7 @@ impl From<model::NoteKind> for NoteKind {
         match kind {
             model::NoteKind::Progress => Self::Progress,
             model::NoteKind::Blocker => Self::Blocker,
+            model::NoteKind::Decision => Self::Decision,
         }
     }
 }
@@ -355,9 +335,9 @@ pub struct TaskEvent {
     pub at: Timestamp,
     /// The change reopened the task: it follows a move to `done`.
     pub reopened: bool,
-    /// Why the work stopped, on a move back to `planned`: the reason of a pause, the
-    /// prerequisites the task waits on, or why it was reopened; `null` for other changes
-    /// and for pauses without a reason.
+    /// Why the change happened: on a move back to `planned`, the reason of a pause, the
+    /// prerequisites the task waits on, or why it was reopened; on a start or completion,
+    /// the reason or note given with it; `null` when none was recorded.
     pub reason: Option<String>,
 }
 
@@ -412,26 +392,11 @@ impl From<&model::Task> for Task {
             status: task.status.into(),
             resolution: task.resolution.map(TaskResolution::from),
             depends_on: task.depends_on.iter().copied().map(TaskId::from).collect(),
-            branch: task.branch.clone(),
-            worktree_path: task.worktree_path.as_ref().map(ToString::to_string),
-            worktree_missing: task.branch.is_some()
-                && task.worktree_path.is_none()
-                && matches!(
-                    task.status,
-                    status::TaskStatus::InProgress | status::TaskStatus::InReview
-                ),
-            herdr_workspace_id: task.herdr_workspace_id.clone(),
-            pull_request_url: task.pull_request_url.clone(),
             issue: task.issue.as_ref().map(LinkedIssue::from),
             estimate: task.estimate.map(Estimate::from),
             due_date: task.due_date.map(|due| due.to_string()),
             labels: task.labels.clone(),
-            pull_request_merged_at: task.pull_request_merged_at.map(Timestamp),
-            pull_request: task.pull_request.as_ref().map(PullRequestSnapshot::from),
-            merged_with: task.merged_with.as_ref().map(|merged| MergedWith {
-                task_id: merged.task_id.map(TaskId::from),
-                pull_request_url: merged.pull_request_url.clone(),
-            }),
+            refs: task.refs.clone(),
             completion_note: task.completion_note.clone(),
             timeline: task
                 .timeline
@@ -481,6 +446,7 @@ impl From<review::Outcome> for ReviewOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewEntry {
+    pub pull_request: Option<PullRequestSnapshot>,
     pub task: Task,
     pub outcome: ReviewOutcome,
     /// Time of the outcome: the milestone, or the latest commit for `worked_on`.
@@ -501,19 +467,6 @@ pub struct Archive {
     pub tasks: Vec<Task>,
 }
 
-/// What importing merged pull requests as done tasks added.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct BackfillSummary {
-    /// Pull requests recorded as new done tasks.
-    pub imported: u32,
-    /// Pull requests left out because a task already records them or has their branch.
-    pub skipped: u32,
-    /// Workspaces whose pull requests could not be read: each names the workspace, what
-    /// failed, and what to do next. The other workspaces were still imported.
-    pub failures: Vec<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct NewTask {
@@ -529,10 +482,6 @@ pub struct NewTask {
     pub labels: Vec<String>,
     /// Completion criteria in order; an `id` is not allowed here.
     pub criteria: Vec<CriterionInput>,
-    /// Whether to put the merge criterion first: the task's pull request is merged, or,
-    /// in a repository without an `origin` remote, its branch is merged into the base
-    /// branch locally. Ignored when `criteria` already has one of those.
-    pub merge_criterion: bool,
 }
 
 impl TryFrom<NewTask> for storage::NewTask {
@@ -567,11 +516,12 @@ pub(super) fn new_criteria(
         .collect()
 }
 
-/// The fields of a task the user edits directly. Status, dependencies, and the
-/// worktree, herdr, and pull request fields have their own commands or workflow steps.
+/// The editable task fields. Lifecycle commands handle status changes other than review.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskEdit {
+    /// Only in_review is set here; other transitions use lifecycle commands.
+    pub status: Option<TaskStatus>,
     pub id: TaskId,
     pub task_type: TaskType,
     pub title: String,
@@ -586,10 +536,6 @@ pub struct TaskEdit {
     /// The new completion criteria in order, which replace the current ones; `null`
     /// keeps them. The criteria of a done task cannot change.
     pub criteria: Option<Vec<CriterionInput>>,
-    /// Whether to put the merge criterion of the task's repository first when the task
-    /// is left without one (see [`NewTask::merge_criterion`]); false changes nothing.
-    #[serde(default)]
-    pub merge_criterion: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
@@ -612,88 +558,6 @@ impl From<&model::CommitRecord> for CommitRecord {
             message: record.message.clone(),
             author: record.author.clone(),
             committed_at: record.committed_at,
-        }
-    }
-}
-
-/// What happened in the git history of a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub enum ActivityKind {
-    #[serde(rename = "commit")]
-    Commit,
-    #[serde(rename = "pr_opened")]
-    PullRequestOpened,
-    #[serde(rename = "checks_passed")]
-    ChecksPassed,
-    #[serde(rename = "checks_failed")]
-    ChecksFailed,
-    #[serde(rename = "pr_merged")]
-    PullRequestMerged,
-}
-
-impl From<activity::ActivityKind> for ActivityKind {
-    fn from(kind: activity::ActivityKind) -> Self {
-        match kind {
-            activity::ActivityKind::Commit => Self::Commit,
-            activity::ActivityKind::PullRequestOpened => Self::PullRequestOpened,
-            activity::ActivityKind::ChecksPassed => Self::ChecksPassed,
-            activity::ActivityKind::ChecksFailed => Self::ChecksFailed,
-            activity::ActivityKind::PullRequestMerged => Self::PullRequestMerged,
-        }
-    }
-}
-
-/// Where an activity event was first learned from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub enum ActivitySource {
-    #[serde(rename = "git_poll")]
-    GitPoll,
-    #[serde(rename = "github_poll")]
-    GitHubPoll,
-}
-
-impl From<activity::ActivitySource> for ActivitySource {
-    fn from(source: activity::ActivitySource) -> Self {
-        match source {
-            activity::ActivitySource::GitPoll => Self::GitPoll,
-            activity::ActivitySource::GitHubPoll => Self::GitHubPoll,
-        }
-    }
-}
-
-/// One event of the git activity of a task.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
-#[serde(rename_all = "camelCase")]
-pub struct TaskActivity {
-    pub kind: ActivityKind,
-    pub source: ActivitySource,
-    /// The commit SHA of a commit or CI result, or the pull request URL.
-    pub external_ref: String,
-    pub title: String,
-    pub author: Option<String>,
-    /// When it happened, in seconds since the Unix epoch.
-    #[specta(type = Number)]
-    pub occurred_at: i64,
-    /// When Toodo first stored it.
-    #[specta(type = Number)]
-    pub received_at: i64,
-    /// The latest time any source reported it.
-    #[specta(type = Number)]
-    pub confirmed_at: i64,
-}
-
-impl From<&activity::RecordedActivity> for TaskActivity {
-    fn from(recorded: &activity::RecordedActivity) -> Self {
-        let event = &recorded.event;
-        Self {
-            kind: event.kind.into(),
-            source: event.source.into(),
-            external_ref: event.external_ref.clone(),
-            title: event.title.clone(),
-            author: event.author.clone(),
-            occurred_at: event.occurred_at,
-            received_at: recorded.received_at,
-            confirmed_at: recorded.confirmed_at,
         }
     }
 }

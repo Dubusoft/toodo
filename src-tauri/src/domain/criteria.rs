@@ -22,37 +22,17 @@ impl fmt::Display for CriterionId {
 pub enum CheckKind {
     /// Checked by the user in the app or by an agent through MCP, with evidence.
     Manual,
-    /// The task's pull request is merged into the workspace base branch.
-    PullRequestMerged,
-    /// The task's pull request is open and all its checks passed.
-    PullRequestOpenChecksPassed,
-    /// The task branch has commits and is merged into the workspace base branch in the
-    /// repository itself, for workspaces without an `origin` remote.
-    BranchMergedLocally,
     /// A GET of the target URL succeeds.
     Url,
-    /// The target shell command exits with status 0 in the task worktree.
-    Command,
 }
 
 impl CheckKind {
-    pub const ALL: [Self; 6] = [
-        Self::Manual,
-        Self::PullRequestMerged,
-        Self::PullRequestOpenChecksPassed,
-        Self::BranchMergedLocally,
-        Self::Url,
-        Self::Command,
-    ];
+    pub const ALL: [Self; 2] = [Self::Manual, Self::Url];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Manual => "manual",
-            Self::PullRequestMerged => "pr_merged",
-            Self::PullRequestOpenChecksPassed => "pr_open_ci_green",
-            Self::BranchMergedLocally => "branch_merged_locally",
             Self::Url => "url",
-            Self::Command => "command",
         }
     }
 
@@ -65,18 +45,9 @@ impl CheckKind {
         self != Self::Manual
     }
 
-    /// Whether the criterion needs a target given by its author: the URL or command to
-    /// check.
+    /// Whether the criterion needs a URL target.
     pub fn takes_target(self) -> bool {
-        matches!(self, Self::Url | Self::Command)
-    }
-
-    /// Whether it looks at the task's pull request.
-    pub fn is_pull_request(self) -> bool {
-        matches!(
-            self,
-            Self::PullRequestMerged | Self::PullRequestOpenChecksPassed
-        )
+        self == Self::Url
     }
 }
 
@@ -91,8 +62,7 @@ pub enum CriterionState {
     /// Not met yet, or not checked yet.
     Pending,
     Met,
-    /// The last automatic check found it not met for a reason worth showing, e.g. a pull
-    /// request closed without merging or a command that failed; it is checked again.
+    /// The last HTTP check failed; completion checks the URL again.
     Failed,
 }
 
@@ -145,8 +115,7 @@ pub struct Criterion {
     /// What has to hold, in words.
     pub text: String,
     pub kind: CheckKind,
-    /// The URL of a `url` criterion, the command of a `command` criterion, or the commit
-    /// a `branch_merged_locally` criterion's branch started from once Toodo knows it.
+    /// The HTTP URL to check for a URL criterion; absent for a manual criterion.
     pub target: Option<String>,
     pub state: CriterionState,
     /// What showed the last check's result: a link, an output, or the reason it failed.
@@ -172,7 +141,7 @@ pub struct NewCriterion {
 
 impl NewCriterion {
     /// Checks and normalizes a criterion from its author: a non-blank text, an `http(s)`
-    /// URL for `url`, a non-blank command for `command`, and no target for other kinds.
+    /// URL for `url`, and no target for `manual`.
     pub fn parse(
         text: &str,
         kind: CheckKind,
@@ -192,12 +161,6 @@ impl NewCriterion {
                     "url criterion {text:?} needs an http:// or https:// URL as its target"
                 )));
             }
-            (CheckKind::Command, Some(_)) => {}
-            (CheckKind::Command, None) => {
-                return Err(InvalidCriterion(format!(
-                    "command criterion {text:?} needs the command to run as its target"
-                )));
-            }
             (_, None) => {}
             (kind, Some(_)) => {
                 return Err(InvalidCriterion(format!(
@@ -210,25 +173,6 @@ impl NewCriterion {
             kind,
             target: target.map(str::to_owned),
         })
-    }
-
-    /// The criterion a git task gets when its author gives none: its pull request is
-    /// merged, or, in a repository without an `origin` remote, its branch is merged into
-    /// the base branch locally.
-    pub fn merge(has_origin: bool) -> Self {
-        if has_origin {
-            Self {
-                text: "Pull request merged into the base branch".to_owned(),
-                kind: CheckKind::PullRequestMerged,
-                target: None,
-            }
-        } else {
-            Self {
-                text: "Branch merged into the base branch locally".to_owned(),
-                kind: CheckKind::BranchMergedLocally,
-                target: None,
-            }
-        }
     }
 }
 
@@ -361,24 +305,18 @@ mod tests {
         use CriterionState::*;
         assert_eq!(decide(&[]), Decision::Wait);
         assert_eq!(
-            decide(&[criterion(PullRequestMerged, Met), criterion(Command, Met)]),
+            decide(&[criterion(Url, Met), criterion(Url, Met)]),
             Decision::Complete
         );
         assert_eq!(
-            decide(&[criterion(PullRequestMerged, Met), criterion(Manual, Met)]),
+            decide(&[criterion(Url, Met), criterion(Manual, Met)]),
             Decision::AwaitConfirmation
         );
         assert_eq!(
-            decide(&[
-                criterion(PullRequestMerged, Met),
-                criterion(Manual, Pending)
-            ]),
+            decide(&[criterion(Url, Met), criterion(Manual, Pending)]),
             Decision::Wait
         );
-        assert_eq!(
-            decide(&[criterion(BranchMergedLocally, Failed)]),
-            Decision::Wait
-        );
+        assert_eq!(decide(&[criterion(Url, Failed)]), Decision::Wait);
         assert!(can_confirm(&[]));
         assert!(can_confirm(&[criterion(Manual, Met)]));
         assert!(!can_confirm(&[
@@ -400,20 +338,15 @@ mod tests {
             }
         );
         assert_eq!(parse(Manual, Some("  ")).unwrap().target, None);
-        assert!(parse(Command, Some("npm test")).is_ok());
         for (kind, target) in [
             (Url, None),
             (Url, Some("ftp://example.com")),
             (Url, Some("https://exa mple.com")),
-            (Command, None),
             (Manual, Some("x")),
-            (BranchMergedLocally, Some("abc")),
         ] {
             assert!(parse(kind, target).is_err(), "{kind} {target:?}");
         }
         assert!(NewCriterion::parse(" ", Manual, None).is_err());
-        assert_eq!(NewCriterion::merge(true).kind, PullRequestMerged);
-        assert_eq!(NewCriterion::merge(false).kind, BranchMergedLocally);
     }
 
     #[test]

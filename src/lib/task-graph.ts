@@ -1,4 +1,4 @@
-import type { BranchFreshness, Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
+import type { Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
 import { type WorkState, workSegments } from "@/lib/timeline";
 import { dueEnd, dueState, estimatedSeconds, type DueState } from "@/lib/plan";
 
@@ -7,8 +7,8 @@ export type DependencyEdge = { id: string; source: TaskId; target: TaskId };
 
 /**
  * Statuses whose dependencies can change, the same in the app and over MCP: every status
- * but `done`. A new prerequisite that is not done pauses an `in_progress` task and closes
- * its herdr workspace, after the user confirms it; an `in_review` task is not paused.
+ * but `done`. A new prerequisite that is not done pauses an `in_progress` task after the
+ * user confirms it; an `in_review` task is not paused.
  */
 export const dependencyEditableStatuses: TaskStatus[] = ["planned", "in_progress", "in_review"];
 
@@ -36,30 +36,9 @@ export function waitingPrerequisites(task: Task, byId: ReadonlyMap<TaskId, Task>
   return task.dependsOn.filter((id) => byId.get(id)?.status !== "done");
 }
 
-/**
- * What is wrong with the base freshness of a branch, as phrases such as "3 commits behind main",
- * or null when it is up to date with its base and its pull request does not conflict.
- */
-export function freshnessWarning(freshness: BranchFreshness): string | null {
-  const conflicting = freshness.mergeable === "conflicting";
-  if (freshness.behind === 0 && !conflicting) {
-    return null;
-  }
-  const parts: string[] = [];
-  if (freshness.behind > 0) {
-    parts.push(`${freshness.behind} ${freshness.behind === 1 ? "commit" : "commits"} behind ${freshness.base}`);
-  }
-  if (conflicting) {
-    parts.push("pull request has merge conflicts");
-  } else if (freshness.mergeable === "mergeable") {
-    parts.push("no merge conflicts");
-  }
-  return parts.join("; ");
-}
-
-/** A planned task that was worked on before: it keeps its branch and worktree. */
+/** A planned task that was worked on before. */
 export function isPaused(task: Task): boolean {
-  return task.status === "planned" && (task.milestones.startedAt !== null || task.branch !== null);
+  return task.status === "planned" && task.milestones.startedAt !== null;
 }
 
 /**

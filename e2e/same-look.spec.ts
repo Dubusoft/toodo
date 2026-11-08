@@ -25,10 +25,8 @@ test("gives the backup actions one style and names the restore of a file", async
   expect(await download.getAttribute("class")).toBe(await restore.getAttribute("class"));
 });
 
-test("shows Clone, Open and Init in the sidebar as outlined buttons", async ({ app }) => {
-  for (const mode of ["Clone", "Open", "Init"]) {
-    const button = app.getByRole("button", { name: `${mode} on Local` });
-    await expect(button).toHaveCSS("border-top-width", "1px");
-    await expect(button).not.toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
-  }
+test("shows Add workspace in the sidebar as an outlined button", async ({ app }) => {
+  const button = app.getByRole("button", { name: "Add workspace" });
+  await expect(button).toHaveCSS("border-top-width", "1px");
+  await expect(button).not.toHaveCSS("border-top-color", "rgba(0, 0, 0, 0)");
 });

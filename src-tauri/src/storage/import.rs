@@ -33,27 +33,12 @@ type Column = (&'static str, Option<&'static str>);
 /// The imported tables in the order they are inserted, each with its columns that are
 /// not copied as they are.
 const TABLES: &[(&str, &[Column])] = &[
-    (
-        "workspaces",
-        &[
-            ("id", Some("id + {w}")),
-            // The repositories here may differ from the other machine's, so the server
-            // detects the source and completion of merge-based git workspaces again at its
-            // next start; workspaces completed manually keep what was chosen.
-            (
-                "axes_detected",
-                Some(
-                    "CASE WHEN source = 'none' OR completion = 'manual' THEN axes_detected ELSE 0 END",
-                ),
-            ),
-        ],
-    ),
+    ("workspaces", &[("id", Some("id + {w}"))]),
     (
         "tasks",
         &[
             ("id", Some("id + {t}")),
             ("workspace_id", Some("workspace_id + {w}")),
-            ("merged_with_task_id", Some("merged_with_task_id + {t}")),
         ],
     ),
     (
@@ -65,6 +50,14 @@ const TABLES: &[(&str, &[Column])] = &[
     ),
     ("commit_records", &[("task_id", Some("task_id + {t}"))]),
     (
+        "pull_request_snapshots",
+        &[("task_id", Some("task_id + {t}"))],
+    ),
+    (
+        "task_activity",
+        &[("id", None), ("task_id", Some("task_id + {t}"))],
+    ),
+    (
         "task_events",
         &[
             ("id", None),
@@ -75,10 +68,6 @@ const TABLES: &[(&str, &[Column])] = &[
             ("request_id", Some("NULL")),
             ("report_id", Some("NULL")),
         ],
-    ),
-    (
-        "pull_request_snapshots",
-        &[("task_id", Some("task_id + {t}"))],
     ),
     (
         "task_notes",
@@ -95,22 +84,13 @@ const TABLES: &[(&str, &[Column])] = &[
         "task_criteria",
         &[("id", None), ("task_id", Some("task_id + {t}"))],
     ),
-    (
-        "task_activity",
-        &[("id", None), ("task_id", Some("task_id + {t}"))],
-    ),
     ("task_labels", &[("task_id", Some("task_id + {t}"))]),
-    (
-        "agent_status_transitions",
-        &[("id", None), ("task_id", Some("task_id + {t}"))],
-    ),
 ];
 
 /// Tables that are deliberately left out, see the module documentation. `task_search` is
 /// filled by the triggers on the imported tables.
 #[cfg(test)]
 pub(super) const SKIPPED: &[&str] = &[
-    "machine_settings",
     "devices",
     "push_subscriptions",
     "oauth_clients",
@@ -120,14 +100,6 @@ pub(super) const SKIPPED: &[&str] = &[
     "task_results",
     "task_search",
     // Runtime handles and runs belong to the other server's hosts.
-    "runtime_workspaces",
-    "agent_conversations",
-    "task_runs",
-    "run_events",
-    "run_operations",
-    "queued_runs",
-    "runtime_host_events",
-    "runtime_hosts",
     // Settings and saved reviews belong to the server that kept them.
     "settings",
     "review_snapshots",
@@ -237,22 +209,15 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::domain::model::{
-        NoteKind, TaskId, TaskType, Workspace, WorkspaceId, WorkspaceLocation,
-    };
-    use crate::domain::path::{PosixPath, WindowsPath};
+    use crate::domain::model::{TaskId, TaskType, Workspace, WorkspaceId};
     use crate::storage::{NewTask, NewWorkspace, TaskSearch, stage_backup};
 
-    fn add_workspace(storage: &mut Storage, name: &str, location: WorkspaceLocation) -> Workspace {
+    fn add_workspace(storage: &mut Storage, name: &str, repository: String) -> Workspace {
         storage
             .create_workspace(&NewWorkspace {
                 name: name.to_owned(),
-                location,
-                default_base_branch: "main".to_owned(),
-                source: crate::domain::model::Source::GitHub,
-                completion: crate::domain::model::CompletionMode::PullRequestMerge,
-                runner: crate::domain::model::Runner::Herdr,
-                axes_detected: true,
+                description: None,
+                repository: Some(repository),
             })
             .unwrap()
     }
@@ -276,110 +241,35 @@ mod tests {
         storage.conn.query_row(sql, [], |row| row.get(0)).unwrap()
     }
 
-    /// A database like the desktop app's: a Windows workspace whose second task waits on
-    /// the first, with history, notes, a related link, and a device, saved at schema
-    /// version 25, which still kept project memory entries.
     fn desktop_database(path: &Path) {
-        let mut desktop = Storage::open(path).unwrap();
-        let workspace = add_workspace(
-            &mut desktop,
-            "app",
-            WorkspaceLocation::Local {
-                path: WindowsPath::parse(r"C:\dev\app").unwrap().into(),
-            },
-        );
-        let first = add_task(&mut desktop, &workspace, "Add storage");
-        let second = add_task(&mut desktop, &workspace, "Add sync");
-        desktop.add_dependency(second, first).unwrap();
-        desktop.add_related(first, second).unwrap();
-        desktop
-            .add_task_note(first, NoteKind::Progress, "Schema drafted")
-            .unwrap();
-        desktop
-            .conn
-            .execute_batch(
-                r"INSERT INTO devices (label, token_hash, created_at, last_seen_at)
-                 VALUES ('Browser', printf('%064d', 0), 0, 0);
-                 INSERT INTO machine_settings (kind, label, worktree_root)
-                 VALUES ('local', '', 'D:\worktrees');
-                 CREATE TABLE memory_entries (
-                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                     workspace_id INTEGER REFERENCES workspaces (id) ON DELETE CASCADE,
-                     kind TEXT NOT NULL,
-                     title TEXT NOT NULL,
-                     body TEXT NOT NULL DEFAULT '',
-                     task_id INTEGER REFERENCES tasks (id) ON DELETE SET NULL,
-                     created_at INTEGER NOT NULL,
-                     updated_at INTEGER NOT NULL,
-                     superseded_by INTEGER REFERENCES memory_entries (id) ON DELETE SET NULL
-                 );
-                 INSERT INTO memory_entries (workspace_id, kind, title, created_at, updated_at)
-                 VALUES (NULL, 'rule', 'Reply in English', 0, 0);
-                 ALTER TABLE workspaces DROP COLUMN source;
-                 ALTER TABLE workspaces DROP COLUMN completion;
-                 ALTER TABLE workspaces DROP COLUMN runner;
-                 ALTER TABLE workspaces DROP COLUMN axes_detected;
-                 ALTER TABLE workspaces DROP COLUMN agent_model;
-                 ALTER TABLE workspaces DROP COLUMN agent_permission_mode;
-                 ALTER TABLE workspaces DROP COLUMN run_time_limit_minutes;
-                 ALTER TABLE tasks DROP COLUMN agent_model;
-                 ALTER TABLE tasks DROP COLUMN agent_permission_mode;
-                 ALTER TABLE tasks DROP COLUMN run_time_limit_minutes;
-                 DROP TABLE task_activity;
-                 DROP TABLE task_labels;
-                 DROP TABLE agent_status_transitions;
-                 ALTER TABLE devices DROP COLUMN expires_at;
-                 ALTER TABLE devices DROP COLUMN scope;
-                 ALTER TABLE tasks ADD COLUMN herdr_workspace_id TEXT;
-                 UPDATE tasks SET herdr_workspace_id = 'w1' WHERE title = 'Add storage';
-                 ALTER TABLE machine_settings DROP COLUMN max_concurrent_runs;
-                 DROP TABLE queued_runs;
-                 DROP TABLE run_operations;
-                 DROP TABLE run_events;
-                 DROP TABLE task_runs;
-                 DROP TABLE agent_conversations;
-                 DROP TABLE runtime_workspaces;
-                 DROP TABLE runtime_host_events;
-                 DROP TABLE runtime_hosts;
-                 DROP TABLE oauth_tokens;
-                 DROP TABLE oauth_grants;
-                 DROP TABLE oauth_clients;
-                 ALTER TABLE push_subscriptions DROP COLUMN last_failure;
-                 ALTER TABLE push_subscriptions DROP COLUMN last_failure_at;
-                 ALTER TABLE workspaces DROP COLUMN archived_at;
-                 ALTER TABLE tasks DROP COLUMN archived_at;
-                 ALTER TABLE task_events DROP COLUMN reason;
-                 DROP TABLE settings;
-                 DROP TABLE review_snapshots;
-                 PRAGMA user_version = 25;",
-            )
-            .unwrap();
+        let conn = rusqlite::Connection::open(path).unwrap();
+        for sql in &super::super::migrations::MIGRATIONS[..25] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch(r#"PRAGMA user_version = 25;
+            INSERT INTO workspaces (id, name, kind, path, default_base_branch) VALUES (1, 'app', 'local', 'C:\dev\app', 'main');
+            INSERT INTO tasks (id, workspace_id, type, title, status, branch, pull_request_url) VALUES (1, 1, 'feat', 'Add storage', 'planned', 'feat/storage', 'https://example.com/pull/1'), (2, 1, 'feat', 'Add sync', 'planned', NULL, NULL);
+            INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (2, 1);
+            INSERT INTO task_relations (task_id, related_id) VALUES (1, 2);
+            INSERT INTO task_events (task_id, status, at) VALUES (1, 'planned', 0), (2, 'planned', 0);
+            INSERT INTO task_notes (task_id, kind, body, at) VALUES (1, 'progress', 'Schema drafted', 0);
+            INSERT INTO devices (label, token_hash, created_at, last_seen_at) VALUES ('Browser', printf('%064d', 0), 0, 0);
+            INSERT INTO machine_settings (kind, label, worktree_root) VALUES ('local', '', 'D:\worktrees');
+            INSERT INTO memory_entries (workspace_id, kind, title, created_at, updated_at) VALUES (NULL, 'rule', 'Reply in English', 0, 0);
+        "#).unwrap();
     }
 
     #[test]
-    fn imported_git_workspaces_are_detected_again_and_manual_ones_keep_their_axes() {
-        use crate::domain::model::{CompletionMode, Runner, Source};
+    fn imported_workspaces_keep_their_metadata() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("other.sqlite3");
         let mut other = Storage::open(&source).unwrap();
-        add_workspace(
-            &mut other,
-            "site",
-            WorkspaceLocation::Local {
-                path: PosixPath::parse("/srv/site").unwrap().into(),
-            },
-        );
+        add_workspace(&mut other, "site", "repository".to_owned());
         other
             .create_workspace(&NewWorkspace {
                 name: "notes".to_owned(),
-                location: WorkspaceLocation::Local {
-                    path: PosixPath::parse("/srv/notes").unwrap().into(),
-                },
-                default_base_branch: String::new(),
-                source: Source::None,
-                completion: CompletionMode::Manual,
-                runner: Runner::None,
-                axes_detected: true,
+                description: Some("Task notes".to_owned()),
+                repository: Some("notes:repository".to_owned()),
             })
             .unwrap();
         drop(other);
@@ -393,22 +283,15 @@ mod tests {
                 .map(|workspace| workspace.name)
                 .collect()
         };
-        assert_eq!(names(server.workspaces_to_detect().unwrap()), ["site"]);
+        assert_eq!(names(server.list_workspaces().unwrap()), ["site", "notes"]);
         let notes = server
             .list_workspaces()
             .unwrap()
             .into_iter()
             .find(|workspace| workspace.name == "notes")
             .unwrap();
-        assert_eq!(
-            (
-                notes.name.as_str(),
-                notes.source,
-                notes.completion,
-                notes.runner
-            ),
-            ("notes", Source::None, CompletionMode::Manual, Runner::None)
-        );
+        assert_eq!(notes.name, "notes");
+        assert_eq!(notes.repository.as_deref(), Some("notes:repository"));
     }
 
     #[test]
@@ -418,13 +301,7 @@ mod tests {
         desktop_database(&source);
 
         let mut server = Storage::open(&dir.path().join("server.sqlite3")).unwrap();
-        let site = add_workspace(
-            &mut server,
-            "site",
-            WorkspaceLocation::Local {
-                path: PosixPath::parse("/srv/site").unwrap().into(),
-            },
-        );
+        let site = add_workspace(&mut server, "site", "repository".to_owned());
         let kept = add_task(&mut server, &site, "Server task");
         let deleted = add_task(&mut server, &site, "Deleted task");
         server.delete_task(deleted).unwrap();
@@ -443,7 +320,6 @@ mod tests {
         let imported = server.get_task(first).unwrap().unwrap();
         assert_eq!(imported.title, "Add storage");
         assert_eq!(imported.workspace_id.0, site.id.0 + 1);
-        assert_eq!(imported.herdr_workspace_id, None);
         let waiting = server.get_task(second).unwrap().unwrap();
         assert_eq!(waiting.depends_on, BTreeSet::from([first]));
         assert_eq!(server.list_relations().unwrap(), vec![(first, second)]);
@@ -472,7 +348,13 @@ mod tests {
             0
         );
         assert_eq!(count(&server, "SELECT count(*) FROM devices"), 0);
-        assert_eq!(count(&server, "SELECT count(*) FROM machine_settings"), 0);
+        assert_eq!(
+            count(
+                &server,
+                "SELECT count(*) FROM sqlite_master WHERE name = 'machine_settings'"
+            ),
+            0
+        );
         assert_eq!(add_task(&mut server, &site, "Next task"), TaskId(5));
     }
 
@@ -501,51 +383,90 @@ mod tests {
         );
     }
 
-    /// Imported tasks forget their herdr workspace, so they get no runtime workspace;
-    /// the runtime records of the other server stay behind.
+    #[test]
+    fn imported_history_keeps_records_and_remaps_task_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("history.sqlite3");
+        {
+            let mut other = Storage::open(&source).unwrap();
+            let workspace = add_workspace(&mut other, "History", "repository".to_owned());
+            let task = add_task(&mut other, &workspace, "Recorded work");
+            other.conn.execute(
+                "INSERT INTO commit_records (task_id, position, sha, message, author, committed_at)
+                 VALUES (?1, 0, 'recorded', 'Recorded commit', 'Ada', 120)",
+                [task.0],
+            ).unwrap();
+            other.conn.execute(
+                "INSERT INTO pull_request_snapshots (task_id, number, title, additions, deletions,
+                 changed_files, review_count, reviewer_count)
+                 VALUES (?1, 7, 'Historical PR', 10, 2, 3, 1, 1)",
+                [task.0],
+            ).unwrap();
+            other.conn.execute(
+                "INSERT INTO task_activity (task_id, dedup_key, kind, source, external_ref, title,
+                 author, occurred_at, received_at, confirmed_at)
+                 VALUES (?1, 'historical', 'commit', 'git_poll', 'polled', 'Polled commit',
+                 'Grace', 150, 160, 160)",
+                [task.0],
+            ).unwrap();
+        }
+        let mut server = Storage::open_in_memory().unwrap();
+        let workspace = add_workspace(&mut server, "Existing", "repository".to_owned());
+        let existing = add_task(&mut server, &workspace, "Existing work");
+        let summary = server.import(&stage_backup(&source).unwrap()).unwrap();
+        assert_eq!(summary.task_id_offset, existing.0);
+        let imported = TaskId(summary.task_id_offset + 1);
+        let records = server.list_commit_records(imported).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].sha, "recorded");
+        assert_eq!(
+            server
+                .historical_pull_request(imported)
+                .unwrap()
+                .unwrap()
+                .title,
+            "Historical PR"
+        );
+        let records = server
+            .list_commit_records_in(crate::domain::review::Period::new(100, 200).unwrap())
+            .unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records.iter().all(|record| record.task_id == imported));
+        assert_eq!(records[1].sha, "polled");
+        assert_eq!(
+            count(
+                &server,
+                "SELECT count(*) FROM task_activity WHERE task_id = 1"
+            ),
+            0
+        );
+        assert!(server.list_commit_records(existing).unwrap().is_empty());
+    }
+
     #[test]
     fn imported_tasks_have_no_runtime_records() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("other.sqlite3");
         {
             let mut other = Storage::open(&source).unwrap();
-            let workspace = add_workspace(
-                &mut other,
-                "site",
-                WorkspaceLocation::Local {
-                    path: PosixPath::parse("/srv/site").unwrap().into(),
-                },
-            );
+            let workspace = add_workspace(&mut other, "site", "repository".to_owned());
             let task = add_task(&mut other, &workspace, "Started");
-            let checkout = crate::domain::naming::TaskCheckout {
-                path: PosixPath::parse("/wt/started").unwrap().into(),
-                branch: "feat/started".to_owned(),
-            };
-            other.start_task(task, &checkout, "w1").unwrap();
-            other
-                .set_host_state(
-                    &crate::domain::runtime::OwnerKey::implicit(),
-                    &crate::domain::runtime::HostRef::Local,
-                    crate::runtime::events::HostState::Online,
-                )
-                .unwrap();
-            assert_eq!(count(&other, "SELECT count(*) FROM runtime_workspaces"), 1);
-            assert_eq!(count(&other, "SELECT count(*) FROM runtime_host_events"), 1);
-            assert_eq!(count(&other, "SELECT count(*) FROM runtime_hosts"), 1);
+            other.start_task(task, None, &[]).unwrap();
         }
         let mut server = Storage::open_in_memory().unwrap();
 
         server.import(&stage_backup(&source).unwrap()).unwrap();
 
         assert_eq!(count(&server, "SELECT count(*) FROM tasks"), 1);
-        assert_eq!(count(&server, "SELECT count(*) FROM runtime_workspaces"), 0);
         assert_eq!(
-            count(&server, "SELECT count(*) FROM runtime_host_events"),
+            count(
+                &server,
+                "SELECT count(*) FROM sqlite_master WHERE name IN ('runtime_hosts', 'runtime_host_events', 'runtime_workspaces')"
+            ),
             0
         );
-        assert_eq!(count(&server, "SELECT count(*) FROM runtime_hosts"), 0);
         let imported = server.list_tasks(WorkspaceId(1)).unwrap();
-        assert_eq!(imported[0].herdr_workspace_id, None);
+        assert_eq!(imported.len(), 1);
     }
 
     #[test]
