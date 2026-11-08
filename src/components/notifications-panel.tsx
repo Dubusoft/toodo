@@ -19,8 +19,6 @@ import {
 const pushKey = ["push"];
 
 const settingOptions = [
-  { key: "agent", label: "Agent finished or needs input" },
-  { key: "pullRequests", label: "Pull request checks and reviews" },
   { key: "completion", label: "Task awaiting completion" },
 ] as const satisfies readonly { key: keyof PushSettings; label: string }[];
 
