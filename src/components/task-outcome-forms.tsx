@@ -17,8 +17,8 @@ import { type TaskContext, taskRef } from "@/components/task-common";
 
 
 /**
- * Concludes an active task without completing it: the conclusion, why the work is not adopted, is
- * required and becomes its completion note.
+ * Concludes an active or planned task without completing it: the conclusion, why the work is not
+ * adopted, is required and becomes its completion note.
  */
 export function ConcludeForm({
   task,
