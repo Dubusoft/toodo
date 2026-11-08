@@ -50,21 +50,21 @@ describe("NotificationsPanel", () => {
     const [permission, publicKey] = vi.mocked(enablePush).mock.calls[0];
     await expect(permission).resolves.toBe("granted");
     expect(publicKey).toBe(off.publicKey);
-    expect(await screen.findByRole("checkbox", { name: "Agent finished or needs input" })).toBeChecked();
+    expect(await screen.findByRole("checkbox", { name: "Task awaiting completion" })).toBeChecked();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Disable notifications on this device" })).toBeInTheDocument();
   });
 
   it("saves a setting as soon as its box changes", async () => {
     vi.mocked(getPushState).mockResolvedValue(on);
-    vi.mocked(saveSettings).mockResolvedValue({ ...subscription, settings: { ...settings, pullRequests: false } });
+    vi.mocked(saveSettings).mockResolvedValue({ ...subscription, settings: { ...settings, completion: false } });
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("checkbox", { name: "Pull request checks and reviews" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Task awaiting completion" }));
 
     await waitFor(() => expect(saveSettings).toHaveBeenCalledOnce());
-    expect(vi.mocked(saveSettings).mock.calls[0][0]).toEqual({ agent: true, pullRequests: false, completion: true });
-    expect(screen.getByRole("checkbox", { name: "Pull request checks and reviews" })).not.toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "Task awaiting completion" })).toBeChecked();
+    expect(vi.mocked(saveSettings).mock.calls[0][0]).toEqual({ agent: true, pullRequests: true, completion: false });
+    expect(screen.getByRole("checkbox", { name: "Task awaiting completion" })).not.toBeChecked();
   });
 
   it("shows why the server refused to turn notifications on", async () => {

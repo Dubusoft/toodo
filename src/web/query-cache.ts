@@ -13,7 +13,7 @@ import { activeServer } from "@/web/server";
 import { getToken, subscribeToken } from "@/web/session";
 
 /** The first part of the keys of kept queries: workspaces, tasks, and task details (see `queryKeys`). */
-const KEPT_QUERIES = ["workspaces", "task-list", "tasks", "agent-statuses", "pull-request-statuses"];
+const KEPT_QUERIES = ["workspaces", "task-list", "tasks"];
 
 /** How long a kept query nobody shows stays in memory, so the next save still has it. */
 const KEPT_GC_MS = 24 * 60 * 60 * 1000;
