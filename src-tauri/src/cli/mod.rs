@@ -51,8 +51,7 @@ to it.
 Commands:
   init             create the data directory, its database and access tokens, save the
                    listen address, start the server, and register its MCP endpoint with
-                   Claude Code and Codex where they are on PATH; then check git,
-                   gh, ssh, herdr, tmux, and the agent CLIs and print what is missing
+                   Claude Code and Codex where they are on PATH
   start            start the server in the background (through systemd or launchd once
                    installed), and register its MCP endpoint again with the agents init
                    registered it with, so they get a replaced token
@@ -120,8 +119,7 @@ fn command_help(command: &str) -> String {
             "toodo init [--port N | --listen HOST:PORT] [--data-dir DIR] [--no-mcp]",
             "Creates the data directory, its database and access tokens, saves the listen
 address, starts the server, and registers its MCP endpoint with Claude Code and Codex
-where they are on PATH. Then it checks git, gh, ssh, herdr, tmux, and the agent CLIs
-and prints what is missing. Running it again keeps the database and tokens.",
+where they are on PATH. Running it again keeps the database and tokens.",
             format!(
                 "{LISTEN_OPTIONS}\n{DATA_DIR_OPTION}\n  --no-mcp            do not register the MCP \
                  endpoint with coding agents"

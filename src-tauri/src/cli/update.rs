@@ -219,7 +219,7 @@ fn check_report(installed: &str, target: &str, tag: &str, option: &str) -> Strin
 
 /// Who runs the server, as far as an update is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Runner {
+enum Supervisor {
     Systemd,
     /// The launchd agent [`launchd::LABEL`] on macOS.
     Launchd,
@@ -264,8 +264,8 @@ pub(super) fn update(
     check_global_root(&npm, &installed.dir)?;
 
     let listen = settings::listen(data)?;
-    let runner = runner(data, var)?;
-    let running = is_running(runner, data);
+    let supervisor = supervisor(data, var)?;
+    let running = is_running(supervisor, data);
 
     let old = &installed.version;
     let target = published_version(&npm, &format!("{PACKAGE}@{tag}"))?;
@@ -336,7 +336,7 @@ pub(super) fn update(
     if !running {
         // The unit runs copies of the server and the web app, so `toodo start` would
         // start the old version unless they are refreshed now.
-        if matches!(runner, Runner::Systemd | Runner::Launchd) {
+        if matches!(supervisor, Supervisor::Systemd | Supervisor::Launchd) {
             service::install_bundle(&bundle, var).map_err(|cause| {
                 format!(
                     "updated {changed}, but the service still has the old server: {cause}; \
@@ -350,21 +350,21 @@ pub(super) fn update(
         super::agents::refresh(data, listen, var);
         return Ok(());
     }
-    let restarted = restart(runner, &bundle, data, listen, flag, var).and_then(|()| {
+    let restarted = restart(supervisor, &bundle, data, listen, flag, var).and_then(|()| {
         healthy(listen).map_err(|cause| format!("toodo-server does not answer: {cause}"))
     });
     match restarted {
         Ok(()) => {
             println!(
                 "Updated {changed}. toodo-server restarted ({}) and answers on {}",
-                describe(runner),
+                describe(supervisor),
                 settings::web_url(listen)
             );
             super::agents::refresh(data, listen, var);
             Ok(())
         }
         Err(cause) => Err(roll_back(
-            &npm, &bin, old, runner, data, listen, flag, var, &changed, &cause,
+            &npm, &bin, old, supervisor, data, listen, flag, var, &changed, &cause,
         )),
     }
 }
@@ -376,7 +376,7 @@ fn roll_back(
     npm: &Path,
     bin: &Path,
     old: &str,
-    runner: Runner,
+    supervisor: Supervisor,
     data: &DataDir,
     listen: SocketAddr,
     flag: &str,
@@ -389,7 +389,7 @@ fn roll_back(
     let spec = format!("{PACKAGE}@{old}");
     let restored = npm_install(npm, &spec)
         .and_then(|()| Bundle::beside(&bin.join("toodo")))
-        .and_then(|bundle| restart(runner, &bundle, data, listen, flag, var))
+        .and_then(|bundle| restart(supervisor, &bundle, data, listen, flag, var))
         .and_then(|()| {
             healthy(listen).map_err(|cause| format!("toodo-server does not answer: {cause}"))
         });
@@ -398,12 +398,12 @@ fn roll_back(
             "updated {changed}, but the server did not come back: {cause}; went back to \
              {old}, and toodo-server answers on {} again.\n{}",
             settings::web_url(listen),
-            log_hint(runner, flag)
+            log_hint(supervisor, flag)
         ),
         Err(again) => format!(
             "updated {changed}, but the server did not come back: {cause}; going back to {old} \
              failed too: {again}\n{}",
-            recovery(runner, old, flag)
+            recovery(supervisor, old, flag)
         ),
     }
 }
@@ -473,55 +473,55 @@ fn install_root(package: &Path) -> Option<&Path> {
         .last()
 }
 
-fn runner(data: &DataDir, var: Var) -> Result<Runner, String> {
+fn supervisor(data: &DataDir, var: Var) -> Result<Supervisor, String> {
     if service::manages(&service::unit_path(var)?, data) {
-        return Ok(Runner::Systemd);
+        return Ok(Supervisor::Systemd);
     }
     if launchd::supported() && launchd::manages(&launchd::plist_path(var)?, data) {
-        return Ok(Runner::Launchd);
+        return Ok(Supervisor::Launchd);
     }
-    Ok(Runner::PidFile)
+    Ok(Supervisor::PidFile)
 }
 
-fn is_running(runner: Runner, data: &DataDir) -> bool {
-    match runner {
-        Runner::Systemd => service::is_active(),
-        Runner::Launchd => launchd::is_running(),
-        Runner::PidFile => process::running_pid(data).is_some(),
+fn is_running(supervisor: Supervisor, data: &DataDir) -> bool {
+    match supervisor {
+        Supervisor::Systemd => service::is_active(),
+        Supervisor::Launchd => launchd::is_running(),
+        Supervisor::PidFile => process::running_pid(data).is_some(),
     }
 }
 
-fn describe(runner: Runner) -> String {
-    match runner {
-        Runner::Systemd => service::UNIT_NAME.to_owned(),
-        Runner::Launchd => format!("launchd job {}", launchd::LABEL),
-        Runner::PidFile => "toodo start".to_owned(),
+fn describe(supervisor: Supervisor) -> String {
+    match supervisor {
+        Supervisor::Systemd => service::UNIT_NAME.to_owned(),
+        Supervisor::Launchd => format!("launchd job {}", launchd::LABEL),
+        Supervisor::PidFile => "toodo start".to_owned(),
     }
 }
 
 /// Restarts the server on the files of `bundle`, and waits until it accepts connections.
 fn restart(
-    runner: Runner,
+    supervisor: Supervisor,
     bundle: &Bundle,
     data: &DataDir,
     listen: SocketAddr,
     flag: &str,
     var: Var,
 ) -> Result<(), String> {
-    match runner {
-        Runner::Systemd => {
+    match supervisor {
+        Supervisor::Systemd => {
             // The unit runs copies of the server and the web app; refresh them first.
             service::install_bundle(bundle, var)?;
             service::systemctl("restart")?;
             service::wait_until_up(listen)
         }
-        Runner::Launchd => {
+        Supervisor::Launchd => {
             // The job runs copies of the server and the web app; refresh them first.
             service::install_bundle(bundle, var)?;
             launchd::kickstart(true)?;
             launchd::wait_until_up(listen, var)
         }
-        Runner::PidFile => {
+        Supervisor::PidFile => {
             process::stop(data)?;
             process::spawn(bundle, data, listen, flag).map(drop)
         }
@@ -565,26 +565,26 @@ fn status_code(response: &[u8]) -> Option<u16> {
 }
 
 /// Where to find out why the server did not come back.
-fn log_hint(runner: Runner, flag: &str) -> String {
-    let more = match runner {
-        Runner::Launchd => format!(" and: launchctl print gui/$(id -u)/{}", launchd::LABEL),
-        Runner::Systemd | Runner::PidFile => String::new(),
+fn log_hint(supervisor: Supervisor, flag: &str) -> String {
+    let more = match supervisor {
+        Supervisor::Launchd => format!(" and: launchctl print gui/$(id -u)/{}", launchd::LABEL),
+        Supervisor::Systemd | Supervisor::PidFile => String::new(),
     };
     format!("Find the cause with: toodo logs{flag}{more}")
 }
 
 /// What to run when the server did not come back after updating from `previous` and
 /// going back to it failed too.
-fn recovery(runner: Runner, previous: &str, flag: &str) -> String {
+fn recovery(supervisor: Supervisor, previous: &str, flag: &str) -> String {
     let back = format!("npm i -g {PACKAGE}@{previous} --include=optional");
-    let hint = log_hint(runner, flag);
-    match runner {
-        Runner::Systemd | Runner::Launchd => format!(
+    let hint = log_hint(supervisor, flag);
+    match supervisor {
+        Supervisor::Systemd | Supervisor::Launchd => format!(
             "{hint}
 Fix it and restart with: toodo restart{flag}
 Or go back to {previous} with: {back} && toodo service install{flag}"
         ),
-        Runner::PidFile => format!(
+        Supervisor::PidFile => format!(
             "{hint}
 Fix it and start it with: toodo start{flag}
 Or go back to {previous} with: {back} && toodo start{flag}"
