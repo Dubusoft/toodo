@@ -115,10 +115,10 @@ fi
 [ "$(uname -s)" = Linux ] || die "toodo-server is installed on Linux only"
 
 log "Checking prerequisites"
-required=(git gh ssh curl)
+required=(curl)
 if [ "$from_release" = 1 ]; then
   [ "$(uname -m)" = x86_64 ] || die "releases carry an x86_64 toodo-server only; build from a checkout instead"
-  required+=(tar sha256sum)
+  required+=(gh tar sha256sum)
 else
   required+=(cargo)
 fi
@@ -129,10 +129,8 @@ for tool in "${required[@]}"; do
 done
 if [ "${#missing[@]}" -gt 0 ]; then
   die "missing on PATH: ${missing[*]}
-  cargo: https://rustup.rs   gh: https://cli.github.com   node/npm (--with-web only): https://nodejs.org"
+  cargo: https://rustup.rs   gh (--release only): https://cli.github.com   node/npm (--with-web only): https://nodejs.org"
 fi
-command -v herdr >/dev/null 2>&1 \
-  || log "herdr not found: workspaces with runner herdr need it (install it from https://herdr.dev); runner plain and none work without it"
 if [ "$service" = 1 ]; then
   command -v systemctl >/dev/null 2>&1 || die "systemctl not found; use --no-service to install without a service"
   systemctl --user show-environment >/dev/null 2>&1 \

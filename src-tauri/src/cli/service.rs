@@ -84,23 +84,14 @@ pub(super) struct Unit<'a> {
     pub path: &'a str,
 }
 
-/// Programs the server runs whose directories go on the service `PATH`: integrations,
-/// the agent CLIs and tmux of the plain and tmux runners, and `node`, which npm-installed
-/// agent CLIs start through `/usr/bin/env node`.
-const SERVICE_TOOLS: [&str; 8] = [
-    "herdr", "gh", "git", "ssh", "tmux", "claude", "codex", "node",
-];
-
 /// The unit file. A server that keeps failing to start is restarted at most 5 times in
-/// 5 minutes, then left failed. Stopping or restarting it ends only the server process:
-/// agents of plain and tmux runs keep running, and the next server reattaches them.
+/// 5 minutes, then left failed.
 pub(super) fn render(unit: &Unit) -> String {
     let mut text = format!(
         "# Written by toodo service install; rerun it instead of editing this file.
 [Unit]
 Description=Toodo server
-After=network.target herdr-server.service
-Wants=herdr-server.service
+After=network.target
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -120,7 +111,6 @@ Environment=TOODO_DATA_DIR={}
         "Environment=PATH={}
 Restart=on-failure
 RestartSec=5
-KillMode=process
 
 [Install]
 WantedBy=default.target
@@ -130,16 +120,11 @@ WantedBy=default.target
     text
 }
 
-/// `PATH` for the service: `bin_dir`, the directories of the programs in `tools` (found
-/// on `PATH` now), then the system directories, each once.
-pub(super) fn service_path(bin_dir: &Path, tools: &[PathBuf]) -> String {
+/// `PATH` for the service: `bin_dir`, then the system directories, each once. The server
+/// runs no other programs, so it needs nothing else.
+pub(super) fn service_path(bin_dir: &Path) -> String {
     let mut dirs: Vec<PathBuf> = Vec::new();
     let candidates = std::iter::once(bin_dir.to_path_buf())
-        .chain(
-            tools
-                .iter()
-                .filter_map(|tool| tool.parent().map(Path::to_path_buf)),
-        )
         .chain(["/usr/local/bin", "/usr/bin", "/bin"].map(PathBuf::from));
     for dir in candidates {
         if !dirs.contains(&dir) {
@@ -152,14 +137,10 @@ pub(super) fn service_path(bin_dir: &Path, tools: &[PathBuf]) -> String {
         .join(":")
 }
 
-/// [`service_path`] for [`SERVICE_TOOLS`], as found on `PATH` now.
+/// [`service_path`] for the `~/.local/bin` the server is copied to.
 pub(super) fn service_path_now(var: Var) -> Result<String, String> {
     let bin_dir = settings::home(var)?.join(".local/bin");
-    let tools: Vec<PathBuf> = SERVICE_TOOLS
-        .iter()
-        .filter_map(|tool| process::find_on_path(tool, var))
-        .collect();
-    Ok(service_path(&bin_dir, &tools))
+    Ok(service_path(&bin_dir))
 }
 
 /// `toodo service install`.
@@ -359,8 +340,7 @@ mod tests {
             "# Written by toodo service install; rerun it instead of editing this file.
 [Unit]
 Description=Toodo server
-After=network.target herdr-server.service
-Wants=herdr-server.service
+After=network.target
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -372,7 +352,6 @@ Environment=TOODO_WEB_DIR=/home/a/.local/share/toodo-server-web
 Environment=PATH=/home/a/.local/bin:/usr/bin
 Restart=on-failure
 RestartSec=5
-KillMode=process
 
 [Install]
 WantedBy=default.target
@@ -402,19 +381,13 @@ WantedBy=default.target
 
     #[test]
     fn the_service_path_lists_each_directory_once_in_order() {
-        let tools = [
-            PathBuf::from("/opt/herdr/bin/herdr"),
-            PathBuf::from("/usr/bin/gh"),
-            PathBuf::from("/usr/bin/git"),
-            PathBuf::from("/home/a/.local/bin/ssh"),
-        ];
         assert_eq!(
-            service_path(Path::new("/home/a/.local/bin"), &tools),
-            "/home/a/.local/bin:/opt/herdr/bin:/usr/bin:/usr/local/bin:/bin"
+            service_path(Path::new("/home/a/.local/bin")),
+            "/home/a/.local/bin:/usr/local/bin:/usr/bin:/bin"
         );
         assert_eq!(
-            service_path(Path::new("/b"), &[]),
-            "/b:/usr/local/bin:/usr/bin:/bin"
+            service_path(Path::new("/usr/bin")),
+            "/usr/bin:/usr/local/bin:/bin"
         );
     }
 
