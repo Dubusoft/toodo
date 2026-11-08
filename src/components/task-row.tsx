@@ -161,7 +161,8 @@ export function TaskRow({
           onSelect: () => completeTask.mutate(task.id),
         }
       : null;
-  const conclude: Action | null = active
+  // A planned task can be concluded too, so an idea is dropped without starting it.
+  const conclude: Action | null = active || task.status === "planned"
     ? {
         key: "conclude",
         label: "Conclude",

@@ -595,6 +595,38 @@ mod tests {
     }
 
     #[test]
+    fn a_planned_task_is_concluded_without_starting_it() {
+        let (mut storage, task) = storage_with_task();
+        let error = storage.complete_task(task.id, None, &[]).unwrap_err();
+        assert!(error.to_string().contains("planned"), "{error}");
+
+        let concluded = Task::from(
+            &storage
+                .conclude_task(task.id, "Not worth it", None)
+                .unwrap(),
+        );
+
+        assert_eq!(concluded.status, types::TaskStatus::Done);
+        assert_eq!(
+            concluded.resolution,
+            Some(types::TaskResolution::NotAdopted)
+        );
+        assert_eq!(concluded.completion_note.as_deref(), Some("Not worth it"));
+        assert!(
+            concluded
+                .timeline
+                .iter()
+                .all(|event| event.status != types::TaskStatus::InProgress),
+            "{:?}",
+            concluded.timeline
+        );
+        assert_eq!(
+            concluded.timeline.last().map(|event| event.status),
+            Some(types::TaskStatus::Done)
+        );
+    }
+
+    #[test]
     fn the_conclusion_of_a_task_that_was_not_adopted_can_be_edited_but_not_cleared() {
         let (mut storage, task) = storage_with_task();
         storage

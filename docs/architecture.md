@@ -419,8 +419,8 @@ or guessed by an agent.
   - The lifecycle tools only record: `start_task` moves a ready task to `in_progress` and
     creates nothing else; `update_task` with `status: "in_review"` marks work that awaits
     review; `complete_task` checks the criteria and moves the task to `done`;
-    `conclude_task` ends it as `not_adopted`, or as shipped with another task
-    (`outcome: "shipped_with"`). See [workflow.md](workflow.md).
+    `conclude_task` ends it, started or still `planned`, as `not_adopted`, or as shipped
+    with another task (`outcome: "shipped_with"`). See [workflow.md](workflow.md).
   - `create_plan` creates several tasks linked to each other by key and to existing tasks
     by ID in one transaction; any failure creates nothing. `add_dependency` takes several
     prerequisites in one call and pauses an `in_progress` task they block.

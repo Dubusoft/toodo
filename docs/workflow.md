@@ -21,6 +21,8 @@ planned -----------------> in_progress ---------> in_review ---------> done (com
    +------- pause_task --------+----------------------+
                                |                      |
                                +---- conclude_task ---+--------------> done (not_adopted)
+
+planned ------------------------- conclude_task ---------------------> done (not_adopted)
 ```
 
 | State | Meaning |
@@ -148,7 +150,9 @@ the same.
 Work that ends without being adopted, typically research, is concluded instead.
 `conclude_task` takes a required note (what was tried, what was found, why it isn't
 adopted) and ends the task as `not_adopted`. Its dependents stay blocked until someone
-removes the dependency or changes the plan.
+removes the dependency or changes the plan. A `planned` task can be concluded as well,
+without starting it first, e.g. an idea that is dropped before anyone works on it; its
+prerequisites don't have to be done. In the app, "Conclude" does the same.
 
 When another task's work shipped this one, call `conclude_task` with outcome
 `shipped_with` and `shipped_with` set to that task's id. The task counts as done and its

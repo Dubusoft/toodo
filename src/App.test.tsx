@@ -1601,6 +1601,26 @@ describe("App", () => {
     );
   });
 
+  it("concludes a planned task as not adopted without starting it", async () => {
+    const prerequisite = task(1, 1, "Pick a cache");
+    const idea = task(2, 1, "Try a second cache", { dependsOn: [1] });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [prerequisite, idea] });
+    await renderWorkspace();
+
+    await chooseAction(2, "Conclude #2 without completing");
+    const concluded: Task = { ...idea, status: "done", resolution: "not_adopted", completionNote: "Not needed" };
+    mocked.concludeTask.mockResolvedValue({ status: "ok", data: concluded });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [prerequisite, concluded] });
+    fireEvent.change(screen.getByRole("textbox", { name: "Conclusion of #2" }), { target: { value: "Not needed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Conclude as not adopted" }));
+
+    fireEvent.click(await within(await taskList()).findByRole("button", { name: "Done 1" }));
+    expect(mocked.concludeTask).toHaveBeenCalledWith(2, "Not needed", "not_adopted", null);
+    expect(mocked.startTask).not.toHaveBeenCalled();
+    expect(within(row("Try a second cache")).getByText("Not adopted")).toBeInTheDocument();
+  });
+
   it("reopens a done task with a reason and shows it paused and reopened", async () => {
     const done = task(1, 1, "Add login", {
       status: "done",
@@ -2366,6 +2386,7 @@ describe("App", () => {
     const items = await screen.findAllByRole("menuitem");
     expect(items.map((item) => item.getAttribute("aria-label"))).toEqual([
       "Show details of #1",
+      "Conclude #1 without completing",
       "Edit #1",
       "Delete #1",
     ]);

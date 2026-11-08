@@ -907,7 +907,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Record an outcome with a required note. Use not_adopted to leave dependents blocked, or shipped_with and a completed task id in shipped_with."
+        description = "Record an outcome with a required note, also for a planned task that was never started. Use not_adopted to leave dependents blocked, or shipped_with and a completed task id in shipped_with."
     )]
     async fn conclude_task(
         &self,
