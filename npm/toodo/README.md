@@ -1,10 +1,10 @@
 # @dubusoft/toodo
 
-Command line for [Toodo](https://github.com/dev-bokdong/toodo), a task planner that turns a plan into implemented, reviewed code. It installs `toodo-server` and the web app it serves.
+Command line for [Toodo](https://github.com/dev-bokdong/toodo), a task tracker that keeps the dependencies between tasks and the memory of the work: notes, decisions, references, and status history. It installs `toodo-server` and the web app it serves.
 
 ## Install
 
-The recommended install, as the user who runs herdr (if any):
+The recommended install:
 
 ```sh
 npm i -g @dubusoft/toodo
@@ -35,7 +35,7 @@ It installs the newest version of the channel with npm (`latest` for releases, `
 - `toodo stop`: stop the server.
 - `toodo restart`: stop the server and start it again.
 - `toodo status`: show whether the server is running and where its files are.
-- `toodo doctor`: check versions, server health, and the tools the server runs, with the fix of each problem.
+- `toodo doctor`: check versions, server health, and the data files, with the fix of each problem.
 - `toodo logs`: print the end of the server log; `--follow` keeps printing.
 - `toodo service install`: install the server as a user service (systemd on Linux, a launchd agent on macOS).
 - `toodo update`: update to the newest version and restart the server; a server that does not come back goes back to the previous version. `toodo update --check` only reports a newer version.
@@ -46,8 +46,6 @@ It installs the newest version of the channel with npm (`latest` for releases, `
 ## Requirements
 
 - Linux x64 or arm64 (glibc or musl) or macOS x64 or arm64, with Node.js 18 or later. Install with optional dependencies enabled (the default), because the binaries ship in the platform packages `@dubusoft/toodo-linux-<arch>`, `@dubusoft/toodo-linux-<arch>-musl`, and `@dubusoft/toodo-darwin-<arch>`.
-- `git` and OpenSSH (`ssh`) on `PATH`.
-- For GitHub workspaces: the GitHub CLI `gh`, logged in with `gh auth login`.
-- Optional: [herdr](https://herdr.dev) for workspaces with runner `herdr` and remote SSH workspaces; runner `plain` needs `claude` or `codex` on `PATH`, and `tmux` runs need `tmux`.
+- Optional: Claude Code (`claude`) or Codex (`codex`) on `PATH`, to register the MCP endpoint with them.
 
 See https://github.com/dev-bokdong/toodo for documentation.
