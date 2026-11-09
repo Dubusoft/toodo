@@ -53,6 +53,7 @@ const SHARED: &[(&str, &str)] = &[
     ),
     ("review-timing", include_str!("shared/review-timing.md")),
     ("merge-policy", include_str!("shared/merge-policy.md")),
+    ("guidelines", include_str!("shared/guidelines.md")),
 ];
 
 fn render(template: &str) -> String {
@@ -67,7 +68,7 @@ static SKILL: LazyLock<String> = LazyLock::new(|| render(include_str!("toodo-ski
 
 static INSTRUCTIONS: LazyLock<String> = LazyLock::new(|| render(INSTRUCTIONS_TEMPLATE));
 
-const INSTRUCTIONS_TEMPLATE: &str = "Toodo records tasks, dependencies, notes, references, and status history. Read read_toodo_skill before managing tasks.\n\nCall current_task with ref to find a task by one of its refs, or get_task with id. Call list_workspaces and search_tasks before creating work; reuse matching records and read related tasks for context.\n\nDependencies point from task_id to the prerequisite ids in depends_on. Reject cycles, complete prerequisites first, and use related links for context that does not block work. Adding an unfinished prerequisite pauses active work; resume_task when it becomes ready.\n\n{{task-description}}\n\n{{other-tasks}}\n\n{{completion}}\n\n{{review-timing}}\n\n{{merge-policy}}";
+const INSTRUCTIONS_TEMPLATE: &str = "Toodo records tasks, dependencies, notes, references, and status history. Read read_toodo_skill before managing tasks.\n\n{{guidelines}}\n\nCall current_task with ref to find a task by one of its refs, or get_task with id. Call list_workspaces and search_tasks before creating work; reuse matching records and read related tasks for context.\n\nDependencies point from task_id to the prerequisite ids in depends_on. Reject cycles, complete prerequisites first, and use related links for context that does not block work. Adding an unfinished prerequisite pauses active work; resume_task when it becomes ready.\n\n{{task-description}}\n\n{{other-tasks}}\n\n{{completion}}\n\n{{review-timing}}\n\n{{merge-policy}}";
 
 /// Storage, connection metadata, and change notifications for MCP tools.
 pub trait Backend: Notifier + Send + Sync + 'static {
@@ -378,11 +379,12 @@ impl Access {
         let scopes = grant.scopes;
         let allowed = match name {
             "read_toodo_skill" | "list_workspaces" | "list_tasks" | "search_tasks" | "get_task"
-            | "review_report" => scopes.can_read(),
+            | "get_guidelines" | "review_report" => scopes.can_read(),
             "create_workspace" | "create_task" | "create_plan" | "update_task"
             | "add_dependency" | "remove_dependency" | "add_related" | "remove_related"
             | "add_criterion" | "remove_criterion" | "check_criterion" | "add_progress_note"
-            | "report_blocker" | "pause_task" => scopes.can_write(),
+            | "report_blocker" | "pause_task" | "add_guideline" | "update_guideline"
+            | "remove_guideline" => scopes.can_write(),
             _ => {
                 return Err(format!(
                     "{name} is local-only; use the Toodo app or a local agent with the MCP token."
@@ -401,7 +403,7 @@ impl Access {
 
 static CHAT_INSTRUCTIONS: LazyLock<String> = LazyLock::new(|| render(CHAT_TEMPLATE));
 
-const CHAT_TEMPLATE: &str = "Plan tasks and record progress, decisions and blockers in Toodo. Use list_workspaces, search_tasks and get_task before creating records. {{task-description}}";
+const CHAT_TEMPLATE: &str = "Plan tasks and record progress, decisions and blockers in Toodo. Use list_workspaces, search_tasks and get_task before creating records. {{task-description}} {{guidelines}}";
 
 /// The bearer token of a request's `Authorization` header; the scheme is matched without
 /// regard to case, as HTTP defines it.
@@ -552,6 +554,18 @@ impl ToodoMcp {
         }
     }
 
+    /// Tells the frontend that the guidelines of a workspace changed.
+    fn announce_guideline(
+        &self,
+        result: CommandResult<crate::commands::types::Guideline>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if let Ok(guideline) = &result {
+            self.backend
+                .guidelines_changed(model::WorkspaceId(guideline.workspace_id.0));
+        }
+        reply(result)
+    }
+
     fn announce(&self, result: CommandResult<Task>) -> Result<CallToolResult, ErrorData> {
         self.announce_with(result, |task| task)
     }
@@ -664,13 +678,62 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Read one task with its whole history: description, refs, status timeline with the reasons given for starts, pauses, and completions, progress, decision, and blocker notes, completion note (the conclusion of a task done as not_adopted), pull request, commits, and the tasks it depends on, that depend on it, and that are related to it (id, title, status). ready says whether it can start (or resume) now, and blockedBy which of the tasks it depends on keep it from that: not done yet, or done as not_adopted, which never unblocks it. Use it to learn what an earlier task decided, and follow its links with further get_task calls."
+        description = "Read one task with its whole history: description, refs, status timeline with the reasons given for starts, pauses, and completions, progress, decision, and blocker notes, completion note (the conclusion of a task done as not_adopted), pull request, commits, and the tasks it depends on, that depend on it, and that are related to it (id, title, status). ready says whether it can start (or resume) now, and blockedBy which of the tasks it depends on keep it from that: not done yet, or done as not_adopted, which never unblocks it. Use it to learn what an earlier task decided, and follow its links with further get_task calls. guidelines lists the guidelines of the task's workspace: follow its rules and read its memories before working on the task."
     )]
     fn get_task(
         &self,
         Parameters(request): Parameters<tools::GetTask>,
     ) -> Result<CallToolResult, ErrorData> {
         reply(tools::task_details(&lock(self.backend.reader()), request))
+    }
+
+    #[tool(
+        description = "Read the guidelines of a workspace: rules its owner sets, which you must follow, then memories, durable lessons and facts recorded for it, each by ascending id. Read them before working on a task of the workspace; start_task and get_task already include them. Returns {workspace: {id, name}, guidelines}."
+    )]
+    fn get_guidelines(
+        &self,
+        Parameters(request): Parameters<tools::GetGuidelines>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(tools::get_guidelines(&lock(self.backend.reader()), request))
+    }
+
+    #[tool(
+        description = "Add a guideline to a workspace, e.g. {\"workspace_id\": 1, \"body\": \"Run cargo test with CARGO_BUILD_JOBS=2\"}. Record a durable lesson or fact that later work in the workspace should know as kind memory, the default. Rules are set by the owner: add kind rule only when the user asks for it. Returns the guideline."
+    )]
+    async fn add_guideline(
+        &self,
+        Parameters(request): Parameters<tools::AddGuideline>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| tools::add_guideline(backend.storage(), request))
+            .await?;
+        self.announce_guideline(result)
+    }
+
+    #[tool(
+        description = "Change the supplied kind and body of a guideline, keeping omitted values. Update a memory that became wrong or incomplete; do not rewrite a rule unless the user asks. Returns the guideline."
+    )]
+    async fn update_guideline(
+        &self,
+        Parameters(request): Parameters<tools::UpdateGuideline>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| tools::update_guideline(backend.storage(), request))
+            .await?;
+        self.announce_guideline(result)
+    }
+
+    #[tool(
+        description = "Remove a guideline, e.g. a memory that no longer holds. Do not remove a rule unless the user asks. Returns the guideline as it was."
+    )]
+    async fn remove_guideline(
+        &self,
+        Parameters(request): Parameters<tools::RemoveGuideline>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| tools::remove_guideline(backend.storage(), request))
+            .await?;
+        self.announce_guideline(result)
     }
 
     #[tool(
@@ -869,7 +932,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Record the start of a ready planned task: move it to in_progress, record reason in its status history, and append refs. Unfinished prerequisites must be completed with complete_task first."
+        description = "Record the start of a ready planned task: move it to in_progress, record reason in its status history, and append refs. Unfinished prerequisites must be completed with complete_task first. The reply carries guidelines, the guidelines of the task's workspace: follow its rules and read its memories before you work."
     )]
     async fn start_task(
         &self,
@@ -878,9 +941,9 @@ impl ToodoMcp {
         let result = self
             .blocking(move |backend| tools::start_task(backend.storage(), request))
             .await?;
-        if let Ok(task) = &result {
+        if let Ok(started) = &result {
             self.backend
-                .tasks_changed(model::WorkspaceId(task.workspace_id.0));
+                .tasks_changed(model::WorkspaceId(started.task.workspace_id.0));
         }
         let result = result.map(|task| {
             let mut value = serde_json::to_value(task).expect("task serializes");
@@ -1320,6 +1383,7 @@ mod tests {
         server: ServerStatus,
         changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
         workspaces_changed: std::sync::Mutex<usize>,
+        guidelines_changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
         changes: tokio::sync::watch::Sender<()>,
     }
     impl TestBackend {
@@ -1336,6 +1400,7 @@ mod tests {
                 },
                 changed: std::sync::Mutex::default(),
                 workspaces_changed: std::sync::Mutex::default(),
+                guidelines_changed: std::sync::Mutex::default(),
                 changes: tokio::sync::watch::Sender::new(()),
             }
         }
@@ -1347,6 +1412,9 @@ mod tests {
         }
         fn workspaces_changed(&self) {
             *self.workspaces_changed.lock().unwrap() += 1;
+        }
+        fn guidelines_changed(&self, workspace: model::WorkspaceId) {
+            self.guidelines_changed.lock().unwrap().push(workspace);
         }
     }
     impl Backend for TestBackend {
@@ -1428,6 +1496,10 @@ mod tests {
             "complete_task",
             "conclude_task",
             "review_report",
+            "get_guidelines",
+            "add_guideline",
+            "update_guideline",
+            "remove_guideline",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -1452,6 +1524,7 @@ mod tests {
         let task: Value =
             serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(task["status"], "in_progress");
+        assert_eq!(task["guidelines"], serde_json::json!([]));
         assert_eq!(task["refs"], serde_json::json!(["lane:test"]));
         assert_eq!(task["timeline"][1]["reason"], "Ready");
         for field in ["panes", "ranIn", "paneError", "worktreePath"] {
@@ -1661,6 +1734,64 @@ mod tests {
             .find(|(name, _)| *name == "task-description")
             .unwrap();
         assert!(CHAT_INSTRUCTIONS.contains(description.trim_end()));
+        let (_, guidelines) = SHARED
+            .iter()
+            .find(|(name, _)| *name == "guidelines")
+            .unwrap();
+        assert!(CHAT_INSTRUCTIONS.contains(guidelines.trim_end()));
+    }
+
+    #[test]
+    fn guideline_tools_announce_changes_and_start_task_returns_the_guidelines() {
+        let (storage, task) = storage_with_task(None);
+        let backend = Arc::new(TestBackend::new(storage));
+        let server = ToodoMcp::new(backend.clone());
+        let workspace = task.workspace_id;
+        let text = |result: CallToolResult| -> Value {
+            let result = serde_json::to_value(result).unwrap();
+            assert_ne!(result["isError"], true, "{result}");
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        fn args<T: serde::de::DeserializeOwned>(value: Value) -> Parameters<T> {
+            Parameters(serde_json::from_value(value).unwrap())
+        }
+        let rt = runtime();
+        let rule = text(rt.block_on(server.add_guideline(args(serde_json::json!({"workspace_id": workspace.0, "kind": "rule", "body": "Write English"})))).unwrap());
+        let memory = text(
+            rt.block_on(server.add_guideline(args(
+                serde_json::json!({"workspace_id": workspace.0, "body": "Tests take a minute"}),
+            )))
+            .unwrap(),
+        );
+        assert_eq!(memory["kind"], "memory");
+        let updated = text(
+            rt.block_on(server.update_guideline(args(
+                serde_json::json!({"id": memory["id"], "body": "Tests take two minutes"}),
+            )))
+            .unwrap(),
+        );
+        assert_eq!(updated["kind"], "memory");
+        let started = text(
+            rt.block_on(server.start_task(args(serde_json::json!({"id": task.id.0}))))
+                .unwrap(),
+        );
+        assert_eq!(started["status"], "in_progress");
+        assert_eq!(started["guidelines"], serde_json::json!([rule, updated]));
+        text(
+            rt.block_on(server.remove_guideline(args(serde_json::json!({"id": rule["id"]}))))
+                .unwrap(),
+        );
+        let listed = text(
+            server
+                .get_guidelines(args(serde_json::json!({"workspace_id": workspace.0})))
+                .unwrap(),
+        );
+        assert_eq!(
+            listed["workspace"],
+            serde_json::json!({"id": workspace.0, "name": "Tasks"})
+        );
+        assert_eq!(listed["guidelines"], serde_json::json!([updated]));
+        assert_eq!(*backend.guidelines_changed.lock().unwrap(), [workspace; 4]);
     }
 
     #[test]
@@ -2066,6 +2197,7 @@ mod tests {
                 "list_tasks",
                 "search_tasks",
                 "get_task",
+                "get_guidelines",
                 "review_report"
             ]
             .into_iter()
@@ -2104,6 +2236,9 @@ mod tests {
                     "add_progress_note",
                     "report_blocker",
                     "pause_task",
+                    "add_guideline",
+                    "update_guideline",
+                    "remove_guideline",
                 ])
                 .map(str::to_owned)
                 .collect()

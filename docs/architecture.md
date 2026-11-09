@@ -39,6 +39,18 @@ directory or a repository; a channel or a project fits too.
 MCP tools: `list_workspaces`, `create_workspace`, `update_workspace`,
 `archive_workspace`.
 
+A workspace also holds **guidelines**, which agents read before working on one of its
+tasks. Each entry has an `id`, its `workspaceId`, a `kind`, a Markdown `body` (trimmed,
+not empty, at most 4000 characters), `createdAt`, and `updatedAt`. The kinds:
+
+- `rule`: set by the owner; agents must follow it and change it only when the user asks.
+- `memory`: a durable lesson or fact about the workspace, often recorded by an agent.
+
+They are listed rules first, then memories, each by ascending id. `get_task` and the
+`start_task` reply include the guidelines of the task's workspace.
+
+MCP tools: `get_guidelines`, `add_guideline`, `update_guideline`, `remove_guideline`.
+
 ### Task Types
 
 A fixed set; users can't define their own types for now.

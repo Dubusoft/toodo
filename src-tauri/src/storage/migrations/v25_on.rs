@@ -880,4 +880,17 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     DELETE FROM task_search;
     INSERT INTO task_search (rowid, title, description, notes, branch, pull_request) SELECT * FROM task_search_source;
     ",
+    // Version 47: guidelines of each workspace: rules its owner sets for the agents that
+    // work on its tasks, and memories, durable lessons or facts recorded for it.
+    r"
+    CREATE TABLE workspace_guidelines (
+        id INTEGER PRIMARY KEY,
+        workspace_id INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('rule', 'memory')),
+        body TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX workspace_guidelines_workspace_id ON workspace_guidelines (workspace_id);
+    ",
 ];

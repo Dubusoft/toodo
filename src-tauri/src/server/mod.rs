@@ -23,7 +23,9 @@ use futures_util::{Stream, StreamExt};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::commands::backup::{self, Backups};
-use crate::commands::events::{Notifier, TasksChanged, WorkspacesChanged, names};
+use crate::commands::events::{
+    GuidelinesChanged, Notifier, TasksChanged, WorkspacesChanged, names,
+};
 use crate::commands::{Runtime, StorageState};
 use crate::domain::model;
 use crate::mcp::{self, Backend, ServerStatus};
@@ -152,6 +154,13 @@ impl Notifier for Services {
 
     fn workspaces_changed(&self) {
         self.emit(names::WORKSPACES_CHANGED, &WorkspacesChanged);
+    }
+
+    fn guidelines_changed(&self, workspace: model::WorkspaceId) {
+        let event = GuidelinesChanged {
+            workspace_id: workspace.into(),
+        };
+        self.emit(names::GUIDELINES_CHANGED, &event);
     }
 }
 

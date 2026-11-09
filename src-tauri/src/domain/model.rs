@@ -29,6 +29,48 @@ pub struct Workspace {
     pub archived_at: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GuidelineId(pub i64);
+
+impl fmt::Display for GuidelineId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// What a workspace guideline records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GuidelineKind {
+    /// A rule the workspace's owner sets, which agents working on its tasks follow.
+    Rule,
+    /// A durable lesson or fact recorded for the workspace, often by an agent.
+    Memory,
+}
+
+impl GuidelineKind {
+    pub const ALL: [Self; 2] = [Self::Rule, Self::Memory];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rule => "rule",
+            Self::Memory => "memory",
+        }
+    }
+}
+
+/// A guideline of a workspace, read before working on one of its tasks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Guideline {
+    pub id: GuidelineId,
+    pub workspace_id: WorkspaceId,
+    pub kind: GuidelineKind,
+    /// Non-empty Markdown.
+    pub body: String,
+    /// Seconds since the Unix epoch.
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 /// Fixed set of task types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaskType {
