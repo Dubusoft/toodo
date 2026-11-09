@@ -26,6 +26,13 @@ An agent gets two texts from Toodo:
   any role.
 - `read_toodo_skill` returns the skill (`src-tauri/src/mcp/toodo-skill.md`).
 
+Both texts tell the agent to read the guidelines of a task's workspace before working on
+it: rules the owner sets, which the agent follows, and memories, durable lessons recorded
+for the workspace. `start_task` and `get_task` include them in `guidelines`, and
+`get_guidelines` with `workspace_id` lists them. An agent records a new lesson with
+`add_guideline` (kind `memory`, the default) and keeps memories current with
+`update_guideline` and `remove_guideline`; it leaves rules to the user.
+
 Rules both texts state, such as the task description format, how completion criteria are
 checked, and how tasks are concluded, live once in `src-tauri/src/mcp/shared/`. A template
 marks where one goes with `{{name}}`, and the server fills it in from `shared/<name>.md`
@@ -85,6 +92,9 @@ that every fragment appears in both texts and that no placeholder is left.
    ```json
    { "id": 42, "reason": "Picked up by the search lane", "refs": ["lane:search", "branch:feat/push-blockers"] }
    ```
+
+   The reply carries `guidelines`, the rules and memories of the task's workspace. Read
+   them before the first edit and follow every rule.
 
 3. A worker finds its task again with `current_task` and one of those refs, e.g.
    `{"ref": "lane:search"}`, or with `get_task` when it knows the id.

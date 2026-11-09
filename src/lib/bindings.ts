@@ -32,6 +32,16 @@ export const commands = {
 	/**  The workspaces and tasks deleting archived, to restore or purge. */
 	listArchive: () => typedError<Archive, CommandError>(invoke("list_archive")),
 	/**
+	 *  The guidelines of a workspace: rules first, then memories, each in the order they were
+	 *  added.
+	 */
+	listGuidelines: (workspaceId: WorkspaceId) => typedError<Guideline[], CommandError>(invoke("list_guidelines", { workspaceId })),
+	addGuideline: (guideline: NewGuideline) => typedError<Guideline, CommandError>(invoke("add_guideline", { guideline })),
+	/**  Replaces the kind and body of a guideline. */
+	updateGuideline: (guideline: GuidelineUpdate) => typedError<Guideline, CommandError>(invoke("update_guideline", { guideline })),
+	/**  Deletes a guideline and returns it as it was. */
+	deleteGuideline: (id: GuidelineId) => typedError<Guideline, CommandError>(invoke("delete_guideline", { id })),
+	/**
 	 *  Tasks ordered by ID, each with its dependencies, which may belong to another
 	 *  workspace: every task without a filter, else those the filter selects. With a limit,
 	 *  the matching tasks with the highest IDs; pass the lowest ID of a full page as `before`
@@ -178,6 +188,7 @@ export const commands = {
 export const events = {
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
 	workspacesChanged: makeEvent<WorkspacesChanged>("workspaces-changed"),
+	guidelinesChanged: makeEvent<GuidelinesChanged>("guidelines-changed"),
 };
 
 /* Types */
@@ -262,7 +273,7 @@ export type CommandErrorCode =
 /**  A referenced object does not exist. */
 "notFound" | 
 /**  No command or tool has this name. */
-"unknownCommand" | "workspaceNotFound" | "taskNotFound" | "criterionNotFound" | "dependencyNotFound" | "relationNotFound" | "runNotFound" | 
+"unknownCommand" | "workspaceNotFound" | "taskNotFound" | "criterionNotFound" | "dependencyNotFound" | "relationNotFound" | "runNotFound" | "guidelineNotFound" | 
 /**  The request breaks a rule. */
 "rejected" | 
 /**  The dependency would make the task DAG cyclic or make a task depend on itself. */
@@ -415,6 +426,38 @@ export type Estimate = {
  */
 export type EstimateUnit = "hours" | "days" | "weeks" | "months";
 
+/**  A guideline of a workspace, read before working on one of its tasks. */
+export type Guideline = {
+	id: GuidelineId,
+	workspaceId: WorkspaceId,
+	kind: GuidelineKind,
+	/**  Markdown. */
+	body: string,
+	createdAt: Timestamp,
+	updatedAt: Timestamp,
+};
+
+export type GuidelineId = number;
+
+/**
+ *  What a workspace guideline records: a `rule` the owner sets for agents to follow, or
+ *  a `memory`, a durable lesson or fact recorded for the workspace.
+ */
+export type GuidelineKind = "rule" | "memory";
+
+/**  The new kind and body of a stored guideline. */
+export type GuidelineUpdate = {
+	id: GuidelineId,
+	kind: GuidelineKind,
+	/**  Markdown, at most 4000 characters after trimming. */
+	body: string,
+};
+
+/**  The guidelines of a workspace were added, changed, or deleted. */
+export type GuidelinesChanged = {
+	workspaceId: WorkspaceId,
+};
+
 /**  A GitHub issue of the workspace repository linked to a task. */
 export type LinkedIssue = {
 	number: number,
@@ -452,6 +495,13 @@ export type McpServerInfo = {
 	instance: string,
 	/**  The last request `/mcp` turned away, from agents here or on SSH machines. */
 	lastRejection: McpRejection | null,
+};
+
+export type NewGuideline = {
+	workspaceId: WorkspaceId,
+	kind: GuidelineKind,
+	/**  Markdown, at most 4000 characters after trimming. */
+	body: string,
 };
 
 export type NewTask = {

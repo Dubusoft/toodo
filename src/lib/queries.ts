@@ -13,6 +13,10 @@ import {
   type BackupSettings,
   type CommandError,
   type CriterionId,
+  type Guideline,
+  type GuidelineId,
+  type GuidelineUpdate,
+  type NewGuideline,
   type NewTask,
   type NewWorkspace,
   type ReviewSnapshotId,
@@ -54,6 +58,8 @@ export async function unwrap<T>(result: Promise<CommandResult<T>>): Promise<T> {
 
 export const queryKeys = {
   workspaces: ["workspaces"] as const,
+  /** The rules and memory of one workspace, refetched on its guidelines-changed events. */
+  guidelines: (workspaceId: WorkspaceId) => ["guidelines", workspaceId] as const,
   /**
    * Tasks of every workspace, loaded in pages (see `useTasks`): dependencies cross workspaces,
    * so they are loaded together. Not `["task-list"]` alone, which held one plain list before.
@@ -224,6 +230,37 @@ export function usePurgeTask() {
   return useArchiveMutation((id: TaskId) => unwrap(commands.purgeTask(id)));
 }
 
+/** The guidelines of a workspace: its rules, then its memory, each in the order they were added. */
+export function useGuidelines(workspaceId: WorkspaceId) {
+  return useQuery({
+    queryKey: queryKeys.guidelines(workspaceId),
+    queryFn: () => unwrap(commands.listGuidelines(workspaceId)),
+  });
+}
+
+/** Commands that change a guideline; each answers with it, naming the workspace to refetch. */
+function useGuidelineMutation<T>(mutationFn: (variables: T) => Promise<Guideline>) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn,
+    onSuccess: (guideline) => queryClient.invalidateQueries({ queryKey: queryKeys.guidelines(guideline.workspaceId) }),
+  });
+}
+
+export function useAddGuideline() {
+  return useGuidelineMutation((guideline: NewGuideline) => unwrap(commands.addGuideline(guideline)));
+}
+
+/** Replaces the kind and body of a guideline. */
+export function useUpdateGuideline() {
+  return useGuidelineMutation((guideline: GuidelineUpdate) => unwrap(commands.updateGuideline(guideline)));
+}
+
+/** Deletes a guideline for good. */
+export function useDeleteGuideline() {
+  return useGuidelineMutation((id: GuidelineId) => unwrap(commands.deleteGuideline(id)));
+}
+
 /** How many finished tasks a page of the task list loads, newest first. */
 export const finishedTasksPage = 100;
 
@@ -367,7 +404,7 @@ export function useDeleteReviewSnapshot() {
   });
 }
 
-/** Applies the task and workspace changes the server reports while the app is mounted. */
+/** Applies the task, workspace, and guideline changes the server reports while the app is mounted. */
 export function useServerEvents() {
   const queryClient = useQueryClient();
   useEffect(() => {
@@ -386,6 +423,9 @@ export function useServerEvents() {
       }),
       events.workspacesChanged.listen(() =>
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
+      ),
+      events.guidelinesChanged.listen((event) =>
+        queryClient.invalidateQueries({ queryKey: queryKeys.guidelines(event.payload.workspaceId) }),
       ),
     ];
     return () => {

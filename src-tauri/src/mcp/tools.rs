@@ -13,8 +13,8 @@ use crate::commands::types::{
     self, CommitRecord, Estimate, Task, TaskEdit, TaskId, TaskResolution, TaskStatus, TaskType,
     Workspace, WorkspaceId,
 };
-use crate::commands::workspaces;
 use crate::commands::{CommandError, CommandErrorCode, CommandResult, State, StorageState, lock};
+use crate::commands::{guidelines, workspaces};
 use crate::domain::criteria::CheckedBy;
 use crate::domain::model::{self, NoteKind};
 use crate::storage::{self, Storage, StorageError, TaskSearch};
@@ -548,6 +548,47 @@ pub struct GetTask {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct GetGuidelines {
+    /// The workspace, e.g. the workspaceId of the task you work on, or one from
+    /// list_workspaces.
+    pub workspace_id: WorkspaceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct AddGuideline {
+    /// The workspace, e.g. the workspaceId of the task you work on.
+    pub workspace_id: WorkspaceId,
+    /// memory (the default) for a durable lesson or fact; rule only when the user asks
+    /// for a rule.
+    #[serde(default)]
+    pub kind: Option<types::GuidelineKind>,
+    /// The guideline in Markdown, at most 4000 characters.
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct UpdateGuideline {
+    /// The guideline, as in get_guidelines.
+    pub id: types::GuidelineId,
+    /// The new kind; unchanged when omitted.
+    #[serde(default)]
+    pub kind: Option<types::GuidelineKind>,
+    /// The new Markdown body, at most 4000 characters; unchanged when omitted.
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RemoveGuideline {
+    /// The guideline, as in get_guidelines.
+    pub id: types::GuidelineId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Related {
     /// One task of the link, e.g. your current task.
     pub task_id: TaskId,
@@ -680,6 +721,108 @@ pub fn update_workspace(
         ..current
     };
     Ok((&workspaces::update(storage, workspace)?).into())
+}
+
+/// A workspace as get_guidelines names it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuidelineWorkspace {
+    pub id: WorkspaceId,
+    pub name: String,
+}
+
+/// The reply of get_guidelines.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceGuidelines {
+    pub workspace: GuidelineWorkspace,
+    /// Rules first, then memories, each in the order they were added.
+    pub guidelines: Vec<types::Guideline>,
+}
+
+fn live_workspace(storage: &Storage, id: WorkspaceId) -> CommandResult<model::Workspace> {
+    storage.get_workspace(id.into())?.ok_or_else(|| {
+        CommandError::new(
+            CommandErrorCode::WorkspaceNotFound,
+            format!(
+                "workspace {} does not exist or is archived; take a workspace id from list_workspaces, or the workspaceId of a task from get_task",
+                id.0
+            ),
+        )
+    })
+}
+
+fn stored_guideline(storage: &Storage, id: types::GuidelineId) -> CommandResult<model::Guideline> {
+    storage.get_guideline(id.into())?.ok_or_else(|| {
+        CommandError::new(
+            CommandErrorCode::GuidelineNotFound,
+            format!(
+                "guideline {} does not exist; call get_guidelines with the workspace_id of your task and take the guideline id from its result",
+                id.0
+            ),
+        )
+    })
+}
+
+/// The guidelines of a task's workspace; none once the workspace is archived.
+fn task_guidelines(
+    storage: &Storage,
+    workspace: WorkspaceId,
+) -> CommandResult<Vec<types::Guideline>> {
+    match storage.list_guidelines(workspace.into()) {
+        Ok(guidelines) => Ok(types::map_all(&guidelines)),
+        Err(StorageError::WorkspaceNotFound(_)) => Ok(Vec::new()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub fn get_guidelines(
+    storage: &Storage,
+    request: GetGuidelines,
+) -> CommandResult<WorkspaceGuidelines> {
+    let workspace = live_workspace(storage, request.workspace_id)?;
+    Ok(WorkspaceGuidelines {
+        guidelines: types::map_all(&storage.list_guidelines(workspace.id)?),
+        workspace: GuidelineWorkspace {
+            id: workspace.id.into(),
+            name: workspace.name,
+        },
+    })
+}
+
+pub fn add_guideline(
+    storage: &StorageState,
+    request: AddGuideline,
+) -> CommandResult<types::Guideline> {
+    live_workspace(&lock(storage), request.workspace_id)?;
+    let new = types::NewGuideline {
+        workspace_id: request.workspace_id,
+        kind: request.kind.unwrap_or(types::GuidelineKind::Memory),
+        body: request.body,
+    };
+    Ok((&guidelines::add(storage, new.try_into()?)?).into())
+}
+
+/// Changes the supplied kind and body of a guideline, keeping omitted values.
+pub fn update_guideline(
+    storage: &StorageState,
+    request: UpdateGuideline,
+) -> CommandResult<types::Guideline> {
+    let current = stored_guideline(&lock(storage), request.id)?;
+    let update = types::GuidelineUpdate {
+        id: request.id,
+        kind: request.kind.unwrap_or(current.kind.into()),
+        body: request.body.unwrap_or(current.body),
+    };
+    Ok((&guidelines::update(storage, update)?).into())
+}
+
+pub fn remove_guideline(
+    storage: &StorageState,
+    request: RemoveGuideline,
+) -> CommandResult<types::Guideline> {
+    stored_guideline(&lock(storage), request.id)?;
+    Ok((&guidelines::delete(storage, request.id.into())?).into())
 }
 
 /// A task as list_tasks returns it, with whether it can start now.
@@ -1588,14 +1731,26 @@ pub fn reopen_task(storage: &mut Storage, request: ReopenTask) -> CommandResult<
     })
 }
 
+/// A started task with the guidelines of its workspace, as start_task returns it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartedTask {
+    #[serde(flatten)]
+    pub task: Task,
+    /// The guidelines of the task's workspace, to read before working on it.
+    pub guidelines: Vec<types::Guideline>,
+}
+
 /// Records the start of a ready task.
-pub fn start_task(storage: &StorageState, request: StartTask) -> CommandResult<Task> {
-    task_commands::start_task(
+pub fn start_task(storage: &StorageState, request: StartTask) -> CommandResult<StartedTask> {
+    let task = task_commands::start_task(
         State(storage),
         request.id,
         request.reason,
         Some(request.refs),
-    )
+    )?;
+    let guidelines = task_guidelines(&lock(storage), task.workspace_id)?;
+    Ok(StartedTask { task, guidelines })
 }
 
 /// Completes a task after checking its completion criteria.
@@ -1730,6 +1885,9 @@ pub struct TaskDetails {
     pub dependents: Vec<TaskLink>,
     /// Related tasks, which neither wait on this task nor block it.
     pub related: Vec<TaskLink>,
+    /// The guidelines of the task's workspace, to read before working on it: rules first,
+    /// then memories.
+    pub guidelines: Vec<types::Guideline>,
 }
 
 /// The links between all tasks: what each task waits on, what waits on it, and what
@@ -1881,6 +2039,7 @@ pub fn task_details(storage: &Storage, request: GetTask) -> CommandResult<TaskDe
         blocked_by,
         dependents: links.links(links.dependents(id)),
         related: links.links(links.related(id)),
+        guidelines: task_guidelines(storage, task.workspace_id.into())?,
     })
 }
 
@@ -3400,5 +3559,90 @@ mod tests {
         };
         assert_eq!(limited(Some(0)), 0);
         assert_eq!(limited(None), 1);
+    }
+
+    #[test]
+    fn guidelines_round_trip_and_get_task_includes_them() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let task = create(&mut storage, workspace, "Add login", vec![]).unwrap();
+        let storage = StorageState::new(storage);
+        use serde_json::json;
+        let added = add_guideline(
+            &storage,
+            serde_json::from_value(
+                json!({"workspace_id": workspace, "body": "  Ask before migrating "}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(added.kind, types::GuidelineKind::Memory);
+        assert_eq!(added.body, "Ask before migrating");
+        let rule = add_guideline(
+            &storage,
+            serde_json::from_value(
+                json!({"workspace_id": workspace, "kind": "rule", "body": "Write English"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let updated = update_guideline(
+            &storage,
+            serde_json::from_value(json!({"id": added.id, "kind": "rule"})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            (updated.kind, updated.body.as_str()),
+            (types::GuidelineKind::Rule, "Ask before migrating")
+        );
+        let listed = get_guidelines(
+            &lock(&storage),
+            GetGuidelines {
+                workspace_id: workspace,
+            },
+        )
+        .unwrap();
+        assert_eq!(listed.workspace.name, "toodo");
+        assert_eq!(listed.guidelines, [updated.clone(), rule.clone()]);
+        let details = task_details(&lock(&storage), GetTask { id: task.id }).unwrap();
+        assert_eq!(details.guidelines, listed.guidelines);
+        assert_eq!(
+            remove_guideline(&storage, RemoveGuideline { id: rule.id }).unwrap(),
+            rule
+        );
+
+        let missing = types::GuidelineId(999);
+        for error in [
+            update_guideline(
+                &storage,
+                UpdateGuideline {
+                    id: missing,
+                    kind: None,
+                    body: Some("x".into()),
+                },
+            )
+            .unwrap_err(),
+            remove_guideline(&storage, RemoveGuideline { id: missing }).unwrap_err(),
+        ] {
+            assert_eq!(error.code, CommandErrorCode::GuidelineNotFound);
+            assert!(error.message.contains("get_guidelines"), "{error:?}");
+        }
+        let unknown = WorkspaceId(999);
+        let listed = get_guidelines(
+            &lock(&storage),
+            GetGuidelines {
+                workspace_id: unknown,
+            },
+        );
+        for error in [
+            listed.unwrap_err(),
+            add_guideline(
+                &storage,
+                serde_json::from_value(json!({"workspace_id": unknown, "body": "x"})).unwrap(),
+            )
+            .unwrap_err(),
+        ] {
+            assert_eq!(error.code, CommandErrorCode::WorkspaceNotFound);
+            assert!(error.message.contains("list_workspaces"), "{error:?}");
+        }
     }
 }

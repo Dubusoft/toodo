@@ -8,6 +8,7 @@
 pub mod backup;
 pub mod completion;
 pub mod events;
+pub mod guidelines;
 pub mod issues;
 pub mod mcp;
 pub mod report;
@@ -93,6 +94,7 @@ pub enum CommandErrorCode {
     DependencyNotFound,
     RelationNotFound,
     RunNotFound,
+    GuidelineNotFound,
     /// The request breaks a rule.
     Rejected,
     /// The dependency would make the task DAG cyclic or make a task depend on itself.
@@ -135,7 +137,8 @@ impl CommandErrorCode {
             | Self::CriterionNotFound
             | Self::DependencyNotFound
             | Self::RelationNotFound
-            | Self::RunNotFound => CommandErrorKind::NotFound,
+            | Self::RunNotFound
+            | Self::GuidelineNotFound => CommandErrorKind::NotFound,
             Self::Rejected
             | Self::DependencyCycle
             | Self::InvalidTransition
@@ -213,6 +216,7 @@ impl From<StorageError> for CommandError {
             StorageError::CriterionNotFound { .. } => CommandErrorCode::CriterionNotFound,
             StorageError::DependencyNotFound { .. } => CommandErrorCode::DependencyNotFound,
             StorageError::RelationNotFound { .. } => CommandErrorCode::RelationNotFound,
+            StorageError::GuidelineNotFound(_) => CommandErrorCode::GuidelineNotFound,
             StorageError::DeviceNotFound(_) | StorageError::PushSubscriptionNotFound(_) => {
                 CommandErrorCode::NotFound
             }
@@ -303,6 +307,11 @@ mod tests {
                 }),
                 CommandErrorKind::Rejected,
                 CommandErrorCode::InvalidTransition,
+            ),
+            (
+                StorageError::GuidelineNotFound(crate::domain::model::GuidelineId(1)),
+                CommandErrorKind::NotFound,
+                CommandErrorCode::GuidelineNotFound,
             ),
             (
                 StorageError::InvalidData("bad".to_owned()),

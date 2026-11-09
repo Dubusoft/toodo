@@ -12,14 +12,15 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::Services;
+use crate::commands::events::Notifier as _;
 use crate::commands::types::{
-    BackupSettings, CriterionId, NewTask, NewWorkspace, OAuthGrantId, ReviewReportRequest,
-    ReviewSnapshotId, SaveReviewSnapshotRequest, TaskEdit, TaskId, TaskListFilter, TaskResolution,
-    Workspace, WorkspaceId,
+    BackupSettings, CriterionId, Guideline, GuidelineId, GuidelineUpdate, NewGuideline, NewTask,
+    NewWorkspace, OAuthGrantId, ReviewReportRequest, ReviewSnapshotId, SaveReviewSnapshotRequest,
+    TaskEdit, TaskId, TaskListFilter, TaskResolution, Workspace, WorkspaceId,
 };
 use crate::commands::{
     CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, backup, completion,
-    issues, mcp, review, tasks, workspaces,
+    guidelines, issues, mcp, review, tasks, workspaces,
 };
 use crate::mcp::Backend as _;
 
@@ -125,6 +126,17 @@ fn parse<T: DeserializeOwned>(args: serde_json::Value) -> Result<T, Reply> {
     serde_json::from_value(args).map_err(|error| Reply::BadArguments(error.to_string()))
 }
 
+/// Announces a change of a guideline to connected clients, with its workspace.
+fn guidelines_changed(
+    services: &Services,
+    result: CommandResult<Guideline>,
+) -> CommandResult<Guideline> {
+    if let Ok(guideline) = &result {
+        services.guidelines_changed(guideline.workspace_id.into());
+    }
+    result
+}
+
 /// Runs a command that blocks (git, gh, herdr, or the database) off the async threads.
 async fn blocking(run: impl FnOnce() -> Reply + Send + 'static) -> Reply {
     tokio::task::spawn_blocking(run)
@@ -188,6 +200,7 @@ pub const READ_COMMANDS: &[&str] = &[
     "get_task",
     "review_period",
     "list_archive",
+    "list_guidelines",
     "review_report",
     "get_review_time_zone",
     "list_review_snapshots",
@@ -218,6 +231,21 @@ commands!(s => {
     "restore_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::restore_workspace(State(&s.storage), id));
     "purge_workspace"(id: WorkspaceId) => sync Reply::result(workspaces::purge_workspace(State(&s.storage), id));
     "list_archive"() => sync Reply::result(workspaces::list_archive(State(s.reader())));
+    "list_guidelines"(workspace_id: WorkspaceId) => sync Reply::result(
+        guidelines::list_guidelines(State(s.reader()), workspace_id)
+    );
+    "add_guideline"(guideline: NewGuideline) => sync Reply::result(guidelines_changed(
+        s,
+        guidelines::add_guideline(State(&s.storage), guideline),
+    ));
+    "update_guideline"(guideline: GuidelineUpdate) => sync Reply::result(guidelines_changed(
+        s,
+        guidelines::update_guideline(State(&s.storage), guideline),
+    ));
+    "delete_guideline"(id: GuidelineId) => sync Reply::result(guidelines_changed(
+        s,
+        guidelines::delete_guideline(State(&s.storage), id),
+    ));
     "list_tasks"(filter: Option<TaskListFilter>) => sync Reply::result(
         tasks::list_tasks(State(s.reader()), filter)
     );
