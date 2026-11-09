@@ -20,6 +20,7 @@ function task(overrides: Partial<Task> = {}): Task {
     completionNote: null,
     notes: [],
     criteria: [],
+    wait: null,
     timeline: [],
     milestones: { plannedAt: null, startedAt: null, reviewAt: null, completedAt: null, reopenedAt: null, pausedAt: null, lastReviewAt: null, activeSeconds: 0, pauseCount: 0 },
     ...overrides,

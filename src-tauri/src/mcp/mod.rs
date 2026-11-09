@@ -383,8 +383,8 @@ impl Access {
             "create_workspace" | "create_task" | "create_plan" | "update_task"
             | "add_dependency" | "remove_dependency" | "add_related" | "remove_related"
             | "add_criterion" | "remove_criterion" | "check_criterion" | "add_progress_note"
-            | "report_blocker" | "pause_task" | "add_guideline" | "update_guideline"
-            | "remove_guideline" => scopes.can_write(),
+            | "report_blocker" | "pause_task" | "wait_task" | "add_guideline"
+            | "update_guideline" | "remove_guideline" => scopes.can_write(),
             _ => {
                 return Err(format!(
                     "{name} is local-only; use the Toodo app or a local agent with the MCP token."
@@ -892,6 +892,26 @@ impl ToodoMcp {
         Parameters(request): Parameters<tools::PauseTask>,
     ) -> Result<CallToolResult, ErrorData> {
         self.change(|storage| tools::pause_task(storage, request))
+    }
+
+    #[tool(
+        description = "Make a planned, in_progress, or in_review task wait until a time, e.g. {\"id\": 5, \"until\": \"2026-11-10T09:00:00+09:00\", \"reason\": \"Waiting for the vendor's reply\"}. An active task is paused (planned) until then; when the time passes Toodo returns it to the status it had, also after a server restart. Call again on a waiting task to move the time; call end_wait to return it now. Returns the task; its wait shows until and the status it returns to."
+    )]
+    fn wait_task(
+        &self,
+        Parameters(request): Parameters<tools::WaitTask>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::wait_task(storage, request))
+    }
+
+    #[tool(
+        description = "End the wait of a waiting task now, e.g. {\"id\": 5}: it returns to the status it had when the wait began, as when the time passes. A task that was in_progress stays paused while a prerequisite is not done. An optional note records why. Returns the task."
+    )]
+    fn end_wait(
+        &self,
+        Parameters(request): Parameters<tools::EndWait>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::end_wait(storage, request))
     }
 
     #[tool(
@@ -1489,6 +1509,8 @@ mod tests {
             "add_progress_note",
             "report_blocker",
             "pause_task",
+            "wait_task",
+            "end_wait",
             "resume_task",
             "delete_task",
             "reopen_task",
@@ -2236,6 +2258,7 @@ mod tests {
                     "add_progress_note",
                     "report_blocker",
                     "pause_task",
+                    "wait_task",
                     "add_guideline",
                     "update_guideline",
                     "remove_guideline",
@@ -2247,6 +2270,7 @@ mod tests {
             "current_task",
             "start_task",
             "resume_task",
+            "end_wait",
             "update_workspace",
             "archive_workspace",
             "complete_task",

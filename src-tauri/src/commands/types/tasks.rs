@@ -226,6 +226,28 @@ pub struct Task {
     pub notes: Vec<TaskNote>,
     /// What has to hold for the task to be done, in order.
     pub criteria: Vec<Criterion>,
+    /// The wait the task is paused for: it is `planned` until `until`, then returns to
+    /// the status it had when the wait began. `None` when it does not wait.
+    pub wait: Option<TaskWait>,
+}
+
+/// A wait on a task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskWait {
+    /// When the wait ends, in seconds since the Unix epoch.
+    pub until: Timestamp,
+    /// The status the task returns to then: `planned`, `in_progress`, or `in_review`.
+    pub status: TaskStatus,
+}
+
+impl From<model::TaskWait> for TaskWait {
+    fn from(wait: model::TaskWait) -> Self {
+        Self {
+            until: Timestamp(wait.until),
+            status: wait.status.into(),
+        }
+    }
 }
 
 /// What a note left on a task records.
@@ -414,6 +436,7 @@ impl From<&model::Task> for Task {
             milestones: timeline::milestones(&task.timeline).into(),
             notes: map_all(&task.notes),
             criteria: map_all(&task.criteria),
+            wait: task.wait.map(TaskWait::from),
         }
     }
 }

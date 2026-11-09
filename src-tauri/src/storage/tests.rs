@@ -1,6 +1,8 @@
 use super::*;
 use crate::domain::dag;
-use crate::domain::model::{CommitRecord, LinkedIssue, NoteKind, Task, TaskType, Workspace};
+use crate::domain::model::{
+    CommitRecord, LinkedIssue, NoteKind, Task, TaskType, TaskWait, Workspace,
+};
 use crate::domain::status::TaskStatus;
 use TaskStatus::*;
 
@@ -858,6 +860,119 @@ fn every_status_change_of_a_task_is_recorded_with_its_time() {
             pause_count: 0,
         }
     );
+}
+
+#[test]
+fn a_waiting_task_is_paused_until_its_time_then_returns_to_its_status() {
+    let (mut storage, now) = clocked_storage(100);
+    let workspace = add_workspace(&mut storage, "Toodo", local_location("/src/toodo"));
+    let active = add_task(&mut storage, &workspace, "Active");
+    let review = add_task(&mut storage, &workspace, "Review");
+    let planned = add_task(&mut storage, &workspace, "Planned");
+    storage.set_task_status(active.id, InProgress).unwrap();
+    storage.set_task_status(review.id, InProgress).unwrap();
+    storage.set_task_status(review.id, InReview).unwrap();
+    let before = storage.last_status_change().unwrap();
+
+    set_now(&now, 200);
+    let waiting = storage.wait_task(active.id, 1_000, Some("Vendor")).unwrap();
+    assert_eq!(waiting.status, Planned);
+    assert_eq!(
+        waiting.wait,
+        Some(TaskWait {
+            until: 1_000,
+            status: InProgress
+        })
+    );
+    storage.wait_task(review.id, 2_000, None).unwrap();
+    storage.wait_task(planned.id, 500, None).unwrap();
+    // Waiting again moves the time and keeps the status to return to.
+    let moved = storage.wait_task(active.id, 600, None).unwrap();
+    assert_eq!(
+        moved.wait,
+        Some(TaskWait {
+            until: 600,
+            status: InProgress
+        })
+    );
+    let (changes, _) = storage.status_changes_after(before).unwrap();
+    let pauses: Vec<_> = changes.iter().map(|c| (c.task, c.from, c.to)).collect();
+    assert_eq!(
+        pauses,
+        [
+            (active.id, Some(InProgress), Planned),
+            (review.id, Some(InReview), Planned),
+        ]
+    );
+
+    set_now(&now, 599);
+    assert_eq!(storage.end_due_waits().unwrap(), [workspace.id]);
+    assert_eq!(storage.get_task(planned.id).unwrap().unwrap().wait, None);
+    assert_eq!(status(&storage, &planned), Planned);
+    assert_eq!(status(&storage, &active), Planned);
+
+    let paused = storage.last_status_change().unwrap();
+    set_now(&now, 600);
+    assert_eq!(storage.end_due_waits().unwrap(), [workspace.id]);
+    let returned = storage.get_task(active.id).unwrap().unwrap();
+    assert_eq!((returned.status, returned.wait), (InProgress, None));
+    // Ending the wait early returns an in_review task to review.
+    let ended = storage
+        .end_task_wait(review.id, Some("Reply came"))
+        .unwrap();
+    assert_eq!((ended.status, ended.wait), (InReview, None));
+    let (changes, _) = storage.status_changes_after(paused).unwrap();
+    let returns: Vec<_> = changes
+        .iter()
+        .map(|c| (c.task, c.from, c.to, c.at))
+        .collect();
+    assert_eq!(
+        returns,
+        [
+            (active.id, Some(Planned), InProgress, 600),
+            (review.id, Some(Planned), InReview, 600),
+        ]
+    );
+    assert!(storage.end_due_waits().unwrap().is_empty());
+}
+
+#[test]
+fn a_status_change_ends_a_wait_and_a_new_prerequisite_keeps_it_paused() {
+    let (mut storage, now) = clocked_storage(100);
+    let workspace = add_workspace(&mut storage, "Toodo", local_location("/src/toodo"));
+    let started = add_task(&mut storage, &workspace, "Started");
+    let blocked = add_task(&mut storage, &workspace, "Blocked");
+    let prerequisite = add_task(&mut storage, &workspace, "Prerequisite");
+    storage.set_task_status(started.id, InProgress).unwrap();
+    storage.set_task_status(blocked.id, InProgress).unwrap();
+    storage.wait_task(started.id, 1_000, None).unwrap();
+    storage.wait_task(blocked.id, 1_000, None).unwrap();
+
+    // Resuming by hand takes the place of the return.
+    storage.set_task_status(started.id, InProgress).unwrap();
+    assert_eq!(storage.get_task(started.id).unwrap().unwrap().wait, None);
+    assert!(storage.wait_task(prerequisite.id, 1_000, None).is_ok());
+    storage
+        .conclude_task(prerequisite.id, "Dropped", None)
+        .unwrap();
+    assert_eq!(
+        storage.get_task(prerequisite.id).unwrap().unwrap().wait,
+        None
+    );
+    assert!(matches!(
+        storage.wait_task(prerequisite.id, 2_000, None),
+        Err(StorageError::Transition(_))
+    ));
+
+    let other = add_task(&mut storage, &workspace, "Other");
+    storage.add_dependency(blocked.id, other.id).unwrap();
+    set_now(&now, 1_000);
+    storage.end_due_waits().unwrap();
+    let still = storage.get_task(blocked.id).unwrap().unwrap();
+    assert_eq!((still.status, still.wait), (Planned, None));
+    assert!(still.notes.iter().any(
+        |note| note.kind == NoteKind::Blocker && note.body.contains(&format!("#{}", other.id))
+    ));
 }
 
 #[test]

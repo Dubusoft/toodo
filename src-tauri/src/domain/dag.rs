@@ -243,6 +243,7 @@ mod tests {
             timeline: Vec::new(),
             notes: Vec::new(),
             criteria: Vec::new(),
+            wait: None,
         }
     }
 

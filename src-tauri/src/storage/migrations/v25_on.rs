@@ -893,4 +893,12 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     );
     CREATE INDEX workspace_guidelines_workspace_id ON workspace_guidelines (workspace_id);
     ",
+    // Version 48: a wait on a task: the time it waits until, and the status it returns to
+    // then. Both are set while the task waits and both are NULL otherwise.
+    r"
+    ALTER TABLE tasks ADD COLUMN wait_until INTEGER;
+    ALTER TABLE tasks ADD COLUMN wait_status TEXT
+        CHECK (wait_status IN ('planned', 'in_progress', 'in_review'));
+    CREATE INDEX tasks_wait_until ON tasks (wait_until) WHERE wait_until IS NOT NULL;
+    ",
 ];

@@ -27,6 +27,7 @@ import {
   type TaskListFilter,
   type TaskResolution,
   type TaskStatus,
+  type Timestamp,
   type Workspace,
   type WorkspaceId,
 } from "@/lib/bindings";
@@ -552,6 +553,21 @@ function useTasksMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
 /** Pauses a started task: it becomes planned again. */
 export function usePauseTask() {
   return useTasksMutation((id: TaskId) => unwrap(commands.pauseTask(id)));
+}
+
+/**
+ * Makes a task wait until `until`: it is paused until then and returns to its status on its own.
+ * A waiting task gets the new time.
+ */
+export function useWaitTask() {
+  return useTasksMutation(({ id, until, reason }: { id: TaskId; until: Timestamp; reason: string | null }) =>
+    unwrap(commands.waitTask(id, until, reason)),
+  );
+}
+
+/** Ends the wait of a task now: it returns to the status it had when the wait began. */
+export function useEndWait() {
+  return useTasksMutation((id: TaskId) => unwrap(commands.endWait(id)));
 }
 
 type CriterionCheck = { taskId: TaskId; criterionId: CriterionId; met: boolean; evidence: string | null };

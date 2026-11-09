@@ -78,6 +78,18 @@ export const commands = {
 	/**  Pauses an `in_progress` or `in_review` task by returning it to `planned`. */
 	pauseTask: (id: TaskId) => typedError<Task, CommandError>(invoke("pause_task", { id })),
 	/**
+	 *  Makes a `planned`, `in_progress`, or `in_review` task wait until `until`: it is paused
+	 *  (`planned`) until then and returns on its own to the status it had, also after a
+	 *  restart of the server. A task that already waits gets the new time. `reason`, if given,
+	 *  is kept with the progress note the wait records.
+	 */
+	waitTask: (id: TaskId, until: Timestamp, reason: string | null) => typedError<Task, CommandError>(invoke("wait_task", { id, until, reason })),
+	/**
+	 *  Ends the wait of a task now: it returns to the status it had when the wait began, as
+	 *  when the time passes.
+	 */
+	endWait: (id: TaskId) => typedError<Task, CommandError>(invoke("end_wait", { id })),
+	/**
 	 *  Stores what the user wrote about the outcome of a `done` task, for reviews. The note
 	 *  is trimmed; an empty one clears it, except for a task that was not adopted, whose note
 	 *  is its required conclusion.
@@ -774,6 +786,11 @@ export type Task = {
 	notes: TaskNote[],
 	/**  What has to hold for the task to be done, in order. */
 	criteria: Criterion[],
+	/**
+	 *  The wait the task is paused for: it is `planned` until `until`, then returns to
+	 *  the status it had when the wait began. `None` when it does not wait.
+	 */
+	wait: TaskWait | null,
 };
 
 /**  The editable task fields. Lifecycle commands handle status changes other than review. */
@@ -911,6 +928,14 @@ export type TaskStatusChanged = {
 };
 
 export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore" | "rnd";
+
+/**  A wait on a task. */
+export type TaskWait = {
+	/**  When the wait ends, in seconds since the Unix epoch. */
+	until: Timestamp,
+	/**  The status the task returns to then: `planned`, `in_progress`, or `in_review`. */
+	status: TaskStatus,
+};
 
 export type TasksChanged = {
 	workspaceId: WorkspaceId,

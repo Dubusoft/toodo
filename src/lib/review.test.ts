@@ -54,6 +54,7 @@ function entry(
       completionNote: null,
       notes: [],
       criteria: [],
+      wait: null,
       timeline: [],
       milestones: {
         plannedAt: null,

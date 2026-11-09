@@ -437,7 +437,7 @@ names the instance in `serverInfo.title`.
 
 ### Agent MCP Tools
 
-The MCP server has 29 tools:
+The MCP server has 31 tools:
 
 - Skill: `read_toodo_skill`.
 - Workspaces: `list_workspaces`, `create_workspace`, `update_workspace`,
@@ -448,8 +448,8 @@ The MCP server has 29 tools:
   `remove_dependency`, `add_related`, `remove_related`, `add_criterion`,
   `remove_criterion`.
 - Recording work: `start_task`, `add_progress_note`, `report_blocker`, `check_criterion`,
-  `pause_task`, `resume_task`, `complete_task`, `conclude_task`, `reopen_task`,
-  `delete_task`.
+  `pause_task`, `resume_task`, `wait_task`, `end_wait`, `complete_task`, `conclude_task`,
+  `reopen_task`, `delete_task`.
 - Review: `review_report`.
 
 Two of them help an agent wire a plan:
@@ -468,6 +468,17 @@ optional reason and refs, and creates nothing else. The agent doing the work mov
 task to review with `update_task` (`status: "in_review"`) and finishes it with
 `complete_task` or `conclude_task`. Toodo doesn't check whether a pull request merged;
 the caller checks that before completing.
+
+`wait_task` makes a `planned`, `in_progress`, or `in_review` task wait until a time, an
+RFC 3339 time with an offset such as `2026-11-10T09:00:00+09:00`; an active task is
+paused until then. A thread of the server returns each task whose time has passed to
+the status it had, checking every few seconds and right after a start, so a wait that
+ended while the server was stopped ends when it starts again. Calling `wait_task` again
+moves the time, and `end_wait` returns the task now. The task's `wait` field
+(`{ "until", "status" }`, `null` when it doesn't wait) tells until when it waits and the
+status it returns to (see [workflow.md](workflow.md#task-states)). `wait_task` takes one
+task: there is no bulk wait, and an agent must not wait every task, or a batch of them, at
+once.
 
 `read_toodo_skill` returns the worker skill (`src-tauri/src/mcp/toodo-skill.md`); rules it
 shares with the `initialize` instructions come from `src-tauri/src/mcp/shared/` (see
@@ -517,9 +528,9 @@ on loopback as before and still see every tool.
 - `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `create_plan`,
   `update_task`, `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
   `add_criterion`, `remove_criterion`, `check_criterion`, `add_progress_note`,
-  `report_blocker`, and `pause_task`.
+  `report_blocker`, `pause_task`, and `wait_task`.
 
-The other tools stay local: `current_task`, `start_task`, `resume_task`,
+The other tools stay local: `current_task`, `start_task`, `resume_task`, `end_wait`,
 `complete_task`, `conclude_task`, `delete_task`, `reopen_task`, `update_workspace`, and
 `archive_workspace` never appear in an app's tool list, and calling one is refused even
 with `toodo.write`. `check_criterion` checks a stored manual criterion. An app's
@@ -661,6 +672,9 @@ curl -N -H "Authorization: Bearer $(cat ~/.local/share/toodo-server/web-token)" 
   `to` are `planned`, `in_progress`, `in_review`, or `done`; a new task reports
   `"from": null, "to": "planned"`. `at` is when the change was recorded, in Unix seconds.
   A move to `done` covers completion and conclusion alike; `get_task` tells them apart.
+  A wait shows as two changes: the pause (`in_progress` or `in_review` to `planned`) when
+  it begins, and the return to that status when its time passes or it ends early. A
+  waiting task that was `planned` sends neither, since its status does not change.
 - `task-ready`: `{ "taskId", "workspaceId", "unblockedBy", "at" }`, sent after the
   `task-status-changed` of `unblockedBy` when that move to `done` finished the last
   unfinished dependency of the planned task `taskId`. A dependency concluded as not

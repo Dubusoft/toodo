@@ -147,6 +147,7 @@ mod tests {
                     reason: None,
                 })
                 .collect(),
+            wait: None,
             notes: Vec::new(),
             criteria: Vec::new(),
         }
