@@ -112,6 +112,9 @@ pub async fn handle(
         }
     };
     let reply = dispatch(services.clone(), &command, args).await;
+    if !READ_COMMANDS.contains(&command.as_str()) {
+        services.announce_status_changes();
+    }
     // Changes the user makes in the app are not news to them: notifications only report
     // what changed on its own (agents, pull requests, background checks).
     services.push.tasks_seen();

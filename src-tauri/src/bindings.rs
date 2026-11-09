@@ -101,6 +101,16 @@ fn collect_events(types: &mut Types) -> Vec<(&'static str, &'static str, DataTyp
             names::GUIDELINES_CHANGED,
             events::GuidelinesChanged::definition(types),
         ),
+        (
+            "taskStatusChanged",
+            names::TASK_STATUS_CHANGED,
+            events::TaskStatusChanged::definition(types),
+        ),
+        (
+            "taskReady",
+            names::TASK_READY,
+            events::TaskReady::definition(types),
+        ),
     ]
 }
 
