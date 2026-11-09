@@ -194,6 +194,18 @@ pub struct Task {
     pub notes: Vec<TaskNote>,
     /// What has to hold for the task to be done, in the order its author gave.
     pub criteria: Vec<Criterion>,
+    /// The wait the task is paused for, if it waits.
+    pub wait: Option<TaskWait>,
+}
+
+/// A wait on a task (see `docs/workflow.md`, Waiting): the task is `planned` until
+/// `until`, then it returns to `status`, the status it had when the wait began.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskWait {
+    /// Seconds since the Unix epoch.
+    pub until: i64,
+    /// `planned`, `in_progress`, or `in_review`.
+    pub status: TaskStatus,
 }
 
 /// A GitHub issue linked to a task.

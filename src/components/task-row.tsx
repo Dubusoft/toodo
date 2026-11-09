@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from "react";
-import { Check, CircleSlash, Flag, GitMerge, PanelRight, Pause, Pencil, Play, RotateCcw, StickyNote, Trash2, X } from "lucide-react";
+import { AlarmClock, AlarmClockOff, Check, CircleSlash, Flag, GitMerge, PanelRight, Pause, Pencil, Play, RotateCcw, StickyNote, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { compactSelectClass, escapeCloses } from "@/components/workspace-list";
@@ -11,6 +11,7 @@ import {
   useAddDependency,
   useCompleteTask,
   useDeleteTask,
+  useEndWait,
   usePauseTask,
   useRemoveDependency,
   useStartTask,
@@ -44,6 +45,7 @@ import {
 import { TaskEditForm } from "@/components/task-edit-form";
 import { ConcludeForm, ReopenForm, OutcomeForm, ShippedByForm, CompletionNote } from "@/components/task-outcome-forms";
 import { TaskIssue } from "@/components/task-issue";
+import { WaitForm, waitLabel } from "@/components/task-wait";
 
 // Sections only the details view shows load with it, apart from the task list.
 const taskDetails = () => import("@/components/task-details");
@@ -80,6 +82,7 @@ export function TaskRow({
   const startTask = useStartTask();
   const completeTask = useCompleteTask();
   const pauseTask = usePauseTask();
+  const endWait = useEndWait();
   const deleteTask = useDeleteTask();
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
@@ -90,6 +93,7 @@ export function TaskRow({
   // A form that changes how the task ends: reopening or correcting a done task, or completing it as shipped by another.
   const [correcting, setCorrecting] = useState<"reopen" | "outcome" | "shipped" | null>(null);
   const [addingNote, setAddingNote] = useState(false);
+  const [waiting, setWaiting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   // A prerequisite that would pause this started task, waiting for confirmation.
   const [confirmingPrerequisite, setConfirmingPrerequisite] = useState<TaskId | null>(null);
@@ -116,6 +120,7 @@ export function TaskRow({
     startTask.error ??
     completeTask.error ??
     pauseTask.error ??
+    endWait.error ??
     deleteTask.error ??
     addDependency.error ??
     removeDependency.error;
@@ -200,6 +205,27 @@ export function TaskRow({
           title: "Pause: stop working on the task; it can be resumed",
           disabled: pauseTask.isPending,
           onSelect: () => pauseTask.mutate(task.id),
+        }
+      : null,
+    !final
+      ? {
+          key: "wait",
+          label: task.wait === null ? "Wait until..." : "Change wait",
+          ariaLabel: `${task.wait === null ? "Wait" : "Change wait of"} #${task.id}`,
+          icon: <AlarmClock />,
+          title: "Pause the task until a time; it then returns to its status on its own",
+          onSelect: () => setWaiting(true),
+        }
+      : null,
+    task.wait !== null
+      ? {
+          key: "end-wait", changesData: true,
+          label: "End wait",
+          ariaLabel: `End wait of #${task.id}`,
+          icon: <AlarmClockOff />,
+          title: "Return the task to its status now",
+          disabled: endWait.isPending,
+          onSelect: () => endWait.mutate(task.id),
         }
       : null,
     final && isNotAdopted(task)
@@ -362,6 +388,11 @@ export function TaskRow({
                   Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
                 </span>
               )}
+              {task.wait !== null && (
+                <span role="note" aria-label={`Wait of #${task.id}`} className={toneText.neutral}>
+                  {waitLabel(task)}
+                </span>
+              )}
               {task.dueDate !== null && <DueDate task={task} />}
               <MissingPlanMark
                 task={task}
@@ -490,6 +521,11 @@ export function TaskRow({
           Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
         </p>
       )}
+      {detailed && task.wait !== null && (
+        <p role="note" aria-label={`Wait of #${task.id}`} className={cn("text-xs", toneText.neutral)}>
+          {waitLabel(task)}
+        </p>
+      )}
       {detailed && <Suspense fallback={null}><TaskPlan task={task} /></Suspense>}
       {detailed && <Suspense fallback={null}><TaskTimeline task={task} detailed /></Suspense>}
       {detailed && task.issue !== null && <TaskIssue task={task} />}
@@ -520,7 +556,8 @@ export function TaskRow({
       {correcting === "reopen" && !editing && (
         <ReopenForm task={task} onDone={() => setCorrecting(null)} />
       )}
-      {!editing && !concluding && correcting === null && (
+      {waiting && !editing && <WaitForm task={task} onDone={() => setWaiting(false)} />}
+      {!editing && !concluding && correcting === null && !waiting && (
         <div className="flex flex-wrap items-center gap-1 max-md:gap-2">
           {primary && actionButton(primary, detailed ? "default" : "outline")}
           {detailed && others.map((action) => actionButton(action, "outline"))}

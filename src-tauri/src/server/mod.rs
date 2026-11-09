@@ -382,6 +382,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     });
     push::spawn(services.clone())?;
     backup::spawn(services.clone())?;
+    crate::commands::tasks::spawn_wait_checks(services.clone())?;
 
     let fetcher = oauth::HttpClientMetadataFetcher::new().map_err(|error| {
         format!(

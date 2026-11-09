@@ -50,6 +50,8 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         tasks::create_task,
         tasks::update_task,
         tasks::pause_task,
+        tasks::wait_task,
+        tasks::end_wait,
         tasks::set_completion_note,
         tasks::reopen_task,
         tasks::set_task_outcome,

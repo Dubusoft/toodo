@@ -63,6 +63,7 @@ function task(id: number, workspace: Workspace, title: string, overrides: Partia
     },
     notes: [],
     criteria: [],
+    wait: null,
     ...overrides,
   };
 }

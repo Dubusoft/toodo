@@ -417,6 +417,30 @@ pub struct PauseTask {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct WaitTask {
+    /// A planned, in_progress, or in_review task.
+    pub id: TaskId,
+    /// When the wait ends: an RFC 3339 time with an offset, in the future, e.g.
+    /// `2026-11-10T09:00:00+09:00` or `2026-11-10T00:00:00Z`.
+    pub until: String,
+    /// Why the task waits, in GitHub-flavored Markdown; recorded with the progress note.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct EndWait {
+    /// The waiting task.
+    pub id: TaskId,
+    /// Why the wait ends early, in GitHub-flavored Markdown; recorded with the progress
+    /// note.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ResumeTask {
     /// The paused task.
     pub id: TaskId,
@@ -1582,6 +1606,28 @@ pub fn pause_task(storage: &mut Storage, request: PauseTask) -> CommandResult<Ta
         &format!("Paused: {reason}"),
     )?;
     Ok((&task).into())
+}
+
+/// Makes a task wait until a time (see [`task_commands::wait_task`]), or moves the time of
+/// a task that already waits.
+pub fn wait_task(storage: &mut Storage, request: WaitTask) -> CommandResult<Task> {
+    let until: jiff::Timestamp = request.until.trim().parse().map_err(|_| {
+        CommandError::invalid_input(format!(
+            "until {:?} is not an RFC 3339 time with an offset; pass e.g. {{\"id\": {}, \"until\": \"2026-11-10T09:00:00+09:00\"}}",
+            request.until, request.id.0
+        ))
+    })?;
+    task_commands::wait(
+        storage,
+        request.id,
+        until.as_second(),
+        request.reason.as_deref(),
+    )
+}
+
+/// Ends the wait of a task now (see [`task_commands::end_wait`]).
+pub fn end_wait(storage: &mut Storage, request: EndWait) -> CommandResult<Task> {
+    task_commands::end_task_wait(storage, request.id, request.note.as_deref())
 }
 
 /// Resumes a previously started, paused task.

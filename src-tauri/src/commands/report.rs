@@ -1197,6 +1197,7 @@ mod tests {
                 },
                 notes: Vec::new(),
                 criteria: Vec::new(),
+                wait: None,
             },
             outcome,
             at: Timestamp(local(2026, 10, 13, 15)),

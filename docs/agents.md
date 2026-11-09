@@ -102,7 +102,8 @@ that every fragment appears in both texts and that no placeholder is left.
 4. While working, record what later readers need: `add_progress_note` with kind
    `progress` for a milestone and kind `decision` for a choice and its reason,
    `report_blocker` when someone has to step in, and `pause_task` with a reason when the
-   work stops. `resume_task` continues it.
+   work stops. `resume_task` continues it. `wait_task` pauses it until a time, after
+   which it returns on its own; `end_wait` returns it sooner.
 
 5. When the work awaits review, move the task with `update_task`:
 

@@ -16,7 +16,7 @@ use crate::commands::events::Notifier as _;
 use crate::commands::types::{
     BackupSettings, CriterionId, Guideline, GuidelineId, GuidelineUpdate, NewGuideline, NewTask,
     NewWorkspace, OAuthGrantId, ReviewReportRequest, ReviewSnapshotId, SaveReviewSnapshotRequest,
-    TaskEdit, TaskId, TaskListFilter, TaskResolution, Workspace, WorkspaceId,
+    TaskEdit, TaskId, TaskListFilter, TaskResolution, Timestamp, Workspace, WorkspaceId,
 };
 use crate::commands::{
     CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, backup, completion,
@@ -270,6 +270,10 @@ commands!(s => {
         tasks::update_task(State(&s.storage), task)
     );
     "pause_task"(id: TaskId) => sync Reply::result(tasks::pause_task(State(&s.storage), id));
+    "wait_task"(id: TaskId, until: Timestamp, reason: Option<String>) => sync Reply::result(
+        tasks::wait_task(State(&s.storage), id, until, reason)
+    );
+    "end_wait"(id: TaskId) => sync Reply::result(tasks::end_wait(State(&s.storage), id));
     "set_completion_note"(id: TaskId, note: String) => sync Reply::result(
         tasks::set_completion_note(State(&s.storage), id, note)
     );
