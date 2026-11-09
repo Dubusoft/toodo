@@ -28,6 +28,10 @@ vi.mock("@/lib/bindings", () => ({
     updateWorkspace: vi.fn(),
     deleteWorkspace: vi.fn(),
     listArchive: vi.fn(),
+    listGuidelines: vi.fn(),
+    addGuideline: vi.fn(),
+    updateGuideline: vi.fn(),
+    deleteGuideline: vi.fn(),
     listTasks: vi.fn(),
     createTask: vi.fn(),
     updateTask: vi.fn(),
@@ -63,6 +67,7 @@ vi.mock("@/lib/bindings", () => ({
   events: {
     tasksChanged: { listen: vi.fn() },
     workspacesChanged: { listen: vi.fn() },
+    guidelinesChanged: { listen: vi.fn() },
   },
 }));
 
@@ -245,6 +250,8 @@ describe("App", () => {
     mocked.getBackupStatus.mockResolvedValue({ lastFailure: null });
     mockedEvents.tasksChanged.listen.mockResolvedValue(() => {});
     mockedEvents.workspacesChanged.listen.mockResolvedValue(() => {});
+    mockedEvents.guidelinesChanged.listen.mockResolvedValue(() => {});
+    mocked.listGuidelines.mockResolvedValue({ status: "ok", data: [] });
   });
 
   it("shows the backend version once the app info command resolves", async () => {
@@ -1209,6 +1216,27 @@ describe("App", () => {
     });
 
     expect(await screen.findByRole("button", { name: /^site/ })).toBeInTheDocument();
+  });
+
+  it("shows a guideline an agent added to the open workspace once the app hears of it", async () => {
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    await renderWorkspace();
+    const guidelines = await screen.findByRole("region", { name: "Guidelines" });
+    expect(await within(guidelines).findByText(/agents read them/)).toBeInTheDocument();
+    await waitFor(() => expect(mockedEvents.guidelinesChanged.listen).toHaveBeenCalled());
+
+    mocked.listGuidelines.mockResolvedValue({
+      status: "ok",
+      data: [{ id: 1, workspaceId: 1, kind: "rule", body: "Write English.", createdAt: 1700000000, updatedAt: 1700000000 }],
+    });
+    const [[onGuidelinesChanged]] = mockedEvents.guidelinesChanged.listen.mock.calls;
+    act(() => {
+      onGuidelinesChanged({ event: "guidelines-changed", id: 4, payload: { workspaceId: 1 } });
+    });
+
+    expect(await within(guidelines).findByRole("button", { name: "Guidelines 1 rule" })).toBeInTheDocument();
+    expect(mocked.listGuidelines).toHaveBeenLastCalledWith(1);
   });
 
   it("shows why a task could not be started", async () => {

@@ -16,7 +16,9 @@ use specta_serde::Phase;
 use specta_typescript::{Error, Exporter, FrameworkExporter, Typescript, define};
 
 use crate::commands::events::{self, names};
-use crate::commands::{self, backup, completion, issues, mcp, review, tasks, updates, workspaces};
+use crate::commands::{
+    self, backup, completion, guidelines, issues, mcp, review, tasks, updates, workspaces,
+};
 
 const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
 
@@ -36,6 +38,10 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         workspaces::restore_workspace,
         workspaces::purge_workspace,
         workspaces::list_archive,
+        guidelines::list_guidelines,
+        guidelines::add_guideline,
+        guidelines::update_guideline,
+        guidelines::delete_guideline,
         tasks::list_tasks,
         tasks::list_task_relations,
         tasks::add_task_relation,
@@ -89,6 +95,11 @@ fn collect_events(types: &mut Types) -> Vec<(&'static str, &'static str, DataTyp
             "workspacesChanged",
             names::WORKSPACES_CHANGED,
             events::WorkspacesChanged::definition(types),
+        ),
+        (
+            "guidelinesChanged",
+            names::GUIDELINES_CHANGED,
+            events::GuidelinesChanged::definition(types),
         ),
     ]
 }

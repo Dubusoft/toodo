@@ -35,6 +35,10 @@ type Column = (&'static str, Option<&'static str>);
 const TABLES: &[(&str, &[Column])] = &[
     ("workspaces", &[("id", Some("id + {w}"))]),
     (
+        "workspace_guidelines",
+        &[("id", None), ("workspace_id", Some("workspace_id + {w}"))],
+    ),
+    (
         "tasks",
         &[
             ("id", Some("id + {t}")),

@@ -11,6 +11,7 @@ mod backup;
 mod commits;
 mod criteria;
 mod devices;
+mod guidelines;
 mod import;
 mod migrations;
 pub mod oauth;
@@ -32,7 +33,7 @@ use rusqlite::{Connection, OpenFlags};
 use crate::domain::criteria::{CheckKind, CriterionId};
 use crate::domain::dag::{BlockingDependency, DependencyError};
 use crate::domain::device::DeviceId;
-use crate::domain::model::{TaskId, TaskResolution, WorkspaceId};
+use crate::domain::model::{GuidelineId, TaskId, TaskResolution, WorkspaceId};
 use crate::domain::status::TransitionError;
 
 pub use backup::{
@@ -41,6 +42,7 @@ pub use backup::{
 };
 pub use criteria::{CriterionCheck, CriterionEdit};
 pub use devices::DeviceAuth;
+pub use guidelines::NewGuideline;
 pub use import::ImportSummary;
 pub use push::NewPushSubscription;
 pub use reviews::{ReviewSnapshot, ReviewSnapshotInfo};
@@ -199,6 +201,7 @@ pub enum StorageError {
         criterion: CriterionId,
         kind: CheckKind,
     },
+    GuidelineNotFound(GuidelineId),
     DeviceNotFound(DeviceId),
     /// The device has not subscribed to push notifications.
     PushSubscriptionNotFound(DeviceId),
@@ -310,6 +313,10 @@ impl fmt::Display for StorageError {
             } => write!(
                 f,
                 "criterion {criterion} of task {task} is a {kind} criterion, which Toodo checks on its own; only manual criteria are checked by hand"
+            ),
+            Self::GuidelineNotFound(id) => write!(
+                f,
+                "guideline {id} does not exist; call list_guidelines with the workspace id and take the guideline id from its result"
             ),
             Self::DeviceNotFound(id) => write!(f, "device {id} does not exist"),
             Self::PushSubscriptionNotFound(id) => {

@@ -13,6 +13,7 @@ vi.mock("@/lib/bindings", () => ({
     createTask: vi.fn(),
     startTask: vi.fn(),
     updateWorkspace: vi.fn(),
+    listGuidelines: vi.fn(),
   },
 }));
 
@@ -136,6 +137,7 @@ describe("TaskList of a workspace", () => {
       removeEventListener: () => {},
     }));
     mocked.listTaskRelations.mockResolvedValue(ok([]));
+    mocked.listGuidelines.mockResolvedValue(ok([]));
   });
 
   it("starts a ready task with no reason or references", async () => {

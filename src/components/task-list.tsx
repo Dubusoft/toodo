@@ -33,6 +33,7 @@ import {
 } from "@/components/task-common";
 import { TaskRow } from "@/components/task-row";
 import { WorkspaceDetails } from "@/components/workspace-settings";
+import { WorkspaceGuidelines } from "@/components/workspace-guidelines";
 import { type TaskDraft, emptyDraft, NewTaskForm } from "@/components/new-task-form";
 import { PlanView } from "@/components/plan-view";
 import type { AllView } from "@/lib/route";
@@ -197,6 +198,8 @@ export function TaskList({
           <p className="text-sm text-muted-foreground max-md:hidden">Tasks of every workspace and the dependencies between them.</p>
         )}
       </header>
+
+      {workspace && <WorkspaceGuidelines key={workspace.id} workspace={workspace} />}
 
       {workspace && onDraftChange && <NewTaskForm workspace={workspace} draft={draft} onChange={onDraftChange} />}
 

@@ -11,6 +11,8 @@ Call list_workspaces and search_tasks before creating records. Read get_task for
 
 # Work and memory
 
+{{guidelines}}
+
 {{other-tasks}}
 
 {{merge-policy}}

@@ -3,6 +3,7 @@
 
 mod backups;
 mod criterion;
+mod guidelines;
 mod ids;
 mod inputs;
 mod review;
@@ -13,6 +14,7 @@ mod workspaces;
 
 pub use backups::*;
 pub use criterion::*;
+pub use guidelines::*;
 pub use ids::*;
 pub use inputs::*;
 pub use review::*;
