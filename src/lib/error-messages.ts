@@ -12,6 +12,8 @@ export function commandErrorMessage(error: CommandError): string {
       return "This page is out of date with the Toodo server. Reload the page, then try again.";
     case "commandPanicked":
       return 'Something went wrong on the Toodo server. Try again; if it keeps failing, look for "a command panicked" in the toodo-server log.';
+    case "guidelineNotFound":
+      return "This guideline no longer exists; it was deleted elsewhere. Reload the page to see the current guidelines, and add your text as a new guideline if it is still needed.";
     case "storageFailed":
       return `The Toodo server could not use its database (${error.message}). Try again; if it keeps failing, check the toodo-server log.`;
     default:
