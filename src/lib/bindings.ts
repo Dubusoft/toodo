@@ -189,6 +189,8 @@ export const events = {
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
 	workspacesChanged: makeEvent<WorkspacesChanged>("workspaces-changed"),
 	guidelinesChanged: makeEvent<GuidelinesChanged>("guidelines-changed"),
+	taskStatusChanged: makeEvent<TaskStatusChanged>("task-status-changed"),
+	taskReady: makeEvent<TaskReady>("task-ready"),
 };
 
 /* Types */
@@ -864,6 +866,18 @@ export type TaskNote = {
 };
 
 /**
+ *  A planned task became ready: the last of its unfinished dependencies, `unblockedBy`,
+ *  moved to `done`.
+ */
+export type TaskReady = {
+	taskId: TaskId,
+	workspaceId: WorkspaceId,
+	unblockedBy: TaskId,
+	/**  When `unblockedBy` moved to `done`. */
+	at: Timestamp,
+};
+
+/**
  *  A related link between two tasks, which may belong to different workspaces. The link
  *  goes both ways; `task_id` is the lower ID.
  */
@@ -885,6 +899,16 @@ export type TaskResolution =
 "not_adopted";
 
 export type TaskStatus = "planned" | "in_progress" | "in_review" | "done";
+
+/**  The status of a task changed, through any surface: the web app or MCP. A newly created task reports `from: null` and `to: "planned"`. */
+export type TaskStatusChanged = {
+	taskId: TaskId,
+	workspaceId: WorkspaceId,
+	from: TaskStatus | null,
+	to: TaskStatus,
+	/**  When the change was recorded in the task's status history. */
+	at: Timestamp,
+};
 
 export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore" | "rnd";
 

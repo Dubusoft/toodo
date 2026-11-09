@@ -861,6 +861,73 @@ fn every_status_change_of_a_task_is_recorded_with_its_time() {
 }
 
 #[test]
+fn status_changes_after_a_record_name_both_statuses_and_the_tasks_made_ready() {
+    let (mut storage, now) = clocked_storage(100);
+    let workspace = add_workspace(&mut storage, "Toodo", local_location("/src/toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+    let waits_on_a = add_task(&mut storage, &workspace, "Waits on A");
+    let waits_on_both = add_task(&mut storage, &workspace, "Waits on A and B");
+    storage.add_dependency(waits_on_a.id, a.id).unwrap();
+    storage.add_dependency(waits_on_both.id, a.id).unwrap();
+    storage.add_dependency(waits_on_both.id, b.id).unwrap();
+    let created = storage.last_status_change().unwrap();
+    let (changes, ready) = storage.status_changes_after(0).unwrap();
+    assert_eq!(changes.len(), 4);
+    assert_eq!(
+        (changes[0].task, changes[0].from, changes[0].to),
+        (a.id, None, Planned)
+    );
+    assert!(ready.is_empty());
+
+    set_now(&now, 200);
+    storage.set_task_status(a.id, InProgress).unwrap();
+    storage.complete_task(a.id, None, &[]).unwrap();
+    let (changes, ready) = storage.status_changes_after(created).unwrap();
+    let moves: Vec<_> = changes
+        .iter()
+        .map(|change| {
+            (
+                change.task,
+                change.workspace,
+                change.from,
+                change.to,
+                change.at,
+            )
+        })
+        .collect();
+    assert_eq!(
+        moves,
+        [
+            (a.id, workspace.id, Some(Planned), InProgress, 200),
+            (a.id, workspace.id, Some(InProgress), Done, 200),
+        ]
+    );
+    assert_eq!(
+        ready,
+        [ReadyTask {
+            task: waits_on_a.id,
+            workspace: workspace.id,
+            unblocked_by: a.id,
+            at: 200,
+        }]
+    );
+
+    // A dependency concluded as not adopted keeps its dependents blocked.
+    let completed = storage.last_status_change().unwrap();
+    storage.conclude_task(b.id, "Not needed", None).unwrap();
+    let (changes, ready) = storage.status_changes_after(completed).unwrap();
+    assert_eq!((changes[0].task, changes[0].to), (b.id, Done));
+    assert!(ready.is_empty());
+    assert_eq!(
+        storage
+            .status_changes_after(storage.last_status_change().unwrap())
+            .unwrap(),
+        (Vec::new(), Vec::new())
+    );
+}
+
+#[test]
 fn only_status_changes_are_recorded_and_rejected_changes_record_nothing() {
     let (mut storage, now) = clocked_storage(100);
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));

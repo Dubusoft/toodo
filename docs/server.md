@@ -644,6 +644,47 @@ keep-alive comment every 15 seconds; a proxy in front must not buffer it. When t
 drops, the web app reconnects with the id of the last event it got and the server replays
 what it missed; when those events are no longer kept, the web app refetches everything.
 
+### Task Events for Other Clients
+
+A program on the server's machine, such as an executor's supervisor, can follow task
+status without polling: open `GET /api/events` with the web token or a device token and
+read the `task-status-changed` and `task-ready` events. They report every change,
+whether it came from the web app or an MCP tool; `toodo` CLI commands
+only read.
+
+```sh
+curl -N -H "Authorization: Bearer $(cat ~/.local/share/toodo-server/web-token)" \
+  http://127.0.0.1:47616/api/events
+```
+
+- `task-status-changed`: `{ "taskId", "workspaceId", "from", "to", "at" }`. `from` and
+  `to` are `planned`, `in_progress`, `in_review`, or `done`; a new task reports
+  `"from": null, "to": "planned"`. `at` is when the change was recorded, in Unix seconds.
+  A move to `done` covers completion and conclusion alike; `get_task` tells them apart.
+- `task-ready`: `{ "taskId", "workspaceId", "unblockedBy", "at" }`, sent after the
+  `task-status-changed` of `unblockedBy` when that move to `done` finished the last
+  unfinished dependency of the planned task `taskId`. A dependency concluded as not
+  adopted keeps its dependents blocked, so it makes none ready.
+
+```text
+id: 3f9a01c2-41
+event: task-status-changed
+data: {"taskId":12,"workspaceId":2,"from":"in_review","to":"done","at":1794190000}
+
+id: 3f9a01c2-42
+event: task-ready
+data: {"taskId":13,"workspaceId":2,"unblockedBy":12,"at":1794190000}
+```
+
+The stream also carries the events the web app uses (`tasks-changed`,
+`workspaces-changed`, `guidelines-changed`); skip the names you do not handle. To resume
+after a disconnect, send the id of the last event you handled as `Last-Event-ID`: the
+server replays the events after it. A `resync` event instead means some were lost (the
+server restarted or more than 256 events went by); read the current state with
+`list_tasks` and go on from the id of the `resync` event. A stream opened without
+`Last-Event-ID` starts with a `ready` event (not to be confused with `task-ready`)
+carrying the id to resume from.
+
 ### Off the Machine: Cloudflare Tunnel and Access
 
 To use the web app from a phone or another computer without an SSH tunnel, publish it
@@ -778,8 +819,10 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   `unknownCommand` and malformed arguments `400` with code `invalidArguments`. A command
   that panics is `500` with code `commandPanicked`; the panic text goes only to the
   server log.
-- `GET /api/events`: server-sent events `tasks-changed` and `workspaces-changed` with the payloads of the
-  events in `src/lib/bindings.ts`. Every event has an id `<epoch>-<sequence>`; `epoch`
+- `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
+  `guidelines-changed`, `task-status-changed`, and `task-ready` with the payloads of the
+  events in `src/lib/bindings.ts` (see [Task Events for Other
+  Clients](#task-events-for-other-clients)). Every event has an id `<epoch>-<sequence>`; `epoch`
   changes with each server start. A request without `Last-Event-ID` starts with a
   `ready` event carrying the current id. With `Last-Event-ID`, the stream first replays
   the events after it (the server keeps the last 256); when some are gone, the id is of

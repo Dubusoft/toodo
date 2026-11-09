@@ -26,6 +26,29 @@ pub struct NewTask {
     pub criteria: Vec<NewCriterion>,
 }
 
+/// A status change from a task's status history, for announcing it to connected clients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusChange {
+    /// The id of the history record; later changes have higher ids.
+    pub id: i64,
+    pub task: TaskId,
+    pub workspace: WorkspaceId,
+    /// The status before the change; `None` for the first record, the task's creation.
+    pub from: Option<TaskStatus>,
+    pub to: TaskStatus,
+    pub at: i64,
+}
+
+/// A planned task that became ready: `unblocked_by` was the last of its dependencies to
+/// finish.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadyTask {
+    pub task: TaskId,
+    pub workspace: WorkspaceId,
+    pub unblocked_by: TaskId,
+    pub at: i64,
+}
+
 /// Which tasks [`Storage::query_tasks`] lists. Every condition set must hold; the default
 /// lists every task.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -685,6 +708,87 @@ impl Storage {
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
         Ok(task)
+    }
+
+    /// The id of the latest status history record; 0 when there is none.
+    pub fn last_status_change(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT coalesce(max(id), 0) FROM task_events", [], |row| {
+                row.get(0)
+            })?)
+    }
+
+    /// The status changes recorded after the history record `after`, oldest first, and the
+    /// planned tasks that one of their moves to `done` made ready.
+    pub fn status_changes_after(&self, after: i64) -> Result<(Vec<StatusChange>, Vec<ReadyTask>)> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT e.id, e.task_id, t.workspace_id, e.status, e.at,
+                 (SELECT p.status FROM task_events p
+                  WHERE p.task_id = e.task_id AND p.id < e.id ORDER BY p.id DESC LIMIT 1)
+             FROM task_events e JOIN tasks t ON t.id = e.task_id
+             WHERE e.id > ?1 ORDER BY e.id",
+        )?;
+        let rows = statement
+            .query_map([after], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut changes = Vec::with_capacity(rows.len());
+        for (id, task, workspace, to, at, from) in rows {
+            changes.push(StatusChange {
+                id,
+                task: TaskId(task),
+                workspace: WorkspaceId(workspace),
+                from: from.as_deref().map(parse_task_status).transpose()?,
+                to: parse_task_status(&to)?,
+                at,
+            });
+        }
+        let finished: HashMap<TaskId, &StatusChange> = changes
+            .iter()
+            .filter(|change| change.to == TaskStatus::Done)
+            .map(|change| (change.task, change))
+            .collect();
+        if finished.is_empty() {
+            return Ok((changes, Vec::new()));
+        }
+        let tasks = all_tasks(&self.conn)?;
+        let mut ready = Vec::new();
+        for task in &tasks {
+            if task.status != TaskStatus::Planned {
+                continue;
+            }
+            // The latest finish among its dependencies is the one that unblocked it.
+            let Some(last) = task
+                .depends_on
+                .iter()
+                .filter_map(|dependency| finished.get(dependency))
+                .max_by_key(|change| change.id)
+            else {
+                continue;
+            };
+            if dag::is_ready(&tasks, task.id)? {
+                ready.push((
+                    last.id,
+                    ReadyTask {
+                        task: task.id,
+                        workspace: task.workspace_id,
+                        unblocked_by: last.task,
+                        at: last.at,
+                    },
+                ));
+            }
+        }
+        ready.sort_by_key(|(id, ready)| (*id, ready.task));
+        Ok((changes, ready.into_iter().map(|(_, ready)| ready).collect()))
     }
 
     /// Rejects starting a task while one of its dependencies is not done.
