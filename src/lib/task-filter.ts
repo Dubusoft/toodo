@@ -95,9 +95,11 @@ export type TaskFilter = {
   /** Tasks with any of these statuses pass; an empty list lets every status through. */
   statuses: ShownStatus[];
   type: TaskType | null;
+  /** Only tasks marked for autopilot pass when set. */
+  autopilot: boolean;
 };
 
-export const emptyTaskFilter: TaskFilter = { query: "", statuses: [], type: null };
+export const emptyTaskFilter: TaskFilter = { query: "", statuses: [], type: null, autopilot: false };
 
 /** What the timeline opens with: every status but the finished ones, done and not adopted. */
 export const defaultTaskFilter: TaskFilter = {
@@ -106,7 +108,7 @@ export const defaultTaskFilter: TaskFilter = {
 };
 
 export function isFilterActive(filter: TaskFilter): boolean {
-  return filter.query.trim() !== "" || filter.statuses.length > 0 || filter.type !== null;
+  return filter.query.trim() !== "" || filter.statuses.length > 0 || filter.type !== null || filter.autopilot;
 }
 
 /** `statuses` with `status` added, or removed when it is already there, in the order of `shownStatuses`. */
@@ -126,6 +128,9 @@ export function matchesFilter(task: Task, filter: TaskFilter, byId: ReadonlyMap<
     return false;
   }
   if (filter.type !== null && task.taskType !== filter.type) {
+    return false;
+  }
+  if (filter.autopilot && !task.autopilot) {
     return false;
   }
   const text = `${task.title}\n${task.description}`.toLocaleLowerCase();

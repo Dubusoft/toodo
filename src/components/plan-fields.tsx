@@ -17,6 +17,34 @@ export function planEstimate(plan: PlanDraft): Estimate | null | undefined {
   return Number.isNaN(amount) ? undefined : { unit: plan.estimateUnit, amount };
 }
 
+/** Whether a task is marked for autopilot: an executor may take it up on its own once it is ready. */
+export function AutopilotField({
+  suffix,
+  checked,
+  onChange,
+}: {
+  /** Appended to the label, as for {@link PlanFields}. */
+  suffix: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label
+      className="flex w-fit items-center gap-1.5 text-xs text-muted-foreground max-md:min-h-11"
+      title="An executor may take up the task on its own once it is ready"
+    >
+      <input
+        type="checkbox"
+        className="size-3.5 accent-sky-600"
+        aria-label={`Autopilot${suffix}`}
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      Autopilot
+    </label>
+  );
+}
+
 export function PlanFields({
   suffix,
   plan,

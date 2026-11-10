@@ -344,6 +344,16 @@ export function TaskRow({
               </span>
             )}
             <TaskTypeBadge type={task.taskType} />
+            {task.autopilot && (
+              <span
+                role="note"
+                aria-label={`#${task.id} is marked for autopilot`}
+                title="Marked for autopilot: an executor may take it up on its own once it is ready"
+                className={cn("shrink-0 rounded-md px-1.5 text-xs font-medium", toneChip.info)}
+              >
+                Autopilot
+              </span>
+            )}
             {!detailed && (
               // The title opens the details sheet. Below md it gets a line of its own under the chips.
               <button

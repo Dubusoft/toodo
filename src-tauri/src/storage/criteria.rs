@@ -357,6 +357,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                autopilot: false,
                 criteria,
             })
             .unwrap();

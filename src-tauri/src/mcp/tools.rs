@@ -40,6 +40,10 @@ pub struct ListTasks {
     /// ID here to read the older ones.
     #[serde(default)]
     pub before_id: Option<TaskId>,
+    /// `true`: only tasks marked for autopilot; `false`: only the others. Every task when
+    /// omitted.
+    #[serde(default)]
+    pub autopilot: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -128,6 +132,11 @@ pub struct CreateTask {
     /// `<kind>:<value>` or a URL, each on one line.
     #[serde(default)]
     pub refs: Vec<String>,
+    /// true marks the task for autopilot: an executor may take it up on its own once it
+    /// is ready. Set it only when the user asked for autopilot on this task; false when
+    /// omitted.
+    #[serde(default)]
+    pub autopilot: bool,
     /// Verifiable completion criteria in order (no `id`). Use `manual` for what a person
     /// or you check with evidence, and `url` for an HTTP GET completion check.
     #[serde(default)]
@@ -186,6 +195,9 @@ pub struct PlanTask {
     /// References, as in create_task.
     #[serde(default)]
     pub refs: Vec<String>,
+    /// Marks the task for autopilot, as in create_task.
+    #[serde(default)]
+    pub autopilot: bool,
     /// Verifiable completion criteria in order (no `id`), as in create_task.
     #[serde(default)]
     pub criteria: Vec<types::CriterionInput>,
@@ -236,6 +248,9 @@ pub struct UpdateTask {
     /// References to remove from the task, given as they are listed in its refs; removed
     /// after `refs` is appended.
     pub remove_refs: Option<Vec<String>>,
+    /// true marks the task for autopilot (only when the user asked for it), false clears
+    /// the mark; unchanged when omitted. Marking a marked task keeps when it was marked.
+    pub autopilot: Option<bool>,
     /// The full new list of completion criteria, replacing the current one; unchanged when
     /// omitted. Criteria whose `id` is left out are deleted with their evidence. Keep an
     /// existing criterion by passing `{"id": N}`; given fields change it, omitted ones
@@ -921,6 +936,7 @@ pub fn list_tasks(storage: &Storage, request: ListTasks) -> CommandResult<Vec<Li
         // Readiness is known only once the prerequisites are loaded, so the limit then
         // applies after filtering by it.
         limit: request.limit.filter(|_| request.ready.is_none()),
+        autopilot: request.autopilot,
     };
     let tasks = storage.query_tasks(&query)?;
     let prerequisites = prerequisites(storage, &tasks)?;
@@ -1306,6 +1322,7 @@ fn plan_task(_storage: &StorageState, item: &PlanTask) -> CommandResult<storage:
         estimate: item.estimate,
         due_date: item.due_date.clone(),
         labels: Vec::new(),
+        autopilot: item.autopilot,
         criteria: item.criteria.clone(),
     }
     .try_into()?;
@@ -1336,6 +1353,7 @@ fn insert_task(storage: &mut Storage, request: CreateTask) -> CommandResult<Task
         estimate: request.estimate,
         due_date: request.due_date,
         labels: Vec::new(),
+        autopilot: request.autopilot,
         criteria: request.criteria,
     }
     .try_into()?;
@@ -1409,6 +1427,7 @@ pub fn update_task(storage: &mut Storage, request: UpdateTask) -> CommandResult<
             estimate: request.estimate.unwrap_or(current.estimate),
             due_date: request.due_date.unwrap_or(current.due_date),
             labels: request.labels,
+            autopilot: request.autopilot,
             criteria: request.criteria,
         },
     )?;
@@ -1453,6 +1472,7 @@ pub fn add_criterion(storage: &mut Storage, request: AddCriterion) -> CommandRes
             estimate: None,
             due_date: None,
             labels: None,
+            autopilot: None,
             criteria: Some(criteria),
         },
     )
@@ -1487,6 +1507,7 @@ pub fn remove_criterion(storage: &mut Storage, request: RemoveCriterion) -> Comm
             estimate: None,
             due_date: None,
             labels: None,
+            autopilot: None,
             criteria: Some(criteria),
         },
     )
@@ -2295,6 +2316,7 @@ mod tests {
                 related: Vec::new(),
                 estimate: None,
                 due_date: None,
+                autopilot: false,
                 labels: Vec::new(),
                 criteria: vec![types::CriterionInput {
                     id: None,
@@ -2564,6 +2586,7 @@ mod tests {
                 estimate: None,
                 due_date: None,
                 labels: None,
+                autopilot: None,
                 criteria: None,
             },
         )
@@ -2917,6 +2940,87 @@ mod tests {
         );
     }
 
+    #[test]
+    fn autopilot_is_set_on_create_listed_by_filter_kept_when_marked_again_and_cleared() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let plain = create(&mut storage, workspace, "Plain", vec![]).unwrap();
+        assert_eq!((plain.autopilot, plain.autopilot_at), (false, None));
+        let request: CreateTask = serde_json::from_value(serde_json::json!({
+            "workspace_id": workspace,
+            "task_type": "feat",
+            "title": "Flagged",
+            "autopilot": true,
+        }))
+        .unwrap();
+        let flagged = insert_task(&mut storage, request).unwrap();
+        assert!(flagged.autopilot);
+        let since = flagged.autopilot_at.expect("a marked task records when");
+
+        let listed = |storage: &Storage, autopilot: Option<bool>| -> Vec<TaskId> {
+            let request = ListTasks {
+                autopilot,
+                ..ListTasks::default()
+            };
+            list_tasks(storage, request)
+                .unwrap()
+                .into_iter()
+                .map(|listed| listed.task.id)
+                .collect()
+        };
+        assert_eq!(listed(&storage, Some(true)), [flagged.id]);
+        assert_eq!(listed(&storage, Some(false)), [plain.id]);
+        assert_eq!(listed(&storage, None), [plain.id, flagged.id]);
+
+        let update = |storage: &mut Storage, id: TaskId, fields: serde_json::Value| {
+            let mut request = serde_json::json!({ "id": id });
+            request
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            update_task(storage, serde_json::from_value(request).unwrap()).unwrap()
+        };
+        let renamed = update(
+            &mut storage,
+            flagged.id,
+            serde_json::json!({ "title": "Still" }),
+        );
+        assert_eq!(renamed.autopilot_at, Some(since));
+        let again = update(
+            &mut storage,
+            flagged.id,
+            serde_json::json!({ "autopilot": true }),
+        );
+        assert_eq!(again.autopilot_at, Some(since));
+        let cleared = update(
+            &mut storage,
+            flagged.id,
+            serde_json::json!({ "autopilot": false }),
+        );
+        assert_eq!((cleared.autopilot, cleared.autopilot_at), (false, None));
+        let marked = update(
+            &mut storage,
+            plain.id,
+            serde_json::json!({ "autopilot": true }),
+        );
+        assert!(marked.autopilot && marked.autopilot_at.is_some());
+        assert_eq!(listed(&storage, Some(true)), [plain.id]);
+
+        let created = create_plan(
+            &StorageState::new(storage),
+            plan(serde_json::json!([
+                { "key": "a", "workspace_id": workspace, "task_type": "feat", "title": "A", "autopilot": true },
+                { "key": "b", "workspace_id": workspace, "task_type": "feat", "title": "B" },
+            ])),
+        )
+        .unwrap();
+        let flags: Vec<bool> = created
+            .tasks
+            .iter()
+            .map(|planned| planned.task.autopilot)
+            .collect();
+        assert_eq!(flags, [true, false]);
+    }
+
     fn plan(tasks: serde_json::Value) -> CreatePlan {
         serde_json::from_value(serde_json::json!({ "tasks": tasks })).unwrap()
     }
@@ -3160,6 +3264,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                autopilot: false,
                 criteria: Vec::new(),
             })
             .unwrap()
@@ -3276,6 +3381,7 @@ mod tests {
             description: String::new(),
             estimate: None,
             due_date: None,
+            autopilot: false,
             criteria: Vec::new(),
         };
         let item = |task, depends_on| crate::storage::NewPlanTask {

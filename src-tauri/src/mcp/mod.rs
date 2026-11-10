@@ -658,7 +658,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "List tasks with status and depends_on, of one workspace or of all workspaces, by ascending ID. Each task has ready (planned and nothing blocks it, so start_task or resume_task can begin it now) and blockedBy: the tasks it depends on that are not done yet, or done as not_adopted, which never unblocks it. Narrow the list to keep it short: status (e.g. [\"planned\", \"in_progress\"]), ready (true for tasks to start now), and limit (the newest matching tasks). When a page holds limit tasks, pass its first ID as before_id to read older ones."
+        description = "List tasks with status and depends_on, of one workspace or of all workspaces, by ascending ID. Each task has ready (planned and nothing blocks it, so start_task or resume_task can begin it now) and blockedBy: the tasks it depends on that are not done yet, or done as not_adopted, which never unblocks it. Narrow the list to keep it short: status (e.g. [\"planned\", \"in_progress\"]), ready (true for tasks to start now), autopilot (true for tasks marked for autopilot), and limit (the newest matching tasks). When a page holds limit tasks, pass its first ID as before_id to read older ones."
     )]
     fn list_tasks(
         &self,
@@ -1486,6 +1486,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                autopilot: false,
                 criteria: vec![],
             })
             .unwrap();
@@ -1995,6 +1996,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                autopilot: false,
                 criteria: Vec::new(),
             })
             .unwrap();

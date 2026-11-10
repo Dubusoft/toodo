@@ -79,6 +79,7 @@ A unit of work inside a workspace.
 | `estimate` | Optional expected size: an amount greater than 0 in `hours`, `days` (24 hours), `weeks` (7 days), or `months` (30 days) of active work. Reviews compare it with the task's active time. |
 | `dueDate` | Optional calendar day (`YYYY-MM-DD`) the task should be done by. It's met when the task is completed before the end of that day in local time. |
 | `labels` | Free text such as a project or goal; each trimmed, at most 40 characters, without commas, at most 20 per task. |
+| `autopilot`, `autopilotAt` | Whether the task is marked for autopilot, and since when: an executor may take it up on its own once it is ready. Set on creation or edit, by the user in the app or by an agent the user asked; `list_tasks` with `autopilot: true` lists the marked tasks. Toodo stores the mark and never starts work itself. |
 | `status` | `planned`, `in_progress`, `in_review`, or `done`; see [workflow.md](workflow.md#task-states). |
 | `resolution` | How a `done` task ended: `completed`, `not_adopted` (concluded without adopting it), or `merged` (historic, for tasks completed before the tracker-only model); `null` for every other status. |
 | `dependsOn` | IDs of tasks that must be done first; see [Task Dependencies](#task-dependencies-dag). |

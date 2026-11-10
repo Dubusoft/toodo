@@ -21,6 +21,7 @@ fn fixture() -> (StorageState, model::TaskId) {
             description: String::new(),
             estimate: None,
             due_date: None,
+            autopilot: false,
             criteria: vec![],
         })
         .unwrap();
@@ -69,6 +70,7 @@ fn conclusion_can_record_work_shipped_with_a_completed_task() {
         description: String::new(),
         estimate: None,
         due_date: None,
+        autopilot: false,
         criteria: vec![],
     });
     let other = other.unwrap();
@@ -208,6 +210,7 @@ fn prerequisites_block_start_until_completed_without_writing_refs() {
             description: String::new(),
             estimate: None,
             due_date: None,
+            autopilot: false,
             criteria: vec![],
         })
         .unwrap();

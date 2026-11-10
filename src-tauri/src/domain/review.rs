@@ -148,6 +148,7 @@ mod tests {
                 })
                 .collect(),
             wait: None,
+            autopilot_at: None,
             notes: Vec::new(),
             criteria: Vec::new(),
         }

@@ -65,6 +65,8 @@ function task(id: number, workspace: Workspace, title: string, overrides: Partia
     notes: [],
     criteria: [],
     wait: null,
+    autopilot: false,
+    autopilotAt: null,
     ...overrides,
   };
 }
@@ -74,6 +76,7 @@ const newDraft: TaskDraft = {
   title: "",
   description: "",
   criteria: [],
+  autopilot: false,
   estimate: "",
   estimateUnit: "hours",
   dueDate: "",

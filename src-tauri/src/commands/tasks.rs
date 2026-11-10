@@ -84,6 +84,11 @@ pub(crate) fn edit_task(storage: &mut Storage, edit: TaskEdit) -> CommandResult<
     task.description = edit.description;
     task.estimate = types::estimate(edit.estimate)?;
     task.due_date = types::due_date(edit.due_date.as_deref())?;
+    task.autopilot_at = match edit.autopilot {
+        None => task.autopilot_at,
+        Some(false) => None,
+        Some(true) => task.autopilot_at.or_else(|| Some(storage.now())),
+    };
     let labels = edit.labels.as_deref().map(types::labels).transpose()?;
     if let Some(criteria) = &edit.criteria {
         if task.status == TaskStatus::Done {
@@ -610,6 +615,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                autopilot: false,
                 criteria: Vec::new(),
             })
             .unwrap();
@@ -636,6 +642,7 @@ mod tests {
                 }),
                 due_date: Some(" 2026-10-31 ".to_owned()),
                 labels: None,
+                autopilot: None,
                 criteria: None,
             },
         )
@@ -796,6 +803,7 @@ mod tests {
                 description: String::new(),
                 estimate: None,
                 due_date: None,
+                autopilot: false,
                 criteria: Vec::new(),
             })
             .unwrap();
@@ -932,6 +940,7 @@ mod tests {
             estimate: None,
             due_date: None,
             labels: None,
+            autopilot: None,
             criteria: None,
         };
         let error = edit_task(&mut storage, edit(task.id.into(), " ")).unwrap_err();
