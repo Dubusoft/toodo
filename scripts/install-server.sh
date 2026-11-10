@@ -26,7 +26,7 @@ Without --release, toodo-server is built from this checkout (needs cargo).
 EOF
 }
 
-release_repo=dev-bokdong/toodo
+release_repo=Dubusoft/toodo
 release=
 # --from-file TARBALL installs a packaged release asset (with TARBALL.sha256 next to it)
 # instead of downloading one; for testing scripts/package-server.sh output.

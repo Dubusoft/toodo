@@ -1,6 +1,6 @@
 # @dubusoft/toodo
 
-Command line for [Toodo](https://github.com/dev-bokdong/toodo), a task tracker that keeps the dependencies between tasks and the memory of the work: notes, decisions, references, and status history. It installs `toodo-server` and the web app it serves.
+Command line for [Toodo](https://github.com/Dubusoft/toodo), a task tracker that keeps the dependencies between tasks and the memory of the work: notes, decisions, references, and status history. It installs `toodo-server` and the web app it serves.
 
 ## Install
 
@@ -48,4 +48,4 @@ It installs the newest version of the channel with npm (`latest` for releases, `
 - Linux x64 or arm64 (glibc or musl) or macOS x64 or arm64, with Node.js 18 or later. Install with optional dependencies enabled (the default), because the binaries ship in the platform packages `@dubusoft/toodo-linux-<arch>`, `@dubusoft/toodo-linux-<arch>-musl`, and `@dubusoft/toodo-darwin-<arch>`.
 - Optional: Claude Code (`claude`) or Codex (`codex`) on `PATH`, to register the MCP endpoint with them.
 
-See https://github.com/dev-bokdong/toodo for documentation.
+See https://github.com/Dubusoft/toodo for documentation.
