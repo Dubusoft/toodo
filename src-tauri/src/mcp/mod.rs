@@ -383,8 +383,8 @@ impl Access {
             "create_workspace" | "create_task" | "create_plan" | "update_task"
             | "add_dependency" | "remove_dependency" | "add_related" | "remove_related"
             | "add_criterion" | "remove_criterion" | "check_criterion" | "add_progress_note"
-            | "report_blocker" | "pause_task" | "add_guideline" | "update_guideline"
-            | "remove_guideline" => scopes.can_write(),
+            | "report_blocker" | "pause_task" | "wait_task" | "add_guideline"
+            | "update_guideline" | "remove_guideline" => scopes.can_write(),
             _ => {
                 return Err(format!(
                     "{name} is local-only; use the Toodo app or a local agent with the MCP token."
@@ -895,6 +895,26 @@ impl ToodoMcp {
     }
 
     #[tool(
+        description = "Make a planned, in_progress, or in_review task wait until a time, e.g. {\"id\": 5, \"until\": \"2026-11-10T09:00:00+09:00\", \"reason\": \"Waiting for the vendor's reply\"}. An active task is paused (planned) until then; when the time passes Toodo returns it to the status it had, also after a server restart. Call again on a waiting task to move the time; call end_wait to return it now. Returns the task; its wait shows until and the status it returns to."
+    )]
+    fn wait_task(
+        &self,
+        Parameters(request): Parameters<tools::WaitTask>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::wait_task(storage, request))
+    }
+
+    #[tool(
+        description = "End the wait of a waiting task now, e.g. {\"id\": 5}: it returns to the status it had when the wait began, as when the time passes. A task that was in_progress stays paused while a prerequisite is not done. An optional note records why. Returns the task."
+    )]
+    fn end_wait(
+        &self,
+        Parameters(request): Parameters<tools::EndWait>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.change(|storage| tools::end_wait(storage, request))
+    }
+
+    #[tool(
         description = "Resume a previously started planned task whose prerequisites are complete. An optional note records why work resumes."
     )]
     async fn resume_task(
@@ -908,7 +928,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Archive a planned task with confirm true after inspecting the confirmation response. Pause active work first."
+        description = "Archive a planned or done (completed or concluded) task with confirm true after inspecting the confirmation response; history stays in review_report and the user can restore it. Pause active work first."
     )]
     async fn delete_task(
         &self,
@@ -918,6 +938,23 @@ impl ToodoMcp {
             .blocking(move |backend| tools::delete_task(backend.storage(), request))
             .await?;
         self.announce_confirmed(result)
+    }
+
+    #[tool(
+        description = "Archive every done (completed or concluded) task of a workspace, e.g. {\"workspace_id\": 1}. Without confirm nothing changes and the reply lists the tasks it would archive; call again with confirm true to archive them. History stays in review_report and the user can restore them."
+    )]
+    fn delete_done_tasks(
+        &self,
+        Parameters(request): Parameters<tools::DeleteDoneTasks>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = tools::delete_done_tasks(&mut lock(self.backend.storage()), request);
+        if let Ok(change) = &result
+            && change.confirmed
+        {
+            self.backend
+                .tasks_changed(model::WorkspaceId(change.workspace_id.0));
+        }
+        reply(result)
     }
 
     #[tool(
@@ -1489,8 +1526,11 @@ mod tests {
             "add_progress_note",
             "report_blocker",
             "pause_task",
+            "wait_task",
+            "end_wait",
             "resume_task",
             "delete_task",
+            "delete_done_tasks",
             "reopen_task",
             "start_task",
             "complete_task",
@@ -1694,6 +1734,7 @@ mod tests {
             "add_related",
             "remove_related",
             "delete_task",
+            "delete_done_tasks",
             "reopen_task",
         ] {
             assert!(server.tool_router.has_route(tool), "{tool}");
@@ -2236,6 +2277,7 @@ mod tests {
                     "add_progress_note",
                     "report_blocker",
                     "pause_task",
+                    "wait_task",
                     "add_guideline",
                     "update_guideline",
                     "remove_guideline",
@@ -2247,11 +2289,13 @@ mod tests {
             "current_task",
             "start_task",
             "resume_task",
+            "end_wait",
             "update_workspace",
             "archive_workspace",
             "complete_task",
             "conclude_task",
             "delete_task",
+            "delete_done_tasks",
             "reopen_task",
         ] {
             assert!(!write.contains(name), "{name}");

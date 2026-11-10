@@ -36,6 +36,8 @@ vi.mock("@/lib/bindings", () => ({
     createTask: vi.fn(),
     updateTask: vi.fn(),
     pauseTask: vi.fn(),
+    waitTask: vi.fn(),
+    endWait: vi.fn(),
     setCompletionNote: vi.fn(),
     checkCriterion: vi.fn(),
     deleteTask: vi.fn(),
@@ -119,6 +121,7 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     completionNote: null,
     notes: [],
     criteria: [],
+    wait: null,
     timeline: [],
     milestones: {
       plannedAt: null,
@@ -2382,6 +2385,50 @@ describe("App", () => {
     );
   });
 
+  it("makes a started task wait until a time, moves the time, and ends the wait", async () => {
+    const started = task(1, 1, "Add login", {
+      status: "in_progress",
+      milestones: { ...task(1, 1, "").milestones, plannedAt: 1760000000, startedAt: 1760100000 },
+    });
+    const until = new Date(2030, 0, 2, 9, 30).getTime() / 1000;
+    const waiting: Task = {
+      ...started,
+      status: "planned",
+      milestones: { ...started.milestones, pausedAt: 1760200000 },
+      wait: { until, status: "in_progress" },
+    };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [started] });
+    mocked.waitTask.mockResolvedValue({ status: "ok", data: waiting });
+    mocked.endWait.mockResolvedValue({ status: "ok", data: started });
+    await renderWorkspace();
+
+    fireEvent.click(await screen.findByRole("button", { name: "More actions for #1" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Wait #1" }));
+    const form = await screen.findByRole("form", { name: "Wait #1" });
+    fireEvent.change(within(form).getByLabelText("Wait #1 until"), { target: { value: "2030-01-02T09:30" } });
+    fireEvent.change(within(form).getByLabelText("Reason #1 waits"), { target: { value: " Vendor reply " } });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [waiting] });
+    fireEvent.click(within(form).getByRole("button", { name: "Wait" }));
+    await waitFor(() => expect(mocked.waitTask).toHaveBeenCalledWith(1, until, "Vendor reply"));
+    expect(await screen.findByRole("note", { name: "Wait of #1" })).toHaveTextContent(
+      `Waiting until ${formatFull(until)}, then in progress`,
+    );
+
+    // A waiting task opens the form with its time, to move it.
+    fireEvent.click(screen.getByRole("button", { name: "More actions for #1" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Change wait of #1" }));
+    const change = await screen.findByRole("form", { name: "Wait #1" });
+    expect(within(change).getByLabelText("Wait #1 until")).toHaveValue("2030-01-02T09:30");
+    fireEvent.click(within(change).getByRole("button", { name: "Back" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "More actions for #1" }));
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [started] });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "End wait of #1" }));
+    await waitFor(() => expect(mocked.endWait).toHaveBeenCalledWith(1));
+    await waitFor(() => expect(screen.queryByRole("note", { name: "Wait of #1" })).not.toBeInTheDocument());
+  });
+
   it("pauses a started task, then resumes or deletes it", async () => {
     const started = task(1, 1, "Add login", {
       status: "in_progress",
@@ -2416,6 +2463,7 @@ describe("App", () => {
       "Show details of #1",
       "Conclude #1 without completing",
       "Edit #1",
+      "Wait #1",
       "Delete #1",
     ]);
     expect(items.at(-1)).toHaveClass("text-destructive");

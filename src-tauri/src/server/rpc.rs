@@ -16,7 +16,7 @@ use crate::commands::events::Notifier as _;
 use crate::commands::types::{
     BackupSettings, CriterionId, Guideline, GuidelineId, GuidelineUpdate, NewGuideline, NewTask,
     NewWorkspace, OAuthGrantId, ReviewReportRequest, ReviewSnapshotId, SaveReviewSnapshotRequest,
-    TaskEdit, TaskId, TaskListFilter, TaskResolution, Workspace, WorkspaceId,
+    TaskEdit, TaskId, TaskListFilter, TaskResolution, Timestamp, Workspace, WorkspaceId,
 };
 use crate::commands::{
     CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, backup, completion,
@@ -112,6 +112,9 @@ pub async fn handle(
         }
     };
     let reply = dispatch(services.clone(), &command, args).await;
+    if !READ_COMMANDS.contains(&command.as_str()) {
+        services.announce_status_changes();
+    }
     // Changes the user makes in the app are not news to them: notifications only report
     // what changed on its own (agents, pull requests, background checks).
     services.push.tasks_seen();
@@ -267,6 +270,10 @@ commands!(s => {
         tasks::update_task(State(&s.storage), task)
     );
     "pause_task"(id: TaskId) => sync Reply::result(tasks::pause_task(State(&s.storage), id));
+    "wait_task"(id: TaskId, until: Timestamp, reason: Option<String>) => sync Reply::result(
+        tasks::wait_task(State(&s.storage), id, until, reason)
+    );
+    "end_wait"(id: TaskId) => sync Reply::result(tasks::end_wait(State(&s.storage), id));
     "set_completion_note"(id: TaskId, note: String) => sync Reply::result(
         tasks::set_completion_note(State(&s.storage), id, note)
     );
@@ -278,6 +285,9 @@ commands!(s => {
     );
     "delete_task"(id: TaskId) => sync Reply::result(
         tasks::delete_task(State(&s.storage), id)
+    );
+    "delete_done_tasks"(workspace_id: WorkspaceId) => sync Reply::result(
+        tasks::delete_done_tasks(State(&s.storage), workspace_id)
     );
     "restore_task"(id: TaskId) => sync Reply::result(tasks::restore_task(State(&s.storage), id));
     "purge_task"(id: TaskId) => sync Reply::result(tasks::purge_task(State(&s.storage), id));

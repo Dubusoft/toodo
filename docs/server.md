@@ -437,7 +437,7 @@ names the instance in `serverInfo.title`.
 
 ### Agent MCP Tools
 
-The MCP server has 29 tools:
+The MCP server has 32 tools:
 
 - Skill: `read_toodo_skill`.
 - Workspaces: `list_workspaces`, `create_workspace`, `update_workspace`,
@@ -448,8 +448,8 @@ The MCP server has 29 tools:
   `remove_dependency`, `add_related`, `remove_related`, `add_criterion`,
   `remove_criterion`.
 - Recording work: `start_task`, `add_progress_note`, `report_blocker`, `check_criterion`,
-  `pause_task`, `resume_task`, `complete_task`, `conclude_task`, `reopen_task`,
-  `delete_task`.
+  `pause_task`, `resume_task`, `wait_task`, `end_wait`, `complete_task`, `conclude_task`,
+  `reopen_task`, `delete_task`, `delete_done_tasks`.
 - Review: `review_report`.
 
 Two of them help an agent wire a plan:
@@ -468,6 +468,17 @@ optional reason and refs, and creates nothing else. The agent doing the work mov
 task to review with `update_task` (`status: "in_review"`) and finishes it with
 `complete_task` or `conclude_task`. Toodo doesn't check whether a pull request merged;
 the caller checks that before completing.
+
+`wait_task` makes a `planned`, `in_progress`, or `in_review` task wait until a time, an
+RFC 3339 time with an offset such as `2026-11-10T09:00:00+09:00`; an active task is
+paused until then. A thread of the server returns each task whose time has passed to
+the status it had, checking every few seconds and right after a start, so a wait that
+ended while the server was stopped ends when it starts again. Calling `wait_task` again
+moves the time, and `end_wait` returns the task now. The task's `wait` field
+(`{ "until", "status" }`, `null` when it doesn't wait) tells until when it waits and the
+status it returns to (see [workflow.md](workflow.md#task-states)). `wait_task` takes one
+task: there is no bulk wait, and an agent must not wait every task, or a batch of them, at
+once.
 
 `read_toodo_skill` returns the worker skill (`src-tauri/src/mcp/toodo-skill.md`); rules it
 shares with the `initialize` instructions come from `src-tauri/src/mcp/shared/` (see
@@ -517,11 +528,11 @@ on loopback as before and still see every tool.
 - `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `create_plan`,
   `update_task`, `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
   `add_criterion`, `remove_criterion`, `check_criterion`, `add_progress_note`,
-  `report_blocker`, and `pause_task`.
+  `report_blocker`, `pause_task`, and `wait_task`.
 
-The other tools stay local: `current_task`, `start_task`, `resume_task`,
-`complete_task`, `conclude_task`, `delete_task`, `reopen_task`, `update_workspace`, and
-`archive_workspace` never appear in an app's tool list, and calling one is refused even
+The other tools stay local: `current_task`, `start_task`, `resume_task`, `end_wait`,
+`complete_task`, `conclude_task`, `delete_task`, `delete_done_tasks`, `reopen_task`,
+`update_workspace`, and `archive_workspace` never appear in an app's tool list, and calling one is refused even
 with `toodo.write`. `check_criterion` checks a stored manual criterion. An app's
 `initialize` reply and `read_toodo_skill` carry planning instructions for a chat.
 
@@ -643,6 +654,50 @@ The event stream (`/api/events`) is a long-lived server-sent event response with
 keep-alive comment every 15 seconds; a proxy in front must not buffer it. When the stream
 drops, the web app reconnects with the id of the last event it got and the server replays
 what it missed; when those events are no longer kept, the web app refetches everything.
+
+### Task Events for Other Clients
+
+A program on the server's machine, such as an executor's supervisor, can follow task
+status without polling: open `GET /api/events` with the web token or a device token and
+read the `task-status-changed` and `task-ready` events. They report every change,
+whether it came from the web app or an MCP tool; `toodo` CLI commands
+only read.
+
+```sh
+curl -N -H "Authorization: Bearer $(cat ~/.local/share/toodo-server/web-token)" \
+  http://127.0.0.1:47616/api/events
+```
+
+- `task-status-changed`: `{ "taskId", "workspaceId", "from", "to", "at" }`. `from` and
+  `to` are `planned`, `in_progress`, `in_review`, or `done`; a new task reports
+  `"from": null, "to": "planned"`. `at` is when the change was recorded, in Unix seconds.
+  A move to `done` covers completion and conclusion alike; `get_task` tells them apart.
+  A wait shows as two changes: the pause (`in_progress` or `in_review` to `planned`) when
+  it begins, and the return to that status when its time passes or it ends early. A
+  waiting task that was `planned` sends neither, since its status does not change.
+- `task-ready`: `{ "taskId", "workspaceId", "unblockedBy", "at" }`, sent after the
+  `task-status-changed` of `unblockedBy` when that move to `done` finished the last
+  unfinished dependency of the planned task `taskId`. A dependency concluded as not
+  adopted keeps its dependents blocked, so it makes none ready.
+
+```text
+id: 3f9a01c2-41
+event: task-status-changed
+data: {"taskId":12,"workspaceId":2,"from":"in_review","to":"done","at":1794190000}
+
+id: 3f9a01c2-42
+event: task-ready
+data: {"taskId":13,"workspaceId":2,"unblockedBy":12,"at":1794190000}
+```
+
+The stream also carries the events the web app uses (`tasks-changed`,
+`workspaces-changed`, `guidelines-changed`); skip the names you do not handle. To resume
+after a disconnect, send the id of the last event you handled as `Last-Event-ID`: the
+server replays the events after it. A `resync` event instead means some were lost (the
+server restarted or more than 256 events went by); read the current state with
+`list_tasks` and go on from the id of the `resync` event. A stream opened without
+`Last-Event-ID` starts with a `ready` event (not to be confused with `task-ready`)
+carrying the id to resume from.
 
 ### Off the Machine: Cloudflare Tunnel and Access
 
@@ -778,8 +833,10 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   `unknownCommand` and malformed arguments `400` with code `invalidArguments`. A command
   that panics is `500` with code `commandPanicked`; the panic text goes only to the
   server log.
-- `GET /api/events`: server-sent events `tasks-changed` and `workspaces-changed` with the payloads of the
-  events in `src/lib/bindings.ts`. Every event has an id `<epoch>-<sequence>`; `epoch`
+- `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
+  `guidelines-changed`, `task-status-changed`, and `task-ready` with the payloads of the
+  events in `src/lib/bindings.ts` (see [Task Events for Other
+  Clients](#task-events-for-other-clients)). Every event has an id `<epoch>-<sequence>`; `epoch`
   changes with each server start. A request without `Last-Event-ID` starts with a
   `ready` event carrying the current id. With `Last-Event-ID`, the stream first replays
   the events after it (the server keeps the last 256); when some are gone, the id is of

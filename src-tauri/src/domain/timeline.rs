@@ -78,6 +78,8 @@ pub fn milestones(timeline: &[TaskEvent]) -> Milestones {
             TaskStatus::InReview => {
                 milestones.review_at.get_or_insert(event.at);
                 milestones.last_review_at = Some(event.at);
+                // A wait returns a paused task straight to review.
+                milestones.paused_at = None;
             }
             TaskStatus::Done => milestones.completed_at = Some(event.at),
         }
@@ -102,6 +104,21 @@ mod tests {
                 reason: None,
             })
             .collect()
+    }
+
+    #[test]
+    fn a_return_to_review_ends_the_pause() {
+        let timeline = events(&[
+            (Planned, 10),
+            (InProgress, 20),
+            (InReview, 30),
+            (Planned, 40),
+            (InReview, 50),
+        ]);
+        let returned = milestones(&timeline);
+        assert_eq!(returned.paused_at, None);
+        assert_eq!(returned.pause_count, 1);
+        assert_eq!(returned.last_review_at, Some(50));
     }
 
     #[test]

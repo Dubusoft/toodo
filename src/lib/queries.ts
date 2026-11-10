@@ -27,6 +27,7 @@ import {
   type TaskListFilter,
   type TaskResolution,
   type TaskStatus,
+  type Timestamp,
   type Workspace,
   type WorkspaceId,
 } from "@/lib/bindings";
@@ -554,6 +555,21 @@ export function usePauseTask() {
   return useTasksMutation((id: TaskId) => unwrap(commands.pauseTask(id)));
 }
 
+/**
+ * Makes a task wait until `until`: it is paused until then and returns to its status on its own.
+ * A waiting task gets the new time.
+ */
+export function useWaitTask() {
+  return useTasksMutation(({ id, until, reason }: { id: TaskId; until: Timestamp; reason: string | null }) =>
+    unwrap(commands.waitTask(id, until, reason)),
+  );
+}
+
+/** Ends the wait of a task now: it returns to the status it had when the wait began. */
+export function useEndWait() {
+  return useTasksMutation((id: TaskId) => unwrap(commands.endWait(id)));
+}
+
 type CriterionCheck = { taskId: TaskId; criterionId: CriterionId; met: boolean; evidence: string | null };
 
 /**
@@ -569,6 +585,24 @@ export function useCheckCriterion() {
 /** Archives a task while keeping its history. */
 export function useDeleteTask() {
   return useArchiveMutation((id: TaskId) => unwrap(commands.deleteTask(id)));
+}
+
+/** Archives every done task of a workspace while keeping their history. */
+export function useDeleteDoneTasks() {
+  return useArchiveMutation((workspaceId: WorkspaceId) => unwrap(commands.deleteDoneTasks(workspaceId)));
+}
+
+/**
+ * How many done tasks a workspace has: what `useDeleteDoneTasks` archives. The server counts
+ * them, since the loaded pages may hold only the newest. Nothing loads until `enabled`.
+ */
+export function useDoneTaskCount(workspaceId: WorkspaceId, enabled: boolean) {
+  return useQuery({
+    // Under the pages' key, so whatever refreshes the pages counts again.
+    queryKey: [...queryKeys.tasks, "done-count", workspaceId],
+    queryFn: async () => (await listTasks({ workspaceId, statuses: ["done"] })).length,
+    enabled,
+  });
 }
 
 /** The edge `id -> dependsOn`; `dependsOn` may be a task of another workspace. */

@@ -36,6 +36,22 @@ A `planned` task that was worked on before shows as **paused**. Pausing isn't a 
 state: `pause_task` moves an `in_progress` or `in_review` task back to `planned` and
 records the required reason.
 
+A task can also **wait** until a time: `wait_task` (or "Wait until..." in the app) pauses
+an `in_progress` or `in_review` task until then, and a `planned` task keeps its status.
+The task shows as waiting with the time and the status it returns to. When the time
+passes, the server returns it to that status on its own, within a few seconds, also when
+the time passed while the server was stopped: then it happens at the next start. Calling
+`wait_task` on a waiting task moves the time; `end_wait` ("End wait" in the app) returns
+it now. Any other status change ends the wait, e.g. resuming or concluding the task by
+hand. A task that was `in_progress` stays paused when a prerequisite added during the wait
+is not done yet; a blocker note names it. The pause and the return are status changes
+like any other, so they appear in the history and as `task-status-changed` events; a
+waiting `planned` task does not change status and records its wait as progress notes.
+
+A wait is set on one task at a time, for that task's own reason. Toodo has no bulk wait,
+and agents must not put every task, or a batch of tasks, on wait at once, e.g. because
+they ran out of usage; such a stop is not a property of the tasks.
+
 Whether a `planned` task can be started isn't a state either. It is **ready** once every
 task it depends on is `done`, none of them `not_adopted`. MCP's `list_tasks` and
 `get_task` give each task `ready` and `blockedBy`, the prerequisites that aren't done
@@ -126,6 +142,8 @@ While work goes on, the executor writes down what matters for later:
   task's completion.
 - `pause_task` with a required reason when the work stops for now, and `resume_task`
   when it can go on.
+- `wait_task` with a time when the work can only go on later, e.g. after a reply; the
+  task returns to its status on its own then, or with `end_wait`.
 
 Work found during a task that the task needs before it can finish becomes a
 **prerequisite** of that task, never a dependent. Adding a prerequisite that isn't done
@@ -174,3 +192,7 @@ outside Toodo. An archived task leaves the task lists and stops holding back its
 dependents, but keeps its history and notes, and the review report still counts it.
 Settings > Archive restores an archived workspace or task, or deletes it for good after a
 confirmation.
+
+Only `planned` and `done` tasks can be deleted; pause an `in_progress` or `in_review`
+task with `pause_task` first. `delete_done_tasks` (or "Delete done" on the app's done
+group) archives every `done` task of a workspace at once.

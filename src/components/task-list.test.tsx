@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { useState } from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TaskList, type TaskDraft } from "@/components/task-list";
-import { commands, type Task, type TaskId, type Workspace } from "@/lib/bindings";
+import { commands, type Task, type TaskId, type TaskListFilter, type Workspace } from "@/lib/bindings";
 
 vi.mock("@/lib/bindings", () => ({
   commands: {
@@ -14,6 +14,7 @@ vi.mock("@/lib/bindings", () => ({
     startTask: vi.fn(),
     updateWorkspace: vi.fn(),
     listGuidelines: vi.fn(),
+    deleteDoneTasks: vi.fn(),
   },
 }));
 
@@ -63,6 +64,7 @@ function task(id: number, workspace: Workspace, title: string, overrides: Partia
     },
     notes: [],
     criteria: [],
+    wait: null,
     ...overrides,
   };
 }
@@ -78,10 +80,19 @@ const newDraft: TaskDraft = {
   labels: "",
 };
 
+/** What `listTasks` returns of `tasks` for `filter`, narrowed by workspace and status as on the server. */
+function listed(tasks: Task[], filter: TaskListFilter | null): Task[] {
+  return tasks.filter(
+    (task) =>
+      (filter?.workspaceId == null || task.workspaceId === filter.workspaceId) &&
+      (!filter?.statuses?.length || filter.statuses.includes(task.status)),
+  );
+}
+
 /** Renders the tasks of `workspace`, with its new task form. */
 function renderTasks(workspace: Workspace, tasks: Task[]) {
   mocked.listWorkspaces.mockResolvedValue(ok([workspace]));
-  mocked.listTasks.mockResolvedValue(ok(tasks));
+  mocked.listTasks.mockImplementation(async (filter) => ok(listed(tasks, filter)));
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   function Page() {
     const [draft, setDraft] = useState(newDraft);
@@ -228,5 +239,41 @@ describe("TaskList of a workspace", () => {
     const menu = await openMenu(4, details);
     expect(within(menu).getByRole("menuitem", { name: "Pause #4" })).toBeInTheDocument();
     expect(within(menu).queryByRole("menuitem", { name: "Link issue to #4" })).not.toBeInTheDocument();
+  });
+
+  it("deletes the done tasks of the workspace only once confirmed", async () => {
+    mocked.deleteDoneTasks.mockResolvedValue(ok(2));
+    renderTasks(app, [
+      task(3, app, "Write outline", { status: "done" }),
+      task(4, app, "Draft summary", { status: "done" }),
+      task(5, app, "Plan launch"),
+    ]);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete done" }));
+    const confirmation = await screen.findByRole("group", { name: "Delete 2 done tasks?" });
+    expect(confirmation).toHaveTextContent(
+      "Delete 2 done tasks? They move to Settings > Archive with their history, where they can be restored.",
+    );
+    const back = within(confirmation).getByRole("button", { name: "Back" });
+    expect(back).toHaveFocus();
+    fireEvent.keyDown(back, { key: "Escape" });
+    expect(screen.queryByRole("group", { name: "Delete 2 done tasks?" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete done" })).toHaveFocus();
+    expect(mocked.deleteDoneTasks).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete done" }));
+    const confirm = await screen.findByRole("button", { name: "Confirm delete" });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    fireEvent.click(confirm);
+    await waitFor(() => expect(mocked.deleteDoneTasks).toHaveBeenCalledWith(app.id));
+  });
+
+  it("names every done task of the workspace in the confirmation, also those a search hides", async () => {
+    renderTasks(app, [task(3, app, "Write outline", { status: "done" }), task(4, app, "Draft summary", { status: "done" })]);
+
+    fireEvent.change(await screen.findByRole("searchbox", { name: "Search tasks" }), { target: { value: "outline" } });
+    await screen.findByRole("button", { name: "Done 1" });
+    fireEvent.click(screen.getByRole("button", { name: "Delete done" }));
+    expect(await screen.findByRole("group", { name: "Delete 2 done tasks?" })).toBeInTheDocument();
   });
 });

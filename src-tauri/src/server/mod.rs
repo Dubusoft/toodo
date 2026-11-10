@@ -24,8 +24,10 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::commands::backup::{self, Backups};
 use crate::commands::events::{
-    GuidelinesChanged, Notifier, TasksChanged, WorkspacesChanged, names,
+    GuidelinesChanged, Notifier, TaskReady, TaskStatusChanged, TasksChanged, WorkspacesChanged,
+    names,
 };
+use crate::commands::types::Timestamp;
 use crate::commands::{Runtime, StorageState};
 use crate::domain::model;
 use crate::mcp::{self, Backend, ServerStatus};
@@ -127,6 +129,9 @@ pub struct Services {
     events: Arc<event_log::EventLog>,
     /// Marked on every announced change, for MCP resource subscriptions.
     changes: tokio::sync::watch::Sender<()>,
+    /// The id of the last status history record announced as a `task-status-changed`
+    /// event; held while announcing, so the events go out once and in order.
+    announced_status: Mutex<i64>,
     /// The largest database file `POST /api/backups/restore` accepts, in bytes.
     restore_limit: u64,
     push: push::Push,
@@ -141,6 +146,50 @@ impl Services {
         }
         self.changes.send_replace(());
     }
+
+    /// Announces the status changes recorded since the last call, and the tasks they made
+    /// ready. Called after every change, so it covers each surface without each command
+    /// reporting its own transitions.
+    pub(super) fn announce_status_changes(&self) {
+        let mut announced = self
+            .announced_status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let storage = crate::commands::lock(self.reader());
+        let found = storage.last_status_change().and_then(|last| {
+            // A restored backup can have fewer records than were announced.
+            *announced = (*announced).min(last);
+            storage.status_changes_after(*announced)
+        });
+        drop(storage);
+        let (changes, ready) = match found {
+            Ok(found) => found,
+            Err(error) => {
+                eprintln!("toodo-server: cannot read task status changes: {error}");
+                return;
+            }
+        };
+        for change in &changes {
+            let event = TaskStatusChanged {
+                task_id: change.task.into(),
+                workspace_id: change.workspace.into(),
+                from: change.from.map(Into::into),
+                to: change.to.into(),
+                at: Timestamp(change.at),
+            };
+            self.emit(names::TASK_STATUS_CHANGED, &event);
+            *announced = change.id;
+        }
+        for task in &ready {
+            let event = TaskReady {
+                task_id: task.task.into(),
+                workspace_id: task.workspace.into(),
+                unblocked_by: task.unblocked_by.into(),
+                at: Timestamp(task.at),
+            };
+            self.emit(names::TASK_READY, &event);
+        }
+    }
 }
 
 impl Notifier for Services {
@@ -149,6 +198,7 @@ impl Notifier for Services {
             workspace_id: workspace.into(),
         };
         self.emit(names::TASKS_CHANGED, &event);
+        self.announce_status_changes();
         self.push.tasks_changed();
     }
 
@@ -300,6 +350,10 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let backups = Backups::load(&config.data_dir);
     let storage = Arc::new(Mutex::new(open_storage(&database, &backups)?));
     let reader = Mutex::new(Storage::open_reader(&database)?);
+    let announced_status = reader
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .last_status_change()?;
     let mcp_token_path = config.data_dir.join(mcp::TOKEN_FILE);
     let mcp_token = mcp::load_token(&mcp_token_path)?;
     let web_token_path = config.data_dir.join(WEB_TOKEN_FILE);
@@ -322,11 +376,13 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         },
         events: Arc::new(event_log::EventLog::new()?),
         changes: tokio::sync::watch::Sender::new(()),
+        announced_status: Mutex::new(announced_status),
         restore_limit: files::RESTORE_LIMIT,
         push,
     });
     push::spawn(services.clone())?;
     backup::spawn(services.clone())?;
+    crate::commands::tasks::spawn_wait_checks(services.clone())?;
 
     let fetcher = oauth::HttpClientMetadataFetcher::new().map_err(|error| {
         format!(
@@ -670,6 +726,7 @@ mod tests {
             },
             events: Arc::new(event_log::EventLog::new().unwrap()),
             changes: tokio::sync::watch::Sender::new(()),
+            announced_status: Mutex::new(0),
             restore_limit: TEST_RESTORE_LIMIT,
             push: push::tests::push(data_dir, push::tests::FakeTransport::default()),
         })

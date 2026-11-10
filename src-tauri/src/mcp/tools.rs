@@ -417,6 +417,30 @@ pub struct PauseTask {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct WaitTask {
+    /// A planned, in_progress, or in_review task.
+    pub id: TaskId,
+    /// When the wait ends: an RFC 3339 time with an offset, in the future, e.g.
+    /// `2026-11-10T09:00:00+09:00` or `2026-11-10T00:00:00Z`.
+    pub until: String,
+    /// Why the task waits, in GitHub-flavored Markdown; recorded with the progress note.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct EndWait {
+    /// The waiting task.
+    pub id: TaskId,
+    /// Why the wait ends early, in GitHub-flavored Markdown; recorded with the progress
+    /// note.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ResumeTask {
     /// The paused task.
     pub id: TaskId,
@@ -428,12 +452,39 @@ pub struct ResumeTask {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct DeleteTask {
-    /// The planned task to delete, e.g. one you created by mistake.
+    /// The planned or done task to delete, e.g. one you created by mistake or a done task
+    /// whose record is no longer wanted.
     pub id: TaskId,
     /// true deletes the task. Without it nothing changes and the reply says what deleting
     /// would remove; read it before you confirm.
     #[serde(default)]
     pub confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct DeleteDoneTasks {
+    /// The workspace whose done (completed or concluded) tasks to delete, as in
+    /// list_workspaces.
+    pub workspace_id: WorkspaceId,
+    /// true deletes them. Without it nothing changes and the reply lists the tasks deleting
+    /// would archive; read it before you confirm.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// The reply of delete_done_tasks, which changes nothing until it is called again with
+/// `confirm: true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoneTasksConfirmation {
+    /// Whether the tasks were archived; false for a call without `confirm: true`.
+    pub confirmed: bool,
+    pub workspace_id: WorkspaceId,
+    /// The done tasks that were archived, or that confirming would archive.
+    pub task_ids: Vec<TaskId>,
+    /// What the change does, or did, and what to do next.
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -1584,6 +1635,28 @@ pub fn pause_task(storage: &mut Storage, request: PauseTask) -> CommandResult<Ta
     Ok((&task).into())
 }
 
+/// Makes a task wait until a time (see [`task_commands::wait_task`]), or moves the time of
+/// a task that already waits.
+pub fn wait_task(storage: &mut Storage, request: WaitTask) -> CommandResult<Task> {
+    let until: jiff::Timestamp = request.until.trim().parse().map_err(|_| {
+        CommandError::invalid_input(format!(
+            "until {:?} is not an RFC 3339 time with an offset; pass e.g. {{\"id\": {}, \"until\": \"2026-11-10T09:00:00+09:00\"}}",
+            request.until, request.id.0
+        ))
+    })?;
+    task_commands::wait(
+        storage,
+        request.id,
+        until.as_second(),
+        request.reason.as_deref(),
+    )
+}
+
+/// Ends the wait of a task now (see [`task_commands::end_wait`]).
+pub fn end_wait(storage: &mut Storage, request: EndWait) -> CommandResult<Task> {
+    task_commands::end_task_wait(storage, request.id, request.note.as_deref())
+}
+
 /// Resumes a previously started, paused task.
 pub fn resume_task(storage: &StorageState, request: ResumeTask) -> CommandResult<Task> {
     let task = get_task(&lock(storage), request.id)?;
@@ -1611,16 +1684,16 @@ pub fn resume_task(storage: &StorageState, request: ResumeTask) -> CommandResult
     Ok(resumed)
 }
 
-/// Deletes (archives) a `planned` task as the app's Delete does (see
+/// Deletes (archives) a `planned` or `done` task as the app's Delete does (see
 /// [`task_commands::delete_task`]), but only with `confirm`; without it, nothing changes and
-/// the reply says what deleting would do. Tasks being worked on and `done` tasks, which reviews are built on, are
-/// rejected.
+/// the reply says what deleting would do. Tasks being worked on (`in_progress` or
+/// `in_review`) are rejected.
 pub fn delete_task(storage: &StorageState, request: DeleteTask) -> CommandResult<Confirmation> {
     let details = task_details(&lock(storage), GetTask { id: request.id })?;
     let task = details.task;
     let id = task.id.0;
     match task.status {
-        TaskStatus::Planned => {}
+        TaskStatus::Planned | TaskStatus::Done => {}
         TaskStatus::InProgress | TaskStatus::InReview => {
             let status = if task.status == TaskStatus::InProgress {
                 "in_progress"
@@ -1629,11 +1702,6 @@ pub fn delete_task(storage: &StorageState, request: DeleteTask) -> CommandResult
             };
             return Err(CommandError::rejected(format!(
                 "task {id} is {status}, so it is being worked on; call pause_task {{\"id\": {id}, \"reason\": \"...\"}} first if the work should stop, then delete_task"
-            )));
-        }
-        TaskStatus::Done => {
-            return Err(CommandError::rejected(format!(
-                "task {id} is done and part of the record reviews are built on, so delete_task keeps it; call reopen_task to work on it again, or ask the user to delete it in the Toodo app"
             )));
         }
     }
@@ -1675,6 +1743,68 @@ pub fn delete_task(storage: &StorageState, request: DeleteTask) -> CommandResult
         confirmed: true,
         task,
         message,
+    })
+}
+
+/// Deletes (archives) every `done` task of a workspace as [`delete_task`] does for one (see
+/// [`task_commands::delete_done_tasks`]), but only with `confirm`; without it, nothing
+/// changes and the reply lists the tasks deleting would archive.
+pub fn delete_done_tasks(
+    storage: &mut Storage,
+    request: DeleteDoneTasks,
+) -> CommandResult<DoneTasksConfirmation> {
+    let stored = live_workspace(storage, request.workspace_id)?;
+    let id = request.workspace_id.0;
+    let done: Vec<(TaskId, String)> = storage
+        .list_tasks(stored.id)?
+        .into_iter()
+        .filter(|task| task.status == crate::domain::status::TaskStatus::Done)
+        .map(|task| (task.id.into(), task.title))
+        .collect();
+    if done.is_empty() {
+        return Ok(DoneTasksConfirmation {
+            confirmed: false,
+            workspace_id: request.workspace_id,
+            task_ids: Vec::new(),
+            message: format!(
+                "Nothing changed: workspace {id} \"{}\" has no done task to delete; call list_tasks {{\"workspace_id\": {id}, \"status\": [\"done\"]}} to check.",
+                stored.name
+            ),
+        });
+    }
+    if !request.confirm {
+        let described: Vec<String> = done
+            .iter()
+            .map(|(task, title)| format!("#{} {title}", task.0))
+            .collect();
+        return Ok(DoneTasksConfirmation {
+            confirmed: false,
+            workspace_id: request.workspace_id,
+            task_ids: done.iter().map(|(task, _)| *task).collect(),
+            message: format!(
+                "Nothing changed yet. Deleting the done tasks of workspace {id} \"{}\" archives {} task(s): {}. They leave the task lists, while their history, notes, criteria, and commit records stay in review_report; the user can restore them, or delete them for good, under Settings > Archive in the Toodo app. To delete them, call delete_done_tasks {{\"workspace_id\": {id}, \"confirm\": true}}.",
+                stored.name,
+                done.len(),
+                described.join(", "),
+            ),
+        });
+    }
+    let archived: Vec<TaskId> = storage
+        .archive_done_tasks(stored.id)?
+        .into_iter()
+        .map(TaskId::from)
+        .collect();
+    let listed: Vec<String> = archived.iter().map(|task| format!("#{}", task.0)).collect();
+    Ok(DoneTasksConfirmation {
+        confirmed: true,
+        workspace_id: request.workspace_id,
+        message: format!(
+            "{} done task(s) of workspace {id} \"{}\" are deleted and kept in the archive, where the user can restore them in the Toodo app: {}.",
+            archived.len(),
+            stored.name,
+            listed.join(", "),
+        ),
+        task_ids: archived,
     })
 }
 
@@ -2792,7 +2922,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_task_deletes_a_planned_task_only_when_confirmed() {
+    fn delete_task_deletes_a_planned_or_done_task_only_when_confirmed() {
         let (mut storage, workspace) = storage_with_workspace();
         let task = create(&mut storage, workspace, "Add login", vec![]).unwrap();
         let dependent = create(&mut storage, workspace, "Use login", vec![task.id]).unwrap();
@@ -2829,10 +2959,85 @@ mod tests {
         assert!(dependent.depends_on.is_empty());
         drop(storage_now);
 
-        let error = delete(done.id, true).unwrap_err();
-        assert_eq!(error.kind, CommandErrorKind::Rejected);
-        assert!(error.message.contains("reopen_task"), "{}", error.message);
+        let preview = delete(done.id, false).unwrap();
+        assert!(!preview.confirmed);
         assert!(lock(&storage).get_task(done.id.into()).unwrap().is_some());
+        let deleted = delete(done.id, true).unwrap();
+        assert!(deleted.confirmed);
+        assert!(lock(&storage).get_task(done.id.into()).unwrap().is_none());
+
+        let active = create(&mut lock(&storage), workspace, "Fix login", vec![]).unwrap();
+        lock(&storage)
+            .set_task_status(active.id.into(), DomainStatus::InProgress)
+            .unwrap();
+        let error = delete(active.id, true).unwrap_err();
+        assert_eq!(error.kind, CommandErrorKind::Rejected);
+        assert!(error.message.contains("pause_task"), "{}", error.message);
+        assert!(lock(&storage).get_task(active.id.into()).unwrap().is_some());
+    }
+
+    #[test]
+    fn delete_done_tasks_archives_the_done_tasks_of_a_workspace_only_when_confirmed() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let planned = create(&mut storage, workspace, "Add login", vec![]).unwrap();
+        let first = create(&mut storage, workspace, "Ship login", vec![]).unwrap();
+        let second = create(&mut storage, workspace, "Drop signup", vec![]).unwrap();
+        for task in [&first, &second] {
+            storage
+                .set_task_status(task.id.into(), DomainStatus::InProgress)
+                .unwrap();
+            storage
+                .conclude_task(task.id.into(), "Not needed", None)
+                .unwrap();
+        }
+        let delete = |storage: &mut Storage, confirm: bool| {
+            delete_done_tasks(
+                storage,
+                DeleteDoneTasks {
+                    workspace_id: workspace,
+                    confirm,
+                },
+            )
+        };
+
+        let preview = delete(&mut storage, false).unwrap();
+        assert!(!preview.confirmed);
+        assert_eq!(preview.task_ids, [first.id, second.id]);
+        assert!(
+            preview.message.contains("#2 Ship login, #3 Drop signup")
+                && preview.message.contains("\"confirm\": true"),
+            "{}",
+            preview.message
+        );
+        assert!(storage.get_task(first.id.into()).unwrap().is_some());
+
+        let deleted = delete(&mut storage, true).unwrap();
+        assert!(deleted.confirmed);
+        assert_eq!(deleted.task_ids, [first.id, second.id]);
+        assert!(deleted.message.contains("#2, #3"), "{}", deleted.message);
+        assert!(storage.get_task(first.id.into()).unwrap().is_none());
+        assert!(storage.get_task(second.id.into()).unwrap().is_none());
+        assert!(storage.get_task(planned.id.into()).unwrap().is_some());
+
+        let none = delete(&mut storage, true).unwrap();
+        assert!(!none.confirmed);
+        assert!(none.task_ids.is_empty());
+        assert!(none.message.contains("list_tasks"), "{}", none.message);
+
+        let error = delete_done_tasks(
+            &mut storage,
+            DeleteDoneTasks {
+                workspace_id: WorkspaceId(99),
+                confirm: true,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, CommandErrorCode::WorkspaceNotFound);
+        assert!(
+            error.message.contains("list_workspaces"),
+            "{}",
+            error.message
+        );
     }
 
     #[test]

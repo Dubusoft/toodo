@@ -50,11 +50,14 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         tasks::create_task,
         tasks::update_task,
         tasks::pause_task,
+        tasks::wait_task,
+        tasks::end_wait,
         tasks::set_completion_note,
         tasks::reopen_task,
         tasks::set_task_outcome,
         tasks::check_criterion,
         tasks::delete_task,
+        tasks::delete_done_tasks,
         tasks::restore_task,
         tasks::purge_task,
         tasks::add_dependency,
@@ -100,6 +103,16 @@ fn collect_events(types: &mut Types) -> Vec<(&'static str, &'static str, DataTyp
             "guidelinesChanged",
             names::GUIDELINES_CHANGED,
             events::GuidelinesChanged::definition(types),
+        ),
+        (
+            "taskStatusChanged",
+            names::TASK_STATUS_CHANGED,
+            events::TaskStatusChanged::definition(types),
+        ),
+        (
+            "taskReady",
+            names::TASK_READY,
+            events::TaskReady::definition(types),
         ),
     ]
 }

@@ -102,7 +102,8 @@ that every fragment appears in both texts and that no placeholder is left.
 4. While working, record what later readers need: `add_progress_note` with kind
    `progress` for a milestone and kind `decision` for a choice and its reason,
    `report_blocker` when someone has to step in, and `pause_task` with a reason when the
-   work stops. `resume_task` continues it.
+   work stops. `resume_task` continues it. `wait_task` pauses it until a time, after
+   which it returns on its own; `end_wait` returns it sooner.
 
 5. When the work awaits review, move the task with `update_task`:
 
@@ -158,9 +159,10 @@ shared fragments the agents read:
 
 - Add a prerequisite to an `in_progress` task last, with all prerequisites in one
   `add_dependency` call: it pauses the task.
-- Delete a `planned` task created by mistake with `delete_task`, and reopen a task done
-  by mistake with `reopen_task` and a reason. A deleted task is archived: it stays in
-  reviews, and only the user restores or purges it in the app.
+- Delete a `planned` task created by mistake, or a `done` task whose record is no longer
+  wanted, with `delete_task`; `delete_done_tasks` deletes every `done` task of a
+  workspace at once. Reopen a task done by mistake with `reopen_task` and a reason. A
+  deleted task is archived: it stays in reviews, and only the user restores or purges it in the app.
 - Archive a workspace that's no longer used with `archive_workspace`. Its tasks are
   archived with it and stay in reviews.
 - When a call is rejected, read the error: it names the argument or step that succeeds.

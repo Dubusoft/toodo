@@ -8,7 +8,7 @@ use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::criteria::NewCriterion;
 use crate::domain::dag;
 use crate::domain::model::{
-    LinkedIssue, NoteKind, Task, TaskId, TaskNote, TaskResolution, TaskType, WorkspaceId,
+    LinkedIssue, NoteKind, Task, TaskId, TaskNote, TaskResolution, TaskType, TaskWait, WorkspaceId,
 };
 use crate::domain::plan::{DueDate, Estimate, EstimateUnit};
 use crate::domain::status::TaskStatus;
@@ -24,6 +24,29 @@ pub struct NewTask {
     pub due_date: Option<DueDate>,
     /// What has to hold for the task to be done, in order.
     pub criteria: Vec<NewCriterion>,
+}
+
+/// A status change from a task's status history, for announcing it to connected clients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusChange {
+    /// The id of the history record; later changes have higher ids.
+    pub id: i64,
+    pub task: TaskId,
+    pub workspace: WorkspaceId,
+    /// The status before the change; `None` for the first record, the task's creation.
+    pub from: Option<TaskStatus>,
+    pub to: TaskStatus,
+    pub at: i64,
+}
+
+/// A planned task that became ready: `unblocked_by` was the last of its dependencies to
+/// finish.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadyTask {
+    pub task: TaskId,
+    pub workspace: WorkspaceId,
+    pub unblocked_by: TaskId,
+    pub at: i64,
 }
 
 /// Which tasks [`Storage::query_tasks`] lists. Every condition set must hold; the default
@@ -164,7 +187,7 @@ fn parse_note_kind(raw: &str) -> Result<NoteKind> {
         .ok_or_else(|| StorageError::InvalidData(format!("unknown note kind {raw:?}")))
 }
 
-const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.description, t.status, t.completion_note, t.resolution, t.issue_number, t.issue_url, t.estimate_unit, t.estimate_amount, t.due_date, t.refs FROM tasks t JOIN workspaces w ON w.id = t.workspace_id";
+const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.description, t.status, t.completion_note, t.resolution, t.issue_number, t.issue_url, t.estimate_unit, t.estimate_amount, t.due_date, t.refs, t.wait_until, t.wait_status FROM tasks t JOIN workspaces w ON w.id = t.workspace_id";
 struct TaskRow {
     id: i64,
     workspace_id: i64,
@@ -180,6 +203,8 @@ struct TaskRow {
     estimate_amount: Option<f64>,
     due_date: Option<String>,
     refs: String,
+    wait_until: Option<i64>,
+    wait_status: Option<String>,
 }
 impl TaskRow {
     fn read(row: &Row<'_>) -> rusqlite::Result<Self> {
@@ -198,6 +223,8 @@ impl TaskRow {
             estimate_amount: row.get(11)?,
             due_date: row.get(12)?,
             refs: row.get(13)?,
+            wait_until: row.get(14)?,
+            wait_status: row.get(15)?,
         })
     }
     fn into_task(
@@ -214,6 +241,19 @@ impl TaskRow {
                 self.id, self.refs
             ))
         })?;
+        let wait = match (self.wait_until, self.wait_status.as_deref()) {
+            (Some(until), Some(status)) => Some(TaskWait {
+                until,
+                status: parse_task_status(status)?,
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(StorageError::InvalidData(format!(
+                    "task {} has only one of wait_until and wait_status",
+                    self.id
+                )));
+            }
+        };
         Ok(Task {
             id: TaskId(self.id),
             workspace_id: WorkspaceId(self.workspace_id),
@@ -244,6 +284,7 @@ impl TaskRow {
             timeline,
             notes,
             criteria,
+            wait,
         })
     }
 }
@@ -407,6 +448,64 @@ fn record_event_with_reason(
         "INSERT INTO task_events (task_id, status, at, reason) VALUES (?1, ?2, ?3, ?4)",
         params![task.0, status.as_str(), at, reason],
     )?;
+    // Any status change ends a wait: starting, completing, or concluding a waiting task
+    // takes the place of its return. A wait that begins with a pause is set after it.
+    conn.execute(
+        "UPDATE tasks SET wait_until = NULL, wait_status = NULL
+         WHERE id = ?1 AND wait_until IS NOT NULL",
+        [task.0],
+    )?;
+    Ok(())
+}
+
+/// The wait's end as an RFC 3339 time in UTC, e.g. `2026-11-10T09:00:00Z`.
+fn wait_time(until: i64) -> String {
+    jiff::Timestamp::from_second(until).map_or_else(|_| until.to_string(), |at| at.to_string())
+}
+
+/// Ends the wait of `task` at `at`: it returns to the status it had when the wait began,
+/// recording that move with `reason`. A task that was `in_progress` stays paused when a
+/// prerequisite added during the wait is not done yet, with a blocker note naming it.
+/// `note` is recorded as a progress note. Does nothing to a task that does not wait.
+fn end_wait(conn: &Connection, task: &Task, at: i64, reason: &str, note: &str) -> Result<()> {
+    let Some(wait) = task.wait else {
+        return Ok(());
+    };
+    let blockers = match wait.status {
+        TaskStatus::InProgress => dag::blocking_dependencies(&all_tasks(conn)?, task.id)?,
+        _ => Vec::new(),
+    };
+    if wait.status == TaskStatus::Planned || !blockers.is_empty() {
+        conn.execute(
+            "UPDATE tasks SET wait_until = NULL, wait_status = NULL WHERE id = ?1",
+            [task.id.0],
+        )?;
+    } else {
+        // Back to where it was: `in_review` is not a move a planned task can make on
+        // its own, so the wait's return is written here rather than through a transition.
+        conn.execute(
+            "UPDATE tasks SET status = ?2 WHERE id = ?1",
+            params![task.id.0, wait.status.as_str()],
+        )?;
+        record_event_with_reason(conn, task.id, wait.status, at, Some(reason))?;
+    }
+    add_note(conn, task.id, NoteKind::Progress, note, at)?;
+    if !blockers.is_empty() {
+        let waiting: Vec<String> = blockers
+            .iter()
+            .map(|blocker| format!("#{} ({})", blocker.id, blocker.status))
+            .collect();
+        add_note(
+            conn,
+            task.id,
+            NoteKind::Blocker,
+            &format!(
+                "The wait ended, but the task stays paused: waiting on {}",
+                waiting.join(", ")
+            ),
+            at,
+        )?;
+    }
     Ok(())
 }
 
@@ -687,6 +786,87 @@ impl Storage {
         Ok(task)
     }
 
+    /// The id of the latest status history record; 0 when there is none.
+    pub fn last_status_change(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT coalesce(max(id), 0) FROM task_events", [], |row| {
+                row.get(0)
+            })?)
+    }
+
+    /// The status changes recorded after the history record `after`, oldest first, and the
+    /// planned tasks that one of their moves to `done` made ready.
+    pub fn status_changes_after(&self, after: i64) -> Result<(Vec<StatusChange>, Vec<ReadyTask>)> {
+        let mut statement = self.conn.prepare_cached(
+            "SELECT e.id, e.task_id, t.workspace_id, e.status, e.at,
+                 (SELECT p.status FROM task_events p
+                  WHERE p.task_id = e.task_id AND p.id < e.id ORDER BY p.id DESC LIMIT 1)
+             FROM task_events e JOIN tasks t ON t.id = e.task_id
+             WHERE e.id > ?1 ORDER BY e.id",
+        )?;
+        let rows = statement
+            .query_map([after], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut changes = Vec::with_capacity(rows.len());
+        for (id, task, workspace, to, at, from) in rows {
+            changes.push(StatusChange {
+                id,
+                task: TaskId(task),
+                workspace: WorkspaceId(workspace),
+                from: from.as_deref().map(parse_task_status).transpose()?,
+                to: parse_task_status(&to)?,
+                at,
+            });
+        }
+        let finished: HashMap<TaskId, &StatusChange> = changes
+            .iter()
+            .filter(|change| change.to == TaskStatus::Done)
+            .map(|change| (change.task, change))
+            .collect();
+        if finished.is_empty() {
+            return Ok((changes, Vec::new()));
+        }
+        let tasks = all_tasks(&self.conn)?;
+        let mut ready = Vec::new();
+        for task in &tasks {
+            if task.status != TaskStatus::Planned {
+                continue;
+            }
+            // The latest finish among its dependencies is the one that unblocked it.
+            let Some(last) = task
+                .depends_on
+                .iter()
+                .filter_map(|dependency| finished.get(dependency))
+                .max_by_key(|change| change.id)
+            else {
+                continue;
+            };
+            if dag::is_ready(&tasks, task.id)? {
+                ready.push((
+                    last.id,
+                    ReadyTask {
+                        task: task.id,
+                        workspace: task.workspace_id,
+                        unblocked_by: last.task,
+                        at: last.at,
+                    },
+                ));
+            }
+        }
+        ready.sort_by_key(|(id, ready)| (*id, ready.task));
+        Ok((changes, ready.into_iter().map(|(_, ready)| ready).collect()))
+    }
+
     /// Rejects starting a task while one of its dependencies is not done.
     pub fn ensure_ready(&self, id: TaskId) -> Result<()> {
         ensure_ready(&self.conn, id)
@@ -898,6 +1078,97 @@ impl Storage {
         self.change_task_status(id, TaskStatus::Planned, reason)
     }
 
+    /// Makes a task wait until `until`, in seconds since the Unix epoch: an `in_progress`
+    /// or `in_review` task is paused (moved back to `planned`), recording the wait as the
+    /// reason; a `planned` task keeps its status. The wait remembers the status to return
+    /// to. A task that already waits gets the new time and keeps the status it returns
+    /// to. `reason`, if given, is added to the progress note recorded with the wait. Whether
+    /// the time is in the future is up to the caller; a `done` task is rejected.
+    pub fn wait_task(&mut self, id: TaskId, until: i64, reason: Option<&str>) -> Result<Task> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        let time = wait_time(until);
+        let mut note = match task.wait {
+            Some(_) => format!("Wait changed: waiting until {time}"),
+            None => format!("Waiting until {time}"),
+        };
+        if let Some(reason) = reason {
+            note.push_str(&format!(": {reason}"));
+        }
+        let status = match task.wait {
+            Some(wait) => wait.status,
+            None if task.status == TaskStatus::Planned => TaskStatus::Planned,
+            None => {
+                // A done task cannot be paused, so it cannot wait either.
+                let paused = task.status.transition_to(TaskStatus::Planned)?;
+                tx.execute(
+                    "UPDATE tasks SET status = ?2 WHERE id = ?1",
+                    params![id.0, paused.as_str()],
+                )?;
+                record_event_with_reason(&tx, id, paused, at, Some(&note))?;
+                task.status
+            }
+        };
+        tx.execute(
+            "UPDATE tasks SET wait_until = ?2, wait_status = ?3 WHERE id = ?1",
+            params![id.0, until, status.as_str()],
+        )?;
+        add_note(&tx, id, NoteKind::Progress, &note, at)?;
+        let waiting = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(waiting)
+    }
+
+    /// Ends the wait of a task before its time: it returns to the status it had when the
+    /// wait began, as when the time passes (see [`Self::end_due_waits`]). `note`, if
+    /// given, is added to the progress note recorded with it. A task that does not wait
+    /// is returned unchanged.
+    pub fn end_task_wait(&mut self, id: TaskId, note: Option<&str>) -> Result<Task> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        let mut text = "Wait ended early".to_owned();
+        if let Some(note) = note {
+            text.push_str(&format!(": {note}"));
+        }
+        end_wait(&tx, &task, at, &text, &text)?;
+        let ended = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(ended)
+    }
+
+    /// Ends every wait whose time has come, earliest first, in one transaction: each task
+    /// returns to the status it had when its wait began. Returns the workspaces of those
+    /// tasks, each once, for change notifications.
+    pub fn end_due_waits(&mut self) -> Result<Vec<WorkspaceId>> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let ids = tx
+            .prepare_cached(
+                "SELECT id FROM tasks WHERE wait_until IS NOT NULL AND wait_until <= ?1
+                 ORDER BY wait_until, id",
+            )?
+            .query_map([at], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut workspaces = Vec::new();
+        for id in ids {
+            let Some(task) = load_tasks(&tx, "t.id = ?", &[id], Scope::All)?.pop() else {
+                continue;
+            };
+            let Some(wait) = task.wait else {
+                continue;
+            };
+            let text = format!("Wait until {} ended", wait_time(wait.until));
+            end_wait(&tx, &task, at, &text, &text)?;
+            if !workspaces.contains(&task.workspace_id) {
+                workspaces.push(task.workspace_id);
+            }
+        }
+        tx.commit()?;
+        Ok(workspaces)
+    }
+
     fn change_task_status(
         &mut self,
         id: TaskId,
@@ -935,6 +1206,41 @@ impl Storage {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Archives every live `done` task of a live workspace in one transaction, as
+    /// [`Self::archive_task`] does for one task, and returns their IDs in ascending order;
+    /// none when the workspace has no `done` task. An unknown or archived workspace is
+    /// rejected.
+    pub fn archive_done_tasks(&mut self, workspace: WorkspaceId) -> Result<Vec<TaskId>> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let archived: Option<Option<i64>> = tx
+            .query_row(
+                "SELECT archived_at FROM workspaces WHERE id = ?1",
+                [workspace.0],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if !matches!(archived, Some(None)) {
+            return Err(StorageError::WorkspaceNotFound(workspace));
+        }
+        let done = TaskStatus::Done.as_str();
+        let ids = tx
+            .prepare(
+                "SELECT id FROM tasks
+                 WHERE workspace_id = ?1 AND status = ?2 AND archived_at IS NULL
+                 ORDER BY id",
+            )?
+            .query_map(params![workspace.0, done], |row| row.get(0).map(TaskId))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        tx.execute(
+            "UPDATE tasks SET archived_at = ?3
+             WHERE workspace_id = ?1 AND status = ?2 AND archived_at IS NULL",
+            params![workspace.0, done, at],
+        )?;
+        tx.commit()?;
+        Ok(ids)
     }
 
     /// Brings an archived task of a live workspace back with its dependencies. Rejected

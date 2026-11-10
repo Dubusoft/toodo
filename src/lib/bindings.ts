@@ -78,6 +78,18 @@ export const commands = {
 	/**  Pauses an `in_progress` or `in_review` task by returning it to `planned`. */
 	pauseTask: (id: TaskId) => typedError<Task, CommandError>(invoke("pause_task", { id })),
 	/**
+	 *  Makes a `planned`, `in_progress`, or `in_review` task wait until `until`: it is paused
+	 *  (`planned`) until then and returns on its own to the status it had, also after a
+	 *  restart of the server. A task that already waits gets the new time. `reason`, if given,
+	 *  is kept with the progress note the wait records.
+	 */
+	waitTask: (id: TaskId, until: Timestamp, reason: string | null) => typedError<Task, CommandError>(invoke("wait_task", { id, until, reason })),
+	/**
+	 *  Ends the wait of a task now: it returns to the status it had when the wait began, as
+	 *  when the time passes.
+	 */
+	endWait: (id: TaskId) => typedError<Task, CommandError>(invoke("end_wait", { id })),
+	/**
 	 *  Stores what the user wrote about the outcome of a `done` task, for reviews. The note
 	 *  is trimmed; an empty one clears it, except for a task that was not adopted, whose note
 	 *  is its required conclusion.
@@ -108,6 +120,12 @@ export const commands = {
 	checkCriterion: (taskId: TaskId, criterionId: CriterionId, met: boolean, evidence: string | null) => typedError<Task, CommandError>(invoke("check_criterion", { taskId, criterionId, met, evidence })),
 	/**  Archives the task while preserving its history. */
 	deleteTask: (id: TaskId) => typedError<null, CommandError>(invoke("delete_task", { id })),
+	/**
+	 *  Archives every `done` (completed or concluded) task of a live workspace in one go, as
+	 *  [`delete_task`] does for one task, keeping their history; returns how many were
+	 *  archived.
+	 */
+	deleteDoneTasks: (workspaceId: WorkspaceId) => typedError<number, CommandError>(invoke("delete_done_tasks", { workspaceId })),
 	/**
 	 *  Brings an archived task of a live workspace back with its dependencies; its worktree,
 	 *  removed when it was deleted, is not recreated.
@@ -189,6 +207,8 @@ export const events = {
 	tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
 	workspacesChanged: makeEvent<WorkspacesChanged>("workspaces-changed"),
 	guidelinesChanged: makeEvent<GuidelinesChanged>("guidelines-changed"),
+	taskStatusChanged: makeEvent<TaskStatusChanged>("task-status-changed"),
+	taskReady: makeEvent<TaskReady>("task-ready"),
 };
 
 /* Types */
@@ -772,6 +792,11 @@ export type Task = {
 	notes: TaskNote[],
 	/**  What has to hold for the task to be done, in order. */
 	criteria: Criterion[],
+	/**
+	 *  The wait the task is paused for: it is `planned` until `until`, then returns to
+	 *  the status it had when the wait began. `None` when it does not wait.
+	 */
+	wait: TaskWait | null,
 };
 
 /**  The editable task fields. Lifecycle commands handle status changes other than review. */
@@ -864,6 +889,18 @@ export type TaskNote = {
 };
 
 /**
+ *  A planned task became ready: the last of its unfinished dependencies, `unblockedBy`,
+ *  moved to `done`.
+ */
+export type TaskReady = {
+	taskId: TaskId,
+	workspaceId: WorkspaceId,
+	unblockedBy: TaskId,
+	/**  When `unblockedBy` moved to `done`. */
+	at: Timestamp,
+};
+
+/**
  *  A related link between two tasks, which may belong to different workspaces. The link
  *  goes both ways; `task_id` is the lower ID.
  */
@@ -886,7 +923,25 @@ export type TaskResolution =
 
 export type TaskStatus = "planned" | "in_progress" | "in_review" | "done";
 
+/**  The status of a task changed, through any surface: the web app or MCP. A newly created task reports `from: null` and `to: "planned"`. */
+export type TaskStatusChanged = {
+	taskId: TaskId,
+	workspaceId: WorkspaceId,
+	from: TaskStatus | null,
+	to: TaskStatus,
+	/**  When the change was recorded in the task's status history. */
+	at: Timestamp,
+};
+
 export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore" | "rnd";
+
+/**  A wait on a task. */
+export type TaskWait = {
+	/**  When the wait ends, in seconds since the Unix epoch. */
+	until: Timestamp,
+	/**  The status the task returns to then: `planned`, `in_progress`, or `in_review`. */
+	status: TaskStatus,
+};
 
 export type TasksChanged = {
 	workspaceId: WorkspaceId,

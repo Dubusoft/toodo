@@ -238,6 +238,100 @@ pub(crate) fn pause(
     Ok((&storage.pause_task(id.into(), reason)?).into())
 }
 
+/// Makes a `planned`, `in_progress`, or `in_review` task wait until `until`: it is paused
+/// (`planned`) until then and returns on its own to the status it had, also after a
+/// restart of the server. A task that already waits gets the new time. `reason`, if given,
+/// is kept with the progress note the wait records.
+#[specta::specta]
+pub fn wait_task(
+    storage: State<'_, StorageState>,
+    id: TaskId,
+    until: types::Timestamp,
+    reason: Option<String>,
+) -> CommandResult<Task> {
+    wait(&mut lock(&storage), id, until.0, reason.as_deref())
+}
+
+/// [`wait_task`] for the commands and the MCP server.
+pub(crate) fn wait(
+    storage: &mut Storage,
+    id: TaskId,
+    until: i64,
+    reason: Option<&str>,
+) -> CommandResult<Task> {
+    let task = storage
+        .get_task(id.into())?
+        .ok_or(StorageError::TaskNotFound(id.into()))?;
+    if task.status == TaskStatus::Done {
+        return Err(CommandError::rejected(format!(
+            "task {} is done, so it cannot wait; reopen it first if more work on it has to wait",
+            task.id
+        )));
+    }
+    let now = storage.now();
+    let valid = jiff::Timestamp::from_second(until).is_ok();
+    if !valid || until <= now {
+        let now =
+            jiff::Timestamp::from_second(now).map_or_else(|_| now.to_string(), |at| at.to_string());
+        return Err(CommandError::invalid_input(format!(
+            "the wait must end in the future, after {now}; choose a later time"
+        )));
+    }
+    let reason = reason.map(str::trim).filter(|reason| !reason.is_empty());
+    Ok((&storage.wait_task(id.into(), until, reason)?).into())
+}
+
+/// Ends the wait of a task now: it returns to the status it had when the wait began, as
+/// when the time passes.
+#[specta::specta]
+pub fn end_wait(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<Task> {
+    end_task_wait(&mut lock(&storage), id, None)
+}
+
+/// [`end_wait`] with `note`, why the wait ends early, kept with its progress note.
+pub(crate) fn end_task_wait(
+    storage: &mut Storage,
+    id: TaskId,
+    note: Option<&str>,
+) -> CommandResult<Task> {
+    let task = storage
+        .get_task(id.into())?
+        .ok_or(StorageError::TaskNotFound(id.into()))?;
+    if task.wait.is_none() {
+        return Err(CommandError::rejected(format!(
+            "task {} does not wait; call wait_task to make it wait until a time",
+            task.id
+        )));
+    }
+    let note = note.map(str::trim).filter(|note| !note.is_empty());
+    Ok((&storage.end_task_wait(id.into(), note)?).into())
+}
+
+/// How often the server looks for waits whose time has come.
+const WAIT_CHECK_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Starts the thread that ends waits once their time has come, announcing each change.
+/// It checks right away, so waits that ended while the server was stopped end on start.
+pub fn spawn_wait_checks(app: std::sync::Arc<dyn super::Runtime>) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("task-waits".to_owned())
+        .spawn(move || {
+            loop {
+                let ended = lock(app.storage()).end_due_waits();
+                match ended {
+                    Ok(workspaces) => {
+                        for workspace in workspaces {
+                            app.tasks_changed(workspace);
+                        }
+                    }
+                    Err(error) => eprintln!("toodo: cannot end due task waits: {error}"),
+                }
+                std::thread::sleep(WAIT_CHECK_PERIOD);
+            }
+        })?;
+    Ok(())
+}
+
 /// Reopens a `done` task that was completed or concluded by mistake: it becomes `planned`
 /// again, paused if it was started, so Start (or Resume) continues the work on its branch.
 /// Its resolution, completion note, and `merged_with` are cleared; `reason`, required, is
@@ -400,6 +494,18 @@ fn note_completion(storage: &mut Storage, id: TaskId, note: &str) -> CommandResu
 #[specta::specta]
 pub fn delete_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<()> {
     Ok(lock(&storage).archive_task(id.into())?)
+}
+
+/// Archives every `done` (completed or concluded) task of a live workspace in one go, as
+/// [`delete_task`] does for one task, keeping their history; returns how many were
+/// archived.
+#[specta::specta]
+pub fn delete_done_tasks(
+    storage: State<'_, StorageState>,
+    workspace_id: types::WorkspaceId,
+) -> CommandResult<u32> {
+    let archived = lock(&storage).archive_done_tasks(workspace_id.into())?;
+    Ok(u32::try_from(archived.len()).unwrap_or(u32::MAX))
 }
 
 /// Brings an archived task of a live workspace back with its dependencies; its worktree,
