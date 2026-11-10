@@ -159,9 +159,10 @@ shared fragments the agents read:
 
 - Add a prerequisite to an `in_progress` task last, with all prerequisites in one
   `add_dependency` call: it pauses the task.
-- Delete a `planned` task created by mistake with `delete_task`, and reopen a task done
-  by mistake with `reopen_task` and a reason. A deleted task is archived: it stays in
-  reviews, and only the user restores or purges it in the app.
+- Delete a `planned` task created by mistake, or a `done` task whose record is no longer
+  wanted, with `delete_task`; `delete_done_tasks` deletes every `done` task of a
+  workspace at once. Reopen a task done by mistake with `reopen_task` and a reason. A
+  deleted task is archived: it stays in reviews, and only the user restores or purges it in the app.
 - Archive a workspace that's no longer used with `archive_workspace`. Its tasks are
   archived with it and stay in reviews.
 - When a call is rejected, read the error: it names the argument or step that succeeds.

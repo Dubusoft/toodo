@@ -121,6 +121,12 @@ export const commands = {
 	/**  Archives the task while preserving its history. */
 	deleteTask: (id: TaskId) => typedError<null, CommandError>(invoke("delete_task", { id })),
 	/**
+	 *  Archives every `done` (completed or concluded) task of a live workspace in one go, as
+	 *  [`delete_task`] does for one task, keeping their history; returns how many were
+	 *  archived.
+	 */
+	deleteDoneTasks: (workspaceId: WorkspaceId) => typedError<number, CommandError>(invoke("delete_done_tasks", { workspaceId })),
+	/**
 	 *  Brings an archived task of a live workspace back with its dependencies; its worktree,
 	 *  removed when it was deleted, is not recreated.
 	 */

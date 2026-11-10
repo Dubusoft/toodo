@@ -192,3 +192,7 @@ outside Toodo. An archived task leaves the task lists and stops holding back its
 dependents, but keeps its history and notes, and the review report still counts it.
 Settings > Archive restores an archived workspace or task, or deletes it for good after a
 confirmation.
+
+Only `planned` and `done` tasks can be deleted; pause an `in_progress` or `in_review`
+task with `pause_task` first. `delete_done_tasks` (or "Delete done" on the app's done
+group) archives every `done` task of a workspace at once.

@@ -57,6 +57,7 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         tasks::set_task_outcome,
         tasks::check_criterion,
         tasks::delete_task,
+        tasks::delete_done_tasks,
         tasks::restore_task,
         tasks::purge_task,
         tasks::add_dependency,

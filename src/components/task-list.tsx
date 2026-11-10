@@ -1,10 +1,10 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
-import { Check, ChevronDown, Inbox, Search, SlidersHorizontal, X } from "lucide-react";
+import { Check, ChevronDown, Inbox, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { compactSelectClass } from "@/components/workspace-list";
+import { compactSelectClass, escapeCloses } from "@/components/workspace-list";
 import { ErrorBoundary } from "@/components/error-boundary";
 import type { TaskId, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
-import { useTasks, useWorkspaces } from "@/lib/queries";
+import { useDeleteDoneTasks, useDoneTaskCount, useTasks, useWorkspaces } from "@/lib/queries";
 import { type TimelineScale } from "@/lib/task-graph";
 import {
   defaultTaskFilter,
@@ -322,23 +322,27 @@ export function TaskList({
                 const count = <span className="tabular-nums font-normal">{grouped.length}</span>;
                 return (
                   <section key={group} aria-label={name} className="flex flex-col gap-2">
-                    <h3 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
-                      {group === "done" ? (
-                        <button
-                          type="button"
-                          aria-expanded={!collapsed}
-                          className="flex items-center gap-1.5 rounded-sm outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11"
-                          onClick={() => setDoneShown(collapsed)}
-                        >
-                          <ChevronDown aria-hidden className={cn("size-4 transition-transform", collapsed && "-rotate-90")} />
-                          {name} {count}
-                        </button>
-                      ) : (
-                        <>
-                          {name} {count}
-                        </>
-                      )}
-                    </h3>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+                        {group === "done" ? (
+                          <button
+                            type="button"
+                            aria-expanded={!collapsed}
+                            className="flex items-center gap-1.5 rounded-sm outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11"
+                            onClick={() => setDoneShown(collapsed)}
+                          >
+                            <ChevronDown aria-hidden className={cn("size-4 transition-transform", collapsed && "-rotate-90")} />
+                            {name} {count}
+                          </button>
+                        ) : (
+                          <>
+                            {name} {count}
+                          </>
+                        )}
+                      </h3>
+                      {/* Deleting acts on every done task of a workspace, so only a workspace's own list offers it. */}
+                      {group === "done" && workspace && <DeleteDoneTasks workspace={workspace} />}
+                    </div>
                     {!collapsed && (
                       <ul aria-label={name} className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
                         {grouped.map((task) => (
@@ -492,6 +496,96 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
         </Button>
       )}
     </div>
+  );
+}
+
+/**
+ * Deletes every done task of `workspace` once an inline confirmation naming how many is
+ * accepted; they move to the archive with their history. The server counts them, since the
+ * loaded pages may hold only the newest done tasks and a search may hide some.
+ */
+function DeleteDoneTasks({ workspace }: { workspace: Workspace }) {
+  const deleteDone = useDeleteDoneTasks();
+  // When the confirmation opened; null while it is closed.
+  const [openedAt, setOpenedAt] = useState<number | null>(null);
+  const confirming = openedAt !== null;
+  // Back, Escape, and deleting return the focus to "Delete done", which the confirmation replaces.
+  const [refocus, setRefocus] = useState(false);
+  const count = useDoneTaskCount(workspace.id, confirming);
+  // Only a count made since the confirmation opened is named (a count kept from earlier may be
+  // out of date), and deleting waits while the tasks are counted again, so the number named is
+  // the number deleted.
+  const counted =
+    openedAt !== null && count.isSuccess && count.dataUpdatedAt >= openedAt ? count.data : undefined;
+  const named = counted === undefined ? "done tasks" : `${counted} done ${counted === 1 ? "task" : "tasks"}`;
+
+  function stopConfirming() {
+    setOpenedAt(null);
+    setRefocus(true);
+  }
+
+  return (
+    <>
+      <div
+        role={confirming ? "group" : undefined}
+        aria-label={confirming ? `Delete ${named}?` : undefined}
+        className={cn("ml-auto flex items-center gap-1 max-md:gap-2", confirming && "basis-full flex-wrap justify-end")}
+        onKeyDown={confirming ? escapeCloses(stopConfirming, deleteDone.isPending) : undefined}
+      >
+        {confirming ? (
+          <>
+            <span className="min-w-0 flex-1 basis-48 text-xs">
+              {counted === undefined
+                ? "Counting done tasks..."
+                : counted === 1
+                  ? `Delete ${named}? It moves to Settings > Archive with its history, where it can be restored.`
+                  : `Delete ${named}? They move to Settings > Archive with their history, where they can be restored.`}
+            </span>
+            <Button
+              changesData
+              size="xs"
+              variant="destructive"
+              disabled={deleteDone.isPending || counted === undefined || count.isFetching}
+              onClick={() => deleteDone.mutate(workspace.id, { onSuccess: stopConfirming })}
+            >
+              <Trash2 />
+              {deleteDone.isPending ? "Deleting..." : "Confirm delete"}
+            </Button>
+            {/* Focus lands on Back, so pressing Enter or Space again cannot delete. */}
+            <Button size="xs" variant="ghost" autoFocus onClick={stopConfirming}>
+              Back
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="xs"
+            variant="ghost"
+            title="Move every done task of this workspace to the archive"
+            autoFocus={refocus}
+            className="text-destructive hover:bg-destructive/10 hover:text-destructive dark:hover:bg-destructive/20"
+            onClick={() => {
+              deleteDone.reset();
+              setOpenedAt(Date.now());
+            }}
+          >
+            <Trash2 />
+            Delete done
+          </Button>
+        )}
+      </div>
+      {deleteDone.isError ? (
+        <p role="alert" className="basis-full text-xs text-destructive">
+          {deleteDone.error.message}
+        </p>
+      ) : (
+        confirming &&
+        count.isError && (
+          <p role="alert" className="basis-full text-xs text-destructive">
+            Could not count the done tasks: {count.error.message} Choose Back, then Delete done to count them again.
+          </p>
+        )
+      )}
+    </>
   );
 }
 

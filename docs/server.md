@@ -437,7 +437,7 @@ names the instance in `serverInfo.title`.
 
 ### Agent MCP Tools
 
-The MCP server has 31 tools:
+The MCP server has 32 tools:
 
 - Skill: `read_toodo_skill`.
 - Workspaces: `list_workspaces`, `create_workspace`, `update_workspace`,
@@ -449,7 +449,7 @@ The MCP server has 31 tools:
   `remove_criterion`.
 - Recording work: `start_task`, `add_progress_note`, `report_blocker`, `check_criterion`,
   `pause_task`, `resume_task`, `wait_task`, `end_wait`, `complete_task`, `conclude_task`,
-  `reopen_task`, `delete_task`.
+  `reopen_task`, `delete_task`, `delete_done_tasks`.
 - Review: `review_report`.
 
 Two of them help an agent wire a plan:
@@ -531,8 +531,8 @@ on loopback as before and still see every tool.
   `report_blocker`, `pause_task`, and `wait_task`.
 
 The other tools stay local: `current_task`, `start_task`, `resume_task`, `end_wait`,
-`complete_task`, `conclude_task`, `delete_task`, `reopen_task`, `update_workspace`, and
-`archive_workspace` never appear in an app's tool list, and calling one is refused even
+`complete_task`, `conclude_task`, `delete_task`, `delete_done_tasks`, `reopen_task`,
+`update_workspace`, and `archive_workspace` never appear in an app's tool list, and calling one is refused even
 with `toodo.write`. `check_criterion` checks a stored manual criterion. An app's
 `initialize` reply and `read_toodo_skill` carry planning instructions for a chat.
 
