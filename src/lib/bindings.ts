@@ -534,6 +534,8 @@ export type NewTask = {
 	dueDate: string | null,
 	/**  Labels such as a project or goal; none when omitted. */
 	labels?: string[],
+	/**  Whether to mark the task for autopilot; not marked when omitted. */
+	autopilot?: boolean,
 	/**  Completion criteria in order; an `id` is not allowed here. */
 	criteria: CriterionInput[],
 };
@@ -797,6 +799,13 @@ export type Task = {
 	 *  the status it had when the wait began. `None` when it does not wait.
 	 */
 	wait: TaskWait | null,
+	/**
+	 *  Whether the task is marked for autopilot: an executor may take it up on its own
+	 *  once it is ready.
+	 */
+	autopilot: boolean,
+	/**  Since when the task is marked for autopilot; `None` when it is not. */
+	autopilotAt: Timestamp | null,
 };
 
 /**  The editable task fields. Lifecycle commands handle status changes other than review. */
@@ -813,6 +822,11 @@ export type TaskEdit = {
 	dueDate: string | null,
 	/**  The new labels, which replace the current ones; `null` or omitted keeps them. */
 	labels?: string[] | null,
+	/**
+	 *  Marks the task for autopilot (`true`) or clears the mark (`false`); `null` or
+	 *  omitted keeps it. Marking a marked task keeps the time it was marked.
+	 */
+	autopilot?: boolean | null,
 	/**
 	 *  The new completion criteria in order, which replace the current ones; `null`
 	 *  keeps them. The criteria of a done task cannot change.

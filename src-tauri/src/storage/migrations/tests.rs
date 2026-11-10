@@ -2229,3 +2229,36 @@ fn version_46_preserves_references_criteria_and_historical_reports() {
             .is_none()
     );
 }
+
+#[test]
+fn version_49_leaves_existing_tasks_off_autopilot_and_keeps_its_time_with_the_flag() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_legacy(&mut conn).unwrap();
+    for sql in &MIGRATIONS[45..48] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 48).unwrap();
+    conn.execute_batch(
+        "INSERT INTO workspaces (id, name) VALUES (1, 'toodo');
+         INSERT INTO tasks (id, workspace_id, type, title, status) VALUES (1, 1, 'feat', 'Login', 'planned');",
+    )
+    .unwrap();
+
+    super::migrate(&mut conn).unwrap();
+
+    assert_eq!(schema_version(&conn).unwrap(), 49);
+    let flag: (i64, Option<i64>) = conn
+        .query_row(
+            "SELECT autopilot, autopilot_at FROM tasks WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(flag, (0, None));
+    let set = |sql: &str| conn.execute(sql, []);
+    assert!(set("UPDATE tasks SET autopilot = 1 WHERE id = 1").is_err());
+    assert!(set("UPDATE tasks SET autopilot_at = 5 WHERE id = 1").is_err());
+    assert!(set("UPDATE tasks SET autopilot = 2, autopilot_at = 5 WHERE id = 1").is_err());
+    set("UPDATE tasks SET autopilot = 1, autopilot_at = 5 WHERE id = 1").unwrap();
+    set("UPDATE tasks SET autopilot = 0, autopilot_at = NULL WHERE id = 1").unwrap();
+}

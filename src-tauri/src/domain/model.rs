@@ -196,6 +196,9 @@ pub struct Task {
     pub criteria: Vec<Criterion>,
     /// The wait the task is paused for, if it waits.
     pub wait: Option<TaskWait>,
+    /// Since when the task is marked for autopilot, in seconds since the Unix epoch: an
+    /// executor may take it up on its own once it is ready. `None` when it is not marked.
+    pub autopilot_at: Option<i64>,
 }
 
 /// A wait on a task (see `docs/workflow.md`, Waiting): the task is `planned` until

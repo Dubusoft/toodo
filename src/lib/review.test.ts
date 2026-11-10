@@ -55,6 +55,8 @@ function entry(
       notes: [],
       criteria: [],
       wait: null,
+      autopilot: false,
+      autopilotAt: null,
       timeline: [],
       milestones: {
         plannedAt: null,

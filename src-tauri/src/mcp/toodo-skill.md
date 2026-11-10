@@ -15,6 +15,8 @@ Call list_workspaces and search_tasks before creating records. Read get_task for
 
 {{other-tasks}}
 
+Set autopilot true in create_task, create_plan, or update_task only when the user asks for autopilot on that task: an executor may then take it up on its own once it is ready. A follow-up task is not marked unless the user asks for that one too. update_task with autopilot false clears the mark. list_tasks with autopilot true lists the marked tasks of every workspace, or of workspace_id; autopilotAt says since when each one is marked.
+
 {{merge-policy}}
 
 # Completion and review

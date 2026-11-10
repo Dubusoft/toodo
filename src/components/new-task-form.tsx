@@ -9,7 +9,7 @@ import { useCreateTask } from "@/lib/queries";
 import { parseLabels } from "@/lib/plan";
 import { cn } from "@/lib/utils";
 import { taskTypes } from "@/components/task-common";
-import { type PlanDraft, planEstimate, PlanFields } from "@/components/plan-fields";
+import { AutopilotField, type PlanDraft, planEstimate, PlanFields } from "@/components/plan-fields";
 import { type CriterionDraft, criterionInputs, targetProblem, CriteriaEditor } from "@/components/criteria-editor";
 
 
@@ -19,6 +19,8 @@ export type TaskDraft = {
   description: string;
   /** Rows of the criteria editor; blank ones are left out when the task is added. */
   criteria: CriterionDraft[];
+  /** Whether the task is marked for autopilot from its creation on. */
+  autopilot: boolean;
 } & PlanDraft;
 
 export const emptyDraft: TaskDraft = {
@@ -26,6 +28,7 @@ export const emptyDraft: TaskDraft = {
   title: "",
   description: "",
   criteria: [],
+  autopilot: false,
   estimate: "",
   estimateUnit: "hours",
   dueDate: "",
@@ -62,11 +65,21 @@ export function NewTaskForm({
         estimate,
         dueDate: draft.dueDate || null,
         labels: parseLabels(draft.labels),
+        autopilot: draft.autopilot,
         criteria: criterionInputs(draft.criteria),
       },
       {
         onSuccess: () => {
-          onChange({ ...draft, title: "", description: "", estimate: "", dueDate: "", labels: "", criteria: [] });
+          onChange({
+            ...draft,
+            title: "",
+            description: "",
+            estimate: "",
+            dueDate: "",
+            labels: "",
+            criteria: [],
+            autopilot: false,
+          });
           setExpanded(false);
         },
       },
@@ -116,6 +129,11 @@ export function NewTaskForm({
             suffix=""
             plan={draft}
             onChange={(plan) => onChange({ ...draft, ...plan })}
+          />
+          <AutopilotField
+            suffix=""
+            checked={draft.autopilot}
+            onChange={(autopilot) => onChange({ ...draft, autopilot })}
           />
           <div className="flex flex-col gap-1 border-t pt-2">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">

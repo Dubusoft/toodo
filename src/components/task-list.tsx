@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
-import { Check, ChevronDown, Inbox, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { Bot, Check, ChevronDown, Inbox, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { compactSelectClass, escapeCloses } from "@/components/workspace-list";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -20,7 +20,7 @@ import {
   type TaskFilter,
 } from "@/lib/task-filter";
 import { needsAttention } from "@/lib/attention";
-import { statusNames, toneFill, toneOutline } from "@/lib/status-styles";
+import { statusNames, toneChip, toneFill, toneOutline } from "@/lib/status-styles";
 import { singleKeyShortcut } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import {
@@ -489,6 +489,21 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
           </option>
         ))}
       </select>
+      <button
+        type="button"
+        className={cn(
+          "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-xs font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11",
+          filter.autopilot
+            ? cn(toneChip.info, "border-transparent hover:brightness-95 dark:hover:brightness-125")
+            : cn(toneOutline.info, "bg-transparent hover:bg-muted"),
+        )}
+        aria-pressed={filter.autopilot}
+        title="Only tasks marked for autopilot"
+        onClick={() => onChange({ ...filter, autopilot: !filter.autopilot })}
+      >
+        {filter.autopilot ? <Check aria-hidden className="size-3" /> : <Bot aria-hidden className="size-3" />}
+        Autopilot
+      </button>
       {isFilterActive(filter) && (
         <Button size="xs" variant="ghost" onClick={() => onChange(emptyTaskFilter)}>
           <X />

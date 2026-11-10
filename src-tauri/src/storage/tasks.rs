@@ -22,6 +22,8 @@ pub struct NewTask {
     pub description: String,
     pub estimate: Option<Estimate>,
     pub due_date: Option<DueDate>,
+    /// Whether the task is marked for autopilot from its creation on.
+    pub autopilot: bool,
     /// What has to hold for the task to be done, in order.
     pub criteria: Vec<NewCriterion>,
 }
@@ -63,6 +65,8 @@ pub struct TaskQuery {
     pub before: Option<TaskId>,
     /// At most this many tasks: the matching tasks with the highest IDs.
     pub limit: Option<u32>,
+    /// `true`: only tasks marked for autopilot; `false`: only the others.
+    pub autopilot: Option<bool>,
 }
 
 /// One task of a plan [`Storage::create_tasks`] creates, with its labels and links.
@@ -187,7 +191,7 @@ fn parse_note_kind(raw: &str) -> Result<NoteKind> {
         .ok_or_else(|| StorageError::InvalidData(format!("unknown note kind {raw:?}")))
 }
 
-const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.description, t.status, t.completion_note, t.resolution, t.issue_number, t.issue_url, t.estimate_unit, t.estimate_amount, t.due_date, t.refs, t.wait_until, t.wait_status FROM tasks t JOIN workspaces w ON w.id = t.workspace_id";
+const TASK_SELECT: &str = "SELECT t.id, t.workspace_id, t.type, t.title, t.description, t.status, t.completion_note, t.resolution, t.issue_number, t.issue_url, t.estimate_unit, t.estimate_amount, t.due_date, t.refs, t.wait_until, t.wait_status, t.autopilot_at FROM tasks t JOIN workspaces w ON w.id = t.workspace_id";
 struct TaskRow {
     id: i64,
     workspace_id: i64,
@@ -205,6 +209,7 @@ struct TaskRow {
     refs: String,
     wait_until: Option<i64>,
     wait_status: Option<String>,
+    autopilot_at: Option<i64>,
 }
 impl TaskRow {
     fn read(row: &Row<'_>) -> rusqlite::Result<Self> {
@@ -225,6 +230,7 @@ impl TaskRow {
             refs: row.get(13)?,
             wait_until: row.get(14)?,
             wait_status: row.get(15)?,
+            autopilot_at: row.get(16)?,
         })
     }
     fn into_task(
@@ -285,6 +291,7 @@ impl TaskRow {
             notes,
             criteria,
             wait,
+            autopilot_at: self.autopilot_at,
         })
     }
 }
@@ -575,6 +582,10 @@ fn queried_tasks(conn: &Connection, query: &TaskQuery) -> Result<Vec<Task>> {
         conditions.push("t.id < ?".to_owned());
         parameters.push(before.0);
     }
+    if let Some(autopilot) = query.autopilot {
+        conditions.push("t.autopilot = ?".to_owned());
+        parameters.push(i64::from(autopilot));
+    }
     if conditions.is_empty() {
         conditions.push("1 = 1".to_owned());
     }
@@ -626,8 +637,8 @@ fn insert_task(conn: &Connection, new: &NewTask, at: i64) -> Result<TaskId> {
     let (estimate_unit, estimate_amount) = estimate_columns(new.estimate);
     let inserted = conn.execute(
         "INSERT INTO tasks (workspace_id, type, title, description, status, estimate_unit,
-             estimate_amount, due_date)
-         SELECT id, ?2, ?3, ?4, ?5, ?6, ?7, ?8 FROM workspaces
+             estimate_amount, due_date, autopilot, autopilot_at)
+         SELECT id, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10 FROM workspaces
          WHERE id = ?1 AND archived_at IS NULL",
         params![
             new.workspace_id.0,
@@ -637,7 +648,9 @@ fn insert_task(conn: &Connection, new: &NewTask, at: i64) -> Result<TaskId> {
             status.as_str(),
             estimate_unit,
             estimate_amount,
-            new.due_date.map(|due| due.to_string())
+            new.due_date.map(|due| due.to_string()),
+            new.autopilot,
+            new.autopilot.then_some(at)
         ],
     )?;
     if inserted == 0 {
@@ -728,7 +741,7 @@ impl Storage {
     /// Saves the editable task fields; lifecycle and references use their own methods.
     pub fn update_task(&mut self, task: &Task) -> Result<()> {
         let (unit, amount) = estimate_columns(task.estimate);
-        if self.conn.execute("UPDATE tasks SET type = ?2, title = ?3, description = ?4, estimate_unit = ?5, estimate_amount = ?6, due_date = ?7 WHERE id = ?1", params![task.id.0, task.task_type.as_str(), task.title, task.description, unit, amount, task.due_date.map(|d| d.to_string())])? == 0 { return Err(StorageError::TaskNotFound(task.id)); }
+        if self.conn.execute("UPDATE tasks SET type = ?2, title = ?3, description = ?4, estimate_unit = ?5, estimate_amount = ?6, due_date = ?7, autopilot = ?8, autopilot_at = ?9 WHERE id = ?1", params![task.id.0, task.task_type.as_str(), task.title, task.description, unit, amount, task.due_date.map(|d| d.to_string()), task.autopilot_at.is_some(), task.autopilot_at])? == 0 { return Err(StorageError::TaskNotFound(task.id)); }
         Ok(())
     }
 

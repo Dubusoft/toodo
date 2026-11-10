@@ -244,6 +244,7 @@ mod tests {
             notes: Vec::new(),
             criteria: Vec::new(),
             wait: None,
+            autopilot_at: None,
         }
     }
 

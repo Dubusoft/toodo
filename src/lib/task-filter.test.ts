@@ -21,6 +21,8 @@ function task(overrides: Partial<Task> = {}): Task {
     notes: [],
     criteria: [],
     wait: null,
+    autopilot: false,
+    autopilotAt: null,
     timeline: [],
     milestones: { plannedAt: null, startedAt: null, reviewAt: null, completedAt: null, reopenedAt: null, pausedAt: null, lastReviewAt: null, activeSeconds: 0, pauseCount: 0 },
     ...overrides,
@@ -137,6 +139,14 @@ describe("matchesFilter", () => {
   it("narrows to one task type", () => {
     expect(matchesFilter(task({ taskType: "fix" }), { ...emptyTaskFilter, type: "fix" }, noTasks)).toBe(true);
     expect(matchesFilter(task(), { ...emptyTaskFilter, type: "fix" }, noTasks)).toBe(false);
+  });
+
+  it("narrows to tasks marked for autopilot", () => {
+    const autopilot = { ...emptyTaskFilter, autopilot: true };
+    expect(isFilterActive(autopilot)).toBe(true);
+    expect(matchesFilter(task({ autopilot: true, autopilotAt: 5 }), autopilot, noTasks)).toBe(true);
+    expect(matchesFilter(task(), autopilot, noTasks)).toBe(false);
+    expect(matchesFilter(task(), emptyTaskFilter, noTasks)).toBe(true);
   });
 
   it("counts a blank query as no filter", () => {
