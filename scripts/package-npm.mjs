@@ -32,7 +32,7 @@ const TARGETS = {
 };
 const SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
-const HOMEPAGE = 'https://github.com/dev-bokdong/toodo';
+const HOMEPAGE = 'https://github.com/Dubusoft/toodo';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const templateDir = path.resolve(here, '..', 'npm', 'toodo');
 
@@ -125,7 +125,7 @@ for (const [target, binDir] of binaries) {
     description: `Toodo server and CLI binaries for ${label}`,
     license: 'AGPL-3.0-only',
     homepage: HOMEPAGE,
-    repository: { type: 'git', url: 'git+https://github.com/dev-bokdong/toodo.git' },
+    repository: { type: 'git', url: 'git+https://github.com/Dubusoft/toodo.git' },
     os: [os],
     cpu: [cpu],
     ...(libc ? { libc: [libc] } : {}),
@@ -148,7 +148,7 @@ writeJson(path.join(mainDir, 'package.json'), {
   description: 'Toodo command line: task planning that turns a plan into reviewed code',
   license: 'AGPL-3.0-only',
   homepage: HOMEPAGE,
-  repository: { type: 'git', url: 'git+https://github.com/dev-bokdong/toodo.git' },
+  repository: { type: 'git', url: 'git+https://github.com/Dubusoft/toodo.git' },
   bin: { toodo: 'bin/toodo.js' },
   files: ['bin'],
   engines: { node: '>=18' },

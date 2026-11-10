@@ -33,7 +33,7 @@ directory or a repository; a channel or a project fits too.
 | `id` | Stable identifier. |
 | `name` | Display name. |
 | `description` | Optional Markdown about the workspace. |
-| `repository` | Optional free text naming where the work lives, such as `dev-bokdong/toodo` or `discord:<channel>`. Toodo doesn't interpret it; a GitHub `owner/repo` form is shown as a link. |
+| `repository` | Optional free text naming where the work lives, such as `Dubusoft/toodo` or `discord:<channel>`. Toodo doesn't interpret it; a GitHub `owner/repo` form is shown as a link. |
 | `archivedAt` | Set when the workspace is archived (removed from the app); `null` otherwise. |
 
 MCP tools: `list_workspaces`, `create_workspace`, `update_workspace`,

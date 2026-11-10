@@ -19,7 +19,7 @@ name: npm
 #
 # Publishing authenticates with the NPM_TOKEN secret when it is set, otherwise with npm
 # trusted publishing (OIDC) when it is configured on npmjs.com for @dubusoft/toodo,
-# @dubusoft/toodo-linux-x64, and @dubusoft/toodo-linux-arm64 (repository dev-bokdong/toodo,
+# @dubusoft/toodo-linux-x64, and @dubusoft/toodo-linux-arm64 (repository Dubusoft/toodo,
 # workflow npm.yml). When neither is available the workflow only prints a notice and
 # succeeds. Under trusted publishing, a platform package of another target is published
 # only once trusted publishing is configured for it too (npm can configure it only for a
@@ -135,7 +135,7 @@ jobs:
                 if publishable "@dubusoft/toodo-$target"; then
                   targets="$targets $target"
                 else
-                  echo "::notice::@dubusoft/toodo-$target is left out: publish its first version by hand, then configure trusted publishing for it on npmjs.com (repository dev-bokdong/toodo, workflow npm.yml), and the next run includes it."
+                  echo "::notice::@dubusoft/toodo-$target is left out: publish its first version by hand, then configure trusted publishing for it on npmjs.com (repository Dubusoft/toodo, workflow npm.yml), and the next run includes it."
                 fi
               done
             fi
@@ -143,7 +143,7 @@ jobs:
           echo "mode=$mode" >>"$GITHUB_OUTPUT"
           echo "targets=$targets" >>"$GITHUB_OUTPUT"
           if [ "$mode" = skip ]; then
-            echo "::notice::Publishing is skipped: set the NPM_TOKEN secret, or configure trusted publishing on npmjs.com for @dubusoft/toodo, @dubusoft/toodo-linux-x64, and @dubusoft/toodo-linux-arm64 (repository dev-bokdong/toodo, workflow npm.yml), then rerun this workflow."
+            echo "::notice::Publishing is skipped: set the NPM_TOKEN secret, or configure trusted publishing on npmjs.com for @dubusoft/toodo, @dubusoft/toodo-linux-x64, and @dubusoft/toodo-linux-arm64 (repository Dubusoft/toodo, workflow npm.yml), then rerun this workflow."
           fi
           echo "version=$version dist-tag=$tag mode=$mode targets=$targets"
 
