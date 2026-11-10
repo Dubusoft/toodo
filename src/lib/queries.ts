@@ -587,6 +587,24 @@ export function useDeleteTask() {
   return useArchiveMutation((id: TaskId) => unwrap(commands.deleteTask(id)));
 }
 
+/** Archives every done task of a workspace while keeping their history. */
+export function useDeleteDoneTasks() {
+  return useArchiveMutation((workspaceId: WorkspaceId) => unwrap(commands.deleteDoneTasks(workspaceId)));
+}
+
+/**
+ * How many done tasks a workspace has: what `useDeleteDoneTasks` archives. The server counts
+ * them, since the loaded pages may hold only the newest. Nothing loads until `enabled`.
+ */
+export function useDoneTaskCount(workspaceId: WorkspaceId, enabled: boolean) {
+  return useQuery({
+    // Under the pages' key, so whatever refreshes the pages counts again.
+    queryKey: [...queryKeys.tasks, "done-count", workspaceId],
+    queryFn: async () => (await listTasks({ workspaceId, statuses: ["done"] })).length,
+    enabled,
+  });
+}
+
 /** The edge `id -> dependsOn`; `dependsOn` may be a task of another workspace. */
 type Dependency = { id: TaskId; dependsOn: TaskId };
 

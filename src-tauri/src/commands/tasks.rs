@@ -496,6 +496,18 @@ pub fn delete_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResul
     Ok(lock(&storage).archive_task(id.into())?)
 }
 
+/// Archives every `done` (completed or concluded) task of a live workspace in one go, as
+/// [`delete_task`] does for one task, keeping their history; returns how many were
+/// archived.
+#[specta::specta]
+pub fn delete_done_tasks(
+    storage: State<'_, StorageState>,
+    workspace_id: types::WorkspaceId,
+) -> CommandResult<u32> {
+    let archived = lock(&storage).archive_done_tasks(workspace_id.into())?;
+    Ok(u32::try_from(archived.len()).unwrap_or(u32::MAX))
+}
+
 /// Brings an archived task of a live workspace back with its dependencies; its worktree,
 /// removed when it was deleted, is not recreated.
 #[specta::specta]

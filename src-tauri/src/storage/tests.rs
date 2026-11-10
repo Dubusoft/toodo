@@ -309,6 +309,39 @@ fn archived_tasks_leave_the_dag_until_restored_and_purge_explicitly() {
 }
 
 #[test]
+fn archive_done_tasks_archives_only_the_live_done_tasks_of_the_workspace() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let other = add_workspace(&mut storage, "Other", local_location(r"C:\src\other"));
+    let planned = add_task(&mut storage, &workspace, "Planned");
+    let first = add_task(&mut storage, &workspace, "First");
+    let second = add_task(&mut storage, &workspace, "Second");
+    let elsewhere = add_task(&mut storage, &other, "Elsewhere");
+    for task in [&first, &second, &elsewhere] {
+        storage
+            .set_task_status(task.id, TaskStatus::InProgress)
+            .unwrap();
+        storage.conclude_task(task.id, "Not needed", None).unwrap();
+    }
+
+    assert_eq!(
+        storage.archive_done_tasks(workspace.id).unwrap(),
+        [first.id, second.id]
+    );
+    assert_eq!(storage.get_task(first.id).unwrap(), None);
+    assert_eq!(storage.get_task(second.id).unwrap(), None);
+    assert!(storage.get_task(planned.id).unwrap().is_some());
+    assert!(storage.get_task(elsewhere.id).unwrap().is_some());
+    assert!(storage.archive_done_tasks(workspace.id).unwrap().is_empty());
+
+    let unknown = WorkspaceId(workspace.id.0 + 100);
+    assert!(matches!(
+        storage.archive_done_tasks(unknown),
+        Err(StorageError::WorkspaceNotFound(id)) if id == unknown
+    ));
+}
+
+#[test]
 fn rejected_dependencies_write_nothing() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));

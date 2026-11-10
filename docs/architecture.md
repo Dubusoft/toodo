@@ -425,8 +425,8 @@ or guessed by an agent.
     `remove_related`, `current_task`, `create_task`, `create_plan`, `check_criterion`,
     `add_criterion`, `remove_criterion`, `update_task`, `add_dependency`,
     `remove_dependency`, `add_progress_note`, `report_blocker`, `pause_task`,
-    `resume_task`, `delete_task`, `reopen_task`, `start_task`, `complete_task`,
-    `conclude_task`, and `review_report`. They reuse the storage rules, so cycles are
+    `resume_task`, `delete_task`, `delete_done_tasks`, `reopen_task`, `start_task`,
+    `complete_task`, `conclude_task`, and `review_report`. They reuse the storage rules, so cycles are
     rejected.
   - The lifecycle tools only record: `start_task` moves a ready task to `in_progress` and
     creates nothing else; `update_task` with `status: "in_review"` marks work that awaits
@@ -436,8 +436,8 @@ or guessed by an agent.
   - `create_plan` creates several tasks linked to each other by key and to existing tasks
     by ID in one transaction; any failure creates nothing. `add_dependency` takes several
     prerequisites in one call and pauses an `in_progress` task they block.
-  - `delete_task`, `reopen_task`, and `archive_workspace` change nothing unless called
-    with `confirm: true`; without it the reply says what the change would do.
+  - `delete_task`, `delete_done_tasks`, `reopen_task`, and `archive_workspace` change
+    nothing unless called with `confirm: true`; without it the reply says what the change would do.
   - `search_tasks` finds tasks of all workspaces (or one, or one status) by words in their
     title, description, completion note, notes, and refs; every word must appear, and
     results come best match first with their `depends_on`, `dependents`, and `related`

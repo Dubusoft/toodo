@@ -1208,6 +1208,41 @@ impl Storage {
         Ok(())
     }
 
+    /// Archives every live `done` task of a live workspace in one transaction, as
+    /// [`Self::archive_task`] does for one task, and returns their IDs in ascending order;
+    /// none when the workspace has no `done` task. An unknown or archived workspace is
+    /// rejected.
+    pub fn archive_done_tasks(&mut self, workspace: WorkspaceId) -> Result<Vec<TaskId>> {
+        let at = self.now();
+        let tx = self.conn.transaction()?;
+        let archived: Option<Option<i64>> = tx
+            .query_row(
+                "SELECT archived_at FROM workspaces WHERE id = ?1",
+                [workspace.0],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if !matches!(archived, Some(None)) {
+            return Err(StorageError::WorkspaceNotFound(workspace));
+        }
+        let done = TaskStatus::Done.as_str();
+        let ids = tx
+            .prepare(
+                "SELECT id FROM tasks
+                 WHERE workspace_id = ?1 AND status = ?2 AND archived_at IS NULL
+                 ORDER BY id",
+            )?
+            .query_map(params![workspace.0, done], |row| row.get(0).map(TaskId))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        tx.execute(
+            "UPDATE tasks SET archived_at = ?3
+             WHERE workspace_id = ?1 AND status = ?2 AND archived_at IS NULL",
+            params![workspace.0, done, at],
+        )?;
+        tx.commit()?;
+        Ok(ids)
+    }
+
     /// Brings an archived task of a live workspace back with its dependencies. Rejected
     /// while its workspace is archived, and when its dependencies would close a cycle with
     /// edges added while it was archived.

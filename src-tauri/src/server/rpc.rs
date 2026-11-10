@@ -286,6 +286,9 @@ commands!(s => {
     "delete_task"(id: TaskId) => sync Reply::result(
         tasks::delete_task(State(&s.storage), id)
     );
+    "delete_done_tasks"(workspace_id: WorkspaceId) => sync Reply::result(
+        tasks::delete_done_tasks(State(&s.storage), workspace_id)
+    );
     "restore_task"(id: TaskId) => sync Reply::result(tasks::restore_task(State(&s.storage), id));
     "purge_task"(id: TaskId) => sync Reply::result(tasks::purge_task(State(&s.storage), id));
     "add_dependency"(task_id: TaskId, depends_on: TaskId, confirm_pause: bool) => sync Reply::result(

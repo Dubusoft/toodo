@@ -928,7 +928,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Archive a planned task with confirm true after inspecting the confirmation response. Pause active work first."
+        description = "Archive a planned or done (completed or concluded) task with confirm true after inspecting the confirmation response; history stays in review_report and the user can restore it. Pause active work first."
     )]
     async fn delete_task(
         &self,
@@ -938,6 +938,23 @@ impl ToodoMcp {
             .blocking(move |backend| tools::delete_task(backend.storage(), request))
             .await?;
         self.announce_confirmed(result)
+    }
+
+    #[tool(
+        description = "Archive every done (completed or concluded) task of a workspace, e.g. {\"workspace_id\": 1}. Without confirm nothing changes and the reply lists the tasks it would archive; call again with confirm true to archive them. History stays in review_report and the user can restore them."
+    )]
+    fn delete_done_tasks(
+        &self,
+        Parameters(request): Parameters<tools::DeleteDoneTasks>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = tools::delete_done_tasks(&mut lock(self.backend.storage()), request);
+        if let Ok(change) = &result
+            && change.confirmed
+        {
+            self.backend
+                .tasks_changed(model::WorkspaceId(change.workspace_id.0));
+        }
+        reply(result)
     }
 
     #[tool(
@@ -1513,6 +1530,7 @@ mod tests {
             "end_wait",
             "resume_task",
             "delete_task",
+            "delete_done_tasks",
             "reopen_task",
             "start_task",
             "complete_task",
@@ -1716,6 +1734,7 @@ mod tests {
             "add_related",
             "remove_related",
             "delete_task",
+            "delete_done_tasks",
             "reopen_task",
         ] {
             assert!(server.tool_router.has_route(tool), "{tool}");
@@ -2276,6 +2295,7 @@ mod tests {
             "complete_task",
             "conclude_task",
             "delete_task",
+            "delete_done_tasks",
             "reopen_task",
         ] {
             assert!(!write.contains(name), "{name}");
