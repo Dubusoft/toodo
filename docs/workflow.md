@@ -92,7 +92,7 @@ calls it. Done tasks keep their criteria as a record.
 ### 1. Register a workspace
 
 A workspace is a group of tasks. It has a name, an optional Markdown description, and an
-optional repository reference: a free string such as `dev-bokdong/toodo` or
+optional repository reference: a free string such as `Dubusoft/toodo` or
 `discord:<channel>`. Toodo doesn't interpret it. A GitHub `owner/repo` value is shown as a
 link. There's no directory, machine, or branch, so work that has no repository fits too.
 

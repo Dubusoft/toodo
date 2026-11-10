@@ -36,7 +36,7 @@ const suffix = platformSuffix();
 if (!suffix) {
   console.error(
     `toodo: ${process.platform}/${process.arch} is not supported; only ${SUPPORTED} are. ` +
-      'Build toodo-server from source instead, following docs/server.md in https://github.com/dev-bokdong/toodo.'
+      'Build toodo-server from source instead, following docs/server.md in https://github.com/Dubusoft/toodo.'
   );
   process.exit(1);
 }

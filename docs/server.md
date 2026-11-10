@@ -206,7 +206,7 @@ scripts/install-server.sh --release latest
 ```
 
 The script needs no checkout in this mode; fetch it alone with
-`gh api repos/dev-bokdong/toodo/contents/scripts/install-server.sh --jq .content | base64 -d`
+`gh api repos/Dubusoft/toodo/contents/scripts/install-server.sh --jq .content | base64 -d`
 if there is none. It downloads the server asset of the release with `gh`, checks its
 sha256 and that the binary reports the release's version, installs it to
 `~/.local/bin/toodo-server` and the web app to `~/.local/share/toodo-server-web`, writes the
@@ -264,7 +264,7 @@ toodo-server
 | `TOODO_DATA_DIR` | `$XDG_DATA_HOME/toodo-server` or `~/.local/share/toodo-server` | Database, backups, and access tokens |
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
 | `TOODO_PUBLIC_URL` | none | Public HTTPS origin, e.g. `https://toodo.example.com`; turns on OAuth for chat apps (see [Chat Apps over OAuth](#chat-apps-over-oauth)) |
-| `TOODO_PUSH_SUBJECT` | `https://github.com/dev-bokdong/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
+| `TOODO_PUSH_SUBJECT` | `https://github.com/Dubusoft/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
 
 On first start the data directory gets two access tokens:
 
