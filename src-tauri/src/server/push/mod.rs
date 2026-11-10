@@ -51,7 +51,7 @@ use crate::storage::NewPushSubscription;
 pub const KEY_FILE: &str = "push-key";
 
 /// The contact push services see in every request, unless `TOODO_PUSH_SUBJECT` sets one.
-pub const DEFAULT_SUBJECT: &str = "https://github.com/dev-bokdong/toodo";
+pub const DEFAULT_SUBJECT: &str = "https://github.com/Dubusoft/toodo";
 
 /// How long a push service keeps a message for a device that is offline.
 const TIME_TO_LIVE: Duration = Duration::from_secs(24 * 60 * 60);

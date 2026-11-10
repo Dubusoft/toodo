@@ -62,7 +62,7 @@ Environment:
                   enables OAuth for remote MCP apps (unset by default)
   TOODO_PUSH_SUBJECT
                   contact for push services in notifications, a mailto: or https: URL
-                  (default https://github.com/dev-bokdong/toodo)
+                  (default https://github.com/Dubusoft/toodo)
 ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
