@@ -7,7 +7,7 @@ use super::Timestamp;
 use crate::commands::{CommandError, CommandResult};
 use crate::domain::criteria;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(transparent)]
 pub struct CriterionId(#[specta(type = Number)] pub i64);
 

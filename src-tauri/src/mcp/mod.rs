@@ -1231,53 +1231,82 @@ impl ServerHandler for ToodoMcp {
     }
 }
 
-/// Agents often send IDs as strings, e.g. `"12"` or `"#12"`. Wherever the tool's input
-/// schema takes only integers, such a string becomes the number before the arguments are
-/// read, so the first call works; any other string there is rejected with what to send.
+/// Agents often send IDs as strings, e.g. `"12"`. Wherever the tool's input schema takes
+/// an integer, at the top level or nested in arrays and objects such as `criteria[0].id`,
+/// a string of digits becomes the number before the arguments are read, so the first call
+/// works; any other string there is rejected with the field and what to send. ID schemas
+/// advertise such strings (see [`crate::commands::types::ID_DIGITS`]).
 fn numbers_from_strings(schema: &JsonObject, arguments: &mut JsonObject) -> Result<(), String> {
     let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
         return Ok(());
     };
     for (name, value) in arguments.iter_mut() {
-        let Some(property) = properties.get(name) else {
-            continue;
-        };
-        let accepts = Accepts::of(property, schema);
-        match value {
-            Value::String(text) if accepts.integer && !accepts.string => {
-                *value = number(name, text)?;
-            }
-            Value::Array(items) if accepts.integer_items => {
-                for item in items {
-                    if let Value::String(text) = item {
-                        *item = number(name, text)?;
-                    }
-                }
-            }
-            _ => {}
+        if let Some(property) = properties.get(name) {
+            convert(value, &[property], schema, name)?;
         }
     }
     Ok(())
 }
 
-/// The JSON values a property schema takes, as far as [`numbers_from_strings`] cares.
-#[derive(Default)]
-struct Accepts {
-    integer: bool,
-    string: bool,
-    /// An array whose items take integers but not strings.
-    integer_items: bool,
+/// Converts the strings in `value`, found at `path`, that the alternatives `schemas` take
+/// as integers, and those nested in its items and fields.
+fn convert(
+    value: &mut Value,
+    schemas: &[&Value],
+    root: &JsonObject,
+    path: &str,
+) -> Result<(), String> {
+    let accepts = Accepts::of(schemas, root);
+    match value {
+        Value::String(text) if accepts.integer && !accepts.string => {
+            *value = number(path, text)?;
+        }
+        Value::Array(items) if !accepts.items.is_empty() => {
+            for (index, item) in items.iter_mut().enumerate() {
+                convert(item, &accepts.items, root, &format!("{path}[{index}]"))?;
+            }
+        }
+        Value::Object(fields) if !accepts.properties.is_empty() => {
+            for (name, field) in fields.iter_mut() {
+                let field_schemas: Vec<&Value> = accepts
+                    .properties
+                    .iter()
+                    .filter_map(|properties| properties.get(name))
+                    .collect();
+                if !field_schemas.is_empty() {
+                    convert(field, &field_schemas, root, &format!("{path}.{name}"))?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
-impl Accepts {
+/// The JSON values a set of alternative schemas takes, as far as [`numbers_from_strings`]
+/// cares.
+#[derive(Default)]
+struct Accepts<'a> {
+    integer: bool,
+    /// Strings other than the digits of an ID.
+    string: bool,
+    /// The item schemas of the arrays it takes.
+    items: Vec<&'a Value>,
+    /// The properties of the objects it takes.
+    properties: Vec<&'a JsonObject>,
+}
+
+impl<'a> Accepts<'a> {
     /// Follows `anyOf`, `oneOf`, and `$ref`s into the `$defs` of `root`.
-    fn of(schema: &Value, root: &JsonObject) -> Self {
+    fn of(schemas: &[&'a Value], root: &'a JsonObject) -> Self {
         let mut accepts = Self::default();
-        accepts.add(schema, root);
+        for schema in schemas {
+            accepts.add(schema, root);
+        }
         accepts
     }
 
-    fn add(&mut self, schema: &Value, root: &JsonObject) {
+    fn add(&mut self, schema: &'a Value, root: &'a JsonObject) {
         if let Some(name) = schema
             .get("$ref")
             .and_then(Value::as_str)
@@ -1294,13 +1323,14 @@ impl Accepts {
         for kind in types {
             match kind {
                 "integer" => self.integer = true,
-                "string" => self.string = true,
-                "array" => {
-                    if let Some(items) = schema.get("items") {
-                        let items = Self::of(items, root);
-                        self.integer_items |= items.integer && !items.string;
-                    }
+                "string" => {
+                    self.string |= schema.get("pattern").and_then(Value::as_str)
+                        != Some(crate::commands::types::ID_DIGITS);
                 }
+                "array" => self.items.extend(schema.get("items")),
+                "object" => self
+                    .properties
+                    .extend(schema.get("properties").and_then(Value::as_object)),
                 _ => {}
             }
         }
@@ -1317,24 +1347,27 @@ impl Accepts {
     }
 }
 
-/// Reads `text`, a whole number with an optional leading `#`, for the field `name`.
+/// Reads `text`, a non-negative whole number written with digits only, for the field
+/// `name`.
 fn number(name: &str, text: &str) -> Result<Value, String> {
-    let trimmed = text.trim();
-    if let Ok(number) = trimmed.strip_prefix('#').unwrap_or(trimmed).parse::<i64>() {
+    if !text.is_empty()
+        && text.bytes().all(|byte| byte.is_ascii_digit())
+        && let Ok(number) = text.parse::<i64>()
+    {
         return Ok(Value::from(number));
     }
     let lookup = if name.contains("workspace") {
         "; list_workspaces lists the workspace IDs"
-    } else if name.contains("criterion") {
+    } else if name.contains("criterion") || name.starts_with("criteria") {
         "; get_task lists a task's criteria with their IDs"
-    } else if name.ends_with("id") || name == "depends_on" || name == "related" {
+    } else if name.ends_with("id") || name.contains("depends_on") || name.contains("related") {
         "; search_tasks or list_tasks finds the task IDs"
     } else {
         ""
     };
     Err(format!(
-        "{name} must be a whole number such as 12, not {text:?}: call the tool again with \
-         {name} as a JSON number{lookup}"
+        "{name} must be a whole number such as 12 or \"12\", not {text:?}: call the tool \
+         again with {name} as a number{lookup}"
     ))
 }
 
@@ -1847,27 +1880,30 @@ mod tests {
                 continue;
             };
             for (name, property) in properties {
-                let accepts = Accepts::of(property, schema);
+                let accepts = Accepts::of(&[property], schema);
                 let converted = |value: Value| {
                     let mut arguments = JsonObject::from_iter([(name.clone(), value)]);
                     numbers_from_strings(schema, &mut arguments).map(|()| arguments[name].clone())
                 };
+                let items = Accepts::of(&accepts.items, schema);
                 if accepts.integer && !accepts.string {
-                    for given in ["12", "#12", " 12 "] {
-                        assert_eq!(converted(given.into()), Ok(12.into()), "{name}: {given}");
-                    }
+                    assert_eq!(converted("12".into()), Ok(12.into()), "{name}");
                     assert_eq!(converted(12.into()), Ok(12.into()), "{name}");
-                    let error = converted("abc".into()).unwrap_err();
-                    assert!(
-                        error.starts_with(&format!("{name} must be a whole number")),
-                        "{error}"
-                    );
-                } else if accepts.integer_items {
+                    for given in ["abc", "1.5", "", " 12", "#12", "-1"] {
+                        let error = converted(given.into()).unwrap_err();
+                        assert!(
+                            error.starts_with(&format!("{name} must be a whole number")),
+                            "{error}"
+                        );
+                    }
+                } else if items.integer && !items.string {
                     assert_eq!(
                         converted(serde_json::json!(["3", 4])),
                         Ok(serde_json::json!([3, 4])),
                         "{name}"
                     );
+                    let error = converted(serde_json::json!([3, "x"])).unwrap_err();
+                    assert!(error.starts_with(&format!("{name}[1] must be")), "{error}");
                 } else {
                     continue;
                 }
@@ -1893,6 +1929,65 @@ mod tests {
     }
 
     #[test]
+    fn nested_ids_take_numeric_strings() {
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        let server = ToodoMcp::new(Arc::new(TestBackend::new(storage)));
+        let convert = |tool: &str, arguments: Value| {
+            let schema = &server.tool_router.get(tool).unwrap().input_schema;
+            let Value::Object(mut arguments) = arguments else {
+                unreachable!()
+            };
+            numbers_from_strings(schema, &mut arguments).map(|()| Value::Object(arguments))
+        };
+        assert_eq!(
+            convert(
+                "update_task",
+                serde_json::json!({"id": "7", "criteria": [{"id": "11"}, {"text": "12", "kind": "manual"}]})
+            ),
+            Ok(
+                serde_json::json!({"id": 7, "criteria": [{"id": 11}, {"text": "12", "kind": "manual"}]})
+            )
+        );
+        assert_eq!(
+            convert(
+                "create_plan",
+                serde_json::json!({"tasks": [{"key": "a", "workspace_id": "1", "depends_on": ["3"], "related": ["4"]}]})
+            ),
+            Ok(
+                serde_json::json!({"tasks": [{"key": "a", "workspace_id": 1, "depends_on": [3], "related": [4]}]})
+            )
+        );
+        let error = convert(
+            "update_task",
+            serde_json::json!({"id": 7, "criteria": [{"id": 11}, {"id": "1.5"}]}),
+        )
+        .unwrap_err();
+        assert!(
+            error.starts_with(
+                r#"criteria[1].id must be a whole number such as 12 or "12", not "1.5""#
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn id_arguments_advertise_numeric_strings() {
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        let server = ToodoMcp::new(Arc::new(TestBackend::new(storage)));
+        let property = |tool: &str, name: &str| {
+            server.tool_router.get(tool).unwrap().input_schema["properties"][name].clone()
+        };
+        assert_eq!(
+            property("get_task", "id"),
+            serde_json::json!({"type": ["integer", "string"], "pattern": "^[0-9]+$", "description": "The task, e.g. one that search_tasks found."})
+        );
+        assert_eq!(
+            property("check_criterion", "task_id")["type"],
+            serde_json::json!(["integer", "string", "null"])
+        );
+    }
+
+    #[test]
     fn a_task_id_sent_as_a_string_reaches_the_tool() {
         let listener = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
         let address = listener.local_addr().unwrap();
@@ -1914,8 +2009,9 @@ mod tests {
         assert!(found.contains(r#"\"title\": \"Add login\""#), "{found}");
         let rejected = get_task(r#""login""#);
         assert!(
-            rejected
-                .contains(r#"InvalidInput: id must be a whole number such as 12, not \"login\""#),
+            rejected.contains(
+                r#"InvalidInput: id must be a whole number such as 12 or \"12\", not \"login\""#
+            ),
             "{rejected}"
         );
         assert!(rejected.contains(r#""isError":true"#), "{rejected}");
