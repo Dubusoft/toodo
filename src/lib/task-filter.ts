@@ -30,61 +30,6 @@ export function shownStatus(task: Task, byId: ReadonlyMap<TaskId, Task>): ShownS
   return task.status === "planned" && dependenciesDone(task, byId) ? "ready" : task.status;
 }
 
-/** The sections of the task list, in the order they are shown. */
-export const taskGroups = ["attention", "in_progress", "in_review", "ready", "planned", "done"] as const;
-
-export type TaskGroup = (typeof taskGroups)[number];
-
-export const taskGroupNames: Record<TaskGroup, string> = {
-  attention: "Needs attention",
-  in_progress: "In progress",
-  in_review: "Awaiting completion",
-  ready: "Ready",
-  planned: "Planned",
-  done: "Done",
-};
-
-function groupOf(task: Task, byId: ReadonlyMap<TaskId, Task>): Exclude<TaskGroup, "attention"> {
-  switch (shownStatus(task, byId)) {
-    case "in_progress":
-      return "in_progress";
-    case "in_review":
-      return "in_review";
-    case "ready":
-      return "ready";
-    case "planned":
-    case "paused":
-      return "planned";
-    case "done":
-    case "not_adopted":
-      return "done";
-  }
-}
-
-/**
- * `tasks` split into the non-empty sections of the task list, active work first. Tasks in
- * `attention` (most urgent first) form the first section whatever their status; the other
- * sections keep the order of `tasks`.
- */
-export function groupTasks(
-  tasks: Task[],
-  byId: ReadonlyMap<TaskId, Task>,
-  attention: TaskId[],
-): { group: TaskGroup; tasks: Task[] }[] {
-  const urgent = tasks
-    .filter((task) => attention.includes(task.id))
-    .sort((a, b) => attention.indexOf(a.id) - attention.indexOf(b.id));
-  return taskGroups
-    .map((group) => ({
-      group,
-      tasks:
-        group === "attention"
-          ? urgent
-          : tasks.filter((task) => !attention.includes(task.id) && groupOf(task, byId) === group),
-    }))
-    .filter((section) => section.tasks.length > 0);
-}
-
 /** What the task views are narrowed to; `null` lets every type through. */
 export type TaskFilter = {
   /**
