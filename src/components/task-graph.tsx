@@ -388,11 +388,7 @@ export function TaskGraph({
   const hoveredBar = layout.bars.find((bar) => bar.task.id === hovered?.id);
 
   function opening() {
-    return openingViewport(layout, {
-      visible: container.current?.clientWidth ?? 0,
-      panel: container.current?.clientHeight ?? 0,
-      height,
-    });
+    return openingViewport(layout, { visible: container.current?.clientWidth ?? 0 });
   }
 
   function showLatest(instance: ReactFlowInstance<BarNode>) {
@@ -421,7 +417,7 @@ export function TaskGraph({
     );
   }
 
-  /** Pans back to where the timeline opens: the Now line and the newest rows. */
+  /** Pans back to where the timeline opens: the Now line and the first rows. */
   function showToday() {
     void flow.current?.setViewport(opening(), { duration: prefersReducedMotion() ? 0 : 200 });
   }

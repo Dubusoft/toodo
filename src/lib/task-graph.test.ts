@@ -420,11 +420,11 @@ describe("majorLabelOffset", () => {
 });
 
 describe("openingViewport", () => {
-  const panel = { visible: 1000, panel: 400, height: 600 };
+  const panel = { visible: 1000 };
 
-  it("opens Hour, Day and Week with Now at the left edge and the last row at the bottom", () => {
+  it("opens Hour, Day and Week with Now at the left edge and the first row at the top", () => {
     for (const scale of ["hour", "day", "week"] as const) {
-      expect(openingViewport({ scale, nowX: 50000, width: 96000 }, panel)).toEqual({ x: 16 - 50000, y: -208, zoom: 1 });
+      expect(openingViewport({ scale, nowX: 50000, width: 96000 }, panel)).toEqual({ x: 16 - 50000, y: 0, zoom: 1 });
     }
   });
 
