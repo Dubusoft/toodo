@@ -22,7 +22,7 @@ async function openTimeline(page: Page) {
 }
 
 for (const scale of ["Day", "Week"]) {
-  test(`${scale} timeline opens at the last row with Now at the left edge`, async ({ app, server }) => {
+  test(`${scale} timeline opens at the first row with Now at the left edge`, async ({ app, server }) => {
     const ids = await seedTasks(server);
     await app.reload();
     await openTimeline(app);
@@ -34,22 +34,22 @@ for (const scale of ["Day", "Week"]) {
     const last = bar(app, ids[ids.length - 1]);
     const first = bar(app, ids[0]);
 
-    await expect(last).toBeVisible();
+    await expect(first).toBeVisible();
 
     await expect
       .poll(async () => {
-        const [area, line, row] = await Promise.all([canvas.boundingBox(), now.boundingBox(), last.boundingBox()]);
+        const [area, line, row] = await Promise.all([canvas.boundingBox(), now.boundingBox(), first.boundingBox()]);
         if (!area || !line || !row) return null;
         return {
           nowAtLeftEdge: line.x - area.x >= 14 && line.x - area.x <= 22,
-          lastRowInside: row.y >= area.y && row.y + row.height <= area.y + area.height,
-          lastRowAtBottom: area.y + area.height - (row.y + row.height) < 40,
+          firstRowInside: row.y >= area.y && row.y + row.height <= area.y + area.height,
+          firstRowAtTop: row.y - area.y < 80,
         };
       })
-      .toEqual({ nowAtLeftEdge: true, lastRowInside: true, lastRowAtBottom: true });
+      .toEqual({ nowAtLeftEdge: true, firstRowInside: true, firstRowAtTop: true });
 
-    const [area, top] = await Promise.all([canvas.boundingBox(), first.boundingBox()]);
-    expect(top!.y + top!.height).toBeLessThan(area!.y);
+    const [area, bottom] = await Promise.all([canvas.boundingBox(), last.boundingBox()]);
+    expect(bottom!.y).toBeGreaterThan(area!.y + area!.height);
   });
 }
 

@@ -621,16 +621,17 @@ export function timelineYears(tasks: Task[], now: Timestamp): number[] {
 }
 
 /**
- * Where the timeline opens. Hour, Day and Week open on the newest work: the last row at the
- * bottom, the Now line at the left edge. Hour needs this most, since its axis is so wide that
- * the end of it, where Month opens, holds none of the work. Month fits the newest end on screen.
+ * Where the timeline opens: always at the first row, since the default filter hides done tasks
+ * and the rows left are the work still ahead. Hour, Day and Week put the Now line at the left
+ * edge. Hour needs this most, since its axis is so wide that the end of it, where Month opens,
+ * holds none of the work. Month fits the newest end on screen.
  */
 export function openingViewport(
   layout: Pick<TimelineLayout, "scale" | "nowX" | "width">,
-  panel: { visible: number; panel: number; height: number },
+  panel: { visible: number },
 ): { x: number; y: number; zoom: 1 } {
   if (layout.scale !== "month" && layout.nowX !== null) {
-    return { x: 16 - layout.nowX, y: Math.min(0, panel.panel - panel.height - 8), zoom: 1 };
+    return { x: 16 - layout.nowX, y: 0, zoom: 1 };
   }
   return { x: Math.min(16, panel.visible - layout.width - 16), y: 0, zoom: 1 };
 }
