@@ -501,7 +501,7 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
         title="Only tasks marked for autopilot"
         onClick={() => onChange({ ...filter, autopilot: !filter.autopilot })}
       >
-        {filter.autopilot ? <Check aria-hidden className="size-3" /> : <Bot aria-hidden className="size-3" />}
+        <Bot aria-hidden className="size-3" />
         Autopilot
       </button>
       {isFilterActive(filter) && (

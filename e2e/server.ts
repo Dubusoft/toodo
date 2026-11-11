@@ -153,7 +153,7 @@ export async function startServer(options: ServerOptions = {}): Promise<ScratchS
   };
 }
 
-export function createTask(server: ScratchServer, task: { workspaceId: number; title: string; taskType?: string }) {
+export function createTask(server: ScratchServer, task: { workspaceId: number; title: string; taskType?: string; autopilot?: boolean }) {
   return server.rpc<{ id: number; title: string }>("create_task", {
     task: { taskType: "feat", description: "", estimate: null, dueDate: null, criteria: [], ...task },
   });

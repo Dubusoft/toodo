@@ -53,6 +53,24 @@ for (const scale of ["Day", "Week"]) {
   });
 }
 
+test("autopilot tasks carry the bot icon of the Autopilot filter", async ({ app, server }) => {
+  const autopilot = await createTask(server, { workspaceId: 1, title: "Taken up by an executor", autopilot: true });
+  const manual = await createTask(server, { workspaceId: 1, title: "Done by hand" });
+  await app.reload();
+  await openTimeline(app);
+
+  await expect(bar(app, autopilot.id).getByRole("img", { name: `#${autopilot.id} is marked for autopilot` })).toBeVisible();
+  await expect(bar(app, manual.id)).toBeVisible();
+  await expect(bar(app, manual.id).locator("svg.lucide-bot")).toHaveCount(0);
+
+  const filter = app.getByRole("button", { name: "Autopilot", exact: true });
+  await expect(filter.locator("svg.lucide-bot")).toHaveCount(1);
+  await filter.click();
+  await expect(filter).toHaveAttribute("aria-pressed", "true");
+  await expect(filter.locator("svg.lucide-bot")).toHaveCount(1);
+  await expect(bar(app, manual.id)).toHaveCount(0);
+});
+
 test("selecting a bar dims the tasks it does not depend on or lead to", async ({ app, server }) => {
   const [before, middle, after, apart] = await Promise.all(
     ["Before", "Middle", "After", "Apart"].map((title) => createTask(server, { workspaceId: 1, title })),
