@@ -10,7 +10,7 @@ use crate::{domain::model, storage};
 /// The most characters a guideline body may have, after trimming.
 pub const GUIDELINE_BODY_LIMIT: usize = 4000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(transparent)]
 pub struct GuidelineId(#[specta(type = Number)] pub i64);
 

@@ -1,4 +1,3 @@
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use specta_typescript::Number;
@@ -8,13 +7,39 @@ use crate::domain::model;
 // Database IDs and timestamps stay far below 2^53, so they are exported as `number`
 // instead of the `bigint` specta requires for `i64` by default.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(transparent)]
 pub struct WorkspaceId(#[specta(type = Number)] pub i64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(transparent)]
 pub struct TaskId(#[specta(type = Number)] pub i64);
+
+/// The pattern of an ID given as a string of digits, such as `"12"`.
+pub const ID_DIGITS: &str = "^[0-9]+$";
+
+/// Gives record IDs the MCP input schema of a JSON integer or the same number as a string
+/// of digits: agents often send `"12"` for 12, and the MCP server reads such a string as
+/// the number before the arguments are parsed.
+macro_rules! id_schema {
+    ($($id:ty),*) => {$(
+        impl schemars::JsonSchema for $id {
+            fn inline_schema() -> bool {
+                true
+            }
+
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($id).into()
+            }
+
+            fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                schemars::json_schema!({"type": ["integer", "string"], "pattern": ID_DIGITS})
+            }
+        }
+    )*};
+}
+
+id_schema!(WorkspaceId, TaskId, super::CriterionId, super::GuidelineId);
 
 /// A related link between two tasks, which may belong to different workspaces. The link
 /// goes both ways; `task_id` is the lower ID.
