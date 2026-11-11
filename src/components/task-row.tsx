@@ -54,6 +54,7 @@ const RelatedTasks = lazy(() => taskDetails().then((module) => ({ default: modul
 const TaskNotes = lazy(() => taskDetails().then((module) => ({ default: module.TaskNotes })));
 const TaskPlan = lazy(() => taskDetails().then((module) => ({ default: module.TaskPlan })));
 const TaskCriteria = lazy(() => taskDetails().then((module) => ({ default: module.TaskCriteria })));
+const AutopilotToggle = lazy(() => taskDetails().then((module) => ({ default: module.AutopilotToggle })));
 
 /** Statuses whose task is not being worked on, so it can be deleted. */
 const deletableStatuses: TaskStatus[] = ["planned", "done"];
@@ -344,7 +345,12 @@ export function TaskRow({
               </span>
             )}
             <TaskTypeBadge type={task.taskType} />
-            {task.autopilot && (
+            {detailed && (
+              <Suspense fallback={null}>
+                <AutopilotToggle task={task} />
+              </Suspense>
+            )}
+            {!detailed && task.autopilot && (
               <span
                 role="note"
                 aria-label={`#${task.id} is marked for autopilot`}

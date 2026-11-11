@@ -1852,6 +1852,39 @@ describe("App", () => {
     });
   });
 
+  it("turns autopilot on and off from the details sheet", async () => {
+    const original = task(1, 1, "Add sign-in", { dueDate: "2026-12-01" });
+    const marked = { ...original, autopilot: true, autopilotAt: 1_794_441_600 };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [original] });
+    mocked.updateTask.mockResolvedValue({ status: "ok", data: marked });
+    await renderWorkspace();
+
+    const sheet = await openDetails("Add sign-in");
+    const toggle = await within(sheet).findByRole("button", { name: "Autopilot of #1" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [marked] });
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-pressed", "true"));
+    expect(mocked.updateTask).toHaveBeenLastCalledWith({
+      status: null,
+      id: 1,
+      taskType: original.taskType,
+      title: "Add sign-in",
+      description: original.description,
+      estimate: null,
+      dueDate: "2026-12-01",
+      autopilot: true,
+      criteria: null,
+    });
+
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [original] });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-pressed", "false"));
+    expect(mocked.updateTask).toHaveBeenLastCalledWith(expect.objectContaining({ id: 1, autopilot: false }));
+  });
+
   it("marks tasks missing an estimate or due date and opens the edit form at the missing field", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({
