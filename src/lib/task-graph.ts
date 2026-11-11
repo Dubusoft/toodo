@@ -374,6 +374,25 @@ function dependencyOrder(placed: Placed[]): Placed[] {
   return ordered;
 }
 
+/**
+ * `tasks` in the order of the timeline's rows, top to bottom: the bars of `layoutTimeline`
+ * without a period, then the tasks it cannot place. The task list follows this order, so it
+ * reads like the timeline: the oldest work first.
+ */
+export function timelineOrder(tasks: Task[], now: Timestamp): Task[] {
+  const placed: Placed[] = [];
+  const unplaced: Task[] = [];
+  for (const task of tasks) {
+    const interval = taskInterval(task, now);
+    if (interval === null) {
+      unplaced.push(task);
+    } else {
+      placed.push({ task, interval });
+    }
+  }
+  return [...dependencyOrder(placed).map(({ task }) => task), ...unplaced];
+}
+
 const pad = (value: number) => String(value).padStart(2, "0");
 
 type TickUnit = "hour" | "day" | "week" | "month" | "year";

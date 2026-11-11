@@ -64,7 +64,7 @@ To make one task wait for another, pick the prerequisite in "Add dependency..." 
 task's details, or on the timeline drag from the prerequisite's right handle to the task
 that waits for it. A task can start only once every task it depends on is done.
 
-![Tasks of a workspace, grouped by status](images/task-list.png)
+![Tasks of a workspace, oldest first](images/task-list.png)
 
 ## 6. Start It and Record Progress
 

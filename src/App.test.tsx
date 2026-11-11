@@ -2324,7 +2324,7 @@ describe("App", () => {
     expect(screen.getByRole("heading", { level: 2, name: "toodo" })).toBeInTheDocument();
   });
 
-  it("puts a task whose agent reported a blocker under Needs attention and shows every note in the task details", async () => {
+  it("marks a task whose agent reported a blocker in the list and shows every note in the task details", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
     const plannedAt = new Date(2026, 5, 1).getTime() / 1000;
@@ -2341,9 +2341,8 @@ describe("App", () => {
     await renderWorkspace();
 
     const tasks = await taskList();
-    const attention = within(tasks).getByRole("list", { name: "Needs attention" });
-    expect(within(attention).getByRole("button", { name: "Add login" })).toBeInTheDocument();
-    expect(within(attention).queryByRole("button", { name: "Add logout" })).not.toBeInTheDocument();
+    expect(within(tasks).getByRole("note", { name: "Blocker on #1: Need a test account for the provider" })).toBeInTheDocument();
+    expect(within(row("Add logout")).queryByText("Blocker")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
@@ -2481,49 +2480,41 @@ describe("App", () => {
     expect(mocked.deleteTask).toHaveBeenCalledWith(1);
   });
 
-  it("groups the list by status, needs attention first, with done work folded away", async () => {
+  it("lists tasks in the timeline's order, oldest first, with done work folded away", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const day = (n: number) => new Date(2026, 5, n).getTime() / 1000;
+    const milestones = (startedAt: number, extra: Partial<Task["milestones"]> = {}) => ({
+      ...task(0, 1, "").milestones,
+      plannedAt: day(1),
+      startedAt,
+      ...extra,
+    });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
     mocked.listTasks.mockResolvedValue({
       status: "ok",
       data: [
-        task(1, 1, "Ship v1", { status: "done", resolution: "merged" }),
-        task(2, 1, "Plan docs", { dependsOn: [3] }),
-        task(3, 1, "Build API", { status: "in_progress" }),
-        task(4, 1, "Fix crash", { status: "in_review", refs: ["pr:https://github.com/acme/toodo/pull/4"] }),
-        task(5, 1, "Add search"),
-        task(6, 1, "Add UI", {
-          status: "in_progress",
-          notes: [{ kind: "blocker", body: "Need an account", at: 1760000000 }],
-        }),
+        task(1, 1, "Ship v1", { status: "done", resolution: "merged", milestones: milestones(day(2), { completedAt: day(3) }) }),
+        task(2, 1, "Plan docs", { dependsOn: [3], milestones: { ...task(0, 1, "").milestones, plannedAt: day(1) } }),
+        task(3, 1, "Build API", { status: "in_progress", milestones: milestones(day(4)) }),
+        task(4, 1, "Fix crash", { status: "in_review", milestones: milestones(day(6), { reviewAt: day(7) }) }),
+        task(5, 1, "Add search", { milestones: { ...task(0, 1, "").milestones, plannedAt: day(1) } }),
+        task(6, 1, "Add UI", { status: "in_progress", milestones: milestones(day(5)) }),
       ],
     });
     await renderWorkspace();
 
     const tasks = await taskList();
-    expect(within(tasks).getAllByRole("region").map((section) => section.getAttribute("aria-label"))).toEqual([
-      "Needs attention",
-      "In progress",
-      "Awaiting completion",
-      "Ready",
-      "Planned",
-      "Done",
-    ]);
-    const titles = (name: string) =>
-      within(within(tasks).getByRole("list", { name }))
+    const titles = () =>
+      within(within(tasks).getByRole("list", { name: "Task list" }))
         .getAllByRole("listitem")
         .map((item) => item.querySelector("[data-task-row] button")?.textContent);
-    expect(titles("Needs attention")).toEqual(["Add UI"]);
-    expect(titles("In progress")).toEqual(["Build API"]);
-    expect(titles("Awaiting completion")).toEqual(["Fix crash"]);
-    expect(titles("Ready")).toEqual(["Add search"]);
-    expect(titles("Planned")).toEqual(["Plan docs"]);
+    expect(titles()).toEqual(["Build API", "Add UI", "Fix crash", "Plan docs", "Add search"]);
 
     const done = within(tasks).getByRole("button", { name: "Done 1" });
     expect(done).toHaveAttribute("aria-expanded", "false");
-    expect(within(tasks).queryByRole("list", { name: "Done" })).not.toBeInTheDocument();
     fireEvent.click(done);
     expect(done).toHaveAttribute("aria-expanded", "true");
-    expect(titles("Done")).toEqual(["Ship v1"]);
+    expect(titles()).toEqual(["Ship v1", "Build API", "Add UI", "Fix crash", "Plan docs", "Add search"]);
   });
-
 });

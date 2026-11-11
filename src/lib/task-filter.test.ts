@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "@/lib/bindings";
-import { emptyTaskFilter, groupTasks, isFilterActive, matchesFilter, toggleStatus, type TaskFilter } from "@/lib/task-filter";
+import { emptyTaskFilter, isFilterActive, matchesFilter, toggleStatus, type TaskFilter } from "@/lib/task-filter";
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
@@ -30,36 +30,6 @@ function task(overrides: Partial<Task> = {}): Task {
 }
 
 const noTasks = new Map<number, Task>();
-
-describe("groupTasks", () => {
-  it("puts tasks needing attention first, then active, ready, planned, and finished work", () => {
-    const tasks = [
-      task({ id: 1, status: "done", resolution: "merged" }),
-      task({ id: 2, status: "done", resolution: "not_adopted" }),
-      task({ id: 3, status: "planned" }),
-      task({ id: 4, status: "planned", dependsOn: [6] }),
-      task({ id: 5, status: "planned", dependsOn: [6], milestones: { ...task().milestones, startedAt: 1 } }),
-      task({ id: 6, status: "in_progress" }),
-      task({ id: 7, status: "in_review" }),
-      task({ id: 8, status: "in_progress" }),
-      task({ id: 9, status: "in_review" }),
-    ];
-    const byId = new Map(tasks.map((each) => [each.id, each]));
-    const groups = groupTasks(tasks, byId, [9, 8]);
-    expect(groups.map(({ group, tasks }) => [group, tasks.map((each) => each.id)])).toEqual([
-      ["attention", [9, 8]],
-      ["in_progress", [6]],
-      ["in_review", [7]],
-      ["ready", [3]],
-      ["planned", [4, 5]],
-      ["done", [1, 2]],
-    ]);
-  });
-
-  it("leaves out empty sections", () => {
-    expect(groupTasks([task()], noTasks, []).map(({ group }) => group)).toEqual(["ready"]);
-  });
-});
 
 describe("matchesFilter", () => {
   it("finds every word of the query in the title or description, ignoring case", () => {
