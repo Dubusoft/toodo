@@ -1198,6 +1198,8 @@ mod tests {
                 notes: Vec::new(),
                 criteria: Vec::new(),
                 wait: None,
+                autopilot: false,
+                autopilot_at: None,
             },
             outcome,
             at: Timestamp(local(2026, 10, 13, 15)),

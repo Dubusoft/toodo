@@ -122,6 +122,8 @@ function task(id: number, workspaceId: number, title: string, overrides: Partial
     notes: [],
     criteria: [],
     wait: null,
+    autopilot: false,
+    autopilotAt: null,
     timeline: [],
     milestones: {
       plannedAt: null,
@@ -1118,6 +1120,7 @@ describe("App", () => {
     fireEvent.change(screen.getByLabelText("Estimate unit"), { target: { value: "weeks" } });
     fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2026-11-01" } });
     fireEvent.change(screen.getByLabelText("Labels"), { target: { value: " q4, docs ,, q4" } });
+    fireEvent.click(screen.getByLabelText("Autopilot"));
     fireEvent.click(screen.getByRole("button", { name: "Add task" }));
 
     expect(await screen.findByText("Write docs")).toBeInTheDocument();
@@ -1129,6 +1132,7 @@ describe("App", () => {
       estimate: { unit: "weeks", amount: 2.5 },
       dueDate: "2026-11-01",
       labels: ["docs", "q4"],
+      autopilot: true,
       criteria: [],
     });
     // The form closes once the task is added, and opens again empty.
@@ -1843,6 +1847,7 @@ describe("App", () => {
       estimate: null,
       dueDate: "2026-12-01",
       labels: ["auth", "q4"],
+      autopilot: null,
       criteria: null,
     });
   });

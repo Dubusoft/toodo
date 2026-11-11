@@ -8,7 +8,7 @@ import { useUpdateTask } from "@/lib/queries";
 import { formatLabels, type MissingPlanField, parseLabels } from "@/lib/plan";
 import { cn } from "@/lib/utils";
 import { taskTypes } from "@/components/task-common";
-import { type PlanDraft, planEstimate, PlanFields } from "@/components/plan-fields";
+import { AutopilotField, type PlanDraft, planEstimate, PlanFields } from "@/components/plan-fields";
 import {
   type CriterionDraft,
   criterionDraft,
@@ -39,6 +39,7 @@ export function TaskEditForm({
     labels: formatLabels(task.labels),
   }));
   const [plan, setPlan] = useState<PlanDraft>(initialPlan);
+  const [autopilot, setAutopilot] = useState(task.autopilot);
   const labelsChanged = formatLabels(parseLabels(plan.labels)) !== formatLabels(task.labels);
   const [initialCriteria] = useState(() => task.criteria.map((criterion) => criterionDraft(criterion)));
   const [criteria, setCriteria] = useState<CriterionDraft[]>(initialCriteria);
@@ -56,6 +57,7 @@ export function TaskEditForm({
     plan.estimateUnit !== initialPlan.estimateUnit ||
     plan.dueDate !== initialPlan.dueDate ||
     plan.labels !== initialPlan.labels ||
+    autopilot !== task.autopilot ||
     criteriaChanged;
   const guard = useDiscardGuard(dirty, onDone, updateTask.isPending);
 
@@ -72,6 +74,8 @@ export function TaskEditForm({
         estimate,
         dueDate: plan.dueDate || null,
         labels: labelsChanged ? parseLabels(plan.labels) : null,
+        // Sent only when changed, so a save keeps when the task was marked.
+        autopilot: autopilot !== task.autopilot ? autopilot : null,
         // The criteria of a done task cannot change.
         criteria: criteriaChanged && task.status !== "done" ? criterionInputs(criteria) : null,
       },
@@ -116,6 +120,7 @@ export function TaskEditForm({
         onChange={setDescription}
       />
       <PlanFields suffix={` of #${task.id}`} plan={plan} onChange={setPlan} autoFocus={focusPlan} />
+      <AutopilotField suffix={` of #${task.id}`} checked={autopilot} onChange={setAutopilot} />
       {task.status !== "done" && (
         <div className="flex flex-col gap-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">

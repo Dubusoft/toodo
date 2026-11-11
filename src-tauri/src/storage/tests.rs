@@ -33,6 +33,7 @@ fn add_task(storage: &mut Storage, workspace: &Workspace, title: &str) -> Task {
             description: format!("Implement {title}"),
             estimate: None,
             due_date: None,
+            autopilot: false,
             criteria: Vec::new(),
         })
         .unwrap()
@@ -207,6 +208,7 @@ fn workspace_updates_archive_restore_and_purge() {
             description: String::new(),
             estimate: None,
             due_date: None,
+            autopilot: false,
             criteria: Vec::new(),
         }),
         Err(StorageError::WorkspaceNotFound(_))

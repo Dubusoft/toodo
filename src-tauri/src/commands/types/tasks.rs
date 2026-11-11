@@ -163,6 +163,7 @@ impl TryFrom<TaskListFilter> for storage::TaskQuery {
                 .map(|ids| ids.into_iter().map(Into::into).collect()),
             before: filter.before.map(Into::into),
             limit: filter.limit,
+            autopilot: None,
         })
     }
 }
@@ -229,6 +230,11 @@ pub struct Task {
     /// The wait the task is paused for: it is `planned` until `until`, then returns to
     /// the status it had when the wait began. `None` when it does not wait.
     pub wait: Option<TaskWait>,
+    /// Whether the task is marked for autopilot: an executor may take it up on its own
+    /// once it is ready.
+    pub autopilot: bool,
+    /// Since when the task is marked for autopilot; `None` when it is not.
+    pub autopilot_at: Option<Timestamp>,
 }
 
 /// A wait on a task.
@@ -437,6 +443,8 @@ impl From<&model::Task> for Task {
             notes: map_all(&task.notes),
             criteria: map_all(&task.criteria),
             wait: task.wait.map(TaskWait::from),
+            autopilot: task.autopilot_at.is_some(),
+            autopilot_at: task.autopilot_at.map(Timestamp),
         }
     }
 }
@@ -503,6 +511,9 @@ pub struct NewTask {
     /// Labels such as a project or goal; none when omitted.
     #[serde(default)]
     pub labels: Vec<String>,
+    /// Whether to mark the task for autopilot; not marked when omitted.
+    #[serde(default)]
+    pub autopilot: bool,
     /// Completion criteria in order; an `id` is not allowed here.
     pub criteria: Vec<CriterionInput>,
 }
@@ -518,6 +529,7 @@ impl TryFrom<NewTask> for storage::NewTask {
             description: new.description,
             estimate: estimate(new.estimate)?,
             due_date: due_date(new.due_date.as_deref())?,
+            autopilot: new.autopilot,
             criteria: new_criteria(&new.criteria)?,
         })
     }
@@ -556,6 +568,10 @@ pub struct TaskEdit {
     /// The new labels, which replace the current ones; `null` or omitted keeps them.
     #[serde(default)]
     pub labels: Option<Vec<String>>,
+    /// Marks the task for autopilot (`true`) or clears the mark (`false`); `null` or
+    /// omitted keeps it. Marking a marked task keeps the time it was marked.
+    #[serde(default)]
+    pub autopilot: Option<bool>,
     /// The new completion criteria in order, which replace the current ones; `null`
     /// keeps them. The criteria of a done task cannot change.
     pub criteria: Option<Vec<CriterionInput>>,

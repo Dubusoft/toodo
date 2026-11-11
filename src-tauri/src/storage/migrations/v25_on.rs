@@ -901,4 +901,13 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
         CHECK (wait_status IN ('planned', 'in_progress', 'in_review'));
     CREATE INDEX tasks_wait_until ON tasks (wait_until) WHERE wait_until IS NOT NULL;
     ",
+    // Version 49: whether a task is marked for autopilot, an executor taking it up on its
+    // own once it is ready, and since when. `autopilot_at` is set exactly while it is on.
+    r"
+    ALTER TABLE tasks ADD COLUMN autopilot INTEGER NOT NULL DEFAULT 0
+        CHECK (autopilot IN (0, 1));
+    ALTER TABLE tasks ADD COLUMN autopilot_at INTEGER
+        CHECK ((autopilot = 1) = (autopilot_at IS NOT NULL));
+    CREATE INDEX tasks_autopilot ON tasks (id) WHERE autopilot = 1;
+    ",
 ];
