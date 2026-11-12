@@ -93,9 +93,13 @@ function TokenForm() {
             maxLength={80}
             value={label}
             onChange={(event) => setLabel(event.target.value)}
+            aria-describedby={`${id}-name-help`}
             required
           />
         </label>
+        <p id={`${id}-name-help`} className="-mt-2 text-xs text-muted-foreground">
+          Signing in again under a device's name replaces that device, so give each browser its own name.
+        </p>
         <div className="grid grid-cols-2 gap-2">
           <label className="flex flex-col gap-1 text-xs text-muted-foreground">
             Access
