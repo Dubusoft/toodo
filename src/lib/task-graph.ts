@@ -374,6 +374,25 @@ function dependencyOrder(placed: Placed[]): Placed[] {
   return ordered;
 }
 
+/**
+ * `tasks` in the order of the timeline's rows, top to bottom: the bars of `layoutTimeline`
+ * without a period, then the tasks it cannot place. The task list follows this order, so it
+ * reads like the timeline: the oldest work first.
+ */
+export function timelineOrder(tasks: Task[], now: Timestamp): Task[] {
+  const placed: Placed[] = [];
+  const unplaced: Task[] = [];
+  for (const task of tasks) {
+    const interval = taskInterval(task, now);
+    if (interval === null) {
+      unplaced.push(task);
+    } else {
+      placed.push({ task, interval });
+    }
+  }
+  return [...dependencyOrder(placed).map(({ task }) => task), ...unplaced];
+}
+
 const pad = (value: number) => String(value).padStart(2, "0");
 
 type TickUnit = "hour" | "day" | "week" | "month" | "year";
@@ -621,16 +640,17 @@ export function timelineYears(tasks: Task[], now: Timestamp): number[] {
 }
 
 /**
- * Where the timeline opens. Hour, Day and Week open on the newest work: the last row at the
- * bottom, the Now line at the left edge. Hour needs this most, since its axis is so wide that
- * the end of it, where Month opens, holds none of the work. Month fits the newest end on screen.
+ * Where the timeline opens: always at the first row, since the default filter hides done tasks
+ * and the rows left are the work still ahead. Hour, Day and Week put the Now line at the left
+ * edge. Hour needs this most, since its axis is so wide that the end of it, where Month opens,
+ * holds none of the work. Month fits the newest end on screen.
  */
 export function openingViewport(
   layout: Pick<TimelineLayout, "scale" | "nowX" | "width">,
-  panel: { visible: number; panel: number; height: number },
+  panel: { visible: number },
 ): { x: number; y: number; zoom: 1 } {
   if (layout.scale !== "month" && layout.nowX !== null) {
-    return { x: 16 - layout.nowX, y: Math.min(0, panel.panel - panel.height - 8), zoom: 1 };
+    return { x: 16 - layout.nowX, y: 0, zoom: 1 };
   }
   return { x: Math.min(16, panel.visible - layout.width - 16), y: 0, zoom: 1 };
 }

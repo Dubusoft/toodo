@@ -1,11 +1,13 @@
-import { X } from "lucide-react";
+import { Bot, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { compactSelectClass } from "@/components/workspace-list";
 import type { SheetNavigation } from "@/components/task-graph";
 import type { Task, TaskEvent } from "@/lib/bindings";
-import { useAddRelation, useRemoveRelation, useTaskRelations } from "@/lib/queries";
+import { useAddRelation, useRemoveRelation, useTaskRelations, useUpdateTask } from "@/lib/queries";
 import { reachedMilestones } from "@/lib/timeline";
 import { When } from "@/components/when";
 import { formatEstimate } from "@/lib/plan";
+import { toneChip } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 import { type TaskContext, taskRef, DueDate, DetailField, TaskLabels, useServerDown } from "@/components/task-common";
 import { openUrl } from "@/web/opener";
@@ -230,6 +232,53 @@ export function RelatedTasks({
       </ul>
       {error}
     </DetailField>
+  );
+}
+
+/**
+ * Turns the autopilot mark of a task on or off in one click, as `update_task` does: marking
+ * records since when, clearing drops it. The other fields are sent unchanged.
+ */
+export function AutopilotToggle({ task }: { task: Task }) {
+  const updateTask = useUpdateTask();
+  const toggle = () =>
+    updateTask.mutate({
+      status: null,
+      id: task.id,
+      taskType: task.taskType,
+      title: task.title,
+      description: task.description,
+      estimate: task.estimate,
+      dueDate: task.dueDate,
+      autopilot: !task.autopilot,
+      criteria: null,
+    });
+  return (
+    <>
+      <Button
+        size="xs"
+        variant="outline"
+        changesData
+        aria-pressed={task.autopilot}
+        aria-label={`Autopilot of #${task.id}`}
+        title={
+          task.autopilot
+            ? "Marked for autopilot: an executor may take it up on its own once it is ready. Click to clear."
+            : "Not marked for autopilot. Click to let an executor take it up on its own once it is ready."
+        }
+        disabled={updateTask.isPending}
+        onClick={toggle}
+        className={cn("shrink-0", task.autopilot && toneChip.info)}
+      >
+        <Bot aria-hidden />
+        {task.autopilot ? "Autopilot on" : "Autopilot off"}
+      </Button>
+      {updateTask.error && (
+        <span role="alert" className="text-xs text-destructive">
+          {updateTask.error.message}
+        </span>
+      )}
+    </>
   );
 }
 

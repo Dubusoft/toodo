@@ -3,23 +3,20 @@ import { Bot, Check, ChevronDown, Inbox, Search, SlidersHorizontal, Trash2, X } 
 import { Button } from "@/components/ui/button";
 import { compactSelectClass, escapeCloses } from "@/components/workspace-list";
 import { ErrorBoundary } from "@/components/error-boundary";
-import type { TaskId, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
+import type { Task, TaskId, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
 import { useDeleteDoneTasks, useDoneTaskCount, useTasks, useWorkspaces } from "@/lib/queries";
-import { type TimelineScale } from "@/lib/task-graph";
+import { timelineOrder, type TimelineScale } from "@/lib/task-graph";
 import {
   defaultTaskFilter,
   emptyTaskFilter,
-  groupTasks,
   isFilterActive,
   matchesFilter,
   shownStatus,
   shownStatuses,
-  taskGroupNames,
   taskNumber,
   toggleStatus,
   type TaskFilter,
 } from "@/lib/task-filter";
-import { needsAttention } from "@/lib/attention";
 import { statusNames, toneChip, toneFill, toneOutline } from "@/lib/status-styles";
 import { singleKeyShortcut } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
@@ -175,6 +172,13 @@ export function TaskList({
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   });
+  // The list runs top to bottom like the timeline's rows, oldest work first. Done tasks are
+  // folded away until asked for, or while a search or filter is narrowing the list.
+  const doneListed = doneShown ?? isFilterActive(taskFilter);
+  const finished = (task: Task) => ["done", "not_adopted"].includes(shownStatus(task, context.byId));
+  const ordered = timelineOrder(filtered ?? [], Date.now() / 1000);
+  const doneCount = ordered.filter(finished).length;
+  const listed = doneListed ? ordered : ordered.filter((task) => !finished(task));
   // Prerequisites in other workspaces are drawn too, dimmed, so the wait is visible.
   const prerequisites =
     filter === null
@@ -310,56 +314,37 @@ export function TaskList({
                   </ul>
                 </section>
               )}
-              {groupTasks(
-                filtered,
-                context.byId,
-                needsAttention(filtered, Date.now() / 1000, context.byId).map(
-                  (item) => item.task.id,
-                ),
-              ).map(({ group, tasks: grouped }) => {
-                const collapsed = group === "done" && !(doneShown ?? isFilterActive(taskFilter));
-                const name = taskGroupNames[group];
-                const count = <span className="tabular-nums font-normal">{grouped.length}</span>;
-                return (
-                  <section key={group} aria-label={name} className="flex flex-col gap-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h3 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
-                        {group === "done" ? (
-                          <button
-                            type="button"
-                            aria-expanded={!collapsed}
-                            className="flex items-center gap-1.5 rounded-sm outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11"
-                            onClick={() => setDoneShown(collapsed)}
-                          >
-                            <ChevronDown aria-hidden className={cn("size-4 transition-transform", collapsed && "-rotate-90")} />
-                            {name} {count}
-                          </button>
-                        ) : (
-                          <>
-                            {name} {count}
-                          </>
-                        )}
-                      </h3>
-                      {/* Deleting acts on every done task of a workspace, so only a workspace's own list offers it. */}
-                      {group === "done" && workspace && <DeleteDoneTasks workspace={workspace} />}
-                    </div>
-                    {!collapsed && (
-                      <ul aria-label={name} className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
-                        {grouped.map((task) => (
-                          <TaskRow
-                            key={task.id}
-                            task={task}
-                            tasks={allTasks.data}
-                            context={context}
-                            showWorkspace={workspace === null}
-                            onShowDetails={() => setDetailId(task.id)}
-                          />
-                        ))}
-                      </ul>
-                    )}
-                  </section>
-                );
-              })}
+              {doneCount > 0 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+                    <button
+                      type="button"
+                      aria-expanded={doneListed}
+                      className="flex items-center gap-1.5 rounded-sm outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11"
+                      onClick={() => setDoneShown(!doneListed)}
+                    >
+                      <ChevronDown aria-hidden className={cn("size-4 transition-transform", !doneListed && "-rotate-90")} />
+                      Done <span className="tabular-nums font-normal">{doneCount}</span>
+                    </button>
+                  </h3>
+                  {/* Deleting acts on every done task of a workspace, so only a workspace's own list offers it. */}
+                  {workspace && <DeleteDoneTasks workspace={workspace} />}
+                </div>
+              )}
+              {listed.length > 0 && (
+                <ul aria-label="Task list" className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
+                  {listed.map((task) => (
+                    <TaskRow
+                      key={task.id}
+                      task={task}
+                      tasks={allTasks.data}
+                      context={context}
+                      showWorkspace={workspace === null}
+                      onShowDetails={() => setDetailId(task.id)}
+                    />
+                  ))}
+                </ul>
+              )}
             </div>
             )}
               {detailId !== null && context.byId.has(detailId) && (
@@ -501,7 +486,7 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
         title="Only tasks marked for autopilot"
         onClick={() => onChange({ ...filter, autopilot: !filter.autopilot })}
       >
-        {filter.autopilot ? <Check aria-hidden className="size-3" /> : <Bot aria-hidden className="size-3" />}
+        <Bot aria-hidden className="size-3" />
         Autopilot
       </button>
       {isFilterActive(filter) && (

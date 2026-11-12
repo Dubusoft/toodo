@@ -239,12 +239,14 @@ the same picture shows both what depended on what and when it happened. The time
 belongs to the "All workspaces" view, where it's the default (a workspace's own view is
 a task list): it draws the tasks of every workspace together, each bar labeled with its
 workspace, and can be narrowed to one workspace. Narrowed, prerequisites from other
-workspaces are still drawn, dimmed and labeled with their workspace.
+workspaces are still drawn, dimmed and labeled with their workspace. A task list shows its
+tasks in the order of the timeline's rows, top to bottom, oldest work first; its done tasks
+are folded away until asked for.
 
 The app loads tasks in pages so its first screen stays quick however long the history
 grows: every open task, the 100 newest done tasks, and the done tasks open ones depend
 on. Where done tasks are shown (the timeline with a status filter that includes them, or
-the task list's Done group), "Load older finished tasks" loads the next 100.
+the task list with its done tasks unfolded), "Load older finished tasks" loads the next 100.
 
 - It reads like a Gantt chart: a time axis header (coarse dates above fine dates or
   hours) stays at the top while the rows scroll, and a cursor marks the current time,

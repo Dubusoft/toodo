@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ChevronLeft, ChevronRight, ChevronsLeft, TriangleAlert } from "lucide-react";
+import { Bot, ChevronLeft, ChevronRight, ChevronsLeft, TriangleAlert } from "lucide-react";
 import { EmptyState } from "@/components/task-list";
 import { compactSelectClass } from "@/components/workspace-list";
 import {
@@ -388,11 +388,7 @@ export function TaskGraph({
   const hoveredBar = layout.bars.find((bar) => bar.task.id === hovered?.id);
 
   function opening() {
-    return openingViewport(layout, {
-      visible: container.current?.clientWidth ?? 0,
-      panel: container.current?.clientHeight ?? 0,
-      height,
-    });
+    return openingViewport(layout, { visible: container.current?.clientWidth ?? 0 });
   }
 
   function showLatest(instance: ReactFlowInstance<BarNode>) {
@@ -421,7 +417,7 @@ export function TaskGraph({
     );
   }
 
-  /** Pans back to where the timeline opens: the Now line and the newest rows. */
+  /** Pans back to where the timeline opens: the Now line and the first rows. */
   function showToday() {
     void flow.current?.setViewport(opening(), { duration: prefersReducedMotion() ? 0 : 200 });
   }
@@ -826,6 +822,7 @@ export function TaskGraph({
                       <span className="truncate" title={task.title}>
                         {task.title}
                       </span>
+                      {task.autopilot && <AutopilotIcon id={task.id} />}
                       <span className={cn("ml-auto shrink-0 rounded-full px-1.5", statusStyle(task))}>
                         {statusLabel(task)}
                       </span>
@@ -1194,6 +1191,7 @@ function TimelineBarView({
         <TaskTypeBadge type={task.taskType} className="bg-card px-1 leading-4" />
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
         <span className="min-w-0 truncate font-semibold">{task.title}</span>
+        {task.autopilot && <AutopilotIcon id={task.id} />}
         {warnings.length > 0 && (
           <TriangleAlert
             role="img"
@@ -1209,5 +1207,14 @@ function TimelineBarView({
       </div>
       <Handle type="source" position={Position.Right} />
     </div>
+  );
+}
+
+/** Marks a task set for autopilot with the bot icon the timeline filter's Autopilot chip shows. */
+function AutopilotIcon({ id }: { id: TaskId }) {
+  return (
+    <Bot role="img" aria-label={`#${id} is marked for autopilot`} className="size-3.5 shrink-0 text-muted-foreground">
+      <title>Marked for autopilot</title>
+    </Bot>
   );
 }
