@@ -348,6 +348,13 @@ signs in anew with the shared token. Only the shared token registers devices, so
 token cannot mint more tokens. A device keeps its id after it is revoked, so data kept per
 device can refer to it.
 
+A registration under the name of a device that is not revoked reuses that device instead
+of adding one: it takes the new token, access, and lifetime, its old token stops working,
+and its notification subscription is dropped. A browser that loses its stored token, e.g.
+because it clears site data on exit, signs in again and keeps one device; older devices
+that share the name are revoked. Two browsers that should both stay signed in need
+different names.
+
 A device token expires 90 days after it is registered unless the registration picks
 another lifetime (30 days, a year, or never in the web app); the device then signs in
 again with the shared token. Tokens registered before expiry existed expire 90 days after

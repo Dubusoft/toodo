@@ -14,7 +14,9 @@
 //!   "expiresInDays"?: number | null }` registers a device and returns
 //!   `{ "device": ..., "token": string }`; the token is shown only this once. The scope
 //!   defaults to `full` and the lifetime to [`DEFAULT_LIFETIME_DAYS`]; `null` never
-//!   expires.
+//!   expires. A device that is not revoked and has the same label is reused instead of
+//!   adding another: it takes the new token and its old token stops working, so a
+//!   browser that lost its stored token and signs in again keeps one device.
 //! - `POST /api/devices/{id}/revoke` revokes a device for good.
 
 use std::sync::Arc;

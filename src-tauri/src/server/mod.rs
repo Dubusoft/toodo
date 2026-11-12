@@ -1097,6 +1097,34 @@ mod tests {
     }
 
     #[test]
+    fn a_browser_that_signs_in_again_keeps_its_device() {
+        let (address, _temp, _services) = serve_services(None);
+        let register = |name: &str| {
+            let (status, body) = post_json(
+                address,
+                "/api/devices",
+                "web",
+                &serde_json::json!({ "label": name }),
+            );
+            assert!(status.contains(" 201 "), "{status}");
+            body
+        };
+        let app_info = |token: &str| status(address, "POST", "/api/rpc/app_info", Some(token));
+        let token = |body: &serde_json::Value| body["token"].as_str().unwrap().to_owned();
+
+        let first = register("Chrome on Windows");
+        let phone = register("Phone");
+        // The browser lost its stored token and signs in again under the same name.
+        let second = register("Chrome on Windows");
+        assert_eq!(second["device"]["id"], first["device"]["id"]);
+        assert!(app_info(&token(&first)).contains(" 401 "));
+        assert!(app_info(&token(&second)).contains(" 200 "));
+        assert!(app_info(&token(&phone)).contains(" 200 "));
+        let devices = devices_seen_by(address, "web");
+        assert_eq!(devices.as_array().unwrap().len(), 2, "{devices}");
+    }
+
+    #[test]
     fn device_tokens_expire_and_read_only_ones_only_read() {
         let (address, _temp, services) = serve_services(None);
         let rpc = |command: &str, token: &str| {
