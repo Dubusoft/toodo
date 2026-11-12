@@ -1210,10 +1210,17 @@ function TimelineBarView({
   );
 }
 
-/** Marks a task set for autopilot with the bot icon the timeline filter's Autopilot chip shows. */
+/**
+ * Marks a task set for autopilot with the bot icon the timeline filter's Autopilot chip shows,
+ * in that chip's `info` tone so it stands apart from the neutral and danger warning icons.
+ */
 function AutopilotIcon({ id }: { id: TaskId }) {
   return (
-    <Bot role="img" aria-label={`#${id} is marked for autopilot`} className="size-3.5 shrink-0 text-muted-foreground">
+    <Bot
+      role="img"
+      aria-label={`#${id} is marked for autopilot`}
+      className={cn("size-3.5 shrink-0", toneText.info)}
+    >
       <title>Marked for autopilot</title>
     </Bot>
   );
