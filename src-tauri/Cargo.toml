@@ -1,6 +1,6 @@
 [package]
 name = "toodo"
-version = "1.9.0"
+version = "1.9.1"
 description = "Turn a task plan into implemented, reviewed code with herdr"
 authors = []
 license = "AGPL-3.0-only"
