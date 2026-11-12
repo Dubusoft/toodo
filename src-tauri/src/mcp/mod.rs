@@ -380,7 +380,7 @@ impl Access {
         let allowed = match name {
             "read_toodo_skill" | "list_workspaces" | "list_tasks" | "search_tasks" | "get_task"
             | "get_guidelines" | "review_report" => scopes.can_read(),
-            "create_workspace" | "create_task" | "create_plan" | "update_task"
+            "create_workspace" | "create_task" | "create_plan" | "update_task" | "move_task"
             | "add_dependency" | "remove_dependency" | "add_related" | "remove_related"
             | "add_criterion" | "remove_criterion" | "check_criterion" | "add_progress_note"
             | "report_blocker" | "pause_task" | "wait_task" | "add_guideline"
@@ -850,6 +850,23 @@ impl ToodoMcp {
             .blocking(move |backend| tools::update_task(&mut lock(backend.storage()), request))
             .await?;
         self.announce(result)
+    }
+
+    #[tool(
+        description = "Move a task, in any status, into another workspace, e.g. {\"id\": 12, \"workspace_id\": 3}. Only its workspace changes: its id, status history, notes, criteria, refs, and dependency and related links stay. Refs such as branch:, lane:, or pr: are kept as recorded; Toodo creates no branch or worktree, so update them with update_task if the executor moves that work. Criteria are manual or url and do not depend on the workspace. The task follows the guidelines of its new workspace: read get_guidelines for it. An archived or unknown workspace is rejected."
+    )]
+    async fn move_task(
+        &self,
+        Parameters(request): Parameters<tools::MoveTask>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| tools::move_task(&mut lock(backend.storage()), request))
+            .await?;
+        if let Ok(moved) = &result {
+            self.backend
+                .tasks_changed(model::WorkspaceId(moved.from_workspace_id.0));
+        }
+        self.announce_with(result, |moved| &moved.task)
     }
 
     #[tool(
@@ -1561,6 +1578,7 @@ mod tests {
             "add_criterion",
             "remove_criterion",
             "update_task",
+            "move_task",
             "add_dependency",
             "remove_dependency",
             "add_progress_note",
@@ -2398,6 +2416,7 @@ mod tests {
                     "create_task",
                     "create_plan",
                     "update_task",
+                    "move_task",
                     "add_dependency",
                     "remove_dependency",
                     "add_related",
