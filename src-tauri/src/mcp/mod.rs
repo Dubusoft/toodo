@@ -1235,13 +1235,19 @@ impl ServerHandler for ToodoMcp {
 /// an integer, at the top level or nested in arrays and objects such as `criteria[0].id`,
 /// a string of digits becomes the number before the arguments are read, so the first call
 /// works; any other string there is rejected with the field and what to send. ID schemas
-/// advertise such strings (see [`crate::commands::types::ID_DIGITS`]).
+/// advertise such strings (see [`crate::commands::types::ID_DIGITS`]). An argument sent
+/// under a serde alias, which the schema records in its `x-aliases` object as alias to
+/// property name, is read with the schema of that property.
 fn numbers_from_strings(schema: &JsonObject, arguments: &mut JsonObject) -> Result<(), String> {
     let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
         return Ok(());
     };
     for (name, value) in arguments.iter_mut() {
-        if let Some(property) = properties.get(name) {
+        let property = properties.get(name).or_else(|| {
+            let target = schema.get("x-aliases")?.get(name)?.as_str()?;
+            properties.get(target)
+        });
+        if let Some(property) = property {
             convert(value, &[property], schema, name)?;
         }
     }
@@ -1968,6 +1974,33 @@ mod tests {
             ),
             "{error}"
         );
+    }
+
+    #[test]
+    fn aliased_criterion_ids_take_numeric_strings() {
+        let storage = crate::storage::Storage::open_in_memory().unwrap();
+        let server = ToodoMcp::new(Arc::new(TestBackend::new(storage)));
+        let convert = |tool: &str, arguments: Value| {
+            let schema = &server.tool_router.get(tool).unwrap().input_schema;
+            let Value::Object(mut arguments) = arguments else {
+                unreachable!()
+            };
+            numbers_from_strings(schema, &mut arguments).map(|()| Value::Object(arguments))
+        };
+        assert_eq!(
+            convert("check_criterion", serde_json::json!({"criterion_id": "3"})),
+            Ok(serde_json::json!({"criterion_id": 3}))
+        );
+        assert_eq!(
+            convert("check_criterion", serde_json::json!({"id": "3"})),
+            Ok(serde_json::json!({"id": 3}))
+        );
+        assert_eq!(
+            convert("remove_criterion", serde_json::json!({"id": "3"})),
+            Ok(serde_json::json!({"id": 3}))
+        );
+        let error = convert("remove_criterion", serde_json::json!({"id": "x"})).unwrap_err();
+        assert!(error.starts_with("id must be a whole number"), "{error}");
     }
 
     #[test]

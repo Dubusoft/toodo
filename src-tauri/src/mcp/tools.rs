@@ -262,6 +262,7 @@ pub struct UpdateTask {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(extend("x-aliases" = {"id": "criterion_id"}))]
 pub struct CheckCriterion {
     /// The task of the criterion; found from the criterion when omitted.
     #[serde(default)]
@@ -294,6 +295,7 @@ pub struct AddCriterion {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(extend("x-aliases" = {"id": "criterion_id"}))]
 pub struct RemoveCriterion {
     /// The task of the criterion; found from the criterion when omitted.
     #[serde(default)]
