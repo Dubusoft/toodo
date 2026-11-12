@@ -269,6 +269,9 @@ commands!(s => {
     "update_task"(task: TaskEdit) => sync Reply::result(
         tasks::update_task(State(&s.storage), task)
     );
+    "move_task"(id: TaskId, workspace_id: WorkspaceId) => sync Reply::result(
+        tasks::move_task(State(&s.storage), id, workspace_id)
+    );
     "pause_task"(id: TaskId) => sync Reply::result(tasks::pause_task(State(&s.storage), id));
     "wait_task"(id: TaskId, until: Timestamp, reason: Option<String>) => sync Reply::result(
         tasks::wait_task(State(&s.storage), id, until, reason)

@@ -541,6 +541,20 @@ export function useUpdateTask() {
   });
 }
 
+/** Moves a task into another workspace; reviews group tasks by workspace, so they refetch too. */
+export function useMoveTask() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, workspaceId }: { id: TaskId; workspaceId: WorkspaceId }) =>
+      unwrap(commands.moveTask(id, workspaceId)),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        queryClient.invalidateQueries({ queryKey: ["review"] }),
+      ]),
+  });
+}
+
 /** Commands that change tasks that other tasks, possibly in other workspaces, may wait on. */
 function useTasksMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
   const queryClient = useQueryClient();

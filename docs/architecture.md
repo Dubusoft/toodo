@@ -73,7 +73,7 @@ A unit of work inside a workspace.
 | Field | Description |
 | --- | --- |
 | `id` | Stable identifier. |
-| `workspaceId` | Owning workspace. |
+| `workspaceId` | Owning workspace. `move_task` (or the workspace picker in the task's details) moves a task, in any status, into another live workspace; everything else about the task stays, since its links and refs may cross workspaces anyway. |
 | `type` | Kind of change, one of the [task types](#task-types). |
 | `title`, `description` | What the task is for. The description is GitHub-flavored Markdown with `## Purpose` and `## Background` sections. |
 | `estimate` | Optional expected size: an amount greater than 0 in `hours`, `days` (24 hours), `weeks` (7 days), or `months` (30 days) of active work. Reviews compare it with the task's active time. |
@@ -426,7 +426,7 @@ or guessed by an agent.
   - Tools: `read_toodo_skill`, `list_workspaces`, `create_workspace`, `update_workspace`,
     `archive_workspace`, `list_tasks`, `search_tasks`, `get_task`, `add_related`,
     `remove_related`, `current_task`, `create_task`, `create_plan`, `check_criterion`,
-    `add_criterion`, `remove_criterion`, `update_task`, `add_dependency`,
+    `add_criterion`, `remove_criterion`, `update_task`, `move_task`, `add_dependency`,
     `remove_dependency`, `add_progress_note`, `report_blocker`, `pause_task`,
     `resume_task`, `delete_task`, `delete_done_tasks`, `reopen_task`, `start_task`,
     `complete_task`, `conclude_task`, and `review_report`. They reuse the storage rules, so cycles are

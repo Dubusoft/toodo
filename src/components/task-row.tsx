@@ -55,6 +55,7 @@ const TaskNotes = lazy(() => taskDetails().then((module) => ({ default: module.T
 const TaskPlan = lazy(() => taskDetails().then((module) => ({ default: module.TaskPlan })));
 const TaskCriteria = lazy(() => taskDetails().then((module) => ({ default: module.TaskCriteria })));
 const AutopilotToggle = lazy(() => taskDetails().then((module) => ({ default: module.AutopilotToggle })));
+const TaskWorkspace = lazy(() => taskDetails().then((module) => ({ default: module.TaskWorkspace })));
 
 /** Statuses whose task is not being worked on, so it can be deleted. */
 const deletableStatuses: TaskStatus[] = ["planned", "done"];
@@ -339,10 +340,15 @@ export function TaskRow({
           <div className={cn("flex min-w-0 items-center gap-2", detailed ? "flex-wrap" : "max-md:flex-wrap max-md:gap-y-1")}>
             <StatusBadge task={task} byId={context.byId} />
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
-            {showWorkspace && (
+            {showWorkspace && !detailed && (
               <span className="shrink-0 rounded-md bg-muted px-1.5 text-xs text-muted-foreground">
                 {context.workspaceName(task.workspaceId)}
               </span>
+            )}
+            {detailed && (
+              <Suspense fallback={null}>
+                <TaskWorkspace task={task} />
+              </Suspense>
             )}
             <TaskTypeBadge type={task.taskType} />
             {detailed && (

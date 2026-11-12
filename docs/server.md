@@ -444,7 +444,7 @@ The MCP server has 32 tools:
   `archive_workspace`.
 - Reading tasks: `list_tasks`, `search_tasks`, `get_task`, `current_task` (finds a task by
   one of its refs, such as `lane:search`).
-- Planning: `create_task`, `create_plan`, `update_task`, `add_dependency`,
+- Planning: `create_task`, `create_plan`, `update_task`, `move_task`, `add_dependency`,
   `remove_dependency`, `add_related`, `remove_related`, `add_criterion`,
   `remove_criterion`.
 - Recording work: `start_task`, `add_progress_note`, `report_blocker`, `check_criterion`,
@@ -526,8 +526,8 @@ on loopback as before and still see every tool.
 - `toodo.read`: `read_toodo_skill`, `list_workspaces`, `list_tasks`, `search_tasks`,
   `get_task`, `review_report`, and the [task resources](#task-resources).
 - `toodo.write`: the read tools, plus `create_workspace`, `create_task`, `create_plan`,
-  `update_task`, `add_dependency`, `remove_dependency`, `add_related`, `remove_related`,
-  `add_criterion`, `remove_criterion`, `check_criterion`, `add_progress_note`,
+  `update_task`, `move_task`, `add_dependency`, `remove_dependency`, `add_related`,
+  `remove_related`, `add_criterion`, `remove_criterion`, `check_criterion`, `add_progress_note`,
   `report_blocker`, `pause_task`, and `wait_task`.
 
 The other tools stay local: `current_task`, `start_task`, `resume_task`, `end_wait`,

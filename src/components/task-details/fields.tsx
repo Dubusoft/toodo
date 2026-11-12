@@ -3,7 +3,14 @@ import { Button } from "@/components/ui/button";
 import { compactSelectClass } from "@/components/workspace-list";
 import type { SheetNavigation } from "@/components/task-graph";
 import type { Task, TaskEvent } from "@/lib/bindings";
-import { useAddRelation, useRemoveRelation, useTaskRelations, useUpdateTask } from "@/lib/queries";
+import {
+  useAddRelation,
+  useMoveTask,
+  useRemoveRelation,
+  useTaskRelations,
+  useUpdateTask,
+  useWorkspaces,
+} from "@/lib/queries";
 import { reachedMilestones } from "@/lib/timeline";
 import { When } from "@/components/when";
 import { formatEstimate } from "@/lib/plan";
@@ -276,6 +283,43 @@ export function AutopilotToggle({ task }: { task: Task }) {
       {updateTask.error && (
         <span role="alert" className="text-xs text-destructive">
           {updateTask.error.message}
+        </span>
+      )}
+    </>
+  );
+}
+
+/**
+ * The workspace of a task in the details sheet, as a picker that moves the task into another
+ * live workspace. Only the workspace changes: history, notes, criteria, refs, and links stay.
+ */
+export function TaskWorkspace({ task }: { task: Task }) {
+  const workspaces = useWorkspaces();
+  const moveTask = useMoveTask();
+  const serverDown = useServerDown();
+  const live = workspaces.data ?? [];
+  if (live.length < 2) {
+    return null;
+  }
+  return (
+    <>
+      <select
+        aria-label={`Workspace of #${task.id}`}
+        title="Move the task to another workspace; its history, notes, criteria, refs, and links stay"
+        className={cn(compactSelectClass, "max-w-40")}
+        value={task.workspaceId}
+        disabled={moveTask.isPending || serverDown}
+        onChange={(event) => moveTask.mutate({ id: task.id, workspaceId: Number(event.target.value) })}
+      >
+        {live.map((workspace) => (
+          <option key={workspace.id} value={workspace.id}>
+            {workspace.name}
+          </option>
+        ))}
+      </select>
+      {moveTask.error && (
+        <span role="alert" className="text-xs text-destructive">
+          {moveTask.error.message}
         </span>
       )}
     </>

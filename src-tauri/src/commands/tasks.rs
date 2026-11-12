@@ -501,6 +501,17 @@ pub fn delete_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResul
     Ok(lock(&storage).archive_task(id.into())?)
 }
 
+/// Moves a task, in any status, into another live workspace, keeping its ID, history,
+/// notes, criteria, refs, and links.
+#[specta::specta]
+pub fn move_task(
+    storage: State<'_, StorageState>,
+    id: TaskId,
+    workspace_id: types::WorkspaceId,
+) -> CommandResult<Task> {
+    Ok((&lock(&storage).move_task(id.into(), workspace_id.into())?).into())
+}
+
 /// Archives every `done` (completed or concluded) task of a live workspace in one go, as
 /// [`delete_task`] does for one task, keeping their history; returns how many were
 /// archived.

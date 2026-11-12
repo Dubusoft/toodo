@@ -163,6 +163,11 @@ shared fragments the agents read:
   wanted, with `delete_task`; `delete_done_tasks` deletes every `done` task of a
   workspace at once. Reopen a task done by mistake with `reopen_task` and a reason. A
   deleted task is archived: it stays in reviews, and only the user restores or purges it in the app.
+- Move a task filed in the wrong workspace with `move_task`, e.g.
+  `{"id": 42, "workspace_id": 3}`. Only its workspace changes: its history, notes,
+  criteria, refs, and links stay, and it follows the new workspace's guidelines. Refs
+  such as `branch:` keep naming what they named; update them if the work moves too. An
+  archived workspace is rejected.
 - Archive a workspace that's no longer used with `archive_workspace`. Its tasks are
   archived with it and stay in reviews.
 - When a call is rejected, read the error: it names the argument or step that succeeds.
