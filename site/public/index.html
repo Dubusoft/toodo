@@ -3,28 +3,29 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Toodo: a task tracker for people and coding agents</title>
-  <meta name="description" content="Toodo is an open source task tracker for planned work, used by people and coding agents. It keeps task dependencies, notes, and history on your own server.">
+  <title>Toodo: plan the work, keep the record</title>
+  <meta name="description" content="Toodo is an open source, self-hosted task tracker for people and coding agents. Tasks wait on their dependencies, finish on checked criteria, and keep every note and status change. Agents report in over MCP.">
   <link rel="canonical" href="https://toodo.dev/">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#fafaf7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0f0e" media="(prefers-color-scheme: dark)">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
   <link rel="stylesheet" href="/styles.css">
+  <script>document.documentElement.classList.add("js")</script>
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Toodo">
   <meta property="og:url" content="https://toodo.dev/">
-  <meta property="og:title" content="Toodo: a task tracker for people and coding agents">
-  <meta property="og:description" content="Toodo is an open source task tracker for planned work, used by people and coding agents. It keeps task dependencies, notes, and history on your own server.">
+  <meta property="og:title" content="Toodo: plan the work, keep the record">
+  <meta property="og:description" content="An open source, self-hosted task tracker for people and coding agents: dependencies, completion criteria, work memory, and a timeline of every status change.">
   <meta property="og:image" content="https://toodo.dev/assets/timeline.png">
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1440">
   <meta property="og:image:height" content="900">
   <meta property="og:image:alt" content="The Toodo timeline: tasks of two workspaces on a time axis, with the dependencies between them.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Toodo: a task tracker for people and coding agents">
-  <meta name="twitter:description" content="Toodo is an open source task tracker for planned work, used by people and coding agents. It keeps task dependencies, notes, and history on your own server.">
+  <meta name="twitter:title" content="Toodo: plan the work, keep the record">
+  <meta name="twitter:description" content="An open source, self-hosted task tracker for people and coding agents: dependencies, completion criteria, work memory, and a timeline of every status change.">
   <meta name="twitter:image" content="https://toodo.dev/assets/timeline.png">
   <meta name="twitter:image:alt" content="The Toodo timeline: tasks of two workspaces on a time axis, with the dependencies between them.">
 </head>
@@ -34,158 +35,236 @@
   <svg class="sprite" aria-hidden="true" focusable="false">
     <symbol id="icon-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></symbol>
     <symbol id="icon-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="icon-github" viewBox="0 0 24 24"><path d="M12 2.5a9.5 9.5 0 0 0-3 18.5c.5.1.7-.2.7-.5v-1.7c-2.7.6-3.2-1.2-3.2-1.2-.5-1.1-1.1-1.4-1.1-1.4-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.3 1.1 2.9.8.1-.6.3-1.1.6-1.3-2.1-.2-4.3-1.1-4.3-4.7 0-1 .4-1.9 1-2.6-.1-.2-.4-1.2.1-2.5 0 0 .8-.3 2.6 1a9 9 0 0 1 4.8 0c1.8-1.3 2.6-1 2.6-1 .5 1.3.2 2.3.1 2.5.6.7 1 1.6 1 2.6 0 3.7-2.2 4.5-4.3 4.7.3.3.6.8.6 1.6v2.4c0 .3.2.6.7.5A9.5 9.5 0 0 0 12 2.5z"/></symbol>
+    <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
   </svg>
 
-  <header class="site-header page-grid">
-    <div class="header-bar">
-      <a class="brand" href="/"><img src="/favicon.svg" width="32" height="32" alt=""><span>Toodo</span></a>
-      <nav class="site-nav" aria-label="Main">
-        <ul>
-          <li class="nav-anchor"><a href="#features">Features</a></li>
-          <li class="nav-anchor"><a href="#get-started">Get started</a></li>
-          <li><a href="https://github.com/Dubusoft/toodo/tree/main/docs">Docs</a></li>
-          <li><a href="https://github.com/Dubusoft/toodo">GitHub</a></li>
-        </ul>
+  <header class="nav-wrap">
+    <div class="nav">
+      <a class="brand" href="/"><img src="/favicon.svg" width="26" height="26" alt=""><span>Toodo</span></a>
+      <nav class="nav-links" aria-label="Main">
+        <a href="#dependencies">Dependencies</a>
+        <a href="#criteria">Criteria</a>
+        <a href="#agents">Agents</a>
+        <a href="#autopilot">Autopilot</a>
+        <a href="https://github.com/Dubusoft/toodo/tree/main/docs">Docs</a>
       </nav>
+      <div class="nav-actions">
+        <a class="btn btn--ghost btn--sm btn--icon" href="https://github.com/Dubusoft/toodo" aria-label="Toodo on GitHub"><svg class="icon"><use href="#icon-github"/></svg><span class="nav-gh-label">GitHub</span></a>
+        <a class="btn btn--primary btn--sm" href="#install">Install</a>
+      </div>
     </div>
   </header>
 
   <main id="main">
-    <section class="hero page-grid" aria-labelledby="hero-title">
-      <div>
-        <h1 id="hero-title">A task tracker for people and coding agents</h1>
-        <p class="lead">Toodo tracks planned work: the dependencies between tasks, and the notes, decisions, and status history of each one. It runs on your own server.</p>
-        <div class="actions">
-          <div class="command">
-            <p class="command-text"><span class="prompt" aria-hidden="true">$</span> <code id="install-command">npx @dubusoft/toodo init</code></p>
-            <button class="copy-button copy-button--on-primary" type="button" data-copy-target="install-command" aria-label="Copy install command" title="Copy install command">
-              <span class="copy-slot" aria-hidden="true"><svg class="icon copy-idle"><use href="#icon-copy"/></svg><svg class="icon copy-done"><use href="#icon-check"/></svg></span>
-              <span class="copy-slot copy-text" aria-hidden="true"><span class="copy-idle">Copy</span><span class="copy-done">Copied</span></span>
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-bg" aria-hidden="true"></div>
+      <div class="container hero-inner">
+        <p class="eyebrow rise"><span class="pulse-dot" aria-hidden="true"></span>Open source · Self-hosted · MCP</p>
+        <h1 id="hero-title" class="display rise" style="--delay: 60ms">Plan the work.<br><span class="soft">Keep the record.</span></h1>
+        <p class="hero-sub rise" style="--delay: 120ms">Toodo is a task tracker for people and coding agents. Tasks wait on what they depend on, finish when their criteria pass, and remember every note, decision, and status change along the way.</p>
+        <div class="hero-cta rise" style="--delay: 180ms">
+          <div class="cmd">
+            <span class="cmd-prompt" aria-hidden="true">$</span>
+            <code id="hero-command">npx @dubusoft/toodo init</code>
+            <button class="copy" type="button" data-copy-target="hero-command" aria-label="Copy the install command" title="Copy">
+              <svg class="icon copy-idle" aria-hidden="true"><use href="#icon-copy"/></svg><svg class="icon copy-done" aria-hidden="true"><use href="#icon-check"/></svg>
             </button>
           </div>
-          <a class="button" href="https://github.com/Dubusoft/toodo">GitHub</a>
-          <a class="button" href="https://github.com/Dubusoft/toodo/tree/main/docs">Docs</a>
+          <a class="btn btn--ghost" href="https://github.com/Dubusoft/toodo/blob/main/docs/quickstart.md">Quickstart <svg class="icon arrow" aria-hidden="true"><use href="#icon-arrow"/></svg></a>
         </div>
+        <p class="hero-makers rise" style="--delay: 220ms">Made by <a href="https://dubusoft.com">Dubusoft</a>. AGPL-3.0, on <a href="https://github.com/Dubusoft/toodo">GitHub</a>.</p>
       </div>
-    </section>
 
-    <section class="page-grid" aria-labelledby="screens-title">
-      <div>
-        <h2 id="screens-title" class="visually-hidden">Screenshots</h2>
-        <figure class="shot">
-          <img src="/assets/timeline.webp" width="1440" height="900" fetchpriority="high" alt="Timeline view of two workspaces: each task is a bar on a day-by-day time axis, lines connect tasks to the tasks they depend on, and labels show statuses such as Completed, In progress, Awaiting completion, Blocked, and Ready.">
-          <figcaption>Timeline: tasks of two workspaces on a time axis, with the dependencies between them.</figcaption>
-        </figure>
-        <div class="shot-pair">
-          <figure class="shot">
-            <img src="/assets/task-list.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Task list of the web-shop workspace: one task in progress, one awaiting completion, and one planned task that is blocked, each with its criteria and timing.">
-            <figcaption>Task list: the tasks of a workspace, grouped by status.</figcaption>
-          </figure>
-          <figure class="shot">
-            <img src="/assets/review.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Week review across all workspaces: three tasks completed, one awaiting completion, and two started, with median lead and cycle times and the completed tasks listed below.">
-            <figcaption>Review: what was completed, awaiting completion, and started in a week.</figcaption>
-          </figure>
-        </div>
-      </div>
-    </section>
-
-    <section id="features" class="section page-grid" aria-labelledby="features-title">
-      <div class="split">
-        <div class="split-head">
-          <h2 id="features-title">Features</h2>
-        </div>
-        <div class="split-body">
-          <p class="intro">Toodo tracks the work; it doesn't run it. You or your agents do the work wherever you like, and record its start, progress, and completion in Toodo.</p>
-          <ul class="features">
-            <li class="feature">
-              <h3>Dependencies as a DAG</h3>
-              <p>Tasks depend on other tasks, and a dependency that would create a cycle is rejected. A task is ready once every task it depends on is done, and it completes when its criteria pass: checked by hand, or by a URL that Toodo fetches.</p>
-            </li>
-            <li class="feature">
-              <h3>Work memory</h3>
-              <p>Each task keeps its progress, decision, and blocker notes, a completion note, and references such as <code>pr:&lt;url&gt;</code>. Starting, pausing, and completing a task each record why.</p>
-            </li>
-            <li class="feature">
-              <h3>Timeline</h3>
-              <p>Every status change is timestamped, and the timeline draws the dependency graph on a time axis: when each task was planned, started, reviewed, and completed.</p>
-            </li>
-            <li class="feature">
-              <h3>MCP for coding agents</h3>
-              <p>Coding agents connect to the server's MCP endpoint to plan tasks, record starts, notes, and decisions, and complete their tasks. The <a href="https://github.com/Dubusoft/toodo/blob/main/docs/agents.md">agents guide</a> shows how a lead agent and its workers use it.</p>
-            </li>
-            <li class="feature">
-              <h3>Review report</h3>
-              <p>Review shows what was planned, started, and completed in a week, month, quarter, or year, built only from recorded facts. Copy it as Markdown, save it as Markdown or CSV, or print it.</p>
-            </li>
-            <li class="feature">
-              <h3>A web app on your own server</h3>
-              <p><code>toodo-server</code> runs on your Linux machine and serves the web app: open it in any browser, or install it as an app on a desktop or a phone. Tasks and their history stay in a SQLite database on that machine.</p>
-            </li>
-          </ul>
-        </div>
-      </div>
-    </section>
-
-    <section id="get-started" class="section band page-grid" aria-labelledby="get-started-title">
-      <div class="split">
-        <div class="split-head">
-          <h2 id="get-started-title">Get started</h2>
-        </div>
-        <div class="steps split-body">
-          <div class="step">
-            <h3>Requirements</h3>
-            <ul class="requirements">
-              <li>Linux on x64 or arm64, with glibc</li>
-              <li>Node.js 18 or later, with npm</li>
-            </ul>
-          </div>
-          <div class="step">
-            <h3>Install and start the server</h3>
-            <div class="code-block">
-              <pre><code id="setup-commands"><span class="line">npm i -g @dubusoft/toodo</span>
-<span class="line">toodo init</span>
-<span class="line">toodo service install</span></code></pre>
-              <button class="copy-button copy-button--quiet" type="button" data-copy-target="setup-commands" aria-label="Copy setup commands" title="Copy setup commands">
-                <span class="copy-slot" aria-hidden="true"><svg class="icon copy-idle"><use href="#icon-copy"/></svg><svg class="icon copy-done"><use href="#icon-check"/></svg></span>
-                <span class="copy-slot copy-text" aria-hidden="true"><span class="copy-idle">Copy</span><span class="copy-done">Copied</span></span>
-              </button>
+      <div class="container">
+        <figure class="win hero-win rise" style="--delay: 260ms">
+          <div class="win-bar" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span class="win-title">web-shop · timeline</span><span class="win-live"><span class="pulse-dot"></span>live</span></div>
+          <div class="dag">
+            <ol class="dag-days" aria-hidden="true"><li>Mon</li><li>Tue</li><li>Wed</li><li>Thu</li><li>Fri</li></ol>
+            <div class="dag-stage">
+              <svg class="dag-edges" viewBox="0 0 1000 380" preserveAspectRatio="none" aria-hidden="true">
+                <path class="edge edge--done" d="M190 46 C 200 46, 195 136, 205 136"/>
+                <path class="edge edge--done" d="M405 136 C 414 136, 410 46, 420 46"/>
+                <path class="edge edge--done" d="M405 136 C 414 136, 410 226, 420 226"/>
+                <path class="edge edge--flow edge--c" d="M640 46 C 675 46, 665 136, 700 136"/>
+                <path class="edge edge--flow" d="M680 226 C 692 226, 688 136, 700 136"/>
+                <path class="edge edge--related" d="M680 238 C 692 238, 688 316, 700 316"/>
+              </svg>
+              <ol class="dag-nodes" aria-label="Example plan">
+                <li class="node node--done" style="--x: 10; --y: 20; --w: 180"><b>Design the schema</b><span>Completed · 1.5d</span></li>
+                <li class="node node--done" style="--x: 205; --y: 110; --w: 200"><b>Write the migration</b><span>Completed · 2d</span></li>
+                <li class="node node--review" style="--x: 420; --y: 20; --w: 220"><b>Add the API endpoints</b><span class="swap"><span class="swap-a">In review · pr:#57</span><span class="swap-b">Completed · 2d</span></span></li>
+                <li class="node node--progress" style="--x: 420; --y: 200; --w: 260"><b>Build the web screens</b><span><i class="pulse-dot"></i>In progress · 3 notes</span></li>
+                <li class="node node--gate" style="--x: 700; --y: 110; --w: 250"><b>Ship the release</b><span class="swap"><span class="swap-a">Blocked · waits on 2</span><span class="swap-b">Ready · autopilot</span></span></li>
+                <li class="node node--planned" style="--x: 700; --y: 290; --w: 220"><b>Write the user guide</b><span>Planned · related</span></li>
+              </ol>
             </div>
-            <p><code>toodo init</code> creates the data directory, starts the server, and registers its MCP endpoint with Claude Code and Codex when they are installed. It prints the web app URL and the file that holds the access token.</p>
-            <p><code>toodo service install</code> keeps the server running as a systemd user service, also after a reboot.</p>
+            <p class="dag-foot"><span><i class="key key--dep"></i>depends on</span><span><i class="key key--rel"></i>related</span><span class="dag-foot-note">A task is ready once everything it depends on is done.</span></p>
           </div>
-          <div class="step">
-            <h3>Plan a first task</h3>
-            <p>Sign in with that token, add a workspace, and plan a task: the <a href="https://github.com/Dubusoft/toodo/blob/main/docs/quickstart.md">quickstart</a> walks through each step. To open the web app from other devices, put the server behind a tunnel, as the <a href="https://github.com/Dubusoft/toodo/blob/main/docs/server.md">server guide</a> describes.</p>
-          </div>
+          <figcaption class="visually-hidden">An example plan on a time axis: finished tasks unlock the ones that depend on them, and a related link adds context without blocking.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <nav class="container index" aria-label="On this page">
+      <ol>
+        <li class="rise"><a href="#dependencies"><span class="n">01</span>Dependencies<span class="d">Ready when its prerequisites are done</span></a></li>
+        <li class="rise" style="--delay: 40ms"><a href="#criteria"><span class="n">02</span>Criteria<span class="d">Done means checked</span></a></li>
+        <li class="rise" style="--delay: 80ms"><a href="#agents"><span class="n">03</span>Agents<span class="d">MCP for Claude Code and Codex</span></a></li>
+        <li class="rise" style="--delay: 120ms"><a href="#autopilot"><span class="n">04</span>Autopilot<span class="d">Marked work an executor may take</span></a></li>
+        <li class="rise" style="--delay: 160ms"><a href="#timeline"><span class="n">05</span>Timeline<span class="d">Every status change, with its reason</span></a></li>
+        <li class="rise" style="--delay: 200ms"><a href="#install"><span class="n">06</span>Install<span class="d">One command on your machine</span></a></li>
+      </ol>
+    </nav>
+
+    <section id="dependencies" class="section container aside" aria-labelledby="dependencies-title">
+      <div class="aside-head">
+        <p class="kicker rise"><span class="num">01</span><span class="rule"></span>Dependencies<span class="dot"></span></p>
+        <h2 id="dependencies-title" class="h2 rise">Tasks wait for what they need. <span class="soft">Cycles never get in.</span></h2>
+        <p class="lede rise">Group tasks in workspaces and point each one at the tasks it depends on. Toodo keeps the graph acyclic, marks a task ready the moment its last prerequisite is done, and links related work that is worth reading together without blocking anything.</p>
+      </div>
+      <div class="card graph-card rise" style="--delay: 80ms">
+        <ul class="g-list">
+          <li class="g-row"><span class="st st--done">Done</span><b>Write the migration</b></li>
+          <li class="g-row g-row--in"><span class="st st--review">In review</span><b>Add the API endpoints</b></li>
+          <li class="g-row g-row--in"><span class="st st--progress">In progress</span><b>Build the web screens</b></li>
+          <li class="g-row g-row--target"><span class="st st--blocked">Blocked</span><b>Ship the release</b><small>depends on 2 unfinished tasks</small></li>
+        </ul>
+        <div class="g-reject">
+          <code>add_dependency</code><span>Write the migration → Ship the release</span>
+          <p><span class="x" aria-hidden="true">×</span> Rejected: the edge would create a cycle.</p>
         </div>
       </div>
     </section>
 
-    <section id="open-source" class="section page-grid" aria-labelledby="open-source-title">
-      <div class="split">
-        <div class="split-head">
-          <h2 id="open-source-title">Open source</h2>
+    <section id="criteria" class="section container aside" aria-labelledby="criteria-title">
+      <div class="aside-head">
+        <p class="kicker rise"><span class="num">02</span><span class="rule"></span>Criteria<span class="dot"></span></p>
+        <h2 id="criteria-title" class="h2 rise">Done means checked. <span class="soft">By a person, or by a URL.</span></h2>
+        <p class="lede rise">Each task carries the criteria that finish it. A manual item is checked with its evidence; a URL item passes when Toodo fetches it at completion. Until every one passes, the task stays open and its dependents keep waiting.</p>
+      </div>
+      <div class="card crit-card rise" style="--delay: 80ms">
+        <p class="card-title">Add the API endpoints <span class="st st--review">In review</span></p>
+        <ul class="crit">
+          <li class="crit--ok"><span class="box" aria-hidden="true"><svg class="icon"><use href="#icon-check"/></svg></span><div><b>Every endpoint has a request example</b><small>manual · evidence: docs/api.md</small></div></li>
+          <li class="crit--ok"><span class="box" aria-hidden="true"><svg class="icon"><use href="#icon-check"/></svg></span><div><b>Staging answers its health check</b><small>url · GET https://staging.example.com/health → 200</small></div></li>
+          <li class="crit--open"><span class="box" aria-hidden="true"></span><div><b>Pagination reviewed with the web team</b><small>manual · open</small></div></li>
+        </ul>
+        <p class="crit-foot"><span class="meter" aria-hidden="true"><i style="--p: 66%"></i></span>2 of 3 passed. <code>complete_task</code> waits for the last one.</p>
+      </div>
+    </section>
+
+    <section id="agents" class="section container aside" aria-labelledby="agents-title">
+      <div class="aside-head">
+        <p class="kicker rise"><span class="num">03</span><span class="rule"></span>Agents<span class="dot"></span></p>
+        <h2 id="agents-title" class="h2 rise">Your agents report in. <span class="soft">Over MCP, with reasons.</span></h2>
+        <p class="lede rise"><code>toodo init</code> registers the server with Claude Code and Codex. From then on an agent reads the plan, starts a task, writes down its decisions and blockers, and completes the task with its refs, all through the same MCP endpoint. Toodo records what it hears; it never runs the work itself.</p>
+        <p class="caption rise"><a href="https://github.com/Dubusoft/toodo/blob/main/docs/agents.md">Read the agents guide</a></p>
+      </div>
+      <figure class="win term rise" style="--delay: 80ms">
+        <div class="win-bar" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span class="win-title">agent · toodo mcp</span></div>
+        <ol class="term-lines">
+          <li style="--i: 0"><span class="t-call">start_task</span> <span class="t-arg">Add the API endpoints</span><span class="t-note">reason: ready, next in the plan</span></li>
+          <li style="--i: 1"><span class="t-call">add_progress_note</span> <span class="t-kind">decision</span><span class="t-note">cursor pagination: ids are stable, offsets are not</span></li>
+          <li style="--i: 2"><span class="t-call">report_blocker</span><span class="t-note">staging database is read-only until the migration lands</span></li>
+          <li style="--i: 3"><span class="t-call">update_task</span> <span class="t-kind">in_review</span><span class="t-note">refs: pr:https://github.com/acme/web-shop/pull/57</span></li>
+          <li style="--i: 4"><span class="t-call">complete_task</span> <span class="t-ok">✓ criteria passed</span><span class="t-note">Ship the release is now ready</span></li>
+        </ol>
+      </figure>
+    </section>
+
+    <section id="autopilot" class="section container aside" aria-labelledby="autopilot-title">
+      <div class="aside-head">
+        <p class="kicker rise"><span class="num">04</span><span class="rule"></span>Autopilot<span class="dot"></span></p>
+        <h2 id="autopilot-title" class="h2 rise">Mark it once. <span class="soft">An executor picks it up when it is ready.</span></h2>
+        <p class="lede rise">Flag a task for autopilot and an executor of your choice may take it up on its own as soon as its dependencies are done. Toodo only keeps the mark and the list of marked tasks; who does the work, and where, stays up to you.</p>
+      </div>
+      <div class="card auto-card rise" style="--delay: 80ms">
+        <ul class="auto-list">
+          <li><span class="st st--ready">Ready</span><b>Ship the release</b><span class="auto-chip auto-chip--on"><i></i>Autopilot</span></li>
+          <li><span class="st st--blocked">Blocked</span><b>Announce the release</b><span class="auto-chip auto-chip--on"><i></i>Autopilot</span></li>
+          <li><span class="st st--planned">Planned</span><b>Write the user guide</b><span class="auto-chip">Manual</span></li>
+        </ul>
+        <p class="auto-foot"><code>list_tasks { autopilot: true }</code> returns the marked tasks; the ready ones are fair game.</p>
+      </div>
+    </section>
+
+    <section id="timeline" class="section container" aria-labelledby="timeline-title">
+      <p class="kicker rise"><span class="num">05</span><span class="rule"></span>Timeline<span class="dot"></span></p>
+      <h2 id="timeline-title" class="h2 rise">Every task remembers why. <span class="soft">Your year, from recorded facts.</span></h2>
+      <p class="lede rise">Starting, pausing, reviewing, and completing a task each leave a timestamp and a reason. The timeline draws the graph on a time axis, and the review report turns the same history into a week, a month, or a year of work you can export as Markdown or CSV.</p>
+      <figure class="shot shot--main rise">
+        <img src="/assets/timeline.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Timeline view of two workspaces: each task is a bar on a day-by-day time axis, lines connect tasks to the tasks they depend on, and labels show statuses such as Completed, In progress, Awaiting completion, Blocked, and Ready.">
+        <figcaption>Timeline: two workspaces on one time axis, with the dependencies between them.</figcaption>
+      </figure>
+      <div class="shot-pair">
+        <figure class="shot rise">
+          <img src="/assets/task-list.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Task list of the web-shop workspace: one task in progress, one awaiting completion, and one planned task that is blocked, each with its criteria and timing.">
+          <figcaption>Task list: a workspace grouped by status, with criteria and timing.</figcaption>
+        </figure>
+        <figure class="shot rise" style="--delay: 80ms">
+          <img src="/assets/review.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Week review across all workspaces: three tasks completed, one awaiting completion, and two started, with median lead and cycle times and the completed tasks listed below.">
+          <figcaption>Review: what was completed, awaiting completion, and started in a week.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section container" aria-labelledby="more-title">
+      <h2 id="more-title" class="h2 h2--sm rise">And the rest is just there.</h2>
+      <ul class="grid-more">
+        <li class="rise"><b>Work memory</b><p>Progress, decision, and blocker notes, a completion note, and refs such as <code>pr:&lt;url&gt;</code> on every task.</p></li>
+        <li class="rise" style="--delay: 40ms"><b>Workspaces</b><p>One per project, with an optional repository; tasks can move between them and links may cross them.</p></li>
+        <li class="rise" style="--delay: 80ms"><b>Waits and pauses</b><p>Pause with a reason, or wait until a time and let the task come back on its own.</p></li>
+        <li class="rise" style="--delay: 120ms"><b>An app on every device</b><p>The server serves a web app you can install on a desktop or a phone, with push notifications.</p></li>
+        <li class="rise"><b>Your data, one file</b><p>Tasks and their history live in a SQLite database on the machine you run the server on.</p></li>
+        <li class="rise" style="--delay: 40ms"><b>Updates that roll back</b><p><code>toodo update</code> restarts on the new version and returns to the old one if it does not answer.</p></li>
+        <li class="rise" style="--delay: 80ms"><b>Review exports</b><p>Copy a report as Markdown, save it as Markdown or CSV, or print it.</p></li>
+        <li class="rise" style="--delay: 120ms"><b>Plans in one call</b><p>An agent can create a whole plan, tasks and dependencies together, and you see it on the timeline.</p></li>
+      </ul>
+    </section>
+
+    <section id="install" class="closing" aria-labelledby="install-title">
+      <div class="container closing-inner">
+        <h2 id="install-title" class="h2 rise">One command.</h2>
+        <p class="lede rise">Install the server, open the web app it prints, and plan your first task. Your coding agents are registered on the way.</p>
+        <div class="install rise" data-tabs>
+          <div class="install-tabs" role="tablist" aria-label="Install method">
+            <button type="button" role="tab" id="tab-npx" aria-controls="panel-npx" aria-selected="true">npx</button>
+            <button type="button" role="tab" id="tab-global" aria-controls="panel-global" aria-selected="false" tabindex="-1">npm, as a service</button>
+          </div>
+          <div class="install-panel" role="tabpanel" id="panel-npx" aria-labelledby="tab-npx">
+            <pre><code id="install-npx"><span class="p" aria-hidden="true">$ </span>npx @dubusoft/toodo init</code></pre>
+            <button class="copy" type="button" data-copy-target="install-npx" aria-label="Copy the npx command" title="Copy"><svg class="icon copy-idle" aria-hidden="true"><use href="#icon-copy"/></svg><svg class="icon copy-done" aria-hidden="true"><use href="#icon-check"/></svg></button>
+          </div>
+          <div class="install-panel" role="tabpanel" id="panel-global" aria-labelledby="tab-global" hidden>
+            <pre><code id="install-global"><span class="p" aria-hidden="true">$ </span>npm i -g @dubusoft/toodo
+<span class="p" aria-hidden="true">$ </span>toodo init
+<span class="p" aria-hidden="true">$ </span>toodo service install</code></pre>
+            <button class="copy" type="button" data-copy-target="install-global" aria-label="Copy the npm commands" title="Copy"><svg class="icon copy-idle" aria-hidden="true"><use href="#icon-copy"/></svg><svg class="icon copy-done" aria-hidden="true"><use href="#icon-check"/></svg></button>
+          </div>
+          <p class="install-meta">Linux (x64, arm64) or macOS, with Node.js 18 or later. <code>toodo service install</code> keeps the server running with systemd or launchd.</p>
         </div>
-        <div class="prose split-body">
-          <p>Toodo is open source under the <a href="https://github.com/Dubusoft/toodo/blob/main/LICENSE">GNU Affero General Public License v3.0 only</a> (<code>AGPL-3.0-only</code>). The source code and releases are on <a href="https://github.com/Dubusoft/toodo">GitHub</a>.</p>
-          <p>Outside contributions are accepted under a Contributor License Agreement; the <a href="https://github.com/Dubusoft/toodo/blob/main/CONTRIBUTING.md">contributing guide</a> explains how to sign it in a pull request.</p>
+        <div class="hero-cta closing-cta rise">
+          <a class="btn btn--primary" href="https://github.com/Dubusoft/toodo/blob/main/docs/quickstart.md">Read the quickstart</a>
+          <a class="btn btn--ghost" href="https://github.com/Dubusoft/toodo"><svg class="icon" aria-hidden="true"><use href="#icon-github"/></svg>Star on GitHub</a>
         </div>
+        <p class="closing-license rise">Open source under <a href="https://github.com/Dubusoft/toodo/blob/main/LICENSE"><code>AGPL-3.0-only</code></a>. Contributions are welcome under a <a href="https://github.com/Dubusoft/toodo/blob/main/CONTRIBUTING.md">Contributor License Agreement</a>.</p>
       </div>
     </section>
 
     <p id="copy-status" class="visually-hidden" role="status"></p>
   </main>
 
-  <footer class="site-footer page-grid">
-    <div class="footer-bar">
-      <p>Made by <a href="https://dubusoft.com">Dubusoft</a></p>
+  <footer class="footer">
+    <div class="container footer-inner">
+      <a class="brand" href="/"><img src="/favicon.svg" width="22" height="22" alt=""><span>Toodo</span></a>
       <nav aria-label="Footer">
-        <ul>
-          <li><a href="https://github.com/Dubusoft/toodo">GitHub</a></li>
-          <li><a href="https://github.com/Dubusoft/toodo/tree/main/docs">Docs</a></li>
-          <li><a href="https://github.com/Dubusoft/toodo/blob/main/LICENSE">License</a></li>
-        </ul>
+        <a href="https://github.com/Dubusoft/toodo/tree/main/docs">Docs</a>
+        <a href="https://github.com/Dubusoft/toodo/releases">Releases</a>
+        <a href="https://github.com/Dubusoft/toodo">GitHub</a>
+        <a href="https://github.com/Dubusoft/toodo/blob/main/LICENSE">License</a>
       </nav>
+      <p class="footer-made">Made by <a href="https://dubusoft.com">Dubusoft</a></p>
     </div>
   </footer>
 
@@ -197,8 +276,9 @@
         const button = event.target.closest("[data-copy-target]");
         if (!button) return;
         const source = document.getElementById(button.dataset.copyTarget);
+        const text = [...source.childNodes].filter((n) => !(n.classList && n.classList.contains("p"))).map((n) => n.textContent).join("").trim();
         try {
-          await navigator.clipboard.writeText(source.textContent.trim());
+          await navigator.clipboard.writeText(text);
           button.dataset.state = "copied";
           status.textContent = "Copied to the clipboard.";
         } catch {
@@ -211,6 +291,40 @@
           status.textContent = "";
         }, 2000));
       });
+
+      for (const tabs of document.querySelectorAll("[data-tabs]")) {
+        const buttons = [...tabs.querySelectorAll("[role=tab]")];
+        const select = (tab) => {
+          for (const b of buttons) {
+            const on = b === tab;
+            b.setAttribute("aria-selected", String(on));
+            b.tabIndex = on ? 0 : -1;
+            document.getElementById(b.getAttribute("aria-controls")).hidden = !on;
+          }
+        };
+        tabs.addEventListener("click", (e) => { const b = e.target.closest("[role=tab]"); if (b) select(b); });
+        tabs.addEventListener("keydown", (e) => {
+          const i = buttons.indexOf(document.activeElement);
+          if (i < 0 || (e.key !== "ArrowRight" && e.key !== "ArrowLeft")) return;
+          const next = buttons[(i + (e.key === "ArrowRight" ? 1 : buttons.length - 1)) % buttons.length];
+          select(next);
+          next.focus();
+        });
+      }
+
+      const items = document.querySelectorAll(".rise");
+      if (!("IntersectionObserver" in window)) {
+        for (const el of items) el.classList.add("in");
+        return;
+      }
+      const io = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          entry.target.classList.add("in");
+          io.unobserve(entry.target);
+        }
+      }, { rootMargin: "0px 0px -8% 0px" });
+      for (const el of items) io.observe(el);
     })();
   </script>
 </body>
