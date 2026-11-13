@@ -78,30 +78,8 @@
 
       <div class="container">
         <figure class="win hero-win rise" style="--delay: 260ms">
-          <div class="win-bar" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span class="win-title">web-shop · timeline</span><span class="win-live"><span class="pulse-dot"></span>live</span></div>
-          <div class="dag">
-            <ol class="dag-days" aria-hidden="true"><li>Mon</li><li>Tue</li><li>Wed</li><li>Thu</li><li>Fri</li></ol>
-            <div class="dag-stage">
-              <svg class="dag-edges" viewBox="0 0 1000 380" preserveAspectRatio="none" aria-hidden="true">
-                <path class="edge edge--done" d="M190 46 C 200 46, 195 136, 205 136"/>
-                <path class="edge edge--done" d="M405 136 C 414 136, 410 46, 420 46"/>
-                <path class="edge edge--done" d="M405 136 C 414 136, 410 226, 420 226"/>
-                <path class="edge edge--flow edge--c" d="M640 46 C 675 46, 665 136, 700 136"/>
-                <path class="edge edge--flow" d="M680 226 C 692 226, 688 136, 700 136"/>
-                <path class="edge edge--related" d="M680 238 C 692 238, 688 316, 700 316"/>
-              </svg>
-              <ol class="dag-nodes" aria-label="Example plan">
-                <li class="node node--done" style="--x: 10; --y: 20; --w: 180"><b>Design the schema</b><span>Completed · 1.5d</span></li>
-                <li class="node node--done" style="--x: 205; --y: 110; --w: 200"><b>Write the migration</b><span>Completed · 2d</span></li>
-                <li class="node node--review" style="--x: 420; --y: 20; --w: 220"><b>Add the API endpoints</b><span class="swap"><span class="swap-a">In review · pr:#57</span><span class="swap-b">Completed · 2d</span></span></li>
-                <li class="node node--progress" style="--x: 420; --y: 200; --w: 260"><b>Build the web screens</b><span><i class="pulse-dot"></i>In progress · 3 notes</span></li>
-                <li class="node node--gate" style="--x: 700; --y: 110; --w: 250"><b>Ship the release</b><span class="swap"><span class="swap-a">Blocked · waits on 2</span><span class="swap-b">Ready · autopilot</span></span></li>
-                <li class="node node--planned" style="--x: 700; --y: 290; --w: 220"><b>Write the user guide</b><span>Planned · related</span></li>
-              </ol>
-            </div>
-            <p class="dag-foot"><span><i class="key key--dep"></i>depends on</span><span><i class="key key--rel"></i>related</span><span class="dag-foot-note">A task is ready once everything it depends on is done.</span></p>
-          </div>
-          <figcaption class="visually-hidden">An example plan on a time axis: finished tasks unlock the ones that depend on them, and a related link adds context without blocking.</figcaption>
+          <div class="win-bar" aria-hidden="true"><span class="dots"><i></i><i></i><i></i></span><span class="win-title">Toodo · All workspaces · timeline</span></div>
+          <img class="win-shot" src="/assets/timeline.webp" width="1440" height="900" fetchpriority="high" decoding="async" alt="The Toodo timeline across two workspaces: completed tasks on the left, tasks in progress and awaiting completion reaching the current time, and two blocked autopilot tasks waiting on them, with lines from each task to the tasks it depends on.">
         </figure>
       </div>
     </section>
@@ -124,15 +102,10 @@
         <p class="lede rise">Group tasks in workspaces and point each one at the tasks it depends on. Toodo keeps the graph acyclic, marks a task ready the moment its last prerequisite is done, and links related work that is worth reading together without blocking anything.</p>
       </div>
       <div class="card graph-card rise" style="--delay: 80ms">
-        <ul class="g-list">
-          <li class="g-row"><span class="st st--done">Done</span><b>Write the migration</b></li>
-          <li class="g-row g-row--in"><span class="st st--review">In review</span><b>Add the API endpoints</b></li>
-          <li class="g-row g-row--in"><span class="st st--progress">In progress</span><b>Build the web screens</b></li>
-          <li class="g-row g-row--target"><span class="st st--blocked">Blocked</span><b>Ship the release</b><small>depends on 2 unfinished tasks</small></li>
-        </ul>
+        <img class="card-shot" src="/assets/dependencies.webp" width="446" height="607" loading="lazy" decoding="async" alt="Three tasks in the web-shop list: Add the API endpoints awaiting completion with 2 of 3 criteria met, Build the web screens in progress, and Ship the release, marked for autopilot, blocked and waiting on #4 and #5.">
         <div class="g-reject">
-          <code>add_dependency</code><span>Write the migration → Ship the release</span>
-          <p><span class="x" aria-hidden="true">×</span> Rejected: the edge would create a cycle.</p>
+          <code>add_dependency</code><span>Write the cart migration → Ship the release</span>
+          <p><span class="x" aria-hidden="true">×</span> Rejected: dependency cycle: 3 -&gt; 7 -&gt; 5 -&gt; 3; task 5 already depends on 3.</p>
         </div>
       </div>
     </section>
@@ -144,13 +117,8 @@
         <p class="lede rise">Each task carries the criteria that finish it. A manual item is checked with its evidence; a URL item passes when Toodo fetches it at completion. Until every one passes, the task stays open and its dependents keep waiting.</p>
       </div>
       <div class="card crit-card rise" style="--delay: 80ms">
-        <p class="card-title">Add the API endpoints <span class="st st--review">In review</span></p>
-        <ul class="crit">
-          <li class="crit--ok"><span class="box" aria-hidden="true"><svg class="icon"><use href="#icon-check"/></svg></span><div><b>Every endpoint has a request example</b><small>manual · evidence: docs/api.md</small></div></li>
-          <li class="crit--ok"><span class="box" aria-hidden="true"><svg class="icon"><use href="#icon-check"/></svg></span><div><b>Staging answers its health check</b><small>url · GET https://staging.example.com/health → 200</small></div></li>
-          <li class="crit--open"><span class="box" aria-hidden="true"></span><div><b>Pagination reviewed with the web team</b><small>manual · open</small></div></li>
-        </ul>
-        <p class="crit-foot"><span class="meter" aria-hidden="true"><i style="--p: 66%"></i></span>2 of 3 passed. <code>complete_task</code> waits for the last one.</p>
+        <img class="card-shot" src="/assets/criteria.webp" width="398" height="378" loading="lazy" decoding="async" alt="Task details of Add the API endpoints: two of its three criteria are checked, each with its evidence and when an agent checked it, and the third, Pagination reviewed with the web team, is still open.">
+        <p class="crit-foot">2 of 3 met. <code>complete_task</code> waits for the last one.</p>
       </div>
     </section>
 
@@ -180,11 +148,7 @@
         <p class="lede rise">Flag a task for autopilot and an executor of your choice may take it up on its own as soon as its dependencies are done. Toodo only keeps the mark and the list of marked tasks; who does the work, and where, stays up to you.</p>
       </div>
       <div class="card auto-card rise" style="--delay: 80ms">
-        <ul class="auto-list">
-          <li><span class="st st--ready">Ready</span><b>Ship the release</b><span class="auto-chip auto-chip--on"><i></i>Autopilot</span></li>
-          <li><span class="st st--blocked">Blocked</span><b>Announce the release</b><span class="auto-chip auto-chip--on"><i></i>Autopilot</span></li>
-          <li><span class="st st--planned">Planned</span><b>Write the user guide</b><span class="auto-chip">Manual</span></li>
-        </ul>
+        <img class="card-shot" src="/assets/autopilot.webp" width="446" height="411" loading="lazy" decoding="async" alt="The task list filtered to autopilot: Ship the release in web-shop and Announce the release in billing-api, both blocked until the tasks they wait on are done.">
         <p class="auto-foot"><code>list_tasks { autopilot: true }</code> returns the marked tasks; the ready ones are fair game.</p>
       </div>
     </section>
@@ -194,17 +158,17 @@
       <h2 id="timeline-title" class="h2 rise">Every task remembers why. <span class="soft">Your year, from recorded facts.</span></h2>
       <p class="lede rise">Starting, pausing, reviewing, and completing a task each leave a timestamp and a reason. The timeline draws the graph on a time axis, and the review report turns the same history into a week, a month, or a year of work you can export as Markdown or CSV.</p>
       <figure class="shot shot--main rise">
-        <img src="/assets/timeline.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Timeline view of two workspaces: each task is a bar on a day-by-day time axis, lines connect tasks to the tasks they depend on, and labels show statuses such as Completed, In progress, Awaiting completion, Blocked, and Ready.">
-        <figcaption>Timeline: two workspaces on one time axis, with the dependencies between them.</figcaption>
+        <img src="/assets/review.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Month review across all workspaces: three tasks completed, one awaiting completion, two started, and three planned, with median lead, cycle, and active times, plan versus actual, and the completed tasks listed below.">
+        <figcaption>Review: a month of work from the recorded history, ready to export.</figcaption>
       </figure>
       <div class="shot-pair">
         <figure class="shot rise">
-          <img src="/assets/task-list.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Task list of the web-shop workspace: one task in progress, one awaiting completion, and one planned task that is blocked, each with its criteria and timing.">
-          <figcaption>Task list: a workspace grouped by status, with criteria and timing.</figcaption>
+          <img src="/assets/task-list.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Task list of the web-shop workspace: a task awaiting completion with 2 of 3 criteria met, one in progress, one blocked autopilot task waiting on both, and one ready task.">
+          <figcaption>Task list: a workspace with status, criteria, and what each task waits on.</figcaption>
         </figure>
         <figure class="shot rise" style="--delay: 80ms">
-          <img src="/assets/review.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Week review across all workspaces: three tasks completed, one awaiting completion, and two started, with median lead and cycle times and the completed tasks listed below.">
-          <figcaption>Review: what was completed, awaiting completion, and started in a week.</figcaption>
+          <img src="/assets/task-details.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Task details of Add the API endpoints open beside the timeline: criteria with evidence, dependencies, the pull request ref, when it was planned, started, and sent for review, and a decision note.">
+          <figcaption>Task details: criteria, refs, notes, and each status change with its reason.</figcaption>
         </figure>
       </div>
     </section>
