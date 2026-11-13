@@ -711,9 +711,11 @@ carrying the id to resume from.
 To use the web app from a phone or another computer without an SSH tunnel, publish it
 through a Cloudflare Tunnel with Cloudflare Access in front. The server keeps listening on
 loopback; `cloudflared` connects out to Cloudflare, so no port is opened on the machine.
-Access signs you in before any request reaches the server, and the web app still asks for
-`web-token`, so a stolen token alone is not enough from outside, and a signed-in browser
-without the token gets nothing.
+Access signs you in before any request reaches the server. By default the web app still
+asks for `web-token`, so a stolen token alone is not enough from outside, and a signed-in
+browser without the token gets nothing. With [Sign-in through
+Access](#sign-in-through-access) set up, the server trusts the Access sign-in instead and
+the web app needs no token.
 
 You need a domain on Cloudflare and a Zero Trust organization (the free plan does). Below,
 `toodo.example.com` stands for the hostname you pick.
@@ -794,6 +796,39 @@ Things to know:
 - To take it offline again, stop and disable `toodo-tunnel`; to remove it, delete the
   tunnel, its DNS record, and the Access application.
 
+#### Sign-in through Access
+
+When only you can pass the Access application, the web token adds a second sign-in
+without adding much. Tell the server which Access application to trust, and `/api`
+accepts the JWT Cloudflare attaches to every request it lets through
+(`Cf-Access-Jwt-Assertion`) instead of a token:
+
+- `TOODO_CF_ACCESS_TEAM_DOMAIN`: the team domain of your Zero Trust organization, e.g.
+  `myteam.cloudflareaccess.com` (*Settings > Custom Pages* in Zero Trust shows it).
+- `TOODO_CF_ACCESS_AUD`: the *Application Audience (AUD) Tag* of the Access application
+  for `toodo.example.com` (its *Overview* tab).
+
+Set both in the service (`Environment=` lines, see [systemd](#systemd)) and restart it; one
+without the other stops the server from starting. The server then checks each JWT
+itself: its RS256 signature against the team's keys at
+`https://<team domain>/cdn-cgi/access/certs` (fetched when first needed, again after an
+hour or when a JWT names an unknown key, at most every 30 seconds), the team domain as
+issuer, the AUD tag among its audiences, and its `exp` and `nbf` times, allowing 60 seconds
+of clock difference. A request with a valid JWT is signed in: as the device whose token it
+bears, if it bears one that works, else with the access of the shared web token. A request
+without a valid JWT, such as one that reaches the loopback port directly, goes through the
+token rules as before.
+
+The web app asks the server (`GET /api/session`) whether Access signed it in before it
+asks for a token, and skips the token form when it did. A browser that already has a
+device token keeps using it, which notifications need: they belong to devices (see
+[Notifications](#notifications)). Whatever the setting, the web app forgets its token only
+when the server itself rejects it, not when a proxy in front of it, such as Access with an
+expired session, answers `401`.
+
+This covers `/api` and its event stream only. `/mcp` keeps its own token and the OAuth
+sign-in of chat apps, and agents keep reaching it over loopback or an SSH tunnel.
+
 #### Chat Apps through the Tunnel
 
 ChatGPT and Claude can't sign in to Access, so the paths they use must skip it while the
@@ -865,6 +900,9 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   name or one over 80 characters is `422`.
 - `POST /api/devices/{id}/revoke`: revokes the device for good and returns it; `404` for
   an unknown id. Revoking it again keeps the first revocation time.
+- `GET /api/session`: `{ "via": "access" }` when Cloudflare Access signed the request in
+  without a token that works (see [Sign-in through Access](#sign-in-through-access)), else
+  `{ "via": "token" }`.
 - `GET /api/push`, `PUT /api/push/settings`, and `POST /api/push/test`: the notification
   state, settings, and test notification of the device (see [Notifications](#notifications)).
 
@@ -872,6 +910,7 @@ Reports are downloaded in the browser, and backups go over the endpoints above a
 `restore_backup { name }` command.
 
 All of them require `Authorization: Bearer <token>` with the shared web
-token or the token of a device that is not revoked; `/mcp` requires the MCP token. The
+token or the token of a device that is not revoked, or a valid Cloudflare Access JWT when
+the server is configured for it; `/mcp` requires the MCP token. The
 generated bindings in `src/lib/bindings.ts` call the API through `src/web/core.ts` and
 `src/web/event.ts`; a test checks that the server routes every command they invoke.

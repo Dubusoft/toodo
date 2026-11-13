@@ -1,17 +1,33 @@
-import { useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { inputClass } from "@/components/workspace-list";
 import { DEFAULT_ACCESS, guessDeviceLabel, LIFETIMES, signIn, TokenRejected, type DeviceScope } from "@/web/devices";
-import { getToken, setToken, subscribeToken } from "@/web/session";
+import { checkAccess, isSignedIn, setToken, subscribeToken } from "@/web/session";
 
 /**
- * Shows the app once the browser holds an access token the server accepts; until then,
- * a form asks for it. Signing in with the shared token from `web-token` in the server's
- * data directory registers this browser as a device with a token of its own.
+ * Shows the app once the browser holds an access token the server accepts, or Cloudflare
+ * Access in front of the server signs it in; otherwise a form asks for the token. Signing in
+ * with the shared token from `web-token` in the server's data directory registers this
+ * browser as a device with a token of its own.
  */
 export function ServerAccess({ children }: { children: ReactNode }) {
-  const token = useSyncExternalStore(subscribeToken, getToken);
-  return token === null ? <TokenForm /> : children;
+  const signedIn = useSyncExternalStore(subscribeToken, isSignedIn);
+  const [askedAccess, setAskedAccess] = useState(false);
+  useEffect(() => {
+    if (signedIn) return;
+    let current = true;
+    checkAccess()
+      .catch((error: unknown) => console.warn("toodo: could not ask the server about Cloudflare Access", error))
+      .finally(() => {
+        if (current) setAskedAccess(true);
+      });
+    return () => {
+      current = false;
+      setAskedAccess(false);
+    };
+  }, [signedIn]);
+  if (signedIn) return children;
+  return askedAccess ? <TokenForm /> : null;
 }
 
 function TokenForm() {

@@ -1,7 +1,9 @@
 //! The HTTP server for task commands, events, MCP, backups, devices and Web Push.
-//! API requests require a shared access token or device token. MCP uses its own token.
+//! API requests require a shared access token or device token, or a Cloudflare Access JWT
+//! when the server is configured for one. MCP uses its own token.
 //! The configured web build serves the app on the same port.
 
+mod access;
 mod devices;
 mod event_log;
 mod files;
@@ -63,6 +65,10 @@ Environment:
   TOODO_PUSH_SUBJECT
                   contact for push services in notifications, a mailto: or https: URL
                   (default https://github.com/Dubusoft/toodo)
+  TOODO_CF_ACCESS_TEAM_DOMAIN, TOODO_CF_ACCESS_AUD
+                  Cloudflare Access team domain (e.g. myteam.cloudflareaccess.com)
+                  and application AUD tag; with both set, /api accepts the
+                  request's Access JWT instead of a token (unset by default)
 ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +79,8 @@ pub struct Config {
     pub public_url: Option<PublicUrl>,
     /// The contact push services see in the VAPID token of every notification.
     pub push_subject: String,
+    /// The Cloudflare Access application whose JWTs sign `/api` requests in.
+    pub access: Option<access::AccessConfig>,
 }
 
 impl Config {
@@ -107,12 +115,29 @@ impl Config {
             }
             None => push::DEFAULT_SUBJECT.to_owned(),
         };
+        let access = match (
+            var("TOODO_CF_ACCESS_TEAM_DOMAIN"),
+            var("TOODO_CF_ACCESS_AUD"),
+        ) {
+            (None, None) => None,
+            (Some(team_domain), Some(audience)) => {
+                Some(access::AccessConfig::parse(&team_domain, &audience)?)
+            }
+            _ => {
+                return Err(
+                    "set both TOODO_CF_ACCESS_TEAM_DOMAIN and TOODO_CF_ACCESS_AUD \
+                            to accept Cloudflare Access sign-ins, or neither"
+                        .to_owned(),
+                );
+            }
+        };
         Ok(Self {
             listen,
             data_dir,
             web_dir,
             public_url,
             push_subject,
+            access,
         })
     }
 }
@@ -390,10 +415,31 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
              system TLS setup, or unset TOODO_PUBLIC_URL to start without public mode"
         )
     })?;
+    let access = match &config.access {
+        Some(access) => {
+            let keys = access::HttpKeySource::new().map_err(|error| {
+                format!(
+                    "cannot create the HTTP client for Cloudflare Access keys ({error}); check \
+                     the system TLS setup, or unset TOODO_CF_ACCESS_TEAM_DOMAIN and \
+                     TOODO_CF_ACCESS_AUD"
+                )
+            })?;
+            println!(
+                "toodo-server: /api accepts Cloudflare Access sign-ins from {}",
+                access.issuer()
+            );
+            Some(Arc::new(access::Verifier::new(
+                access.clone(),
+                Arc::new(keys),
+            )))
+        }
+        None => None,
+    };
     let app = router(
         services.clone(),
         web_token,
         mcp_token,
+        access,
         config.web_dir.as_deref(),
         Arc::new(fetcher),
     );
@@ -442,11 +488,13 @@ pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)
 }
 
-/// The routes: the API behind the web token, MCP behind its own token, and the web app.
+/// The routes: the API behind the web token (or Cloudflare Access), MCP behind its own
+/// token, and the web app.
 fn router(
     services: Arc<Services>,
     web_token: String,
     mcp_token: String,
+    access: Option<Arc<access::Verifier>>,
     web_dir: Option<&Path>,
     fetcher: Arc<dyn oauth::ClientMetadataFetcher>,
 ) -> Router {
@@ -464,6 +512,7 @@ fn router(
         .route("/api/backups/{name}", get(files::download))
         .route("/api/devices", get(devices::list).post(devices::register))
         .route("/api/devices/{id}/revoke", post(devices::revoke))
+        .route("/api/session", get(devices::session))
         .route("/api/push", get(push::state))
         .route(
             "/api/push/subscription",
@@ -478,6 +527,7 @@ fn router(
                 shared_token: Arc::new(web_token.clone()),
                 mcp_token: Arc::new(mcp_token.clone()),
                 attempts: mcp::attempts::FailedAttempts::default(),
+                access,
             },
             devices::require_access,
         ))
@@ -773,11 +823,21 @@ mod tests {
 
     /// Serves `services` with the web token `web` and the MCP token `agent`.
     pub(super) fn serve(services: Arc<Services>, web_dir: Option<&Path>) -> SocketAddr {
+        serve_app(services, None, web_dir)
+    }
+
+    /// [`serve`], also accepting Cloudflare Access JWTs that `access` admits.
+    fn serve_app(
+        services: Arc<Services>,
+        access: Option<Arc<access::Verifier>>,
+        web_dir: Option<&Path>,
+    ) -> SocketAddr {
         let fetcher = Arc::new(oauth::HttpClientMetadataFetcher::new().unwrap());
         let app = router(
             services,
             "web".to_owned(),
             "agent".to_owned(),
+            access,
             web_dir,
             fetcher,
         );
@@ -816,6 +876,129 @@ mod tests {
         // Without a web build, other paths are simply not there.
         assert!(status(address, "GET", "/", None).contains(" 404 "));
         assert!(status(address, "GET", "/tasks", None).contains(" 404 "));
+    }
+
+    /// Sends `head` (request line and extra headers) with `jwt` as the Access JWT and
+    /// `token` as the bearer token, and an empty JSON body; returns the status line and
+    /// the body. Reads the response head alone for an event stream, which never ends.
+    fn with_access(
+        address: SocketAddr,
+        head: &str,
+        jwt: Option<&str>,
+        token: Option<&str>,
+    ) -> (String, String) {
+        use std::io::{Read, Write};
+        let mut request = head.to_owned();
+        if let Some(jwt) = jwt {
+            request.push_str(&format!("\r\nCf-Access-Jwt-Assertion: {jwt}"));
+        }
+        if let Some(token) = token {
+            request.push_str(&format!("\r\nAuthorization: Bearer {token}"));
+        }
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        write!(
+            stream,
+            "{request}\r\nHost: localhost\r\nContent-Type: application/json\r\n\
+             Content-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+        )
+        .unwrap();
+        let mut response = Vec::new();
+        let mut byte = [0];
+        while !response.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap() == 1 {
+            response.push(byte[0]);
+        }
+        let head = String::from_utf8(response).unwrap();
+        let mut body = String::new();
+        if !head.contains("text/event-stream") {
+            stream.read_to_string(&mut body).unwrap();
+        }
+        (head.lines().next().unwrap_or_default().to_owned(), body)
+    }
+
+    #[test]
+    fn a_cloudflare_access_jwt_signs_api_requests_in_without_a_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let verifier = access::testing::verifier(access::testing::keys());
+        let address = serve_app(services(temp.path()), Some(Arc::new(verifier)), None);
+        let valid = access::testing::valid_token();
+        let expired = access::testing::token(
+            access::testing::KID,
+            &access::testing::claims(1_700_000_000),
+        );
+        let rpc = "POST /api/rpc/list_workspaces HTTP/1.1";
+        let ask = |head, jwt, token| with_access(address, head, jwt, token);
+
+        assert!(ask(rpc, Some(&valid), None).0.contains(" 200 "));
+        let (status, body) = ask("GET /api/session HTTP/1.1", Some(&valid), None);
+        assert!(status.contains(" 200 "), "{status}");
+        assert_eq!(body, r#"{"via":"access"}"#);
+        let (_, body) = ask("GET /api/session HTTP/1.1", Some(&valid), Some("web"));
+        assert_eq!(body, r#"{"via":"token"}"#);
+        let (status, _) = ask("GET /api/events HTTP/1.1", Some(&valid), None);
+        assert!(status.contains(" 200 "), "{status}");
+        // A token that does not work no longer matters once Access signed the request in.
+        assert!(ask(rpc, Some(&valid), Some("nope")).0.contains(" 200 "));
+        let device = r#"{"label":"Phone"}"#;
+        let (status, _, _) = exchange(
+            address,
+            &format!(
+                "POST /api/devices HTTP/1.1\r\nCf-Access-Jwt-Assertion: {valid}\r\n\
+                 Content-Type: application/json\r\nContent-Length: {}",
+                device.len()
+            ),
+            device.as_bytes(),
+        );
+        assert!(status.contains(" 201 "), "{status}");
+
+        // Without a valid JWT the token rules hold as before.
+        for jwt in [None, Some(expired.as_str()), Some("not.a.jwt")] {
+            let (status, body) = ask(rpc, jwt, None);
+            assert!(status.contains(" 401 "), "{status}");
+            assert!(
+                body.contains("Toodo API: the request has no Authorization header"),
+                "{body}"
+            );
+            assert!(ask(rpc, jwt, Some("web")).0.contains(" 200 "));
+            assert!(ask(rpc, jwt, Some("agent")).0.contains(" 401 "));
+        }
+        // MCP keeps its own token.
+        assert!(
+            ask("POST /mcp HTTP/1.1", Some(&valid), None)
+                .0
+                .contains(" 401 ")
+        );
+    }
+
+    #[test]
+    fn access_jwts_are_ignored_unless_the_server_is_configured_for_them() {
+        let (address, _temp) = serve_router(None);
+        let valid = access::testing::valid_token();
+        let rpc = "POST /api/rpc/list_workspaces HTTP/1.1";
+        assert!(
+            with_access(address, rpc, Some(&valid), None)
+                .0
+                .contains(" 401 ")
+        );
+    }
+
+    #[test]
+    fn access_needs_both_its_settings() {
+        let config = |vars: &[(&str, &str)]| {
+            Config::from_env(|name| {
+                (name == "HOME").then(|| "/home/me".to_owned()).or_else(|| {
+                    vars.iter()
+                        .find(|(key, _)| *key == name)
+                        .map(|(_, value)| (*value).to_owned())
+                })
+            })
+        };
+        let team = ("TOODO_CF_ACCESS_TEAM_DOMAIN", "team.cloudflareaccess.com");
+        let aud = ("TOODO_CF_ACCESS_AUD", "aud");
+        let access = config(&[team, aud]).unwrap().access.unwrap();
+        assert_eq!(access.issuer(), "https://team.cloudflareaccess.com");
+        assert!(config(&[team]).unwrap_err().contains("TOODO_CF_ACCESS_AUD"));
+        assert!(config(&[aud]).is_err());
+        assert_eq!(config(&[]).unwrap().access, None);
     }
 
     #[test]
