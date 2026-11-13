@@ -6,8 +6,8 @@
   <title>Page not found | Toodo</title>
   <meta name="robots" content="noindex">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#fafaf7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0f0e" media="(prefers-color-scheme: dark)">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
   <link rel="stylesheet" href="/styles.css">
@@ -15,40 +15,37 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <header class="site-header page-grid">
-    <div class="header-bar">
-      <a class="brand" href="/"><img src="/favicon.svg" width="32" height="32" alt=""><span>Toodo</span></a>
-      <nav class="site-nav" aria-label="Main">
-        <ul>
-          <li><a href="https://github.com/Dubusoft/toodo/tree/main/docs">Docs</a></li>
-          <li><a href="https://github.com/Dubusoft/toodo">GitHub</a></li>
-        </ul>
-      </nav>
+  <header class="nav-wrap">
+    <div class="nav">
+      <a class="brand" href="/"><img src="/favicon.svg" width="26" height="26" alt=""><span>Toodo</span></a>
+      <div class="nav-actions">
+        <a class="btn btn--ghost btn--sm" href="https://github.com/Dubusoft/toodo/tree/main/docs">Docs</a>
+        <a class="btn btn--ghost btn--sm" href="https://github.com/Dubusoft/toodo">GitHub</a>
+      </div>
     </div>
   </header>
 
   <main id="main">
-    <section class="hero page-grid" aria-labelledby="not-found-title">
-      <div>
-        <h1 id="not-found-title">Page not found</h1>
-        <p class="lead">There is no page at this address. It may have moved, or the link may have a typo.</p>
-        <div class="actions">
-          <a class="button button--primary" href="/">Go to the home page</a>
-        </div>
+    <section class="notfound container" aria-labelledby="not-found-title">
+      <p class="eyebrow">404</p>
+      <h1 id="not-found-title" class="display">Page not found. <span class="soft">Nothing depends on it.</span></h1>
+      <p class="lede">There is no page at this address. It may have moved, or the link may have a typo.</p>
+      <div class="hero-cta">
+        <a class="btn btn--primary" href="/">Go to the home page</a>
       </div>
     </section>
   </main>
 
-  <footer class="site-footer page-grid">
-    <div class="footer-bar">
-      <p>Made by <a href="https://dubusoft.com">Dubusoft</a></p>
+  <footer class="footer">
+    <div class="container footer-inner">
+      <a class="brand" href="/"><img src="/favicon.svg" width="22" height="22" alt=""><span>Toodo</span></a>
       <nav aria-label="Footer">
-        <ul>
-          <li><a href="https://github.com/Dubusoft/toodo">GitHub</a></li>
-          <li><a href="https://github.com/Dubusoft/toodo/tree/main/docs">Docs</a></li>
-          <li><a href="https://github.com/Dubusoft/toodo/blob/main/LICENSE">License</a></li>
-        </ul>
+        <a href="https://github.com/Dubusoft/toodo/tree/main/docs">Docs</a>
+        <a href="https://github.com/Dubusoft/toodo/releases">Releases</a>
+        <a href="https://github.com/Dubusoft/toodo">GitHub</a>
+        <a href="https://github.com/Dubusoft/toodo/blob/main/LICENSE">License</a>
       </nav>
+      <p class="footer-made">Made by <a href="https://dubusoft.com">Dubusoft</a></p>
     </div>
   </footer>
 </body>
