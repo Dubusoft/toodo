@@ -26,13 +26,13 @@ function fakeServer() {
   });
 }
 
-function signIn(token: string, label?: string) {
+async function signIn(token: string, label?: string) {
   render(
     <ServerAccess>
       <p>App</p>
     </ServerAccess>,
   );
-  fireEvent.change(screen.getByLabelText("Access token"), { target: { value: token } });
+  fireEvent.change(await screen.findByLabelText("Access token"), { target: { value: token } });
   if (label !== undefined) fireEvent.change(screen.getByLabelText("Device name"), { target: { value: label } });
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 }
@@ -51,7 +51,7 @@ describe("ServerAccess", () => {
   });
 
   it("registers this browser as a device with the shared token and keeps the device token", async () => {
-    signIn(" shared ", " Work laptop ");
+    await signIn(" shared ", " Work laptop ");
 
     expect(await screen.findByText("App")).toBeInTheDocument();
     expect(getToken()).toBe(deviceToken);
@@ -65,7 +65,7 @@ describe("ServerAccess", () => {
         <p>App</p>
       </ServerAccess>,
     );
-    fireEvent.change(screen.getByLabelText("Access"), { target: { value: "read" } });
+    fireEvent.change(await screen.findByLabelText("Access"), { target: { value: "read" } });
     fireEvent.change(screen.getByLabelText("Token expires after"), { target: { value: "never" } });
     fireEvent.change(screen.getByLabelText("Access token"), { target: { value: "shared" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
@@ -76,7 +76,7 @@ describe("ServerAccess", () => {
   });
 
   it("keeps a device token as it is without registering again", async () => {
-    signIn(deviceToken);
+    await signIn(deviceToken);
 
     expect(await screen.findByText("App")).toBeInTheDocument();
     expect(getToken()).toBe(deviceToken);
@@ -84,7 +84,7 @@ describe("ServerAccess", () => {
   });
 
   it("says when the server rejects the token and keeps nothing", async () => {
-    signIn("wrong");
+    await signIn("wrong");
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("The server did not accept this token.");
@@ -97,6 +97,22 @@ describe("ServerAccess", () => {
     fireEvent.change(field, { target: { value: "shared" } });
     expect(field).not.toHaveAttribute("aria-invalid");
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("shows the app without asking for a token when Cloudflare Access signs the browser in", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) => (path === "/api/session" ? reply(200, { via: "access" }) : reply(404, "not found"))),
+    );
+    render(
+      <ServerAccess>
+        <p>App</p>
+      </ServerAccess>,
+    );
+
+    expect(await screen.findByText("App")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Access token")).toBeNull();
+    expect(getToken()).toBeNull();
   });
 });
 

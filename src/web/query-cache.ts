@@ -10,7 +10,7 @@ import { dehydrate, hydrate, onlineManager, type DehydratedState, type Query, ty
 import { version } from "../../package.json";
 import { reachability, subscribeReachability } from "@/web/connection";
 import { activeServer } from "@/web/server";
-import { getToken, subscribeToken } from "@/web/session";
+import { isSignedIn, subscribeToken } from "@/web/session";
 
 /** The first part of the keys of kept queries: workspaces, tasks, and task details (see `queryKeys`). */
 const KEPT_QUERIES = ["workspaces", "task-list", "tasks"];
@@ -55,13 +55,13 @@ export function pauseQueriesWhileUnreachable(): void {
 
 /**
  * Puts the saved queries back into `client`. A snapshot of another build is ignored, since
- * the shape of the data may have changed; without an access token there is nothing to show.
+ * the shape of the data may have changed; signed out, there is nothing to show.
  */
 export async function restoreQueries(client: QueryClient, store: SnapshotStore): Promise<void> {
   for (const key of KEPT_QUERIES) {
     client.setQueryDefaults([key], { gcTime: KEPT_GC_MS });
   }
-  if (getToken() === null) return;
+  if (!isSignedIn()) return;
   try {
     const snapshot = await store.load();
     if (isSnapshot(snapshot)) {
@@ -73,14 +73,14 @@ export async function restoreQueries(client: QueryClient, store: SnapshotStore):
 }
 
 /**
- * Saves the kept queries of `client` whenever one loads, and forgets them when the access
- * token is forgotten, so a signed-out browser keeps no task data.
+ * Saves the kept queries of `client` whenever one loads, and forgets them when the browser
+ * signs out, so a signed-out browser keeps no task data.
  */
 export function saveQueries(client: QueryClient, store: SnapshotStore, delayMs = SAVE_DELAY_MS): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const save = () => {
     timer = undefined;
-    if (getToken() === null) return;
+    if (!isSignedIn()) return;
     const state = dehydrate(client, { shouldDehydrateQuery: isKept, shouldDehydrateMutation: () => false });
     store.save({ version, savedAt: Date.now(), state }).catch((error: unknown) => {
       console.error("Toodo: could not save the tasks for offline reading", error);
@@ -92,7 +92,7 @@ export function saveQueries(client: QueryClient, store: SnapshotStore, delayMs =
     }
   });
   const unsubscribeToken = subscribeToken(() => {
-    if (getToken() !== null) return;
+    if (isSignedIn()) return;
     clearTimeout(timer);
     timer = undefined;
     store.clear().catch((error: unknown) => console.error("Toodo: could not forget the saved tasks", error));

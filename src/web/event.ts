@@ -6,10 +6,10 @@
  * When the server cannot, or this stream fell behind, the server sends a `resync` event and
  * `onReconnect` subscribers are told to refetch everything; so are they after a reconnect
  * without an id. It reconnects at once when the server answers again (see `connection.ts`).
- * A rejected token is forgotten, so the app asks for it again.
+ * A token the server rejects is forgotten, so the app asks for it again.
  */
 import { onReachable, recoveryCount, serverFetch } from "@/web/connection";
-import { authorization, forgetToken, getToken, subscribeToken } from "@/web/session";
+import { credentials, forgetToken, rejectedByServer, subscribeToken } from "@/web/session";
 
 export type Event<T> = { event: string; id: number; payload: T };
 export type EventCallback<T> = (event: Event<T>) => void;
@@ -75,10 +75,10 @@ function deliver({ event, data, id }: ServerSentEvent) {
 }
 
 /** Opens the event stream; resolves once the server accepted it. */
-async function open(token: string, signal: AbortSignal): Promise<ReadableStreamDefaultReader<string>> {
-  const headers = { ...authorization(token), ...(lastEventId === null ? {} : { "Last-Event-ID": lastEventId }) };
+async function open(signedIn: Record<string, string>, signal: AbortSignal): Promise<ReadableStreamDefaultReader<string>> {
+  const headers = { ...signedIn, ...(lastEventId === null ? {} : { "Last-Event-ID": lastEventId }) };
   const response = await serverFetch("/api/events", { headers, signal });
-  if (response.status === 401) {
+  if (await rejectedByServer(response)) {
     // Stops this connection: forgetting the token disconnects.
     forgetToken();
   }
@@ -100,8 +100,8 @@ async function read(reader: ReadableStreamDefaultReader<string>): Promise<void> 
 }
 
 function connect() {
-  const token = getToken();
-  if (connection !== null || token === null || handlers.size === 0) return;
+  const signedIn = credentials();
+  if (connection !== null || signedIn === null || handlers.size === 0) return;
   const controller = new AbortController();
   connection = controller;
   void (async () => {
@@ -110,7 +110,7 @@ function connect() {
     while (!controller.signal.aborted) {
       const recoveries = recoveryCount();
       try {
-        const reader = await open(token, controller.signal);
+        const reader = await open(signedIn, controller.signal);
         // With an id, the server replays what was missed or sends a resync itself.
         if (connected && lastEventId === null) {
           reconnectListeners.forEach((listener) => listener());

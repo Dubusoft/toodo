@@ -39,10 +39,20 @@ describe("database files of the server", () => {
   });
 
   it("forgets a token the server rejects", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("missing or wrong Toodo access token", { status: 401 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("Toodo API: this device's token has expired.", { status: 401 })),
+    );
 
     await expect(downloadExport()).rejects.toBeInstanceOf(Error);
     expect(getToken()).toBeNull();
+  });
+
+  it("keeps the token when a proxy in front of the server answers 401", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("Unauthorized", { status: 401 })));
+
+    await expect(downloadExport()).rejects.toThrow("A proxy in front of the Toodo server");
+    expect(getToken()).toBe("secret");
   });
 
   it("saves a snapshot under the name the server gives it", async () => {

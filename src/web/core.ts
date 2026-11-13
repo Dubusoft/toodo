@@ -3,7 +3,7 @@
  * which posts them to the server.
  */
 import { serverFetch } from "@/web/connection";
-import { authorization, forgetToken, getToken } from "@/web/session";
+import { credentials, forgetToken, proxyRefused, rejectedByServer } from "@/web/session";
 
 type CommandError = { kind: string; code: string; message: string };
 
@@ -23,16 +23,17 @@ function isCommandError(value: unknown): value is CommandError {
  * `{ status: "error" }`; transport failures reject with an `Error`.
  */
 export async function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
-  const token = getToken();
-  if (token === null) {
+  const signedIn = credentials();
+  if (signedIn === null) {
     throw new Error("No access token for the Toodo server.");
   }
   const response = await serverFetch(`/api/rpc/${encodeURIComponent(command)}`, {
     method: "POST",
-    headers: { ...authorization(token), "Content-Type": "application/json" },
+    headers: { ...signedIn, "Content-Type": "application/json" },
     body: JSON.stringify(args),
   });
   if (response.status === 401) {
+    if (!(await rejectedByServer(response))) throw proxyRefused();
     forgetToken();
     throw new Error("The Toodo server did not accept the access token.");
   }
