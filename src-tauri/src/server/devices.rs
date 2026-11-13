@@ -18,18 +18,24 @@
 //!   adding another: it takes the new token and its old token stops working, so a
 //!   browser that lost its stored token and signs in again keeps one device.
 //! - `POST /api/devices/{id}/revoke` revokes a device for good.
+//! - `GET /api/session` tells how the request signed in: `{ "via": "token" | "access" }`.
+//!
+//! With Cloudflare Access configured (see [`access`]), a request with a valid Access JWT
+//! needs no token: it counts as the device whose token it bears, else as
+//! [`Caller::Access`].
 
 use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Extension, Path, Request, State};
-use axum::http::{Method, StatusCode, header};
+use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::Services;
+use super::access;
 use super::rpc::{self, Reply, json};
 use crate::commands::{CommandError, CommandErrorCode, CommandResult, lock};
 use crate::domain::device::{
@@ -44,6 +50,8 @@ pub enum Caller {
     /// A client that bears the shared web token.
     Shared,
     Device(DeviceId),
+    /// A request Cloudflare Access signed in, without a token that works.
+    Access,
 }
 
 /// What `/api` requests are checked against.
@@ -54,6 +62,8 @@ pub struct Gate {
     /// The MCP token, which `/api` rejects with a reason of its own.
     pub mcp_token: Arc<String>,
     pub attempts: attempts::FailedAttempts,
+    /// Checks Cloudflare Access JWTs, when the server is configured for them.
+    pub access: Option<Arc<access::Verifier>>,
 }
 
 /// The hash a device's token is stored as. Tokens are 32 random bytes, so a fast hash
@@ -123,48 +133,90 @@ fn expired() -> Response {
 }
 
 /// Lets a request through when it bears the shared token or an active device's token
-/// that may make it, with its [`Caller`] as a request extension; a device's last-seen
-/// time moves with it.
+/// that may make it, or a valid Cloudflare Access JWT, with its [`Caller`] as a request
+/// extension; a device's last-seen time moves with it.
 pub async fn require_access(
     State(gate): State<Gate>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    let rejected = |rejection| mcp::unauthorized(mcp::Surface::Api, rejection, None);
-    let peer = attempts::peer(&request);
-    if let Some(wait) = gate.attempts.locked_out(peer) {
-        return attempts::too_many("API", wait);
-    }
-    let presented = match mcp::bearer(request.headers()) {
-        Ok(presented) => presented,
-        Err(rejection) => return rejected(rejection),
+    let through_access = match &gate.access {
+        Some(verifier) => verifier.admits(request.headers()).await,
+        None => false,
     };
-    let caller = if mcp::same_secret(presented, &gate.shared_token) {
-        Caller::Shared
-    } else if mcp::same_secret(presented, &gate.mcp_token) {
-        return rejected(mcp::Rejection::OtherSurfaceToken);
-    } else {
-        let hash = token_hash(presented);
-        let services = gate.services.clone();
-        match blocking(move || authenticate(&services, &hash)).await {
-            Ok(DeviceAuth::Active { device, .. }) => {
-                if device.scope == DeviceScope::ReadOnly
-                    && !read_only_allows(request.method(), request.uri().path(), device.id)
-                {
-                    return read_only_refused();
-                }
-                Caller::Device(device.id)
-            }
-            Ok(DeviceAuth::Expired(_)) => return expired(),
-            Ok(DeviceAuth::Unknown) => {
-                gate.attempts.record(peer);
-                return rejected(mcp::Rejection::WrongToken);
-            }
-            Err(error) => return Reply::Failed(error).into_response(),
-        }
+    let peer = attempts::peer(&request);
+    let asked = Asked {
+        headers: request.headers(),
+        method: request.method(),
+        path: request.uri().path(),
+        peer,
+    };
+    let caller = match (by_token(&gate, asked, through_access).await, through_access) {
+        (Ok(caller), _) => caller,
+        (Err(_), true) => Caller::Access,
+        (Err(refused), false) => return *refused,
     };
     request.extensions_mut().insert(caller);
     next.run(request).await
+}
+
+/// What [`by_token`] needs of a request.
+#[derive(Clone, Copy)]
+struct Asked<'a> {
+    headers: &'a HeaderMap,
+    method: &'a Method,
+    path: &'a str,
+    peer: std::net::IpAddr,
+}
+
+/// The caller the request's token stands for, or the response refusing it. Wrong tokens
+/// count towards the lockout unless Access signed the request in.
+async fn by_token(
+    gate: &Gate,
+    asked: Asked<'_>,
+    through_access: bool,
+) -> Result<Caller, Box<Response>> {
+    let rejected = |rejection| Box::new(mcp::unauthorized(mcp::Surface::Api, rejection, None));
+    let peer = asked.peer;
+    if !through_access && let Some(wait) = gate.attempts.locked_out(peer) {
+        return Err(Box::new(attempts::too_many("API", wait)));
+    }
+    let presented = mcp::bearer(asked.headers).map_err(rejected)?;
+    if mcp::same_secret(presented, &gate.shared_token) {
+        return Ok(Caller::Shared);
+    }
+    if mcp::same_secret(presented, &gate.mcp_token) {
+        return Err(rejected(mcp::Rejection::OtherSurfaceToken));
+    }
+    let hash = token_hash(presented);
+    let services = gate.services.clone();
+    match blocking(move || authenticate(&services, &hash)).await {
+        Ok(DeviceAuth::Active { device, .. }) => {
+            if device.scope == DeviceScope::ReadOnly
+                && !read_only_allows(asked.method, asked.path, device.id)
+            {
+                return Err(Box::new(read_only_refused()));
+            }
+            Ok(Caller::Device(device.id))
+        }
+        Ok(DeviceAuth::Expired(_)) => Err(Box::new(expired())),
+        Ok(DeviceAuth::Unknown) => {
+            if !through_access {
+                gate.attempts.record(peer);
+            }
+            Err(rejected(mcp::Rejection::WrongToken))
+        }
+        Err(error) => Err(Box::new(Reply::Failed(error).into_response())),
+    }
+}
+
+pub async fn session(Extension(caller): Extension<Caller>) -> Response {
+    let via = if caller == Caller::Access {
+        "access"
+    } else {
+        "token"
+    };
+    json(StatusCode::OK, &serde_json::json!({ "via": via }))
 }
 
 #[derive(Debug, Serialize)]
@@ -249,9 +301,10 @@ pub async fn register(
         Ok(new) => new,
         Err(error) => return Reply::BadArguments(error.to_string()).into_response(),
     };
-    if caller != Caller::Shared {
+    if !matches!(caller, Caller::Shared | Caller::Access) {
         let error = CommandError::rejected(
-            "only the shared web token can register a device; sign in with it on the new device",
+            "only the shared web token or Cloudflare Access can register a device; sign in \
+             with it on the new device",
         );
         return json(StatusCode::FORBIDDEN, &error);
     }

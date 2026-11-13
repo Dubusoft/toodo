@@ -518,15 +518,16 @@ fn parse_subscription(input: &SubscriptionInput) -> Result<NewPushSubscription, 
     })
 }
 
-/// The asking device, or the 403 for a browser signed in with the shared token.
+/// The asking device, or the 403 for a browser signed in with the shared token or
+/// Cloudflare Access alone.
 fn device(caller: Caller) -> Result<DeviceId, Box<Response>> {
     match caller {
         Caller::Device(id) => Ok(id),
-        Caller::Shared => Err(Box::new(json(
+        Caller::Shared | Caller::Access => Err(Box::new(json(
             StatusCode::FORBIDDEN,
             &CommandError::rejected(
-                "notifications are per device; sign in on this device to get a device token \
-                 instead of using the shared web token",
+                "notifications are per device; sign in on this device with the shared web \
+                 token to get a device token",
             ),
         ))),
     }
@@ -543,7 +544,7 @@ pub async fn state(
 ) -> Response {
     let public_key = services.push.public_key();
     let subscription = match caller {
-        Caller::Shared => Ok(None),
+        Caller::Shared | Caller::Access => Ok(None),
         Caller::Device(id) => {
             blocking(move || Ok(lock(&services.storage).push_subscription(id)?)).await
         }
