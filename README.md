@@ -85,6 +85,7 @@ The web app lists these with `?`. Letter shortcuts do nothing while you type in 
 
 ## Documentation
 
+- [toodo.dev](https://toodo.dev): website landing page; see [site/README.md](site/README.md) for preview and deployment.
 - [docs/quickstart.md](docs/quickstart.md): from install to a first completed task.
 - [docs/troubleshooting.md](docs/troubleshooting.md): common errors and what to do.
 - [AGENTS.md](AGENTS.md): contributor and AI-agent guidelines, including the language policy.

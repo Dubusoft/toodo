@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Toodo: a task tracker for people and coding agents</title>
+  <meta name="description" content="Toodo is an open source task tracker for planned work, used by people and coding agents. It keeps task dependencies, notes, and history on your own server.">
+  <link rel="canonical" href="https://toodo.dev/">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+  <link rel="stylesheet" href="/styles.css">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Toodo">
+  <meta property="og:url" content="https://toodo.dev/">
+  <meta property="og:title" content="Toodo: a task tracker for people and coding agents">
+  <meta property="og:description" content="Toodo is an open source task tracker for planned work, used by people and coding agents. It keeps task dependencies, notes, and history on your own server.">
+  <meta property="og:image" content="https://toodo.dev/assets/timeline.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1440">
+  <meta property="og:image:height" content="900">
+  <meta property="og:image:alt" content="The Toodo timeline: tasks of two workspaces on a time axis, with the dependencies between them.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Toodo: a task tracker for people and coding agents">
+  <meta name="twitter:description" content="Toodo is an open source task tracker for planned work, used by people and coding agents. It keeps task dependencies, notes, and history on your own server.">
+  <meta name="twitter:image" content="https://toodo.dev/assets/timeline.png">
+  <meta name="twitter:image:alt" content="The Toodo timeline: tasks of two workspaces on a time axis, with the dependencies between them.">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="icon-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="icon-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  </svg>
+
+  <header class="site-header page-grid">
+    <div class="header-bar">
+      <a class="brand" href="/"><img src="/favicon.svg" width="32" height="32" alt=""><span>Toodo</span></a>
+      <nav class="site-nav" aria-label="Main">
+        <ul>
+          <li class="nav-anchor"><a href="#features">Features</a></li>
+          <li class="nav-anchor"><a href="#get-started">Get started</a></li>
+          <li><a href="https://github.com/Dubusoft/toodo/tree/main/docs">Docs</a></li>
+          <li><a href="https://github.com/Dubusoft/toodo">GitHub</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero page-grid" aria-labelledby="hero-title">
+      <div>
+        <h1 id="hero-title">A task tracker for people and coding agents</h1>
+        <p class="lead">Toodo tracks planned work: the dependencies between tasks, and the notes, decisions, and status history of each one. It runs on your own server.</p>
+        <div class="actions">
+          <div class="command">
+            <p class="command-text"><span class="prompt" aria-hidden="true">$</span> <code id="install-command">npx @dubusoft/toodo init</code></p>
+            <button class="copy-button copy-button--on-primary" type="button" data-copy-target="install-command" aria-label="Copy install command" title="Copy install command">
+              <span class="copy-slot" aria-hidden="true"><svg class="icon copy-idle"><use href="#icon-copy"/></svg><svg class="icon copy-done"><use href="#icon-check"/></svg></span>
+              <span class="copy-slot copy-text" aria-hidden="true"><span class="copy-idle">Copy</span><span class="copy-done">Copied</span></span>
+            </button>
+          </div>
+          <a class="button" href="https://github.com/Dubusoft/toodo">GitHub</a>
+          <a class="button" href="https://github.com/Dubusoft/toodo/tree/main/docs">Docs</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="page-grid" aria-labelledby="screens-title">
+      <div>
+        <h2 id="screens-title" class="visually-hidden">Screenshots</h2>
+        <figure class="shot">
+          <img src="/assets/timeline.webp" width="1440" height="900" fetchpriority="high" alt="Timeline view of two workspaces: each task is a bar on a day-by-day time axis, lines connect tasks to the tasks they depend on, and labels show statuses such as Completed, In progress, Awaiting completion, Blocked, and Ready.">
+          <figcaption>Timeline: tasks of two workspaces on a time axis, with the dependencies between them.</figcaption>
+        </figure>
+        <div class="shot-pair">
+          <figure class="shot">
+            <img src="/assets/task-list.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Task list of the web-shop workspace: one task in progress, one awaiting completion, and one planned task that is blocked, each with its criteria and timing.">
+            <figcaption>Task list: the tasks of a workspace, grouped by status.</figcaption>
+          </figure>
+          <figure class="shot">
+            <img src="/assets/review.webp" width="1440" height="900" loading="lazy" decoding="async" alt="Week review across all workspaces: three tasks completed, one awaiting completion, and two started, with median lead and cycle times and the completed tasks listed below.">
+            <figcaption>Review: what was completed, awaiting completion, and started in a week.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="section page-grid" aria-labelledby="features-title">
+      <div class="split">
+        <div class="split-head">
+          <h2 id="features-title">Features</h2>
+        </div>
+        <div class="split-body">
+          <p class="intro">Toodo tracks the work; it doesn't run it. You or your agents do the work wherever you like, and record its start, progress, and completion in Toodo.</p>
+          <ul class="features">
+            <li class="feature">
+              <h3>Dependencies as a DAG</h3>
+              <p>Tasks depend on other tasks, and a dependency that would create a cycle is rejected. A task is ready once every task it depends on is done, and it completes when its criteria pass: checked by hand, or by a URL that Toodo fetches.</p>
+            </li>
+            <li class="feature">
+              <h3>Work memory</h3>
+              <p>Each task keeps its progress, decision, and blocker notes, a completion note, and references such as <code>pr:&lt;url&gt;</code>. Starting, pausing, and completing a task each record why.</p>
+            </li>
+            <li class="feature">
+              <h3>Timeline</h3>
+              <p>Every status change is timestamped, and the timeline draws the dependency graph on a time axis: when each task was planned, started, reviewed, and completed.</p>
+            </li>
+            <li class="feature">
+              <h3>MCP for coding agents</h3>
+              <p>Coding agents connect to the server's MCP endpoint to plan tasks, record starts, notes, and decisions, and complete their tasks. The <a href="https://github.com/Dubusoft/toodo/blob/main/docs/agents.md">agents guide</a> shows how a lead agent and its workers use it.</p>
+            </li>
+            <li class="feature">
+              <h3>Review report</h3>
+              <p>Review shows what was planned, started, and completed in a week, month, quarter, or year, built only from recorded facts. Copy it as Markdown, save it as Markdown or CSV, or print it.</p>
+            </li>
+            <li class="feature">
+              <h3>A web app on your own server</h3>
+              <p><code>toodo-server</code> runs on your Linux machine and serves the web app: open it in any browser, or install it as an app on a desktop or a phone. Tasks and their history stay in a SQLite database on that machine.</p>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="get-started" class="section band page-grid" aria-labelledby="get-started-title">
+      <div class="split">
+        <div class="split-head">
+          <h2 id="get-started-title">Get started</h2>
+        </div>
+        <div class="steps split-body">
+          <div class="step">
+            <h3>Requirements</h3>
+            <ul class="requirements">
+              <li>Linux on x64 or arm64, with glibc</li>
+              <li>Node.js 18 or later, with npm</li>
+            </ul>
+          </div>
+          <div class="step">
+            <h3>Install and start the server</h3>
+            <div class="code-block">
+              <pre><code id="setup-commands"><span class="line">npm i -g @dubusoft/toodo</span>
+<span class="line">toodo init</span>
+<span class="line">toodo service install</span></code></pre>
+              <button class="copy-button copy-button--quiet" type="button" data-copy-target="setup-commands" aria-label="Copy setup commands" title="Copy setup commands">
+                <span class="copy-slot" aria-hidden="true"><svg class="icon copy-idle"><use href="#icon-copy"/></svg><svg class="icon copy-done"><use href="#icon-check"/></svg></span>
+                <span class="copy-slot copy-text" aria-hidden="true"><span class="copy-idle">Copy</span><span class="copy-done">Copied</span></span>
+              </button>
+            </div>
+            <p><code>toodo init</code> creates the data directory, starts the server, and registers its MCP endpoint with Claude Code and Codex when they are installed. It prints the web app URL and the file that holds the access token.</p>
+            <p><code>toodo service install</code> keeps the server running as a systemd user service, also after a reboot.</p>
+          </div>
+          <div class="step">
+            <h3>Plan a first task</h3>
+            <p>Sign in with that token, add a workspace, and plan a task: the <a href="https://github.com/Dubusoft/toodo/blob/main/docs/quickstart.md">quickstart</a> walks through each step. To open the web app from other devices, put the server behind a tunnel, as the <a href="https://github.com/Dubusoft/toodo/blob/main/docs/server.md">server guide</a> describes.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="open-source" class="section page-grid" aria-labelledby="open-source-title">
+      <div class="split">
+        <div class="split-head">
+          <h2 id="open-source-title">Open source</h2>
+        </div>
+        <div class="prose split-body">
+          <p>Toodo is open source under the <a href="https://github.com/Dubusoft/toodo/blob/main/LICENSE">GNU Affero General Public License v3.0 only</a> (<code>AGPL-3.0-only</code>). The source code and releases are on <a href="https://github.com/Dubusoft/toodo">GitHub</a>.</p>
+          <p>Outside contributions are accepted under a Contributor License Agreement; the <a href="https://github.com/Dubusoft/toodo/blob/main/CONTRIBUTING.md">contributing guide</a> explains how to sign it in a pull request.</p>
+        </div>
+      </div>
+    </section>
+
+    <p id="copy-status" class="visually-hidden" role="status"></p>
+  </main>
+
+  <footer class="site-footer page-grid">
+    <div class="footer-bar">
+      <p>Made by <a href="https://dubusoft.com">Dubusoft</a></p>
+      <nav aria-label="Footer">
+        <ul>
+          <li><a href="https://github.com/Dubusoft/toodo">GitHub</a></li>
+          <li><a href="https://github.com/Dubusoft/toodo/tree/main/docs">Docs</a></li>
+          <li><a href="https://github.com/Dubusoft/toodo/blob/main/LICENSE">License</a></li>
+        </ul>
+      </nav>
+    </div>
+  </footer>
+
+  <script>
+    (() => {
+      const status = document.getElementById("copy-status");
+      const timers = new WeakMap();
+      document.addEventListener("click", async (event) => {
+        const button = event.target.closest("[data-copy-target]");
+        if (!button) return;
+        const source = document.getElementById(button.dataset.copyTarget);
+        try {
+          await navigator.clipboard.writeText(source.textContent.trim());
+          button.dataset.state = "copied";
+          status.textContent = "Copied to the clipboard.";
+        } catch {
+          getSelection().selectAllChildren(source);
+          status.textContent = "Could not copy. The text is selected; press Ctrl+C or Command+C to copy it.";
+        }
+        clearTimeout(timers.get(button));
+        timers.set(button, setTimeout(() => {
+          delete button.dataset.state;
+          status.textContent = "";
+        }, 2000));
+      });
+    })();
+  </script>
+</body>
+</html>
