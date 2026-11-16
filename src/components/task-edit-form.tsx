@@ -1,12 +1,12 @@
 import { useState, type FormEvent } from "react";
-import { Button } from "@/components/ui/button";
-import { inputClass } from "@/components/workspace-list";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Button } from "@/components/button";
 import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import type { Task, TaskType } from "@/lib/bindings";
 import { useUpdateTask } from "@/lib/queries";
 import { formatLabels, type MissingPlanField, parseLabels } from "@/lib/plan";
-import { cn } from "@/lib/utils";
 import { taskTypes } from "@/components/task-common";
 import { AutopilotField, type PlanDraft, planEstimate, PlanFields } from "@/components/plan-fields";
 import {
@@ -63,7 +63,8 @@ export function TaskEditForm({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (estimate === undefined || criteriaInvalid) return;
+    // Astryx fields do not set the native `required`, so a blank title is refused here.
+    if (estimate === undefined || criteriaInvalid || title.trim() === "") return;
     updateTask.mutate(
       {
         status: null,
@@ -92,25 +93,21 @@ export function TaskEditForm({
       onKeyDown={guard.onKeyDown}
     >
       <div className="flex gap-2">
-        <select
-          aria-label={`Type of #${task.id}`}
-          className={cn(inputClass, "w-28")}
+        <Selector
+          label={`Type of #${task.id}`}
+          isLabelHidden
+          width={112}
+          options={taskTypes}
           value={taskType}
-          onChange={(e) => setTaskType(e.target.value as TaskType)}
-        >
-          {taskTypes.map((type) => (
-            <option key={type} value={type}>
-              {type}
-            </option>
-          ))}
-        </select>
-        <input
-          className={inputClass}
-          aria-label={`Title of #${task.id}`}
+          onChange={(type) => setTaskType(type as TaskType)}
+        />
+        <TextInput
+          containerClassName="flex-1"
+          label={`Title of #${task.id}`}
+          isLabelHidden
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          required
-          autoFocus={focusPlan === undefined}
+          onChange={setTitle}
+          hasAutoFocus={focusPlan === undefined}
         />
       </div>
       <MarkdownEditor
@@ -138,12 +135,14 @@ export function TaskEditForm({
         />
       ) : (
         <div className="flex gap-1 max-md:gap-2">
-          <Button type="submit" size="xs" disabled={updateTask.isPending || estimate === undefined || criteriaInvalid}>
-            {updateTask.isPending ? "Saving..." : "Save"}
-          </Button>
-          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
-            Discard
-          </Button>
+          <Button
+            type="submit"
+            size="sm"
+            variant="primary"
+            label={updateTask.isPending ? "Saving..." : "Save"}
+            isDisabled={updateTask.isPending || estimate === undefined || criteriaInvalid || title.trim() === ""}
+          />
+          <Button type="button" size="sm" variant="ghost" label="Discard" onClick={guard.request} />
         </div>
       )}
       {updateTask.isError && (

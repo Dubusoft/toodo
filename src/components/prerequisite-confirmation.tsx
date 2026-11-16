@@ -1,5 +1,5 @@
 import { Pause } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import { escapeCloses } from "@/components/workspace-list";
 import type { TaskId } from "@/lib/bindings";
 import { tonePanel } from "@/lib/status-styles";
@@ -30,13 +30,15 @@ export function PrerequisiteConfirmation({
       <span className="min-w-0 flex-1">
         Adding {prerequisite} as a prerequisite pauses #{taskId} until {prerequisite} is done.
       </span>
-      <Button size="xs" variant="destructive" disabled={pending} onClick={onConfirm}>
-        <Pause />
-        {pending ? "Pausing..." : "Pause and add"}
-      </Button>
-      <Button size="xs" variant="ghost" autoFocus disabled={pending} onClick={onCancel}>
-        Back
-      </Button>
+      <Button
+        size="sm"
+        variant="destructive"
+        icon={<Pause />}
+        label={pending ? "Pausing..." : "Pause and add"}
+        isDisabled={pending}
+        onClick={onConfirm}
+      />
+      <Button size="sm" variant="ghost" label="Back" autoFocus isDisabled={pending} onClick={onCancel} />
     </div>
   );
 }
