@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
-import { compactSelectClass } from "@/components/workspace-list";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
 import type { EstimateUnit, Task, TaskId } from "@/lib/bindings";
 import {
   formatWork,
@@ -43,46 +44,36 @@ export function PlanView({ tasks, onShowTask }: { tasks: Task[]; onShowTask: (id
 
   return (
     <div role="region" aria-label="Plan" className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div role="group" aria-label="Plan period" className="flex gap-1 max-md:gap-2">
-          {(["quarter", "year"] as const).map((option) => (
-            <Button
-              key={option}
-              size="xs"
-              variant={scale === option ? "secondary" : "ghost"}
-              aria-pressed={scale === option}
-              onClick={() => setScale(option)}
-            >
-              {scaleNames[option]}
-            </Button>
-          ))}
-        </div>
-        <label className="flex items-center gap-1.5 text-xs text-muted-foreground max-md:text-sm">
-          Capacity per quarter
-          <input
-            type="text"
-            inputMode="decimal"
-            aria-label="Capacity per quarter"
-            aria-invalid={Number.isNaN(amount) || undefined}
-            aria-describedby="capacity-hint"
-            placeholder="None"
-            className={cn(compactSelectClass, "w-16")}
-            value={amountText}
-            onChange={(event) => changeCapacity(event.target.value, unit)}
-          />
-        </label>
-        <select
-          aria-label="Capacity unit"
-          className={compactSelectClass}
-          value={unit}
-          onChange={(event) => changeCapacity(amountText, event.target.value as EstimateUnit)}
+      <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
+        <ToggleButtonGroup
+          label="Plan period"
+          size="sm"
+          value={scale}
+          onChange={(next) => typeof next === "string" && setScale(next as PlanScale)}
         >
-          {(Object.keys(unitNames) as EstimateUnit[]).map((option) => (
-            <option key={option} value={option}>
-              {unitNames[option]}
-            </option>
+          {(["quarter", "year"] as const).map((option) => (
+            <ToggleButton key={option} value={option} label={scaleNames[option]} />
           ))}
-        </select>
+        </ToggleButtonGroup>
+        <TextInput
+          label="Capacity per quarter"
+          size="sm"
+          width={128}
+          inputMode="decimal"
+          status={Number.isNaN(amount) ? { type: "error" } : undefined}
+          aria-describedby="capacity-hint"
+          placeholder="None"
+          value={amountText}
+          onChange={(value) => changeCapacity(value, unit)}
+        />
+        <Selector
+          label="Capacity unit"
+          isLabelHidden
+          size="sm"
+          options={(Object.keys(unitNames) as EstimateUnit[]).map((option) => ({ value: option, label: unitNames[option] }))}
+          value={unit}
+          onChange={(value) => changeCapacity(amountText, value as EstimateUnit)}
+        />
       </div>
       <p id="capacity-hint" className={cn("text-xs", Number.isNaN(amount) ? "text-destructive" : "text-muted-foreground")}>
         {Number.isNaN(amount)
