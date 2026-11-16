@@ -1,8 +1,10 @@
 import { lazy, Suspense, useState } from "react";
 import { AlarmClock, AlarmClockOff, Check, CircleSlash, Flag, GitMerge, PanelRight, Pause, Pencil, Play, RotateCcw, StickyNote, Trash2, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Badge, type BadgeVariant } from "@astryxdesign/core/Badge";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Button, IconButton } from "@/components/button";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
-import { compactSelectClass, escapeCloses } from "@/components/workspace-list";
+import { escapeCloses } from "@/components/workspace-list";
 import type { SheetNavigation } from "@/components/task-graph";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { MoreMenu, type Action } from "@/components/more-menu";
@@ -29,12 +31,13 @@ import { reachedMilestones } from "@/lib/timeline";
 import type { MissingPlanField } from "@/lib/plan";
 import { When } from "@/components/when";
 import { firstParagraph } from "@/lib/markdown";
-import { toneChip, toneOutline, toneText } from "@/lib/status-styles";
+import { toneChip, toneOutline, toneText, type Tone } from "@/lib/status-styles";
+import { shownStatus } from "@/lib/task-filter";
 import { cn } from "@/lib/utils";
 import {
   statusLabel,
   completeStyle,
-  statusStyle,
+  statusTones,
   type TaskContext,
   taskRef,
   DueDate,
@@ -298,22 +301,21 @@ export function TaskRow({
   const failedCriteria = task.criteria.filter((criterion) => criterion.state === "failed").length;
   const preview = detailed ? "" : firstParagraph(task.description);
 
-  function actionButton(action: Action, variant: "default" | "outline") {
+  function actionButton(action: Action, variant: "primary" | "secondary") {
     return (
       <Button
         key={action.key}
-        size="xs"
+        size="sm"
         variant={variant}
         changesData={action.changesData}
+        label={action.label}
+        icon={action.icon}
         aria-label={action.ariaLabel}
-        title={action.title}
-        disabled={action.disabled}
+        tooltip={action.title}
+        isDisabled={action.disabled}
         onClick={action.onSelect}
         className={action.className}
-      >
-        {action.icon}
-        {action.label}
-      </Button>
+      />
     );
   }
 
@@ -477,48 +479,45 @@ export function TaskRow({
             >
               <span>{taskRef(id, task.workspaceId, context)}</span>
               {dependenciesEditable && (
-                <button
-                  type="button"
-                  aria-label={`Remove dependency #${id} from #${task.id}`}
-                  title="Remove dependency"
-                  className="flex items-center justify-center self-stretch rounded-sm p-0.5 hover:bg-muted hover:text-foreground disabled:opacity-50 max-md:size-11"
-                  disabled={changingDependencies}
+                <IconButton
+                  size="sm"
+                  variant="ghost"
+                  label={`Remove dependency #${id} from #${task.id}`}
+                  tooltip="Remove dependency"
+                  icon={<X />}
+                  isDisabled={changingDependencies}
                   onClick={() => removeDependency.mutate({ id: task.id, dependsOn: id })}
-                >
-                  <X className="size-3" />
-                </button>
+                />
               )}
             </span>
           ))}
           {dependenciesEditable && candidates.length > 0 && (
-            <select
-              aria-label={`Add dependency to #${task.id}`}
-              title={task.status !== "in_progress" ? undefined : "A prerequisite that is not done pauses this task"}
-              className={cn(compactSelectClass, "max-w-48")}
-              value=""
-              disabled={changingDependencies || serverDown}
-              onChange={(e) => {
-                if (e.target.value) {
-                  const prerequisite = Number(e.target.value);
+            // Selector takes no title, so the hint about pausing sits on a wrapper.
+            <span title={task.status !== "in_progress" ? undefined : "A prerequisite that is not done pauses this task"}>
+              <Selector
+                label={`Add dependency to #${task.id}`}
+                isLabelHidden
+                size="sm"
+                width={192}
+                placeholder="Add dependency..."
+                // Nothing stays chosen: picking a task adds it and the picker resets.
+                value=""
+                isDisabled={changingDependencies || serverDown}
+                options={candidateGroups.map((group) => ({
+                  type: "section" as const,
+                  title: context.workspaceName(group.workspaceId),
+                  options: group.tasks.map((other) => ({ value: String(other.id), label: `#${other.id} ${other.title}` })),
+                }))}
+                onChange={(value) => {
+                  const prerequisite = Number(value);
                   // The server tells whether it pauses this started task; then the user confirms it first.
                   addDependency.mutate(
                     { id: task.id, dependsOn: prerequisite, confirmPause: false },
                     { onSuccess: (outcome) => outcome === "confirm_pause" && setConfirmingPrerequisite(prerequisite) },
                   );
-                }
-              }}
-            >
-              <option value="">Add dependency...</option>
-              {candidateGroups.map((group) => (
-                <optgroup key={group.workspaceId} label={context.workspaceName(group.workspaceId)}>
-                  {group.tasks.map((other) => (
-                    <option key={other.id} value={other.id}>
-                      #{other.id} {other.title}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
+                }}
+              />
+            </span>
           )}
         </div>
         )
@@ -581,8 +580,8 @@ export function TaskRow({
       {waiting && !editing && <WaitForm task={task} onDone={() => setWaiting(false)} />}
       {!editing && !concluding && correcting === null && !waiting && (
         <div className="flex flex-wrap items-center gap-1 max-md:gap-2">
-          {primary && actionButton(primary, detailed ? "default" : "outline")}
-          {detailed && others.map((action) => actionButton(action, "outline"))}
+          {primary && actionButton(primary, detailed ? "primary" : "secondary")}
+          {detailed && others.map((action) => actionButton(action, "secondary"))}
           <div
             role={confirming ? "group" : undefined}
             aria-label={confirming ? `Delete #${task.id}?` : undefined}
@@ -598,19 +597,16 @@ export function TaskRow({
                   Delete #{task.id}? It moves to Settings &gt; Archive with its history, where it can be restored.
                 </span>
                 <Button
-                  size="xs"
+                  size="sm"
                   variant="destructive"
+                  label={deleteTask.isPending ? "Deleting..." : "Confirm delete"}
+                  icon={<Trash2 />}
                   aria-label={`Confirm delete #${task.id}`}
-                  disabled={deleteTask.isPending}
+                  isDisabled={deleteTask.isPending}
                   onClick={() => deleteTask.mutate(task.id, { onSettled: () => setConfirming(false) })}
-                >
-                  <Trash2 />
-                  {deleteTask.isPending ? "Deleting..." : "Confirm delete"}
-                </Button>
+                />
                 {/* Focus lands on Back, under the pointer, so a double click cannot delete. */}
-                <Button key="back" size="xs" variant="ghost" autoFocus onClick={() => setConfirming(false)}>
-                  Back
-                </Button>
+                <Button key="back" size="sm" variant="ghost" label="Back" autoFocus onClick={() => setConfirming(false)} />
               </>
             ) : (
               menu.length > 0 && <MoreMenu label={`More actions for #${task.id}`} actions={menu} />
@@ -622,16 +618,25 @@ export function TaskRow({
   );
 }
 
+/** The Astryx badge colour of each status tone. */
+const toneBadges: Record<Tone, BadgeVariant> = {
+  neutral: "neutral",
+  info: "info",
+  progress: "blue",
+  review: "purple",
+  success: "success",
+  attention: "warning",
+  danger: "error",
+};
+
 function StatusBadge({ task, byId }: { task: Task; byId: ReadonlyMap<TaskId, Task> }) {
+  const status = shownStatus(task, byId);
   return (
-    <span
-      className={cn(
-        "inline-flex shrink-0 items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium",
-        statusStyle(task, byId),
-      )}
-    >
-      <span aria-hidden className="size-1.5 rounded-full bg-current opacity-80" />
-      {statusLabel(task, byId)}
-    </span>
+    <Badge
+      variant={toneBadges[statusTones[status]]}
+      label={statusLabel(task, byId)}
+      // Not adopted is neutral like planned, outlined to tell the two apart.
+      className={cn("shrink-0", status === "not_adopted" && "ring-1 ring-inset ring-muted-foreground/40")}
+    />
   );
 }

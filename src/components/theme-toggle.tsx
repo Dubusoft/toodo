@@ -1,5 +1,5 @@
 import { Monitor, Moon, Sun } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
 import { setThemePreference, useThemePreference, type ThemePreference } from "@/lib/theme";
 
 const options: { value: ThemePreference; label: string; Icon: typeof Sun }[] = [
@@ -11,20 +11,17 @@ const options: { value: ThemePreference; label: string; Icon: typeof Sun }[] = [
 export function ThemeToggle() {
   const preference = useThemePreference();
   return (
-    <div role="group" aria-label="Theme" className="flex gap-0.5 rounded-lg border p-0.5">
+    <ToggleButtonGroup
+      label="Theme"
+      type="single"
+      size="sm"
+      value={preference}
+      // Pressing the chosen theme again keeps it: one theme is always chosen.
+      onChange={(value) => typeof value === "string" && setThemePreference(value as ThemePreference)}
+    >
       {options.map(({ value, label, Icon }) => (
-        <Button
-          key={value}
-          variant={preference === value ? "default" : "ghost"}
-          size="icon-sm"
-          aria-label={label}
-          aria-pressed={preference === value}
-          title={label}
-          onClick={() => setThemePreference(value)}
-        >
-          <Icon />
-        </Button>
+        <ToggleButton key={value} value={value} label={label} icon={<Icon />} isIconOnly />
       ))}
-    </div>
+    </ToggleButtonGroup>
   );
 }

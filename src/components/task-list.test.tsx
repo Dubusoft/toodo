@@ -119,11 +119,14 @@ function renderTasks(workspace: Workspace, tasks: Task[]) {
   );
 }
 
-/** The labels of the options of a criterion kind picker. */
-function kindOptions(select: HTMLElement) {
-  return within(select)
+/** The labels of the options of a criterion kind picker, an Astryx Selector opened to read them. */
+function kindOptions(combobox: HTMLElement) {
+  fireEvent.click(combobox);
+  const names = within(document.getElementById(combobox.getAttribute("aria-controls")!)!)
     .getAllByRole("option")
     .map((option) => option.textContent);
+  fireEvent.click(combobox);
+  return names;
 }
 
 // The details sheet is lazy-loaded; transform it once here so no test pays for that within its timeout.
@@ -159,7 +162,7 @@ describe("TaskList of a workspace", () => {
     renderTasks(app, [task(3, app, "Write outline")]);
 
     const start = await screen.findByRole("button", { name: "Start #3" });
-    expect(start).toBeEnabled();
+    expect(start).not.toHaveAttribute("aria-disabled", "true");
     fireEvent.click(start);
     await waitFor(() => expect(mocked.startTask).toHaveBeenCalledWith(3, null, null));
   });
@@ -199,7 +202,7 @@ describe("TaskList of a workspace", () => {
     expect(within(form).queryByRole("checkbox", { name: "Done when merged" })).not.toBeInTheDocument();
     expect(within(form).queryByLabelText("Issue number")).not.toBeInTheDocument();
     fireEvent.click(within(form).getByRole("button", { name: "Add criterion" }));
-    expect(kindOptions(within(form).getByLabelText("Criterion 1 kind"))).toEqual(kinds);
+    expect(kindOptions(within(form).getByRole("combobox", { name: "Criterion 1 kind" }))).toEqual(kinds);
     fireEvent.change(within(form).getByLabelText("Criterion 1 text"), { target: { value: "Docs reviewed" } });
     fireEvent.click(within(form).getByRole("button", { name: "Add task" }));
 
@@ -221,7 +224,7 @@ describe("TaskList of a workspace", () => {
     const form = await screen.findByRole("form", { name: "Edit task #5" });
     expect(within(form).queryByRole("checkbox", { name: "Done when merged, #5" })).not.toBeInTheDocument();
     fireEvent.click(within(form).getByRole("button", { name: "Add criterion to #5" }));
-    expect(kindOptions(within(form).getByLabelText("Criterion 1 kind of #5"))).toEqual(kinds);
+    expect(kindOptions(within(form).getByRole("combobox", { name: "Criterion 1 kind of #5" }))).toEqual(kinds);
   });
 
   it("shows a started task's lifecycle actions and its references, without execution details", async () => {
@@ -266,7 +269,8 @@ describe("TaskList of a workspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Delete done" }));
     const confirm = await screen.findByRole("button", { name: "Confirm delete" });
-    await waitFor(() => expect(confirm).toBeEnabled());
+    // Astryx buttons are disabled through aria-disabled.
+    await waitFor(() => expect(confirm).not.toHaveAttribute("aria-disabled", "true"));
     fireEvent.click(confirm);
     await waitFor(() => expect(mocked.deleteDoneTasks).toHaveBeenCalledWith(app.id));
   });

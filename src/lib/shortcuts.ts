@@ -25,9 +25,12 @@ export function isPaletteKey(event: KeyboardEvent): boolean {
   return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k";
 }
 
-/** Whether a dialog or menu that owns the keyboard is open over the page. */
+/**
+ * Whether a dialog or menu that owns the keyboard is open over the page. A menu counts while
+ * its button is expanded: Astryx keeps a closed menu in the page, in a hidden popover.
+ */
 function overlayOpen(): boolean {
-  return [...document.querySelectorAll("[aria-modal='true'], [role=menu]")].some(
+  return [...document.querySelectorAll("[aria-modal='true'], [aria-haspopup='menu'][aria-expanded='true']")].some(
     (element) => element.closest("[hidden]") === null,
   );
 }

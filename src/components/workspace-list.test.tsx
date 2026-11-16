@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceList } from "@/components/workspace-list";
 import type { Workspace } from "@/lib/bindings";
 
@@ -13,6 +13,16 @@ vi.mock("@/lib/queries", async (importOriginal) => ({
   useCreateWorkspace: () => mutation,
   useDeleteWorkspace: () => mutation,
 }));
+
+beforeAll(() => {
+  // jsdom has no modal dialogs; Astryx Dialog opens its <dialog> with showModal.
+  HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
+    this.setAttribute("open", "");
+  };
+  HTMLDialogElement.prototype.close ??= function (this: HTMLDialogElement) {
+    this.removeAttribute("open");
+  };
+});
 
 beforeEach(() => {
   workspaces = [];
@@ -30,7 +40,8 @@ describe("New workspace", () => {
   it("adds a workspace with only a name", () => {
     const dialog = openNewWorkspace();
     const add = within(dialog).getByRole("button", { name: "Add workspace" });
-    expect(add).toBeDisabled();
+    // Astryx buttons are disabled through aria-disabled.
+    expect(add).toHaveAttribute("aria-disabled", "true");
 
     fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "notes" } });
     fireEvent.click(add);
