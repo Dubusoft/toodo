@@ -15,6 +15,8 @@ function stubMatchMedia() {
     addEventListener: (_type: string, listener: () => void) => {
       notifyOsChange = listener;
     },
+    // Astryx components subscribe to media queries too and unsubscribe on unmount.
+    removeEventListener: () => {},
   }));
 }
 
