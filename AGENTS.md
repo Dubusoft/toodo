@@ -55,8 +55,8 @@ See [`docs/architecture.md`](docs/architecture.md) for the domain model and
 - **Backend**: Rust with tokio and axum: commands over HTTP, events over server-sent
   events, MCP, and Web Push. TypeScript bindings for the commands are generated with
   specta and specta-typescript.
-- **Frontend**: React, Vite, TypeScript, TanStack Query, Tailwind CSS, shadcn/ui, built as
-  an installable web app with a service worker.
+- **Frontend**: React, Vite, TypeScript, TanStack Query, Tailwind CSS, Astryx
+  (`@astryxdesign/core`), built as an installable web app with a service worker.
 - **DAG editor**: React Flow (`@xyflow/react`) laid out on a timeline (see
   `docs/architecture.md`, Timeline View).
 - **Storage**: SQLite via `rusqlite` in the server's data directory.
@@ -73,7 +73,11 @@ Layout:
 - `src/`: React frontend. `@/` is an alias for `src/`.
   - `src/lib/bindings.ts`: TypeScript bindings generated from
     `src-tauri/src/bindings.rs`. Do not edit by hand; `cargo test` rewrites it.
-  - `src/components/ui/`: shadcn/ui components (add more with `npx shadcn@latest add <name>`).
+  - `src/components/button.tsx`: the app's `Button` and `IconButton`, the Astryx ones plus
+    `changesData` (disabled while the server is unreachable; on for submit buttons) and
+    `autoFocus`. Use them instead of importing the Astryx buttons directly.
+  - `src/lib/astryx-theme.ts`: the Astryx theme (defaults with the brand accent);
+    `src/index.css` points the app's Tailwind color names at its tokens.
   - `src/web/`: browser modules the bindings and the app use to talk to `toodo-server`:
     commands (`core.ts`), events over SSE (`event.ts`), server access and devices,
     connection state, Web Push, and install prompts. PWA artwork is in `src/web/pwa/`.
@@ -118,6 +122,8 @@ Run from the repository root unless noted. Package manager is npm.
 - Build (web app): `npm run build` (typecheck, then build into `dist-web/`)
 - Test (frontend): `npm test`
 - Typecheck (frontend): `npm run typecheck`
+- Astryx docs (the project's pinned version): `npm run astryx -- search '<what>'`,
+  `npm run astryx -- component <Name>`, `npm run astryx -- docs <topic>`
 - Test (web app end to end): `npm run test:e2e`, after building the server and `dist-web/`;
   see the "End-to-End Tests" section of `README.md`
 - Server: `cargo build --bin toodo-server` in `src-tauri/`
@@ -145,6 +151,9 @@ frontend); it runs no tests, lints, or format checks. Run the tests, clippy, and
 ## Conventions
 
 - Keep changes small and focused; one concern per commit.
+- Before UI work, read the Astryx docs through the project-pinned CLI
+  (`npm run astryx -- search '<what>'`, `npm run astryx -- component <Name>`,
+  `npm run astryx -- docs <topic>`) rather than the package files or a global install.
 - Commit messages: imperative mood, English, e.g. `Add decision notes to the review report`.
 - Do not commit secrets, SSH keys, or host-specific paths.
 - Treat the task DAG as an invariant: reject edges that would create a cycle.
