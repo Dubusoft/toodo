@@ -26,11 +26,14 @@ export function isPaletteKey(event: KeyboardEvent): boolean {
 }
 
 /**
- * Whether a dialog or menu that owns the keyboard is open over the page. A menu counts while
- * its button is expanded: Astryx keeps a closed menu in the page, in a hidden popover.
+ * Matches the button of an open menu. The menu element itself does not tell: Astryx keeps a
+ * closed menu in the page, in a hidden popover.
  */
+export const openMenuButton = "[aria-haspopup='menu'][aria-expanded='true']";
+
+/** Whether a dialog or menu that owns the keyboard is open over the page. */
 function overlayOpen(): boolean {
-  return [...document.querySelectorAll("[aria-modal='true'], [aria-haspopup='menu'][aria-expanded='true']")].some(
+  return [...document.querySelectorAll(`[aria-modal='true'], ${openMenuButton}`)].some(
     (element) => element.closest("[hidden]") === null,
   );
 }

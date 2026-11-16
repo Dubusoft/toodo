@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button } from "@/components/button";
 import { DetailsSheet } from "@/components/details-sheet";
-
+import { openMenuButton } from "@/lib/shortcuts";
 
 /**
  * The details sheet of the task list, like the timeline's. Escape, the close button, or a swipe
@@ -21,7 +21,7 @@ export function TaskDetailsSheet({ onClose, children }: { onClose: () => void; c
 
   useEffect(() => {
     function closeOnEscape(event: globalThis.KeyboardEvent) {
-      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector("[role=menu]")) {
+      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector(openMenuButton)) {
         return;
       }
       if (discarding) {
