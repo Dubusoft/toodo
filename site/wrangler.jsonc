@@ -9,6 +9,10 @@
     {
       "pattern": "toodo.dev",
       "custom_domain": true
+    },
+    {
+      "pattern": "www.toodo.dev",
+      "custom_domain": true
     }
   ],
   "workers_dev": false

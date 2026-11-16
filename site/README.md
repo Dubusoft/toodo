@@ -14,6 +14,6 @@ Or run `npx wrangler dev` from `site/`.
 
 ## Deploy
 
-For a manual deploy, run `npx wrangler login` once, then `npx wrangler deploy` from `site/`. This deploys the static assets and binds the `toodo.dev` custom domain.
+The `Site` workflow (`.github/workflows/site.yml`) deploys on every push to `dev` that touches `site/`, and can be run by hand from the Actions tab. It reads the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repository secrets; the token needs Workers Scripts edit on the account and Workers Routes and DNS edit on the `toodo.dev` zone.
 
-Alternatively, connect the repository to Cloudflare Workers Builds, set the root directory to `site`, and use `npx wrangler deploy` as the deploy command. Deploy from the `main` branch.
+For a manual deploy, run `npx wrangler login` once (or set `CLOUDFLARE_API_TOKEN`), then `npx wrangler deploy` from `site/`. This deploys the static assets and binds the `toodo.dev` and `www.toodo.dev` custom domains.
