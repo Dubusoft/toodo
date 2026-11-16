@@ -10,7 +10,7 @@ describe("ConnectionGate", () => {
   it("warns while the server is unreachable, pauses data changes, and clears once it answers", async () => {
     vi.resetModules();
     const { serverFetch } = await import("@/web/connection");
-    const { Button } = await import("@/components/ui/button");
+    const { Button } = await import("@/components/button");
     const { ConnectionGate } = await import("@/components/offline-screen");
     let up = false;
     vi.stubGlobal(
@@ -24,8 +24,8 @@ describe("ConnectionGate", () => {
       <QueryClientProvider client={new QueryClient()}>
         <ConnectionGate>
           <input aria-label="Draft" defaultValue="typed before the outage" />
-          <Button changesData>Save</Button>
-          <Button>Look</Button>
+          <Button changesData label="Save" />
+          <Button label="Look" />
         </ConnectionGate>
       </QueryClientProvider>,
     );
@@ -36,8 +36,9 @@ describe("ConnectionGate", () => {
 
     const banner = await screen.findByRole("alert");
     expect(banner).toHaveTextContent("Can't reach the Toodo server");
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Look" })).toBeEnabled();
+    // Astryx disables a button with aria-disabled, not the native attribute.
+    expect(screen.getByRole("button", { name: "Save" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Look" })).not.toHaveAttribute("aria-disabled", "true");
 
     up = true;
     fireEvent.click(screen.getByRole("button", { name: "Retry now" }));
@@ -46,7 +47,7 @@ describe("ConnectionGate", () => {
     expect(screen.getByLabelText("Draft")).toHaveValue(
       "typed before the outage",
     );
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save" })).not.toHaveAttribute("aria-disabled", "true");
   });
 
   it("tells when the tasks shown were loaded", async () => {

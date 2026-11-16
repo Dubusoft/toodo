@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore } from "react";
 import { Download, Share } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import { tonePanel } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 import { dismissInstall, install, installOffer, subscribeInstallOffer } from "@/web/install";
@@ -38,14 +38,14 @@ export function InstallBanner() {
       </div>
       <div className="flex gap-1 max-md:gap-2">
         {offer === "prompt" && (
-          <Button size="sm" disabled={installing} onClick={run}>
-            <Download />
-            Install
-          </Button>
+          <Button size="sm" variant="primary" label="Install" icon={<Download />} isDisabled={installing} onClick={run} />
         )}
-        <Button size="sm" variant="outline" onClick={dismissInstall}>
-          {offer === "prompt" ? "Not now" : "Dismiss"}
-        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          label={offer === "prompt" ? "Not now" : "Dismiss"}
+          onClick={dismissInstall}
+        />
       </div>
     </div>
   );

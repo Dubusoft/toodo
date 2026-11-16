@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import type { McpRejectionReason, McpServerInfo } from "@/lib/bindings";
 import { useMcpServerInfo } from "@/lib/queries";
 import { formatFull, formatWhen } from "@/lib/timeline";
@@ -118,20 +118,25 @@ export function AgentAccessPanel() {
           ) : (
             data.token && (
               <div className="flex flex-wrap gap-1.5">
-                <Button size="xs" onClick={() => void copy(mcpConfig(data), "the MCP config")}>
-                  Copy MCP config
-                </Button>
-                <Button size="xs" variant="outline" onClick={() => void copy(data.token ?? "", "the MCP token for agents")}>
-                  Copy MCP token for agents
-                </Button>
                 <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={test === "testing"}
+                  size="sm"
+                  variant="primary"
+                  label="Copy MCP config"
+                  onClick={() => void copy(mcpConfig(data), "the MCP config")}
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  label="Copy MCP token for agents"
+                  onClick={() => void copy(data.token ?? "", "the MCP token for agents")}
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  label="Test connection"
+                  isDisabled={test === "testing"}
                   onClick={() => void testConnection(data)}
-                >
-                  Test connection
-                </Button>
+                />
               </div>
             )
           )}

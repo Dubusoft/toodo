@@ -1,7 +1,7 @@
 import { useSyncExternalStore, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { WifiOff } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import { When } from "@/components/when";
 import { queryKeys } from "@/lib/queries";
 import { reachability, retryNow, subscribeReachability, unreachableCause } from "@/web/connection";
@@ -10,7 +10,7 @@ import { reachability, retryNow, subscribeReachability, unreachableCause } from 
  * Tells while `toodo-server` does not answer and takes the banner away once it answers
  * again. The app stays mounted underneath, so what was loaded stays readable and nothing
  * typed or selected is lost; buttons that change data are disabled meanwhile (see
- * `src/components/ui/button.tsx`). What was loaded may come from an earlier visit (see
+ * `src/components/button.tsx`). What was loaded may come from an earlier visit (see
  * `src/web/query-cache.ts`), so the banner tells when.
  */
 export function ConnectionGate({ children }: { children: ReactNode }) {
@@ -51,9 +51,13 @@ function OfflineBanner({ retrying }: { retrying: boolean }) {
           Changes are paused. Toodo reconnects on its own as soon as the server answers.
         </p>
       </div>
-      <Button size="sm" variant="outline" disabled={retrying} onClick={retryNow}>
-        {retrying ? "Trying..." : "Retry now"}
-      </Button>
+      <Button
+        size="sm"
+        variant="secondary"
+        label={retrying ? "Trying..." : "Retry now"}
+        isDisabled={retrying}
+        onClick={retryNow}
+      />
     </div>
   );
 }

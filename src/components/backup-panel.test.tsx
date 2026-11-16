@@ -57,7 +57,8 @@ describe("BackupPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Export..." }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("Downloaded toodo-backup-2026-10-14.sqlite3");
+    // Astryx buttons and fields carry empty live regions of their own, so the notice is found by its text.
+    expect(await screen.findByText("Downloaded toodo-backup-2026-10-14.sqlite3")).toHaveAttribute("role", "status");
   });
 
   it("uploads a picked file only after confirmation and refetches everything", async () => {
@@ -72,9 +73,11 @@ describe("BackupPanel", () => {
     expect(uploadRestore).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole("button", { name: "Replace data" }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent(
-      "Restored laptop.sqlite3. The previous data was saved as toodo-pre-restore-20261014-100000.sqlite3.",
-    );
+    expect(
+      await screen.findByText(
+        "Restored laptop.sqlite3. The previous data was saved as toodo-pre-restore-20261014-100000.sqlite3.",
+      ),
+    ).toHaveAttribute("role", "status");
     expect(vi.mocked(uploadRestore).mock.calls[0][0]).toBe(file);
     expect(invalidate).toHaveBeenCalledWith();
   });
@@ -88,7 +91,7 @@ describe("BackupPanel", () => {
     });
     fireEvent.click(await screen.findByRole("button", { name: "Replace data" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("not a Toodo database");
+    expect(await screen.findByText(/not a Toodo database/)).toHaveAttribute("role", "alert");
   });
 
   it("downloads a listed backup by name", async () => {
@@ -98,7 +101,7 @@ describe("BackupPanel", () => {
     const list = await screen.findByRole("list", { name: "Saved backups" });
     fireEvent.click(await within(list).findByRole("button", { name: /^Download backup from/ }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("Downloaded toodo-auto-20261014-093005.sqlite3");
+    expect(await screen.findByText("Downloaded toodo-auto-20261014-093005.sqlite3")).toHaveAttribute("role", "status");
     expect(vi.mocked(downloadBackup).mock.calls[0][0]).toBe("toodo-auto-20261014-093005.sqlite3");
   });
 
@@ -113,7 +116,7 @@ describe("BackupPanel", () => {
     fireEvent.click(await within(list).findByRole("button", { name: /^Restore this backup from/ }));
     fireEvent.click(screen.getByRole("button", { name: "Replace data" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("not a Toodo database");
+    expect(await screen.findByText(/not a Toodo database/)).toHaveAttribute("role", "alert");
     expect(mocked.restoreBackup).toHaveBeenCalledWith("toodo-auto-20261014-093005.sqlite3");
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
@@ -126,8 +129,13 @@ describe("BackupPanel", () => {
     });
     renderPanel();
 
-    fireEvent.change(await screen.findByLabelText("Hours between backups"), { target: { value: "6" } });
-    fireEvent.change(screen.getByLabelText("Backups to keep"), { target: { value: "3" } });
+    // A number field commits what was typed when it loses the focus.
+    const hours = await screen.findByLabelText("Hours between backups");
+    fireEvent.change(hours, { target: { value: "6" } });
+    fireEvent.blur(hours);
+    const keep = screen.getByLabelText("Backups to keep");
+    fireEvent.change(keep, { target: { value: "3" } });
+    fireEvent.blur(keep);
     fireEvent.change(screen.getByLabelText("Backup directory"), { target: { value: " /mnt/backup/toodo " } });
     fireEvent.click(screen.getByRole("button", { name: "Save backup settings" }));
 

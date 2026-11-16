@@ -9,7 +9,7 @@ import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/button";
 import { commands } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { useNarrow } from "@/lib/narrow";
@@ -189,15 +189,14 @@ export function SettingsDialog({
             <h2 id="settings-title" className="text-lg font-semibold tracking-tight md:text-base">
               Settings
             </h2>
-            <Button
+            <IconButton
               variant="ghost"
-              size="icon-sm"
+              size="sm"
               className="ml-auto md:hidden"
-              aria-label="Close settings"
+              label="Close settings"
+              icon={<X />}
               onClick={() => onClose()}
-            >
-              <X />
-            </Button>
+            />
           </div>
           <div role="tablist" aria-orientation="vertical" aria-label="Settings sections" className="flex flex-col gap-0.5" onKeyDown={onTabKeyDown}>
             {sections.map((item) => {
@@ -228,22 +227,26 @@ export function SettingsDialog({
         </div>
         <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", section === null && "max-md:hidden")}>
           <div className="flex shrink-0 items-center gap-1 border-b px-2 py-2 md:px-6 md:py-3">
-            <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Back to settings" onClick={back}>
-              <ChevronLeft />
-            </Button>
+            <IconButton
+              variant="ghost"
+              size="sm"
+              className="md:hidden"
+              label="Back to settings"
+              icon={<ChevronLeft />}
+              onClick={back}
+            />
             <h3 ref={contentHeading} tabIndex={-1} className="text-base font-semibold outline-none">
               {current.label}
             </h3>
-            <Button
+            <IconButton
               variant="ghost"
-              size="icon-sm"
+              size="sm"
               className="ml-auto"
-              aria-label="Close settings"
-              title="Close settings (Esc)"
+              label="Close settings"
+              tooltip="Close settings (Esc)"
+              icon={<X />}
               onClick={() => onClose()}
-            >
-              <X />
-            </Button>
+            />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-4 md:px-6">
             {sections.map((item) => (

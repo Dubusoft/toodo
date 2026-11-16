@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import { When } from "@/components/when";
 import { escapeCloses } from "@/components/workspace-list";
 import { commands, type ConnectedApp } from "@/lib/bindings";
@@ -46,9 +46,7 @@ function PublicMcpUrl({ url }: { url: string | null }) {
       >
         {url}
       </code>
-      <Button size="xs" className="self-start" onClick={() => void copy(url)}>
-        Copy MCP URL
-      </Button>
+      <Button size="sm" variant="primary" className="self-start" label="Copy MCP URL" onClick={() => void copy(url)} />
       {notice && <p role="status">{notice}</p>}
     </>
   );
@@ -82,16 +80,25 @@ function AppRow({ app }: { app: ConnectedApp }) {
         >
           <p>The app's tokens stop working at once; to use it later, connect it again from the app.</p>
           <div className="flex gap-1">
-            <Button changesData size="xs" variant="destructive" disabled={revoke.isPending} onClick={() => revoke.mutate()}>
-              Revoke
-            </Button>
-            <Button size="xs" variant="ghost" autoFocus onClick={() => setConfirming(false)}>
-              Keep
-            </Button>
+            <Button
+              changesData
+              size="sm"
+              variant="destructive"
+              label="Revoke"
+              isDisabled={revoke.isPending}
+              onClick={() => revoke.mutate()}
+            />
+            <Button size="sm" variant="ghost" label="Keep" autoFocus onClick={() => setConfirming(false)} />
           </div>
         </div>
       ) : (
-        <Button size="xs" variant="outline" className="self-start" aria-label={`Revoke ${name}`} onClick={() => setConfirming(true)}>
+        <Button
+          size="sm"
+          variant="secondary"
+          className="self-start"
+          label={`Revoke ${name}`}
+          onClick={() => setConfirming(true)}
+        >
           Revoke
         </Button>
       )}

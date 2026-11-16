@@ -1,6 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { RotateCcw, TriangleAlert } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -54,13 +54,14 @@ export class ErrorBoundary extends Component<Props, State> {
         </p>
         {error.message && <p className="font-mono text-xs break-all text-muted-foreground">{error.message}</p>}
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" onClick={() => this.setState({ error: null })}>
-            <RotateCcw />
-            Try again
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => window.location.reload()}>
-            Reload page
-          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            label="Try again"
+            icon={<RotateCcw />}
+            onClick={() => this.setState({ error: null })}
+          />
+          <Button size="sm" variant="ghost" label="Reload page" onClick={() => window.location.reload()} />
         </div>
       </Element>
     );
