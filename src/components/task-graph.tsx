@@ -42,6 +42,7 @@ import {
   layoutTimeline,
   majorLabelOffset,
   openingViewport,
+  pixelsPerDay,
   waitingPrerequisites,
   relatedTasks,
   timelineAxis,
@@ -190,6 +191,7 @@ export function TaskGraph({
   onSelectedTaskChange: setSelectedTaskId,
   shownTaskId = null,
   onTaskShown,
+  onNearPast,
   renderDetail,
 }: {
   /** Tasks drawn on the timeline. */
@@ -212,6 +214,11 @@ export function TaskGraph({
   /** A task to select and pan to once it is on the timeline; `onTaskShown` is called when it is. */
   shownTaskId?: TaskId | null;
   onTaskShown?: () => void;
+  /**
+   * Called while the user pans or scrolls to within a screen of the earliest bar, to load older
+   * tasks; left out when there are none to load.
+   */
+  onNearPast?: () => void;
   /** Details of the task selected on the timeline, with its actions. */
   renderDetail: (task: Task, navigation: SheetNavigation) => ReactNode;
 }) {
@@ -265,6 +272,51 @@ export function TaskGraph({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+  // Older tasks asked for with `onNearPast` move the start of the axis earlier, every bar right
+  // with it, and take rows above the ones shown, being older work. Once they are in, the view
+  // moves along, so it keeps showing the same days and the same task at its top.
+  const chart = `${scale}-${year ?? "all"}`;
+  const shownLayout = useRef<{ chart: string; start: Timestamp; rows: TaskId[] } | null>(null);
+  const pastAsked = useRef(false);
+  const lastViewportY = useRef(0);
+  useLayoutEffect(() => {
+    const previous = shownLayout.current;
+    const rows: TaskId[] = [];
+    for (const bar of layout.bars) rows[bar.row] = bar.task.id;
+    shownLayout.current = { chart, start: layout.start, rows };
+    const instance = flow.current;
+    if (!pastAsked.current || previous === null || previous.chart !== chart || instance === null) return;
+    if (rows.length <= previous.rows.length) return;
+    pastAsked.current = false;
+    const { x, y, zoom } = instance.getViewport();
+    const shift = ((previous.start - layout.start) / (24 * 60 * 60)) * pixelsPerDay[scale];
+    const topRow = Math.min(Math.max(Math.floor(-y / rowHeight), 0), previous.rows.length - 1);
+    const movedRow = rows.indexOf(previous.rows[topRow]);
+    const drop = movedRow === -1 ? 0 : (movedRow - topRow) * rowHeight;
+    void instance.setViewport({ x: x - shift, y: y - drop, zoom });
+  }, [chart, layout]);
+  function askPast() {
+    pastAsked.current = true;
+    onNearPast?.();
+  }
+  /**
+   * Asks for older tasks once the view is within a screen of the earliest bar, or of the top row
+   * while it moves up: older work runs left and on top.
+   */
+  function nearPast(viewport: { x: number; y: number }) {
+    const movedUp = viewport.y > lastViewportY.current;
+    lastViewportY.current = viewport.y;
+    const panel = container.current;
+    if (onNearPast === undefined || layout.bars.length === 0 || panel === null) return;
+    const earliest = Math.min(...layout.bars.map((bar) => bar.x));
+    if (-viewport.x < earliest + panel.clientWidth || (movedUp && -viewport.y < panel.clientHeight)) askPast();
+  }
+  // At the top row the view cannot move up any further, so scrolling up there asks by itself.
+  function scrollUpAtTop(event: WheelEvent) {
+    const panel = container.current;
+    if (onNearPast === undefined || event.deltaY >= 0 || flow.current === null || panel === null) return;
+    if (-flow.current.getViewport().y < panel.clientHeight) askPast();
+  }
   // Rows can be panned vertically only as far as they go; never into empty space.
   const translateExtent: [[number, number], [number, number]] = [
     [-Infinity, 0],
@@ -702,6 +754,8 @@ export function TaskGraph({
         <div
           ref={container}
           className="min-w-0 flex-1 rounded-lg border"
+          // Captured: React Flow stops the wheel events it pans with from bubbling.
+          onWheelCapture={(event) => scrollUpAtTop(event.nativeEvent)}
         >
           {layout.bars.length === 0 ? (
             <EmptyState
@@ -719,7 +773,7 @@ export function TaskGraph({
             />
           ) : (
             <ReactFlow
-              key={`${scale}-${year ?? "all"}`}
+              key={chart}
               nodes={nodes}
               edges={edges}
               nodeTypes={nodeTypes}
@@ -746,6 +800,7 @@ export function TaskGraph({
               }}
               onNodeMouseLeave={hideTooltip}
               onMoveStart={() => setHovered(null)}
+              onMove={(_, viewport) => nearPast(viewport)}
               autoPanOnNodeFocus={false}
               onEdgesChange={changeEdges}
               onEdgesDelete={removeEdges}

@@ -83,13 +83,18 @@ const newDraft: TaskDraft = {
   labels: "",
 };
 
-/** What `listTasks` returns of `tasks` for `filter`, narrowed by workspace and status as on the server. */
+/**
+ * What `listTasks` returns of `tasks` for `filter`, narrowed by workspace and status as on the
+ * server, and paged like it: below `before`, at most `limit` of them, the newest first.
+ */
 function listed(tasks: Task[], filter: TaskListFilter | null): Task[] {
-  return tasks.filter(
+  const found = tasks.filter(
     (task) =>
       (filter?.workspaceId == null || task.workspaceId === filter.workspaceId) &&
-      (!filter?.statuses?.length || filter.statuses.includes(task.status)),
+      (!filter?.statuses?.length || filter.statuses.includes(task.status)) &&
+      (filter?.before == null || task.id < filter.before),
   );
+  return filter?.limit == null ? found : found.sort((a, b) => b.id - a.id).slice(0, filter.limit);
 }
 
 /** Renders the tasks of `workspace`, with its new task form. */
@@ -282,5 +287,29 @@ describe("TaskList of a workspace", () => {
     await screen.findByRole("button", { name: "Done 1" });
     fireEvent.click(screen.getByRole("button", { name: "Delete done" }));
     expect(await screen.findByRole("group", { name: "Delete 2 done tasks?" })).toBeInTheDocument();
+  });
+
+  it("loads older done tasks when scrolling up to the top of the list, and only the newest page once Done is folded", async () => {
+    // Where the top of the list is on screen: far above it at first.
+    let rect = { top: -5000, bottom: -4968 };
+    const measured = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(() => rect as DOMRect);
+    const done = Array.from({ length: 150 }, (_, index) => task(index + 1, app, `Finished ${index + 1}`, { status: "done" }));
+    renderTasks(app, [...done, task(200, app, "Plan launch")]);
+    const olderPages = () => mocked.listTasks.mock.calls.filter(([filter]) => filter?.before != null).length;
+
+    fireEvent.click(await screen.findByRole("button", { name: "Done 100" }));
+    fireEvent.wheel(document, { deltaY: -100 });
+    rect = { top: 100, bottom: 132 };
+    fireEvent.wheel(document, { deltaY: 100 });
+    expect(olderPages()).toBe(0);
+    fireEvent.wheel(document, { deltaY: -100 });
+    fireEvent.click(await screen.findByRole("button", { name: "Done 150" }));
+    expect(olderPages()).toBe(1);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Done 100" }));
+    expect(olderPages()).toBe(1);
+    measured.mockRestore();
   });
 });

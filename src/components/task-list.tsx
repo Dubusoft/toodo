@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Bot, Check, ChevronDown, Inbox, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Selector } from "@astryxdesign/core/Selector";
@@ -8,7 +8,7 @@ import { Button } from "@/components/button";
 import { escapeCloses } from "@/components/workspace-list";
 import { ErrorBoundary } from "@/components/error-boundary";
 import type { Task, TaskId, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
-import { useDeleteDoneTasks, useDoneTaskCount, useTasks, useWorkspaces } from "@/lib/queries";
+import { useDeleteDoneTasks, useDoneTaskCount, useOlderTasksWhileShown, useTasks, useWorkspaces } from "@/lib/queries";
 import { timelineOrder, type TimelineScale } from "@/lib/task-graph";
 import {
   defaultTaskFilter,
@@ -139,10 +139,21 @@ export function TaskList({
       matchesFilter(task, taskFilter, context.byId),
   );
   const timelineTasks = numbered === undefined ? (filtered ?? []) : [numbered, ...(filtered ?? [])];
-  // Older finished tasks load on request, offered wherever finished tasks are shown.
+  // Older finished tasks load as the user scrolls toward them, wherever finished tasks are shown:
+  // up to the top of the list, or into the past on the timeline. Hidden again, they are dropped,
+  // so showing them later loads the newest page only.
   const finishedShown = narrowable
     ? taskFilter.statuses.length === 0 || taskFilter.statuses.some((status) => status === "done" || status === "not_adopted")
     : (doneShown ?? isFilterActive(taskFilter));
+  useOlderTasksWhileShown(finishedShown);
+  const loadOlder =
+    finishedShown && allTasks.hasNextPage
+      ? () => void allTasks.fetchNextPage({ cancelRefetch: false })
+      : undefined;
+  // The oldest work comes first, so older finished tasks go on top of the list.
+  const olderLoader = loadOlder && (
+    <OlderTasksLoader loading={allTasks.isFetchingNextPage} failed={allTasks.isFetchNextPageError} onLoad={loadOlder} />
+  );
   const shownTaskData = shownTask === null ? undefined : context.byId.get(shownTask.id);
   useEffect(() => {
     if (shownTaskData === undefined) {
@@ -290,7 +301,10 @@ export function TaskList({
           ) : !showTimeline ? (
             <>
             {showPlan ? (
-              <PlanView tasks={timelineTasks} onShowTask={setDetailId} />
+              <>
+                {olderLoader}
+                <PlanView tasks={timelineTasks} onShowTask={setDetailId} />
+              </>
             ) : (
             <div role="region" aria-label="Tasks" className="flex flex-col gap-4">
               {numbered && (
@@ -327,6 +341,7 @@ export function TaskList({
                   {workspace && <DeleteDoneTasks workspace={workspace} />}
                 </div>
               )}
+              {olderLoader}
               {listed.length > 0 && (
                 <ul aria-label="Task list" className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
                   {listed.map((task) => (
@@ -378,6 +393,7 @@ export function TaskList({
                   onSelectedTaskChange={setDetailId}
                   shownTaskId={shownTask?.id ?? null}
                   onTaskShown={() => onTaskShown?.()}
+                  onNearPast={allTasks.isFetchingNextPage || allTasks.isFetchNextPageError ? undefined : loadOlder}
                   renderDetail={(selected, navigation) => (
                     <TaskRow
                       key={selected.id}
@@ -393,19 +409,79 @@ export function TaskList({
               </Suspense>
             </ErrorBoundary>
           )}
-          {allTasks.hasNextPage && finishedShown && (
-            <Button
-              size="sm"
-              variant="secondary"
-              className="self-start"
-              label={allTasks.isFetchingNextPage ? "Loading older finished tasks..." : "Load older finished tasks"}
-              isDisabled={allTasks.isFetchingNextPage}
-              onClick={() => void allTasks.fetchNextPage()}
-            />
-          )}
         </>
       )}
     </section>
+  );
+}
+
+/** The element that scrolls `element` up and down: its nearest scrolling ancestor, else the page. */
+function scrollerOf(element: Element): Element {
+  for (let parent = element.parentElement; parent !== null; parent = parent.parentElement) {
+    if (/auto|scroll/.test(getComputedStyle(parent).overflowY) && parent.scrollHeight > parent.clientHeight) {
+      return parent;
+    }
+  }
+  return document.scrollingElement ?? document.documentElement;
+}
+
+/**
+ * Sits on top of the list, where older finished tasks go, and loads the next page of them each
+ * time the user scrolls up while it is on screen or close to it. Showing the finished tasks
+ * alone loads none, and a page coming in above the rows on screen pushes it away until the user
+ * scrolls up to it again, so one move loads one page. After a failed page it waits for the user
+ * to try again, instead of asking the server over and over.
+ */
+function OlderTasksLoader({ loading, failed, onLoad }: { loading: boolean; failed: boolean; onLoad: () => void }) {
+  const top = useRef<HTMLDivElement>(null);
+  const latest = useRef({ loading, failed, onLoad });
+  useEffect(() => {
+    latest.current = { loading, failed, onLoad };
+  });
+  useEffect(() => {
+    const element = top.current!;
+    // Measured when the user moves rather than observed, since a jump to the top fires a single
+    // scroll event, before an observer would report the change.
+    const near = () => {
+      const { top, bottom } = element.getBoundingClientRect();
+      return bottom > -600 && top < window.innerHeight;
+    };
+    const scrolledUp = () => {
+      const { loading, failed, onLoad } = latest.current;
+      if (!loading && !failed && near()) onLoad();
+    };
+    // Scroll positions of the elements scrolling the list, to tell which way each one moved.
+    const positions = new WeakMap<Element, number>();
+    const scroller = scrollerOf(element);
+    positions.set(scroller, scroller.scrollTop);
+    const onScroll = (event: Event) => {
+      const scroller = event.target === document ? document.scrollingElement : event.target;
+      if (!(scroller instanceof Element) || !scroller.contains(element)) return;
+      const previous = positions.get(scroller) ?? scroller.scrollTop;
+      positions.set(scroller, scroller.scrollTop);
+      if (scroller.scrollTop < previous) scrolledUp();
+    };
+    // At the top nothing scrolls any more, but the wheel still turns.
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0 && scrollerOf(element).scrollTop <= 0) scrolledUp();
+    };
+    document.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    document.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      document.removeEventListener("scroll", onScroll, { capture: true });
+      document.removeEventListener("wheel", onWheel);
+    };
+  }, []);
+  return (
+    <div ref={top} className="flex min-h-8 items-center gap-2 text-sm text-muted-foreground">
+      <span role="status">{loading ? "Loading older finished tasks..." : ""}</span>
+      {failed && !loading && (
+        <>
+          <span role="alert">Could not load older finished tasks.</span>
+          <Button size="sm" variant="secondary" label="Try again" onClick={onLoad} />
+        </>
+      )}
+    </div>
   );
 }
 

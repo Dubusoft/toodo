@@ -314,8 +314,41 @@ export function cachedTasks(queryClient: QueryClient): Task[] | undefined {
 }
 
 /**
+ * Drops the pages of older finished tasks loaded so far, keeping the first page. Every page
+ * loaded is refetched on each change and saved for the next start, so pages nobody shows any
+ * more would make each of those load the whole history again.
+ */
+async function forgetOlderTasks(queryClient: QueryClient): Promise<void> {
+  const data = queryClient.getQueryData<InfiniteData<TasksPage, TaskId | null>>(queryKeys.tasks);
+  if (data === undefined || data.pages.length <= 1) return;
+  // A page still loading would land after the first page as if it followed it.
+  await queryClient.cancelQueries({ queryKey: queryKeys.tasks, exact: true });
+  queryClient.setQueryData<InfiniteData<TasksPage, TaskId | null>>(queryKeys.tasks, (current) =>
+    current === undefined
+      ? current
+      : { pages: current.pages.slice(0, 1), pageParams: current.pageParams.slice(0, 1) },
+  );
+}
+
+/**
+ * Keeps the older finished tasks loaded only while `shown`: once they are hidden again, or the
+ * caller unmounts, the task list goes back to its first page.
+ */
+export function useOlderTasksWhileShown(shown: boolean) {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (!shown) {
+      void forgetOlderTasks(queryClient);
+      return;
+    }
+    return () => void forgetOlderTasks(queryClient);
+  }, [shown, queryClient]);
+}
+
+/**
  * Tasks of every workspace, as loaded so far: open ones and the newest finished ones first,
- * older finished ones on `fetchNextPage`. A status change may release dependents in other
+ * older finished ones on `fetchNextPage`, while the user scrolls toward them (see
+ * `useOlderTasksWhileShown`). A status change may release dependents in other
  * workspaces, so they load together. The tasks `wanted` names (one a link or a search points at)
  * are loaded too when the pages do not hold them yet.
  */
