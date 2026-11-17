@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore } from "react";
 import { RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import { tonePanel } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 import { dismissNewBuild, newBuild, reloadIntoNewBuild, subscribeNewBuild } from "@/web/build";
@@ -33,12 +33,14 @@ export function UpdateBanner() {
         <p className="text-xs">This tab still runs the earlier version. Reload to switch to the new one.</p>
       </div>
       <div className="flex gap-1 max-md:gap-2">
-        <Button size="sm" disabled={reloading} onClick={reload}>
-          {reloading ? "Reloading..." : "Reload"}
-        </Button>
-        <Button size="sm" variant="outline" disabled={reloading} onClick={dismissNewBuild}>
-          Later
-        </Button>
+        <Button
+          size="sm"
+          variant="primary"
+          label={reloading ? "Reloading..." : "Reload"}
+          isDisabled={reloading}
+          onClick={reload}
+        />
+        <Button size="sm" variant="secondary" label="Later" isDisabled={reloading} onClick={dismissNewBuild} />
       </div>
     </div>
   );

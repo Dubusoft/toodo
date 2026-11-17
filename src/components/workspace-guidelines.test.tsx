@@ -92,7 +92,8 @@ describe("WorkspaceGuidelines", () => {
     expect(await within(section).findByText(/agents read them before working on a task/)).toBeInTheDocument();
     fireEvent.click(within(section).getByRole("button", { name: "Add guideline" }));
     const form = within(section).getByRole("form", { name: "Add guideline" });
-    fireEvent.change(within(form).getByRole("combobox", { name: "Kind" }), { target: { value: "memory" } });
+    fireEvent.click(within(form).getByRole("combobox", { name: "Kind" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Memory" }));
     fireEvent.change(within(form).getByRole("textbox", { name: "Guideline" }), {
       target: { value: "  The staging server resets every night.\n" },
     });
@@ -143,7 +144,8 @@ describe("WorkspaceGuidelines", () => {
     fireEvent.click(within(form).getByRole("button", { name: "Keep editing" }));
     expect(body).toHaveValue("Run the full test suite before review.");
 
-    fireEvent.change(within(form).getByRole("combobox", { name: "Kind" }), { target: { value: "memory" } });
+    fireEvent.click(within(form).getByRole("combobox", { name: "Kind" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Memory" }));
     mocked.listGuidelines.mockResolvedValue(ok([edited]));
     fireEvent.click(within(form).getByRole("button", { name: "Save" }));
 

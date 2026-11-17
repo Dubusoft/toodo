@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import { When } from "@/components/when";
 import { escapeCloses } from "@/components/workspace-list";
 import { guessDeviceLabel, listDevices, registerDevice, revokeDevice, type Device } from "@/web/devices";
@@ -31,14 +31,13 @@ function ThisBrowser({ devices }: { devices: Device[] }) {
           <p className="text-muted-foreground">Register it to give it a token of its own that you can revoke alone.</p>
           <Button
             changesData
-            size="xs"
-            variant="outline"
+            size="sm"
+            variant="secondary"
             className="self-start"
-            disabled={register.isPending}
+            label={register.isPending ? "Registering..." : "Register this browser"}
+            isDisabled={register.isPending}
             onClick={() => register.mutate()}
-          >
-            {register.isPending ? "Registering..." : "Register this browser"}
-          </Button>
+          />
         </>
       )}
       {register.error && (
@@ -98,16 +97,25 @@ function DeviceRow({ device }: { device: Device }) {
                 : "The device's token stops working for good."}
             </p>
             <div className="flex gap-1">
-              <Button changesData size="xs" variant="destructive" disabled={revoke.isPending} onClick={() => revoke.mutate()}>
-                Revoke
-              </Button>
-              <Button size="xs" variant="ghost" autoFocus onClick={() => setConfirming(false)}>
-                Keep
-              </Button>
+              <Button
+                changesData
+                size="sm"
+                variant="destructive"
+                label="Revoke"
+                isDisabled={revoke.isPending}
+                onClick={() => revoke.mutate()}
+              />
+              <Button size="sm" variant="ghost" label="Keep" autoFocus onClick={() => setConfirming(false)} />
             </div>
           </div>
         ) : (
-          <Button size="xs" variant="outline" className="self-start" aria-label={`Revoke ${device.label}`} onClick={() => setConfirming(true)}>
+          <Button
+            size="sm"
+            variant="secondary"
+            className="self-start"
+            label={`Revoke ${device.label}`}
+            onClick={() => setConfirming(true)}
+          >
             Revoke
           </Button>
         ))}

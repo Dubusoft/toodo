@@ -1,5 +1,8 @@
 import { useRef, useState, type FormEvent } from "react";
-import { Button } from "@/components/ui/button";
+import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { NumberInput } from "@astryxdesign/core/NumberInput";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Button } from "@/components/button";
 import type { BackupEntry, BackupSettings } from "@/lib/bindings";
 import { formatFull } from "@/lib/timeline";
 import { When } from "@/components/when";
@@ -13,8 +16,6 @@ import {
   useSaveBackupSettings,
   useUploadRestore,
 } from "@/lib/queries";
-
-const inputClass = "h-7 w-16 rounded-md border bg-background px-2 text-sm";
 
 function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
@@ -97,12 +98,15 @@ export function BackupPanel() {
   return (
     <section aria-label="Backups" className="flex flex-col gap-2">
       <div className="flex gap-1">
-        <Button size="sm" variant="outline" onClick={exportToFile} disabled={exporting}>
-          {exporting ? "Exporting..." : "Export..."}
-        </Button>
-        <Button size="sm" variant="outline" onClick={pickBackup} disabled={restoring}>
-          Restore...
-        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          label={exporting ? "Exporting..." : "Export..."}
+          onClick={exportToFile}
+          isDisabled={exporting}
+        />
+        <Button size="sm" variant="secondary" label="Restore..." onClick={pickBackup} isDisabled={restoring} />
+        {/* Kept native: an invisible picker the Restore... action opens; the confirmation below holds the file. */}
         <input
           ref={upload}
           type="file"
@@ -123,12 +127,14 @@ export function BackupPanel() {
             current data is backed up first.
           </p>
           <div className="flex gap-1">
-            <Button size="xs" variant="destructive" onClick={() => restore(confirming)} disabled={restoring}>
-              {restoring ? "Restoring..." : "Replace data"}
-            </Button>
-            <Button size="xs" variant="ghost" onClick={() => setConfirming(null)} disabled={restoring}>
-              Cancel
-            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              label={restoring ? "Restoring..." : "Replace data"}
+              onClick={() => restore(confirming)}
+              isDisabled={restoring}
+            />
+            <Button size="sm" variant="ghost" label="Cancel" onClick={() => setConfirming(null)} isDisabled={restoring} />
           </div>
         </div>
       )}
@@ -159,10 +165,10 @@ export function BackupPanel() {
             <span className="flex flex-wrap gap-1">
               <Button
                 changesData
-                size="xs"
-                variant="outline"
-                aria-label={`Download backup from ${formatFull(backup.createdAt)}`}
-                disabled={downloadBackup.isPending}
+                size="sm"
+                variant="secondary"
+                label={`Download backup from ${formatFull(backup.createdAt)}`}
+                isDisabled={downloadBackup.isPending}
                 onClick={() => {
                   setNotice(null);
                   downloadBackup.mutate(fileName(backup.path), { onSuccess: (name) => setNotice(`Downloaded ${name}`) });
@@ -171,9 +177,9 @@ export function BackupPanel() {
                 Download
               </Button>
               <Button
-                size="xs"
-                variant="outline"
-                aria-label={`Restore this backup from ${formatFull(backup.createdAt)}`}
+                size="sm"
+                variant="secondary"
+                label={`Restore this backup from ${formatFull(backup.createdAt)}`}
                 onClick={() => {
                   setNotice(null);
                   setConfirming({ kind: "backup", path: backup.path });
@@ -199,75 +205,72 @@ function AutoBackupSettings() {
 function AutoBackupForm({ initial }: { initial: BackupSettings }) {
   const save = useSaveBackupSettings();
   const [enabled, setEnabled] = useState(initial.enabled);
-  const [intervalHours, setIntervalHours] = useState(String(initial.intervalHours));
-  const [keep, setKeep] = useState(String(initial.keep));
+  const [intervalHours, setIntervalHours] = useState(initial.intervalHours);
+  const [keep, setKeep] = useState(initial.keep);
   const [directory, setDirectory] = useState(initial.directory ?? "");
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    save.mutate({ enabled, intervalHours: Number(intervalHours), keep: Number(keep), directory: directory.trim() || null });
+    save.mutate({ enabled, intervalHours, keep, directory: directory.trim() || null });
   }
 
   return (
     <form onSubmit={submit} aria-label="Automatic backups" className="flex flex-col gap-1 text-xs">
-      <label className="flex items-center gap-2">
-        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-        Back up automatically
-      </label>
-      <label className="flex items-center gap-2">
+      <CheckboxInput size="sm" label="Back up automatically" value={enabled} onChange={setEnabled} />
+      <div className="flex items-center gap-2">
         Every
-        <input
-          className={inputClass}
-          type="number"
+        <NumberInput
+          size="sm"
+          width={80}
+          label="Hours between backups"
+          isLabelHidden
+          isIntegerOnly
           min={1}
           max={720}
-          aria-label="Hours between backups"
           value={intervalHours}
-          onChange={(e) => setIntervalHours(e.target.value)}
-          disabled={!enabled}
-          required
+          onChange={setIntervalHours}
+          isDisabled={!enabled}
         />
         hours
-      </label>
-      <label className="flex items-center gap-2">
+      </div>
+      <div className="flex items-center gap-2">
         Keep
-        <input
-          className={inputClass}
-          type="number"
+        <NumberInput
+          size="sm"
+          width={80}
+          label="Backups to keep"
+          isLabelHidden
+          isIntegerOnly
           min={1}
           max={100}
-          aria-label="Backups to keep"
           value={keep}
-          onChange={(e) => setKeep(e.target.value)}
-          disabled={!enabled}
-          required
+          onChange={setKeep}
+          isDisabled={!enabled}
         />
         latest
-      </label>
-      <label className="flex flex-col gap-1">
-        Save backups in
-        <input
-          className="h-7 w-full rounded-md border bg-background px-2 text-sm"
-          type="text"
-          spellCheck={false}
-          aria-label="Backup directory"
-          placeholder="the server's data directory"
-          value={directory}
-          onChange={(e) => setDirectory(e.target.value)}
-        />
-        <span className="text-muted-foreground">
-          An absolute path on the server, e.g. on another disk. Every backup goes there, including the one before an
-          update.
-        </span>
-      </label>
+      </div>
+      <TextInput
+        size="sm"
+        label="Backup directory"
+        description="An absolute path on the server, e.g. on another disk. Every backup goes there, including the one before an update."
+        placeholder="the server's data directory"
+        hasSpellCheck={false}
+        value={directory}
+        onChange={setDirectory}
+      />
       {save.isError && (
         <p role="alert" className="text-destructive">
           {save.error.message}
         </p>
       )}
-      <Button type="submit" size="xs" variant="outline" className="self-start" disabled={save.isPending}>
-        {save.isPending ? "Saving..." : "Save backup settings"}
-      </Button>
+      <Button
+        type="submit"
+        size="sm"
+        variant="secondary"
+        className="self-start"
+        label={save.isPending ? "Saving..." : "Save backup settings"}
+        isDisabled={save.isPending}
+      />
     </form>
   );
 }

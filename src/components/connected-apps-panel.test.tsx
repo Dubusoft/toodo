@@ -53,7 +53,8 @@ describe("ConnectedAppsPanel", () => {
     expect(await screen.findByLabelText("Public MCP URL")).toHaveTextContent(publicMcpUrl);
     fireEvent.click(screen.getByRole("button", { name: "Copy MCP URL" }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("Copied the MCP URL.");
+    // Astryx buttons carry empty live regions of their own, so the notice is found by its text.
+    expect(await screen.findByText("Copied the MCP URL.")).toHaveAttribute("role", "status");
     expect(writeText).toHaveBeenCalledWith(publicMcpUrl);
   });
 

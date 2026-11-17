@@ -26,7 +26,7 @@ import { InstallBanner } from "@/components/install-banner";
 import { NeedsAttention } from "@/components/needs-attention";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
 import { SettingsDialog, type SettingsSection } from "@/components/settings-dialog";
-import { Button } from "@/components/ui/button";
+import { Button, IconButton } from "@/components/button";
 import { NewWorkspaceDialog, WorkspaceList } from "@/components/workspace-list";
 import type { Task, TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
@@ -43,7 +43,7 @@ const Review = lazy(() => import("@/components/review").then((module) => ({ defa
 
 /** The search field of the shown task view, unless it is folded away on a phone. */
 function searchField(): HTMLInputElement | null {
-  const field = document.querySelector<HTMLInputElement>("input[aria-label='Search tasks']");
+  const field = document.querySelector<HTMLInputElement>("[role='search'] input[type='search']");
   return field !== null && (typeof field.checkVisibility !== "function" || field.checkVisibility()) ? field : null;
 }
 
@@ -152,7 +152,7 @@ export default function App() {
   const paletteCommands = (): PaletteCommand[] => {
     const workspaceName = new Map(workspaces.data?.map((workspace) => [workspace.id, workspace.name]));
     const search = searchField();
-    const newTask = document.querySelector<HTMLInputElement>("input[aria-label='Task title']");
+    const newTask = document.querySelector<HTMLInputElement>("form[aria-label='New task'] input");
     const actions: (PaletteCommand | false)[] = [
       !!workspaces.data?.length && {
         id: "timeline",
@@ -251,16 +251,15 @@ export default function App() {
             </span>
             Toodo
           </h1>
-          <Button
+          <IconButton
             variant="ghost"
-            size="icon-sm"
+            size="sm"
             className="ml-auto md:hidden"
-            aria-label="Close menu"
+            label="Close menu"
+            icon={<X />}
             ref={closeMenuButton}
             onClick={() => setMenuOpen(false)}
-          >
-            <X />
-          </Button>
+          />
         </div>
         <ErrorBoundary label="the tasks that need attention">
           <NeedsAttention onShow={showTask} />
@@ -269,22 +268,20 @@ export default function App() {
           <Button
             variant={reviewing ? "secondary" : "ghost"}
             className="justify-start"
+            label="Review"
+            icon={<ChartColumn />}
             aria-pressed={reviewing}
             onClick={() => openPage({ page: "review" })}
-          >
-            <ChartColumn />
-            Review
-          </Button>
+          />
           <Button
             variant={showingAll ? "secondary" : "ghost"}
             className="justify-start"
+            label="All workspaces"
+            icon={<Layers />}
             aria-pressed={showingAll}
-            disabled={!workspaces.data?.length}
+            isDisabled={!workspaces.data?.length}
             onClick={() => openPage({ page: "all", view: "timeline", task: null })}
-          >
-            <Layers />
-            All workspaces
-          </Button>
+          />
         </nav>
         <ErrorBoundary label="the workspace list">
           <WorkspaceList
@@ -295,29 +292,30 @@ export default function App() {
         <Button
           variant="ghost"
           className="mt-auto shrink-0 justify-start"
+          label="Settings"
+          icon={<Settings />}
+          // The backup status is part of the button's name, so it is read with it.
+          endContent={
+            <span className="ml-auto flex flex-col items-end text-xs font-normal">
+              <BackupStatusLabel />
+            </span>
+          }
           aria-haspopup="dialog"
           aria-expanded={settingsOpen}
           ref={settingsButton}
           onClick={() => showSettings(null)}
-        >
-          <Settings />
-          Settings
-          <span className="ml-auto flex flex-col items-end text-xs font-normal">
-            <BackupStatusLabel />
-          </span>
-        </Button>
+        />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col" inert={menuOpen || settingsOpen}>
         <header className="flex items-center gap-2 border-b px-2 py-1.5 md:hidden print:hidden">
-          <Button
+          <IconButton
             variant="ghost"
-            size="icon-sm"
-            aria-label="Open menu"
+            size="sm"
+            label="Open menu"
+            icon={<Menu />}
             ref={openMenuButton}
             onClick={() => setMenuOpen(true)}
-          >
-            <Menu />
-          </Button>
+          />
           <span className="font-semibold tracking-tight">Toodo</span>
         </header>
         <main className="relative flex min-w-0 flex-1 flex-col overflow-y-auto px-4 py-4 md:px-8 md:py-6 print:block print:overflow-visible print:p-0">
@@ -361,10 +359,14 @@ export default function App() {
                   title="Create a workspace to start planning tasks."
                   hint="A workspace groups tasks, e.g. those of one repository or project."
                   action={
-                    <Button ref={addFirstButton} aria-haspopup="dialog" onClick={() => setAddingFirst(true)}>
-                      <Plus />
-                      Add workspace
-                    </Button>
+                    <Button
+                      ref={addFirstButton}
+                      variant="primary"
+                      label="Add workspace"
+                      icon={<Plus />}
+                      aria-haspopup="dialog"
+                      onClick={() => setAddingFirst(true)}
+                    />
                   }
                 />
               )

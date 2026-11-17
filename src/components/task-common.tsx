@@ -1,4 +1,5 @@
 import { lazy, useSyncExternalStore, type ReactNode } from "react";
+import { Badge } from "@astryxdesign/core/Badge";
 import type { Task, TaskId, TaskType, WorkspaceId } from "@/lib/bindings";
 import { shownStatus, type ShownStatus } from "@/lib/task-filter";
 import { dueState, dueStateLabels, type MissingPlanField, missingPlan, missingPlanLabel } from "@/lib/plan";
@@ -121,8 +122,8 @@ export function TaskLabels({ task, className }: { task: Task; className?: string
   return (
     <ul aria-label={`Labels of #${task.id}`} className={cn("flex flex-wrap gap-1", className)}>
       {task.labels.map((label) => (
-        <li key={label} className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
-          {label}
+        <li key={label}>
+          <Badge label={label} />
         </li>
       ))}
     </ul>

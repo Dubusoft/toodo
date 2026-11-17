@@ -65,8 +65,10 @@ describe("ServerAccess", () => {
         <p>App</p>
       </ServerAccess>,
     );
-    fireEvent.change(await screen.findByLabelText("Access"), { target: { value: "read" } });
-    fireEvent.change(screen.getByLabelText("Token expires after"), { target: { value: "never" } });
+    fireEvent.click(await screen.findByRole("combobox", { name: "Access" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Read-only" }));
+    fireEvent.click(screen.getByRole("combobox", { name: "Token expires after" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Never expires" }));
     fireEvent.change(screen.getByLabelText("Access token"), { target: { value: "shared" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
 

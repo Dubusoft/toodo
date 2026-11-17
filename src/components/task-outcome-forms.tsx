@@ -1,7 +1,8 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { CircleSlash, Flag, GitMerge, Pencil, RotateCcw, StickyNote } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { inputClass } from "@/components/workspace-list";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextArea } from "@astryxdesign/core/TextArea";
+import { Button, IconButton } from "@/components/button";
 import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import type { Task, TaskResolution } from "@/lib/bindings";
 import {
@@ -12,7 +13,6 @@ import {
 } from "@/lib/queries";
 import { isNotAdopted } from "@/lib/task-graph";
 import { statusNames } from "@/lib/status-styles";
-import { cn } from "@/lib/utils";
 import { type TaskContext, taskRef } from "@/components/task-common";
 
 
@@ -48,14 +48,14 @@ export function ConcludeForm({
       <p className="text-xs text-muted-foreground">
         Finish #{task.id} without completing it. It is marked not adopted. Tasks that depend on it stay blocked.
       </p>
-      <textarea
-        className={cn(inputClass, "h-auto min-h-16 py-1.5")}
-        aria-label={`Conclusion of #${task.id}`}
+      <TextArea
+        rows={2}
+        label={`Conclusion of #${task.id}`}
+        isLabelHidden
         placeholder="What was tried, what was found, and why it is not adopted."
         value={note}
-        onChange={(e) => setNote(e.target.value)}
-        required
-        autoFocus
+        onChange={setNote}
+        hasAutoFocus
       />
       {guard.asking ? (
         <DiscardConfirm
@@ -68,29 +68,25 @@ export function ConcludeForm({
         <div className="flex gap-1">
           <Button
             type="submit"
-            size="xs"
+            size="sm"
             variant="destructive"
-            disabled={concludeTask.isPending || note.trim() === ""}
-          >
-            <CircleSlash />
-            {concludeTask.isPending ? "Concluding..." : "Conclude as not adopted"}
-          </Button>
+            icon={<CircleSlash />}
+            label={concludeTask.isPending ? "Concluding..." : "Conclude as not adopted"}
+            isDisabled={concludeTask.isPending || note.trim() === ""}
+          />
           {/* Work that shipped through another task is done, not concluded. */}
           <Button
             type="button"
-            size="xs"
-            variant="outline"
+            size="sm"
+            variant="secondary"
+            icon={<GitMerge />}
+            label="Complete as shipped by..."
             aria-label={`Complete #${task.id} as shipped by another task`}
-            title="The work shipped through another task: complete the task instead"
-            disabled={concludeTask.isPending}
+            tooltip="The work shipped through another task: complete the task instead"
+            isDisabled={concludeTask.isPending}
             onClick={onShipped}
-          >
-            <GitMerge />
-            Complete as shipped by...
-          </Button>
-          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
-            Back
-          </Button>
+          />
+          <Button type="button" size="sm" variant="ghost" label="Back" onClick={guard.request} />
         </div>
       )}
       {concludeTask.isError && (
@@ -135,14 +131,14 @@ export function ReopenForm({
         Reopen #{task.id}: it is paused, and Resume continues the
         work. Its outcome and completion note are cleared and kept, with your reason, as a progress note.
       </p>
-      <textarea
-        className={cn(inputClass, "h-auto min-h-16 py-1.5")}
-        aria-label={`Reason to reopen #${task.id}`}
+      <TextArea
+        rows={2}
+        label={`Reason to reopen #${task.id}`}
+        isLabelHidden
         placeholder="Why is the task not finished after all?"
         value={reason}
-        onChange={(e) => setReason(e.target.value)}
-        required
-        autoFocus
+        onChange={setReason}
+        hasAutoFocus
       />
       {guard.asking ? (
         <DiscardConfirm
@@ -153,13 +149,16 @@ export function ReopenForm({
         />
       ) : (
         <div className="flex gap-1">
-          <Button changesData type="submit" size="xs" disabled={reopenTask.isPending || reason.trim() === ""}>
-            <RotateCcw />
-            {reopenTask.isPending ? "Reopening..." : "Reopen"}
-          </Button>
-          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
-            Back
-          </Button>
+          <Button
+            changesData
+            type="submit"
+            size="sm"
+            variant="primary"
+            icon={<RotateCcw />}
+            label={reopenTask.isPending ? "Reopening..." : "Reopen"}
+            isDisabled={reopenTask.isPending || reason.trim() === ""}
+          />
+          <Button type="button" size="sm" variant="ghost" label="Back" onClick={guard.request} />
         </div>
       )}
       {reopenTask.isError && (
@@ -199,26 +198,22 @@ export function OutcomeForm({ task, onDone }: { task: Task; onDone: () => void }
         Correct how it ended; the earlier outcome and note are kept as a progress note. Tasks that depend on it wait
         while it is not adopted.
       </p>
-      <select
-        aria-label={`New outcome of #${task.id}`}
-        className={cn(inputClass, "w-40")}
+      <Selector
+        label={`New outcome of #${task.id}`}
+        isLabelHidden
+        width={160}
         value={resolution}
-        onChange={(e) => setResolution(e.target.value as TaskResolution)}
-      >
-        {choices.map((choice) => (
-          <option key={choice} value={choice}>
-            {resolutionNames[choice]}
-          </option>
-        ))}
-      </select>
-      <textarea
-        className={cn(inputClass, "h-auto min-h-16 py-1.5")}
-        aria-label={`Outcome note of #${task.id}`}
+        options={choices.map((choice) => ({ value: choice, label: resolutionNames[choice] }))}
+        onChange={(choice) => setResolution(choice as TaskResolution)}
+      />
+      <TextArea
+        rows={2}
+        label={`Outcome note of #${task.id}`}
+        isLabelHidden
         placeholder="What happened, e.g. the change was reverted. This becomes the completion note."
         value={note}
-        onChange={(e) => setNote(e.target.value)}
-        required
-        autoFocus
+        onChange={setNote}
+        hasAutoFocus
       />
       {guard.asking ? (
         <DiscardConfirm
@@ -229,13 +224,16 @@ export function OutcomeForm({ task, onDone }: { task: Task; onDone: () => void }
         />
       ) : (
         <div className="flex gap-1">
-          <Button changesData type="submit" size="xs" disabled={setOutcome.isPending || note.trim() === ""}>
-            <Flag />
-            {setOutcome.isPending ? "Saving..." : "Change outcome"}
-          </Button>
-          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
-            Back
-          </Button>
+          <Button
+            changesData
+            type="submit"
+            size="sm"
+            variant="primary"
+            icon={<Flag />}
+            label={setOutcome.isPending ? "Saving..." : "Change outcome"}
+            isDisabled={setOutcome.isPending || note.trim() === ""}
+          />
+          <Button type="button" size="sm" variant="ghost" label="Back" onClick={guard.request} />
         </div>
       )}
       {setOutcome.isError && (
@@ -277,6 +275,9 @@ export function ShippedByForm({
   const [note, setNote] = useState("");
   const ready = shipper !== "" && note.trim() !== "";
   const guard = useDiscardGuard(shipper !== "" || note.trim() !== "", onDone, concludeTask.isPending);
+  // Selector does not take autoFocus, so its trigger is focused here, once, like the attribute.
+  const picker = useRef<HTMLButtonElement>(null);
+  useEffect(() => picker.current?.focus(), []);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -293,28 +294,25 @@ export function ShippedByForm({
       <p className="text-xs text-muted-foreground">
         Complete #{task.id} as shipped by another done task. It becomes done, and tasks that depend on it can start.
       </p>
-      <select
-        aria-label={`Task that shipped #${task.id}`}
-        className={inputClass}
+      <Selector
+        ref={picker}
+        label={`Task that shipped #${task.id}`}
+        isLabelHidden
+        placeholder="Choose a task..."
         value={shipper}
-        onChange={(e) => setShipper(e.target.value)}
-        required
-        autoFocus
-      >
-        <option value="">Choose a task...</option>
-        {shippers.map((other) => (
-          <option key={other.id} value={other.id}>
-            {taskRef(other.id, task.workspaceId, context)} {other.title}
-          </option>
-        ))}
-      </select>
-      <textarea
-        className={cn(inputClass, "h-auto min-h-16 py-1.5")}
-        aria-label={`Shipped note of #${task.id}`}
+        options={shippers.map((other) => ({
+          value: String(other.id),
+          label: `${taskRef(other.id, task.workspaceId, context)} ${other.title}`,
+        }))}
+        onChange={setShipper}
+      />
+      <TextArea
+        rows={2}
+        label={`Shipped note of #${task.id}`}
+        isLabelHidden
         placeholder="How the other task shipped this work. This becomes the completion note."
         value={note}
-        onChange={(e) => setNote(e.target.value)}
-        required
+        onChange={setNote}
       />
       {guard.asking ? (
         <DiscardConfirm
@@ -325,13 +323,16 @@ export function ShippedByForm({
         />
       ) : (
         <div className="flex gap-1">
-          <Button changesData type="submit" size="xs" disabled={concludeTask.isPending || !ready}>
-            <GitMerge />
-            {concludeTask.isPending ? "Completing..." : "Complete as shipped"}
-          </Button>
-          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
-            Back
-          </Button>
+          <Button
+            changesData
+            type="submit"
+            size="sm"
+            variant="primary"
+            icon={<GitMerge />}
+            label={concludeTask.isPending ? "Completing..." : "Complete as shipped"}
+            isDisabled={concludeTask.isPending || !ready}
+          />
+          <Button type="button" size="sm" variant="ghost" label="Back" onClick={guard.request} />
         </div>
       )}
       {concludeTask.isError && (
@@ -384,15 +385,14 @@ export function CompletionNote({ task, adding, onAdded }: { task: Task; adding: 
         <p aria-label={`Completion note of #${task.id}`} className="min-w-0 flex-1 whitespace-pre-line break-words-keep text-xs">
           {task.completionNote}
         </p>
-        <Button
-          size="icon-xs"
+        <IconButton
+          size="sm"
           variant="ghost"
-          aria-label={`Edit completion note of #${task.id}`}
-          title="Edit note"
+          label={`Edit completion note of #${task.id}`}
+          tooltip="Edit note"
+          icon={<Pencil />}
           onClick={edit}
-        >
-          <Pencil />
-        </Button>
+        />
       </div>
     );
   }
@@ -403,13 +403,14 @@ export function CompletionNote({ task, adding, onAdded }: { task: Task; adding: 
       className="flex flex-col gap-1"
       onKeyDown={guard.onKeyDown}
     >
-      <textarea
-        className={cn(inputClass, "h-auto min-h-16 py-1.5")}
-        aria-label={`Completion note for #${task.id}`}
+      <TextArea
+        rows={2}
+        label={`Completion note for #${task.id}`}
+        isLabelHidden
         placeholder="What did this achieve? Impact, decisions, follow-ups. Reviews include this note."
         value={note}
-        onChange={(e) => setNoteText(e.target.value)}
-        autoFocus
+        onChange={setNoteText}
+        hasAutoFocus
       />
       {guard.asking ? (
         <DiscardConfirm
@@ -422,15 +423,13 @@ export function CompletionNote({ task, adding, onAdded }: { task: Task; adding: 
         <div className="flex gap-1">
           <Button
             type="submit"
-            size="xs"
+            size="sm"
+            variant="primary"
+            label={setNote.isPending ? "Saving..." : "Save note"}
             // The conclusion of work that was not adopted cannot be cleared.
-            disabled={setNote.isPending || note.trim() === saved || (isNotAdopted(task) && note.trim() === "")}
-          >
-            {setNote.isPending ? "Saving..." : "Save note"}
-          </Button>
-          <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
-            Discard
-          </Button>
+            isDisabled={setNote.isPending || note.trim() === saved || (isNotAdopted(task) && note.trim() === "")}
+          />
+          <Button type="button" size="sm" variant="ghost" label="Discard" onClick={guard.request} />
         </div>
       )}
       {setNote.isError && (

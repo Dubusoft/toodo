@@ -1,7 +1,9 @@
 import { Suspense, useId, useState, type FormEvent } from "react";
 import { ChevronDown, Pencil, Plus, Trash2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { compactSelectClass, escapeCloses, inputClass } from "@/components/workspace-list";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextArea } from "@astryxdesign/core/TextArea";
+import { Button, IconButton } from "@/components/button";
+import { escapeCloses } from "@/components/workspace-list";
 import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import { Markdown } from "@/components/task-common";
 import type { Guideline, GuidelineKind, Workspace } from "@/lib/bindings";
@@ -11,9 +13,9 @@ import { cn } from "@/lib/utils";
 /** The most characters the server keeps in a guideline body, after trimming. */
 const bodyLimit = 4000;
 
-const kinds: GuidelineKind[] = ["rule", "memory"];
-
 const kindNames: Record<GuidelineKind, string> = { rule: "Rule", memory: "Memory" };
+
+const kindOptions = (["rule", "memory"] as const).map((kind) => ({ value: kind, label: kindNames[kind] }));
 
 const groupNames: Record<GuidelineKind, string> = { rule: "Rules", memory: "Memory" };
 
@@ -77,14 +79,14 @@ export function WorkspaceGuidelines({ workspace }: { workspace: Workspace }) {
         </h3>
         {!adding && (
           <Button
-            size="xs"
-            variant="outline"
-            aria-label="Add guideline"
-            title="Add a rule or memory for agents"
+            size="sm"
+            variant="secondary"
+            label="Add guideline"
+            tooltip="Add a rule or memory for agents"
+            icon={<Plus />}
             autoFocus={refocusAdd}
             onClick={openAdd}
           >
-            <Plus />
             Add
           </Button>
         )}
@@ -92,9 +94,7 @@ export function WorkspaceGuidelines({ workspace }: { workspace: Workspace }) {
       {guidelines.isError && (
         <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-destructive">
           <p>Failed to load guidelines: {guidelines.error.message}</p>
-          <Button size="xs" variant="outline" onClick={() => void guidelines.refetch()}>
-            Retry now
-          </Button>
+          <Button size="sm" variant="secondary" label="Retry now" onClick={() => void guidelines.refetch()} />
         </div>
       )}
       <div id={panel} hidden={!expanded} className="flex flex-col gap-2">
@@ -189,33 +189,30 @@ function GuidelineItem({ guideline, position }: { guideline: Guideline; position
         </Suspense>
         {!confirming && (
           <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within/guideline:opacity-100 group-hover/guideline:opacity-100 max-md:gap-2 [@media(hover:none)]:opacity-100">
-            <Button
-              size="icon-xs"
+            <IconButton
+              size="sm"
               variant="ghost"
-              aria-label={`Edit ${name}`}
-              title="Edit"
+              label={`Edit ${name}`}
+              tooltip="Edit"
+              icon={<Pencil />}
               autoFocus={refocus === "edit"}
               onClick={() => {
                 updateGuideline.reset();
                 setEditing(true);
               }}
-            >
-              <Pencil />
-            </Button>
-            <Button
-              size="icon-xs"
+            />
+            <IconButton
+              size="sm"
               variant="ghost"
-              aria-label={`Delete ${name}`}
-              title="Delete"
-              className="hover:text-destructive"
+              label={`Delete ${name}`}
+              tooltip="Delete"
+              icon={<Trash2 />}
               autoFocus={refocus === "delete"}
               onClick={() => {
                 deleteGuideline.reset();
                 setConfirming(true);
               }}
-            >
-              <Trash2 />
-            </Button>
+            />
           </div>
         )}
       </div>
@@ -229,18 +226,16 @@ function GuidelineItem({ guideline, position }: { guideline: Guideline; position
           <span className="mr-1">Delete this {guideline.kind}? It cannot be restored.</span>
           <Button
             changesData
-            size="xs"
+            size="sm"
             variant="destructive"
-            aria-label={`Confirm delete ${name}`}
-            disabled={deleteGuideline.isPending}
+            label={`Confirm delete ${name}`}
+            icon={<Trash2 />}
+            isDisabled={deleteGuideline.isPending}
             onClick={() => deleteGuideline.mutate(guideline.id)}
           >
-            <Trash2 />
             {deleteGuideline.isPending ? "Deleting..." : "Delete"}
           </Button>
-          <Button size="xs" variant="ghost" autoFocus onClick={stopConfirming}>
-            Back
-          </Button>
+          <Button size="sm" variant="ghost" label="Back" autoFocus onClick={stopConfirming} />
         </div>
       )}
       {deleteGuideline.isError && (
@@ -293,32 +288,29 @@ function GuidelineForm({
       onKeyDown={guard.onKeyDown}
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <select
-          aria-label="Kind"
+        <Selector
+          size="sm"
+          label="Kind"
+          isLabelHidden
           aria-describedby={hint}
-          className={compactSelectClass}
+          options={kindOptions}
           value={kind}
-          onChange={(e) => setKind(e.target.value as GuidelineKind)}
-        >
-          {kinds.map((option) => (
-            <option key={option} value={option}>
-              {kindNames[option]}
-            </option>
-          ))}
-        </select>
+          onChange={(value) => setKind(value as GuidelineKind)}
+        />
         <span id={hint} className="text-xs text-muted-foreground">
           {kindHints[kind]}
         </span>
       </div>
-      <textarea
-        aria-label="Guideline"
+      <TextArea
+        size="sm"
+        label="Guideline"
+        isLabelHidden
         placeholder="Write it in Markdown"
-        className={cn(inputClass, "h-24 py-1.5 max-md:h-32")}
+        rows={4}
         value={body}
-        maxLength={bodyLimit}
-        required
-        autoFocus
-        onChange={(e) => setBody(e.target.value)}
+        htmlMaxLength={bodyLimit}
+        hasAutoFocus
+        onChange={setBody}
       />
       {guard.asking ? (
         <DiscardConfirm
@@ -329,12 +321,20 @@ function GuidelineForm({
         />
       ) : (
         <div className="flex items-center gap-2">
-          <Button type="submit" size="sm" variant="outline" disabled={pending || body.trim() === ""}>
-            {guideline ? "Save" : "Add"}
-          </Button>
-          <Button type="button" size="sm" variant="ghost" onClick={guard.request}>
-            {guideline ? "Discard" : "Cancel"}
-          </Button>
+          <Button
+            type="submit"
+            size="sm"
+            variant="secondary"
+            label={guideline ? "Save" : "Add"}
+            isDisabled={pending || body.trim() === ""}
+          />
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            label={guideline ? "Discard" : "Cancel"}
+            onClick={guard.request}
+          />
         </div>
       )}
       {error && (

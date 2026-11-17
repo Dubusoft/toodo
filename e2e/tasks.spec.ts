@@ -7,7 +7,8 @@ test("creates a task in a workspace", async ({ app }) => {
   // The form rests as one line and opens once its title field takes focus.
   await expect(app.getByLabel("Task type")).toHaveCount(0);
   await app.getByLabel("Task title").fill("Repair the login redirect");
-  await app.getByLabel("Task type").selectOption("fix");
+  await app.getByRole("combobox", { name: "Task type" }).click();
+  await app.getByRole("option", { name: "fix", exact: true }).click();
   await app.getByRole("button", { name: "Add task" }).click();
 
   const row = app.getByRole("region", { name: "Tasks" }).getByRole("listitem").filter({ hasText: "Repair the login redirect" });
@@ -45,7 +46,8 @@ test("adds and removes a dependency", async ({ app, server }) => {
   // Dependencies are edited in the task's details sheet, opened from its title.
   await app.getByRole("region", { name: "Tasks" }).getByRole("button", { name: second.title }).click();
   const details = app.getByRole("complementary", { name: "Task details" });
-  await details.getByLabel(`Add dependency to #${second.id}`).selectOption({ label: `#${first.id} ${first.title}` });
+  await details.getByRole("combobox", { name: `Add dependency to #${second.id}` }).click();
+  await app.getByRole("option", { name: `#${first.id} ${first.title}` }).click();
 
   const dependencies = details.getByRole("group", { name: `Dependencies of #${second.id}` });
   await expect(dependencies).toContainText(`#${first.id}`);

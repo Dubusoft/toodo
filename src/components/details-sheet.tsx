@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, type CSSProperties, type ReactNode, type Ref } from "react";
 import { XIcon } from "lucide-react";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/button";
 import { useSwipeClose } from "@/lib/swipe-close";
 
 /**
@@ -87,9 +87,14 @@ export function DetailsSheet({
         <h3 ref={heading} tabIndex={-1} className="text-xs font-medium text-muted-foreground outline-none">
           Task details
         </h3>
-        <Button size="icon-xs" variant="ghost" aria-label="Close details" title="Close details (Esc)" onClick={onClose}>
-          <XIcon />
-        </Button>
+        <IconButton
+          size="sm"
+          variant="ghost"
+          label="Close details"
+          tooltip="Close details (Esc)"
+          icon={<XIcon />}
+          onClick={onClose}
+        />
       </div>
       {banner}
       <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain">

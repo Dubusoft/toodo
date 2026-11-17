@@ -1,11 +1,14 @@
+// First: the stylesheet declares the cascade-layer order every later stylesheet joins.
+import "@/index.css";
+import { Theme } from "@astryxdesign/core/theme";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React, { type ReactNode } from "react";
 import ReactDOM from "react-dom/client";
 import App from "@/App";
 import { ErrorBoundary } from "@/components/error-boundary";
-import "@/index.css";
 import { UpdateBanner } from "@/components/update-banner";
-import { initTheme } from "@/lib/theme";
+import { toodoTheme } from "@/lib/astryx-theme";
+import { initTheme, useColorMode } from "@/lib/theme";
 import { checkForNewBuild, watchBuild } from "@/web/build";
 import { onReachable, watchConnection } from "@/web/connection";
 import { watchInstallOffer } from "@/web/install";
@@ -19,15 +22,26 @@ const savedQueries = indexedDbStore();
 
 const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
 
+/** Astryx components follow the same light or dark mode as the `.dark` class. */
+function ThemedApp({ children }: { children: ReactNode }) {
+  return (
+    <Theme theme={toodoTheme} mode={useColorMode()}>
+      {children}
+    </Theme>
+  );
+}
+
 function render(app: ReactNode) {
   root.render(
     <React.StrictMode>
       <QueryClientProvider client={queryClient}>
-        {/* Outside the boundary: an earlier build that fails against a newer server still offers the reload. */}
-        <UpdateBanner />
-        <ErrorBoundary label="Toodo" className="m-4">
-          {app}
-        </ErrorBoundary>
+        <ThemedApp>
+          {/* Outside the boundary: an earlier build that fails against a newer server still offers the reload. */}
+          <UpdateBanner />
+          <ErrorBoundary label="Toodo" className="m-4">
+            {app}
+          </ErrorBoundary>
+        </ThemedApp>
       </QueryClientProvider>
     </React.StrictMode>,
   );

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import type { TaskId, WorkspaceId } from "@/lib/bindings";
 import { useArchive, usePurgeTask, usePurgeWorkspace, useRestoreTask, useRestoreWorkspace } from "@/lib/queries";
 
@@ -46,12 +46,15 @@ export function ArchivePanel() {
             and leave the reviews; this cannot be undone.
           </p>
           <div className="flex gap-1">
-            <Button changesData size="xs" variant="destructive" onClick={() => purge(confirming)} disabled={busy}>
-              {purgeWorkspace.isPending || purgeTask.isPending ? "Deleting..." : "Delete permanently"}
-            </Button>
-            <Button size="xs" variant="ghost" autoFocus onClick={() => setConfirming(null)} disabled={busy}>
-              Cancel
-            </Button>
+            <Button
+              changesData
+              size="sm"
+              variant="destructive"
+              label={purgeWorkspace.isPending || purgeTask.isPending ? "Deleting..." : "Delete permanently"}
+              onClick={() => purge(confirming)}
+              isDisabled={busy}
+            />
+            <Button size="sm" variant="ghost" label="Cancel" autoFocus onClick={() => setConfirming(null)} isDisabled={busy} />
           </div>
         </div>
       )}
@@ -132,17 +135,10 @@ function ArchiveItem({
         <span className="truncate text-muted-foreground">{detail}</span>
       </span>
       <span className="flex gap-1">
-        <Button changesData size="xs" variant="outline" aria-label={`Restore ${name}`} disabled={busy} onClick={onRestore}>
+        <Button changesData size="sm" variant="secondary" label={`Restore ${name}`} isDisabled={busy} onClick={onRestore}>
           Restore
         </Button>
-        <Button
-          size="xs"
-          variant="ghost"
-          className="hover:text-destructive"
-          aria-label={`Delete ${name} permanently`}
-          disabled={busy}
-          onClick={onPurge}
-        >
+        <Button size="sm" variant="ghost" label={`Delete ${name} permanently`} isDisabled={busy} onClick={onPurge}>
           Delete permanently
         </Button>
       </span>

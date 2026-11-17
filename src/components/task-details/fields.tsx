@@ -1,6 +1,6 @@
 import { Bot, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { compactSelectClass } from "@/components/workspace-list";
+import { Selector } from "@astryxdesign/core/Selector";
+import { Button, IconButton } from "@/components/button";
 import type { SheetNavigation } from "@/components/task-graph";
 import type { Task, TaskEvent } from "@/lib/bindings";
 import {
@@ -14,8 +14,6 @@ import {
 import { reachedMilestones } from "@/lib/timeline";
 import { When } from "@/components/when";
 import { formatEstimate } from "@/lib/plan";
-import { toneChip } from "@/lib/status-styles";
-import { cn } from "@/lib/utils";
 import { type TaskContext, taskRef, DueDate, DetailField, TaskLabels, useServerDown } from "@/components/task-common";
 import { openUrl } from "@/web/opener";
 
@@ -168,28 +166,26 @@ export function RelatedTasks({
     return null;
   }
   const picker = groups.length > 0 && (
-    <select
-      aria-label={`Add related task to #${task.id}`}
-      className={cn(compactSelectClass, "max-w-48")}
+    <Selector
+      label={`Add related task to #${task.id}`}
+      isLabelHidden
+      size="sm"
+      width={192}
+      placeholder="Add related task..."
+      // Always shows the placeholder: picking a task adds it instead of keeping a value.
       value=""
-      disabled={busy}
-      onChange={(event) => {
-        if (event.target.value) {
-          addRelation.mutate({ taskId: task.id, relatedId: Number(event.target.value) });
+      isDisabled={busy}
+      options={groups.map((group) => ({
+        type: "section" as const,
+        title: context.workspaceName(group.workspaceId),
+        options: group.tasks.map((other) => ({ value: String(other.id), label: `#${other.id} ${other.title}` })),
+      }))}
+      onChange={(value) => {
+        if (value) {
+          addRelation.mutate({ taskId: task.id, relatedId: Number(value) });
         }
       }}
-    >
-      <option value="">Add related task...</option>
-      {groups.map((group) => (
-        <optgroup key={group.workspaceId} label={context.workspaceName(group.workspaceId)}>
-          {group.tasks.map((other) => (
-            <option key={other.id} value={other.id}>
-              #{other.id} {other.title}
-            </option>
-          ))}
-        </optgroup>
-      ))}
-    </select>
+    />
   );
   const error = failure && (
     <p role="alert" className="text-destructive">
@@ -211,27 +207,26 @@ export function RelatedTasks({
           const other = context.byId.get(id);
           const label = taskRef(id, task.workspaceId, context);
           return (
-            <li key={id} className="inline-flex h-6 min-w-0 items-center rounded-md border max-md:h-11 max-md:gap-2 max-md:border-0">
-              <button
-                type="button"
+            <li key={id} className="inline-flex min-w-0 items-center max-md:gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                label={other === undefined ? label : `${label} ${other.title}`}
                 aria-label={`Open related task ${label}`}
-                title={other?.title}
-                className="h-full min-w-0 max-w-56 truncate rounded-l-md px-1.5 tabular-nums hover:bg-muted max-md:rounded-md max-md:border max-md:px-3 disabled:cursor-default disabled:hover:bg-transparent"
-                disabled={navigation === undefined || !navigation.canOpen(id)}
+                tooltip={other?.title}
+                className="min-w-0 max-w-56 tabular-nums"
+                isDisabled={navigation === undefined || !navigation.canOpen(id)}
                 onClick={() => navigation?.open(id)}
-              >
-                {label} {other?.title}
-              </button>
-              <button
-                type="button"
-                aria-label={`Remove related task #${id} from #${task.id}`}
-                title="Remove related task"
-                className="flex h-full items-center justify-center rounded-r-md p-1 text-muted-foreground hover:bg-muted max-md:w-11 max-md:rounded-md max-md:border hover:text-foreground disabled:opacity-50"
-                disabled={busy}
+              />
+              <IconButton
+                size="sm"
+                variant="ghost"
+                label={`Remove related task #${id} from #${task.id}`}
+                tooltip="Remove related task"
+                icon={<X />}
+                isDisabled={busy}
                 onClick={() => removeRelation.mutate({ taskId: task.id, relatedId: id })}
-              >
-                <X className="size-3" />
-              </button>
+              />
             </li>
           );
         })}
@@ -263,23 +258,22 @@ export function AutopilotToggle({ task }: { task: Task }) {
   return (
     <>
       <Button
-        size="xs"
-        variant="outline"
+        size="sm"
+        variant={task.autopilot ? "primary" : "secondary"}
         changesData
         aria-pressed={task.autopilot}
         aria-label={`Autopilot of #${task.id}`}
-        title={
+        label={task.autopilot ? "Autopilot on" : "Autopilot off"}
+        icon={<Bot aria-hidden />}
+        tooltip={
           task.autopilot
             ? "Marked for autopilot: an executor may take it up on its own once it is ready. Click to clear."
             : "Not marked for autopilot. Click to let an executor take it up on its own once it is ready."
         }
-        disabled={updateTask.isPending}
+        isDisabled={updateTask.isPending}
         onClick={toggle}
-        className={cn("shrink-0", task.autopilot && toneChip.info)}
-      >
-        <Bot aria-hidden />
-        {task.autopilot ? "Autopilot on" : "Autopilot off"}
-      </Button>
+        className="shrink-0"
+      />
       {updateTask.error && (
         <span role="alert" className="text-xs text-destructive">
           {updateTask.error.message}
@@ -303,20 +297,21 @@ export function TaskWorkspace({ task }: { task: Task }) {
   }
   return (
     <>
-      <select
-        aria-label={`Workspace of #${task.id}`}
+      <span
+        className="inline-flex"
         title="Move the task to another workspace; its history, notes, criteria, refs, and links stay"
-        className={cn(compactSelectClass, "max-w-40")}
-        value={task.workspaceId}
-        disabled={moveTask.isPending || serverDown}
-        onChange={(event) => moveTask.mutate({ id: task.id, workspaceId: Number(event.target.value) })}
       >
-        {live.map((workspace) => (
-          <option key={workspace.id} value={workspace.id}>
-            {workspace.name}
-          </option>
-        ))}
-      </select>
+        <Selector
+          label={`Workspace of #${task.id}`}
+          isLabelHidden
+          size="sm"
+          width={160}
+          value={String(task.workspaceId)}
+          isDisabled={moveTask.isPending || serverDown}
+          options={live.map((workspace) => ({ value: String(workspace.id), label: workspace.name }))}
+          onChange={(value) => moveTask.mutate({ id: task.id, workspaceId: Number(value) })}
+        />
+      </span>
       {moveTask.error && (
         <span role="alert" className="text-xs text-destructive">
           {moveTask.error.message}

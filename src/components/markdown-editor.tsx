@@ -1,7 +1,6 @@
 import { lazy, Suspense, useId, useState } from "react";
-
-import { Button } from "@/components/ui/button";
-import { inputClass } from "@/components/workspace-list";
+import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
+import { TextArea } from "@astryxdesign/core/TextArea";
 import { cn } from "@/lib/utils";
 
 const Markdown = lazy(() => import("@/components/markdown"));
@@ -25,14 +24,15 @@ export function MarkdownEditor({
 
   return (
     <div className={cn("flex min-w-0 flex-col gap-1 max-md:gap-2", className)}>
-      <div role="group" aria-label={`Mode of ${label}`} className="flex gap-0.5 max-md:gap-2">
-        <Button type="button" size="xs" variant={previewing ? "ghost" : "default"} aria-pressed={!previewing} onClick={() => setPreviewing(false)}>
-          Write
-        </Button>
-        <Button type="button" size="xs" variant={previewing ? "default" : "ghost"} aria-pressed={previewing} onClick={() => setPreviewing(true)}>
-          Preview
-        </Button>
-      </div>
+      <SegmentedControl
+        label={`Mode of ${label}`}
+        size="sm"
+        value={previewing ? "preview" : "write"}
+        onChange={(mode) => setPreviewing(mode === "preview")}
+      >
+        <SegmentedControlItem value="write" label="Write" />
+        <SegmentedControlItem value="preview" label="Preview" />
+      </SegmentedControl>
       {previewing ? (
         <div
           role="region"
@@ -48,14 +48,14 @@ export function MarkdownEditor({
           )}
         </div>
       ) : (
-        <textarea
-          className={cn(inputClass, "h-auto min-h-16 resize-y py-1.5 max-md:h-auto")}
+        <TextArea
           rows={3}
           placeholder={placeholder}
-          aria-label={label}
+          label={label}
+          isLabelHidden
           aria-describedby={hint}
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={onChange}
         />
       )}
       <p id={hint} className="text-xs text-muted-foreground">

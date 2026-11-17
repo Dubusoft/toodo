@@ -1,13 +1,13 @@
 import { useState, type FormEvent } from "react";
 import { Plus } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { inputClass } from "@/components/workspace-list";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Button } from "@/components/button";
 import { CollapsibleForm } from "@/components/collapsible-form";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import type { TaskType, Workspace } from "@/lib/bindings";
 import { useCreateTask } from "@/lib/queries";
 import { parseLabels } from "@/lib/plan";
-import { cn } from "@/lib/utils";
 import { taskTypes } from "@/components/task-common";
 import { AutopilotField, type PlanDraft, planEstimate, PlanFields } from "@/components/plan-fields";
 import { type CriterionDraft, criterionInputs, targetProblem, CriteriaEditor } from "@/components/criteria-editor";
@@ -55,7 +55,8 @@ export function NewTaskForm({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (estimate === undefined || criteriaInvalid) return;
+    // The title is required; TextInput marks it so but does not set the native attribute.
+    if (title === "" || estimate === undefined || criteriaInvalid) return;
     createTask.mutate(
       {
         workspaceId: workspace.id,
@@ -90,31 +91,31 @@ export function NewTaskForm({
     <CollapsibleForm label="New task" expanded={expanded} onExpandedChange={setExpanded} onSubmit={submit}>
       <div className="flex gap-2">
         {expanded && (
-          <select
-            aria-label="Task type"
-            className={cn(inputClass, "w-28 shrink-0 font-mono")}
+          <Selector
+            label="Task type"
+            isLabelHidden
+            width={112}
+            containerClassName="shrink-0 font-mono"
+            options={taskTypes}
             value={taskType}
-            onChange={(e) => setTaskType(e.target.value as TaskType)}
-          >
-            {taskTypes.map((type) => (
-              <option key={type} value={type}>
-                {type}
-              </option>
-            ))}
-          </select>
+            onChange={(value) => setTaskType(value as TaskType)}
+          />
         )}
-        <input
-          className={cn(inputClass, "min-w-0")}
+        <TextInput
+          label="Task title"
+          isLabelHidden
+          containerClassName="min-w-0 flex-1"
           placeholder={expanded ? "Task title" : "New task"}
-          aria-label="Task title"
           value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          required
+          onChange={setTitle}
         />
-        <Button type="submit" disabled={createTask.isPending || estimate === undefined || criteriaInvalid}>
-          <Plus />
-          Add task
-        </Button>
+        <Button
+          type="submit"
+          variant="primary"
+          label="Add task"
+          icon={<Plus />}
+          isDisabled={createTask.isPending || estimate === undefined || criteriaInvalid}
+        />
       </div>
       {expanded && (
         <>

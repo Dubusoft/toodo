@@ -15,6 +15,8 @@ function stubMatchMedia() {
     addEventListener: (_type: string, listener: () => void) => {
       notifyOsChange = listener;
     },
+    // Astryx components subscribe to media queries too and unsubscribe on unmount.
+    removeEventListener: () => {},
   }));
 }
 
@@ -64,17 +66,17 @@ describe("theme", () => {
 
   it("colors the status bar with the background of the chosen theme, whatever the OS setting", () => {
     initTheme();
-    expect(themeColors()).toEqual(["#ffffff", "#ffffff"]);
+    expect(themeColors()).toEqual(["#F1F4F7", "#F1F4F7"]);
 
     setThemePreference("dark");
-    expect(themeColors()).toEqual(["#0a0a0a", "#0a0a0a"]);
+    expect(themeColors()).toEqual(["#111112", "#111112"]);
 
     osDark = true;
     setThemePreference("light");
-    expect(themeColors()).toEqual(["#ffffff", "#ffffff"]);
+    expect(themeColors()).toEqual(["#F1F4F7", "#F1F4F7"]);
 
     setThemePreference("system");
-    expect(themeColors()).toEqual(["#0a0a0a", "#0a0a0a"]);
+    expect(themeColors()).toEqual(["#111112", "#111112"]);
   });
 
   it("falls back to system for an unknown stored value", () => {

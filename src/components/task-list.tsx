@@ -1,7 +1,11 @@
 import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { Bot, Check, ChevronDown, Inbox, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { compactSelectClass, escapeCloses } from "@/components/workspace-list";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
+import { Button } from "@/components/button";
+import { escapeCloses } from "@/components/workspace-list";
 import { ErrorBoundary } from "@/components/error-boundary";
 import type { Task, TaskId, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
 import { useDeleteDoneTasks, useDoneTaskCount, useTasks, useWorkspaces } from "@/lib/queries";
@@ -17,14 +21,13 @@ import {
   toggleStatus,
   type TaskFilter,
 } from "@/lib/task-filter";
-import { statusNames, toneChip, toneFill, toneOutline } from "@/lib/status-styles";
+import { statusNames, toneFill } from "@/lib/status-styles";
 import { singleKeyShortcut } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import {
   taskTypes,
   statusLabel,
   statusTones,
-  shownStatusStyle,
   statusStyle,
   type TaskContext,
 } from "@/components/task-common";
@@ -234,54 +237,45 @@ export function TaskList({
         <>
           <div className="flex flex-wrap items-center gap-2">
             {workspace === null && (
-              <div role="group" aria-label="Task view" className="flex gap-1 max-md:gap-2">
-                {(["timeline", "list", "plan"] as const).map((option) => (
-                  <Button
-                    key={option}
-                    size="xs"
-                    variant={view === option ? "default" : "ghost"}
-                    aria-pressed={view === option}
-                    onClick={() => onViewChange?.(option)}
-                  >
-                    {option === "list" ? "List" : option === "plan" ? "Plan" : "Timeline"}
-                  </Button>
-                ))}
-              </div>
+              <ToggleButtonGroup
+                label="Task view"
+                type="single"
+                size="sm"
+                value={view}
+                // Pressing the shown view again keeps it: one view is always shown.
+                onChange={(next) => typeof next === "string" && onViewChange?.(next as AllView)}
+              >
+                <ToggleButton value="timeline" label="Timeline" />
+                <ToggleButton value="list" label="List" />
+                <ToggleButton value="plan" label="Plan" />
+              </ToggleButtonGroup>
             )}
             <Button
-              size="xs"
-              variant={filtersOpen ? "secondary" : "outline"}
+              size="sm"
+              variant="secondary"
               className="ml-auto md:hidden"
+              label={activeFilters > 0 ? `Filters, ${activeFilters} active` : "Filters"}
+              icon={<SlidersHorizontal />}
+              endContent={activeFilters > 0 ? <Badge variant="info" label={activeFilters} /> : undefined}
               aria-expanded={filtersOpen}
               aria-controls="task-filters"
               onClick={() => setFiltersOpen(!filtersOpen)}
             >
-              <SlidersHorizontal />
               Filters
-              {activeFilters > 0 && (
-                <span className="rounded-full bg-primary px-1.5 text-[0.625rem] leading-4 text-primary-foreground tabular-nums">
-                  {activeFilters}
-                  <span className="sr-only"> active</span>
-                </span>
-              )}
             </Button>
             <div id="task-filters" className={cn("contents", !filtersOpen && "max-md:hidden")}>
               {narrowable && (
-                <select
-                  aria-label={showPlan ? "Plan workspace" : "Timeline workspace"}
-                  className={compactSelectClass}
-                  value={filter ?? "all"}
-                  onChange={(event) =>
-                    setTimelineWorkspace(event.target.value === "all" ? null : Number(event.target.value))
-                  }
-                >
-                  <option value="all">All workspaces</option>
-                  {filterOptions.map((id) => (
-                    <option key={id} value={id}>
-                      {context.workspaceName(id)}
-                    </option>
-                  ))}
-                </select>
+                <Selector
+                  label={showPlan ? "Plan workspace" : "Timeline workspace"}
+                  isLabelHidden
+                  size="sm"
+                  value={filter === null ? "all" : String(filter)}
+                  options={[
+                    { value: "all", label: "All workspaces" },
+                    ...filterOptions.map((id) => ({ value: String(id), label: context.workspaceName(id) })),
+                  ]}
+                  onChange={(value) => setTimelineWorkspace(value === "all" ? null : Number(value))}
+                />
               )}
               <TaskFilterBar filter={taskFilter} onChange={setTaskFilter} />
             </div>
@@ -317,15 +311,16 @@ export function TaskList({
               {doneCount > 0 && (
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
-                    <button
-                      type="button"
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      label={`Done ${doneCount}`}
+                      icon={<ChevronDown aria-hidden className={cn("transition-transform", !doneListed && "-rotate-90")} />}
                       aria-expanded={doneListed}
-                      className="flex items-center gap-1.5 rounded-sm outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11"
                       onClick={() => setDoneShown(!doneListed)}
                     >
-                      <ChevronDown aria-hidden className={cn("size-4 transition-transform", !doneListed && "-rotate-90")} />
                       Done <span className="tabular-nums font-normal">{doneCount}</span>
-                    </button>
+                    </Button>
                   </h3>
                   {/* Deleting acts on every done task of a workspace, so only a workspace's own list offers it. */}
                   {workspace && <DeleteDoneTasks workspace={workspace} />}
@@ -399,14 +394,13 @@ export function TaskList({
           )}
           {allTasks.hasNextPage && finishedShown && (
             <Button
-              size="xs"
-              variant="outline"
+              size="sm"
+              variant="secondary"
               className="self-start"
-              disabled={allTasks.isFetchingNextPage}
+              label={allTasks.isFetchingNextPage ? "Loading older finished tasks..." : "Load older finished tasks"}
+              isDisabled={allTasks.isFetchingNextPage}
               onClick={() => void allTasks.fetchNextPage()}
-            >
-              {allTasks.isFetchingNextPage ? "Loading older finished tasks..." : "Load older finished tasks"}
-            </Button>
+            />
           )}
         </>
       )}
@@ -422,78 +416,52 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
       aria-label="Task filters"
       className="flex flex-1 flex-wrap items-center justify-end gap-2 max-md:grid max-md:basis-full max-md:grid-cols-2"
     >
-      <input
+      <TextInput
         type="search"
-        aria-label="Search tasks"
+        label="Search tasks"
+        isLabelHidden
+        size="sm"
         placeholder="Search title, description, or #number"
-        className={cn(compactSelectClass, "w-56 max-md:col-span-2 max-md:w-full")}
+        containerClassName="w-56 max-md:col-span-2 max-md:w-full"
         value={filter.query}
-        onChange={(event) => onChange({ ...filter, query: event.target.value })}
+        onChange={(query) => onChange({ ...filter, query })}
       />
       <div role="group" aria-label="Status filter" className="flex flex-wrap gap-1 max-md:col-span-2 max-md:gap-2">
-        {shownStatuses.map((status) => {
-          const selected = filter.statuses.includes(status);
-          const tone = statusTones[status];
-          // Selected: filled like the status chip, with a check. Not selected: outlined in the
-          // same hue, with a dot.
-          return (
-            <button
-              key={status}
-              type="button"
-              className={cn(
-                "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-xs font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11",
-                selected
-                  ? cn(shownStatusStyle(status), "border-transparent hover:brightness-95 dark:hover:brightness-125")
-                  : cn(toneOutline[tone], "bg-transparent hover:bg-muted"),
-              )}
-              aria-pressed={selected}
-              onClick={() => onChange({ ...filter, statuses: toggleStatus(filter.statuses, status) })}
-            >
-              {selected ? (
-                <Check aria-hidden className="size-3" />
-              ) : (
-                <span aria-hidden className={cn("size-1.5 rounded-full", toneFill[tone])} />
-              )}
-              {statusNames[status]}
-            </button>
-          );
-        })}
-      </div>
-      <select
-        aria-label="Type filter"
-        className={compactSelectClass}
-        value={filter.type ?? "all"}
-        onChange={(event) =>
-          onChange({ ...filter, type: event.target.value === "all" ? null : (event.target.value as TaskType) })
-        }
-      >
-        <option value="all">All types</option>
-        {taskTypes.map((type) => (
-          <option key={type} value={type}>
-            {type}
-          </option>
+        {shownStatuses.map((status) => (
+          // Not selected: a dot in the hue of the status chip. Selected: a check.
+          <ToggleButton
+            key={status}
+            size="sm"
+            label={statusNames[status]}
+            icon={<span aria-hidden className={cn("size-1.5 rounded-full", toneFill[statusTones[status]])} />}
+            pressedIcon={<Check aria-hidden />}
+            isPressed={filter.statuses.includes(status)}
+            onPressedChange={() => onChange({ ...filter, statuses: toggleStatus(filter.statuses, status) })}
+          >
+            {statusNames[status]}
+          </ToggleButton>
         ))}
-      </select>
-      <button
-        type="button"
-        className={cn(
-          "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-xs font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11",
-          filter.autopilot
-            ? cn(toneChip.info, "border-transparent hover:brightness-95 dark:hover:brightness-125")
-            : cn(toneOutline.info, "bg-transparent hover:bg-muted"),
-        )}
-        aria-pressed={filter.autopilot}
-        title="Only tasks marked for autopilot"
-        onClick={() => onChange({ ...filter, autopilot: !filter.autopilot })}
+      </div>
+      <Selector
+        label="Type filter"
+        isLabelHidden
+        size="sm"
+        value={filter.type ?? "all"}
+        options={[{ value: "all", label: "All types" }, ...taskTypes]}
+        onChange={(value) => onChange({ ...filter, type: value === "all" ? null : (value as TaskType) })}
+      />
+      <ToggleButton
+        size="sm"
+        label="Autopilot"
+        tooltip="Only tasks marked for autopilot"
+        icon={<Bot aria-hidden />}
+        isPressed={filter.autopilot}
+        onPressedChange={(autopilot) => onChange({ ...filter, autopilot })}
       >
-        <Bot aria-hidden className="size-3" />
         Autopilot
-      </button>
+      </ToggleButton>
       {isFilterActive(filter) && (
-        <Button size="xs" variant="ghost" onClick={() => onChange(emptyTaskFilter)}>
-          <X />
-          Clear filters
-        </Button>
+        <Button size="sm" variant="ghost" label="Clear filters" icon={<X />} onClick={() => onChange(emptyTaskFilter)} />
       )}
     </div>
   );
@@ -543,34 +511,29 @@ function DeleteDoneTasks({ workspace }: { workspace: Workspace }) {
             </span>
             <Button
               changesData
-              size="xs"
+              size="sm"
               variant="destructive"
-              disabled={deleteDone.isPending || counted === undefined || count.isFetching}
+              label={deleteDone.isPending ? "Deleting..." : "Confirm delete"}
+              icon={<Trash2 />}
+              isDisabled={deleteDone.isPending || counted === undefined || count.isFetching}
               onClick={() => deleteDone.mutate(workspace.id, { onSuccess: stopConfirming })}
-            >
-              <Trash2 />
-              {deleteDone.isPending ? "Deleting..." : "Confirm delete"}
-            </Button>
+            />
             {/* Focus lands on Back, so pressing Enter or Space again cannot delete. */}
-            <Button size="xs" variant="ghost" autoFocus onClick={stopConfirming}>
-              Back
-            </Button>
+            <Button size="sm" variant="ghost" label="Back" autoFocus onClick={stopConfirming} />
           </>
         ) : (
           <Button
-            size="xs"
+            size="sm"
             variant="ghost"
-            title="Move every done task of this workspace to the archive"
+            label="Delete done"
+            icon={<Trash2 />}
+            tooltip="Move every done task of this workspace to the archive"
             autoFocus={refocus}
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive dark:hover:bg-destructive/20"
             onClick={() => {
               deleteDone.reset();
               setOpenedAt(Date.now());
             }}
-          >
-            <Trash2 />
-            Delete done
-          </Button>
+          />
         )}
       </div>
       {deleteDone.isError ? (

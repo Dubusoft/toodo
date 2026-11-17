@@ -85,7 +85,8 @@ describe("NotificationsPanel", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Send test notification" }));
 
-    expect(await screen.findByRole("status")).toHaveTextContent("Test notification sent.");
+    // Astryx buttons carry empty live regions of their own, so the notice is found by its text.
+    expect(await screen.findByText("Test notification sent.")).toHaveAttribute("role", "status");
   });
 
   it("shows the last delivery failure and refreshes it after a test notification", async () => {
