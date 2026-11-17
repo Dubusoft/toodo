@@ -21,13 +21,14 @@ import {
   toggleStatus,
   type TaskFilter,
 } from "@/lib/task-filter";
-import { statusNames, toneFill } from "@/lib/status-styles";
+import { statusNames, toneChip, toneFill, toneOutline, type Tone } from "@/lib/status-styles";
 import { singleKeyShortcut } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import {
   taskTypes,
   statusLabel,
   statusTones,
+  shownStatusStyle,
   statusStyle,
   type TaskContext,
 } from "@/components/task-common";
@@ -408,6 +409,19 @@ export function TaskList({
   );
 }
 
+/**
+ * A filter chip in the hue of its tone: outlined while off, filled like the status chip while on.
+ * The Astryx toggle alone is neutral, which loses the status colours.
+ */
+function filterChipStyle(tone: Tone, pressed: boolean, filled: string = toneChip[tone]) {
+  return cn(
+    "gap-1 rounded-full border px-2",
+    pressed
+      ? cn(filled, "border-transparent hover:brightness-95 dark:hover:brightness-125")
+      : cn(toneOutline[tone], "bg-transparent"),
+  );
+}
+
 /** Search text and status and type filters narrowing the task list and the timeline. */
 function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (filter: TaskFilter) => void }) {
   return (
@@ -435,6 +449,11 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
             label={statusNames[status]}
             icon={<span aria-hidden className={cn("size-1.5 rounded-full", toneFill[statusTones[status]])} />}
             pressedIcon={<Check aria-hidden />}
+            className={filterChipStyle(
+              statusTones[status],
+              filter.statuses.includes(status),
+              shownStatusStyle(status),
+            )}
             isPressed={filter.statuses.includes(status)}
             onPressedChange={() => onChange({ ...filter, statuses: toggleStatus(filter.statuses, status) })}
           >
@@ -455,6 +474,7 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
         label="Autopilot"
         tooltip="Only tasks marked for autopilot"
         icon={<Bot aria-hidden />}
+        className={filterChipStyle("info", filter.autopilot)}
         isPressed={filter.autopilot}
         onPressedChange={(autopilot) => onChange({ ...filter, autopilot })}
       >
