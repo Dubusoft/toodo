@@ -11,6 +11,10 @@ const accent: [light: string, dark: string] = ["#006E46", "#63DCA9"];
 
 export const toodoTheme = defineTheme({
   name: "toodo",
+  // Geist, loaded in `src/index.css`; Hangul and other scripts it lacks fall back to the
+  // platform's default sans-serif font (Apple SD Gothic Neo on Apple devices) rather than the
+  // system UI font, whose Hangul has different shapes and metrics.
+  typography: { body: { family: "Geist Variable", fallbacks: "sans-serif" } },
   tokens: {
     "--color-accent": accent,
     "--color-text-accent": accent,

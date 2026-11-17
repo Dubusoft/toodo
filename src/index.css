@@ -8,6 +8,7 @@
 @import "tailwindcss";
 @import "@astryxdesign/core/reset.css";
 @import "@astryxdesign/core/astryx.css";
+@import "@fontsource-variable/geist";
 
 /* Paper is light: printing uses the light theme whatever the screen shows. */
 @custom-variant dark {
@@ -108,8 +109,14 @@
   * {
     @apply border-border outline-ring/50;
     }
+  /*
+   * The platform's own font smoothing, which the Astryx reset turns off on macOS; without it
+   * Hangul strokes render thin.
+   */
   body {
     @apply bg-background text-foreground;
+    -webkit-font-smoothing: auto;
+    -moz-osx-font-smoothing: auto;
     }
   html {
     @apply font-sans;
