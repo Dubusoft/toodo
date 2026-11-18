@@ -272,12 +272,14 @@ export function TaskGraph({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
-  // Older tasks asked for with `onNearPast` move the start of the axis earlier, every bar right
-  // with it, and take rows above the ones shown, being older work. Once they are in, the view
-  // moves along, so it keeps showing the same days and the same task at its top.
+  // The rows change when a filter changes, when older tasks asked for with `onNearPast` come in,
+  // or when a task is added, finished, or removed. Older tasks move the start of the axis
+  // earlier, every bar right with it, and take rows above the ones shown, being older work. The
+  // view moves along at once, before the next paint: it keeps showing the same days, and the
+  // task at its top, or the first one below it that is still shown, stays there. It never stays
+  // below the last row, which React Flow would correct only on the next pan.
   const chart = `${scale}-${year ?? "all"}`;
   const shownLayout = useRef<{ chart: string; start: Timestamp; rows: TaskId[] } | null>(null);
-  const pastAsked = useRef(false);
   const lastViewportY = useRef(0);
   useLayoutEffect(() => {
     const previous = shownLayout.current;
@@ -285,20 +287,33 @@ export function TaskGraph({
     for (const bar of layout.bars) rows[bar.row] = bar.task.id;
     shownLayout.current = { chart, start: layout.start, rows };
     const instance = flow.current;
-    if (!pastAsked.current || previous === null || previous.chart !== chart || instance === null) return;
-    if (rows.length <= previous.rows.length) return;
-    pastAsked.current = false;
+    const panel = container.current;
+    // A new chart, or one that had no rows, opens on its own in `showLatest`.
+    if (previous === null || previous.chart !== chart || previous.rows.length === 0) return;
+    if (instance === null || panel === null) return;
+    const unchanged =
+      previous.start === layout.start &&
+      previous.rows.length === rows.length &&
+      previous.rows.every((id, row) => rows[row] === id);
+    if (unchanged) return;
     const { x, y, zoom } = instance.getViewport();
     const shift = ((previous.start - layout.start) / (24 * 60 * 60)) * pixelsPerDay[scale];
+    const rowOf = new Map(rows.map((id, row) => [id, row]));
     const topRow = Math.min(Math.max(Math.floor(-y / rowHeight), 0), previous.rows.length - 1);
-    const movedRow = rows.indexOf(previous.rows[topRow]);
-    const drop = movedRow === -1 ? 0 : (movedRow - topRow) * rowHeight;
-    void instance.setViewport({ x: x - shift, y: y - drop, zoom });
+    let drop = 0;
+    for (let row = topRow; row < previous.rows.length; row += 1) {
+      const moved = rowOf.get(previous.rows[row]);
+      if (moved !== undefined) {
+        drop = (moved - row) * rowHeight;
+        break;
+      }
+    }
+    const lowest = Math.min(0, panel.clientHeight - height - 8);
+    const nextY = Math.min(0, Math.max(lowest, y - drop));
+    if (shift !== 0 || nextY !== y) {
+      void instance.setViewport({ x: x - shift, y: nextY, zoom });
+    }
   }, [chart, layout]);
-  function askPast() {
-    pastAsked.current = true;
-    onNearPast?.();
-  }
   /**
    * Asks for older tasks once the view is within a screen of the earliest bar, or of the top row
    * while it moves up: older work runs left and on top.
@@ -309,13 +324,13 @@ export function TaskGraph({
     const panel = container.current;
     if (onNearPast === undefined || layout.bars.length === 0 || panel === null) return;
     const earliest = Math.min(...layout.bars.map((bar) => bar.x));
-    if (-viewport.x < earliest + panel.clientWidth || (movedUp && -viewport.y < panel.clientHeight)) askPast();
+    if (-viewport.x < earliest + panel.clientWidth || (movedUp && -viewport.y < panel.clientHeight)) onNearPast();
   }
   // At the top row the view cannot move up any further, so scrolling up there asks by itself.
   function scrollUpAtTop(event: WheelEvent) {
     const panel = container.current;
     if (onNearPast === undefined || event.deltaY >= 0 || flow.current === null || panel === null) return;
-    if (-flow.current.getViewport().y < panel.clientHeight) askPast();
+    if (-flow.current.getViewport().y < panel.clientHeight) onNearPast();
   }
   // Rows can be panned vertically only as far as they go; never into empty space.
   const translateExtent: [[number, number], [number, number]] = [
