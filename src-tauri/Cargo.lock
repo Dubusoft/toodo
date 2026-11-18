@@ -1882,7 +1882,7 @@ dependencies = [
 
 [[package]]
 name = "toodo"
-version = "1.10.1"
+version = "1.10.2"
 dependencies = [
  "axum",
  "base64 0.22.1",
