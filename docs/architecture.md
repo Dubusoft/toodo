@@ -253,11 +253,14 @@ the task list with its done tasks unfolded), "Load older finished tasks" loads t
   refreshed every 30 seconds.
 - Each task is a bar whose ends follow its status:
   - Never started (`planned` without `startedAt`): a fixed-width bar attached to the
-    current-time cursor, moving with it.
+    current-time cursor, moving with it. One that waits until a later time (`wait`)
+    starts at the end of the wait instead, when it can be started.
   - Being worked on (`in_progress`, `in_review`): fixed at `startedAt`, its end attached
     to the current-time cursor.
   - Paused or done (`planned` after a start, `done`): fixed from `startedAt` to
-    `pausedAt` (drawn faded) or `completedAt`.
+    `pausedAt` (drawn faded) or `completedAt`. A paused task's pause is a dashed line
+    from `pausedAt` to the current time; when the task waits until a time, the line runs
+    to the end of the wait, where a fixed-width box shows when the work can go on.
   A started bar is split into phases from the status history: in progress, in review,
   and paused (back in `planned` until the task was resumed), so a paused and resumed
   task shows its pause as a gap. Without history the phases come from the milestones:

@@ -720,7 +720,8 @@ export function TaskGraph({
           </li>
         </ul>
         <p className="pb-1">
-          Tasks not started yet wait at the current time, after their prerequisites.
+          Tasks not started yet wait at the current time, after their prerequisites, or at the end of their wait.
+          A paused task that waits gets a box there too.
           <span className="[@media(pointer:coarse)]:hidden">
             {" "}Drag from a task's right handle to another task to make it a prerequisite. With a task selected, use the
             arrow keys to move between rows.
@@ -1111,7 +1112,7 @@ function TimelineBarView({
   selected,
   positionAbsoluteX,
 }: NodeProps<BarNode>) {
-  const { task, phases, blocks, pauses, pending, lead, dueX, dueState } = bar;
+  const { task, phases, blocks, pauses, resume, pending, lead, dueX, dueState } = bar;
   // How far the bar reaches left of the panel's edge; it changes, and re-renders the bar, only
   // while the bar starts off screen.
   const offScreen = useStore((state) => Math.max(0, pinnedLabelInset - positionAbsoluteX - state.transform[0]));
@@ -1143,8 +1144,9 @@ function TimelineBarView({
     const natural = element.offsetWidth;
     element.style.minWidth = minWidth;
     element.style.maxWidth = maxWidth;
-    setLabelOutside(natural > bar.width);
-  }, [bar.width, task.title, workspace, statusLabel]);
+    // A label fits only on the work before a wait, so it does not run along the wait into the box after it.
+    setLabelOutside(natural > (resume === null ? bar.width : (pauses.at(-1)?.x ?? resume.x)));
+  }, [bar.width, resume, pauses, task.title, workspace, statusLabel]);
   const labelLeft = labelOutside ? drawnWidth + labelGap - 6 : 0;
   // A label that would start off screen is pinned to the panel's left edge, behind a chevron
   // saying that the bar goes on to the left.
