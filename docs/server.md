@@ -781,9 +781,12 @@ Things to know:
   manifest without cookies otherwise, Access would answer it with its login redirect, and
   the browser would not offer to install the app.
 - The service worker loads pages from the network first, so when the Access session has
-  expired, reopening or reloading the app goes through the Access login again. Until then,
-  requests to `/api` fail (Access redirects them to its login, which a script cannot
-  follow); reload the app to sign in again. The Access session duration of the
+  expired, reopening or reloading the app goes through the Access login again. An app that
+  stays open (or comes back from the background) notices that Access redirects `/api` to its
+  login, which a script cannot follow, and reloads itself into the Access login, which
+  returns to the app. It does so once in five minutes at most, so a reload that brings no
+  login cannot repeat; the banner's Reload button is left for that case. A plain outage
+  never reloads: the app keeps showing what it loaded. The Access session duration of the
   application sets how often that happens.
 - `/api/events` works through the tunnel: Cloudflare passes `text/event-stream` responses
   through unbuffered, and the server's 15-second keep-alive stays below Cloudflare's idle
