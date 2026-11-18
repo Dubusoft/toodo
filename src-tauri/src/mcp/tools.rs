@@ -3985,6 +3985,39 @@ mod tests {
     }
 
     #[test]
+    fn search_leaves_out_archived_tasks_and_tasks_of_archived_workspaces() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let live = create(&mut storage, workspace, "Avatar upload", vec![]).unwrap();
+        let archived = create(&mut storage, workspace, "Avatar crop", vec![]).unwrap();
+        storage
+            .add_related(live.id.into(), archived.id.into())
+            .unwrap();
+        storage.archive_task(archived.id.into()).unwrap();
+        let other = storage
+            .create_workspace(&NewWorkspace {
+                name: "Other".to_owned(),
+                description: None,
+                repository: None,
+            })
+            .unwrap();
+        create(&mut storage, other.id.into(), "Avatar resize", vec![]).unwrap();
+        storage.archive_workspace(other.id).unwrap();
+
+        let hits = search_tasks(
+            &storage,
+            SearchTasks {
+                query: "avatar".to_owned(),
+                workspace_id: None,
+                status: None,
+                limit: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(hits.iter().map(|hit| hit.id).collect::<Vec<_>>(), [live.id]);
+        assert!(hits[0].related.is_empty());
+    }
+
+    #[test]
     fn guidelines_round_trip_and_get_task_includes_them() {
         let (mut storage, workspace) = storage_with_workspace();
         let task = create(&mut storage, workspace, "Add login", vec![]).unwrap();
