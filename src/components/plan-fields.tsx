@@ -1,7 +1,12 @@
-import { compactSelectClass, inputClass } from "@/components/workspace-list";
+import { useEffect, useRef } from "react";
+import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { DateInput, type DateInputProps } from "@astryxdesign/core/DateInput";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextInput } from "@astryxdesign/core/TextInput";
 import type { Estimate, EstimateUnit } from "@/lib/bindings";
 import { type MissingPlanField, parseEstimateAmount } from "@/lib/plan";
-import { cn } from "@/lib/utils";
+
+const estimateUnits: EstimateUnit[] = ["hours", "days", "weeks", "months"];
 
 
 /**
@@ -29,19 +34,9 @@ export function AutopilotField({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label
-      className="flex w-fit items-center gap-1.5 text-xs text-muted-foreground max-md:min-h-11"
-      title="An executor may take up the task on its own once it is ready"
-    >
-      <input
-        type="checkbox"
-        className="size-3.5 accent-sky-600"
-        aria-label={`Autopilot${suffix}`}
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-      Autopilot
-    </label>
+    <span className="w-fit" title="An executor may take up the task on its own once it is ready">
+      <CheckboxInput size="sm" label="Autopilot" aria-label={`Autopilot${suffix}`} value={checked} onChange={onChange} />
+    </span>
   );
 }
 
@@ -59,55 +54,59 @@ export function PlanFields({
   autoFocus?: MissingPlanField;
 }) {
   const invalid = planEstimate(plan) === undefined;
+  // DateInput does not take autoFocus, so the due date is focused here, once, like the attribute.
+  const dueDate = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (autoFocus === "dueDate") dueDate.current?.focus();
+  }, []);
   return (
-    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-      <label className="flex items-center gap-1">
-        Estimate
-        <input
-          className={cn(inputClass, "w-20")}
+    <div className="flex flex-wrap items-end gap-2">
+      <span title="Optional: expected size, a number greater than 0">
+        <TextInput
+          size="sm"
+          width={80}
           inputMode="decimal"
           placeholder="Optional"
+          label="Estimate"
           aria-label={`Estimate${suffix}`}
-          aria-invalid={invalid}
-          autoFocus={autoFocus === "estimate"}
-          title="Optional: expected size, a number greater than 0"
+          status={invalid ? { type: "error" } : undefined}
+          statusVariant="tooltip"
+          hasAutoFocus={autoFocus === "estimate"}
           value={plan.estimate}
-          onChange={(e) => onChange({ ...plan, estimate: e.target.value })}
+          onChange={(estimate) => onChange({ ...plan, estimate })}
         />
-      </label>
-      <select
-        aria-label={`Estimate unit${suffix}`}
-        className={cn(compactSelectClass, "w-24")}
+      </span>
+      <Selector
+        size="sm"
+        width={96}
+        label={`Estimate unit${suffix}`}
+        isLabelHidden
+        options={estimateUnits}
         value={plan.estimateUnit}
-        onChange={(e) => onChange({ ...plan, estimateUnit: e.target.value as EstimateUnit })}
-      >
-        <option value="hours">hours</option>
-        <option value="days">days</option>
-        <option value="weeks">weeks</option>
-        <option value="months">months</option>
-      </select>
-      <label className="flex items-center gap-1">
-        Due
-        <input
-          type="date"
-          className={cn(inputClass, "w-40")}
-          aria-label={`Due date${suffix}`}
-          autoFocus={autoFocus === "dueDate"}
-          value={plan.dueDate}
-          onChange={(e) => onChange({ ...plan, dueDate: e.target.value })}
-        />
-      </label>
-      <label className="flex min-w-48 flex-1 items-center gap-1">
-        Labels
-        <input
-          className={inputClass}
+        onChange={(unit) => onChange({ ...plan, estimateUnit: unit as EstimateUnit })}
+      />
+      <DateInput
+        ref={dueDate}
+        size="sm"
+        width={160}
+        label="Due"
+        aria-label={`Due date${suffix}`}
+        hasClear
+        format="system_date"
+        // A due date is blank or `YYYY-MM-DD`, from the server or from this field.
+        value={(plan.dueDate || undefined) as DateInputProps["value"]}
+        onChange={(date) => onChange({ ...plan, dueDate: date ?? "" })}
+      />
+      <span className="min-w-48 flex-1" title="Optional: projects or goals, separated by commas, that reviews filter by">
+        <TextInput
+          size="sm"
           placeholder="Optional, comma-separated"
+          label="Labels"
           aria-label={`Labels${suffix}`}
-          title="Optional: projects or goals, separated by commas, that reviews filter by"
           value={plan.labels}
-          onChange={(e) => onChange({ ...plan, labels: e.target.value })}
+          onChange={(labels) => onChange({ ...plan, labels })}
         />
-      </label>
+      </span>
     </div>
   );
 }

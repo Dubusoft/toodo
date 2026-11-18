@@ -1,5 +1,8 @@
 import { useRef, useState, type KeyboardEvent } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
+
+/** The fields of a form that take typed or picked values, Astryx selectors included. */
+const fields = "input, textarea, select, [role=combobox]";
 
 /**
  * Closing of an inline form that may hold typed text: `request` closes a clean form at once
@@ -21,11 +24,11 @@ export function useDiscardGuard(dirty: boolean, close: () => void, busy = false)
   };
   const keep = (from: EventTarget | null) => {
     const field = editedField.current;
-    if (field?.isConnected && field.matches("input, textarea, select")) {
+    if (field?.isConnected && field.matches(fields)) {
       field.focus();
     } else {
       const form = from instanceof Element ? from.closest("form") : null;
-      form?.querySelector<HTMLElement>("textarea, input:not([type=checkbox]), select")?.focus();
+      form?.querySelector<HTMLElement>("textarea, input:not([type=checkbox]), select, [role=combobox]")?.focus();
     }
     setAsking(false);
   };
@@ -35,6 +38,8 @@ export function useDiscardGuard(dirty: boolean, close: () => void, busy = false)
   };
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key !== "Escape" || busy || event.defaultPrevented) return;
+    // Escape in an open selector closes its option list, not the form.
+    if (event.target instanceof Element && event.target.closest("[role=listbox], [aria-expanded=true]")) return;
     event.preventDefault();
     if (asking) keep(event.target);
     else request();
@@ -57,12 +62,15 @@ export function DiscardConfirm({
   return (
     <div role="group" aria-label={label} className="flex flex-wrap items-center gap-1 text-xs max-md:gap-2">
       <span className="mr-1">{question}</span>
-      <Button type="button" size="xs" variant="outline" autoFocus onClick={(event) => onKeep(event.currentTarget)}>
-        Keep editing
-      </Button>
-      <Button type="button" size="xs" variant="destructive" onClick={onDiscard}>
-        Discard changes
-      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant="secondary"
+        label="Keep editing"
+        autoFocus
+        onClick={(event) => onKeep(event.currentTarget)}
+      />
+      <Button type="button" size="sm" variant="destructive" label="Discard changes" onClick={onDiscard} />
     </div>
   );
 }

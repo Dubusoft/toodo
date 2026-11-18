@@ -1,7 +1,13 @@
-import { useEffect, useRef, useState } from "react";
-import { CalendarCheck, ChevronLeft, ChevronRight, Download } from "lucide-react";
+import { useState } from "react";
+import { ChevronLeft, ChevronRight, Download } from "lucide-react";
+import { Badge } from "@astryxdesign/core/Badge";
+import type { ISODateString } from "@astryxdesign/core/Calendar";
+import { DateInput } from "@astryxdesign/core/DateInput";
+import { DropdownMenu, type DropdownMenuOption } from "@astryxdesign/core/DropdownMenu";
+import { Selector } from "@astryxdesign/core/Selector";
+import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
 import { TaskTypeBadge } from "@/components/task-type-badge";
-import { Button } from "@/components/ui/button";
+import { Button, IconButton } from "@/components/button";
 import { EmptyState } from "@/components/task-list";
 import { MissingPlanMark, TaskLabels } from "@/components/task-common";
 import { TaskEditForm } from "@/components/task-edit-form";
@@ -62,7 +68,7 @@ import {
   type ReviewPeriod,
 } from "@/lib/review";
 import { type MissingPlanField, missingPlan } from "@/lib/plan";
-import { toneChip, toneFill, toneText } from "@/lib/status-styles";
+import { toneFill, toneText } from "@/lib/status-styles";
 import { When } from "@/components/when";
 import { activeSeconds, formatDate, formatFull, waitingSeconds, workSegments } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
@@ -76,7 +82,10 @@ const outcomeStyles: Record<ReviewOutcome, string> = {
   planned: toneText.neutral,
 };
 
-const notAdoptedChip = cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", toneChip.neutral);
+/** Selector values for the choices the review state keeps as `null`. */
+const liveReview = "live";
+const allWorkspaces = "all";
+const anyLabel = "any";
 
 const periodKinds: { kind: PeriodKind; label: string }[] = [
   { kind: "week", label: "Week" },
@@ -96,56 +105,21 @@ function download(name: string, contents: string, type: string) {
 }
 
 /** Report actions in one menu, so the controls fit a phone in two rows. */
-function ExportMenu({ disabled, children }: { disabled: boolean; children: (close: () => void) => React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => event.key === "Escape" && setOpen(false);
-    document.addEventListener("pointerdown", onPointer);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("pointerdown", onPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+function ExportMenu({ disabled, items }: { disabled: boolean; items: DropdownMenuOption[] }) {
   return (
-    <div ref={root} className="relative">
-      <Button size="sm" aria-haspopup="menu" aria-expanded={open} disabled={disabled} onClick={() => setOpen(!open)}>
-        <Download />
-        <span className="max-md:sr-only">Export</span>
-      </Button>
-      {open && (
-        <div
-          role="menu"
-          aria-label="Export review"
-          className="absolute right-0 z-10 mt-1 flex w-48 flex-col rounded-lg border bg-popover p-1 text-popover-foreground shadow-md"
-        >
-          {children(() => setOpen(false))}
-        </div>
+    <DropdownMenu
+      items={items}
+      alignment="end"
+      menuWidth={192}
+      renderTrigger={(trigger) => (
+        <Button {...trigger} size="sm" variant="primary" icon={<Download />} label="Export" isDisabled={disabled} />
       )}
-    </div>
+    />
   );
 }
 
 function plural(count: number, noun: string): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
-
-function MenuItem({ onSelect, children }: { onSelect: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onSelect}
-      className="rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted max-md:min-h-11"
-    >
-      {children}
-    </button>
-  );
 }
 
 /** The time zone reviewed periods are judged in, and a form to change it. */
@@ -172,16 +146,16 @@ function TimeZoneControl() {
       <span>
         Days are in {current}
         {configured === null && " (the server's time zone)"}.{" "}
-        <button
-          type="button"
-          className="text-primary underline underline-offset-2 hover:no-underline print:hidden"
+        <Button
+          size="sm"
+          variant="ghost"
+          label="Change time zone"
+          className="print:hidden"
           onClick={() => {
             setDraft(configured ?? current);
             setEditing(true);
           }}
-        >
-          Change time zone
-        </button>
+        />
       </span>
     );
   }
@@ -210,17 +184,11 @@ function TimeZoneControl() {
           <option key={zone} value={zone} />
         ))}
       </datalist>
-      <Button size="sm" type="submit" disabled={setTimeZone.isPending}>
-        Save
-      </Button>
+      <Button size="sm" variant="primary" type="submit" label="Save" isDisabled={setTimeZone.isPending} />
       {configured !== null && (
-        <Button size="sm" type="button" variant="outline" onClick={() => void save(null)}>
-          Use the server's
-        </Button>
+        <Button size="sm" variant="secondary" label="Use the server's" onClick={() => void save(null)} />
       )}
-      <Button size="sm" type="button" variant="ghost" onClick={() => setEditing(false)}>
-        Cancel
-      </Button>
+      <Button size="sm" variant="ghost" label="Cancel" onClick={() => setEditing(false)} />
       {error && (
         <span role="alert" className="w-full text-xs text-destructive">
           {error}
@@ -411,212 +379,147 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
 
       {(viewing || (snapshots.data?.length ?? 0) > 0) && (
         <div className="flex flex-wrap items-center gap-2 print:hidden">
-          <select
-            aria-label="Saved reviews"
-            className={cn(inputClass, "w-auto max-md:min-w-0 max-md:flex-1")}
-            value={snapshotId ?? ""}
-            onChange={(e) => openSnapshot(e.target.value === "" ? null : Number(e.target.value))}
-          >
-            <option value="">Live review</option>
-            {snapshots.data?.map((saved) => (
-              <option key={saved.id} value={saved.id}>
-                {saved.title} (saved {formatDate(saved.savedAt)})
-              </option>
-            ))}
-          </select>
+          <Selector
+            label="Saved reviews"
+            isLabelHidden
+            size="sm"
+            options={[
+              { value: liveReview, label: "Live review" },
+              ...(snapshots.data ?? []).map((saved) => ({
+                value: String(saved.id),
+                label: `${saved.title} (saved ${formatDate(saved.savedAt)})`,
+              })),
+            ]}
+            value={snapshotId === null ? liveReview : String(snapshotId)}
+            onChange={(value) => openSnapshot(value === liveReview ? null : Number(value))}
+          />
           {snapshotId !== null && (
             <>
-              <Button size="sm" variant="outline" onClick={() => openSnapshot(null)}>
-                Back to the live review
-              </Button>
+              <Button size="sm" variant="secondary" label="Back to the live review" onClick={() => openSnapshot(null)} />
               <Button
                 size="sm"
                 variant="ghost"
-                disabled={deleteSnapshot.isPending}
+                label="Delete saved review"
+                isDisabled={deleteSnapshot.isPending}
                 onClick={() => void removeSnapshot(snapshotId)}
-              >
-                Delete saved review
-              </Button>
+              />
             </>
           )}
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-2 print:hidden">
+      <div className="flex flex-wrap items-end gap-2 print:hidden">
         {!viewing && (
           <>
-            <div role="group" aria-label="Review period" className="flex rounded-md border p-0.5 max-md:w-full">
+            <ToggleButtonGroup
+              label="Review period"
+              size="sm"
+              value={period.kind}
+              onChange={(next) => typeof next === "string" && switchKind(next as PeriodKind)}
+            >
               {periodKinds.map(({ kind, label }) => (
-                <Button
-                  key={kind}
-                  size="sm"
-                  variant={period.kind === kind ? "default" : "ghost"}
-                  aria-pressed={period.kind === kind}
-                  onClick={() => switchKind(kind)}
-                >
-                  {label}
-                </Button>
+                <ToggleButton key={kind} value={kind} label={label} />
               ))}
-            </div>
+            </ToggleButtonGroup>
             {period.kind === "week" && (
-              <>
-                <label htmlFor="week-start" className="text-xs text-muted-foreground max-md:sr-only">
-                  Week starting
-                </label>
-                <input
-                  id="week-start"
-                  type="date"
-                  required
-                  className={cn(inputClass, "w-40 max-md:w-0 max-md:min-w-0 max-md:flex-1")}
-                  value={period.from}
-                  onChange={(e) => e.target.value && moveTo(weekStarting(e.target.value))}
-                />
-              </>
+              <DateInput
+                label="Week starting"
+                size="sm"
+                format="system_date"
+                value={period.from as ISODateString}
+                onChange={(value) => value && moveTo(weekStarting(value))}
+              />
             )}
             {period.kind === "custom" && (
               <>
-                <label htmlFor="review-from" className="text-xs text-muted-foreground max-md:sr-only">
-                  From
-                </label>
-                <input
-                  id="review-from"
-                  type="date"
-                  required
-                  max={period.to}
-                  className={cn(inputClass, "w-40")}
-                  value={period.from}
-                  onChange={(e) => e.target.value && e.target.value <= period.to && moveTo({ ...period, from: e.target.value })}
+                <DateInput
+                  label="From"
+                  size="sm"
+                  format="system_date"
+                  max={period.to as ISODateString}
+                  value={period.from as ISODateString}
+                  onChange={(value) => value && value <= period.to && moveTo({ ...period, from: value })}
                 />
-                <label htmlFor="review-to" className="text-xs text-muted-foreground max-md:sr-only">
-                  To
-                </label>
-                <input
-                  id="review-to"
-                  type="date"
-                  required
-                  min={period.from}
-                  className={cn(inputClass, "w-40")}
-                  value={period.to}
-                  onChange={(e) => e.target.value && e.target.value >= period.from && moveTo({ ...period, to: e.target.value })}
+                <DateInput
+                  label="To"
+                  size="sm"
+                  format="system_date"
+                  min={period.from as ISODateString}
+                  value={period.to as ISODateString}
+                  onChange={(value) => value && value >= period.from && moveTo({ ...period, to: value })}
                 />
               </>
             )}
             {period.kind !== "week" && period.kind !== "custom" && (
               <span className="px-1 text-sm font-medium">{periodLabel(period)}</span>
             )}
-            <Button
-              size="icon-sm"
-              variant="outline"
-              aria-label={`Previous ${noun}`}
-              title={`Previous ${noun}`}
+            <IconButton
+              size="sm"
+              variant="secondary"
+              icon={<ChevronLeft />}
+              label={`Previous ${noun}`}
+              tooltip={`Previous ${noun}`}
               onClick={() => moveTo(shiftPeriod(period, -1))}
-            >
-              <ChevronLeft />
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="outline"
-              aria-label={`Next ${noun}`}
-              title={`Next ${noun}`}
+            />
+            <IconButton
+              size="sm"
+              variant="secondary"
+              icon={<ChevronRight />}
+              label={`Next ${noun}`}
+              tooltip={`Next ${noun}`}
               onClick={() => moveTo(shiftPeriod(period, 1))}
-            >
-              <ChevronRight />
-            </Button>
+            />
             {period.kind !== "custom" && (
               <Button
                 size="sm"
                 variant="ghost"
+                label={`This ${noun}`}
                 onClick={() => moveTo(periodContaining(period.kind, formatDate(Date.now() / 1000)))}
-              >
-                <CalendarCheck className="md:hidden" aria-hidden />
-                <span className="max-md:sr-only">This {noun}</span>
-              </Button>
+              />
             )}
           </>
         )}
         <div className="ml-auto">
-          <ExportMenu disabled={!entries}>
-            {(close) => (
-              <>
-                {!viewing && (
-                  <MenuItem
-                    onSelect={() => {
-                      close();
-                      void saveAsSnapshot();
-                    }}
-                  >
-                    Save as snapshot
-                  </MenuItem>
-                )}
-                <MenuItem
-                  onSelect={() => {
-                    close();
-                    void copyMarkdown();
-                  }}
-                >
-                  Copy as Markdown
-                </MenuItem>
-                <MenuItem
-                  onSelect={() => {
-                    close();
-                    void saveAs("markdown");
-                  }}
-                >
-                  Save as Markdown
-                </MenuItem>
-                <MenuItem
-                  onSelect={() => {
-                    close();
-                    void saveAs("csv");
-                  }}
-                >
-                  Save as CSV
-                </MenuItem>
-                <MenuItem
-                  onSelect={() => {
-                    close();
-                    window.print();
-                  }}
-                >
-                  Print or save as PDF
-                </MenuItem>
-              </>
-            )}
-          </ExportMenu>
+          <ExportMenu
+            disabled={!entries}
+            items={[
+              ...(viewing ? [] : [{ label: "Save as snapshot", onClick: () => void saveAsSnapshot() }]),
+              { label: "Copy as Markdown", onClick: () => void copyMarkdown() },
+              { label: "Save as Markdown", onClick: () => void saveAs("markdown") },
+              { label: "Save as CSV", onClick: () => void saveAs("csv") },
+              { label: "Print or save as PDF", onClick: () => window.print() },
+            ]}
+          />
         </div>
       </div>
 
       <div role="group" aria-label="Review filters" className="flex flex-wrap items-center gap-2 print:hidden">
-        <select
-          aria-label="Workspace"
-          className={cn(inputClass, "w-auto max-md:min-w-0 max-md:flex-1")}
-          value={filter.workspaceId ?? ""}
-          onChange={(e) => setFilter({ ...filter, workspaceId: e.target.value === "" ? null : Number(e.target.value) })}
-        >
-          <option value="">All workspaces</option>
-          {workspaceList.map((workspace) => (
-            <option key={workspace.id} value={workspace.id}>
-              {workspace.name}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="Label"
-          className={cn(inputClass, "w-auto max-md:min-w-0 max-md:flex-1")}
-          value={filter.label ?? ""}
-          onChange={(e) => setFilter({ ...filter, label: e.target.value === "" ? null : e.target.value })}
-        >
-          <option value="">{labels.length === 0 ? "No labels in this period" : "Any label"}</option>
-          {labels.map((label) => (
-            <option key={label} value={label}>
-              {label}
-            </option>
-          ))}
-        </select>
+        <Selector
+          label="Workspace"
+          isLabelHidden
+          size="sm"
+          options={[
+            { value: allWorkspaces, label: "All workspaces" },
+            ...workspaceList.map((workspace) => ({ value: String(workspace.id), label: workspace.name })),
+          ]}
+          value={filter.workspaceId === null ? allWorkspaces : String(filter.workspaceId)}
+          onChange={(value) => setFilter({ ...filter, workspaceId: value === allWorkspaces ? null : Number(value) })}
+        />
+        <Selector
+          label="Label"
+          isLabelHidden
+          size="sm"
+          options={[
+            { value: anyLabel, label: labels.length === 0 ? "No labels in this period" : "Any label" },
+            ...labels.map((label) => ({ value: `label:${label}`, label })),
+          ]}
+          value={filter.label === null ? anyLabel : `label:${filter.label}`}
+          onChange={(value) =>
+            setFilter({ ...filter, label: value === anyLabel ? null : value.slice("label:".length) })
+          }
+        />
         {(filter.workspaceId !== null || filter.label !== null) && (
-          <Button size="sm" variant="ghost" onClick={() => setFilter(noReviewFilter)}>
-            Clear filters
-          </Button>
+          <Button size="sm" variant="ghost" label="Clear filters" onClick={() => setFilter(noReviewFilter)} />
         )}
       </div>
 
@@ -656,9 +559,12 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           action={
             viewing ? undefined : (
             <div className="flex flex-wrap justify-center gap-2 print:hidden">
-              <Button size="sm" variant="outline" onClick={() => moveTo(shiftPeriod(period, -1))}>
-                Show the {noun} before
-              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                label={`Show the ${noun} before`}
+                onClick={() => moveTo(shiftPeriod(period, -1))}
+              />
             </div>
             )
           }
@@ -691,13 +597,9 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                     >
                       {task.title}
                     </button>
-                    {task.resolution === "not_adopted" && (
-                      <span className={notAdoptedChip}>Not adopted</span>
-                    )}
-                    {archived && <span className={notAdoptedChip}>Archived</span>}
-                    {task.resolution === "completed" && (
-                      <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-medium", toneChip.success)}>Completed</span>
-                    )}
+                    {task.resolution === "not_adopted" && <Badge className="shrink-0" label="Not adopted" />}
+                    {archived && <Badge className="shrink-0" label="Archived" />}
+                    {task.resolution === "completed" && <Badge className="shrink-0" variant="green" label="Completed" />}
                     {pullRequestRef(task) && <PullRequestLink url={pullRequestRef(task)!} stats={pullRequest} />}
                     <span className="shrink-0 text-xs text-muted-foreground max-md:hidden print:inline">
                       {names.get(task.workspaceId) ?? `Workspace ${task.workspaceId}`} &middot; <When at={at} />
@@ -856,14 +758,7 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
               <li key={task.id} className="flex flex-col gap-1 px-2 py-1.5">
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
                   <span className="truncate font-medium">{task.title}</span>
-                  <span
-                    className={cn(
-                      "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
-                      adopted ? toneChip.success : toneChip.neutral,
-                    )}
-                  >
-                    {adopted ? "Adopted" : "Not adopted"}
-                  </span>
+                  <Badge className="shrink-0" variant={adopted ? "green" : "neutral"} label={adopted ? "Adopted" : "Not adopted"} />
                   <When className="ml-auto shrink-0 text-xs text-muted-foreground" at={at} />
                 </div>
                 <p aria-label={`Research conclusion of #${task.id}`} className="whitespace-pre-line break-words-keep text-xs">

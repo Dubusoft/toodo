@@ -1,6 +1,13 @@
+/*
+ * Cascade layers: the reset lowest, Tailwind's preflight above it, Astryx components and theme
+ * in the middle, and Tailwind utilities last, so a class on `className` still wins over an
+ * Astryx component's own style. The order holds only because this stylesheet loads first.
+ */
+@layer reset, theme, base, astryx-base, astryx-theme, components, utilities;
+
 @import "tailwindcss";
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
+@import "@astryxdesign/core/reset.css";
+@import "@astryxdesign/core/astryx.css";
 @import "@fontsource-variable/geist";
 
 /* Paper is light: printing uses the light theme whatever the screen shows. */
@@ -14,7 +21,7 @@
 
 @theme inline {
     --font-heading: var(--font-sans);
-    --font-sans: 'Geist Variable', sans-serif;
+    --font-sans: var(--font-family-body);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -55,86 +62,61 @@
     --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/*
+ * The app's color names point at Astryx tokens, so every Tailwind class (`bg-background`,
+ * `text-muted-foreground`, `bg-primary`) follows the Astryx theme. The tokens switch between
+ * light and dark with `color-scheme` (`light-dark()`), which `src/lib/theme.ts` and the
+ * Astryx `Theme` set from the same preference.
+ */
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
+    --background: var(--color-background-body);
+    --foreground: var(--color-text-primary);
+    --card: var(--color-background-card);
+    --card-foreground: var(--color-text-primary);
+    --popover: var(--color-background-popover);
+    --popover-foreground: var(--color-text-primary);
+    --primary: var(--color-accent);
+    --primary-foreground: var(--color-on-accent);
+    --secondary: var(--color-neutral);
+    --secondary-foreground: var(--color-text-primary);
+    --muted: var(--color-background-muted);
+    --muted-foreground: var(--color-text-secondary);
+    --accent: var(--color-overlay-hover);
+    --accent-foreground: var(--color-text-primary);
+    --destructive: var(--color-text-error);
+    --border: var(--color-border);
     /* Field edges: at least 3:1 against the background and cards. */
-    --input: oklch(0.64 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
-    --dependency-line: oklch(0.708 0 0);
-}
-
-@media not print {
-.dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 40%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
-    --dependency-line: oklch(0.556 0 0);
-}
+    --input: var(--color-border-emphasized);
+    --ring: var(--focus-outline-color);
+    --chart-1: var(--color-data-categorical-blue);
+    --chart-2: var(--color-data-categorical-teal);
+    --chart-3: var(--color-data-categorical-orange);
+    --chart-4: var(--color-data-categorical-purple);
+    --chart-5: var(--color-data-categorical-pink);
+    --radius: var(--radius-element);
+    --sidebar: var(--color-background-surface);
+    --sidebar-foreground: var(--color-text-primary);
+    --sidebar-primary: var(--color-accent);
+    --sidebar-primary-foreground: var(--color-on-accent);
+    --sidebar-accent: var(--color-overlay-hover);
+    --sidebar-accent-foreground: var(--color-text-primary);
+    --sidebar-border: var(--color-border);
+    --sidebar-ring: var(--focus-outline-color);
+    --dependency-line: var(--color-border-emphasized);
 }
 
 @layer base {
   * {
     @apply border-border outline-ring/50;
     }
+  /*
+   * The platform's own font smoothing, which the Astryx reset turns off on macOS; without it
+   * Hangul strokes render thin.
+   */
   body {
     @apply bg-background text-foreground;
+    -webkit-font-smoothing: auto;
+    -moz-osx-font-smoothing: auto;
     }
   html {
     @apply font-sans;
@@ -206,6 +188,11 @@
 @media print {
   @page {
     margin: 1.5cm;
+  }
+  /* The colors follow `color-scheme`, which the theme sets inline on `<html>` and on its wrapper. */
+  :root,
+  [data-astryx-theme] {
+    color-scheme: light !important;
   }
   main section > ul > li,
   main section[aria-label="Summary"] {

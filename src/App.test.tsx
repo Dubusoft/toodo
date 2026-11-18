@@ -207,6 +207,40 @@ async function openDetails(title: string) {
   return screen.findByRole("complementary", { name: "Task details" });
 }
 
+/** Whether a button is disabled; Astryx buttons use aria-disabled instead of the native attribute. */
+function isDisabled(element: HTMLElement) {
+  return element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true";
+}
+
+/** The option list of an Astryx Selector, opened first if it is closed. */
+function openOptions(combobox: HTMLElement) {
+  if (combobox.getAttribute("aria-expanded") !== "true") fireEvent.click(combobox);
+  return document.getElementById(combobox.getAttribute("aria-controls")!)!;
+}
+
+/** The option labels of an Astryx Selector, which is closed again afterwards. */
+function optionNames(combobox: HTMLElement) {
+  const names = within(openOptions(combobox))
+    .getAllByRole("option")
+    .map((option) => option.textContent);
+  fireEvent.click(combobox);
+  return names;
+}
+
+/** Picks the option named `name` of an Astryx Selector. */
+function chooseOption(combobox: HTMLElement, name: string | RegExp) {
+  fireEvent.click(within(openOptions(combobox)).getByRole("option", { name }));
+}
+
+/** The app's one alert; Astryx keeps an assertive live region of its own in the page, left out here. */
+function findAlert() {
+  return waitFor(() => {
+    const alerts = screen.getAllByRole("alert").filter((alert) => !alert.hasAttribute("data-astryx-live-region"));
+    expect(alerts).toHaveLength(1);
+    return alerts[0];
+  });
+}
+
 /** Picks `name` from the "More" menu of task `id`, in a row or, given `scope`, in the details sheet. */
 async function chooseAction(id: number, name: string, scope: HTMLElement = document.body) {
   fireEvent.click(await within(scope).findByRole("button", { name: `More actions for #${id}` }));
@@ -217,6 +251,17 @@ describe("App", () => {
   // The timeline, Markdown, the task details, and the review are lazy-loaded; transform them
   // once here so no test pays for that within its timeout.
   beforeAll(async () => {
+    // jsdom has no modal dialogs; Astryx Dialog opens its <dialog> with showModal.
+    HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
+      this.setAttribute("open", "");
+    };
+    HTMLDialogElement.prototype.close ??= function (this: HTMLDialogElement) {
+      this.removeAttribute("open");
+    };
+    // Nor the browser style that hides a closed dialog, such as the settings while they are closed.
+    const style = document.createElement("style");
+    style.textContent = "dialog:not([open]) { display: none; }";
+    document.head.append(style);
     await Promise.all([
       import("@/components/task-graph"),
       import("@/components/markdown"),
@@ -410,7 +455,7 @@ describe("App", () => {
       title: null,
     });
 
-    fireEvent.change(await screen.findByRole("combobox", { name: "Saved reviews" }), { target: { value: "7" } });
+    chooseOption(await screen.findByRole("combobox", { name: "Saved reviews" }), /^Week review 2026-10-12 to 2026-10-18 \(saved/);
     expect(await screen.findByRole("heading", { name: "Week review 2026-10-12 to 2026-10-18" })).toBeInTheDocument();
     expect(mocked.getReviewSnapshot).toHaveBeenCalledWith(7);
     expect(screen.getByText(/with days in Asia\/Seoul; it stays as it was when saved/)).toBeInTheDocument();
@@ -441,15 +486,15 @@ describe("App", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^herdr/ }));
     const details = await openDetails("Build UI");
     const add = await within(details).findByRole("combobox", { name: "Add dependency to #3" });
-    const groups = within(add).getAllByRole("group");
-    expect(groups.map((group) => group.getAttribute("label"))).toEqual(["herdr", "toodo"]);
+    const groups = within(openOptions(add)).getAllByRole("group");
+    expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(["herdr", "toodo"]);
     expect(within(groups[1]).getByRole("option", { name: "#1 Add low level API" })).toBeInTheDocument();
 
     mocked.listTasks.mockResolvedValue({
       status: "ok",
       data: [api, { ...ui, status: "planned", dependsOn: [1] }, docs],
     });
-    fireEvent.change(add, { target: { value: "1" } });
+    chooseOption(add, "#1 Add low level API");
     const dependencies = await screen.findByRole("group", { name: "Dependencies of #3" });
     await waitFor(() => expect(within(dependencies).getByText("toodo #1")).toBeInTheDocument());
     expect(mocked.addDependency).toHaveBeenCalledWith(3, 1, false);
@@ -540,15 +585,15 @@ describe("App", () => {
     expect(within(summary).queryByRole("list", { name: "Completed per month" })).not.toBeInTheDocument();
     expect(within(workedOn).getByRole("list", { name: "Labels of #3" })).toHaveTextContent("infra");
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Workspace" }), { target: { value: "2" } });
+    chooseOption(screen.getByRole("combobox", { name: "Workspace" }), "herdr");
     expect(screen.queryByRole("region", { name: "Completed" })).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Worked on" })).toBeInTheDocument();
     expect(screen.getByText(/to 2026-10-18 in herdr\./)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Label" }), { target: { value: "infra" } });
+    chooseOption(screen.getByRole("combobox", { name: "Label" }), "infra");
     expect(screen.queryByRole("region", { name: "Completed" })).not.toBeInTheDocument();
     expect(screen.getByText(/across all workspaces, labelled infra\./)).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: "Workspace" }), { target: { value: "1" } });
+    chooseOption(screen.getByRole("combobox", { name: "Workspace" }), "toodo");
     expect(screen.getByText("No recorded activity in this week matches the filters.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
     expect(screen.getByRole("region", { name: "Completed" })).toBeInTheDocument();
@@ -645,25 +690,25 @@ describe("App", () => {
     fireEvent.click(within(timeline).getByRole("button", { name: "Month" }));
     expect(within(timeline).getByRole("button", { name: "Month" })).toHaveAttribute("aria-pressed", "true");
     const period = within(timeline).getByRole("combobox", { name: "Timeline period" });
-    expect(within(period).getAllByRole("option").map((option) => option.textContent)).toEqual([
+    expect(optionNames(period)).toEqual([
       "All time",
       "2026",
       "2025",
     ]);
-    fireEvent.change(period, { target: { value: "2025" } });
+    chooseOption(period, "2025");
     expect(await within(timeline).findByText("Fix login")).toBeInTheDocument();
     expect(within(timeline).queryByText("Add UI")).not.toBeInTheDocument();
     expect(within(unplaced).getByText("Write docs")).toBeInTheDocument();
-    fireEvent.change(period, { target: { value: "all" } });
+    chooseOption(period, "All time");
 
     const filter = screen.getByRole("combobox", { name: "Timeline workspace" });
-    expect(within(filter).getAllByRole("option").map((option) => option.textContent)).toEqual([
+    expect(optionNames(filter)).toEqual([
       "All workspaces",
       "herdr",
       "toodo",
     ]);
     expect(within(timeline).getByText("Add storage").closest("[data-dimmed]")).toBeNull();
-    fireEvent.change(filter, { target: { value: "2" } });
+    chooseOption(filter, "herdr");
     expect(await within(timeline).findByText("Add herdr API")).toBeInTheDocument();
     expect(within(timeline).queryByText("Add UI")).not.toBeInTheDocument();
     expect(within(timeline).queryByText("Write docs")).not.toBeInTheDocument();
@@ -709,7 +754,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     expect(await within(timeline).findByText("Add storage")).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: "Type filter" }), { target: { value: "fix" } });
+    chooseOption(screen.getByRole("combobox", { name: "Type filter" }), "fix");
     expect(await within(timeline).findByText("Fix ssh")).toBeInTheDocument();
     expect(within(timeline).getByText("Fix login")).toBeInTheDocument();
     expect(within(timeline).queryByText("Add storage")).not.toBeInTheDocument();
@@ -937,7 +982,9 @@ describe("App", () => {
     const search = within(palette).getByRole("combobox", { name: "Search actions and tasks" });
     expect(search).toHaveFocus();
     fireEvent.change(search, { target: { value: "#2" } });
-    expect(within(palette).getByRole("option", { selected: true })).toHaveTextContent("#2 Ship pane events");
+    // The first match is highlighted, so Enter runs it.
+    const highlighted = (field: HTMLElement) => document.getElementById(field.getAttribute("aria-activedescendant") ?? "");
+    await waitFor(() => expect(highlighted(search)).toHaveTextContent("#2 Ship pane events"));
     fireEvent.keyDown(search, { key: "Enter" });
     expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "herdr" })).toBeInTheDocument();
@@ -947,6 +994,7 @@ describe("App", () => {
     fireEvent.keyDown(document.body, { key: "k", metaKey: true });
     const again = screen.getByRole("combobox", { name: "Search actions and tasks" });
     fireEvent.change(again, { target: { value: "show review" } });
+    await waitFor(() => expect(highlighted(again)).toHaveTextContent("Show the review"));
     fireEvent.keyDown(again, { key: "Enter" });
     expect(screen.getByRole("button", { name: "Review" })).toHaveAttribute("aria-pressed", "true");
 
@@ -1036,7 +1084,7 @@ describe("App", () => {
     });
     renderApp();
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("database is locked");
+    expect(await findAlert()).toHaveTextContent("database is locked");
   });
 
   it("starts on All workspaces and keeps the timeline scale and task drafts while navigating", async () => {
@@ -1051,14 +1099,14 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
     fireEvent.focusIn(await screen.findByLabelText("Task title"));
     fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Half-written task" } });
-    fireEvent.change(screen.getByLabelText("Task type"), { target: { value: "fix" } });
+    chooseOption(screen.getByRole("combobox", { name: "Task type" }), "fix");
     fireEvent.click(screen.getByRole("button", { name: /^herdr/ }));
     expect(await screen.findByRole("heading", { name: "herdr" })).toBeInTheDocument();
     expect(screen.getByLabelText("Task title")).toHaveValue("");
     fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
     expect(await screen.findByLabelText("Task title")).toHaveValue("Half-written task");
     fireEvent.focusIn(screen.getByLabelText("Task title"));
-    expect(screen.getByLabelText("Task type")).toHaveValue("fix");
+    expect(screen.getByRole("combobox", { name: "Task type" })).toHaveTextContent("fix");
 
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     expect(
@@ -1090,7 +1138,7 @@ describe("App", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Remove toodo" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm remove toodo" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("database is locked");
+    expect(await findAlert()).toHaveTextContent("database is locked");
     expect(screen.getByRole("region", { name: "Workspaces" })).toHaveTextContent("toodo");
 
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [herdr] });
@@ -1110,14 +1158,14 @@ describe("App", () => {
 
     await screen.findByText("No tasks in this workspace yet.");
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(5, 1, "Write docs")] });
-    expect(screen.queryByLabelText("Task type")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Task type" })).not.toBeInTheDocument();
     fireEvent.focusIn(screen.getByLabelText("Task title"));
-    fireEvent.change(screen.getByLabelText("Task type"), { target: { value: "docs" } });
+    chooseOption(screen.getByRole("combobox", { name: "Task type" }), "docs");
     fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Write docs" } });
     fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "x" } });
-    expect(screen.getByRole("button", { name: "Add task" })).toBeDisabled();
+    expect(isDisabled(screen.getByRole("button", { name: "Add task" }))).toBe(true);
     fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "2.5" } });
-    fireEvent.change(screen.getByLabelText("Estimate unit"), { target: { value: "weeks" } });
+    chooseOption(screen.getByRole("combobox", { name: "Estimate unit" }), "weeks");
     fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2026-11-01" } });
     fireEvent.change(screen.getByLabelText("Labels"), { target: { value: " q4, docs ,, q4" } });
     fireEvent.click(screen.getByLabelText("Autopilot"));
@@ -1187,9 +1235,9 @@ describe("App", () => {
     fireEvent.click(add);
     fireEvent.change(within(form).getByLabelText("Criterion 2 text"), { target: { value: "Tests pass" } });
     expect(within(form).queryByLabelText("Criterion 2 target")).not.toBeInTheDocument();
-    fireEvent.change(within(form).getByLabelText("Criterion 2 kind"), { target: { value: "url" } });
+    chooseOption(within(form).getByRole("combobox", { name: "Criterion 2 kind" }), "URL responds");
     // A URL criterion cannot be added without an http(s) URL.
-    expect(within(form).getByRole("button", { name: "Add task" })).toBeDisabled();
+    expect(isDisabled(within(form).getByRole("button", { name: "Add task" }))).toBe(true);
     fireEvent.change(within(form).getByLabelText("Criterion 2 target"), { target: { value: "https://example.com/health" } });
     // A row left blank is not sent.
     fireEvent.click(add);
@@ -1256,10 +1304,10 @@ describe("App", () => {
     await renderWorkspace();
 
     const start = await screen.findByRole("button", { name: "Start #1" });
-    await waitFor(() => expect(start).toBeEnabled());
+    await waitFor(() => expect(isDisabled(start)).toBe(false));
     fireEvent.click(start);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("worktree root is not set for machine local");
+    expect(await findAlert()).toHaveTextContent("worktree root is not set for machine local");
     expect(within(row("Add login")).getByText("Ready")).toBeInTheDocument();
   });
 
@@ -1385,8 +1433,13 @@ describe("App", () => {
     renderApp();
     fireEvent.click(await screen.findByRole("button", { name: /^Settings/ }));
     const general = within(screen.getByRole("dialog", { name: "Settings" })).getByRole("region", { name: "General" });
-    expect(await within(general).findByRole("status")).toHaveTextContent(
-      "v1.3.0 is available on the latest channel. Update the server with toodo update.",
+    // Buttons carry live regions of their own, so the update notice is the status with text.
+    await waitFor(() =>
+      expect(within(general).getAllByRole("status").filter((status) => status.textContent !== "")).toEqual([
+        expect.objectContaining({
+          textContent: "v1.3.0 is available on the latest channel. Update the server with toodo update.",
+        }),
+      ]),
     );
   });
 
@@ -1408,9 +1461,9 @@ describe("App", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Complete #1" }));
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("is not merged yet");
+    expect(await findAlert()).toHaveTextContent("is not merged yet");
     expect(within(row("Add login")).getByText("Awaiting completion")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Complete #1" })).toBeEnabled();
+    expect(isDisabled(screen.getByRole("button", { name: "Complete #1" }))).toBe(false);
   });
 
   it("checks a manual criterion with evidence and unchecks it", async () => {
@@ -1498,7 +1551,7 @@ describe("App", () => {
     const tasks = await taskList();
     expect(within(row("Add search")).getByText("Awaiting completion")).toBeInTheDocument();
     const complete = within(tasks).getByRole("button", { name: "Complete #1" });
-    expect(complete).toBeEnabled();
+    expect(isDisabled(complete)).toBe(false);
     expect(complete).toHaveClass("bg-emerald-100");
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [done] });
     fireEvent.click(complete);
@@ -1518,7 +1571,7 @@ describe("App", () => {
     const details = await openDetails("Add login");
     await chooseAction(1, "Add completion note to #1", details);
     const save = within(details).getByRole("button", { name: "Save note" });
-    expect(save).toBeDisabled();
+    expect(isDisabled(save)).toBe(true);
 
     const noted = { ...done, completionNote: "Cut sign-in time in half" };
     mocked.setCompletionNote.mockResolvedValue({ status: "ok", data: noted });
@@ -1609,7 +1662,7 @@ describe("App", () => {
 
     await chooseAction(1, "Conclude #1 without completing");
     const conclude = screen.getByRole("button", { name: "Conclude as not adopted" });
-    expect(conclude).toBeDisabled();
+    expect(isDisabled(conclude)).toBe(true);
 
     const concluded: Task = {
       ...research,
@@ -1629,7 +1682,7 @@ describe("App", () => {
     expect(mocked.concludeTask).toHaveBeenCalledWith(1, "Twice as slow as the current cache", "not_adopted", null);
     expect(within(row("Try a new cache")).getByText("Not adopted")).toBeInTheDocument();
     expect(screen.getByRole("note", { name: "Blocked prerequisites of #2" })).toHaveTextContent("#1 not adopted");
-    expect(screen.getByRole("button", { name: "Start #2" })).toBeDisabled();
+    expect(isDisabled(screen.getByRole("button", { name: "Start #2" }))).toBe(true);
     const details = await openDetails("Try a new cache");
     expect(within(details).getByLabelText("Completion note of #1")).toHaveTextContent(
       "Twice as slow as the current cache",
@@ -1670,7 +1723,7 @@ describe("App", () => {
     const details = await openDetails("Add login");
     await chooseAction(1, "Reopen #1", details);
     const reopen = within(details).getByRole("button", { name: "Reopen" });
-    expect(reopen).toBeDisabled();
+    expect(isDisabled(reopen)).toBe(true);
 
     const reopened: Task = {
       ...done,
@@ -1700,12 +1753,12 @@ describe("App", () => {
     const details = await openDetails("Add login");
     await chooseAction(1, "Change outcome of #1", details);
     const outcome = within(details).getByRole("combobox", { name: "New outcome of #1" });
-    expect(within(outcome).queryByRole("option", { name: "Merged" })).not.toBeInTheDocument();
+    expect(within(openOptions(outcome)).queryByRole("option", { name: "Merged" })).not.toBeInTheDocument();
 
     const corrected: Task = { ...done, resolution: "not_adopted", completionNote: "Reverted the next day" };
     mocked.setTaskOutcome.mockResolvedValue({ status: "ok", data: corrected });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [corrected] });
-    fireEvent.change(outcome, { target: { value: "not_adopted" } });
+    chooseOption(outcome, /^Not adopted/);
     fireEvent.change(within(details).getByRole("textbox", { name: "Outcome note of #1" }), {
       target: { value: "Reverted the next day" },
     });
@@ -1729,7 +1782,7 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Complete #2 as shipped by another task" }));
     const shipper = screen.getByRole("combobox", { name: "Task that shipped #2" });
     // Only work that shipped can be named.
-    expect(within(shipper).queryByRole("option", { name: "#3 Add logout" })).not.toBeInTheDocument();
+    expect(within(openOptions(shipper)).queryByRole("option", { name: "#3 Add logout" })).not.toBeInTheDocument();
 
     const done: Task = {
       ...extra,
@@ -1740,7 +1793,7 @@ describe("App", () => {
     };
     mocked.concludeTask.mockResolvedValue({ status: "ok", data: done });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [batch, done, planned] });
-    fireEvent.change(shipper, { target: { value: "1" } });
+    chooseOption(shipper, "#1 Add login");
     fireEvent.change(screen.getByRole("textbox", { name: "Shipped note of #2" }), { target: { value: "Fixed in #1" } });
     fireEvent.click(screen.getByRole("button", { name: "Complete as shipped" }));
 
@@ -1760,17 +1813,17 @@ describe("App", () => {
 
     const details = await openDetails("Add UI");
     const add = within(details).getByRole("combobox", { name: "Add dependency to #2" });
-    expect(within(add).getByRole("option", { name: "#1 Add storage" })).toBeInTheDocument();
-    expect(within(add).queryByRole("option", { name: "#2 Add UI" })).not.toBeInTheDocument();
+    expect(within(openOptions(add)).getByRole("option", { name: "#1 Add storage" })).toBeInTheDocument();
+    expect(within(openOptions(add)).queryByRole("option", { name: "#2 Add UI" })).not.toBeInTheDocument();
     mocked.listTasks.mockResolvedValue({
       status: "ok",
       data: [storage, { ...ui, status: "planned", dependsOn: [1] }],
     });
-    fireEvent.change(add, { target: { value: "1" } });
+    chooseOption(add, "#1 Add storage");
 
     const remove = await within(details).findByRole("button", { name: "Remove dependency #1 from #2" });
     expect(mocked.addDependency).toHaveBeenCalledWith(2, 1, false);
-    expect(within(details).getByRole("button", { name: "Start #2" })).toBeDisabled();
+    expect(isDisabled(within(details).getByRole("button", { name: "Start #2" }))).toBe(true);
     mocked.removeDependency.mockResolvedValue({ status: "ok", data: null });
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [storage, ui] });
     fireEvent.click(remove);
@@ -1800,12 +1853,12 @@ describe("App", () => {
 
     const details = await openDetails("Add storage");
     const add = within(details).getByRole("combobox", { name: "Add dependency to #1" });
-    expect(within(add).queryByRole("option", { name: "#2 Add UI" })).not.toBeInTheDocument();
-    expect(within(add).queryByRole("option", { name: "#3 Add docs" })).not.toBeInTheDocument();
+    expect(within(openOptions(add)).queryByRole("option", { name: "#2 Add UI" })).not.toBeInTheDocument();
+    expect(within(openOptions(add)).queryByRole("option", { name: "#3 Add docs" })).not.toBeInTheDocument();
     // The server checks the whole DAG, also edges the app has not loaded yet.
-    fireEvent.change(add, { target: { value: "4" } });
+    chooseOption(add, "#4 Add search");
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("would create a cycle");
+    expect(await findAlert()).toHaveTextContent("would create a cycle");
     expect(mocked.addDependency).toHaveBeenCalledWith(1, 4, false);
     expect(screen.queryByRole("combobox", { name: "Add dependency to #2" })).not.toBeInTheDocument();
   });
@@ -1825,7 +1878,7 @@ describe("App", () => {
 
     await chooseAction(1, "Edit #1");
     const form = screen.getByRole("form", { name: "Edit task #1" });
-    fireEvent.change(within(form).getByLabelText("Type of #1"), { target: { value: "fix" } });
+    chooseOption(within(form).getByRole("combobox", { name: "Type of #1" }), "fix");
     fireEvent.change(within(form).getByLabelText("Title of #1"), { target: { value: "  Add sign-in " } });
     fireEvent.change(within(form).getByLabelText("Description of #1"), { target: { value: " new " } });
     expect(within(form).getByLabelText("Estimate of #1")).toHaveValue("3");
@@ -1930,7 +1983,7 @@ describe("App", () => {
     });
     fireEvent.click(within(form).getByRole("button", { name: "Add criterion to #1" }));
     fireEvent.change(within(form).getByLabelText("Criterion 3 text of #1"), { target: { value: "Search answers" } });
-    fireEvent.change(within(form).getByLabelText("Criterion 3 kind of #1"), { target: { value: "url" } });
+    chooseOption(within(form).getByRole("combobox", { name: "Criterion 3 kind of #1" }), "URL responds");
     fireEvent.change(within(form).getByLabelText("Criterion 3 target of #1"), {
       target: { value: "https://example.com/search" },
     });
@@ -2099,13 +2152,13 @@ describe("App", () => {
     expect(within(row("Add login")).queryByText(/Steps/)).not.toBeInTheDocument();
     await chooseAction(1, "Edit #1");
     const form = screen.getByRole("form", { name: "Edit task #1" });
-    fireEvent.click(within(form).getByRole("button", { name: "Preview" }));
+    fireEvent.click(within(form).getByRole("radio", { name: "Preview" }));
 
     const preview = within(form).getByRole("region", { name: "Preview of Description of #1" });
     expect(await within(preview).findByRole("heading", { name: "Steps" })).toBeInTheDocument();
     expect(within(preview).getByRole("img", { name: "Done" })).toBeInTheDocument();
     expect(within(form).queryByLabelText("Description of #1")).not.toBeInTheDocument();
-    fireEvent.click(within(form).getByRole("button", { name: "Write" }));
+    fireEvent.click(within(form).getByRole("radio", { name: "Write" }));
     expect(within(form).getByLabelText("Description of #1")).toHaveValue("## Steps\n\n- [x] **form**");
   });
 
@@ -2122,7 +2175,7 @@ describe("App", () => {
 
     const details = await openDetails("Verify login");
     const add = within(details).getByRole("combobox", { name: "Add dependency to #2" });
-    fireEvent.change(add, { target: { value: "1" } });
+    chooseOption(add, "#1 Fix login");
     const confirmation = await screen.findByRole("group", { name: "Confirm prerequisite of #2" });
     mocked.addDependency.mockResolvedValue({ status: "ok", data: "added" });
     mocked.listTasks.mockResolvedValue({
@@ -2135,7 +2188,7 @@ describe("App", () => {
       "Waiting on #1",
     );
     expect(mocked.addDependency).toHaveBeenCalledWith(2, 1, true);
-    expect(within(details).getByRole("button", { name: "Resume #2" })).toBeDisabled();
+    expect(isDisabled(within(details).getByRole("button", { name: "Resume #2" }))).toBe(true);
     expect(within(row("Verify login")).getByRole("note", { name: "Waiting prerequisites of #2" })).toBeInTheDocument();
   });
 
@@ -2151,7 +2204,7 @@ describe("App", () => {
     const note = await screen.findByRole("note", { name: "Waiting prerequisites of #3" });
     expect(note).toHaveTextContent(/^Waiting on #2$/);
     expect(note).toHaveClass("text-muted-foreground");
-    expect(screen.getByRole("button", { name: "Start #3" })).toBeDisabled();
+    expect(isDisabled(screen.getByRole("button", { name: "Start #3" }))).toBe(true);
     expect(screen.queryByRole("note", { name: "Waiting prerequisites of #4" })).not.toBeInTheDocument();
   });
 
@@ -2231,9 +2284,7 @@ describe("App", () => {
     expect(
       within(details).queryByRole("region", { name: "Related" }),
     ).not.toBeInTheDocument();
-    fireEvent.change(within(details).getByLabelText("Add related task to #3"), {
-      target: { value: "1" },
-    });
+    chooseOption(within(details).getByRole("combobox", { name: "Add related task to #3" }), "#1 Add storage");
     await waitFor(() =>
       expect(mocked.addTaskRelation).toHaveBeenCalledWith(3, 1),
     );
@@ -2402,7 +2453,7 @@ describe("App", () => {
     const details = await openDetails("Verify login");
     const add = () => within(details).getByRole("combobox", { name: "Add dependency to #2" });
 
-    fireEvent.change(add(), { target: { value: "1" } });
+    chooseOption(add(), "#1 Fix login");
     const confirmation = await screen.findByRole("group", { name: "Confirm prerequisite of #2" });
     expect(confirmation).toHaveTextContent("Adding #1 as a prerequisite pauses #2");
     // The question takes the place of the dependency row instead of pushing the row down.
@@ -2412,7 +2463,7 @@ describe("App", () => {
     expect(screen.queryByRole("group", { name: "Confirm prerequisite of #2" })).not.toBeInTheDocument();
     expect(mocked.addDependency).not.toHaveBeenCalledWith(2, 1, true);
 
-    fireEvent.change(add(), { target: { value: "1" } });
+    chooseOption(add(), "#1 Fix login");
     const again = await screen.findByRole("group", { name: "Confirm prerequisite of #2" });
     mocked.addDependency.mockResolvedValue({ status: "ok", data: "added" });
     fireEvent.click(within(again).getByRole("button", { name: "Pause and add" }));
@@ -2488,7 +2539,7 @@ describe("App", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [paused] });
     fireEvent.click(pause);
 
-    expect(await screen.findByRole("button", { name: "Resume #1" })).toBeEnabled();
+    expect(isDisabled(await screen.findByRole("button", { name: "Resume #1" }))).toBe(false);
     expect(mocked.pauseTask).toHaveBeenCalledWith(1);
     expect(within(row("Add login")).getByText("Paused")).toBeInTheDocument();
     expect(row("Add login")).toHaveTextContent(`Paused ${formatWhen(1760200000)}`);
@@ -2503,7 +2554,7 @@ describe("App", () => {
       "Wait #1",
       "Delete #1",
     ]);
-    expect(items.at(-1)).toHaveClass("text-destructive");
+    expect(items.at(-1)).toHaveAttribute("data-variant", "destructive");
     fireEvent.click(items.at(-1) as HTMLElement);
     expect(mocked.deleteTask).not.toHaveBeenCalled();
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });

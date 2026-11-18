@@ -1,9 +1,12 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
-import { Search, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { keepFocusIn } from "@/lib/focus-trap";
+import { useEffect, useLayoutEffect, useRef, type ReactNode } from "react";
+import {
+  CommandPalette as AstryxCommandPalette,
+  CommandPaletteInput,
+  useCommandPaletteContext,
+} from "@astryxdesign/core/CommandPalette";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import type { SearchableItem, SearchSource } from "@astryxdesign/core/Typeahead";
 import { shortcuts } from "@/lib/shortcuts";
-import { cn } from "@/lib/utils";
 
 /** An entry of the command palette: an action, or a task to jump to. */
 export type PaletteCommand = {
@@ -28,20 +31,18 @@ function matchCommands(commands: PaletteCommand[], query: string): PaletteComman
 }
 
 /**
- * A modal over the page: Escape and a click beside it close it, Tab stays inside, and closing
- * returns the focus to what had it before, unless something outside took the focus on purpose.
+ * A modal over the page: Escape closes it, and closing returns the focus to what had it
+ * before, unless something outside took the focus on purpose.
  */
-function Overlay({ label, onClose, className, children }: { label: string; onClose: () => void; className?: string; children: ReactNode }) {
-  const dialog = useRef<HTMLDivElement>(null);
+function useModal(onClose: () => void) {
   const close = useRef(onClose);
   close.current = onClose;
 
   useLayoutEffect(() => {
     const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const element = dialog.current;
     return () => {
       const active = document.activeElement;
-      if (active !== null && active !== document.body && !element?.contains(active)) return;
+      if (active !== null && active !== document.body && !active.closest("dialog")) return;
       if (before?.isConnected) before.focus({ preventScroll: true });
     };
   }, []);
@@ -52,149 +53,81 @@ function Overlay({ label, onClose, className, children }: { label: string; onClo
         event.preventDefault();
         close.current();
       }
-      if (event.key === "Tab") keepFocusIn(dialog.current, event);
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, []);
+}
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center px-4 pt-[min(15vh,8rem)] max-md:pt-[max(1rem,env(safe-area-inset-top))]">
-      <div aria-hidden className="absolute inset-0 bg-black/40" onClick={() => onClose()} />
-      <div
-        ref={dialog}
-        role="dialog"
-        aria-modal
-        aria-label={label}
-        className={cn(
-          "relative flex max-h-[min(32rem,calc(100dvh-2rem))] w-full max-w-xl flex-col overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-xl",
-          className,
-        )}
-      >
-        {children}
-      </div>
-    </div>
-  );
+/** Astryx groups the results by `auxiliaryData.group`. */
+type PaletteItem = SearchableItem<PaletteCommand> & { auxiliaryData: PaletteCommand };
+
+/** Highlights the first match whenever the matches change, so Enter runs it right away. */
+function HighlightFirstMatch() {
+  const palette = useCommandPaletteContext();
+  const first = palette?.selectableItems[0]?.value;
+  useEffect(() => {
+    if (palette !== null && first !== undefined && palette.highlightedIndex === -1) palette.setHighlightedIndex(0);
+  }, [palette?.searchResults, first]);
+  return null;
 }
 
 /**
- * The command palette: a search field over a list of actions and tasks. Typing narrows the list,
- * the arrow keys move the highlight, and Enter or a click runs the highlighted entry and closes it.
+ * The command palette: a search field over a list of actions and tasks. Typing narrows the list
+ * and highlights the first match, the arrow keys move the highlight, and Enter or a click runs
+ * the highlighted entry and closes it.
  */
 export function CommandPalette({ commands, onClose }: { commands: PaletteCommand[]; onClose: () => void }) {
-  const [query, setQuery] = useState("");
-  const [active, setActive] = useState(0);
-  const listId = useId();
-  const list = useRef<HTMLDivElement>(null);
-  const matched = matchCommands(commands, query);
-  const index = Math.min(active, matched.length - 1);
-  const optionId = (position: number) => `${listId}-${position}`;
+  useModal(onClose);
+  const items = commands.map((command): PaletteItem => ({ id: command.id, label: command.label, auxiliaryData: command }));
+  const byId = new Map(items.map((item) => [item.id, item.auxiliaryData]));
+  const source: SearchSource<PaletteItem> = {
+    search: (query) => {
+      const matched = new Set(matchCommands(commands, query));
+      return items.filter((item) => matched.has(item.auxiliaryData));
+    },
+    bootstrap: () => items,
+  };
 
-  useEffect(() => {
-    list.current?.querySelector(`[id="${optionId(index)}"]`)?.scrollIntoView?.({ block: "nearest" });
-  }, [index, query]);
-
-  const run = (command: PaletteCommand | undefined) => {
+  const run = (id: string) => {
+    const command = byId.get(id);
     if (command === undefined) return;
     onClose();
     command.run();
   };
 
-  const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-    const last = matched.length - 1;
-    const next =
-      event.key === "ArrowDown"
-        ? Math.min(index + 1, last)
-        : event.key === "ArrowUp"
-          ? Math.max(index - 1, 0)
-          : event.key === "Home" && event.ctrlKey
-            ? 0
-            : event.key === "End" && event.ctrlKey
-              ? last
-              : null;
-    if (next !== null) {
-      event.preventDefault();
-      setActive(next);
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      run(matched[index]);
-    }
-  };
-
-  const groups = (["Actions", "Tasks"] as const)
-    .map((group) => ({ group, entries: matched.map((command, position) => ({ command, position })).filter(({ command }) => command.group === group) }))
-    .filter(({ entries }) => entries.length > 0);
-
   return (
-    <Overlay label="Command palette" onClose={onClose}>
-      <div className="flex shrink-0 items-center gap-2 border-b px-3">
-        <Search aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-        <input
-          autoFocus
-          role="combobox"
-          aria-label="Search actions and tasks"
-          aria-expanded
-          aria-controls={listId}
-          aria-autocomplete="list"
-          aria-activedescendant={matched.length > 0 ? optionId(index) : undefined}
-          placeholder="Jump to a task or run an action..."
-          className="h-11 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-          value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setActive(0);
-          }}
-          onKeyDown={onKeyDown}
-        />
-        <kbd className="rounded border px-1.5 text-[0.625rem] text-muted-foreground max-md:hidden">Esc</kbd>
-      </div>
-      <div ref={list} id={listId} role="listbox" aria-label="Actions and tasks" className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
-        {groups.length === 0 && <p className="px-3 py-6 text-center text-sm text-muted-foreground">No actions or tasks match.</p>}
-        {groups.map(({ group, entries }) => (
-          <div key={group} role="group" aria-label={group} className="flex flex-col">
-            <div aria-hidden className="px-2 pt-2 pb-1 text-xs font-medium text-muted-foreground">
-              {group}
-            </div>
-            {entries.map(({ command, position }) => (
-              <div
-                key={command.id}
-                id={optionId(position)}
-                role="option"
-                aria-selected={position === index}
-                className={cn(
-                  "flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-sm select-none max-md:min-h-11 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
-                  position === index && "bg-muted",
-                )}
-                onMouseMove={() => position !== index && setActive(position)}
-                // Keeps the focus in the search field, so the keys keep working after a click.
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => run(command)}
-              >
-                {command.icon}
-                <span className="min-w-0 flex-1 truncate">{command.label}</span>
-                {command.hint && <span className="shrink-0 text-xs text-muted-foreground">{command.hint}</span>}
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-    </Overlay>
+    <AstryxCommandPalette<PaletteItem>
+      isOpen
+      onOpenChange={(open) => !open && onClose()}
+      label="Command palette"
+      searchSource={source}
+      onValueChange={run}
+      emptySearchText="No actions or tasks match."
+      input={
+        <>
+          <CommandPaletteInput label="Search actions and tasks" placeholder="Jump to a task or run an action..." />
+          <HighlightFirstMatch />
+        </>
+      }
+      renderItem={({ auxiliaryData: command }) => (
+        <span className="flex min-w-0 flex-1 items-center gap-2 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground">
+          {command.icon}
+          <span className="min-w-0 flex-1 truncate">{command.label}</span>
+          {command.hint && <span className="shrink-0 text-xs text-muted-foreground">{command.hint}</span>}
+        </span>
+      )}
+    />
   );
 }
 
 /** The list of keyboard shortcuts, opened with `?` or from the command palette. */
 export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
-  const closeButton = useRef<HTMLButtonElement>(null);
-  useLayoutEffect(() => closeButton.current?.focus({ preventScroll: true }), []);
+  useModal(onClose);
   return (
-    <Overlay label="Keyboard shortcuts" onClose={onClose} className="max-w-md">
-      <div className="flex shrink-0 items-center border-b px-4 py-2">
-        <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
-        <Button ref={closeButton} variant="ghost" size="icon-sm" className="ml-auto" aria-label="Close shortcuts" title="Close (Esc)" onClick={onClose}>
-          <X />
-        </Button>
-      </div>
-      <dl className="flex min-h-0 flex-col gap-2 overflow-y-auto p-4 text-sm">
+    <Dialog isOpen onOpenChange={(open) => !open && onClose()} width={448}>
+      <DialogHeader title="Keyboard shortcuts" onOpenChange={(open) => !open && onClose()} />
+      <dl className="flex min-h-0 flex-col gap-2 overflow-y-auto py-4 text-sm">
         {shortcuts.map((shortcut) => (
           <div key={shortcut.description} className="flex items-baseline gap-3">
             <dt className="flex w-32 shrink-0 flex-wrap gap-1">
@@ -208,7 +141,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
           </div>
         ))}
       </dl>
-      <p className="border-t px-4 py-2 text-xs text-muted-foreground">Letter shortcuts do nothing while you type in a field.</p>
-    </Overlay>
+      <p className="border-t pt-2 text-xs text-muted-foreground">Letter shortcuts do nothing while you type in a field.</p>
+    </Dialog>
   );
 }

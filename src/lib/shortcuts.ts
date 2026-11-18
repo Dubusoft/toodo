@@ -25,9 +25,15 @@ export function isPaletteKey(event: KeyboardEvent): boolean {
   return (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "k";
 }
 
+/**
+ * Matches the button of an open menu. The menu element itself does not tell: Astryx keeps a
+ * closed menu in the page, in a hidden popover.
+ */
+export const openMenuButton = "[aria-haspopup='menu'][aria-expanded='true']";
+
 /** Whether a dialog or menu that owns the keyboard is open over the page. */
 function overlayOpen(): boolean {
-  return [...document.querySelectorAll("[aria-modal='true'], [role=menu]")].some(
+  return [...document.querySelectorAll(`[aria-modal='true'], ${openMenuButton}`)].some(
     (element) => element.closest("[hidden]") === null,
   );
 }

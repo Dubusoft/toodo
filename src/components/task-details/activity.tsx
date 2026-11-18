@@ -3,24 +3,19 @@ import type { NoteKind, Task } from "@/lib/bindings";
 import { formatFull } from "@/lib/timeline";
 import { When } from "@/components/when";
 import { markdownPreview } from "@/lib/markdown";
-import { toneChip, type Tone } from "@/lib/status-styles";
-import { cn } from "@/lib/utils";
+import { Badge, type BadgeProps } from "@astryxdesign/core/Badge";
 import { DetailField, Markdown } from "@/components/task-common";
 
 const noteKindLabels: Record<NoteKind, string> = { progress: "Progress", blocker: "Blocker", decision: "Decision" };
-const noteKindTones: Record<NoteKind, Tone> = { progress: "neutral", blocker: "attention", decision: "info" };
+const noteKindVariants: Record<NoteKind, BadgeProps["variant"]> = {
+  progress: "neutral",
+  blocker: "warning",
+  decision: "info",
+};
 
 function NoteKindBadge({ kind }: { kind: NoteKind }) {
   return (
-    <span
-      data-note-kind={kind}
-      className={cn(
-        "shrink-0 rounded-md px-1.5 font-medium",
-        toneChip[noteKindTones[kind]],
-      )}
-    >
-      {noteKindLabels[kind]}
-    </span>
+    <Badge data-note-kind={kind} className="shrink-0" variant={noteKindVariants[kind]} label={noteKindLabels[kind]} />
   );
 }
 

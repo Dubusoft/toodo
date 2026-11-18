@@ -344,6 +344,47 @@ fn archive_done_tasks_archives_only_the_live_done_tasks_of_the_workspace() {
 }
 
 #[test]
+fn move_task_changes_only_the_workspace_and_rejects_archived_ones() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let general = add_workspace(&mut storage, "General", local_location(r"C:\src\general"));
+    let archived = add_workspace(&mut storage, "Old", local_location(r"C:\src\old"));
+    let prerequisite = add_task(&mut storage, &workspace, "Prerequisite");
+    let task = add_task(&mut storage, &workspace, "Move me");
+    storage.add_dependency(task.id, prerequisite.id).unwrap();
+    storage
+        .set_task_refs(task.id, &["lane:move".to_owned()])
+        .unwrap();
+    let before = storage.get_task(task.id).unwrap().unwrap();
+    storage.archive_workspace(archived.id).unwrap();
+
+    let moved = storage.move_task(task.id, general.id).unwrap();
+    assert_eq!(moved.workspace_id, general.id);
+    assert_eq!(
+        moved,
+        Task {
+            workspace_id: general.id,
+            ..before.clone()
+        }
+    );
+    assert_eq!(
+        storage.list_tasks(general.id).unwrap(),
+        std::slice::from_ref(&moved)
+    );
+
+    assert!(matches!(
+        storage.move_task(task.id, archived.id),
+        Err(StorageError::WorkspaceNotFound(id)) if id == archived.id
+    ));
+    let unknown = WorkspaceId(archived.id.0 + 100);
+    assert!(matches!(
+        storage.move_task(task.id, unknown),
+        Err(StorageError::WorkspaceNotFound(id)) if id == unknown
+    ));
+    assert_eq!(storage.get_task(task.id).unwrap().unwrap(), moved);
+}
+
+#[test]
 fn rejected_dependencies_write_nothing() {
     let mut storage = Storage::open_in_memory().unwrap();
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));

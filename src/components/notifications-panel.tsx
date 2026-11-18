@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Button } from "@/components/ui/button";
+import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { Button } from "@/components/button";
 import { formatFull, formatWhen } from "@/lib/timeline";
 import {
   disablePush,
@@ -84,27 +85,30 @@ function PushControls({ state }: { state: PushState }) {
           <fieldset className="flex flex-col gap-1">
             <legend className="mb-1 text-muted-foreground">Notify about</legend>
             {settingOptions.map(({ key, label }) => (
-              <label key={key} className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={settings[key]}
-                  disabled={save.isPending}
-                  onChange={(event) => save.mutate({ ...settings, [key]: event.target.checked })}
-                />
-                {label}
-              </label>
+              <CheckboxInput
+                key={key}
+                label={label}
+                value={settings[key]}
+                isDisabled={save.isPending}
+                onChange={(checked) => save.mutate({ ...settings, [key]: checked })}
+              />
             ))}
           </fieldset>
           <div className="flex flex-wrap gap-1">
-            <Button changesData size="xs" variant="outline" disabled={test.isPending} onClick={() => test.mutate()}>
-              Send test notification
-            </Button>
             <Button
               changesData
-              size="xs"
+              size="sm"
+              variant="secondary"
+              label="Send test notification"
+              isDisabled={test.isPending}
+              onClick={() => test.mutate()}
+            />
+            <Button
+              changesData
+              size="sm"
               variant="ghost"
-              aria-label="Disable notifications on this device"
-              disabled={disable.isPending}
+              label="Disable notifications on this device"
+              isDisabled={disable.isPending}
               onClick={() => disable.mutate()}
             >
               Disable notifications
@@ -117,10 +121,11 @@ function PushControls({ state }: { state: PushState }) {
         <>
           <p className="font-medium">Notifications are off for this device.</p>
           <Button
-            size="xs"
+            size="sm"
+            variant="primary"
             className="self-start"
-            aria-label="Enable notifications on this device"
-            disabled={enable.isPending}
+            label="Enable notifications on this device"
+            isDisabled={enable.isPending}
             onClick={askAndEnable}
           >
             Enable notifications

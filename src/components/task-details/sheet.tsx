@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import { DetailsSheet } from "@/components/details-sheet";
-
+import { openMenuButton } from "@/lib/shortcuts";
 
 /**
  * The details sheet of the task list, like the timeline's. Escape, the close button, or a swipe
@@ -21,12 +21,12 @@ export function TaskDetailsSheet({ onClose, children }: { onClose: () => void; c
 
   useEffect(() => {
     function closeOnEscape(event: globalThis.KeyboardEvent) {
-      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector("[role=menu]")) {
+      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector(openMenuButton)) {
         return;
       }
       if (discarding) {
         setDiscarding(false);
-      } else if (!(event.target instanceof HTMLElement && event.target.closest("input, textarea, select"))) {
+      } else if (!(event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [role=combobox], [role=listbox]"))) {
         close();
       }
     }
@@ -47,12 +47,8 @@ export function TaskDetailsSheet({ onClose, children }: { onClose: () => void; c
             className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted px-4 py-2 text-xs"
           >
             <span className="min-w-0 flex-1">Discard your unsaved changes?</span>
-            <Button size="xs" variant="outline" autoFocus onClick={() => setDiscarding(false)}>
-              Keep editing
-            </Button>
-            <Button size="xs" variant="destructive" onClick={onClose}>
-              Discard changes
-            </Button>
+            <Button size="sm" variant="secondary" label="Keep editing" autoFocus onClick={() => setDiscarding(false)} />
+            <Button size="sm" variant="destructive" label="Discard changes" onClick={onClose} />
           </div>
         )
       }

@@ -1,7 +1,9 @@
 import { useState, type FormEvent } from "react";
 import { Circle, CircleCheck, CircleX } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { inputClass } from "@/components/workspace-list";
+import { Badge } from "@astryxdesign/core/Badge";
+import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Button } from "@/components/button";
 import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import type { CheckedBy, Criterion, CriterionState, Task } from "@/lib/bindings";
 import { useCheckCriterion } from "@/lib/queries";
@@ -110,15 +112,15 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
       >
         {checkable ? (
           <>
-            <label className="flex size-4 shrink-0 items-center justify-center max-md:-mx-3.5 max-md:size-11">
-              <input
-                type="checkbox"
-                aria-label={`Check criterion ${criterion.id} of #${task.id}`}
-                checked={criterion.state === "met" || writing}
-                disabled={checkCriterion.isPending || serverDown}
-                onChange={(e) => toggle(e.target.checked)}
-              />
-            </label>
+            <CheckboxInput
+              size="sm"
+              className="shrink-0"
+              label={`Check criterion ${criterion.id} of #${task.id}`}
+              isLabelHidden
+              value={criterion.state === "met" || writing}
+              isDisabled={checkCriterion.isPending || serverDown}
+              onChange={toggle}
+            />
             {/* An unchecked box alone cannot tell a failed check from a pending one. */}
             {criterion.state === "failed" && <CriterionMarker state="failed" />}
           </>
@@ -133,9 +135,7 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
           )}
         >{criterion.text}</span>
         {criterion.kind !== "manual" && (
-          <span className="shrink-0 rounded-md bg-muted px-1.5 text-muted-foreground">
-            {criterionKindLabels[criterion.kind]}
-          </span>
+          <Badge className="shrink-0" label={criterionKindLabels[criterion.kind]} />
         )}
         {!detailed && criterion.evidence && (
           <span className="min-w-0 flex-1 truncate text-muted-foreground">{criterion.evidence}</span>
@@ -165,13 +165,15 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
           className="ml-5.5 flex flex-wrap items-center gap-1"
           onKeyDown={guard.onKeyDown}
         >
-          <input
-            className={cn(inputClass, "h-7 flex-1 basis-48")}
-            aria-label={`Evidence for criterion ${criterion.id}`}
+          <TextInput
+            size="sm"
+            containerClassName="flex-1 basis-48"
+            label={`Evidence for criterion ${criterion.id}`}
+            isLabelHidden
             placeholder="Evidence (optional), e.g. a link or what you checked"
             value={evidence}
-            onChange={(e) => setEvidence(e.target.value)}
-            autoFocus
+            onChange={setEvidence}
+            hasAutoFocus
           />
           {guard.asking ? (
             <DiscardConfirm
@@ -182,12 +184,14 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
             />
           ) : (
             <>
-              <Button type="submit" size="xs" disabled={checkCriterion.isPending}>
-                {checkCriterion.isPending ? "Saving..." : "Save"}
-              </Button>
-              <Button type="button" size="xs" variant="ghost" onClick={guard.request}>
-                Cancel
-              </Button>
+              <Button
+                type="submit"
+                size="sm"
+                variant="primary"
+                label={checkCriterion.isPending ? "Saving..." : "Save"}
+                isDisabled={checkCriterion.isPending}
+              />
+              <Button type="button" size="sm" variant="ghost" label="Cancel" onClick={guard.request} />
             </>
           )}
         </form>

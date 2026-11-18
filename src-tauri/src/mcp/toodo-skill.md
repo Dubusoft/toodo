@@ -7,6 +7,8 @@ description: Record task plans, notes, dependencies, references, and status in T
 
 Call list_workspaces and search_tasks before creating records. Read get_task for the task description, notes, references, status history, dependencies, dependents, and related tasks. current_task finds a task by ref, such as lane:search; use get_task with id when the task id is known.
 
+move_task moves a task, in any status, into another live workspace when it was filed in the wrong one. Only its workspace changes; its refs stay as recorded, and it follows the guidelines of its new workspace.
+
 {{task-description}}
 
 # Work and memory

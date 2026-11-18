@@ -1,4 +1,5 @@
 import { BellRing } from "lucide-react";
+import { Badge, type BadgeVariant } from "@astryxdesign/core/Badge";
 import { needsAttention, type AttentionReason } from "@/lib/attention";
 import type { TaskId } from "@/lib/bindings";
 import { useTasks } from "@/lib/queries";
@@ -10,9 +11,9 @@ const reasonLabels: Record<AttentionReason, string> = {
   stalled: "Stalled",
 };
 
-const reasonStyles: Record<AttentionReason, string> = {
-  blocker_note: toneChip.attention,
-  stalled: toneChip.neutral,
+const reasonVariants: Record<AttentionReason, BadgeVariant> = {
+  blocker_note: "warning",
+  stalled: "neutral",
 };
 
 /**
@@ -52,13 +53,7 @@ export function NeedsAttention({ onShow }: { onShow: (id: TaskId) => void }) {
               </span>
               <span className="flex flex-wrap gap-1">
                 {reasons.map((reason) => (
-                  <span
-                    key={reason}
-                    data-reason={reason}
-                    className={cn("rounded-full px-1.5 text-[11px] font-medium leading-4", reasonStyles[reason])}
-                  >
-                    {reasonLabels[reason]}
-                  </span>
+                  <Badge key={reason} data-reason={reason} variant={reasonVariants[reason]} label={reasonLabels[reason]} />
                 ))}
               </span>
             </button>

@@ -434,6 +434,27 @@ pub struct PauseTask {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct MoveTask {
+    /// The task to move, in any status.
+    pub id: TaskId,
+    /// The live workspace it moves into, as in list_workspaces; archived ones are rejected.
+    pub workspace_id: WorkspaceId,
+}
+
+/// The reply of move_task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovedTask {
+    /// The task in its new workspace.
+    pub task: Task,
+    /// The workspace the task was in before the move.
+    pub from_workspace_id: WorkspaceId,
+    /// What the move kept and what to do next.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct WaitTask {
     /// A planned, in_progress, or in_review task.
     pub id: TaskId,
@@ -1449,6 +1470,35 @@ pub fn new_criterion(request: &AddCriterion) -> types::CriterionInput {
         kind: Some(request.kind),
         target: request.target.clone(),
     }
+}
+
+/// Moves a task, in any status, into another live workspace. Only its workspace changes:
+/// refs (branches, lanes, pull requests) stay as recorded, since Toodo does not interpret
+/// them, and the task follows the guidelines of its new workspace from then on.
+pub fn move_task(storage: &mut Storage, request: MoveTask) -> CommandResult<MovedTask> {
+    let current = get_task(storage, request.id)?;
+    let from = live_workspace(storage, current.workspace_id)?;
+    let to = live_workspace(storage, request.workspace_id)?;
+    let id = request.id.0;
+    if from.id == to.id {
+        return Ok(MovedTask {
+            task: current,
+            from_workspace_id: request.workspace_id,
+            message: format!(
+                "Nothing changed: task {id} is already in workspace {} \"{}\".",
+                to.id.0, to.name
+            ),
+        });
+    }
+    let moved = storage.move_task(request.id.into(), request.workspace_id.into())?;
+    Ok(MovedTask {
+        task: (&moved).into(),
+        from_workspace_id: from.id.into(),
+        message: format!(
+            "Moved task {id} from workspace {} \"{}\" to workspace {} \"{}\". Its id, status and history, notes, criteria, refs, and dependency and related links are unchanged; refs such as branch: or lane: still name what they named before, so update them with update_task refs and remove_refs if the executor moves that work. Read get_guidelines {{\"workspace_id\": {}}} before working on it again.",
+            from.id.0, from.name, to.id.0, to.name, to.id.0
+        ),
+    })
 }
 
 /// Adds one criterion, pending, after the task's criteria, which stay as they are;
@@ -3025,6 +3075,66 @@ mod tests {
 
     fn plan(tasks: serde_json::Value) -> CreatePlan {
         serde_json::from_value(serde_json::json!({ "tasks": tasks })).unwrap()
+    }
+
+    #[test]
+    fn move_task_moves_a_done_task_and_rejects_an_archived_workspace() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let general: WorkspaceId = storage
+            .create_workspace(&NewWorkspace {
+                name: "General".to_owned(),
+                description: None,
+                repository: None,
+            })
+            .unwrap()
+            .id
+            .into();
+        let old: WorkspaceId = storage
+            .create_workspace(&NewWorkspace {
+                name: "Old".to_owned(),
+                description: None,
+                repository: None,
+            })
+            .unwrap()
+            .id
+            .into();
+        storage.archive_workspace(old.into()).unwrap();
+        let task = create(&mut storage, workspace, "Sort mail", vec![]).unwrap();
+        storage
+            .set_task_status(task.id.into(), DomainStatus::InProgress)
+            .unwrap();
+        storage
+            .conclude_task(task.id.into(), "Not needed", None)
+            .unwrap();
+        let done = get_task(&storage, task.id).unwrap();
+        let request = |workspace_id| MoveTask {
+            id: task.id,
+            workspace_id,
+        };
+
+        let moved = move_task(&mut storage, request(general)).unwrap();
+        assert_eq!(moved.from_workspace_id, workspace);
+        assert_eq!(moved.task.workspace_id, general);
+        assert_eq!(
+            moved.task,
+            Task {
+                workspace_id: general,
+                ..done
+            }
+        );
+        assert!(moved.message.contains("\"General\""), "{}", moved.message);
+
+        let again = move_task(&mut storage, request(general)).unwrap();
+        assert_eq!(again.task, moved.task);
+        assert!(
+            again.message.starts_with("Nothing changed"),
+            "{}",
+            again.message
+        );
+
+        let error = move_task(&mut storage, request(old)).unwrap_err();
+        assert_eq!(error.code, CommandErrorCode::WorkspaceNotFound);
+        assert_eq!(get_task(&storage, task.id).unwrap().workspace_id, general);
     }
 
     #[test]

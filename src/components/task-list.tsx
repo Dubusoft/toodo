@@ -1,10 +1,14 @@
-import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Bot, Check, ChevronDown, Inbox, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { compactSelectClass, escapeCloses } from "@/components/workspace-list";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
+import { Button } from "@/components/button";
+import { escapeCloses } from "@/components/workspace-list";
 import { ErrorBoundary } from "@/components/error-boundary";
 import type { Task, TaskId, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
-import { useDeleteDoneTasks, useDoneTaskCount, useTasks, useWorkspaces } from "@/lib/queries";
+import { useDeleteDoneTasks, useDoneTaskCount, useOlderTasksWhileShown, useTasks, useWorkspaces } from "@/lib/queries";
 import { timelineOrder, type TimelineScale } from "@/lib/task-graph";
 import {
   defaultTaskFilter,
@@ -17,7 +21,7 @@ import {
   toggleStatus,
   type TaskFilter,
 } from "@/lib/task-filter";
-import { statusNames, toneChip, toneFill, toneOutline } from "@/lib/status-styles";
+import { statusNames, toneChip, toneFill, toneOutline, type Tone } from "@/lib/status-styles";
 import { singleKeyShortcut } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import {
@@ -135,10 +139,21 @@ export function TaskList({
       matchesFilter(task, taskFilter, context.byId),
   );
   const timelineTasks = numbered === undefined ? (filtered ?? []) : [numbered, ...(filtered ?? [])];
-  // Older finished tasks load on request, offered wherever finished tasks are shown.
+  // Older finished tasks load as the user scrolls toward them, wherever finished tasks are shown:
+  // up to the top of the list, or into the past on the timeline. Hidden again, they are dropped,
+  // so showing them later loads the newest page only.
   const finishedShown = narrowable
     ? taskFilter.statuses.length === 0 || taskFilter.statuses.some((status) => status === "done" || status === "not_adopted")
     : (doneShown ?? isFilterActive(taskFilter));
+  useOlderTasksWhileShown(finishedShown);
+  const loadOlder =
+    finishedShown && allTasks.hasNextPage
+      ? () => void allTasks.fetchNextPage({ cancelRefetch: false })
+      : undefined;
+  // The oldest work comes first, so older finished tasks go on top of the list.
+  const olderLoader = loadOlder && (
+    <OlderTasksLoader loading={allTasks.isFetchingNextPage} failed={allTasks.isFetchNextPageError} onLoad={loadOlder} />
+  );
   const shownTaskData = shownTask === null ? undefined : context.byId.get(shownTask.id);
   useEffect(() => {
     if (shownTaskData === undefined) {
@@ -234,54 +249,45 @@ export function TaskList({
         <>
           <div className="flex flex-wrap items-center gap-2">
             {workspace === null && (
-              <div role="group" aria-label="Task view" className="flex gap-1 max-md:gap-2">
-                {(["timeline", "list", "plan"] as const).map((option) => (
-                  <Button
-                    key={option}
-                    size="xs"
-                    variant={view === option ? "default" : "ghost"}
-                    aria-pressed={view === option}
-                    onClick={() => onViewChange?.(option)}
-                  >
-                    {option === "list" ? "List" : option === "plan" ? "Plan" : "Timeline"}
-                  </Button>
-                ))}
-              </div>
+              <ToggleButtonGroup
+                label="Task view"
+                type="single"
+                size="sm"
+                value={view}
+                // Pressing the shown view again keeps it: one view is always shown.
+                onChange={(next) => typeof next === "string" && onViewChange?.(next as AllView)}
+              >
+                <ToggleButton value="timeline" label="Timeline" />
+                <ToggleButton value="list" label="List" />
+                <ToggleButton value="plan" label="Plan" />
+              </ToggleButtonGroup>
             )}
             <Button
-              size="xs"
-              variant={filtersOpen ? "secondary" : "outline"}
+              size="sm"
+              variant="secondary"
               className="ml-auto md:hidden"
+              label={activeFilters > 0 ? `Filters, ${activeFilters} active` : "Filters"}
+              icon={<SlidersHorizontal />}
+              endContent={activeFilters > 0 ? <Badge variant="info" label={activeFilters} /> : undefined}
               aria-expanded={filtersOpen}
               aria-controls="task-filters"
               onClick={() => setFiltersOpen(!filtersOpen)}
             >
-              <SlidersHorizontal />
               Filters
-              {activeFilters > 0 && (
-                <span className="rounded-full bg-primary px-1.5 text-[0.625rem] leading-4 text-primary-foreground tabular-nums">
-                  {activeFilters}
-                  <span className="sr-only"> active</span>
-                </span>
-              )}
             </Button>
             <div id="task-filters" className={cn("contents", !filtersOpen && "max-md:hidden")}>
               {narrowable && (
-                <select
-                  aria-label={showPlan ? "Plan workspace" : "Timeline workspace"}
-                  className={compactSelectClass}
-                  value={filter ?? "all"}
-                  onChange={(event) =>
-                    setTimelineWorkspace(event.target.value === "all" ? null : Number(event.target.value))
-                  }
-                >
-                  <option value="all">All workspaces</option>
-                  {filterOptions.map((id) => (
-                    <option key={id} value={id}>
-                      {context.workspaceName(id)}
-                    </option>
-                  ))}
-                </select>
+                <Selector
+                  label={showPlan ? "Plan workspace" : "Timeline workspace"}
+                  isLabelHidden
+                  size="sm"
+                  value={filter === null ? "all" : String(filter)}
+                  options={[
+                    { value: "all", label: "All workspaces" },
+                    ...filterOptions.map((id) => ({ value: String(id), label: context.workspaceName(id) })),
+                  ]}
+                  onChange={(value) => setTimelineWorkspace(value === "all" ? null : Number(value))}
+                />
               )}
               <TaskFilterBar filter={taskFilter} onChange={setTaskFilter} />
             </div>
@@ -295,7 +301,10 @@ export function TaskList({
           ) : !showTimeline ? (
             <>
             {showPlan ? (
-              <PlanView tasks={timelineTasks} onShowTask={setDetailId} />
+              <>
+                {olderLoader}
+                <PlanView tasks={timelineTasks} onShowTask={setDetailId} />
+              </>
             ) : (
             <div role="region" aria-label="Tasks" className="flex flex-col gap-4">
               {numbered && (
@@ -317,20 +326,22 @@ export function TaskList({
               {doneCount > 0 && (
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
-                    <button
-                      type="button"
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      label={`Done ${doneCount}`}
+                      icon={<ChevronDown aria-hidden className={cn("transition-transform", !doneListed && "-rotate-90")} />}
                       aria-expanded={doneListed}
-                      className="flex items-center gap-1.5 rounded-sm outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11"
                       onClick={() => setDoneShown(!doneListed)}
                     >
-                      <ChevronDown aria-hidden className={cn("size-4 transition-transform", !doneListed && "-rotate-90")} />
                       Done <span className="tabular-nums font-normal">{doneCount}</span>
-                    </button>
+                    </Button>
                   </h3>
                   {/* Deleting acts on every done task of a workspace, so only a workspace's own list offers it. */}
                   {workspace && <DeleteDoneTasks workspace={workspace} />}
                 </div>
               )}
+              {olderLoader}
               {listed.length > 0 && (
                 <ul aria-label="Task list" className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
                   {listed.map((task) => (
@@ -382,6 +393,7 @@ export function TaskList({
                   onSelectedTaskChange={setDetailId}
                   shownTaskId={shownTask?.id ?? null}
                   onTaskShown={() => onTaskShown?.()}
+                  onNearPast={allTasks.isFetchingNextPage || allTasks.isFetchNextPageError ? undefined : loadOlder}
                   renderDetail={(selected, navigation) => (
                     <TaskRow
                       key={selected.id}
@@ -397,20 +409,92 @@ export function TaskList({
               </Suspense>
             </ErrorBoundary>
           )}
-          {allTasks.hasNextPage && finishedShown && (
-            <Button
-              size="xs"
-              variant="outline"
-              className="self-start"
-              disabled={allTasks.isFetchingNextPage}
-              onClick={() => void allTasks.fetchNextPage()}
-            >
-              {allTasks.isFetchingNextPage ? "Loading older finished tasks..." : "Load older finished tasks"}
-            </Button>
-          )}
         </>
       )}
     </section>
+  );
+}
+
+/** The element that scrolls `element` up and down: its nearest scrolling ancestor, else the page. */
+function scrollerOf(element: Element): Element {
+  for (let parent = element.parentElement; parent !== null; parent = parent.parentElement) {
+    if (/auto|scroll/.test(getComputedStyle(parent).overflowY) && parent.scrollHeight > parent.clientHeight) {
+      return parent;
+    }
+  }
+  return document.scrollingElement ?? document.documentElement;
+}
+
+/**
+ * Sits on top of the list, where older finished tasks go, and loads the next page of them each
+ * time the user scrolls up while it is on screen or close to it. Showing the finished tasks
+ * alone loads none, and a page coming in above the rows on screen pushes it away until the user
+ * scrolls up to it again, so one move loads one page. After a failed page it waits for the user
+ * to try again, instead of asking the server over and over.
+ */
+function OlderTasksLoader({ loading, failed, onLoad }: { loading: boolean; failed: boolean; onLoad: () => void }) {
+  const top = useRef<HTMLDivElement>(null);
+  const latest = useRef({ loading, failed, onLoad });
+  useEffect(() => {
+    latest.current = { loading, failed, onLoad };
+  });
+  useEffect(() => {
+    const element = top.current!;
+    // Measured when the user moves rather than observed, since a jump to the top fires a single
+    // scroll event, before an observer would report the change.
+    const near = () => {
+      const { top, bottom } = element.getBoundingClientRect();
+      return bottom > -600 && top < window.innerHeight;
+    };
+    const scrolledUp = () => {
+      const { loading, failed, onLoad } = latest.current;
+      if (!loading && !failed && near()) onLoad();
+    };
+    // Scroll positions of the elements scrolling the list, to tell which way each one moved.
+    const positions = new WeakMap<Element, number>();
+    const scroller = scrollerOf(element);
+    positions.set(scroller, scroller.scrollTop);
+    const onScroll = (event: Event) => {
+      const scroller = event.target === document ? document.scrollingElement : event.target;
+      if (!(scroller instanceof Element) || !scroller.contains(element)) return;
+      const previous = positions.get(scroller) ?? scroller.scrollTop;
+      positions.set(scroller, scroller.scrollTop);
+      if (scroller.scrollTop < previous) scrolledUp();
+    };
+    // At the top nothing scrolls any more, but the wheel still turns.
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaY < 0 && scrollerOf(element).scrollTop <= 0) scrolledUp();
+    };
+    document.addEventListener("scroll", onScroll, { capture: true, passive: true });
+    document.addEventListener("wheel", onWheel, { passive: true });
+    return () => {
+      document.removeEventListener("scroll", onScroll, { capture: true });
+      document.removeEventListener("wheel", onWheel);
+    };
+  }, []);
+  return (
+    <div ref={top} className="flex min-h-8 items-center gap-2 text-sm text-muted-foreground">
+      <span role="status">{loading ? "Loading older finished tasks..." : ""}</span>
+      {failed && !loading && (
+        <>
+          <span role="alert">Could not load older finished tasks.</span>
+          <Button size="sm" variant="secondary" label="Try again" onClick={onLoad} />
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A filter chip in the hue of its tone: outlined while off, filled like the status chip while on.
+ * The Astryx toggle alone is neutral, which loses the status colours.
+ */
+function filterChipStyle(tone: Tone, pressed: boolean, filled: string = toneChip[tone]) {
+  return cn(
+    "gap-1 rounded-full border px-2",
+    pressed
+      ? cn(filled, "border-transparent hover:brightness-95 dark:hover:brightness-125")
+      : cn(toneOutline[tone], "bg-transparent"),
   );
 }
 
@@ -422,78 +506,58 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
       aria-label="Task filters"
       className="flex flex-1 flex-wrap items-center justify-end gap-2 max-md:grid max-md:basis-full max-md:grid-cols-2"
     >
-      <input
+      <TextInput
         type="search"
-        aria-label="Search tasks"
+        label="Search tasks"
+        isLabelHidden
+        size="sm"
         placeholder="Search title, description, or #number"
-        className={cn(compactSelectClass, "w-56 max-md:col-span-2 max-md:w-full")}
+        containerClassName="w-56 max-md:col-span-2 max-md:w-full"
         value={filter.query}
-        onChange={(event) => onChange({ ...filter, query: event.target.value })}
+        onChange={(query) => onChange({ ...filter, query })}
       />
       <div role="group" aria-label="Status filter" className="flex flex-wrap gap-1 max-md:col-span-2 max-md:gap-2">
-        {shownStatuses.map((status) => {
-          const selected = filter.statuses.includes(status);
-          const tone = statusTones[status];
-          // Selected: filled like the status chip, with a check. Not selected: outlined in the
-          // same hue, with a dot.
-          return (
-            <button
-              key={status}
-              type="button"
-              className={cn(
-                "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-xs font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11",
-                selected
-                  ? cn(shownStatusStyle(status), "border-transparent hover:brightness-95 dark:hover:brightness-125")
-                  : cn(toneOutline[tone], "bg-transparent hover:bg-muted"),
-              )}
-              aria-pressed={selected}
-              onClick={() => onChange({ ...filter, statuses: toggleStatus(filter.statuses, status) })}
-            >
-              {selected ? (
-                <Check aria-hidden className="size-3" />
-              ) : (
-                <span aria-hidden className={cn("size-1.5 rounded-full", toneFill[tone])} />
-              )}
-              {statusNames[status]}
-            </button>
-          );
-        })}
-      </div>
-      <select
-        aria-label="Type filter"
-        className={compactSelectClass}
-        value={filter.type ?? "all"}
-        onChange={(event) =>
-          onChange({ ...filter, type: event.target.value === "all" ? null : (event.target.value as TaskType) })
-        }
-      >
-        <option value="all">All types</option>
-        {taskTypes.map((type) => (
-          <option key={type} value={type}>
-            {type}
-          </option>
+        {shownStatuses.map((status) => (
+          // Not selected: a dot in the hue of the status chip. Selected: a check.
+          <ToggleButton
+            key={status}
+            size="sm"
+            label={statusNames[status]}
+            icon={<span aria-hidden className={cn("size-1.5 rounded-full", toneFill[statusTones[status]])} />}
+            pressedIcon={<Check aria-hidden />}
+            className={filterChipStyle(
+              statusTones[status],
+              filter.statuses.includes(status),
+              shownStatusStyle(status),
+            )}
+            isPressed={filter.statuses.includes(status)}
+            onPressedChange={() => onChange({ ...filter, statuses: toggleStatus(filter.statuses, status) })}
+          >
+            {statusNames[status]}
+          </ToggleButton>
         ))}
-      </select>
-      <button
-        type="button"
-        className={cn(
-          "inline-flex h-6 shrink-0 items-center gap-1 rounded-full border px-2 text-xs font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11",
-          filter.autopilot
-            ? cn(toneChip.info, "border-transparent hover:brightness-95 dark:hover:brightness-125")
-            : cn(toneOutline.info, "bg-transparent hover:bg-muted"),
-        )}
-        aria-pressed={filter.autopilot}
-        title="Only tasks marked for autopilot"
-        onClick={() => onChange({ ...filter, autopilot: !filter.autopilot })}
+      </div>
+      <Selector
+        label="Type filter"
+        isLabelHidden
+        size="sm"
+        value={filter.type ?? "all"}
+        options={[{ value: "all", label: "All types" }, ...taskTypes]}
+        onChange={(value) => onChange({ ...filter, type: value === "all" ? null : (value as TaskType) })}
+      />
+      <ToggleButton
+        size="sm"
+        label="Autopilot"
+        tooltip="Only tasks marked for autopilot"
+        icon={<Bot aria-hidden />}
+        className={filterChipStyle("info", filter.autopilot)}
+        isPressed={filter.autopilot}
+        onPressedChange={(autopilot) => onChange({ ...filter, autopilot })}
       >
-        <Bot aria-hidden className="size-3" />
         Autopilot
-      </button>
+      </ToggleButton>
       {isFilterActive(filter) && (
-        <Button size="xs" variant="ghost" onClick={() => onChange(emptyTaskFilter)}>
-          <X />
-          Clear filters
-        </Button>
+        <Button size="sm" variant="ghost" label="Clear filters" icon={<X />} onClick={() => onChange(emptyTaskFilter)} />
       )}
     </div>
   );
@@ -543,34 +607,29 @@ function DeleteDoneTasks({ workspace }: { workspace: Workspace }) {
             </span>
             <Button
               changesData
-              size="xs"
+              size="sm"
               variant="destructive"
-              disabled={deleteDone.isPending || counted === undefined || count.isFetching}
+              label={deleteDone.isPending ? "Deleting..." : "Confirm delete"}
+              icon={<Trash2 />}
+              isDisabled={deleteDone.isPending || counted === undefined || count.isFetching}
               onClick={() => deleteDone.mutate(workspace.id, { onSuccess: stopConfirming })}
-            >
-              <Trash2 />
-              {deleteDone.isPending ? "Deleting..." : "Confirm delete"}
-            </Button>
+            />
             {/* Focus lands on Back, so pressing Enter or Space again cannot delete. */}
-            <Button size="xs" variant="ghost" autoFocus onClick={stopConfirming}>
-              Back
-            </Button>
+            <Button size="sm" variant="ghost" label="Back" autoFocus onClick={stopConfirming} />
           </>
         ) : (
           <Button
-            size="xs"
+            size="sm"
             variant="ghost"
-            title="Move every done task of this workspace to the archive"
+            label="Delete done"
+            icon={<Trash2 />}
+            tooltip="Move every done task of this workspace to the archive"
             autoFocus={refocus}
-            className="text-destructive hover:bg-destructive/10 hover:text-destructive dark:hover:bg-destructive/20"
             onClick={() => {
               deleteDone.reset();
               setOpenedAt(Date.now());
             }}
-          >
-            <Trash2 />
-            Delete done
-          </Button>
+          />
         )}
       </div>
       {deleteDone.isError ? (

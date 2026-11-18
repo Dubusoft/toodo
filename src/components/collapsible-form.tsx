@@ -1,7 +1,7 @@
 import { useEffect, useRef, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { X } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/button";
 import { useNarrow } from "@/lib/narrow";
 import { cn } from "@/lib/utils";
 
@@ -87,9 +87,7 @@ export function CollapsibleForm({
           {expanded && (
             <div className="flex items-center gap-2">
               <h3 className="min-w-0 flex-1 text-sm font-medium">{label}</h3>
-              <Button type="button" size="icon-xs" variant="ghost" aria-label={`Close ${label}`} title="Close (Esc)" onClick={close}>
-                <X />
-              </Button>
+              <IconButton size="sm" variant="ghost" label={`Close ${label}`} tooltip="Close (Esc)" icon={<X />} onClick={close} />
             </div>
           )}
           {children}

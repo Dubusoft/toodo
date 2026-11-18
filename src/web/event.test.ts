@@ -135,7 +135,7 @@ describe("event stream connection", () => {
   it("forgets a token the server rejects and stops retrying", async () => {
     vi.useFakeTimers();
     localStorage.setItem(TOKEN_KEY, "revoked");
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response("no", { status: 401 }));
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response("Toodo API: this device's token has expired.", { status: 401 }));
     vi.stubGlobal("fetch", fetch);
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { listen } = await freshEventModule();

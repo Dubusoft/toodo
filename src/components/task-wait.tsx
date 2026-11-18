@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { AlarmClock } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Button } from "@/components/button";
 import { inputClass } from "@/components/workspace-list";
 import type { Task, Timestamp } from "@/lib/bindings";
 import { useWaitTask } from "@/lib/queries";
@@ -64,6 +65,7 @@ export function WaitForm({ task, onDone }: { task: Task; onDone: () => void }) {
           : `Move the end of the wait; #${task.id} then returns to ${statusNames[task.wait.status].toLowerCase()}.`}
       </p>
       <div className="flex flex-wrap gap-1 max-md:gap-2">
+        {/* Native: Astryx DateInput picks a date only, and this needs a date and a time. */}
         <input
           type="datetime-local"
           className={cn(inputClass, "w-auto")}
@@ -73,22 +75,26 @@ export function WaitForm({ task, onDone }: { task: Task; onDone: () => void }) {
           required
           autoFocus
         />
-        <input
-          className={cn(inputClass, "min-w-0 flex-1 basis-48")}
-          aria-label={`Reason #${task.id} waits`}
+        <TextInput
+          containerClassName="min-w-0 flex-1 basis-48"
+          label={`Reason #${task.id} waits`}
+          isLabelHidden
           placeholder="Why it waits (optional)"
           value={reason}
-          onChange={(e) => setReason(e.target.value)}
+          onChange={setReason}
         />
       </div>
       <div className="flex gap-1">
-        <Button changesData type="submit" size="xs" disabled={waitTask.isPending || !valid}>
-          <AlarmClock />
-          {waitTask.isPending ? "Saving..." : task.wait === null ? "Wait" : "Change wait"}
-        </Button>
-        <Button type="button" size="xs" variant="ghost" onClick={onDone}>
-          Back
-        </Button>
+        <Button
+          changesData
+          type="submit"
+          size="sm"
+          variant="primary"
+          icon={<AlarmClock />}
+          label={waitTask.isPending ? "Saving..." : task.wait === null ? "Wait" : "Change wait"}
+          isDisabled={waitTask.isPending || !valid}
+        />
+        <Button type="button" size="sm" variant="ghost" label="Back" onClick={onDone} />
       </div>
       {waitTask.isError && (
         <p role="alert" className="text-xs text-destructive">

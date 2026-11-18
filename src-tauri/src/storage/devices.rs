@@ -57,8 +57,15 @@ pub enum DeviceAuth {
 }
 
 impl Storage {
-    /// Adds a device whose access token hashes to `token_hash`, with `scope`, expiring
-    /// `lifetime_days` days from now (never for `None`); it counts as seen now.
+    /// Registers a device named `label` whose access token hashes to `token_hash`, with
+    /// `scope`, expiring `lifetime_days` days from now (never for `None`); it counts as
+    /// seen now.
+    ///
+    /// A device that is not revoked and has the same name is the same browser signing in
+    /// again, e.g. after it lost its stored token: the most recently seen one keeps its id
+    /// and takes the new token, scope, and lifetime, so its old token stops working and its
+    /// push subscription, which belonged to the lost state, is dropped. Any other device
+    /// that is not revoked and has that name is revoked, so repeated sign-ins leave one.
     pub fn create_device(
         &mut self,
         label: &DeviceLabel,
@@ -67,19 +74,46 @@ impl Storage {
         lifetime_days: Option<u32>,
     ) -> Result<Device> {
         let at = self.now();
+        let expires_at = expiry(at, lifetime_days);
         let tx = self.conn.transaction()?;
-        tx.execute(
-            "INSERT INTO devices (label, token_hash, created_at, last_seen_at, expires_at, scope)
-             VALUES (?1, ?2, ?3, ?3, ?4, ?5)",
-            rusqlite::params![
-                label.as_str(),
-                token_hash,
-                at,
-                expiry(at, lifetime_days),
-                scope.as_str()
-            ],
-        )?;
-        let device = find(&tx, DeviceId(tx.last_insert_rowid()))?;
+        let namesakes = {
+            let mut statement = tx.prepare(
+                "SELECT id FROM devices WHERE label = ?1 AND revoked_at IS NULL
+                 ORDER BY last_seen_at DESC, id DESC",
+            )?;
+            statement
+                .query_map([label.as_str()], |row| row.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let id = match namesakes.split_first() {
+            Some((&kept, others)) => {
+                tx.execute(
+                    "UPDATE devices
+                     SET token_hash = ?2, last_seen_at = ?3, expires_at = ?4, scope = ?5
+                     WHERE id = ?1",
+                    rusqlite::params![kept, token_hash, at, expires_at, scope.as_str()],
+                )?;
+                for &other in others {
+                    tx.execute(
+                        "UPDATE devices SET revoked_at = ?2 WHERE id = ?1",
+                        [other, at],
+                    )?;
+                }
+                for &id in &namesakes {
+                    tx.execute("DELETE FROM push_subscriptions WHERE device_id = ?1", [id])?;
+                }
+                kept
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO devices (label, token_hash, created_at, last_seen_at, expires_at, scope)
+                     VALUES (?1, ?2, ?3, ?3, ?4, ?5)",
+                    rusqlite::params![label.as_str(), token_hash, at, expires_at, scope.as_str()],
+                )?;
+                tx.last_insert_rowid()
+            }
+        };
+        let device = find(&tx, DeviceId(id))?;
         tx.commit()?;
         Ok(device)
     }
@@ -307,6 +341,75 @@ mod tests {
         storage.revoke_device(laptop.id).unwrap();
         assert_eq!(names(&storage), ["Phone", "Laptop"]);
         assert_eq!(storage.list_devices().unwrap()[0].id, phone.id);
+    }
+
+    #[test]
+    fn signing_in_again_under_the_same_name_reuses_the_device() {
+        let (mut storage, clock) = storage();
+        let phone = add(&mut storage, "Phone", PHONE);
+        let laptop = add(&mut storage, "Laptop", LAPTOP);
+
+        clock.store(2_000, Ordering::SeqCst);
+        let again = storage
+            .create_device(
+                &label("Phone"),
+                &"3".repeat(64),
+                DeviceScope::ReadOnly,
+                Some(1),
+            )
+            .unwrap();
+        assert_eq!(again.id, phone.id);
+        assert_eq!((again.created_at, again.last_seen_at), (1_000, 2_000));
+        assert_eq!(
+            (again.expires_at, again.scope),
+            (Some(2_000 + DAY), DeviceScope::ReadOnly)
+        );
+        assert_eq!(
+            storage.authenticate_device(PHONE).unwrap(),
+            DeviceAuth::Unknown
+        );
+        assert_eq!(active(&storage, &"3".repeat(64)).unwrap().id, phone.id);
+        assert_eq!(active(&storage, LAPTOP).unwrap().id, laptop.id);
+        assert_eq!(storage.list_devices().unwrap().len(), 2);
+
+        // A revoked device stays revoked: signing in again under its name adds a device.
+        storage.revoke_device(laptop.id).unwrap();
+        let fresh = add(&mut storage, "Laptop", &"4".repeat(64));
+        assert_ne!(fresh.id, laptop.id);
+        assert_eq!(storage.list_devices().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn signing_in_again_revokes_the_other_devices_of_that_name() {
+        let (mut storage, clock) = storage();
+        // Devices registered before names were reused may share one.
+        for (at, hash) in [(1_000, PHONE), (1_100, LAPTOP)] {
+            clock.store(at, Ordering::SeqCst);
+            storage
+                .conn
+                .execute(
+                    "INSERT INTO devices (label, token_hash, created_at, last_seen_at, scope)
+                     VALUES ('Chrome on Windows', ?1, ?2, ?2, 'full')",
+                    rusqlite::params![hash, at],
+                )
+                .unwrap();
+        }
+        let newest = active(&storage, LAPTOP).unwrap();
+
+        clock.store(2_000, Ordering::SeqCst);
+        let again = add(&mut storage, "Chrome on Windows", &"3".repeat(64));
+        assert_eq!(again.id, newest.id);
+        let revoked: Vec<_> = storage
+            .list_devices()
+            .unwrap()
+            .into_iter()
+            .map(|device| (device.id == newest.id, device.revoked_at))
+            .collect();
+        assert_eq!(revoked, [(true, None), (false, Some(2_000))]);
+        assert_eq!(
+            storage.authenticate_device(PHONE).unwrap(),
+            DeviceAuth::Unknown
+        );
     }
 
     #[test]

@@ -1,11 +1,11 @@
 import { Suspense, useState, type FormEvent } from "react";
-import { Button } from "@/components/ui/button";
-import { inputClass } from "@/components/workspace-list";
+import { TextArea } from "@astryxdesign/core/TextArea";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Button } from "@/components/button";
 import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import { Markdown } from "@/components/task-common";
 import type { Workspace } from "@/lib/bindings";
 import { useUpdateWorkspace } from "@/lib/queries";
-import { cn } from "@/lib/utils";
 
 /** The link a repository reference points to: a URL as it is, `owner/repo` on GitHub; `null` for anything else. */
 export function repositoryUrl(repository: string): string | null {
@@ -71,7 +71,7 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
                 {workspace.repository}
               </a>
             ))}
-          <Button size="xs" variant="ghost" aria-label="Edit workspace" onClick={open}>
+          <Button size="sm" variant="ghost" label="Edit workspace" onClick={open}>
             Edit
           </Button>
         </p>
@@ -93,22 +93,15 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
       className="flex flex-col gap-1.5"
       onKeyDown={guard.onKeyDown}
     >
-      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-        Name
-        <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
-      </label>
-      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-        Description (optional, Markdown)
-        <textarea
-          className={cn(inputClass, "h-24 py-1.5 max-md:h-32")}
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-        />
-      </label>
-      <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-        Repository (optional, e.g. owner/repo or a URL)
-        <input className={cn(inputClass, "font-mono")} value={repository} onChange={(e) => setRepository(e.target.value)} />
-      </label>
+      <TextInput size="sm" label="Name" value={name} onChange={setName} hasAutoFocus />
+      <TextArea size="sm" label="Description (optional, Markdown)" rows={4} value={description} onChange={setDescription} />
+      <TextInput
+        size="sm"
+        label="Repository (optional, e.g. owner/repo or a URL)"
+        hasSpellCheck={false}
+        value={repository}
+        onChange={setRepository}
+      />
       {guard.asking ? (
         <DiscardConfirm
           label="Discard workspace changes"
@@ -118,12 +111,14 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
         />
       ) : (
         <div className="flex items-center gap-2">
-          <Button type="submit" size="sm" variant="outline" disabled={updateWorkspace.isPending || name.trim() === ""}>
-            Save
-          </Button>
-          <Button type="button" size="sm" variant="ghost" onClick={guard.request}>
-            Discard
-          </Button>
+          <Button
+            type="submit"
+            size="sm"
+            variant="secondary"
+            label="Save"
+            isDisabled={updateWorkspace.isPending || name.trim() === ""}
+          />
+          <Button type="button" size="sm" variant="ghost" label="Discard" onClick={guard.request} />
         </div>
       )}
       {updateWorkspace.isError && (

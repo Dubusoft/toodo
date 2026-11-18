@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { Plus, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { compactSelectClass, inputClass } from "@/components/workspace-list";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Button, IconButton } from "@/components/button";
 import type { CheckKind, Criterion, CriterionId, CriterionInput, TaskId } from "@/lib/bindings";
-import { cn } from "@/lib/utils";
 
 
 export const criterionKindLabels: Record<CheckKind, string> = {
@@ -97,52 +97,53 @@ export function CriteriaEditor({
                 <span aria-hidden className="w-4 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
                   {n}
                 </span>
-                <input
-                  className={cn(inputClass, "h-7 flex-1 basis-48 max-md:col-span-2")}
-                  aria-label={`Criterion ${n} text${of}`}
+                <TextInput
+                  size="sm"
+                  containerClassName="flex-1 basis-48 max-md:col-span-2"
+                  label={`Criterion ${n} text${of}`}
+                  isLabelHidden
                   placeholder="What has to hold, e.g. Docs updated"
                   value={draft.text}
-                  onChange={(e) => update(draft.key, { text: e.target.value })}
-                  autoFocus={draft.key === addedKey}
+                  onChange={(text) => update(draft.key, { text })}
+                  hasAutoFocus={draft.key === addedKey}
                 />
-                <select
-                  aria-label={`Criterion ${n} kind${of}`}
-                  className={cn(compactSelectClass, "h-7 max-md:col-start-2 max-md:row-start-2")}
-                  value={draft.kind}
-                  title="How the criterion is checked"
-                  onChange={(e) => update(draft.key, { kind: e.target.value as CheckKind })}
-                >
-                  {criterionKinds.map((kind) => (
-                    <option key={kind} value={kind}>
-                      {criterionKindLabels[kind]}
-                    </option>
-                  ))}
-                </select>
-                {takesTarget(draft.kind) && (
-                  <input
-                    className={cn(
-                      inputClass,
-                      "h-7 flex-1 basis-40 font-mono max-md:col-span-2 max-md:col-start-2 max-md:row-start-3 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20",
-                    )}
-                    aria-label={`Criterion ${n} target${of}`}
-                    aria-invalid={problem !== null}
-                    title={problem ?? "Toodo checks that a GET of this URL succeeds"}
-                    placeholder="https://example.com/health"
-                    value={draft.target}
-                    onChange={(e) => update(draft.key, { target: e.target.value })}
+                <span className="max-md:col-start-2 max-md:row-start-2" title="How the criterion is checked">
+                  <Selector
+                    size="sm"
+                    label={`Criterion ${n} kind${of}`}
+                    isLabelHidden
+                    value={draft.kind}
+                    options={criterionKinds.map((kind) => ({ value: kind, label: criterionKindLabels[kind] }))}
+                    onChange={(kind) => update(draft.key, { kind: kind as CheckKind })}
                   />
+                </span>
+                {takesTarget(draft.kind) && (
+                  <span
+                    className="flex-1 basis-40 max-md:col-span-2 max-md:col-start-2 max-md:row-start-3"
+                    title={problem ?? "Toodo checks that a GET of this URL succeeds"}
+                  >
+                    <TextInput
+                      size="sm"
+                      controlClassName="font-mono"
+                      label={`Criterion ${n} target${of}`}
+                      isLabelHidden
+                      status={problem === null ? undefined : { type: "error", message: problem }}
+                      statusVariant="tooltip"
+                      placeholder="https://example.com/health"
+                      value={draft.target}
+                      onChange={(target) => update(draft.key, { target })}
+                    />
+                  </span>
                 )}
-                <Button
-                  type="button"
-                  size="icon-xs"
+                <IconButton
+                  size="sm"
                   variant="ghost"
-                  aria-label={`Remove criterion ${n}${of}`}
-                  title="Remove criterion"
+                  label={`Remove criterion ${n}${of}`}
+                  tooltip="Remove criterion"
+                  icon={<X />}
                   className="max-md:col-start-3 max-md:row-start-2"
                   onClick={() => onChange(criteria.filter((other) => other.key !== draft.key))}
-                >
-                  <X />
-                </Button>
+                />
               </li>
             );
           })}
@@ -150,15 +151,14 @@ export function CriteriaEditor({
       )}
       <Button
         type="button"
-        size="xs"
+        size="sm"
         variant="ghost"
         className="self-start"
+        label="Add criterion"
+        icon={<Plus />}
         aria-label={taskId === undefined ? undefined : `Add criterion to #${taskId}`}
         onClick={add}
-      >
-        <Plus />
-        Add criterion
-      </Button>
+      />
     </div>
   );
 }

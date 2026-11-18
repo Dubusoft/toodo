@@ -1,45 +1,17 @@
-import { useId, useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent } from "react";
 import { Plus, X } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { TextArea } from "@astryxdesign/core/TextArea";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Button, IconButton } from "@/components/button";
 import type { NewWorkspace, Workspace, WorkspaceId } from "@/lib/bindings";
-import { keepFocusIn } from "@/lib/focus-trap";
+import { useNarrow } from "@/lib/narrow";
 import { useCreateWorkspace, useDeleteWorkspace, useWorkspaces } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { reachability, subscribeReachability, unreachableCause } from "@/web/connection";
 
 export const inputClass =
   "h-8 w-full min-w-0 rounded-lg border border-input bg-background px-2.5 text-sm outline-none max-md:h-11 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50";
-
-/** A small select for toolbars and inline pickers. */
-export const compactSelectClass =
-  "h-6 rounded-md border border-input bg-background px-1.5 text-xs outline-none max-md:h-11 max-md:px-2.5 max-md:text-sm focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50";
-
-/** A field with a visible label above it and optional help text below. */
-function Field({
-  label,
-  help,
-  children,
-}: {
-  label: string;
-  help?: string;
-  children: (ids: { id: string; describedBy: string | undefined }) => ReactNode;
-}) {
-  const id = useId();
-  const helpId = `${id}-help`;
-  return (
-    <div className="flex flex-col gap-1">
-      <label htmlFor={id} className="text-xs text-muted-foreground">
-        {label}
-      </label>
-      {children({ id, describedBy: help ? helpId : undefined })}
-      {help && (
-        <p id={helpId} className="text-xs text-muted-foreground">
-          {help}
-        </p>
-      )}
-    </div>
-  );
-}
 
 type WorkspaceListProps = {
   selectedId: WorkspaceId | null;
@@ -65,20 +37,19 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
           Workspaces
         </h2>
         <Button
-          size="xs"
-          variant="outline"
+          size="sm"
+          variant="secondary"
+          label="Add"
+          icon={<Plus />}
           aria-label="Add workspace"
-          title="Add a workspace"
+          tooltip="Add a workspace"
           aria-haspopup="dialog"
           aria-expanded={adding}
           onClick={(event) => {
             opener.current = event.currentTarget;
             setAdding(true);
           }}
-        >
-          <Plus />
-          Add
-        </Button>
+        />
       </div>
       {workspaces.isPending && !serverDown && (
         <p className="text-sm text-muted-foreground">Loading workspaces...</p>
@@ -89,9 +60,7 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
             Failed to load workspaces:{" "}
             {workspaces.error?.message ?? (unreachableCause() || "The Toodo server does not answer.")}
           </p>
-          <Button size="xs" variant="outline" onClick={() => void workspaces.refetch()}>
-            Retry now
-          </Button>
+          <Button size="sm" variant="secondary" label="Retry now" onClick={() => void workspaces.refetch()} />
         </div>
       )}
       {workspaces.data?.length === 0 && !adding && (
@@ -155,19 +124,18 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           )}
         </button>
         {!confirming && (
-          <Button
-            size="icon-xs"
+          <IconButton
+            size="sm"
             variant="ghost"
-            aria-label={`Remove ${workspace.name}`}
-            title="Move the workspace and its tasks to the archive"
-            className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 hover:text-destructive focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+            label={`Remove ${workspace.name}`}
+            tooltip="Move the workspace and its tasks to the archive"
+            icon={<X />}
+            className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
             onClick={() => {
               deleteWorkspace.reset();
               setConfirming(true);
             }}
-          >
-            <X />
-          </Button>
+          />
         )}
       </div>
       {confirming && (
@@ -194,17 +162,14 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           <div className="flex gap-1">
             <Button
               changesData
-              size="xs"
+              size="sm"
               variant="destructive"
+              label={deleteWorkspace.isPending ? "Removing..." : "Remove"}
               aria-label={`Confirm remove ${workspace.name}`}
-              disabled={deleteWorkspace.isPending}
+              isDisabled={deleteWorkspace.isPending}
               onClick={() => deleteWorkspace.mutate(workspace.id)}
-            >
-              {deleteWorkspace.isPending ? "Removing..." : "Remove"}
-            </Button>
-            <Button size="xs" variant="ghost" autoFocus onClick={() => setConfirming(false)}>
-              Back
-            </Button>
+            />
+            <Button size="sm" variant="ghost" label="Back" autoFocus onClick={() => setConfirming(false)} />
           </div>
         </div>
       )}
@@ -230,8 +195,7 @@ type NewWorkspaceDialogProps = {
 /** Adds a workspace: a name, an optional Markdown description, and an optional repository reference. */
 export function NewWorkspaceDialog({ onCreated, onClose }: NewWorkspaceDialogProps) {
   const createWorkspace = useCreateWorkspace();
-  const dialog = useRef<HTMLDivElement>(null);
-  const titleId = useId();
+  const narrow = useNarrow();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [repository, setRepository] = useState("");
@@ -252,91 +216,44 @@ export function NewWorkspaceDialog({ onCreated, onClose }: NewWorkspaceDialogPro
   }
 
   return (
-    <div className="fixed inset-0 z-50">
-      <div aria-hidden className="absolute inset-0 bg-black/40 max-md:hidden" onClick={close} />
-      <div
-        ref={dialog}
-        role="dialog"
-        aria-modal
-        aria-labelledby={titleId}
-        onKeyDown={(event) => {
-          if (event.key === "Tab") keepFocusIn(dialog.current, event.nativeEvent);
-          else escapeCloses(onClose, busy)(event);
-        }}
-        className={cn(
-          "relative flex flex-col overflow-hidden bg-background text-foreground",
-          "max-md:h-full max-md:pt-[env(safe-area-inset-top)] max-md:pb-[env(safe-area-inset-bottom)]",
-          "md:absolute md:top-1/2 md:left-1/2 md:max-h-[min(40rem,calc(100dvh-4rem))] md:w-[min(36rem,calc(100vw-4rem))] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-2xl md:border md:shadow-xl",
-        )}
-      >
-        <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
-          <div className="flex shrink-0 items-center gap-2 px-4 pt-3 pb-2 md:px-6 md:pt-4">
-            <h2 id={titleId} className="min-w-0 flex-1 truncate text-base font-semibold">
-              New workspace
-            </h2>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Close new workspace"
-              title="Close (Esc)"
-              disabled={busy}
-              onClick={close}
-            >
-              <X />
-            </Button>
-          </div>
-          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain border-t px-4 py-4 md:px-6">
-            <Field label="Name">
-              {({ id }) => (
-                <input
-                  id={id}
-                  className={inputClass}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  required
-                  autoFocus
-                />
-              )}
-            </Field>
-            <Field label="Description" help="Optional, Markdown.">
-              {({ id, describedBy }) => (
-                <textarea
-                  id={id}
-                  className={cn(inputClass, "h-24 py-1.5 max-md:h-32")}
-                  aria-describedby={describedBy}
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                />
-              )}
-            </Field>
-            <Field label="Repository" help="Optional, e.g. owner/repo or a URL. Toodo only shows it.">
-              {({ id, describedBy }) => (
-                <input
-                  id={id}
-                  className={inputClass}
-                  aria-describedby={describedBy}
-                  value={repository}
-                  onChange={(e) => setRepository(e.target.value)}
-                />
-              )}
-            </Field>
-            {createWorkspace.isError && (
-              <p role="alert" className="text-xs break-words text-destructive">
-                {createWorkspace.error.message}
-              </p>
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-2 border-t px-4 py-3 md:px-6">
-            <Button type="button" variant="ghost" disabled={busy} onClick={close}>
-              Cancel
-            </Button>
-            <Button type="submit" className="ml-auto" changesData disabled={busy || name.trim() === ""}>
-              {busy ? "Adding..." : "Add workspace"}
-            </Button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <Dialog
+      isOpen
+      onOpenChange={(open) => !open && close()}
+      purpose="form"
+      variant={narrow ? "fullscreen" : "standard"}
+      width={576}
+      maxHeight="min(40rem, calc(100dvh - 4rem))"
+    >
+      <DialogHeader title="New workspace" onOpenChange={busy ? undefined : (open) => !open && close()} />
+      {/* Escape is handled here too, so it closes the dialog (unless busy) wherever the focus is in it. */}
+      <form onSubmit={submit} onKeyDown={escapeCloses(onClose, busy)} className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain py-4">
+          <TextInput label="Name" value={name} onChange={setName} hasAutoFocus />
+          <TextArea label="Description" description="Optional, Markdown." rows={4} value={description} onChange={setDescription} />
+          <TextInput
+            label="Repository"
+            description="Optional, e.g. owner/repo or a URL. Toodo only shows it."
+            value={repository}
+            onChange={setRepository}
+          />
+          {createWorkspace.isError && (
+            <p role="alert" className="text-xs break-words text-destructive">
+              {createWorkspace.error.message}
+            </p>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2 border-t pt-3">
+          <Button variant="ghost" label="Cancel" isDisabled={busy} onClick={close} />
+          <Button
+            type="submit"
+            variant="primary"
+            className="ml-auto"
+            changesData
+            label={busy ? "Adding..." : "Add workspace"}
+            isDisabled={busy || name.trim() === ""}
+          />
+        </div>
+      </form>
+    </Dialog>
   );
 }

@@ -75,6 +75,11 @@ export const commands = {
 	 */
 	createTask: (task: NewTask) => typedError<Task, CommandError>(invoke("create_task", { task })),
 	updateTask: (task: TaskEdit) => typedError<Task, CommandError>(invoke("update_task", { task })),
+	/**
+	 *  Moves a task, in any status, into another live workspace, keeping its ID, history,
+	 *  notes, criteria, refs, and links.
+	 */
+	moveTask: (id: TaskId, workspaceId: WorkspaceId) => typedError<Task, CommandError>(invoke("move_task", { id, workspaceId })),
 	/**  Pauses an `in_progress` or `in_review` task by returning it to `planned`. */
 	pauseTask: (id: TaskId) => typedError<Task, CommandError>(invoke("pause_task", { id })),
 	/**

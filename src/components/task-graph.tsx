@@ -1,7 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Bot, ChevronLeft, ChevronRight, ChevronsLeft, TriangleAlert } from "lucide-react";
+import { Bot, ChevronLeft, ChevronsLeft, TriangleAlert } from "lucide-react";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Collapsible } from "@astryxdesign/core/Collapsible";
+import { Selector } from "@astryxdesign/core/Selector";
+import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
 import { EmptyState } from "@/components/task-list";
-import { compactSelectClass } from "@/components/workspace-list";
 import {
   BaseEdge,
   Handle,
@@ -23,7 +26,7 @@ import "@xyflow/react/dist/style.css";
 import { DetailsSheet } from "@/components/details-sheet";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
 import { TaskTypeBadge } from "@/components/task-type-badge";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/button";
 import type { Task, TaskId, Timestamp } from "@/lib/bindings";
 import {
   useAddDependency,
@@ -39,6 +42,7 @@ import {
   layoutTimeline,
   majorLabelOffset,
   openingViewport,
+  pixelsPerDay,
   waitingPrerequisites,
   relatedTasks,
   timelineAxis,
@@ -125,7 +129,10 @@ function prefersReducedMotion(): boolean {
 
 /** Whether Escape pressed on `target` belongs to a form field rather than to the timeline. */
 function isField(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && target.closest("input, textarea, select, [contenteditable='true']") !== null;
+  return (
+    target instanceof HTMLElement &&
+    target.closest("input, textarea, select, [role='combobox'], [contenteditable='true']") !== null
+  );
 }
 /** Width of the hover card of a bar. */
 const tooltipWidth = 288;
@@ -184,6 +191,7 @@ export function TaskGraph({
   onSelectedTaskChange: setSelectedTaskId,
   shownTaskId = null,
   onTaskShown,
+  onNearPast,
   renderDetail,
 }: {
   /** Tasks drawn on the timeline. */
@@ -206,6 +214,11 @@ export function TaskGraph({
   /** A task to select and pan to once it is on the timeline; `onTaskShown` is called when it is. */
   shownTaskId?: TaskId | null;
   onTaskShown?: () => void;
+  /**
+   * Called while the user pans or scrolls to within a screen of the earliest bar, to load older
+   * tasks; left out when there are none to load.
+   */
+  onNearPast?: () => void;
   /** Details of the task selected on the timeline, with its actions. */
   renderDetail: (task: Task, navigation: SheetNavigation) => ReactNode;
 }) {
@@ -259,6 +272,51 @@ export function TaskGraph({
     observer.observe(element);
     return () => observer.disconnect();
   }, []);
+  // Older tasks asked for with `onNearPast` move the start of the axis earlier, every bar right
+  // with it, and take rows above the ones shown, being older work. Once they are in, the view
+  // moves along, so it keeps showing the same days and the same task at its top.
+  const chart = `${scale}-${year ?? "all"}`;
+  const shownLayout = useRef<{ chart: string; start: Timestamp; rows: TaskId[] } | null>(null);
+  const pastAsked = useRef(false);
+  const lastViewportY = useRef(0);
+  useLayoutEffect(() => {
+    const previous = shownLayout.current;
+    const rows: TaskId[] = [];
+    for (const bar of layout.bars) rows[bar.row] = bar.task.id;
+    shownLayout.current = { chart, start: layout.start, rows };
+    const instance = flow.current;
+    if (!pastAsked.current || previous === null || previous.chart !== chart || instance === null) return;
+    if (rows.length <= previous.rows.length) return;
+    pastAsked.current = false;
+    const { x, y, zoom } = instance.getViewport();
+    const shift = ((previous.start - layout.start) / (24 * 60 * 60)) * pixelsPerDay[scale];
+    const topRow = Math.min(Math.max(Math.floor(-y / rowHeight), 0), previous.rows.length - 1);
+    const movedRow = rows.indexOf(previous.rows[topRow]);
+    const drop = movedRow === -1 ? 0 : (movedRow - topRow) * rowHeight;
+    void instance.setViewport({ x: x - shift, y: y - drop, zoom });
+  }, [chart, layout]);
+  function askPast() {
+    pastAsked.current = true;
+    onNearPast?.();
+  }
+  /**
+   * Asks for older tasks once the view is within a screen of the earliest bar, or of the top row
+   * while it moves up: older work runs left and on top.
+   */
+  function nearPast(viewport: { x: number; y: number }) {
+    const movedUp = viewport.y > lastViewportY.current;
+    lastViewportY.current = viewport.y;
+    const panel = container.current;
+    if (onNearPast === undefined || layout.bars.length === 0 || panel === null) return;
+    const earliest = Math.min(...layout.bars.map((bar) => bar.x));
+    if (-viewport.x < earliest + panel.clientWidth || (movedUp && -viewport.y < panel.clientHeight)) askPast();
+  }
+  // At the top row the view cannot move up any further, so scrolling up there asks by itself.
+  function scrollUpAtTop(event: WheelEvent) {
+    const panel = container.current;
+    if (onNearPast === undefined || event.deltaY >= 0 || flow.current === null || panel === null) return;
+    if (-flow.current.getViewport().y < panel.clientHeight) askPast();
+  }
   // Rows can be panned vertically only as far as they go; never into empty space.
   const translateExtent: [[number, number], [number, number]] = [
     [-Infinity, 0],
@@ -572,52 +630,40 @@ export function TaskGraph({
           !legendOpen && "max-md:flex-nowrap max-md:overflow-x-auto max-md:[scrollbar-width:none] max-md:*:shrink-0",
         )}
       >
-        <div role="group" aria-label="Timeline scale" className="flex gap-1">
-          {timelineScales.map((option) => (
-            <Button
-              key={option}
-              size="xs"
-              variant={scale === option ? "default" : "ghost"}
-              aria-pressed={scale === option}
-              onClick={() => onScaleChange(option)}
-            >
-              {scaleLabels[option]}
-            </Button>
-          ))}
-        </div>
-        <select
-          aria-label="Timeline period"
-          className={compactSelectClass}
-          value={year ?? "all"}
-          onChange={(event) => setYear(event.target.value === "all" ? null : Number(event.target.value))}
+        <ToggleButtonGroup
+          label="Timeline scale"
+          size="sm"
+          value={scale}
+          onChange={(next) => typeof next === "string" && onScaleChange(next as TimelineScale)}
         >
-          <option value="all">All time</option>
-          {timelineYears(tasks, now).map((option) => (
-            <option key={option} value={option}>
-              {option}
-            </option>
+          {timelineScales.map((option) => (
+            <ToggleButton key={option} value={option} label={scaleLabels[option]} />
           ))}
-        </select>
+        </ToggleButtonGroup>
+        <Selector
+          label="Timeline period"
+          isLabelHidden
+          size="sm"
+          options={[
+            { value: "all", label: "All time" },
+            ...timelineYears(tasks, now).map((option) => ({ value: String(option), label: String(option) })),
+          ]}
+          value={year === null ? "all" : String(year)}
+          onChange={(value) => setYear(value === "all" ? null : Number(value))}
+        />
         {layout.bars.length > 0 && (
           <div role="group" aria-label="Timeline position" className="flex gap-1">
-            <Button size="xs" variant="outline" onClick={showEarliest}>
-              <ChevronsLeft />
-              <span className="max-md:sr-only">Earliest task</span>
-            </Button>
-            <Button size="xs" variant="outline" disabled={layout.nowX === null} onClick={showToday}>
-              Today
-            </Button>
+            <Button size="sm" variant="secondary" icon={<ChevronsLeft />} label="Earliest task" onClick={showEarliest} />
+            <Button size="sm" variant="secondary" label="Today" isDisabled={layout.nowX === null} onClick={showToday} />
           </div>
         )}
-        <details
-          open={legendOpen}
-          onToggle={(event) => setLegendOpen(event.currentTarget.open)}
-          className="group min-w-0 text-muted-foreground open:basis-full"
+        <Collapsible
+          trigger="Legend"
+          chevronPosition="start"
+          isOpen={legendOpen}
+          onOpenChange={setLegendOpen}
+          className={cn("min-w-0 text-muted-foreground", legendOpen && "basis-full")}
         >
-        <summary className="flex min-h-7 cursor-pointer list-none items-center gap-1 font-medium max-md:min-h-11 [&::-webkit-details-marker]:hidden">
-          <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
-          Legend
-        </summary>
         <ul aria-label="Phases" className="flex flex-wrap gap-x-2 gap-y-1 pb-1 [&>li]:whitespace-nowrap">
           <li className="flex items-center gap-1">
             <span className="size-2 rotate-45 border border-muted-foreground" />
@@ -665,18 +711,17 @@ export function TaskGraph({
             arrow keys to move between rows.
           </span>
         </p>
-        </details>
+        </Collapsible>
       </div>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground empty:hidden">
         {selected.length > 0 && (
           <Button
-            size="xs"
-            variant="outline"
-            disabled={changing}
+            size="sm"
+            variant="secondary"
+            label={`Remove ${selected.map((edge) => `#${edge.source} \u2192 #${edge.target}`).join(", ")}`}
+            isDisabled={changing}
             onClick={() => removeEdges(selected.map((edge) => ({ source: String(edge.source), target: String(edge.target) })))}
-          >
-            Remove {selected.map((edge) => `#${edge.source} \u2192 #${edge.target}`).join(", ")}
-          </Button>
+          />
         )}
       </div>
       {confirmingEdge !== null && (
@@ -709,6 +754,8 @@ export function TaskGraph({
         <div
           ref={container}
           className="min-w-0 flex-1 rounded-lg border"
+          // Captured: React Flow stops the wheel events it pans with from bubbling.
+          onWheelCapture={(event) => scrollUpAtTop(event.nativeEvent)}
         >
           {layout.bars.length === 0 ? (
             <EmptyState
@@ -720,15 +767,13 @@ export function TaskGraph({
               }
               action={
                 year === null ? undefined : (
-                  <Button size="sm" variant="outline" onClick={() => setYear(null)}>
-                    Show all years
-                  </Button>
+                  <Button size="sm" variant="secondary" label="Show all years" onClick={() => setYear(null)} />
                 )
               }
             />
           ) : (
             <ReactFlow
-              key={`${scale}-${year ?? "all"}`}
+              key={chart}
               nodes={nodes}
               edges={edges}
               nodeTypes={nodeTypes}
@@ -755,6 +800,7 @@ export function TaskGraph({
               }}
               onNodeMouseLeave={hideTooltip}
               onMoveStart={() => setHovered(null)}
+              onMove={(_, viewport) => nearPast(viewport)}
               autoPanOnNodeFocus={false}
               onEdgesChange={changeEdges}
               onEdgesDelete={removeEdges}
@@ -799,12 +845,13 @@ export function TaskGraph({
                   className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted px-4 py-2 text-xs"
                 >
                   <span className="min-w-0 flex-1">Discard your unsaved changes to #{selectedTask.id}?</span>
-                  <Button size="xs" variant="outline" autoFocus onClick={() => setDiscarding(null)}>
-                    Keep editing
-                  </Button>
-                  <Button size="xs" variant="destructive" onClick={() => applySelection(discarding.next)}>
-                    Discard changes
-                  </Button>
+                  <Button size="sm" variant="secondary" label="Keep editing" autoFocus onClick={() => setDiscarding(null)} />
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    label="Discard changes"
+                    onClick={() => applySelection(discarding.next)}
+                  />
                 </div>
               )
             }
@@ -974,7 +1021,7 @@ function TimelineTooltip({
       }}
     >
       <div className="flex items-center gap-1.5">
-        {workspace !== null && <span className="rounded-sm bg-muted px-1 text-muted-foreground">{workspace}</span>}
+        {workspace !== null && <Badge label={workspace} />}
         <TaskTypeBadge type={task.taskType} className="px-1 leading-4" />
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
         <span className={cn("ml-auto shrink-0 rounded-full px-1.5 font-medium", statusStyle)}>{statusLabel}</span>

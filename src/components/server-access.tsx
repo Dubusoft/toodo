@@ -1,18 +1,42 @@
-import { useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
-import { Button } from "@/components/ui/button";
-import { inputClass } from "@/components/workspace-list";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
+import { Selector } from "@astryxdesign/core/Selector";
+import { TextInput } from "@astryxdesign/core/TextInput";
+import { Button } from "@/components/button";
 import { DEFAULT_ACCESS, guessDeviceLabel, LIFETIMES, signIn, TokenRejected, type DeviceScope } from "@/web/devices";
-import { getToken, setToken, subscribeToken } from "@/web/session";
+import { checkAccess, isSignedIn, setToken, subscribeToken } from "@/web/session";
 
 /**
- * Shows the app once the browser holds an access token the server accepts; until then,
- * a form asks for it. Signing in with the shared token from `web-token` in the server's
- * data directory registers this browser as a device with a token of its own.
+ * Shows the app once the browser holds an access token the server accepts, or Cloudflare
+ * Access in front of the server signs it in; otherwise a form asks for the token. Signing in
+ * with the shared token from `web-token` in the server's data directory registers this
+ * browser as a device with a token of its own.
  */
 export function ServerAccess({ children }: { children: ReactNode }) {
-  const token = useSyncExternalStore(subscribeToken, getToken);
-  return token === null ? <TokenForm /> : children;
+  const signedIn = useSyncExternalStore(subscribeToken, isSignedIn);
+  const [askedAccess, setAskedAccess] = useState(false);
+  useEffect(() => {
+    if (signedIn) return;
+    let current = true;
+    checkAccess()
+      .catch((error: unknown) => console.warn("toodo: could not ask the server about Cloudflare Access", error))
+      .finally(() => {
+        if (current) setAskedAccess(true);
+      });
+    return () => {
+      current = false;
+      setAskedAccess(false);
+    };
+  }, [signedIn]);
+  if (signedIn) return children;
+  return askedAccess ? <TokenForm /> : null;
 }
+
+const scopeOptions = [
+  { value: "full", label: "Full access" },
+  { value: "read", label: "Read-only" },
+];
+
+const lifetimeOptions = LIFETIMES.map(({ label, days }) => ({ value: days === null ? "never" : String(days), label }));
 
 function TokenForm() {
   const [token, setDraft] = useState("");
@@ -58,23 +82,18 @@ function TokenForm() {
           Sign in with the server's access token. This browser then gets a token of its own, which you can revoke under Devices.
         </p>
         <div className="flex flex-col gap-1">
-          <label htmlFor={`${id}-token`} className="text-xs text-muted-foreground">
-            Access token
-          </label>
-          <input
+          <TextInput
             ref={tokenField}
-            id={`${id}-token`}
-            className={`${inputClass} aria-invalid:border-destructive`}
+            label="Access token"
             type="password"
             autoComplete="current-password"
             value={token}
-            onChange={(event) => {
-              setDraft(event.target.value);
+            onChange={(value) => {
+              setDraft(value);
               setRejected(false);
             }}
-            aria-invalid={rejected || undefined}
+            status={rejected ? { type: "error" } : undefined}
             aria-describedby={rejected ? `${rejectedId} ${helpId}` : helpId}
-            required
           />
           {rejected && (
             <p id={rejectedId} role="alert" className="text-xs text-destructive">
@@ -86,34 +105,20 @@ function TokenForm() {
             Copy it from <code className="text-xs">web-token</code> in the server's data directory.
           </p>
         </div>
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Device name
-          <input
-            className={inputClass}
-            maxLength={80}
-            value={label}
-            onChange={(event) => setLabel(event.target.value)}
-            required
-          />
-        </label>
+        <TextInput
+          label="Device name"
+          description="Signing in again under a device's name replaces that device, so give each browser its own name."
+          value={label}
+          onChange={(value) => setLabel(value.slice(0, 80))}
+        />
         <div className="grid grid-cols-2 gap-2">
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Access
-            <select className={inputClass} value={scope} onChange={(event) => setScope(event.target.value as DeviceScope)}>
-              <option value="full">Full access</option>
-              <option value="read">Read-only</option>
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-            Token expires after
-            <select className={inputClass} value={lifetime} onChange={(event) => setLifetime(event.target.value)}>
-              {LIFETIMES.map(({ label, days }) => (
-                <option key={label} value={days === null ? "never" : String(days)}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Selector
+            label="Access"
+            options={scopeOptions}
+            value={scope}
+            onChange={(value) => setScope(value as DeviceScope)}
+          />
+          <Selector label="Token expires after" options={lifetimeOptions} value={lifetime} onChange={setLifetime} />
         </div>
         <p className="text-xs text-muted-foreground">
           Applies when you sign in with <code className="text-xs">web-token</code>. When the token expires, sign in again.
@@ -123,9 +128,12 @@ function TokenForm() {
             {error}
           </p>
         )}
-        <Button type="submit" disabled={checking || !token.trim() || !label.trim()}>
-          {checking ? "Checking..." : "Continue"}
-        </Button>
+        <Button
+          type="submit"
+          variant="primary"
+          label={checking ? "Checking..." : "Continue"}
+          isDisabled={checking || !token.trim() || !label.trim()}
+        />
       </form>
     </main>
   );

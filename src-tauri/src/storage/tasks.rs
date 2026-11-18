@@ -1221,6 +1221,32 @@ impl Storage {
         Ok(())
     }
 
+    /// Moves live task `id` into live workspace `workspace`. Only its workspace changes:
+    /// its ID, status history, notes, criteria, refs, and dependency and related links
+    /// stay as they are, since all of them may cross workspaces. An unknown or archived
+    /// workspace is rejected; moving a task into its own workspace changes nothing.
+    pub fn move_task(&mut self, id: TaskId, workspace: WorkspaceId) -> Result<Task> {
+        let tx = self.conn.transaction()?;
+        find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        let live: Option<Option<i64>> = tx
+            .query_row(
+                "SELECT archived_at FROM workspaces WHERE id = ?1",
+                [workspace.0],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if !matches!(live, Some(None)) {
+            return Err(StorageError::WorkspaceNotFound(workspace));
+        }
+        tx.execute(
+            "UPDATE tasks SET workspace_id = ?2 WHERE id = ?1",
+            params![id.0, workspace.0],
+        )?;
+        let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
+        tx.commit()?;
+        Ok(task)
+    }
+
     /// Archives every live `done` task of a live workspace in one transaction, as
     /// [`Self::archive_task`] does for one task, and returns their IDs in ascending order;
     /// none when the workspace has no `done` task. An unknown or archived workspace is
