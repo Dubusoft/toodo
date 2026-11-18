@@ -197,6 +197,21 @@ describe("TaskList of a workspace", () => {
     );
   });
 
+  it("offers to set a missing workspace repository and saves it", async () => {
+    const bare = { ...app, repository: null };
+    mocked.updateWorkspace.mockResolvedValue(ok(app));
+    renderTasks(bare, []);
+
+    fireEvent.click(screen.getByRole("button", { name: "Set repository" }));
+    const form = screen.getByRole("form", { name: "Workspace details" });
+    const field = within(form).getByLabelText(/^Repository/);
+    expect(field).toHaveFocus();
+    fireEvent.change(field, { target: { value: " acme/app " } });
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(mocked.updateWorkspace).toHaveBeenCalledWith({ ...bare, repository: "acme/app" }));
+  });
+
   it("offers a new task only manual and URL criteria", async () => {
     mocked.createTask.mockResolvedValue(ok(task(9, app, "Write docs")));
     renderTasks(app, []);
