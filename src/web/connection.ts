@@ -5,7 +5,9 @@
  * and the probe repeats after a growing delay, and at once when the browser comes back
  * online or the page is shown again. Any answer of the server ends it. A proxy that wants the
  * browser to sign in to it again, such as Cloudflare Access whose session ran out, counts as
- * unreachable too, but only a reload that signs in again ends that; see `signInExpired`.
+ * unreachable too, but only a reload that signs in again ends that; see `signInExpired`. The
+ * app reloads itself for it: the service worker loads pages from the network, so the reload
+ * follows the proxy to its sign-in page, which returns to the app (see `signInAgain`).
  */
 import { activeServer } from "@/web/server";
 
@@ -26,6 +28,10 @@ const HEARTBEAT_TIMEOUT_MS = 3000;
 /** The cause when a proxy in front of the server sends the browser to sign in to it again. */
 const SIGN_IN_AGAIN =
   "The sign-in to the proxy in front of the server (such as Cloudflare Access) ran out. Reload the page to sign in again.";
+/** When the tab last reloaded to sign in again, kept across that reload. */
+const SIGN_IN_RELOAD_KEY = "toodo-sign-in-reload-at";
+/** A reload that brought no sign-in page waits this long before the next, so it cannot loop. */
+const SIGN_IN_RELOAD_INTERVAL_MS = 5 * 60_000;
 
 let state: Reachability = "reachable";
 let delay = FIRST_RETRY_MS;
@@ -136,8 +142,24 @@ async function ask(timeoutMs: number): Promise<string | null> {
   }
 }
 
+/**
+ * Reloads the page so the proxy shows its sign-in, once in a while at most: if the reload
+ * comes back without signing in (the page came from elsewhere, or the person went back), the
+ * banner's Reload button is left.
+ */
+function signInAgain() {
+  if (document.visibilityState !== "visible") return;
+  const last = Number(sessionStorage.getItem(SIGN_IN_RELOAD_KEY));
+  if (Date.now() - last < SIGN_IN_RELOAD_INTERVAL_MS) return;
+  sessionStorage.setItem(SIGN_IN_RELOAD_KEY, String(Date.now()));
+  location.reload();
+}
+
 function giveUp() {
   set("unreachable");
+  if (signInExpired()) {
+    signInAgain();
+  }
   timer = setTimeout(() => void probe("retrying"), delay);
   delay = Math.min(delay * 2, MAX_RETRY_MS);
 }
