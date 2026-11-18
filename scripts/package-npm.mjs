@@ -141,6 +141,8 @@ if (!isDir(templateDir)) fail(`${templateDir} not found; run the script from a f
 const launcher = path.join(mainDir, 'bin', 'toodo.js');
 cpSync(path.join(templateDir, 'bin', 'toodo.js'), launcher);
 chmodSync(launcher, 0o755);
+cpSync(path.join(templateDir, 'lib'), path.join(mainDir, 'lib'), { recursive: true });
+cpSync(path.join(templateDir, 'install.js'), path.join(mainDir, 'install.js'));
 cpSync(path.join(templateDir, 'README.md'), path.join(mainDir, 'README.md'));
 writeJson(path.join(mainDir, 'package.json'), {
   name: '@dubusoft/toodo',
@@ -150,7 +152,9 @@ writeJson(path.join(mainDir, 'package.json'), {
   homepage: HOMEPAGE,
   repository: { type: 'git', url: 'git+https://github.com/Dubusoft/toodo.git' },
   bin: { toodo: 'bin/toodo.js' },
-  files: ['bin'],
+  // Fails the install when npm skipped the platform package (npm/toodo/install.js).
+  scripts: { postinstall: 'node install.js' },
+  files: ['bin', 'lib', 'install.js'],
   engines: { node: '>=18' },
   optionalDependencies: Object.fromEntries(
     [...binaries.keys()].map((t) => [`@dubusoft/toodo-${t}`, args.version]),

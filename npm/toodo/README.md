@@ -45,7 +45,7 @@ It installs the newest version of the channel with npm (`latest` for releases, `
 
 ## Requirements
 
-- Linux x64 or arm64 (glibc or musl) or macOS x64 or arm64, with Node.js 18 or later. Install with optional dependencies enabled (the default), because the binaries ship in the platform packages `@dubusoft/toodo-linux-<arch>`, `@dubusoft/toodo-linux-<arch>-musl`, and `@dubusoft/toodo-darwin-<arch>`.
+- Linux x64 or arm64 (glibc or musl) or macOS x64 or arm64, with Node.js 18 or later. Install with optional dependencies enabled (the default), because the binaries ship in the platform packages `@dubusoft/toodo-linux-<arch>`, `@dubusoft/toodo-linux-<arch>-musl`, and `@dubusoft/toodo-darwin-<arch>`. When npm cannot install the platform package (optional dependencies disabled, or the registry not serving it yet), the install fails with the reason instead of leaving a `toodo` without binaries, and an existing install stays as it was.
 - Optional: Claude Code (`claude`) or Codex (`codex`) on `PATH`, to register the MCP endpoint with them.
 
 See https://github.com/Dubusoft/toodo for documentation.
