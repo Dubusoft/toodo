@@ -170,6 +170,7 @@ describe("layoutTimeline", () => {
         ],
         blocks: [{ x: 0, width: 3 * 48 }],
         pauses: [],
+        resume: null,
         lead: { x: -2 * 48, planned: true, readyX: null },
         dueX: null,
         dueState: null,
@@ -234,6 +235,50 @@ describe("layoutTimeline", () => {
       // The pause runs on past the bar to now.
       pauses: [{ x: 2 * 48, width: 6 * 48 }],
     });
+  });
+
+  it("starts a task not started that waits at the end of its wait", () => {
+    const later = task(8, { wait: { until: jan(14, 12), status: "planned" }, milestones: milestones({ plannedAt: jan(7) }) });
+
+    const layout = layoutTimeline([later], { now, scale: "day", period: null });
+
+    expect(layout.bars[0]).toMatchObject({ x: 7.5 * 48, width: 28, pending: true });
+    // The wait before the bar reaches from the planned time to the end of the wait.
+    expect(layout.bars[0].lead).toEqual({ x: -7.5 * 48, planned: true, readyX: null });
+    expect(layout.end).toBe(jan(15));
+    // A wait that ended a moment ago leaves the task at now until the server returns it.
+    const ended = layoutTimeline([later], { now: jan(15), scale: "day", period: null });
+    expect(ended.bars[0].x).toBe(ended.nowX);
+  });
+
+  it("joins the work of a paused task that waits to a box at the end of its wait", () => {
+    const paused = task(9, {
+      wait: { until: jan(14), status: "in_progress" },
+      timeline: [
+        { status: "planned", at: jan(1), reopened: false, reason: null },
+        { status: "in_progress", at: jan(3), reopened: false, reason: null },
+        { status: "planned", at: jan(5), reopened: false, reason: null },
+      ],
+      milestones: milestones({ plannedAt: jan(1), startedAt: jan(3), pausedAt: jan(5) }),
+    });
+
+    const layout = layoutTimeline([paused], { now, scale: "day", period: null });
+
+    expect(layout.bars[0]).toMatchObject({
+      x: 2 * 48,
+      width: 11 * 48 + 28,
+      phases: [{ phase: "in_progress", x: 0, width: 2 * 48 }],
+      pauses: [{ x: 2 * 48, width: 9 * 48 }],
+      blocks: [
+        { x: 0, width: 2 * 48 },
+        { x: 11 * 48, width: 28 },
+      ],
+      resume: { x: 11 * 48, width: 28 },
+    });
+    expect(layout.end).toBe(jan(15));
+    // Cut off by the period, the pause runs to its edge without a box after it.
+    const clipped = layoutTimeline([paused], { now, scale: "day", period: { start: jan(1), end: jan(13) } });
+    expect(clipped.bars[0]).toMatchObject({ width: 2 * 48, pauses: [{ x: 2 * 48, width: 8 * 48 }], resume: null });
   });
 
   it("cuts the bar of a resumed task at its pauses, between its stretches of work", () => {

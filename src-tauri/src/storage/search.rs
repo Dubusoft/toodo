@@ -68,7 +68,8 @@ pub(super) fn link_related(conn: &Connection, task: TaskId, related: TaskId) -> 
 }
 
 impl Storage {
-    /// IDs of the tasks matching `search`, best match first, at most `search.limit`.
+    /// IDs of the live tasks matching `search`, best match first, at most `search.limit`;
+    /// archived tasks and the tasks of archived workspaces are left out.
     /// Words of three or more characters go through the trigram index and rank the
     /// results by bm25; when every word is shorter, tasks whose title matches come first.
     /// Ties go to the newer task. A query without words matches nothing.
@@ -81,7 +82,7 @@ impl Storage {
             return Ok(Vec::new());
         }
 
-        let mut conditions = Vec::new();
+        let mut conditions = vec![LIVE_TASK.to_owned()];
         let mut parameters: Vec<Box<dyn ToSql>> = Vec::new();
         if !indexed.is_empty() {
             conditions.push("task_search MATCH ?".to_owned());

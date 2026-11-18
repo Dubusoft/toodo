@@ -272,10 +272,45 @@ jobs:
         run: |
           # Platform packages come first, the main package last, so an install never
           # resolves a main package whose platform package is missing.
+          #
+          # npm publish returns before the registry has processed a package, and a large
+          # platform package can become visible after the small main package published after
+          # it; an install in between skips the missing optional dependency without a word and
+          # leaves no binary. The metadata can list a version minutes before its tarball
+          # downloads, so the main package is published only once the registry serves the
+          # tarball of every platform package at this version (HTTP 200 on dist.tarball), and
+          # the run fails if one never does.
+          visible() {
+            [ "$(npm view "$1@$VERSION" version --prefer-online 2>/dev/null)" = "$VERSION" ]
+          }
+          served() {
+            local tarball code
+            tarball=$(npm view "$1@$VERSION" dist.tarball --prefer-online 2>/dev/null)
+            [ -n "$tarball" ] || return 1
+            code=$(curl -sS -o /dev/null -w '%{http_code}' "$tarball" || true)
+            echo "GET $tarball: HTTP ${code:-none}"
+            [ "$code" = 200 ]
+          }
+          wait_served() {
+            for _ in $(seq 80); do
+              served "$1" && return 0
+              sleep 15
+            done
+            echo "::error::the tarball of $1@$VERSION is still not downloadable 20 minutes after publishing, so @dubusoft/toodo@$VERSION is not published; rerun this workflow once npm serves it."
+            return 1
+          }
+          platforms=()
           while read -r dir; do
             [ -n "$dir" ] || continue
             name=$(jq -r .name "$dir/package.json")
-            if [ -n "$(npm view "$name@$VERSION" version 2>/dev/null)" ]; then
+            if [ "$name" = @dubusoft/toodo ]; then
+              for platform in "${platforms[@]}"; do
+                wait_served "$platform"
+              done
+            else
+              platforms+=("$name")
+            fi
+            if visible "$name"; then
               echo "$name@$VERSION is already published; skipping"
               continue
             fi

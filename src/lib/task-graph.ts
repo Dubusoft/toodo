@@ -71,6 +71,14 @@ function isPending(task: Task): boolean {
 }
 
 /**
+ * When paused `task` can go on again: the end of its wait, or now once that passed; null when
+ * it is not paused or does not wait.
+ */
+function resumeAt(task: Task, now: Timestamp): Timestamp | null {
+  return isPaused(task) && task.wait !== null ? Math.max(task.wait.until, now) : null;
+}
+
+/**
  * When the last dependency of `task` was completed, if all of them are done and adopted; null
  * without dependencies or when one is not done, not adopted, or not in `byId`.
  */
@@ -221,6 +229,11 @@ export type TimelineBar = {
    * past the bar's end, from its pause to now.
    */
   pauses: TimelineSpan[];
+  /**
+   * The box of a paused task that waits until a time, at the end of the wait, where the work
+   * can go on; it is the last of `blocks`. Null for any other bar.
+   */
+  resume: TimelineSpan | null;
   /** The wait before the bar, from `plannedAt` to `x`; null when there was none. */
   lead: TimelineLead | null;
   /** The end of the due day relative to `x`; null without a due date or when it is off the axis. */
@@ -262,14 +275,16 @@ export type TimelineLayout = {
 const day = 24 * 60 * 60;
 
 /**
- * The interval a task's bar covers. A task that has never started sits at `now`; a task
- * being worked on runs from `startedAt` to `now`; a done or paused task ends at
- * `completedAt` or `pausedAt`. Null when a started task lacks the milestones to place it.
+ * The interval a task's bar covers. A task that has never started sits at `now`, or at the
+ * end of its wait when it waits until a later time; a task being worked on runs from
+ * `startedAt` to `now`; a done or paused task ends at `completedAt` or `pausedAt`. Null when
+ * a started task lacks the milestones to place it.
  */
 export function taskInterval(task: Task, now: Timestamp): Period | null {
   const { plannedAt, startedAt, reviewAt, completedAt, pausedAt } = task.milestones;
   if (isPending(task)) {
-    return { start: now, end: now };
+    const at = Math.max(task.wait?.until ?? now, now);
+    return { start: at, end: at };
   }
   const started = startedAt ?? reviewAt;
   if (task.status === "in_progress" || task.status === "in_review") {
@@ -523,11 +538,12 @@ export function majorLabelOffset(
 
 /**
  * Lays tasks out as a Gantt chart: one row per task, prerequisites before their dependents.
- * A task that has not started waits at `now`, pushed right past the bars of its unfinished
- * prerequisites; a started task is fixed at `startedAt` and grows with `now`; a closed
- * task is fixed at both ends. With a `period`, only tasks overlapping it are drawn, clipped
- * to it; otherwise the axis has no ends, and `start` and `end` only span the days with a
- * bar. The scale sets the pixels per day and the tick units of `timelineAxis`.
+ * A task that has not started waits at `now` (or at the end of its wait), pushed right past
+ * the bars of its unfinished prerequisites; a started task is fixed at `startedAt` and grows
+ * with `now`; a closed task is fixed at both ends, and a paused one that waits until a time
+ * gets a box at that time after its pause. With a `period`, only tasks overlapping it are
+ * drawn, clipped to it; otherwise the axis has no ends, and `start` and `end` only span the
+ * days with a bar. The scale sets the pixels per day and the tick units of `timelineAxis`.
  */
 export function layoutTimeline(
   tasks: Task[],
@@ -553,7 +569,8 @@ export function layoutTimeline(
     const first = placed.map(({ task, interval }) => Math.min(interval.start, task.milestones.plannedAt ?? interval.start));
     const dueEnds = placed.flatMap(({ task }) => (task.dueDate === null ? [] : [dueEnd(task.dueDate)]));
     start = startOfUnit(Math.min(now, ...first, ...dueEnds.map((at) => at - day)), "day").getTime() / 1000;
-    const last = Math.max(now, ...placed.map(({ interval }) => interval.end), ...dueEnds.map((at) => at - 1));
+    const resumes = placed.flatMap(({ task }) => resumeAt(task, now) ?? []);
+    const last = Math.max(now, ...placed.map(({ interval }) => interval.end), ...resumes, ...dueEnds.map((at) => at - 1));
     const endDay = startOfUnit(last, "day");
     nextUnit(endDay, "day");
     end = endDay.getTime() / 1000;
@@ -568,6 +585,7 @@ export function layoutTimeline(
     let width: number;
     let phases: TimelineBar["phases"] = [];
     let pauses: TimelineSpan[] = [];
+    let resume: TimelineSpan | null = null;
     if (pending) {
       const after = task.dependsOn.flatMap((id) => {
         // A finished prerequisite no longer holds the task back, so it stays at `now`.
@@ -592,9 +610,16 @@ export function layoutTimeline(
           pauses.push(span);
         }
       }
-      const pausedUntil = scaleX(Math.min(now, end)) - x;
+      // A paused task that waits until a time gets a box there, where it can go on, joined to
+      // its work by the dashed pause.
+      const resumes = resumeAt(task, now);
+      const pausedUntil = scaleX(Math.min(resumes ?? now, end)) - x;
       if (isPaused(task) && pausedUntil - width >= timelinePauseMinWidth) {
         pauses = [...pauses, { x: width, width: pausedUntil - width }];
+      }
+      if (resumes !== null && resumes < end && pausedUntil >= width) {
+        resume = { x: pausedUntil, width: timelinePendingWidth };
+        width = pausedUntil + timelinePendingWidth;
       }
     }
     rightEdges.set(task.id, x + width);
@@ -607,6 +632,7 @@ export function layoutTimeline(
       pending,
       phases,
       blocks: barBlocks(width, pauses),
+      resume,
       pauses,
       lead: taskLead(task, readyAt(task, byId), x, start, scaleX),
       dueX: due !== null && due >= start && due <= end ? scaleX(due) - x : null,
