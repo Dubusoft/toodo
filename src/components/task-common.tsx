@@ -4,6 +4,7 @@ import type { Task, TaskId, TaskType, WorkspaceId } from "@/lib/bindings";
 import { shownStatus, type ShownStatus } from "@/lib/task-filter";
 import { dueState, dueStateLabels, type MissingPlanField, missingPlan, missingPlanLabel } from "@/lib/plan";
 import { statusNames, toneChip, toneText, type Tone } from "@/lib/status-styles";
+import { formatRemaining } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import { reachability, subscribeReachability } from "@/web/connection";
 
@@ -13,11 +14,13 @@ export const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs
 
 /**
  * The status of `task`, naming a planned task that can be started now "Ready", one still
- * waiting on a prerequisite "Blocked", one that was worked on before "Paused" and a task
- * concluded without merging "Not adopted".
+ * waiting on a prerequisite "Blocked", one that was worked on before "Paused", a task that
+ * waits until a time "Planned" with the time left, e.g. "Planned ~7d", and a task concluded
+ * without merging "Not adopted".
  */
 export function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
   if (task.status === "done" && task.resolution === "completed") return "Completed";
+  if (task.wait !== null) return `${statusNames.waiting} ~${formatRemaining(task.wait.until)}`;
   return statusNames[shownStatus(task, byId)];
 }
 
@@ -25,6 +28,7 @@ export function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string
 export const statusTones: Record<ShownStatus, Tone> = {
   planned: "neutral",
   ready: "attention",
+  waiting: "neutral",
   paused: "neutral",
   in_progress: "progress",
   in_review: "review",

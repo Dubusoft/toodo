@@ -3,7 +3,7 @@ import { AlarmClock } from "lucide-react";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button } from "@/components/button";
 import { inputClass } from "@/components/workspace-list";
-import type { Task, Timestamp } from "@/lib/bindings";
+import type { Task, TaskWait, Timestamp } from "@/lib/bindings";
 import { useWaitTask } from "@/lib/queries";
 import { statusNames } from "@/lib/status-styles";
 import { formatFull } from "@/lib/timeline";
@@ -24,10 +24,18 @@ function tomorrowMorning(): Timestamp {
   return date.getTime() / 1000;
 }
 
+/**
+ * The status a wait returns a task to, by name: "planned" rather than "blocked" for a planned
+ * one, since whether it is blocked or ready then depends on its prerequisites.
+ */
+function returnName(status: TaskWait["status"]): string {
+  return (status === "planned" ? statusNames.waiting : statusNames[status]).toLowerCase();
+}
+
 /** What a waiting task shows: until when it waits and the status it returns to. */
 export function waitLabel(task: Task): string | null {
   if (task.wait === null) return null;
-  return `Waiting until ${formatFull(task.wait.until)}, then ${statusNames[task.wait.status].toLowerCase()}`;
+  return `Waiting until ${formatFull(task.wait.until)}, then ${returnName(task.wait.status)}`;
 }
 
 /**
@@ -62,7 +70,7 @@ export function WaitForm({ task, onDone }: { task: Task; onDone: () => void }) {
           ? task.status === "planned"
             ? `#${task.id} waits until then and stays planned.`
             : `#${task.id} is paused until then, then returns to ${statusNames[task.status].toLowerCase()} on its own.`
-          : `Move the end of the wait; #${task.id} then returns to ${statusNames[task.wait.status].toLowerCase()}.`}
+          : `Move the end of the wait; #${task.id} then returns to ${returnName(task.wait.status)}.`}
       </p>
       <div className="flex flex-wrap gap-1 max-md:gap-2">
         {/* Native: Astryx DateInput picks a date only, and this needs a date and a time. */}

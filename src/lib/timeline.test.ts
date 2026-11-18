@@ -4,6 +4,7 @@ import {
   activeSeconds,
   formatDate,
   formatFull,
+  formatRemaining,
   formatWhen,
   reachedMilestones,
   waitingSeconds,
@@ -109,6 +110,32 @@ describe("formatWhen", () => {
   it("is a short date from 7 days on, with the year when it is not this one", () => {
     expect(formatWhen(now - 7 * 86400, now)).toBe("Oct 17");
     expect(formatWhen(new Date(2025, 11, 31, 8, 0).getTime() / 1000, now)).toBe("Dec 31, 2025");
+  });
+});
+
+describe("formatRemaining", () => {
+  const now = 1_000_000;
+  const minute = 60;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+
+  it("rounds down to minutes, half hours, and days under two weeks", () => {
+    expect(formatRemaining(now - 5, now)).toBe("0m");
+    expect(formatRemaining(now + 59 * minute + 59, now)).toBe("59m");
+    expect(formatRemaining(now + hour + 29 * minute, now)).toBe("1h");
+    expect(formatRemaining(now + hour + 30 * minute, now)).toBe("1.5h");
+    expect(formatRemaining(now + 23 * hour + 59 * minute, now)).toBe("23.5h");
+    expect(formatRemaining(now + day, now)).toBe("1d");
+    expect(formatRemaining(now + 7 * day + 23 * hour, now)).toBe("7d");
+    expect(formatRemaining(now + 13 * day + 23 * hour, now)).toBe("13d");
+  });
+
+  it("counts whole weeks, months, and years from two weeks on", () => {
+    expect(formatRemaining(now + 14 * day, now)).toBe("2w");
+    expect(formatRemaining(now + 59 * day, now)).toBe("8w");
+    expect(formatRemaining(now + 60 * day, now)).toBe("2mo");
+    expect(formatRemaining(now + 364 * day, now)).toBe("12mo");
+    expect(formatRemaining(now + 2 * 365 * day + 300 * day, now)).toBe("2y");
   });
 });
 

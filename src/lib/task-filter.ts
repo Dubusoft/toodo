@@ -5,13 +5,24 @@ import { dependenciesDone, isNotAdopted, isPaused, prerequisitesResolved } from 
  * The status a task is shown with: its stored status, with paused and not adopted tasks told
  * apart, and a planned task that can be started now (every prerequisite done and adopted, or
  * none) shown as ready. A planned task still waiting on a prerequisite stays planned. A task
- * paused by a new prerequisite is shown as ready again once that prerequisite is done.
+ * paused by a new prerequisite is shown as ready again once that prerequisite is done. A task
+ * that waits until a time is shown as waiting until the wait ends, neither ready nor blocked:
+ * it goes on by itself then.
  */
-export type ShownStatus = "planned" | "ready" | "paused" | "in_progress" | "in_review" | "done" | "not_adopted";
+export type ShownStatus =
+  | "planned"
+  | "ready"
+  | "waiting"
+  | "paused"
+  | "in_progress"
+  | "in_review"
+  | "done"
+  | "not_adopted";
 
 export const shownStatuses: ShownStatus[] = [
   "planned",
   "ready",
+  "waiting",
   "paused",
   "in_progress",
   "in_review",
@@ -23,6 +34,9 @@ export const shownStatuses: ShownStatus[] = [
 export function shownStatus(task: Task, byId: ReadonlyMap<TaskId, Task>): ShownStatus {
   if (isNotAdopted(task)) {
     return "not_adopted";
+  }
+  if (task.wait !== null) {
+    return "waiting";
   }
   if (isPaused(task)) {
     return prerequisitesResolved(task, byId) ? "ready" : "paused";

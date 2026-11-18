@@ -8,6 +8,8 @@ export const statusNames: Record<ShownStatus, string> = {
   // A planned task that cannot start yet, because a prerequisite is not done.
   planned: "Blocked",
   ready: "Ready",
+  // A task that waits until a time and goes on by itself then: planned, but not blocked.
+  waiting: "Planned",
   paused: "Paused",
   in_progress: "In progress",
   in_review: "Awaiting completion",
