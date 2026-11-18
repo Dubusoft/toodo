@@ -76,6 +76,22 @@ describe("reachability", () => {
     await vi.waitFor(() => expect(connection.reachability()).toBe("unreachable"));
   });
 
+  it("tells a proxy that wants a new sign-in from an outage", async () => {
+    const connection = await freshConnection();
+    // What `redirect: "manual"` gives for Cloudflare Access sending the browser to sign in.
+    const signIn = { type: "opaqueredirect", status: 0, headers: new Headers(), body: null } as Response;
+    let answer: () => Response = () => signIn;
+    serve(down, () => answer());
+
+    await expect(connection.serverFetch("/api/rpc/list_tasks")).rejects.toThrow(TypeError);
+    await vi.waitFor(() => expect(connection.reachability()).toBe("unreachable"));
+    expect(connection.signInExpired()).toBe(true);
+
+    answer = down;
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(connection.signInExpired()).toBe(false);
+  });
+
   it("probes at once when asked to try again", async () => {
     const connection = await freshConnection();
     let answer: () => Response = down;
