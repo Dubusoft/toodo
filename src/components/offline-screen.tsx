@@ -4,7 +4,7 @@ import { WifiOff } from "lucide-react";
 import { Button } from "@/components/button";
 import { When } from "@/components/when";
 import { queryKeys } from "@/lib/queries";
-import { reachability, retryNow, subscribeReachability, unreachableCause } from "@/web/connection";
+import { reachability, retryNow, signInExpired, subscribeReachability, unreachableCause } from "@/web/connection";
 
 /**
  * Tells while `toodo-server` does not answer and takes the banner away once it answers
@@ -28,6 +28,8 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 
 function OfflineBanner({ retrying }: { retrying: boolean }) {
   const reason = navigator.onLine ? unreachableCause() : "This device is offline.";
+  // Only a reload signs in to the proxy again, so waiting for an answer would never end.
+  const signIn = navigator.onLine && signInExpired();
   const loadedAt = useQueryClient().getQueryState(queryKeys.tasks)?.dataUpdatedAt;
   return (
     <div
@@ -37,7 +39,7 @@ function OfflineBanner({ retrying }: { retrying: boolean }) {
       <WifiOff aria-hidden className="size-4 shrink-0" />
       <div className="min-w-0 flex-1">
         <p className="font-medium">
-          Can't reach the Toodo server
+          {signIn ? "Sign in to the Toodo server again" : "Can't reach the Toodo server"}
         </p>
         <p className="text-xs">
           {reason}{" "}
@@ -48,16 +50,22 @@ function OfflineBanner({ retrying }: { retrying: boolean }) {
           ) : (
             "What you see may be out of date."
           )}{" "}
-          Changes are paused. Toodo reconnects on its own as soon as the server answers.
+          {signIn
+            ? "Changes are paused until you sign in again."
+            : "Changes are paused. Toodo reconnects on its own as soon as the server answers."}
         </p>
       </div>
-      <Button
-        size="sm"
-        variant="secondary"
-        label={retrying ? "Trying..." : "Retry now"}
-        isDisabled={retrying}
-        onClick={retryNow}
-      />
+      {signIn ? (
+        <Button size="sm" variant="secondary" label="Reload" onClick={() => location.reload()} />
+      ) : (
+        <Button
+          size="sm"
+          variant="secondary"
+          label={retrying ? "Trying..." : "Retry now"}
+          isDisabled={retrying}
+          onClick={retryNow}
+        />
+      )}
     </div>
   );
 }

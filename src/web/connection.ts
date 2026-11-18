@@ -3,7 +3,9 @@
  * in front of it answering for it) starts a check: the app probes the server, and while the
  * server does not answer, the offline screen shows (see `src/components/offline-screen.tsx`)
  * and the probe repeats after a growing delay, and at once when the browser comes back
- * online or the page is shown again. Any answer of the server ends it.
+ * online or the page is shown again. Any answer of the server ends it. A proxy that wants the
+ * browser to sign in to it again, such as Cloudflare Access whose session ran out, counts as
+ * unreachable too, but only a reload that signs in again ends that; see `signInExpired`.
  */
 import { activeServer } from "@/web/server";
 
@@ -21,6 +23,9 @@ const PROBE_TIMEOUT_MS = 10_000;
 const HEARTBEAT_MS = 5000;
 /** The heartbeat gives up sooner than a probe, so an outage shows within 10 s. */
 const HEARTBEAT_TIMEOUT_MS = 3000;
+/** The cause when a proxy in front of the server sends the browser to sign in to it again. */
+const SIGN_IN_AGAIN =
+  "The sign-in to the proxy in front of the server (such as Cloudflare Access) ran out. Reload the page to sign in again.";
 
 let state: Reachability = "reachable";
 let delay = FIRST_RETRY_MS;
@@ -48,6 +53,11 @@ export function subscribeReachability(listener: () => void): () => void {
 /** Why the server counts as unreachable, for the person looking at the banner. */
 export function unreachableCause(): string {
   return cause;
+}
+
+/** Whether the server counts as unreachable because a proxy in front of it wants a new sign-in. */
+export function signInExpired(): boolean {
+  return cause === SIGN_IN_AGAIN;
 }
 
 /** How often the server answered again after it was unreachable, to tell a recovery that came before a wait. */
@@ -108,9 +118,16 @@ async function probe(running: "checking" | "retrying") {
 /** Asks the server for any answer; returns why it did not give one, or null. */
 async function ask(timeoutMs: number): Promise<string | null> {
   try {
-    // Any answer will do: without a token the server answers 401.
-    const response = await activeServer.fetch("/api", { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+    // Any answer will do: without a token the server answers 401. The server never redirects,
+    // but a proxy whose sign-in ran out redirects to its sign-in page on another origin, which
+    // a followed fetch reports as a network error; `manual` tells it apart.
+    const response = await activeServer.fetch("/api", {
+      cache: "no-store",
+      redirect: "manual",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     void response.body?.cancel();
+    if (response.type === "opaqueredirect") return SIGN_IN_AGAIN;
     return isGatewayFailure(response) ? `A gateway in front of the server answered ${response.status}.` : null;
   } catch (error) {
     return error instanceof DOMException && error.name === "TimeoutError"
