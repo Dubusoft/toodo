@@ -1,4 +1,5 @@
 import { Suspense, useState, type FormEvent } from "react";
+import { FolderGit2, Pencil } from "lucide-react";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button } from "@/components/button";
@@ -19,7 +20,9 @@ export function repositoryUrl(repository: string): string | null {
  */
 export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
   const updateWorkspace = useUpdateWorkspace();
-  const [editing, setEditing] = useState(false);
+  // Which field the open form focuses first: the name, or the repository when the form was
+  // opened to set a missing one.
+  const [editing, setEditing] = useState<false | "name" | "repository">(false);
   const [name, setName] = useState(workspace.name);
   const [description, setDescription] = useState(workspace.description ?? "");
   const [repository, setRepository] = useState(workspace.repository ?? "");
@@ -29,12 +32,12 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
     repository !== (workspace.repository ?? "");
   const guard = useDiscardGuard(changed, () => setEditing(false), updateWorkspace.isPending);
 
-  function open() {
+  function open(focus: "name" | "repository") {
     updateWorkspace.reset();
     setName(workspace.name);
     setDescription(workspace.description ?? "");
     setRepository(workspace.repository ?? "");
-    setEditing(true);
+    setEditing(focus);
   }
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -55,8 +58,18 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
     return (
       <div className="flex min-w-0 flex-col gap-1 text-sm text-muted-foreground">
         <p className="flex min-w-0 items-center gap-1 max-md:flex-wrap">
-          {workspace.repository !== null &&
-            (link === null ? (
+          {workspace.repository === null ? (
+            // An empty repository is easy to miss, so it gets its own button rather than only
+            // the edit form behind "Edit workspace".
+            <Button
+              size="sm"
+              variant="secondary"
+              label="Set repository"
+              icon={<FolderGit2 />}
+              tooltip="Link this workspace to a repository, e.g. owner/repo or a URL"
+              onClick={() => open("repository")}
+            />
+          ) : link === null ? (
               <code aria-label="Repository" className="truncate text-foreground">
                 {workspace.repository}
               </code>
@@ -70,10 +83,8 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
               >
                 {workspace.repository}
               </a>
-            ))}
-          <Button size="sm" variant="ghost" label="Edit workspace" onClick={open}>
-            Edit
-          </Button>
+          )}
+          <Button size="sm" variant="ghost" label="Edit workspace" icon={<Pencil />} onClick={() => open("name")} />
         </p>
         {workspace.description !== null && (
           <Suspense fallback={<p className="whitespace-pre-wrap">{workspace.description}</p>}>
@@ -93,12 +104,13 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
       className="flex flex-col gap-1.5"
       onKeyDown={guard.onKeyDown}
     >
-      <TextInput size="sm" label="Name" value={name} onChange={setName} hasAutoFocus />
+      <TextInput size="sm" label="Name" value={name} onChange={setName} hasAutoFocus={editing === "name"} />
       <TextArea size="sm" label="Description (optional, Markdown)" rows={4} value={description} onChange={setDescription} />
       <TextInput
         size="sm"
         label="Repository (optional, e.g. owner/repo or a URL)"
         hasSpellCheck={false}
+        hasAutoFocus={editing === "repository"}
         value={repository}
         onChange={setRepository}
       />
