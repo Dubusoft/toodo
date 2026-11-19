@@ -38,7 +38,12 @@ records the required reason.
 
 A task can also **wait** until a time: `wait_task` (or "Wait until..." in the app) pauses
 an `in_progress` or `in_review` task until then, and a `planned` task keeps its status.
-The task shows as waiting with the time and the status it returns to. When the time
+The task shows as waiting with the time and the status it returns to, and its status chip
+reads "Planned" with the time left, e.g. `Planned ~7d`: a waiting task is neither ready
+(`list_tasks` and `get_task` report `ready: false`) nor blocked, and the status filter
+lists it under Planned. The time left is in minutes under an hour (`~45m`), half hours
+under a day (`~1.5h`), days under two weeks (`~7d`), then whole weeks, months, and years
+(`~3w`, `~5mo`, `~2y`), each rounded down. When the time
 passes, the server returns it to that status on its own, within a few seconds, also when
 the time passed while the server was stopped: then it happens at the next start. Calling
 `wait_task` on a waiting task moves the time; `end_wait` ("End wait" in the app) returns

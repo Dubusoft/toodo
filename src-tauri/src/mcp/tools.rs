@@ -920,8 +920,9 @@ pub fn remove_guideline(
 pub struct ListedTask {
     #[serde(flatten)]
     pub task: Task,
-    /// Whether the task is planned and every task it depends on is done and adopted, so
-    /// start_task (or resume_task for a paused task) can begin it now.
+    /// Whether the task is planned, does not wait until a time, and every task it depends
+    /// on is done and adopted, so start_task (or resume_task for a paused task) can begin
+    /// it now.
     pub ready: bool,
     /// The tasks it depends on that keep it from starting: not done yet, or done as
     /// not_adopted, which never unblocks it.
@@ -1038,9 +1039,12 @@ fn task_links(
         .collect()
 }
 
-/// Whether `task` can start (or resume) now: it is planned and nothing blocks it.
+/// Whether `task` can start (or resume) now: it is planned, does not wait until a time,
+/// and nothing blocks it. A wait that ends makes it ready again.
 fn is_ready(task: &model::Task, blocked_by: &[TaskLink]) -> bool {
-    task.status == crate::domain::status::TaskStatus::Planned && blocked_by.is_empty()
+    task.status == crate::domain::status::TaskStatus::Planned
+        && task.wait.is_none()
+        && blocked_by.is_empty()
 }
 
 /// `links` as a list such as "#3 (planned), #4 (done as not_adopted)".
@@ -1087,6 +1091,9 @@ fn dependency_message(details: &TaskDetails, paused: bool) -> String {
             TaskStatus::Planned if !blockers.is_empty() => {
                 format!("task {id} waits for {waiting} before it can start.")
             }
+            TaskStatus::Planned if task.wait.is_some() => format!(
+                "task {id} no longer waits on any task, but waits until a time: it is ready once that wait ends."
+            ),
             TaskStatus::Planned if task.milestones.started_at.is_some() => format!(
                 "task {id} is paused and no longer waits on any task: resume_task resumes it."
             ),
@@ -2078,8 +2085,9 @@ pub struct TaskDetails {
     pub commits: Vec<CommitRecord>,
     /// Tasks this task waits on.
     pub depends_on: Vec<TaskLink>,
-    /// Whether the task is planned and every task it depends on is done and adopted, so
-    /// start_task (or resume_task for a paused task) can begin it now.
+    /// Whether the task is planned, does not wait until a time, and every task it depends
+    /// on is done and adopted, so start_task (or resume_task for a paused task) can begin
+    /// it now.
     pub ready: bool,
     /// The tasks of `dependsOn` that keep it from starting: not done yet, or done as
     /// not_adopted, which never unblocks it.
@@ -3881,6 +3889,37 @@ mod tests {
         assert!(!listed[0].ready);
         let error = list_tasks(&storage, page(0, None)).unwrap_err();
         assert_eq!(error.kind, CommandErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn a_task_that_waits_until_a_time_is_ready_only_once_the_wait_ends() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let schema = create(&mut storage, workspace, "Schema", vec![]).unwrap();
+        let docs = create(&mut storage, workspace, "Docs", vec![]).unwrap();
+        storage.wait_task(docs.id.into(), i64::MAX, None).unwrap();
+        let ready = |storage: &Storage, ready: bool| -> Vec<TaskId> {
+            let request = ListTasks {
+                ready: Some(ready),
+                ..ListTasks::default()
+            };
+            list_tasks(storage, request)
+                .unwrap()
+                .iter()
+                .map(|listed| listed.task.id)
+                .collect()
+        };
+        assert_eq!(ready(&storage, true), [schema.id]);
+        assert_eq!(ready(&storage, false), [docs.id]);
+        let details = task_details(&storage, GetTask { id: docs.id }).unwrap();
+        assert!(!details.ready);
+        assert!(details.blocked_by.is_empty());
+        storage.end_task_wait(docs.id.into(), None).unwrap();
+        assert_eq!(ready(&storage, true), [schema.id, docs.id]);
+        assert!(
+            task_details(&storage, GetTask { id: docs.id })
+                .unwrap()
+                .ready
+        );
     }
 
     #[test]

@@ -39,6 +39,22 @@ export function formatWhen(at: Timestamp, now: Timestamp = Date.now() / 1000): s
   return date.toLocaleDateString("en", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
 }
 
+/**
+ * The time left until `at`, rounded down, for a chip: minutes under an hour (`45m`), half hours
+ * under a day (`1.5h`, `12h`), days under two weeks (`7d`), then whole weeks (`3w`), months of 30
+ * days (`5mo`), and years of 365 days (`2y`). `0m` once `at` has passed.
+ */
+export function formatRemaining(at: Timestamp, now: Timestamp = Date.now() / 1000): string {
+  const minutes = Math.max(0, Math.floor((at - now) / 60));
+  if (minutes < 60) return `${minutes}m`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 30) / 2}h`;
+  const days = Math.floor(minutes / (24 * 60));
+  if (days < 14) return `${days}d`;
+  if (days < 60) return `${Math.floor(days / 7)}w`;
+  if (days < 365) return `${Math.floor(days / 30)}mo`;
+  return `${Math.floor(days / 365)}y`;
+}
+
 /** The full local date and time of `at` without seconds, for tooltips and detail views. */
 export function formatFull(at: Timestamp): string {
   return new Date(at * 1000).toLocaleString("en", { dateStyle: "medium", timeStyle: "short" });

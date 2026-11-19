@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "@/lib/bindings";
-import { emptyTaskFilter, isFilterActive, matchesFilter, toggleStatus, type TaskFilter } from "@/lib/task-filter";
+import { emptyTaskFilter, isFilterActive, matchesFilter, toggleStatus, type ShownStatus, type TaskFilter } from "@/lib/task-filter";
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
@@ -97,6 +97,23 @@ describe("matchesFilter", () => {
     expect(matchesFilter(pausedTask("blocker"), ready, noTasks)).toBe(true);
     // Paused by hand through MCP, which records the reason as a progress note.
     expect(matchesFilter(pausedTask("progress"), paused, noTasks)).toBe(true);
+  });
+
+  it("shows a task that waits until a time as waiting, neither ready nor blocked, until the wait ends", () => {
+    const done = task({ id: 1, status: "done", resolution: "merged" });
+    const byId = new Map([[done.id, done]]);
+    const filter = (status: ShownStatus): TaskFilter => ({ ...emptyTaskFilter, statuses: [status] });
+    const wait = { until: 2_000_000_000, status: "planned" as const };
+    const paused = { ...task().milestones, startedAt: 20, pausedAt: 30 };
+
+    for (const waiting of [task({ id: 2, dependsOn: [1], wait }), task({ id: 3, milestones: paused, wait: { ...wait, status: "in_progress" } })]) {
+      expect(matchesFilter(waiting, filter("waiting"), byId)).toBe(true);
+      expect(matchesFilter(waiting, filter("ready"), byId)).toBe(false);
+      expect(matchesFilter(waiting, filter("planned"), byId)).toBe(false);
+      expect(matchesFilter(waiting, filter("paused"), byId)).toBe(false);
+    }
+    // The server clears the wait when it ends.
+    expect(matchesFilter(task({ id: 2, dependsOn: [1] }), filter("ready"), byId)).toBe(true);
   });
 
   it("lets tasks of any selected status through", () => {
