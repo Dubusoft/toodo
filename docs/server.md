@@ -106,7 +106,9 @@ The commands of a global install (`toodo COMMAND --help` shows the options of ea
 - `toodo start`, `toodo stop`: start or stop the server, through systemd or launchd once
   the service is installed, else as a background process with `server.pid` and
   `server.log` in the data directory. On macOS `toodo stop` unloads the launchd job; it
-  loads again at the next login or `toodo start`.
+  loads again at the next login or `toodo start`. On SIGTERM or Ctrl+C the server stops
+  accepting connections and gives the requests in flight up to 5 seconds to finish;
+  open event streams of the web app are cut after that and reconnect once it is back.
 - `toodo restart`: stop the server and start it again the same way, then register its MCP
   endpoint again like `toodo start`.
 - `toodo status`: whether the server runs and where its files are; exits `0` when it runs

@@ -6,6 +6,7 @@ mod resources;
 mod tools;
 
 use std::fs;
+use std::future::Future;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
@@ -174,13 +175,34 @@ pub(crate) const READ_TIMEOUT: Duration = if cfg!(test) {
     Duration::from_secs(30)
 };
 
+/// How long [`serve`] lets open requests finish once shutdown starts. Event streams never
+/// end on their own, so without it one open browser tab would keep the server running.
+pub(crate) const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
+
 /// Serves `app` on `listener` over HTTP/1.1 with [`READ_TIMEOUT`], giving handlers the
 /// client's address as [`ConnectInfo`]. `axum::serve` gives hyper no timer, which leaves
 /// hyper's header timeout off.
-pub(crate) async fn serve(listener: TcpListener, app: axum::Router) -> io::Result<()> {
+///
+/// Once `shutdown` completes it stops accepting connections, closes idle ones, and waits
+/// up to `deadline` for the requests in flight to be answered before it returns;
+/// connections still open then end with the runtime.
+pub(crate) async fn serve(
+    listener: TcpListener,
+    app: axum::Router,
+    shutdown: impl Future<Output = ()>,
+    deadline: Duration,
+) -> io::Result<()> {
     let listener = tokio::net::TcpListener::from_std(listener)?;
+    let mut shutdown = std::pin::pin!(shutdown);
+    // Dropping `stop` tells every connection to finish; `open` closes once all have.
+    let (stop, stopping) = tokio::sync::watch::channel(());
+    let (open, connection_open) = tokio::sync::watch::channel(());
     loop {
-        let (stream, remote) = match listener.accept().await {
+        let accepted = tokio::select! {
+            accepted = listener.accept() => accepted,
+            () = &mut shutdown => break,
+        };
+        let (stream, remote) = match accepted {
             Ok(accepted) => accepted,
             Err(error) => {
                 accept_failed(error).await;
@@ -191,16 +213,36 @@ pub(crate) async fn serve(listener: TcpListener, app: axum::Router) -> io::Resul
             AddExtension::new(app.clone(), ConnectInfo(remote)),
             READ_TIMEOUT,
         ));
+        let mut stopping = stopping.clone();
+        let connection_open = connection_open.clone();
         tokio::spawn(async move {
             let connection = hyper::server::conn::http1::Builder::new()
                 .timer(TokioTimer::new())
                 .header_read_timeout(READ_TIMEOUT)
                 .serve_connection(TokioIo::new(stream), service)
                 .with_upgrades();
+            let mut connection = std::pin::pin!(connection);
             // A connection that breaks off or times out only ends; the client sees it closed.
-            drop(connection.await);
+            tokio::select! {
+                result = connection.as_mut() => drop(result),
+                _ = stopping.changed() => {
+                    connection.as_mut().graceful_shutdown();
+                    drop(connection.await);
+                }
+            }
+            drop(connection_open);
         });
     }
+    drop(listener);
+    drop(stop);
+    drop(connection_open);
+    if tokio::time::timeout(deadline, open.closed()).await.is_err() {
+        eprintln!(
+            "toodo-server: stopping with connections still open after {}s",
+            deadline.as_secs_f32()
+        );
+    }
+    Ok(())
 }
 
 /// Waits out an accept failure as `axum::serve` does: a connection that went away before
@@ -1498,6 +1540,108 @@ mod tests {
         assert_eq!(load_token(&path).unwrap(), token);
     }
 
+    /// A router whose one route, `/`, reports on `entered` that a request reached it and
+    /// then answers with `respond`.
+    fn signalling_router<F, R>(
+        entered: tokio::sync::oneshot::Sender<()>,
+        respond: F,
+    ) -> axum::Router
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Future<Output = Response> + Send + 'static,
+    {
+        let hooks = Arc::new(Mutex::new(Some((entered, respond))));
+        axum::Router::new().route(
+            "/",
+            axum::routing::get(move || {
+                let (entered, respond) = hooks.lock().unwrap().take().unwrap();
+                entered.send(()).unwrap();
+                respond()
+            }),
+        )
+    }
+
+    /// Sends `GET /` to `address` and returns all that comes back until the connection
+    /// closes.
+    fn get_root(address: SocketAddr) -> String {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        String::from_utf8(response).unwrap()
+    }
+
+    // Like `toodo-server`, these tests end the runtime, and with it every connection, as
+    // soon as `serve` returns.
+
+    #[test]
+    fn a_request_in_flight_when_shutdown_starts_is_answered() {
+        let (entered, request_arrived) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let app = signalling_router(entered, || async move {
+            released.await.unwrap();
+            "finished".into_response()
+        });
+        let listener = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || get_root(address));
+        // Shutdown starts once the request has reached the handler.
+        let (seen, shutdown_started) = tokio::sync::oneshot::channel();
+        let shutdown = async move {
+            request_arrived.await.unwrap();
+            seen.send(()).unwrap();
+        };
+        runtime().block_on(async move {
+            let served = serve(listener, app, shutdown, Duration::from_secs(60));
+            let mut served = std::pin::pin!(served);
+            // Polled a few more times after shutdown starts, `serve` must still wait for the
+            // request it has not answered yet.
+            let settled = async {
+                shutdown_started.await.unwrap();
+                for _ in 0..3 {
+                    tokio::task::yield_now().await;
+                }
+            };
+            tokio::select! {
+                _ = &mut served => panic!("serve returned before the request in flight was answered"),
+                () = settled => {}
+            }
+            release.send(()).unwrap();
+            served.await.unwrap();
+        });
+        let response = client.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(response.ends_with("finished"), "{response}");
+    }
+
+    #[test]
+    fn a_response_that_never_ends_holds_shutdown_only_until_the_deadline() {
+        let (entered, request_arrived) = tokio::sync::oneshot::channel();
+        // Like an event stream: the headers go out, the body never ends.
+        let app = signalling_router(entered, || async {
+            axum::body::Body::from_stream(futures_util::stream::pending::<
+                io::Result<axum::body::Bytes>,
+            >())
+            .into_response()
+        });
+        let listener = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = std::thread::spawn(move || get_root(address));
+        let shutdown = async move { request_arrived.await.unwrap() };
+        runtime().block_on(async move {
+            let served = serve(listener, app, shutdown, Duration::from_millis(100));
+            tokio::time::timeout(Duration::from_secs(10), served)
+                .await
+                .expect("serve returns once the deadline has passed")
+                .unwrap();
+        });
+        let response = client.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    }
+
     #[cfg(unix)]
     #[test]
     fn only_the_owner_can_read_the_token() {
@@ -1785,7 +1929,14 @@ mod tests {
         let storage = crate::storage::Storage::open_in_memory().unwrap();
         let backend = Arc::new(TestBackend::new(storage));
         let app = router(backend.clone(), "secret".to_owned(), Some("web".to_owned()));
-        std::thread::spawn(move || runtime().block_on(serve(listener, app)));
+        std::thread::spawn(move || {
+            runtime().block_on(serve(
+                listener,
+                app,
+                std::future::pending(),
+                SHUTDOWN_DEADLINE,
+            ))
+        });
 
         let rejected = |authorization: &str, reason: &str| {
             let response = post_initialize(address, authorization);
@@ -2099,7 +2250,14 @@ mod tests {
             "secret".to_owned(),
             None,
         );
-        std::thread::spawn(move || runtime().block_on(serve(listener, app)));
+        std::thread::spawn(move || {
+            runtime().block_on(serve(
+                listener,
+                app,
+                std::future::pending(),
+                SHUTDOWN_DEADLINE,
+            ))
+        });
         let get_task = |id: &str| {
             let body = format!(
                 r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"get_task","arguments":{{"id":{id}}}}}}}"#
@@ -2163,7 +2321,14 @@ mod tests {
         if let Some(peer) = peer {
             app = app.layer(axum::Extension(ConnectInfo(peer)));
         }
-        std::thread::spawn(move || runtime().block_on(serve(listener, app)));
+        std::thread::spawn(move || {
+            runtime().block_on(serve(
+                listener,
+                app,
+                std::future::pending(),
+                SHUTDOWN_DEADLINE,
+            ))
+        });
         address
     }
 
