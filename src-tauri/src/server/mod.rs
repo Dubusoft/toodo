@@ -746,6 +746,35 @@ mod tests {
     }
 
     #[test]
+    fn only_commands_that_change_data_move_the_notification_baseline() {
+        let temp = tempfile::tempdir().unwrap();
+        let services = services(temp.path());
+        let changes = push::tests::changes(&services.push);
+        let address = serve(services, None);
+        let rpc = |command: &str, args: serde_json::Value| {
+            let (status, _) = post_json(address, &format!("/api/rpc/{command}"), "web", &args);
+            assert!(status.contains(" 200 "), "{command}: {status}");
+        };
+
+        // The app polls `mcp_server_info` and `get_backup_status`.
+        for command in [
+            "list_workspaces",
+            "list_tasks",
+            "app_info",
+            "mcp_server_info",
+            "get_backup_status",
+        ] {
+            rpc(command, serde_json::json!({}));
+            assert_eq!(changes.try_recv().ok(), None, "{command}");
+        }
+        rpc(
+            "set_review_time_zone",
+            serde_json::json!({ "timeZone": null }),
+        );
+        assert_eq!(changes.try_recv().ok(), Some(push::Change::TasksSeen));
+    }
+
+    #[test]
     fn the_version_names_the_commit_of_the_build() {
         assert_eq!(
             with_commit("toodo-server", "1.2.3", "0123456789ab"),

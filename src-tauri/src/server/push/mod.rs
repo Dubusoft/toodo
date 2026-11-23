@@ -169,8 +169,8 @@ impl std::fmt::Display for SendError {
 }
 
 /// A change the worker turns into notifications.
-#[derive(Debug)]
-enum Change {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Change {
     Tasks,
     /// The tasks changed through the app; the baseline moves without notifications.
     TasksSeen,
@@ -727,6 +727,13 @@ pub(crate) mod tests {
                 })
             })
         }
+    }
+
+    /// Takes the changes announced to `push`, in place of the worker.
+    pub(crate) fn changes(push: &Push) -> mpsc::Receiver<Change> {
+        let (sender, changes) = mpsc::channel();
+        push.changes.set(sender).unwrap();
+        changes
     }
 
     /// A push identity with a fresh key in `dir` and `transport`.
