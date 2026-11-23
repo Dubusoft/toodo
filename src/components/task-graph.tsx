@@ -37,6 +37,7 @@ import {
   canAddDependency,
   dependencyEdges,
   dependencyEditableStatuses,
+  edgeId,
   isNotAdopted,
   isPaused,
   layoutTimeline,
@@ -229,8 +230,12 @@ export function TaskGraph({
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
-  // A dependency drawn onto a started task that it would pause, waiting for confirmation.
-  const [confirmingEdge, setConfirmingEdge] = useState<{ id: TaskId; dependsOn: TaskId } | null>(null);
+  // Dependencies drawn onto started tasks that they would pause, confirmed one at a time in the
+  // order they were drawn.
+  const [confirmingEdges, setConfirmingEdges] = useState<{ id: TaskId; dependsOn: TaskId }[]>([]);
+  const confirmingEdge = confirmingEdges.at(0) ?? null;
+  // Why the latest dependency changes failed, one message per failed change.
+  const [edgeErrors, setEdgeErrors] = useState<string[]>([]);
   const [year, setYear] = useState<number | null>(null);
   // The bar under the pointer, with its place on screen for the hover card.
   const [hovered, setHovered] = useState<{ id: TaskId; rect: DOMRect } | null>(null);
@@ -497,18 +502,59 @@ export function TaskGraph({
 
   function connect({ source, target }: Connection) {
     const edge = { id: Number(target), dependsOn: Number(source) };
+    setEdgeErrors([]);
     // The server tells whether the edge pauses a started task; then the user confirms it first.
-    addDependency.mutate(
-      { ...edge, confirmPause: false },
-      { onSuccess: (outcome) => outcome === "confirm_pause" && setConfirmingEdge(edge) },
+    // Each call settles on its own promise: the callbacks of `mutate` run only for the latest of
+    // several calls in flight, and a second edge drawn meanwhile would lose the first's outcome.
+    addDependency.mutateAsync({ ...edge, confirmPause: false }).then(
+      (outcome) => {
+        if (outcome === "confirm_pause") {
+          setConfirmingEdges((queue) =>
+            queue.some((queued) => queued.id === edge.id && queued.dependsOn === edge.dependsOn)
+              ? queue
+              : [...queue, edge],
+          );
+        }
+      },
+      (error: Error) => setEdgeErrors((errors) => [...errors, error.message]),
     );
   }
 
-  function removeEdges(removed: { source: string; target: string }[]) {
-    for (const edge of removed) {
-      removeDependency.mutate({ id: Number(edge.target), dependsOn: Number(edge.source) });
-    }
-    setSelectedEdgeIds(new Set());
+  function confirmEdge(edge: { id: TaskId; dependsOn: TaskId }) {
+    setEdgeErrors([]);
+    addDependency
+      .mutateAsync({ ...edge, confirmPause: true })
+      .catch((error: Error) => setEdgeErrors((errors) => [...errors, error.message]))
+      .finally(() => dropConfirmation(edge));
+  }
+
+  function dropConfirmation(edge: { id: TaskId; dependsOn: TaskId }) {
+    setConfirmingEdges((queue) => queue.filter((queued) => queued !== edge));
+  }
+
+  /** Removes the edges together; those that fail stay selected, each with its error shown. */
+  async function removeEdges(removed: { source: string; target: string }[]) {
+    setEdgeErrors([]);
+    const results = await Promise.allSettled(
+      removed.map((edge) => removeDependency.mutateAsync({ id: Number(edge.target), dependsOn: Number(edge.source) })),
+    );
+    const ids = removed.map((edge) => edgeId(Number(edge.source), Number(edge.target)));
+    setSelectedEdgeIds((current) => {
+      const next = new Set(current);
+      results.forEach((result, index) =>
+        result.status === "rejected" ? next.add(ids[index]) : next.delete(ids[index]),
+      );
+      return next;
+    });
+    setEdgeErrors(
+      results.flatMap((result, index) =>
+        result.status === "rejected"
+          ? [
+              `Could not remove #${removed[index].source} \u2192 #${removed[index].target}: ${(result.reason as Error).message}`,
+            ]
+          : [],
+      ),
+    );
   }
 
   /**
@@ -745,16 +791,16 @@ export function TaskGraph({
           taskId={confirmingEdge.id}
           prerequisite={`#${confirmingEdge.dependsOn}`}
           pending={addDependency.isPending}
-          onConfirm={() =>
-            addDependency.mutate({ ...confirmingEdge, confirmPause: true }, { onSettled: () => setConfirmingEdge(null) })
-          }
-          onCancel={() => setConfirmingEdge(null)}
+          onConfirm={() => confirmEdge(confirmingEdge)}
+          onCancel={() => dropConfirmation(confirmingEdge)}
         />
       )}
-      {(addDependency.error ?? removeDependency.error) && (
-        <p role="alert" className="text-xs text-destructive">
-          {(addDependency.error ?? removeDependency.error)?.message}
-        </p>
+      {edgeErrors.length > 0 && (
+        <div role="alert" className="text-xs text-destructive">
+          {edgeErrors.map((message, index) => (
+            <p key={index}>{message}</p>
+          ))}
+        </div>
       )}
       <div
         className="flex min-h-40 flex-1 gap-2"
