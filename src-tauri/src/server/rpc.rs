@@ -112,13 +112,20 @@ pub async fn handle(
         }
     };
     let reply = dispatch(services.clone(), &command, args).await;
-    if !READ_COMMANDS.contains(&command.as_str()) {
+    if changes_data(&command) {
         services.announce_status_changes();
+        // Changes the user makes in the app are not news to them: notifications only
+        // report what changed on its own (agents, pull requests, background checks).
+        services.push.tasks_seen();
     }
-    // Changes the user makes in the app are not news to them: notifications only report
-    // what changed on its own (agents, pull requests, background checks).
-    services.push.tasks_seen();
     reply
+}
+
+/// Whether `command` may change data. Commands that only read leave the notifications'
+/// baseline alone: the app polls some of them, and moving the baseline on each poll would
+/// swallow a change an agent just made.
+fn changes_data(command: &str) -> bool {
+    !READ_COMMANDS.contains(&command) && !matches!(command, "mcp_server_info" | "get_backup_status")
 }
 
 fn parse<T: DeserializeOwned>(args: serde_json::Value) -> Result<T, Reply> {
