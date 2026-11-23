@@ -7,6 +7,7 @@
 //! imported: they belong to the server that kept them. Tasks forget their herdr workspace: runtime records are not
 //! imported, since their IDs only meant something to the other machine's herdr.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use rusqlite::Transaction;
@@ -180,7 +181,59 @@ fn merge(tx: &Transaction<'_>) -> Result<ImportSummary> {
             [],
         )?;
     }
+    move_task_refs(tx, t)?;
     Ok(summary)
+}
+
+/// References of the form `task:<id>`, such as the one a shipped-with conclusion writes,
+/// name tasks of the imported database, so they move along with the task IDs. One whose
+/// task is not in that database is dropped: its number would name an unrelated task
+/// here. Every other reference is kept as it is.
+fn move_task_refs(tx: &Transaction<'_>, t: i64) -> Result<()> {
+    let imported: HashSet<i64> = tx
+        .prepare(&format!("SELECT id FROM {SOURCE}.tasks"))?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut select = tx.prepare(&format!(
+        "SELECT id, refs FROM {SOURCE}.tasks WHERE refs LIKE '%\"task:%'"
+    ))?;
+    let rows = select
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (id, json) in rows {
+        let refs: Vec<String> = serde_json::from_str(&json).map_err(|_| {
+            StorageError::InvalidData(format!(
+                "imported task {id} has refs that are not a JSON array of strings: {json}"
+            ))
+        })?;
+        let moved: Vec<String> = refs
+            .iter()
+            .filter_map(|reference| match task_ref(reference) {
+                Some(task) if imported.contains(&task) => Some(format!("task:{}", task + t)),
+                Some(_) => None,
+                None => Some(reference.clone()),
+            })
+            .collect();
+        if moved != refs {
+            let json = serde_json::to_string(&moved).expect("a list of strings serializes to JSON");
+            tx.execute(
+                "UPDATE main.tasks SET refs = ?2 WHERE id = ?1",
+                rusqlite::params![id + t, json],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// The task ID of a `task:<id>` reference.
+fn task_ref(reference: &str) -> Option<i64> {
+    let id = reference.strip_prefix("task:")?;
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    id.parse().ok()
 }
 
 /// The columns of `table` in this database, which the imported one matches since both
@@ -446,6 +499,82 @@ mod tests {
             0
         );
         assert!(server.list_commit_records(existing).unwrap().is_empty());
+    }
+
+    #[test]
+    fn shipped_with_refs_point_at_the_imported_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("other.sqlite3");
+        {
+            let mut other = Storage::open(&source).unwrap();
+            let workspace = add_workspace(&mut other, "site", "repository".to_owned());
+            let shipped = add_task(&mut other, &workspace, "Shipped");
+            let concluded = add_task(&mut other, &workspace, "Concluded");
+            other.start_task(shipped, None, &[]).unwrap();
+            other.complete_task(shipped, None, &[]).unwrap();
+            other
+                .conclude_task(concluded, "Shipped together", Some(shipped))
+                .unwrap();
+        }
+        let mut server = Storage::open_in_memory().unwrap();
+        let workspace = add_workspace(&mut server, "Existing", "repository".to_owned());
+        // Task #1 here has the number the shipping task had in the other database.
+        add_task(&mut server, &workspace, "Existing work");
+        add_task(&mut server, &workspace, "More existing work");
+
+        let summary = server.import(&stage_backup(&source).unwrap()).unwrap();
+
+        assert_eq!(summary.task_id_offset, 2);
+        let concluded = server.get_task(TaskId(4)).unwrap().unwrap();
+        assert_eq!(concluded.title, "Concluded");
+        assert_eq!(concluded.refs, ["task:3"]);
+        assert_eq!(
+            server.get_task(TaskId(3)).unwrap().unwrap().title,
+            "Shipped"
+        );
+    }
+
+    #[test]
+    fn task_refs_to_tasks_missing_from_the_import_are_dropped_and_others_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("other.sqlite3");
+        {
+            let mut other = Storage::open(&source).unwrap();
+            let workspace = add_workspace(&mut other, "site", "repository".to_owned());
+            let gone = add_task(&mut other, &workspace, "Deleted later");
+            let kept = add_task(&mut other, &workspace, "Kept");
+            let task = add_task(&mut other, &workspace, "Refers");
+            let refs = [
+                "lane:refers".to_owned(),
+                "pr:https://example.com/pull/1".to_owned(),
+                "task:draft".to_owned(),
+                format!("task:{kept}"),
+            ];
+            other.start_task(task, None, &refs).unwrap();
+            other.start_task(gone, None, &[]).unwrap();
+            other.complete_task(gone, None, &[]).unwrap();
+            other
+                .conclude_task(task, "Shipped elsewhere", Some(gone))
+                .unwrap();
+            other.delete_task(gone).unwrap();
+        }
+        let mut server = Storage::open_in_memory().unwrap();
+        let workspace = add_workspace(&mut server, "Existing", "repository".to_owned());
+        add_task(&mut server, &workspace, "Existing work");
+
+        server.import(&stage_backup(&source).unwrap()).unwrap();
+
+        let refers = server.get_task(TaskId(4)).unwrap().unwrap();
+        assert_eq!(refers.title, "Refers");
+        assert_eq!(
+            refers.refs,
+            [
+                "lane:refers",
+                "pr:https://example.com/pull/1",
+                "task:draft",
+                "task:3"
+            ]
+        );
     }
 
     #[test]
