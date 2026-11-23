@@ -644,6 +644,31 @@ describe("App", () => {
     expect(screen.queryByRole("heading", { name: "Year review" })).not.toBeInTheDocument();
   });
 
+  it("tells why the review could not be copied or exported in the server's words", async () => {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: vi.fn() }, configurable: true });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [] });
+    mocked.reviewPeriod.mockImplementation(async (from, to) => reviewOf(from, to, []));
+    mocked.reviewReport.mockResolvedValue({
+      status: "error",
+      error: { kind: "internal", code: "internal", message: "database is locked" },
+    });
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    renderApp();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+    expect(await screen.findByText("No recorded activity in this week.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Save as CSV" }));
+    expect(await screen.findByText("Could not export: database is locked")).toBeInTheDocument();
+    expect(click).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy as Markdown" }));
+    expect(await screen.findByText("Could not copy: database is locked")).toBeInTheDocument();
+    click.mockRestore();
+  });
+
   it("shows the tasks of every workspace on a timeline, narrowed to one workspace on request", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));

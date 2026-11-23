@@ -12,27 +12,30 @@ function attachmentName(response: Response, fallback: string): string {
   return match?.[1] ?? fallback;
 }
 
-function save(name: string, data: Blob) {
+/** Has the browser save `data` as a file named `name`. */
+export function saveFile(name: string, data: Blob) {
   const url = URL.createObjectURL(data);
   const link = document.createElement("a");
   link.href = url;
   link.download = name;
   link.click();
-  URL.revokeObjectURL(url);
+  // A browser may start the download after `click()` returns; revoking the URL right away
+  // could cancel it, so the URL lives until the next task.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 /** Downloads a snapshot of the server's database; resolves with the saved file name. */
 export async function downloadExport(): Promise<string> {
   const response = await request("/api/backups/export");
   const name = attachmentName(response, "toodo-backup.sqlite3");
-  save(name, await response.blob());
+  saveFile(name, await response.blob());
   return name;
 }
 
 /** Downloads the backup named `name` from the server's backup directory. */
 export async function downloadBackup(name: string): Promise<string> {
   const response = await request(`/api/backups/${encodeURIComponent(name)}`);
-  save(name, await response.blob());
+  saveFile(name, await response.blob());
   return name;
 }
 
@@ -40,7 +43,7 @@ export async function downloadBackup(name: string): Promise<string> {
 export async function downloadRunLog(runId: number, stream: "stdout" | "stderr"): Promise<string> {
   const response = await request(`/api/runs/${runId}/log/${stream}`);
   const name = attachmentName(response, `run-${runId}-${stream}.log`);
-  save(name, await response.blob());
+  saveFile(name, await response.blob());
   return name;
 }
 
