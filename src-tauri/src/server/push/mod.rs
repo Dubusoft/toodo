@@ -14,7 +14,9 @@
 //! A subscription also carries `lastFailure` (`{ message, at }` or `null`): why the latest
 //! notification did not reach the device, until one reaches it again. Messages the push
 //! service could not take for a while (no connection, 429, 5xx) are tried again after
-//! [`RETRY_DELAYS`] first.
+//! [`RETRY_DELAYS`] first. Up to [`CONCURRENT_DELIVERIES`] devices get their messages at
+//! once, and a device's messages of one change get [`DELIVERY_DEADLINE`], so a slow push
+//! service holds up neither the other devices nor the next change.
 //!
 //! Subscriptions belong to devices: a browser signed in with the shared web token gets 403.
 
@@ -33,6 +35,7 @@ use axum::body::Bytes;
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use self::alerts::{Alert, Watch};
@@ -65,6 +68,13 @@ pub const RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(2),
     Duration::from_secs(4),
 ];
+
+/// How many subscriptions get their messages at the same time.
+pub const CONCURRENT_DELIVERIES: usize = 8;
+
+/// How long one subscription's messages of a change may take, retries included; a push
+/// service that has not taken them by then counts as unreachable.
+pub const DELIVERY_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PushRequest {
@@ -302,10 +312,82 @@ fn record_outcome(
     }
 }
 
+/// What one subscription's messages of a change came to.
+struct Delivery<'a> {
+    subscription: &'a PushSubscription,
+    sent: usize,
+    /// The outcome of its latest message; `None` when none was sent or it is gone.
+    latest: Option<Result<(), SendError>>,
+    gone: bool,
+}
+
+/// Sends the alerts `subscription` allows, one after another, within [`DELIVERY_DEADLINE`].
+async fn deliver_to<'a>(
+    push: &Push,
+    subscription: &'a PushSubscription,
+    alerts: &[Alert],
+) -> Delivery<'a> {
+    let mut delivery = Delivery {
+        subscription,
+        sent: 0,
+        latest: None,
+        gone: false,
+    };
+    let sending = async {
+        for alert in alerts {
+            if alert
+                .kind
+                .is_some_and(|kind| !subscription.settings.allows(kind))
+            {
+                continue;
+            }
+            match push.send_with_retry(subscription, alert).await {
+                Ok(()) => {
+                    delivery.sent += 1;
+                    delivery.latest = Some(Ok(()));
+                }
+                Err(SendError::Gone) => {
+                    delivery.gone = true;
+                    delivery.latest = None;
+                    return;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "toodo-server: push to device {} failed: {error}",
+                        subscription.device
+                    );
+                    let transient = error.is_transient();
+                    delivery.latest = Some(Err(error));
+                    if transient {
+                        return;
+                    }
+                }
+            }
+        }
+    };
+    if tokio::time::timeout(DELIVERY_DEADLINE, sending)
+        .await
+        .is_err()
+    {
+        let error = SendError::Unreachable(format!(
+            "no answer within {} seconds",
+            DELIVERY_DEADLINE.as_secs()
+        ));
+        eprintln!(
+            "toodo-server: push to device {} failed: {error}",
+            subscription.device
+        );
+        delivery.latest = Some(Err(error));
+    }
+    delivery
+}
+
 /// Sends every alert to every subscription whose settings allow it, records the outcome
 /// of each subscription's latest message, and drops the subscriptions their push service
-/// reports gone. A subscription whose push service stays unreachable gets no further
-/// alerts this time. Returns how many messages were sent.
+/// reports gone. Subscriptions get their alerts side by side, [`CONCURRENT_DELIVERIES`] at
+/// a time; a subscription whose push service stays unreachable or misses
+/// [`DELIVERY_DEADLINE`] gets no further alerts this time. Returns how many messages were
+/// sent.
 pub(crate) fn deliver(
     storage: &StorageState,
     push: &Push,
@@ -322,47 +404,22 @@ pub(crate) fn deliver(
             return 0;
         }
     };
+    let deliveries: Vec<Delivery> = runtime.block_on(
+        futures_util::stream::iter(&subscriptions)
+            .map(|subscription| deliver_to(push, subscription, alerts))
+            .buffer_unordered(CONCURRENT_DELIVERIES)
+            .collect(),
+    );
     let mut sent = 0;
-    let mut gone = Vec::new();
-    for subscription in &subscriptions {
-        let mut latest = None;
-        for alert in alerts {
-            if alert
-                .kind
-                .is_some_and(|kind| !subscription.settings.allows(kind))
+    for delivery in deliveries {
+        sent += delivery.sent;
+        if delivery.gone {
+            if let Err(error) = lock(storage).delete_push_endpoint(&delivery.subscription.endpoint)
             {
-                continue;
+                eprintln!("toodo-server: cannot drop a gone push subscription: {error}");
             }
-            match runtime.block_on(push.send_with_retry(subscription, alert)) {
-                Ok(()) => {
-                    sent += 1;
-                    latest = Some(Ok(()));
-                }
-                Err(SendError::Gone) => {
-                    gone.push(subscription.endpoint.clone());
-                    latest = None;
-                    break;
-                }
-                Err(error) => {
-                    eprintln!(
-                        "toodo-server: push to device {} failed: {error}",
-                        subscription.device
-                    );
-                    let transient = error.is_transient();
-                    latest = Some(Err(error));
-                    if transient {
-                        break;
-                    }
-                }
-            }
-        }
-        if let Some(outcome) = &latest {
-            record_outcome(storage, subscription, outcome.as_ref().map(|_| ()));
-        }
-    }
-    for endpoint in gone {
-        if let Err(error) = lock(storage).delete_push_endpoint(&endpoint) {
-            eprintln!("toodo-server: cannot drop a gone push subscription: {error}");
+        } else if let Some(outcome) = &delivery.latest {
+            record_outcome(storage, delivery.subscription, outcome.as_ref().map(|_| ()));
         }
     }
     sent
@@ -382,15 +439,18 @@ pub fn spawn(services: Arc<Services>) -> io::Result<()> {
         .spawn(move || {
             let mut watch = Watch::default();
             watch_tasks(&services, &mut watch);
-            for change in changes {
-                let alerts = match change {
-                    Change::Tasks => watch_tasks(&services, &mut watch),
-                    Change::TasksSeen => {
-                        watch_tasks(&services, &mut watch);
-                        Vec::new()
-                    }
-                };
-                deliver(&services.storage, &services.push, &runtime, &alerts);
+            while let Ok(change) = changes.recv() {
+                // The changes announced while the last ones were delivered are read once.
+                // A batch notifies when any of its changes did not come from the app, so
+                // an agent's change is never folded into the baseline unannounced.
+                let mut notify = matches!(change, Change::Tasks);
+                while let Ok(change) = changes.try_recv() {
+                    notify |= matches!(change, Change::Tasks);
+                }
+                let alerts = watch_tasks(&services, &mut watch);
+                if notify {
+                    deliver(&services.storage, &services.push, &runtime, &alerts);
+                }
             }
         })?;
     Ok(())
@@ -696,11 +756,15 @@ pub(crate) mod tests {
     use super::*;
 
     /// Records every request and answers each with the next queued status (201 when none
-    /// is queued); a queued 0 fails as an unreachable push service.
+    /// is queued); a queued 0 fails as an unreachable push service. A stalled endpoint
+    /// never answers.
     #[derive(Default)]
     pub(crate) struct FakeTransport {
         pub requests: Arc<Mutex<Vec<PushRequest>>>,
         pub statuses: Arc<Mutex<Vec<u16>>>,
+        pub stalled: Arc<Mutex<Vec<String>>>,
+        /// When each request was posted, on the runtime's clock.
+        pub posted_at: Arc<Mutex<Vec<(String, tokio::time::Instant)>>>,
     }
 
     impl Transport for FakeTransport {
@@ -708,7 +772,15 @@ pub(crate) mod tests {
             &self,
             request: PushRequest,
         ) -> Pin<Box<dyn Future<Output = Result<PushResponse, String>> + Send + '_>> {
+            self.posted_at
+                .lock()
+                .unwrap()
+                .push((request.endpoint.clone(), tokio::time::Instant::now()));
+            let stalled = self.stalled.lock().unwrap().contains(&request.endpoint);
             self.requests.lock().unwrap().push(request);
+            if stalled {
+                return Box::pin(std::future::pending());
+            }
             let status = {
                 let mut statuses = self.statuses.lock().unwrap();
                 if statuses.is_empty() {
@@ -886,6 +958,75 @@ pub(crate) mod tests {
         // The next message that gets through clears it.
         assert_eq!(deliver(&storage, &push, &runtime, &[Alert::test()]), 1);
         assert_eq!(failure(), None);
+    }
+
+    #[test]
+    fn a_stalled_push_service_holds_up_neither_other_devices_nor_the_next_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let transport = FakeTransport::default();
+        transport
+            .stalled
+            .lock()
+            .unwrap()
+            .push("https://push.example/stalled".to_owned());
+        let posted_at = transport.posted_at.clone();
+        let push = push(temp.path(), transport);
+        let storage: StorageState =
+            std::sync::Mutex::new(crate::storage::Storage::open_in_memory().unwrap());
+        // The stalled device comes first, as serial delivery would reach it first.
+        subscribed(
+            &storage,
+            "Stalled",
+            "https://push.example/stalled",
+            PushSettings::default(),
+        );
+        subscribed(
+            &storage,
+            "Phone",
+            "https://push.example/phone",
+            PushSettings::default(),
+        );
+        // Paused time jumps ahead whenever every task waits, so the deadline costs nothing.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .start_paused(true)
+            .build()
+            .unwrap();
+        let now = || runtime.block_on(async { tokio::time::Instant::now() });
+        let failures = || {
+            lock(&storage)
+                .active_push_subscriptions()
+                .unwrap()
+                .into_iter()
+                .map(|subscription| subscription.last_failure.map(|failure| failure.message))
+                .collect::<Vec<_>>()
+        };
+
+        let start = now();
+        assert_eq!(deliver(&storage, &push, &runtime, &[Alert::test()]), 1);
+        let took = now() - start;
+        assert!(took >= DELIVERY_DEADLINE && took < DELIVERY_DEADLINE + Duration::from_secs(1));
+        let phone_at = |posted: &[(String, tokio::time::Instant)]| {
+            posted
+                .iter()
+                .rev()
+                .find(|(endpoint, _)| endpoint == "https://push.example/phone")
+                .map(|(_, at)| *at)
+                .unwrap()
+        };
+        assert_eq!(phone_at(&posted_at.lock().unwrap()), start);
+        assert_eq!(
+            failures(),
+            [
+                Some("cannot reach the push service: no answer within 30 seconds".to_owned()),
+                None
+            ]
+        );
+
+        // The next change is delivered as soon as the deadline let the last one go.
+        let next = now();
+        assert_eq!(deliver(&storage, &push, &runtime, &[Alert::test()]), 1);
+        assert_eq!(phone_at(&posted_at.lock().unwrap()), next);
     }
 
     #[test]

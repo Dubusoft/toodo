@@ -404,7 +404,11 @@ subscription the push service reports gone is dropped.
 A notification the push service cannot take for a while (it cannot be reached, or it
 answers 429 or 5xx) is tried again after 1, 2, and 4 seconds; while a device's push
 service stays unreachable, its other notifications of the same change are skipped. Any
-other refusal is not retried. The settings show the last notification that did not
+other refusal is not retried. Up to eight devices get their notifications at once, and a
+device's notifications of one change get 30 seconds, retries included; a push service
+that has not taken them by then counts as unreachable, so one slow push service holds up
+neither the other devices nor the next change. Changes that arrive while notifications
+are being sent are read together once those are done. The settings show the last notification that did not
 reach the device and why, until a notification (such as a test one) reaches it again.
 
 The server signs its requests to push services with a P-256 key (VAPID) that it creates
