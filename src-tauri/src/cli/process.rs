@@ -2,7 +2,7 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Seek, SeekFrom};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -22,6 +22,8 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL: Duration = Duration::from_millis(100);
 /// Lines of `server.log` shown when the server exits during its start.
 const LOG_TAIL: usize = 20;
+/// Bytes read from the end of `server.log` to find those lines; the log is never rotated.
+const LOG_TAIL_BYTES: u64 = 64 * 1024;
 
 /// The executable `name` in a directory of `PATH`.
 pub(crate) fn find_on_path(name: &str, var: Var) -> Option<PathBuf> {
@@ -353,10 +355,22 @@ pub(super) fn stop(data: &DataDir) -> Result<bool, String> {
     Ok(true)
 }
 
-/// The last `lines` lines of the file at `path`.
+/// The last `lines` lines within the last `LOG_TAIL_BYTES` of the file at `path`, with
+/// invalid UTF-8 replaced. Empty when the file cannot be read.
 fn tail(path: &Path, lines: usize) -> String {
-    let text = fs::read_to_string(path).unwrap_or_default();
-    let all: Vec<&str> = text.lines().collect();
+    let mut bytes = Vec::new();
+    let mut start = 0;
+    let read = fs::File::open(path).and_then(|mut file| {
+        start = file.metadata()?.len().saturating_sub(LOG_TAIL_BYTES);
+        file.seek(SeekFrom::Start(start))?;
+        file.take(LOG_TAIL_BYTES).read_to_end(&mut bytes)
+    });
+    if read.is_err() {
+        return String::new();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    // A read that starts inside the file starts inside a line: drop that partial line.
+    let all: Vec<&str> = text.lines().skip(usize::from(start > 0)).collect();
     all[all.len().saturating_sub(lines)..].join("\n")
 }
 
@@ -479,5 +493,24 @@ mod tests {
         fs::write(&path, "a\nb\nc\n").unwrap();
         assert_eq!(tail(&path, 2), "b\nc");
         assert_eq!(tail(&path, 10), "a\nb\nc");
+    }
+
+    #[test]
+    fn the_tail_of_a_large_log_with_invalid_utf8_keeps_the_last_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        let mut log = vec![0xff; 1024 * 1024];
+        log.extend_from_slice(b"\nfirst \xfe line\nsecond line\nlast line\n");
+        fs::write(&path, log).unwrap();
+        assert_eq!(tail(&path, 2), "second line\nlast line");
+        assert_eq!(
+            tail(&path, 3),
+            "first \u{fffd} line\nsecond line\nlast line"
+        );
+        // Only the partial line at the cut is dropped, not the whole window.
+        assert_eq!(
+            tail(&path, 10),
+            "first \u{fffd} line\nsecond line\nlast line"
+        );
     }
 }
