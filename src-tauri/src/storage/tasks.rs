@@ -42,13 +42,43 @@ pub struct StatusChange {
 }
 
 /// A planned task that became ready: `unblocked_by` was the last of its dependencies to
-/// finish.
+/// finish, or to be adopted after it was concluded as not adopted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadyTask {
     pub task: TaskId,
     pub workspace: WorkspaceId,
     pub unblocked_by: TaskId,
     pub at: i64,
+}
+
+/// How far [`Storage::status_changes_after`] has read: the id of the last status history
+/// record and of the last adoption, 0 for none.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatusCursor {
+    pub status_change: i64,
+    pub adoption: i64,
+}
+
+impl StatusCursor {
+    /// The earlier position of each kind of record.
+    pub fn min(self, other: Self) -> Self {
+        Self {
+            status_change: self.status_change.min(other.status_change),
+            adoption: self.adoption.min(other.adoption),
+        }
+    }
+}
+
+/// What [`Storage::status_changes_after`] found after a cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusChanges {
+    /// The status changes, oldest first.
+    pub changes: Vec<StatusChange>,
+    /// The planned tasks that a move to `done` or an adoption among them made ready.
+    pub ready: Vec<ReadyTask>,
+    /// The cursor past the latest records: the latest, not the last one found, since a
+    /// restored backup can have fewer records than were announced.
+    pub cursor: StatusCursor,
 }
 
 /// Which tasks [`Storage::query_tasks`] lists. Every condition set must hold; the default
@@ -441,6 +471,31 @@ pub(super) fn record_event(
     at: i64,
 ) -> Result<()> {
     record_event_with_reason(conn, task, status, at, None)
+}
+
+/// The cursor past the latest status history record and the latest adoption.
+fn status_cursor(conn: &Connection) -> Result<StatusCursor> {
+    Ok(conn.query_row(
+        "SELECT (SELECT coalesce(max(id), 0) FROM task_events),
+                (SELECT coalesce(max(id), 0) FROM task_adoptions)",
+        [],
+        |row| {
+            Ok(StatusCursor {
+                status_change: row.get(0)?,
+                adoption: row.get(1)?,
+            })
+        },
+    )?)
+}
+
+/// Records that the work of done task `task`, concluded as not adopted, is adopted after
+/// all, see [`Storage::status_changes_after`].
+fn record_adoption(conn: &Connection, task: TaskId, at: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO task_adoptions (task_id, at) VALUES (?1, ?2)",
+        params![task.0, at],
+    )?;
+    Ok(())
 }
 
 /// [`record_event`] with `reason`, why the work stopped on a move back to `planned`.
@@ -838,29 +893,21 @@ impl Storage {
         Ok(task)
     }
 
-    /// The id of the latest status history record; 0 when there is none.
-    pub fn last_status_change(&self) -> Result<i64> {
-        Ok(self
-            .conn
-            .query_row("SELECT coalesce(max(id), 0) FROM task_events", [], |row| {
-                row.get(0)
-            })?)
+    /// The cursor past the latest status history record and the latest adoption.
+    pub fn status_cursor(&self) -> Result<StatusCursor> {
+        status_cursor(&self.conn)
     }
 
-    /// The id of the latest status history record, the status changes recorded after the
-    /// history record `after` (oldest first), and the planned tasks that one of their moves
-    /// to `done` made ready. All three come from one read transaction, so a change
-    /// committed meanwhile by another connection is in none of them: a task waiting on two
-    /// dependencies that finish one after the other is ready only from the second finish.
-    pub fn status_changes_after(
-        &mut self,
-        after: i64,
-    ) -> Result<(i64, Vec<StatusChange>, Vec<ReadyTask>)> {
+    /// The status changes and adoptions recorded after `after`, the planned tasks that one
+    /// of their moves to `done` or adoptions made ready, and the cursor past the latest of
+    /// both records. An adoption changes no status, so it adds no status change. All of it
+    /// comes from one read transaction, so a change committed meanwhile by another
+    /// connection is in none of them: a task waiting on two dependencies that finish one
+    /// after the other is ready only from the second finish.
+    pub fn status_changes_after(&mut self, after: StatusCursor) -> Result<StatusChanges> {
         // Only reads: dropping the transaction ends it.
         let tx = self.conn.transaction()?;
-        let last = tx.query_row("SELECT coalesce(max(id), 0) FROM task_events", [], |row| {
-            row.get(0)
-        })?;
+        let cursor = status_cursor(&tx)?;
         let mut statement = tx.prepare_cached(
             "SELECT e.id, e.task_id, t.workspace_id, e.status, e.at,
                  (SELECT p.status FROM task_events p
@@ -869,7 +916,7 @@ impl Storage {
              WHERE e.id > ?1 ORDER BY e.id",
         )?;
         let rows = statement
-            .query_map([after], |row| {
+            .query_map([after.status_change], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
@@ -891,13 +938,36 @@ impl Storage {
                 at,
             });
         }
-        let finished: HashMap<TaskId, &StatusChange> = changes
+        let mut statement = tx.prepare_cached(
+            "SELECT id, task_id, at FROM task_adoptions WHERE id > ?1 ORDER BY id",
+        )?;
+        let adoptions = statement
+            .query_map([after.adoption], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    TaskId(row.get(1)?),
+                    row.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        // The latest move to `done` or adoption of each task, keyed by its time, then
+        // its kind and record id, so the tasks it made ready come in the order they did.
+        let mut finished: HashMap<TaskId, (i64, u8, i64)> = HashMap::new();
+        let finishes = changes
             .iter()
             .filter(|change| change.to == TaskStatus::Done)
-            .map(|change| (change.task, change))
-            .collect();
+            .map(|change| (change.task, (change.at, 0, change.id)))
+            .chain(adoptions.iter().map(|&(id, task, at)| (task, (at, 1, id))));
+        for (task, key) in finishes {
+            let latest = finished.entry(task).or_insert(key);
+            *latest = (*latest).max(key);
+        }
         if finished.is_empty() {
-            return Ok((last, changes, Vec::new()));
+            return Ok(StatusChanges {
+                changes,
+                ready: Vec::new(),
+                cursor,
+            });
         }
         let tasks = all_tasks(&tx)?;
         let mut ready = Vec::new();
@@ -906,32 +976,32 @@ impl Storage {
                 continue;
             }
             // The latest finish among its dependencies is the one that unblocked it.
-            let Some(last) = task
+            let Some((&dependency, &key)) = task
                 .depends_on
                 .iter()
-                .filter_map(|dependency| finished.get(dependency))
-                .max_by_key(|change| change.id)
+                .filter_map(|dependency| finished.get_key_value(dependency))
+                .max_by_key(|&(_, key)| *key)
             else {
                 continue;
             };
             if dag::is_ready(&tasks, task.id)? {
                 ready.push((
-                    last.id,
+                    key,
                     ReadyTask {
                         task: task.id,
                         workspace: task.workspace_id,
-                        unblocked_by: last.task,
-                        at: last.at,
+                        unblocked_by: dependency,
+                        at: key.0,
                     },
                 ));
             }
         }
-        ready.sort_by_key(|(id, ready)| (*id, ready.task));
-        Ok((
-            last,
+        ready.sort_by_key(|(key, ready)| (*key, ready.task));
+        Ok(StatusChanges {
             changes,
-            ready.into_iter().map(|(_, ready)| ready).collect(),
-        ))
+            ready: ready.into_iter().map(|(_, ready)| ready).collect(),
+            cursor,
+        })
     }
 
     /// Rejects starting a task while one of its dependencies is not done.
@@ -1025,6 +1095,9 @@ impl Storage {
         }
         if changes_status {
             record_event_with_reason(&tx, id, TaskStatus::Done, at, Some(note))?;
+        } else {
+            // A task done as not adopted that another task shipped is adopted now.
+            record_adoption(&tx, id, at)?;
         }
         let task = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;
@@ -1056,8 +1129,9 @@ impl Storage {
 
     /// Corrects how a `done` task ended to `resolution` in one transaction: `completion_note`
     /// becomes its completion note, and `note`, the record of the change, is added as a
-    /// progress note. Its status history stays: the task did finish then. Whether the task
-    /// and `resolution` allow it is up to the caller.
+    /// progress note. Its status history stays: the task did finish then. Adopting work
+    /// that was not adopted is recorded as an adoption, which announces the dependents it
+    /// makes ready. Whether the task and `resolution` allow it is up to the caller.
     pub fn set_task_outcome(
         &mut self,
         id: TaskId,
@@ -1078,6 +1152,11 @@ impl Storage {
             "UPDATE tasks SET resolution = ?2, completion_note = ?3 WHERE id = ?1",
             params![id.0, resolution.as_str(), completion_note],
         )?;
+        if task.resolution == Some(TaskResolution::NotAdopted)
+            && resolution != TaskResolution::NotAdopted
+        {
+            record_adoption(&tx, id, at)?;
+        }
         add_note(&tx, id, NoteKind::Progress, note, at)?;
         let corrected = find_task(&tx, id)?.ok_or(StorageError::TaskNotFound(id))?;
         tx.commit()?;

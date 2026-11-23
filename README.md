@@ -21,7 +21,7 @@ creates worktrees, runs agents, and opens pull requests, records the outcome in 
 - **Reasons**: starting, pausing, and completing a task record why, next to the status
   change in its history.
 - **Completion criteria**: `manual` items checked with evidence, and `url` items Toodo
-  checks with an HTTP GET; completing a task makes its dependents ready.
+  checks with an HTTP GET; completing a task releases the dependents waiting on it.
 - **Agent access (MCP)**: coding agents read and plan tasks, record starts, notes, and
   decisions, and complete tasks through the server's MCP endpoint; copy the client config
   from Agent access in Settings (the gear at the bottom of the sidebar). See

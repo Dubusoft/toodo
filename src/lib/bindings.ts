@@ -893,13 +893,13 @@ export type TaskNote = {
 
 /**
  *  A planned task became ready: the last of its unfinished dependencies, `unblockedBy`,
- *  moved to `done`.
+ *  moved to `done`, or was adopted after it was concluded as not adopted.
  */
 export type TaskReady = {
 	taskId: TaskId,
 	workspaceId: WorkspaceId,
 	unblockedBy: TaskId,
-	/**  When `unblockedBy` moved to `done`. */
+	/**  When `unblockedBy` moved to `done` or was adopted. */
 	at: Timestamp,
 };
 

@@ -701,7 +701,10 @@ curl -N -H "Authorization: Bearer $(cat ~/.local/share/toodo-server/web-token)" 
 - `task-ready`: `{ "taskId", "workspaceId", "unblockedBy", "at" }`, sent after the
   `task-status-changed` of `unblockedBy` when that move to `done` finished the last
   unfinished dependency of the planned task `taskId`. A dependency concluded as not
-  adopted keeps its dependents blocked, so it makes none ready.
+  adopted keeps its dependents blocked, so it makes none ready. Correcting its outcome
+  later (Set outcome to `completed`, or `conclude_task` with `shipped_with`) changes no
+  status, so it sends only `task-ready` for each dependent it releases last, with `at`
+  set to the time of the correction.
 
 ```text
 id: 3f9a01c2-41

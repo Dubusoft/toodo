@@ -168,8 +168,9 @@ work.
 Once the work shipped and its criteria hold, the executor checks the `manual` criteria
 with `check_criterion` and calls `complete_task` with an optional note and refs. Toodo
 runs the `url` checks, moves the task to `done` with resolution `completed`, records
-`completedAt` and the note, and the dependents become ready. In the app, "Complete" does
-the same.
+`completedAt` and the note, and the task no longer holds back its dependents: each one
+becomes ready once its other dependencies are done too. In the app, "Complete" does the
+same.
 
 Work that ends without being adopted, typically research, is concluded instead.
 `conclude_task` takes a required note (what was tried, what was found, why it isn't
@@ -179,8 +180,11 @@ without starting it first, e.g. an idea that is dropped before anyone works on i
 prerequisites don't have to be done. In the app, "Conclude" does the same.
 
 When another task's work shipped this one, call `conclude_task` with outcome
-`shipped_with` and `shipped_with` set to that task's id. The task counts as done and its
-dependents become ready.
+`shipped_with` and `shipped_with` set to that task's id. The task counts as done and no
+longer holds back its dependents; each one becomes ready once its other dependencies are
+done too. This also corrects a task already concluded as `not_adopted`, as does Set
+outcome (`set_task_outcome`) with `completed`; either releases its dependents the same
+way and announces those it makes ready with a `task-ready` event.
 
 The completion note can be edited later in the app.
 

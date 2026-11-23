@@ -948,7 +948,7 @@ fn a_waiting_task_is_paused_until_its_time_then_returns_to_its_status() {
     storage.set_task_status(active.id, InProgress).unwrap();
     storage.set_task_status(review.id, InProgress).unwrap();
     storage.set_task_status(review.id, InReview).unwrap();
-    let before = storage.last_status_change().unwrap();
+    let before = storage.status_cursor().unwrap();
 
     set_now(&now, 200);
     let waiting = storage.wait_task(active.id, 1_000, Some("Vendor")).unwrap();
@@ -971,7 +971,7 @@ fn a_waiting_task_is_paused_until_its_time_then_returns_to_its_status() {
             status: InProgress
         })
     );
-    let (_, changes, _) = storage.status_changes_after(before).unwrap();
+    let changes = storage.status_changes_after(before).unwrap().changes;
     let pauses: Vec<_> = changes.iter().map(|c| (c.task, c.from, c.to)).collect();
     assert_eq!(
         pauses,
@@ -987,7 +987,7 @@ fn a_waiting_task_is_paused_until_its_time_then_returns_to_its_status() {
     assert_eq!(status(&storage, &planned), Planned);
     assert_eq!(status(&storage, &active), Planned);
 
-    let paused = storage.last_status_change().unwrap();
+    let paused = storage.status_cursor().unwrap();
     set_now(&now, 600);
     assert_eq!(storage.end_due_waits().unwrap(), [workspace.id]);
     let returned = storage.get_task(active.id).unwrap().unwrap();
@@ -997,7 +997,7 @@ fn a_waiting_task_is_paused_until_its_time_then_returns_to_its_status() {
         .end_task_wait(review.id, Some("Reply came"))
         .unwrap();
     assert_eq!((ended.status, ended.wait), (InReview, None));
-    let (_, changes, _) = storage.status_changes_after(paused).unwrap();
+    let changes = storage.status_changes_after(paused).unwrap().changes;
     let returns: Vec<_> = changes
         .iter()
         .map(|c| (c.task, c.from, c.to, c.at))
@@ -1103,8 +1103,10 @@ fn status_changes_after_a_record_name_both_statuses_and_the_tasks_made_ready() {
     storage.add_dependency(waits_on_a.id, a.id).unwrap();
     storage.add_dependency(waits_on_both.id, a.id).unwrap();
     storage.add_dependency(waits_on_both.id, b.id).unwrap();
-    let created = storage.last_status_change().unwrap();
-    let (_, changes, ready) = storage.status_changes_after(0).unwrap();
+    let created = storage.status_cursor().unwrap();
+    let StatusChanges { changes, ready, .. } = storage
+        .status_changes_after(StatusCursor::default())
+        .unwrap();
     assert_eq!(changes.len(), 4);
     assert_eq!(
         (changes[0].task, changes[0].from, changes[0].to),
@@ -1115,7 +1117,7 @@ fn status_changes_after_a_record_name_both_statuses_and_the_tasks_made_ready() {
     set_now(&now, 200);
     storage.set_task_status(a.id, InProgress).unwrap();
     storage.complete_task(a.id, None, &[]).unwrap();
-    let (_, changes, ready) = storage.status_changes_after(created).unwrap();
+    let StatusChanges { changes, ready, .. } = storage.status_changes_after(created).unwrap();
     let moves: Vec<_> = changes
         .iter()
         .map(|change| {
@@ -1146,20 +1148,118 @@ fn status_changes_after_a_record_name_both_statuses_and_the_tasks_made_ready() {
     );
 
     // A dependency concluded as not adopted keeps its dependents blocked.
-    let completed = storage.last_status_change().unwrap();
+    let completed = storage.status_cursor().unwrap();
     storage.conclude_task(b.id, "Not needed", None).unwrap();
-    let (_, changes, ready) = storage.status_changes_after(completed).unwrap();
+    let StatusChanges { changes, ready, .. } = storage.status_changes_after(completed).unwrap();
     assert_eq!((changes[0].task, changes[0].to), (b.id, Done));
     assert!(ready.is_empty());
-    let last = storage.last_status_change().unwrap();
+    let last = storage.status_cursor().unwrap();
     assert_eq!(
         storage.status_changes_after(last).unwrap(),
-        (last, Vec::new(), Vec::new())
+        StatusChanges {
+            changes: Vec::new(),
+            ready: Vec::new(),
+            cursor: last,
+        }
     );
     // A restored backup can have fewer records than were announced.
+    let ahead = StatusCursor {
+        status_change: last.status_change + 5,
+        adoption: last.adoption + 5,
+    };
     assert_eq!(
-        storage.status_changes_after(last + 5).unwrap(),
-        (last, Vec::new(), Vec::new())
+        storage.status_changes_after(ahead).unwrap(),
+        StatusChanges {
+            changes: Vec::new(),
+            ready: Vec::new(),
+            cursor: last,
+        }
+    );
+}
+
+#[test]
+fn adopting_work_concluded_as_not_adopted_makes_its_dependents_ready_once() {
+    let (mut storage, now) = clocked_storage(100);
+    let workspace = add_workspace(&mut storage, "Toodo", local_location("/src/toodo"));
+    let corrected = add_task(&mut storage, &workspace, "Corrected");
+    let shipped = add_task(&mut storage, &workspace, "Shipped with another");
+    let shipper = add_task(&mut storage, &workspace, "Shipper");
+    let open = add_task(&mut storage, &workspace, "Open");
+    let waits_on_corrected = add_task(&mut storage, &workspace, "Waits on corrected");
+    let waits_on_shipped = add_task(&mut storage, &workspace, "Waits on shipped");
+    let waits_on_both = add_task(&mut storage, &workspace, "Waits on corrected and open");
+    storage
+        .add_dependency(waits_on_corrected.id, corrected.id)
+        .unwrap();
+    storage
+        .add_dependency(waits_on_shipped.id, shipped.id)
+        .unwrap();
+    storage
+        .add_dependency(waits_on_both.id, corrected.id)
+        .unwrap();
+    storage.add_dependency(waits_on_both.id, open.id).unwrap();
+    storage.set_task_status(shipper.id, InProgress).unwrap();
+    storage.complete_task(shipper.id, None, &[]).unwrap();
+    storage
+        .conclude_task(corrected.id, "Not needed", None)
+        .unwrap();
+    storage
+        .conclude_task(shipped.id, "Not needed", None)
+        .unwrap();
+    // The conclusions are announced first; they make nothing ready.
+    let concluded = storage
+        .status_changes_after(StatusCursor::default())
+        .unwrap();
+    assert!(concluded.ready.is_empty());
+
+    // Correcting the outcome changes no status, so it announces only the ready task.
+    set_now(&now, 200);
+    storage
+        .set_task_outcome(
+            corrected.id,
+            TaskResolution::Completed,
+            "Adopted after all",
+            "Outcome changed",
+        )
+        .unwrap();
+    let adopted = storage.status_changes_after(concluded.cursor).unwrap();
+    assert!(adopted.changes.is_empty());
+    assert_eq!(
+        adopted.ready,
+        [ReadyTask {
+            task: waits_on_corrected.id,
+            workspace: workspace.id,
+            unblocked_by: corrected.id,
+            at: 200,
+        }]
+    );
+
+    // So does concluding it as shipped with a completed task.
+    set_now(&now, 300);
+    storage
+        .conclude_task(shipped.id, "Shipped with the shipper", Some(shipper.id))
+        .unwrap();
+    let shipped_with = storage.status_changes_after(adopted.cursor).unwrap();
+    assert!(shipped_with.changes.is_empty());
+    assert_eq!(
+        shipped_with.ready,
+        [ReadyTask {
+            task: waits_on_shipped.id,
+            workspace: workspace.id,
+            unblocked_by: shipped.id,
+            at: 300,
+        }]
+    );
+
+    let last = storage.status_cursor().unwrap();
+    assert_eq!(shipped_with.cursor, last);
+    assert_eq!(
+        storage.status_changes_after(last).unwrap(),
+        StatusChanges {
+            changes: Vec::new(),
+            ready: Vec::new(),
+            cursor: last,
+        }
     );
 }
 
@@ -1590,7 +1690,10 @@ fn a_task_is_ready_only_from_the_finish_of_its_last_dependency_while_others_writ
     storage.set_task_status(a.id, InProgress).unwrap();
     storage.set_task_status(b.id, InProgress).unwrap();
     let mut reader = Storage::open_reader(&path).unwrap();
-    let (announced, _, _) = reader.status_changes_after(0).unwrap();
+    let announced = reader
+        .status_changes_after(StatusCursor::default())
+        .unwrap()
+        .cursor;
 
     // B finishes on the writer after the reader has read A's finish, before it reads the
     // tasks: the tasks it reads still have B in progress.
@@ -1602,13 +1705,17 @@ fn a_task_is_ready_only_from_the_finish_of_its_last_dependency_while_others_writ
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
         Some(write_after_the_changes_are_read),
     );
-    let (announced, changes, ready) = reader.status_changes_after(announced).unwrap();
+    let StatusChanges {
+        changes,
+        ready,
+        cursor: announced,
+    } = reader.status_changes_after(announced).unwrap();
     assert!(WRITE_AFTER_THE_CHANGES_READ.with_borrow(Option::is_none));
     let moves: Vec<_> = changes.iter().map(|c| (c.task, c.to)).collect();
     assert_eq!(moves, [(a.id, Done)]);
     assert_eq!(ready, []);
 
-    let (_, changes, ready) = reader.status_changes_after(announced).unwrap();
+    let StatusChanges { changes, ready, .. } = reader.status_changes_after(announced).unwrap();
     let moves: Vec<_> = changes.iter().map(|c| (c.task, c.to)).collect();
     assert_eq!(moves, [(b.id, Done)]);
     let unblocked: Vec<_> = ready.iter().map(|r| (r.task, r.unblocked_by)).collect();

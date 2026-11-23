@@ -34,7 +34,7 @@ use crate::commands::{Runtime, StorageState};
 use crate::domain::model;
 use crate::mcp::{self, Backend, ServerStatus};
 use crate::oauth::{self, PublicUrl};
-use crate::storage::Storage;
+use crate::storage::{StatusChanges, StatusCursor, Storage};
 
 pub(crate) const DATABASE_FILE: &str = "toodo.sqlite3";
 
@@ -154,9 +154,10 @@ pub struct Services {
     events: Arc<event_log::EventLog>,
     /// Marked on every announced change, for MCP resource subscriptions.
     changes: tokio::sync::watch::Sender<()>,
-    /// The id of the last status history record announced as a `task-status-changed`
-    /// event; held while announcing, so the events go out once and in order.
-    announced_status: Mutex<i64>,
+    /// How far the status history records and adoptions are announced as
+    /// `task-status-changed` and `task-ready` events; held while announcing, so the events
+    /// go out once and in order.
+    announced_status: Mutex<StatusCursor>,
     /// The largest database file `POST /api/backups/restore` accepts, in bytes.
     restore_limit: u64,
     push: push::Push,
@@ -181,7 +182,11 @@ impl Services {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let found = crate::commands::lock(self.reader()).status_changes_after(*announced);
-        let (last, changes, ready) = match found {
+        let StatusChanges {
+            changes,
+            ready,
+            cursor,
+        } = match found {
             Ok(found) => found,
             Err(error) => {
                 eprintln!("toodo-server: cannot read task status changes: {error}");
@@ -200,7 +205,7 @@ impl Services {
         }
         // The latest record, not the last change: a restored backup can have fewer records
         // than were announced.
-        *announced = last;
+        *announced = cursor;
         for task in &ready {
             let event = TaskReady {
                 task_id: task.task.into(),
@@ -374,7 +379,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let announced_status = reader
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .last_status_change()?;
+        .status_cursor()?;
     let mcp_token_path = config.data_dir.join(mcp::TOKEN_FILE);
     let mcp_token = mcp::load_token(&mcp_token_path)?;
     let web_token_path = config.data_dir.join(WEB_TOKEN_FILE);
@@ -801,7 +806,7 @@ mod tests {
             },
             events: Arc::new(event_log::EventLog::new().unwrap()),
             changes: tokio::sync::watch::Sender::new(()),
-            announced_status: Mutex::new(0),
+            announced_status: Mutex::new(StatusCursor::default()),
             restore_limit: TEST_RESTORE_LIMIT,
             push: push::tests::push(data_dir, push::tests::FakeTransport::default()),
         })

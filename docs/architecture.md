@@ -107,7 +107,10 @@ them.
 - `start_task` is rejected while a prerequisite isn't done; the message names it.
   Dependents can be planned at any time.
 - A task concluded as `not_adopted` doesn't release its dependents: they stay blocked
-  until the dependency is removed or replaced.
+  until the dependency is removed or replaced, or its outcome is corrected to adopted
+  (Set outcome, or `conclude_task` with `shipped_with`). The correction is kept as an
+  adoption record, since the status history doesn't change, and announces the dependents
+  it makes ready.
 - Dependencies change while a task is `planned` or `in_progress`. A new prerequisite that
   isn't done pauses an `in_progress` task in the same transaction (back to `planned`,
   with a status event naming the prerequisites it waits on).

@@ -459,7 +459,8 @@ mod tests {
     /// Writes `storage`'s data to `path` with tasks 1 and 2 waiting with only one of
     /// `wait_until` and `wait_status`, at schema `version` and without the triggers of
     /// version 50 that refuse such waits. Below version 51 the push subscriptions get back
-    /// the setting columns that version drops.
+    /// the setting columns that version drops, and below version 52 it has no adoptions
+    /// table.
     fn export_with_half_waits(storage: &Storage, path: &Path, version: i64) {
         storage.export_to(path).unwrap();
         let conn = Connection::open(path).unwrap();
@@ -476,6 +477,9 @@ mod tests {
                  ALTER TABLE push_subscriptions ADD COLUMN pull_requests INTEGER NOT NULL DEFAULT 1;",
             )
             .unwrap();
+        }
+        if version < 52 {
+            conn.execute_batch("DROP TABLE task_adoptions").unwrap();
         }
         conn.pragma_update(None, "user_version", version).unwrap();
     }
