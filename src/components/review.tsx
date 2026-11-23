@@ -72,6 +72,7 @@ import { toneFill, toneText } from "@/lib/status-styles";
 import { When } from "@/components/when";
 import { activeSeconds, formatDate, formatFull, waitingSeconds, workSegments } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
+import { saveFile } from "@/web/files";
 import { openUrl } from "@/web/opener";
 
 const outcomeStyles: Record<ReviewOutcome, string> = {
@@ -94,15 +95,6 @@ const periodKinds: { kind: PeriodKind; label: string }[] = [
   { kind: "year", label: "Year" },
   { kind: "custom", label: "Custom" },
 ];
-
-function download(name: string, contents: string, type: string) {
-  const url = URL.createObjectURL(new Blob([contents], { type: `${type};charset=utf-8` }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = name;
-  link.click();
-  URL.revokeObjectURL(url);
-}
 
 /** Report actions in one menu, so the controls fit a phone in two rows. */
 function ExportMenu({ disabled, items }: { disabled: boolean; items: DropdownMenuOption[] }) {
@@ -341,7 +333,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
       }
       setNotice("Copied as Markdown.");
     } catch (error) {
-      setNotice(`Could not copy: ${String(error)}`);
+      setNotice(`Could not copy: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -349,10 +341,10 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
     try {
       const report = await renderReport(format);
       // The report is for the user, not the server: the browser downloads it.
-      download(report.fileName, report.contents, report.mediaType);
+      saveFile(report.fileName, new Blob([report.contents], { type: `${report.mediaType};charset=utf-8` }));
       setNotice(`Downloaded ${report.fileName}`);
     } catch (error) {
-      setNotice(`Could not export: ${String(error)}`);
+      setNotice(`Could not export: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 

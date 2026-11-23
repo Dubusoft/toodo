@@ -61,11 +61,16 @@ describe("database files of the server", () => {
       headers: { "Content-Disposition": 'attachment; filename="toodo-backup-2026-10-14.sqlite3"' },
     });
     vi.stubGlobal("fetch", vi.fn(async () => response));
-    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: vi.fn(() => "blob:x"), revokeObjectURL: vi.fn() }));
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: vi.fn(() => "blob:x"), revokeObjectURL }));
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
 
     await expect(downloadExport()).resolves.toBe("toodo-backup-2026-10-14.sqlite3");
     expect(click).toHaveBeenCalledOnce();
     expect((click.mock.contexts[0] as HTMLAnchorElement).download).toBe("toodo-backup-2026-10-14.sqlite3");
+    // The URL outlives the click so the browser can start the download.
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:x");
   });
 });
