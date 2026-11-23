@@ -339,7 +339,7 @@ mod tests {
         let export = dir.path().join("export.sqlite3");
         storage.export_to(&export).unwrap();
 
-        add_workspace(&mut storage, "herdr");
+        add_workspace(&mut storage, "notes");
         assert_ne!(snapshot(&storage), exported);
         storage.restore(stage_backup(&export).unwrap()).unwrap();
 

@@ -1,6 +1,6 @@
 //! Completion criteria of tasks and the status change they cause: a task being worked on
 //! whose criteria are all met, one of them manual, awaits completion (`in_review`).
-//! Completing a task, which closes its herdr workspace, is up to the caller.
+//! Completing the task is up to the caller.
 
 use std::collections::HashMap;
 

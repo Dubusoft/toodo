@@ -72,9 +72,7 @@ impl Storage {
     /// DAG but keep their history for reviews until [`Self::restore_workspace`] brings them
     /// back or [`Self::purge_workspace`] deletes them. Rejected while a `planned` task of
     /// another workspace depends on one of its tasks, which would otherwise silently become
-    /// ready to start, and while a run of one of its tasks is queued or active; a run of
-    /// runner `none` has no process to stop and does not count. The herdr
-    /// workspaces its tasks have open are forgotten; herdr keeps them.
+    /// ready to start.
     pub fn archive_workspace(&mut self, id: WorkspaceId) -> Result<()> {
         let at = self.now();
         let tx = self.conn.transaction()?;

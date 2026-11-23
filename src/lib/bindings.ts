@@ -308,19 +308,6 @@ export type CommandErrorCode =
 "notPermitted" | 
 /**  An external tool failed. */
 "external" | 
-/**  git reported an error. */
-"gitFailed" | 
-/**  herdr reported an error or is not running. */
-"herdrFailed" | 
-/**  gh has no valid login, or the login may not open pull requests in the repository. */
-"gitHubAuthFailed" | 
-/**
- *  GitHub refused the draft setting, a reviewer, or a label of the workspace's pull
- *  request options.
- */
-"pullRequestOptionInvalid" | 
-/**  GitHub refused to open the pull request for another reason. */
-"pullRequestFailed" | 
 /**  The server failed. */
 "internal" | 
 /**  The database failed or holds data the server cannot read. */

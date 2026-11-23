@@ -115,7 +115,7 @@ pub async fn handle(
     if changes_data(&command) {
         services.announce_status_changes();
         // Changes the user makes in the app are not news to them: notifications only
-        // report what changed on its own (agents, pull requests, background checks).
+        // report what changed on its own (agents over MCP, waits that end).
         services.push.tasks_seen();
     }
     reply
@@ -147,7 +147,8 @@ fn guidelines_changed(
     result
 }
 
-/// Runs a command that blocks (git, gh, herdr, or the database) off the async threads.
+/// Runs a command that blocks (the database, or the HTTP GET of a URL criterion) off the
+/// async threads.
 async fn blocking(run: impl FnOnce() -> Reply + Send + 'static) -> Reply {
     tokio::task::spawn_blocking(run)
         .await
