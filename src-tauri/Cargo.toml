@@ -56,6 +56,8 @@ panic = "abort"
 strip = true
 
 [dev-dependencies]
+# Statement traces for ordering a write between the reads of a test.
+rusqlite = { version = "0.40", features = ["trace"] }
 tempfile = "3"
 # Generating the frontend's bindings (src/bindings.rs).
 heck = "0.5"

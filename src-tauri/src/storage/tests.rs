@@ -971,7 +971,7 @@ fn a_waiting_task_is_paused_until_its_time_then_returns_to_its_status() {
             status: InProgress
         })
     );
-    let (changes, _) = storage.status_changes_after(before).unwrap();
+    let (_, changes, _) = storage.status_changes_after(before).unwrap();
     let pauses: Vec<_> = changes.iter().map(|c| (c.task, c.from, c.to)).collect();
     assert_eq!(
         pauses,
@@ -997,7 +997,7 @@ fn a_waiting_task_is_paused_until_its_time_then_returns_to_its_status() {
         .end_task_wait(review.id, Some("Reply came"))
         .unwrap();
     assert_eq!((ended.status, ended.wait), (InReview, None));
-    let (changes, _) = storage.status_changes_after(paused).unwrap();
+    let (_, changes, _) = storage.status_changes_after(paused).unwrap();
     let returns: Vec<_> = changes
         .iter()
         .map(|c| (c.task, c.from, c.to, c.at))
@@ -1104,7 +1104,7 @@ fn status_changes_after_a_record_name_both_statuses_and_the_tasks_made_ready() {
     storage.add_dependency(waits_on_both.id, a.id).unwrap();
     storage.add_dependency(waits_on_both.id, b.id).unwrap();
     let created = storage.last_status_change().unwrap();
-    let (changes, ready) = storage.status_changes_after(0).unwrap();
+    let (_, changes, ready) = storage.status_changes_after(0).unwrap();
     assert_eq!(changes.len(), 4);
     assert_eq!(
         (changes[0].task, changes[0].from, changes[0].to),
@@ -1115,7 +1115,7 @@ fn status_changes_after_a_record_name_both_statuses_and_the_tasks_made_ready() {
     set_now(&now, 200);
     storage.set_task_status(a.id, InProgress).unwrap();
     storage.complete_task(a.id, None, &[]).unwrap();
-    let (changes, ready) = storage.status_changes_after(created).unwrap();
+    let (_, changes, ready) = storage.status_changes_after(created).unwrap();
     let moves: Vec<_> = changes
         .iter()
         .map(|change| {
@@ -1148,14 +1148,18 @@ fn status_changes_after_a_record_name_both_statuses_and_the_tasks_made_ready() {
     // A dependency concluded as not adopted keeps its dependents blocked.
     let completed = storage.last_status_change().unwrap();
     storage.conclude_task(b.id, "Not needed", None).unwrap();
-    let (changes, ready) = storage.status_changes_after(completed).unwrap();
+    let (_, changes, ready) = storage.status_changes_after(completed).unwrap();
     assert_eq!((changes[0].task, changes[0].to), (b.id, Done));
     assert!(ready.is_empty());
+    let last = storage.last_status_change().unwrap();
     assert_eq!(
-        storage
-            .status_changes_after(storage.last_status_change().unwrap())
-            .unwrap(),
-        (Vec::new(), Vec::new())
+        storage.status_changes_after(last).unwrap(),
+        (last, Vec::new(), Vec::new())
+    );
+    // A restored backup can have fewer records than were announced.
+    assert_eq!(
+        storage.status_changes_after(last + 5).unwrap(),
+        (last, Vec::new(), Vec::new())
     );
 }
 
@@ -1546,6 +1550,69 @@ fn the_reader_reads_committed_data_while_a_write_is_in_progress() {
     let renamed = reader.get_workspace(workspace.id).unwrap().unwrap();
     assert_eq!(renamed.name, "Renamed");
     assert!(reader.conn.execute("DELETE FROM workspaces", []).is_err());
+}
+
+thread_local! {
+    /// A write another connection commits once the reader has read the status changes and
+    /// starts its next statement; see [`write_after_the_changes_are_read`].
+    static WRITE_AFTER_THE_CHANGES_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static THE_CHANGES_READ: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A statement trace for the reader that runs `WRITE_AFTER_THE_CHANGES_READ` between the
+/// query of the status changes and the next one, the gap a write of another connection can
+/// commit in.
+fn write_after_the_changes_are_read(event: rusqlite::trace::TraceEvent<'_>) {
+    let rusqlite::trace::TraceEvent::Stmt(_, sql) = event else {
+        return;
+    };
+    if sql.contains("FROM task_events e JOIN tasks t") {
+        THE_CHANGES_READ.set(true);
+    } else if THE_CHANGES_READ.get()
+        && let Some(write) = WRITE_AFTER_THE_CHANGES_READ.take()
+    {
+        write();
+    }
+}
+
+#[test]
+fn a_task_is_ready_only_from_the_finish_of_its_last_dependency_while_others_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("toodo.sqlite3");
+    let mut storage = Storage::open(&path).unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location("/src/toodo"));
+    let a = add_task(&mut storage, &workspace, "A");
+    let b = add_task(&mut storage, &workspace, "B");
+    let waits = add_task(&mut storage, &workspace, "Waits on A and B");
+    storage.add_dependency(waits.id, a.id).unwrap();
+    storage.add_dependency(waits.id, b.id).unwrap();
+    storage.set_task_status(a.id, InProgress).unwrap();
+    storage.set_task_status(b.id, InProgress).unwrap();
+    let mut reader = Storage::open_reader(&path).unwrap();
+    let (announced, _, _) = reader.status_changes_after(0).unwrap();
+
+    // B finishes on the writer after the reader has read A's finish, before it reads the
+    // tasks: the tasks it reads still have B in progress.
+    storage.complete_task(a.id, None, &[]).unwrap();
+    WRITE_AFTER_THE_CHANGES_READ.set(Some(Box::new(move || {
+        storage.complete_task(b.id, None, &[]).unwrap();
+    })));
+    reader.conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+        Some(write_after_the_changes_are_read),
+    );
+    let (announced, changes, ready) = reader.status_changes_after(announced).unwrap();
+    assert!(WRITE_AFTER_THE_CHANGES_READ.with_borrow(Option::is_none));
+    let moves: Vec<_> = changes.iter().map(|c| (c.task, c.to)).collect();
+    assert_eq!(moves, [(a.id, Done)]);
+    assert_eq!(ready, []);
+
+    let (_, changes, ready) = reader.status_changes_after(announced).unwrap();
+    let moves: Vec<_> = changes.iter().map(|c| (c.task, c.to)).collect();
+    assert_eq!(moves, [(b.id, Done)]);
+    let unblocked: Vec<_> = ready.iter().map(|r| (r.task, r.unblocked_by)).collect();
+    assert_eq!(unblocked, [(waits.id, b.id)]);
 }
 
 #[test]
