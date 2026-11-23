@@ -49,7 +49,9 @@ the time passed while the server was stopped: then it happens at the next start.
 `wait_task` on a waiting task moves the time; `end_wait` ("End wait" in the app) returns
 it now. Any other status change ends the wait, e.g. resuming or concluding the task by
 hand. A task that was `in_progress` stays paused when a prerequisite added during the wait
-is not done yet; a blocker note names it. The pause and the return are status changes
+is not done yet; a blocker note names it. An archived task, or a task of an archived
+workspace, keeps its wait as it is while archived; once restored, a wait whose time has
+passed ends at the next check, as for a server that was stopped. The pause and the return are status changes
 like any other, so they appear in the history and as `task-status-changed` events; a
 waiting `planned` task does not change status and records its wait as progress notes.
 

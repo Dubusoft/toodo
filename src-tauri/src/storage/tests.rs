@@ -1052,6 +1052,47 @@ fn a_status_change_ends_a_wait_and_a_new_prerequisite_keeps_it_paused() {
 }
 
 #[test]
+fn an_archived_waiting_task_keeps_its_wait_until_restored_and_holds_no_other_wait_back() {
+    let (mut storage, now) = clocked_storage(100);
+    let workspace = add_workspace(&mut storage, "Toodo", local_location("/src/toodo"));
+    let other = add_workspace(&mut storage, "Other", local_location("/src/other"));
+    let live = add_task(&mut storage, &workspace, "Live");
+    let archived = add_task(&mut storage, &workspace, "Archived");
+    let in_archived_workspace = add_task(&mut storage, &other, "In archived workspace");
+    for task in [&live, &archived, &in_archived_workspace] {
+        storage.set_task_status(task.id, InProgress).unwrap();
+        storage.wait_task(task.id, 1_000, None).unwrap();
+    }
+    storage.archive_task(archived.id).unwrap();
+    storage.archive_workspace(other.id).unwrap();
+
+    set_now(&now, 1_000);
+    assert_eq!(storage.end_due_waits().unwrap(), [workspace.id]);
+    let returned = storage.get_task(live.id).unwrap().unwrap();
+    assert_eq!((returned.status, returned.wait), (InProgress, None));
+    // Archived tasks keep their wait and status while archived.
+    let frozen = Some(TaskWait {
+        until: 1_000,
+        status: InProgress,
+    });
+    for task in storage.archived_tasks().unwrap() {
+        assert_eq!((task.status, task.wait), (Planned, frozen));
+    }
+    storage.restore_workspace(other.id).unwrap();
+    let restored = storage.get_task(in_archived_workspace.id).unwrap().unwrap();
+    assert_eq!((restored.status, restored.wait), (Planned, frozen));
+
+    // Once restored, a wait whose time has passed ends on the next check.
+    storage.restore_task(archived.id).unwrap();
+    set_now(&now, 1_100);
+    assert_eq!(storage.end_due_waits().unwrap(), [workspace.id, other.id]);
+    for task in [&archived, &in_archived_workspace] {
+        let ended = storage.get_task(task.id).unwrap().unwrap();
+        assert_eq!((ended.status, ended.wait), (InProgress, None));
+    }
+}
+
+#[test]
 fn status_changes_after_a_record_name_both_statuses_and_the_tasks_made_ready() {
     let (mut storage, now) = clocked_storage(100);
     let workspace = add_workspace(&mut storage, "Toodo", local_location("/src/toodo"));
