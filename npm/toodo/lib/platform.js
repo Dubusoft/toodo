@@ -68,4 +68,4 @@ function findPlatformPackage() {
   return { dir };
 }
 
-module.exports = { findPlatformPackage, REINSTALL };
+module.exports = { findPlatformPackage, platformSuffix, REINSTALL };

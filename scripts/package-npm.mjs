@@ -15,11 +15,8 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArgs, SEMVER } from './npm-args.mjs';
 
-const USAGE =
-  'Usage: node scripts/package-npm.mjs --version <semver> --web <web dir> --out <out dir> ' +
-  '--binaries <target>=<dir> [--binaries <target>=<dir> ...], where <target> is one of ' +
-  'linux-x64, linux-arm64, linux-x64-musl, linux-arm64-musl, darwin-x64, darwin-arm64';
 // Each target is published as @dubusoft/toodo-<target>; npm installs the one whose os,
 // cpu, and libc match, and the launcher (npm/toodo/bin/toodo.js) runs it.
 const TARGETS = {
@@ -30,8 +27,6 @@ const TARGETS = {
   'darwin-x64': { os: 'darwin', cpu: 'x64', label: 'macOS x64' },
   'darwin-arm64': { os: 'darwin', cpu: 'arm64', label: 'macOS arm64' },
 };
-const SEMVER =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
 const HOMEPAGE = 'https://github.com/Dubusoft/toodo';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const templateDir = path.resolve(here, '..', 'npm', 'toodo');
@@ -41,30 +36,16 @@ function fail(message) {
   process.exit(1);
 }
 
-function parseArgs(argv) {
-  const args = { binaries: [] };
-  for (let i = 0; i < argv.length; i += 2) {
-    const flag = argv[i];
-    const value = argv[i + 1];
-    if (!['--version', '--web', '--out', '--binaries'].includes(flag)) {
-      fail(`unknown argument "${flag}". ${USAGE}`);
-    }
-    if (value === undefined || value.startsWith('--')) fail(`${flag} needs a value. ${USAGE}`);
-    if (flag === '--binaries') args.binaries.push(value);
-    else args[flag.slice(2)] = value;
-  }
-  for (const required of ['version', 'web', 'out']) {
-    if (!args[required]) fail(`missing --${required}. ${USAGE}`);
-  }
-  if (args.binaries.length === 0) fail(`missing --binaries. ${USAGE}`);
-  return args;
-}
-
 function isDir(p) {
   return existsSync(p) && statSync(p).isDirectory();
 }
 
-const args = parseArgs(process.argv.slice(2));
+let args;
+try {
+  args = parseArgs(process.argv.slice(2));
+} catch (error) {
+  fail(error.message);
+}
 
 if (!SEMVER.test(args.version)) {
   fail(`--version "${args.version}" is not a semver version; pass one like 1.3.2 or 1.3.2-dev.7.`);
