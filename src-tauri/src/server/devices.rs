@@ -136,7 +136,7 @@ pub async fn require_access(
         Some(verifier) => verifier.admits(request.headers()).await,
         None => false,
     };
-    let peer = attempts::peer(&request);
+    let peer = attempts::peer(request.extensions());
     let asked = Asked {
         headers: request.headers(),
         method: request.method(),

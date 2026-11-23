@@ -6,6 +6,8 @@ use crate::storage::Storage;
 
 const VERIFIER: &str = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
 const REDIRECT: &str = "https://client.example/callback";
+const HOST: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 7));
+const OTHER_HOST: IpAddr = IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 8));
 
 struct FakeFetcher {
     document: Vec<u8>,
@@ -36,6 +38,7 @@ fn server() -> (Arc<Server>, Arc<AtomicI64>) {
             cache: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             codes: Mutex::new(HashMap::new()),
+            attempts: FailedAttempts::with_limit(CONSENT_FAILURES),
         }),
         clock,
     )
@@ -88,9 +91,16 @@ fn query(id: &str) -> Authorize {
 }
 
 async fn pending(s: &Arc<Server>, id: &str) -> String {
+    let before: Vec<String> = s.pending.lock().unwrap().keys().cloned().collect();
     let response = authorize(State(s.clone()), Query(query(id))).await;
     assert_eq!(response.status(), StatusCode::OK);
-    s.pending.lock().unwrap().keys().next().unwrap().clone()
+    s.pending
+        .lock()
+        .unwrap()
+        .keys()
+        .find(|key| !before.contains(key))
+        .unwrap()
+        .clone()
 }
 
 fn approval(id: &str) -> Consent {
@@ -109,7 +119,7 @@ fn location(response: &Response) -> reqwest::Url {
 
 async fn code(s: &Arc<Server>, id: &str) -> String {
     let request = pending(s, id).await;
-    let response = consent(State(s.clone()), Form(approval(&request))).await;
+    let response = consent(State(s.clone()), HOST, Form(approval(&request))).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     let url = location(&response);
     let pairs: HashMap<_, _> = url.query_pairs().into_owned().collect();
@@ -427,36 +437,21 @@ async fn authorization_never_redirects_bad_clients_or_redirects_and_requires_s25
 }
 
 #[tokio::test]
-async fn consent_denial_wrong_token_lockout_and_parameter_binding() {
+async fn consent_denial_wrong_token_and_parameter_binding() {
     let (s, _) = server();
     let id = client(&s).await;
     let request = pending(&s, &id).await;
-    for attempt in 1..=5 {
-        let mut form = approval(&request);
-        form.web_token = "wrong".to_owned();
-        let response = consent(State(s.clone()), Form(form)).await;
-        assert_eq!(
-            response.status(),
-            if attempt == 5 {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::OK
-            }
-        );
-    }
-    assert!(!s.pending.lock().unwrap().contains_key(&request));
-    assert_eq!(
-        consent(State(s.clone()), Form(approval(&request)))
-            .await
-            .status(),
-        StatusCode::BAD_REQUEST
-    );
+    let mut form = approval(&request);
+    form.web_token = "wrong".to_owned();
+    let response = consent(State(s.clone()), HOST, Form(form)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(s.pending.lock().unwrap().contains_key(&request));
     let request = pending(&s, &id).await;
     let form: Consent = serde_json::from_value(json!({
         "pending_id": request, "decision": "deny"
     }))
     .unwrap();
-    let response = consent(State(s.clone()), Form(form)).await;
+    let response = consent(State(s.clone()), HOST, Form(form)).await;
     assert_eq!(
         location(&response)
             .query_pairs()
@@ -470,7 +465,7 @@ async fn consent_denial_wrong_token_lockout_and_parameter_binding() {
     let request = pending(&s, &id).await;
     let mut form = approval(&request);
     form.write = None;
-    consent(State(s.clone()), Form(form)).await;
+    consent(State(s.clone()), HOST, Form(form)).await;
     assert_eq!(
         s.codes
             .lock()
@@ -482,6 +477,35 @@ async fn consent_denial_wrong_token_lockout_and_parameter_binding() {
             .scopes,
         Scopes::READ
     );
+}
+
+#[tokio::test]
+async fn wrong_consent_tokens_lock_the_address_out_across_requests() {
+    let (s, _) = server();
+    let id = client(&s).await;
+    for attempt in 1..=CONSENT_FAILURES {
+        let request = pending(&s, &id).await;
+        let mut form = approval(&request);
+        form.web_token = "wrong".to_owned();
+        let response = consent(State(s.clone()), HOST, Form(form)).await;
+        assert_eq!(
+            response.status(),
+            if attempt == CONSENT_FAILURES {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::OK
+            }
+        );
+    }
+    // A sixth attempt is refused even on a new consent request with the right token.
+    let request = pending(&s, &id).await;
+    let response = consent(State(s.clone()), HOST, Form(approval(&request))).await;
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(response.headers()[header::RETRY_AFTER], "60");
+    assert!(s.codes.lock().unwrap().is_empty());
+    // The request is kept, and another address is still heard.
+    let response = consent(State(s.clone()), OTHER_HOST, Form(approval(&request))).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
 }
 
 #[tokio::test]
@@ -543,7 +567,7 @@ async fn token_redirect_is_optional_only_when_omitted_from_authorization() {
                 StatusCode::OK
             );
             let request = s.pending.lock().unwrap().keys().next().unwrap().clone();
-            let response = consent(State(s.clone()), Form(approval(&request))).await;
+            let response = consent(State(s.clone()), HOST, Form(approval(&request))).await;
             let code = location(&response)
                 .query_pairs()
                 .find(|(key, _)| key == "code")
@@ -576,7 +600,7 @@ async fn write_only_consent_can_be_reduced_to_read() {
         let request = s.pending.lock().unwrap().keys().next().unwrap().clone();
         let mut form = approval(&request);
         form.write = write.clone();
-        let response = consent(State(s.clone()), Form(form)).await;
+        let response = consent(State(s.clone()), HOST, Form(form)).await;
         let code = location(&response)
             .query_pairs()
             .find(|(key, _)| key == "code")
@@ -787,7 +811,7 @@ async fn pending_requests_and_unused_codes_expire_without_grants() {
     let request = pending(&s, &id).await;
     clock.store(1600, Ordering::SeqCst);
     assert_eq!(
-        consent(State(s.clone()), Form(approval(&request)))
+        consent(State(s.clone()), HOST, Form(approval(&request)))
             .await
             .status(),
         StatusCode::BAD_REQUEST

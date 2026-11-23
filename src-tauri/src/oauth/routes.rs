@@ -1,13 +1,15 @@
 //! HTTP endpoints and short-lived, server-side consent and authorization codes.
 
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::rejection::{FormRejection, QueryRejection};
 use axum::extract::{Form, Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{Extensions, HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use base64::Engine;
@@ -19,6 +21,7 @@ use sha2::{Digest, Sha256};
 use super::clients::{self, Cache, ClientMetadataFetcher, Metadata};
 use super::{OwnerKey, PublicUrl, Scope, Scopes, hash, random};
 use crate::commands::{StorageState, lock};
+use crate::mcp::attempts::{self, FailedAttempts};
 use crate::storage::oauth::{Client, RefreshResult};
 
 pub(super) struct Server {
@@ -29,7 +32,14 @@ pub(super) struct Server {
     pub cache: Cache,
     pending: Mutex<HashMap<String, Pending>>,
     codes: Mutex<HashMap<String, Code>>,
+    /// Wrong web sign-in tokens entered on consent pages, per address, whatever request
+    /// they were entered for.
+    attempts: FailedAttempts,
 }
+
+/// Wrong web sign-in tokens an address may enter on consent pages within
+/// [`attempts::WINDOW`] before it is locked out.
+const CONSENT_FAILURES: u32 = 5;
 
 /// Constructs only public OAuth and discovery routes; the caller opts in by mounting it.
 pub fn router(
@@ -64,9 +74,9 @@ pub fn router(
                 },
             )
             .post(
-                |state, form: Result<Form<Consent>, FormRejection>| async move {
+                |state, extensions: Extensions, form: Result<Form<Consent>, FormRejection>| async move {
                     match form {
-                        Ok(form) => consent(state, form).await,
+                        Ok(form) => consent(state, attempts::peer(&extensions), form).await,
                         Err(_) => html(StatusCode::BAD_REQUEST, "Start the connection again from the app and submit the consent form."),
                     }
                 },
@@ -102,6 +112,7 @@ pub fn router(
             cache: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             codes: Mutex::new(HashMap::new()),
+            attempts: FailedAttempts::with_limit(CONSENT_FAILURES),
         }))
 }
 
@@ -273,7 +284,6 @@ struct Pending {
     state: Option<String>,
     resource: String,
     expires: i64,
-    attempts: u8,
 }
 
 struct Code {
@@ -365,7 +375,6 @@ async fn authorize(State(s): State<Arc<Server>>, Query(q): Query<Authorize>) -> 
         state: q.state,
         resource: q.resource.unwrap_or_else(|| s.issuer.resource()),
         expires: now + 600,
-        attempts: 0,
     };
     let response = consent_page(&id, &pending, "");
     let mut requests = s.pending.lock().unwrap_or_else(PoisonError::into_inner);
@@ -393,7 +402,11 @@ struct Consent {
     write: Option<String>,
 }
 
-async fn consent(State(s): State<Arc<Server>>, Form(form): Form<Consent>) -> Response {
+async fn consent(
+    State(s): State<Arc<Server>>,
+    peer: IpAddr,
+    Form(form): Form<Consent>,
+) -> Response {
     let now = match now(&s.storage).await {
         Ok(now) => now,
         Err(e) => return e.into_response(),
@@ -417,13 +430,17 @@ async fn consent(State(s): State<Arc<Server>>, Form(form): Form<Consent>) -> Res
             "Start the connection again from the app and approve it to grant access.",
         );
     }
+    // The lockout is per address, so starting new consent requests gains no guesses; the
+    // request is kept for when the wait is over.
+    if let Some(wait) = s.attempts.locked_out(peer) {
+        requests.insert(form.pending_id, pending);
+        return locked_out(wait);
+    }
     if !crate::mcp::same_secret(&form.web_token, &s.web_token) {
-        pending.attempts += 1;
-        if pending.attempts >= 5 {
-            return html(
-                StatusCode::BAD_REQUEST,
-                "Start the connection again from the app; this consent request is locked after five incorrect sign-in tokens.",
-            );
+        s.attempts.record(peer);
+        if let Some(wait) = s.attempts.locked_out(peer) {
+            requests.insert(form.pending_id, pending);
+            return locked_out(wait);
         }
         let response = consent_page(
             &form.pending_id,
@@ -538,6 +555,21 @@ body {{ font: 1rem system-ui; margin: 3rem auto; padding: 0 1rem; max-width: 32r
 label {{ display: block; margin: 1rem 0; }} input[type=password] {{ box-sizing: border-box; width: 100%; padding: .6rem; }} button {{ padding: .6rem 1rem; margin-right: .5rem; }}
 @media (prefers-color-scheme: dark) {{ body {{ background: #171717; color: #eee; }} input, button {{ background: #333; color: #eee; }} }}
 </style><main><h1>Connect to Toodo</h1>{content}</main></html>"#)).into_response()
+}
+
+/// `429` for an address that entered too many wrong sign-in tokens, with `Retry-After`.
+fn locked_out(wait: Duration) -> Response {
+    let seconds = attempts::retry_seconds(wait);
+    let mut response = html(
+        StatusCode::TOO_MANY_REQUESTS,
+        &format!(
+            "Too many incorrect sign-in tokens came from this address. Wait {seconds} seconds, then go back and approve again with the web sign-in token from the server data directory."
+        ),
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from(seconds));
+    response
 }
 
 fn consent_page(id: &str, p: &Pending, error: &str) -> Response {

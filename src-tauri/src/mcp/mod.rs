@@ -382,7 +382,7 @@ async fn require_token(
         )
             .into_response();
     }
-    let peer = attempts::peer(&request);
+    let peer = attempts::peer(request.extensions());
     if let Some(wait) = guard.attempts.locked_out(peer) {
         return attempts::too_many("MCP", wait);
     }
