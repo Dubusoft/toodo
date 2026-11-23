@@ -18,6 +18,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
+use tokio_util::io::ReaderStream;
 
 use super::Services;
 use super::rpc::Reply;
@@ -49,19 +50,32 @@ async fn remove(path: &Path) {
     }
 }
 
-/// The file at `path` as an attachment named `name`.
-async fn attachment(path: &Path, name: &str) -> Response {
-    match tokio::fs::read(path).await {
-        Ok(bytes) => (
+/// The file at `path`, opened for sending, and its length in bytes.
+async fn open(path: &Path) -> std::io::Result<(tokio::fs::File, u64)> {
+    let file = tokio::fs::File::open(path).await?;
+    let length = file.metadata().await?.len();
+    Ok((file, length))
+}
+
+/// The file `opened` from `path` as an attachment named `name`, read from disk while it
+/// is sent, so a download holds one chunk of it in memory rather than the whole file.
+fn attachment(
+    opened: std::io::Result<(tokio::fs::File, u64)>,
+    path: &Path,
+    name: &str,
+) -> Response {
+    match opened {
+        Ok((file, length)) => (
             [
                 (header::CONTENT_TYPE, SQLITE.to_owned()),
+                (header::CONTENT_LENGTH, length.to_string()),
                 (
                     header::CONTENT_DISPOSITION,
                     format!("attachment; filename=\"{name}\""),
                 ),
                 (header::CACHE_CONTROL, "no-store".to_owned()),
             ],
-            bytes,
+            Body::from_stream(ReaderStream::new(file)),
         )
             .into_response(),
         Err(error) => failed(CommandError::internal(format!(
@@ -79,9 +93,10 @@ pub async fn export(State(services): State<Arc<Services>>) -> Response {
     .await;
     match snapshot {
         Ok((path, name)) => {
-            let response = attachment(&path, &name).await;
+            // The open file keeps the snapshot readable while it is sent.
+            let opened = open(&path).await;
             remove(&path).await;
-            response
+            attachment(opened, &path, &name)
         }
         Err(error) => failed(error),
     }
@@ -92,7 +107,7 @@ pub async fn download(
     extract::Path(name): extract::Path<String>,
 ) -> Response {
     match services.backups.backup_path(&name) {
-        Ok(path) => attachment(&path, &name).await,
+        Ok(path) => attachment(open(&path).await, &path, &name),
         Err(error) => failed(error),
     }
 }
