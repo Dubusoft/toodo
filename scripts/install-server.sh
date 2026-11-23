@@ -237,6 +237,108 @@ if [ "$service" = 0 ]; then
   exit 0
 fi
 
+status_of() { curl -s -o /dev/null --max-time 5 -w '%{http_code}' "$@" || true; }
+api_status() {
+  status_of -X POST -H 'Content-Type: application/json' -d '{}' "$base_url/api/rpc/list_tasks"
+}
+# Prints what the server answers wrongly, or nothing when /api (and / with web=1) answer.
+health_problem() {
+  local api root
+  api=$(api_status)
+  if [ "$api" != 401 ]; then
+    echo "POST $base_url/api/rpc/list_tasks without a token returned $api, expected 401"
+  elif [ "$web" = 1 ]; then
+    root=$(status_of "$base_url/")
+    [ "$root" = 200 ] || echo "GET $base_url/ returned $root, expected 200 (web app)"
+  fi
+}
+# Retries the health check for up to check_seconds, since a server can take a while to
+# answer after it starts; sets problem to the last failure when it gives up.
+check_seconds=30
+wait_healthy() {
+  local deadline=$((SECONDS + check_seconds))
+  problem=$(health_problem)
+  while [ -n "$problem" ]; do
+    [ "$SECONDS" -lt "$deadline" ] || return 1
+    sleep 1
+    problem=$(health_problem)
+  done
+}
+
+# What the service runs now, kept to go back to when the new version does not come up.
+unit=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/toodo-server.service
+settings=$data_dir/cli.json
+previous=$work/previous
+mkdir "$previous"
+previous_version=
+if [ -f "$bin_dir/toodo-server" ]; then
+  cp -p "$bin_dir/toodo-server" "$previous/toodo-server"
+  previous_version=$("$previous/toodo-server" --version 2>/dev/null) || previous_version="the previous toodo-server"
+fi
+[ -d "$web_dir" ] && cp -R "$web_dir" "$previous/web"
+[ -f "$unit" ] && cp -p "$unit" "$previous/unit"
+[ -f "$settings" ] && cp -p "$settings" "$previous/cli.json"
+
+# Puts back the server, web app, unit, and settings saved above, restarts the service,
+# says what it restored, and exits 1. With no earlier server it only reports $1.
+roll_back() {
+  printf 'error: %s\n' "$1" >&2
+  if [ -z "$previous_version" ]; then
+    die "no earlier toodo-server was installed, so there is nothing to go back to; see: journalctl --user -u toodo-server"
+  fi
+  log "Going back to $previous_version"
+  local restored=() tmp_bin old_web
+  tmp_bin=$(mktemp "$bin_dir/.toodo-server.XXXXXX")
+  cp -p "$previous/toodo-server" "$tmp_bin"
+  mv -f "$tmp_bin" "$bin_dir/toodo-server"
+  restored+=("$bin_dir/toodo-server ($previous_version)")
+  if [ -e "$web_dir" ]; then
+    old_web=$(mktemp -d "$share_dir/.toodo-server-web.old.XXXXXX")
+    mv "$web_dir" "$old_web/web"
+    rm -rf "$old_web"
+  fi
+  web=0
+  if [ -d "$previous/web" ]; then
+    mv "$previous/web" "$web_dir"
+    web=1
+    restored+=("$web_dir")
+  else
+    restored+=("no $web_dir, as before")
+  fi
+  if [ -f "$previous/cli.json" ]; then
+    cp -p "$previous/cli.json" "$settings"
+    restored+=("$settings")
+  elif [ -f "$settings" ]; then
+    rm -f "$settings"
+    restored+=("no $settings, as before")
+  fi
+  if [ -f "$previous/unit" ]; then
+    cp -p "$previous/unit" "$unit"
+    restored+=("$unit")
+    systemctl --user daemon-reload
+    systemctl --user restart toodo-server.service
+  else
+    # The previous server ran without the service (--no-service or toodo start).
+    systemctl --user disable --now toodo-server.service || true
+    rm -f "$unit"
+    systemctl --user daemon-reload
+    restored+=("no $unit, as before (start the server as you did before)")
+  fi
+  printf 'Restored:\n' >&2
+  printf '  %s\n' "${restored[@]}" >&2
+  if [ -f "$previous/unit" ]; then
+    if wait_healthy; then
+      printf '%s answers on %s again.\n' "$previous_version" "$base_url" >&2
+    else
+      printf 'error: %s does not answer either: %s; see: journalctl --user -u toodo-server\n' \
+        "$previous_version" "$problem" >&2
+    fi
+  fi
+  printf 'error: %s did not come up, so %s is installed again; see why with: journalctl --user -u toodo-server\n' \
+    "$version" "$previous_version" >&2
+  exit 1
+}
+
 # toodo service install copies toodo-server and ../web from beside the toodo it runs to
 # where the unit runs them from, writes the unit, restarts the service, and waits for it.
 log "Installing $version as toodo-server.service with toodo service install"
@@ -249,18 +351,10 @@ if [ "$web" = 1 ]; then
   cp -R "$web_src" "$bundle/web"
 fi
 "$bundle/bin/toodo" service install --data-dir "$data_dir" --listen "$listen" \
-  || die "toodo service install failed; fix what it reports above and rerun this script"
+  || roll_back "toodo service install failed (see above)"
 
-status_of() { curl -s -o /dev/null --max-time 5 -w '%{http_code}' "$@"; }
-api_status() {
-  status_of -X POST -H 'Content-Type: application/json' -d '{}' "$base_url/api/rpc/list_tasks"
-}
-
-api=$(api_status)
-[ "$api" = 401 ] || die "POST $base_url/api/rpc/list_tasks without a token returned $api, expected 401"
+wait_healthy || roll_back "$problem (checked for ${check_seconds}s)"
 if [ "$web" = 1 ]; then
-  root=$(status_of "$base_url/")
-  [ "$root" = 200 ] || die "GET $base_url/ returned $root, expected 200 (web app)"
   log "Health check passed: /api without a token -> 401, GET / -> 200"
 else
   log "Health check passed: /api without a token -> 401"
