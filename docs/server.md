@@ -198,16 +198,19 @@ or `toodo stop` and `toodo start`.
 
 ## Install and Update
 
-Without Node.js, install and update from releases instead of npm. The script needs gh logged in and curl to download the release;
-no Rust toolchain is needed:
+Without Node.js, install and update from releases instead of npm. The script needs curl,
+tar, and sha256sum; no Rust toolchain, gh, or GitHub login is needed. Releases carry a Linux
+x86_64 (glibc) build only: on arm64, musl, or macOS, [install with npm](#install-with-npm)
+instead, or [build from a checkout](#from-a-checkout).
 
 ```sh
 scripts/install-server.sh --release latest
 ```
 
 The script needs no checkout in this mode; fetch it alone with
-`gh api repos/Dubusoft/toodo/contents/scripts/install-server.sh --jq .content | base64 -d`
-if there is none. It downloads the server asset of the release with `gh`, checks its
+`curl -fsSLO https://raw.githubusercontent.com/Dubusoft/toodo/main/scripts/install-server.sh`
+if there is none, and run it with `bash install-server.sh --release latest`. It downloads
+the server asset of the release and its checksum from GitHub with `curl`, checks its
 sha256 and that the binary reports the release's version, installs it to
 `~/.local/bin/toodo-server` and the web app to `~/.local/share/toodo-server-web`, writes the
 systemd user service `toodo-server.service` (see [systemd](#systemd)), restarts it, and

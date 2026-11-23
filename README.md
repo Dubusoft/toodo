@@ -100,8 +100,9 @@ The web app lists these with `?`. Letter shortcuts do nothing while you type in 
 
 ## Requirements
 
-- A Linux machine for `toodo-server`: x64 or arm64 with glibc for the npm packages,
-  x86_64 for the release archive
+- A machine for `toodo-server`: Linux x64 or arm64 (glibc or musl) or macOS x64 or arm64
+  for the npm packages, with Node.js 18 or later; Linux x86_64 (glibc) for the release
+  archive
 - A current browser to use the web app
 - Optional: Claude Code (`claude`) or Codex (`codex`) on `PATH` when `toodo init` runs, to
   register the MCP endpoint with them

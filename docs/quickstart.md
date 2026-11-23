@@ -1,14 +1,15 @@
 # Quickstart
 
-From installing Toodo to a first completed task, on one Linux machine. Plan on about ten
-minutes.
+From installing Toodo to a first completed task, on one Linux or macOS machine. Plan
+on about ten minutes.
 
 Toodo tracks work; it doesn't run it. You or your agents do the work wherever you like,
 and record its start, progress, and completion in Toodo.
 
 ## 1. Check the Prerequisites
 
-On the Linux machine that will run the server (x64 or arm64, glibc):
+On the machine that will run the server (Linux x64 or arm64 with glibc or musl, or macOS x64
+or arm64):
 
 - Node.js 18 or later with npm.
 
@@ -27,7 +28,8 @@ toodo service install
 starts the server on `127.0.0.1:47616`, and registers its MCP endpoint with Claude Code
 and Codex where they are installed. It prints the web app URL and the file that holds the
 web access token. `toodo service install` keeps the server running as the systemd user
-service `toodo-server.service`, also after a reboot. `toodo status` shows whether it runs.
+service `toodo-server.service` (on macOS, the launchd agent `toodo-server`), also after a
+reboot. `toodo status` shows whether it runs.
 
 ## 3. Sign In
 

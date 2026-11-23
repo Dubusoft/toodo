@@ -27,6 +27,7 @@ EOF
 }
 
 release_repo=Dubusoft/toodo
+release_url=https://github.com/$release_repo/releases
 release=
 # --from-file TARBALL installs a packaged release asset (with TARBALL.sha256 next to it)
 # instead of downloading one; for testing scripts/package-server.sh output.
@@ -117,8 +118,9 @@ fi
 log "Checking prerequisites"
 required=(curl)
 if [ "$from_release" = 1 ]; then
-  [ "$(uname -m)" = x86_64 ] || die "releases carry an x86_64 toodo-server only; build from a checkout instead"
-  required+=(gh tar sha256sum)
+  [ "$(uname -m)" = x86_64 ] \
+    || die "releases carry an x86_64 toodo-server only; on $(uname -m) install with npm instead ('npm i -g @dubusoft/toodo', see docs/server.md) or build from a checkout"
+  required+=(tar sha256sum)
 else
   required+=(cargo)
 fi
@@ -129,7 +131,7 @@ for tool in "${required[@]}"; do
 done
 if [ "${#missing[@]}" -gt 0 ]; then
   die "missing on PATH: ${missing[*]}
-  cargo: https://rustup.rs   gh (--release only): https://cli.github.com   node/npm (--with-web only): https://nodejs.org"
+  cargo: https://rustup.rs   node/npm (--with-web only): https://nodejs.org"
 fi
 if [ "$service" = 1 ]; then
   command -v systemctl >/dev/null 2>&1 || die "systemctl not found; use --no-service to install without a service"
@@ -161,14 +163,18 @@ if [ "$from_release" = 1 ]; then
   else
     tag=$release
     if [ "$tag" = latest ]; then
-      tag=$(gh release view --repo "$release_repo" --json tagName --jq .tagName) \
-        || die "could not look up the latest release of $release_repo (is gh logged in?)"
+      # GitHub redirects releases/latest to releases/tag/<tag> of the newest release.
+      latest_url=$(curl -fsSL --retry 3 -o /dev/null -w '%{url_effective}' "$release_url/latest") \
+        || die "could not look up the latest release of $release_repo"
+      tag=${latest_url##*/}
+      [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not find the latest release of $release_repo (got $latest_url)"
     fi
     asset=toodo-server-$tag-linux-x86_64.tar.gz
     log "Downloading $asset from $release_repo release $tag"
-    gh release download "$tag" --repo "$release_repo" --dir "$work" \
-      --pattern "$asset" --pattern "$asset.sha256" \
-      || die "could not download $asset from release $tag (releases before the server was published have none)"
+    for file in "$asset" "$asset.sha256"; do
+      curl -fsSL --retry 3 -o "$work/$file" "$release_url/download/$tag/$file" \
+        || die "could not download $file from release $tag (releases before the server was published have none)"
+    done
   fi
   log "Checking the sha256 of $asset"
   (cd "$work" && sha256sum --check --strict "$asset.sha256") || die "sha256 mismatch for $asset"
