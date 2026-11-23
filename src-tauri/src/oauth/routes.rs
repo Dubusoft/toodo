@@ -1,7 +1,7 @@
 //! HTTP endpoints and short-lived, server-side consent and authorization codes.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use axum::Router;
 use axum::body::Bytes;
@@ -163,6 +163,22 @@ impl IntoResponse for OAuthError {
     }
 }
 
+/// Runs `run`, which locks the storage, off the async threads, see
+/// [`crate::commands::blocking`]; a panic in it is a server error.
+pub(super) async fn blocking<T: Send + 'static>(
+    run: impl FnOnce() -> Result<T, OAuthError> + Send + 'static,
+) -> Result<T, OAuthError> {
+    crate::commands::blocking(move || Ok(run()))
+        .await
+        .map_err(|_| OAuthError::internal())?
+}
+
+/// The storage clock, read off the async threads.
+pub(super) async fn now(storage: &Arc<StorageState>) -> Result<i64, OAuthError> {
+    let storage = storage.clone();
+    blocking(move || Ok(lock(&storage).now())).await
+}
+
 fn json_response(status: StatusCode, value: Value) -> Response {
     (
         status,
@@ -216,11 +232,19 @@ async fn register(State(s): State<Arc<Server>>, body: Bytes) -> Result<Response,
     } else {
         Some(random()?)
     };
-    let at = lock(&s.storage).now();
-    let client = metadata.client(id.clone(), method.clone(), secret.as_deref().map(hash), at);
-    lock(&s.storage)
-        .oauth_register_client(&client)
-        .map_err(|_| OAuthError::internal())?;
+    let storage = s.storage.clone();
+    let (client_id, auth_method) = (id.clone(), method.clone());
+    let secret_hash = secret.as_deref().map(hash);
+    let (at, metadata) = blocking(move || {
+        let mut storage = lock(&storage);
+        let at = storage.now();
+        let client = metadata.client(client_id, auth_method, secret_hash, at);
+        storage
+            .oauth_register_client(&client)
+            .map_err(|_| OAuthError::internal())?;
+        Ok((at, metadata))
+    })
+    .await?;
     let mut result = json!({
         "client_id": id, "client_id_issued_at": at, "client_secret_expires_at": 0,
         "redirect_uris": metadata.redirect_uris, "token_endpoint_auth_method": method,
@@ -328,7 +352,10 @@ async fn authorize(State(s): State<Arc<Server>>, Query(q): Query<Authorize>) -> 
         Ok(id) => id,
         Err(e) => return e.into_response(),
     };
-    let now = lock(&s.storage).now();
+    let now = match now(&s.storage).await {
+        Ok(now) => now,
+        Err(e) => return e.into_response(),
+    };
     let pending = Pending {
         client,
         redirect,
@@ -341,7 +368,7 @@ async fn authorize(State(s): State<Arc<Server>>, Query(q): Query<Authorize>) -> 
         attempts: 0,
     };
     let response = consent_page(&id, &pending, "");
-    let mut requests = s.pending.lock().unwrap();
+    let mut requests = s.pending.lock().unwrap_or_else(PoisonError::into_inner);
     requests.retain(|_, p| p.expires > now);
     // Anyone can start an authorization for a registered client; bound what they can hold.
     if requests.len() >= MAX_PENDING
@@ -367,8 +394,11 @@ struct Consent {
 }
 
 async fn consent(State(s): State<Arc<Server>>, Form(form): Form<Consent>) -> Response {
-    let now = lock(&s.storage).now();
-    let mut requests = s.pending.lock().unwrap();
+    let now = match now(&s.storage).await {
+        Ok(now) => now,
+        Err(e) => return e.into_response(),
+    };
+    let mut requests = s.pending.lock().unwrap_or_else(PoisonError::into_inner);
     let Some(mut pending) = requests
         .remove(&form.pending_id)
         .filter(|p| p.expires > now)
@@ -436,7 +466,7 @@ async fn consent(State(s): State<Arc<Server>>, Form(form): Form<Consent>) -> Res
         pending.state.as_deref(),
         &[("code", &code)],
     );
-    let mut codes = s.codes.lock().unwrap();
+    let mut codes = s.codes.lock().unwrap_or_else(PoisonError::into_inner);
     codes.retain(|_, c| c.expires > now || (c.grant_id.is_some() && c.expires + 600 > now));
     codes.insert(
         hash(&code),
@@ -629,86 +659,23 @@ async fn token(
     let client = authenticate(&s, &headers, &form).await?;
     let access = random()?;
     let refresh = random()?;
-    let scopes = match form.grant_type.as_deref() {
-        Some("authorization_code") => {
-            let mut codes = s.codes.lock().unwrap();
-            let code = codes
-                .get_mut(&hash(form.code.as_deref().unwrap_or("")))
-                .ok_or_else(OAuthError::grant)?;
-            if code.pending.client.client_id != client.client_id
-                || ((code.pending.redirect_required || form.redirect_uri.is_some())
-                    && form.redirect_uri.as_deref() != Some(&code.pending.redirect))
-                || !verifier_matches(
-                    form.code_verifier.as_deref().unwrap_or(""),
-                    &code.pending.challenge,
-                )
-            {
-                return Err(OAuthError::grant());
-            }
-            if let Some(id) = code.grant_id {
-                lock(&s.storage)
-                    .oauth_revoke_grant(id)
-                    .map_err(|_| OAuthError::internal())?;
-                return Err(OAuthError::grant());
-            }
-            if code.expires <= lock(&s.storage).now()
-                || (code.pending.resource != s.issuer.resource()
-                    && code.pending.resource != s.issuer.as_str())
-            {
-                return Err(OAuthError::grant());
-            }
-            let id = lock(&s.storage)
-                .oauth_create_grant(
-                    &code.owner,
-                    &client,
-                    code.pending.scopes,
-                    &hash(&access),
-                    &hash(&refresh),
-                )
-                .map_err(|_| OAuthError::internal())?;
-            code.grant_id = Some(id);
-            code.pending.scopes
-        }
+    let (access_hash, refresh_hash) = (hash(&access), hash(&refresh));
+    let server = s.clone();
+    let scopes = blocking(move || match form.grant_type.as_deref() {
+        Some("authorization_code") => redeem(&server, &client, &form, &access_hash, &refresh_hash),
         Some("refresh_token") => {
-            let requested = form
-                .scope
-                .as_deref()
-                .map(|scope| Scopes::parse(Some(scope)))
-                .transpose()
-                .map_err(|e| OAuthError::bad("invalid_scope", e))?;
-            match lock(&s.storage)
-                .oauth_rotate(
-                    &hash(form.refresh_token.as_deref().unwrap_or("")),
-                    &client.client_id,
-                    requested,
-                    &hash(&access),
-                    &hash(&refresh),
-                )
-                .map_err(|_| OAuthError::internal())?
-            {
-                RefreshResult::Issued(scopes) => scopes,
-                RefreshResult::Invalid => return Err(OAuthError::grant()),
-                RefreshResult::InvalidScope => {
-                    return Err(OAuthError::bad(
-                        "invalid_scope",
-                        "Request the same scopes or fewer scopes than the current refresh grant.",
-                    ));
-                }
-            }
+            rotate(&server.storage, &client, &form, &access_hash, &refresh_hash)
         }
-        None => {
-            return Err(OAuthError::bad(
-                "invalid_request",
-                "Send grant_type=authorization_code or grant_type=refresh_token.",
-            ));
-        }
-        _ => {
-            return Err(OAuthError::bad(
-                "unsupported_grant_type",
-                "Use authorization_code or refresh_token as grant_type.",
-            ));
-        }
-    };
+        None => Err(OAuthError::bad(
+            "invalid_request",
+            "Send grant_type=authorization_code or grant_type=refresh_token.",
+        )),
+        _ => Err(OAuthError::bad(
+            "unsupported_grant_type",
+            "Use authorization_code or refresh_token as grant_type.",
+        )),
+    })
+    .await?;
     Ok(json_response(
         StatusCode::OK,
         json!({
@@ -716,6 +683,82 @@ async fn token(
             "refresh_token": refresh, "scope": scopes.to_string()
         }),
     ))
+}
+
+/// Exchanges the authorization code in `form` for a grant with the tokens hashed as
+/// `access` and `refresh`. Holds the codes while it writes the grant, so a code is
+/// redeemed once.
+fn redeem(
+    s: &Server,
+    client: &Client,
+    form: &TokenForm,
+    access: &str,
+    refresh: &str,
+) -> Result<Scopes, OAuthError> {
+    let mut codes = s.codes.lock().unwrap_or_else(PoisonError::into_inner);
+    let code = codes
+        .get_mut(&hash(form.code.as_deref().unwrap_or("")))
+        .ok_or_else(OAuthError::grant)?;
+    if code.pending.client.client_id != client.client_id
+        || ((code.pending.redirect_required || form.redirect_uri.is_some())
+            && form.redirect_uri.as_deref() != Some(&code.pending.redirect))
+        || !verifier_matches(
+            form.code_verifier.as_deref().unwrap_or(""),
+            &code.pending.challenge,
+        )
+    {
+        return Err(OAuthError::grant());
+    }
+    if let Some(id) = code.grant_id {
+        lock(&s.storage)
+            .oauth_revoke_grant(id)
+            .map_err(|_| OAuthError::internal())?;
+        return Err(OAuthError::grant());
+    }
+    if code.expires <= lock(&s.storage).now()
+        || (code.pending.resource != s.issuer.resource()
+            && code.pending.resource != s.issuer.as_str())
+    {
+        return Err(OAuthError::grant());
+    }
+    let id = lock(&s.storage)
+        .oauth_create_grant(&code.owner, client, code.pending.scopes, access, refresh)
+        .map_err(|_| OAuthError::internal())?;
+    code.grant_id = Some(id);
+    Ok(code.pending.scopes)
+}
+
+/// Replaces the refresh token in `form` with the tokens hashed as `access` and `refresh`.
+fn rotate(
+    storage: &StorageState,
+    client: &Client,
+    form: &TokenForm,
+    access: &str,
+    refresh: &str,
+) -> Result<Scopes, OAuthError> {
+    let requested = form
+        .scope
+        .as_deref()
+        .map(|scope| Scopes::parse(Some(scope)))
+        .transpose()
+        .map_err(|e| OAuthError::bad("invalid_scope", e))?;
+    match lock(storage)
+        .oauth_rotate(
+            &hash(form.refresh_token.as_deref().unwrap_or("")),
+            &client.client_id,
+            requested,
+            access,
+            refresh,
+        )
+        .map_err(|_| OAuthError::internal())?
+    {
+        RefreshResult::Issued(scopes) => Ok(scopes),
+        RefreshResult::Invalid => Err(OAuthError::grant()),
+        RefreshResult::InvalidScope => Err(OAuthError::bad(
+            "invalid_scope",
+            "Request the same scopes or fewer scopes than the current refresh grant.",
+        )),
+    }
 }
 
 async fn revoke(
@@ -731,9 +774,13 @@ async fn revoke(
         )
     })?;
     let _ = form.token_type_hint;
-    lock(&s.storage)
-        .oauth_revoke_token(&hash(&token), &client.client_id)
-        .map_err(|_| OAuthError::internal())?;
+    let storage = s.storage.clone();
+    blocking(move || {
+        lock(&storage)
+            .oauth_revoke_token(&hash(&token), &client.client_id)
+            .map_err(|_| OAuthError::internal())
+    })
+    .await?;
     Ok((StatusCode::OK, [(header::CACHE_CONTROL, "no-store")]).into_response())
 }
 

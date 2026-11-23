@@ -37,7 +37,7 @@ use sha2::{Digest, Sha256};
 use super::Services;
 use super::access;
 use super::rpc::{self, Reply, json};
-use crate::commands::{CommandError, CommandErrorCode, CommandResult, lock};
+use crate::commands::{CommandError, CommandErrorCode, CommandResult, blocking, lock};
 use crate::domain::device::{
     DEFAULT_LIFETIME_DAYS, Device, DeviceId, DeviceLabel, DeviceScope, MAX_LIFETIME_DAYS,
 };
@@ -73,14 +73,6 @@ pub fn token_hash(token: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
-}
-
-pub(super) async fn blocking<T: Send + 'static>(
-    run: impl FnOnce() -> CommandResult<T> + Send + 'static,
-) -> CommandResult<T> {
-    tokio::task::spawn_blocking(run)
-        .await
-        .unwrap_or_else(|error| Err(CommandError::internal(format!("panicked: {error}"))))
 }
 
 /// What `token_hash` stands for. The lookup runs on the read-only connection, so a
