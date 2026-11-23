@@ -78,7 +78,9 @@ installed one, it prints the command that installs it anyway,
 `toodo update --channel <channel> --allow-downgrade`. `toodo update --check` shows what
 the channel has without installing it. When the server does not answer after an update,
 `toodo update` goes back to the previous version by itself and exits `1`; `toodo logs`
-shows why the new version did not start.
+shows why the new version did not start. `scripts/install-server.sh` does the same for a
+release or checkout install: it lists what it restored and exits `1`, and
+`journalctl --user -u toodo-server` shows why.
 
 ## Tasks
 

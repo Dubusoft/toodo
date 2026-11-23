@@ -211,8 +211,12 @@ if there is none. It downloads the server asset of the release with `gh`, checks
 sha256 and that the binary reports the release's version, installs it to
 `~/.local/bin/toodo-server` and the web app to `~/.local/share/toodo-server-web`, writes the
 systemd user service `toodo-server.service` (see [systemd](#systemd)), restarts it, and
-checks that it answers (`/api` without a token is `401`, `/` is the web app). It prints
-where the tokens are, never the tokens.
+checks that it answers (`/api` without a token is `401`, `/` is the web app), retrying for
+up to 30 s. It prints where the tokens are, never the tokens. When the new version does
+not come up (`toodo service install` fails or the check keeps failing), the script puts
+back the server, web app, unit, and listen setting it replaced, restarts the service,
+lists what it restored, and exits `1`; `journalctl --user -u toodo-server` shows why the
+new version failed.
 
 - `--release latest|vX.Y.Z`: the release to install; `vX.Y.Z` pins a version.
 - `--listen ADDR`: listen address of the service (default `127.0.0.1:47616`).
