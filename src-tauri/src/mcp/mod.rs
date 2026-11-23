@@ -305,7 +305,8 @@ async fn require_token(
                     request.extensions_mut().insert(Access::OAuth(grant));
                     return next.run(request).await;
                 }
-                Err(_) => {
+                Err(error) => {
+                    eprintln!("toodo: failed to look up an MCP OAuth access token: {error}");
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "Reconnect from the app after the server database is available.",
