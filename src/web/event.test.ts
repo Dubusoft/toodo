@@ -121,6 +121,69 @@ describe("event stream connection", () => {
     unlisten();
   });
 
+  it("reconnects a stream that sends nothing, not even a keep-alive, for 45 s", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(TOKEN_KEY, "secret");
+    const cancelled = vi.fn();
+    const silent = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("id: ab-4\nevent: ready\ndata:\n\n"));
+        },
+        cancel: cancelled,
+      }),
+      { status: 200 },
+    );
+    const stream = vi
+      .fn<(init?: RequestInit) => Promise<Response>>()
+      .mockResolvedValueOnce(silent)
+      .mockResolvedValueOnce(eventStream(true));
+    vi.stubGlobal("fetch", (path: string, init?: RequestInit) =>
+      path === "/api/events" ? stream(init) : Promise.resolve(new Response(null, { status: 401 })),
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { listen } = await freshEventModule();
+    const unlisten = await listen("tasks-changed", () => {});
+
+    await vi.advanceTimersByTimeAsync(44_999);
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(cancelled).not.toHaveBeenCalled();
+
+    // The stalled stream is dropped, and the next one starts after the first retry delay.
+    await vi.advanceTimersByTimeAsync(1 + 1000);
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    expect(stream).toHaveBeenCalledTimes(2);
+    expect(new Headers(stream.mock.calls[1][0]?.headers).get("Last-Event-ID")).toBe("ab-4");
+    unlisten();
+  });
+
+  it("keeps a stream open while keep-alives arrive", async () => {
+    vi.useFakeTimers();
+    localStorage.setItem(TOKEN_KEY, "secret");
+    let keepAlive: ReturnType<typeof setInterval> | undefined;
+    const stream = vi.fn(
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              keepAlive = setInterval(() => controller.enqueue(new TextEncoder().encode(":\n\n")), 15_000);
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", (path: string) =>
+      path === "/api/events" ? stream() : Promise.resolve(new Response(null, { status: 401 })),
+    );
+    const { listen } = await freshEventModule();
+    const unlisten = await listen("tasks-changed", () => {});
+
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(stream).toHaveBeenCalledTimes(1);
+    unlisten();
+    clearInterval(keepAlive);
+  });
+
   it("tells reconnect listeners to refetch when the server sends a resync", async () => {
     localStorage.setItem(TOKEN_KEY, "secret");
     vi.stubGlobal("fetch", () => Promise.resolve(eventStreamOf("id: ab-7\nevent: resync\ndata:\n\n", true)));

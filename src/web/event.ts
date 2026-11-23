@@ -6,6 +6,8 @@
  * When the server cannot, or this stream fell behind, the server sends a `resync` event and
  * `onReconnect` subscribers are told to refetch everything; so are they after a reconnect
  * without an id. It reconnects at once when the server answers again (see `connection.ts`).
+ * A stream that sends nothing, not even the server's keep-alive, for `IDLE_TIMEOUT_MS` is
+ * taken for a dead connection (one a network change left half open) and reconnected too.
  * A token the server rejects is forgotten, so the app asks for it again.
  */
 import { onReachable, recoveryCount, serverFetch } from "@/web/connection";
@@ -22,6 +24,8 @@ const RESYNC = "resync";
 
 const FIRST_RETRY_MS = 1000;
 const MAX_RETRY_MS = 30_000;
+/** The server sends a keep-alive every 15 s; a stream quiet for three of them has stalled. */
+const IDLE_TIMEOUT_MS = 45_000;
 
 const handlers = new Map<string, Set<EventCallback<unknown>>>();
 const reconnectListeners = new Set<() => void>();
@@ -88,10 +92,26 @@ async function open(signedIn: Record<string, string>, signal: AbortSignal): Prom
   return response.body.pipeThrough(new TextDecoderStream()).getReader();
 }
 
+/** Reads the next chunk; cancels the stream and throws when none comes in `IDLE_TIMEOUT_MS`. */
+async function readWithinIdleTimeout(reader: ReadableStreamDefaultReader<string>): Promise<ReadableStreamReadResult<string>> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stalled = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      void reader.cancel();
+      reject(new Error(`event stream sent nothing for ${IDLE_TIMEOUT_MS / 1000} s`));
+    }, IDLE_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([reader.read(), stalled]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function read(reader: ReadableStreamDefaultReader<string>): Promise<void> {
   let buffer = "";
   for (;;) {
-    const { value, done } = await reader.read();
+    const { value, done } = await readWithinIdleTimeout(reader);
     if (done) return;
     const parsed = parseServerSentEvents(buffer + value);
     buffer = parsed.rest;

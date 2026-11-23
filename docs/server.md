@@ -659,7 +659,8 @@ whole server account. To open it from a phone, see
 
 The event stream (`/api/events`) is a long-lived server-sent event response with a
 keep-alive comment every 15 seconds; a proxy in front must not buffer it. When the stream
-drops, the web app reconnects with the id of the last event it got and the server replays
+drops, or sends nothing for 45 seconds (a connection a network change left half open), the
+web app reconnects with the id of the last event it got and the server replays
 what it missed; when those events are no longer kept, the web app refetches everything.
 
 ### Task Events for Other Clients
