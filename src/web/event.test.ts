@@ -95,6 +95,61 @@ describe("event stream connection", () => {
     unlisten();
   });
 
+  it.each([
+    ["starts again with a resync", "id: cd-1\nevent: resync\ndata:\n\n"],
+    ["replays what was missed", "id: ab-2\nevent: tasks-changed\ndata: 2\n\n"],
+  ])("tells reconnect listeners once when the server answers again and %s", async (_, reopened) => {
+    vi.useFakeTimers();
+    localStorage.setItem(TOKEN_KEY, "secret");
+    let serverUp = false;
+    const stream = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValueOnce(eventStreamOf("id: ab-1\nevent: ready\ndata:\n\n", false))
+      .mockRejectedValueOnce(new TypeError("connection refused"))
+      .mockResolvedValueOnce(eventStreamOf(reopened, true));
+    vi.stubGlobal("fetch", (path: string) => {
+      if (path === "/api/events") return stream();
+      return serverUp ? Promise.resolve(new Response(null, { status: 401 })) : Promise.reject(new TypeError("connection refused"));
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { listen, onReconnect } = await freshEventModule();
+    const { reachability } = await import("@/web/connection");
+    const reconnected = vi.fn();
+    onReconnect(reconnected);
+    const unlisten = await listen("tasks-changed", () => {});
+
+    // The second connection fails and the probe it starts finds the server down.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(reachability()).toBe("unreachable");
+    serverUp = true;
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(reachability()).toBe("reachable");
+    expect(stream).toHaveBeenCalledTimes(3);
+    expect(reconnected).toHaveBeenCalledTimes(1);
+    unlisten();
+  });
+
+  it("tells reconnect listeners when the server answers again and no stream is open", async () => {
+    vi.useFakeTimers();
+    let serverUp = false;
+    vi.stubGlobal("fetch", () =>
+      serverUp ? Promise.resolve(new Response(null, { status: 401 })) : Promise.reject(new TypeError("connection refused")),
+    );
+    const { onReconnect } = await freshEventModule();
+    const { reachability, retryNow, serverFetch } = await import("@/web/connection");
+    const reconnected = vi.fn();
+    onReconnect(reconnected);
+
+    await expect(serverFetch("/api/tasks")).rejects.toThrow(TypeError);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reachability()).toBe("unreachable");
+    serverUp = true;
+    retryNow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reachability()).toBe("reachable");
+    expect(reconnected).toHaveBeenCalledTimes(1);
+  });
+
   it("resumes from the last event id instead of refetching everything", async () => {
     vi.useFakeTimers();
     localStorage.setItem(TOKEN_KEY, "secret");

@@ -5,7 +5,9 @@
  * last event it got (`Last-Event-ID`), and the server replays what was missed meanwhile.
  * When the server cannot, or this stream fell behind, the server sends a `resync` event and
  * `onReconnect` subscribers are told to refetch everything; so are they after a reconnect
- * without an id. It reconnects at once when the server answers again (see `connection.ts`).
+ * without an id, and when the server answers again after it was unreachable (see
+ * `connection.ts`), once per recovery: the stream reconnects at once then, and tells when it
+ * is open, so the resync a restarted server starts it with tells nothing new.
  * A stream that sends nothing, not even the server's keep-alive, for `IDLE_TIMEOUT_MS` is
  * taken for a dead connection (one a network change left half open) and reconnected too.
  * A token the server rejects is forgotten, so the app asks for it again.
@@ -35,6 +37,13 @@ let connection: AbortController | null = null;
 let nextId = 0;
 /** The id of the last event the server sent, to resume from after a reconnect. */
 let lastEventId: string | null = null;
+/** The connection whose stream is open and reading. */
+let streaming: AbortController | null = null;
+/** The server answered again while the stream was down; it tells subscribers once it is open. */
+let recovered = false;
+/** Subscribers were told as the open stream started, so a resync it starts with tells nothing new. */
+let toldAtOpen = false;
+
 
 /**
  * Splits server-sent events off the front of `buffer`: complete events and the incomplete
@@ -81,11 +90,21 @@ function notifyReconnect() {
   reconnectListeners.forEach((listener) => run(RESYNC, listener));
 }
 
+onReachable(() => {
+  if (connection !== null && streaming !== connection) {
+    recovered = true;
+  } else {
+    notifyReconnect();
+  }
+});
+
 // The id moves on even when the event cannot be delivered: a replay would fail the same way.
 function deliver({ event, data, id }: ServerSentEvent) {
   if (id !== undefined) lastEventId = id;
+  const told = toldAtOpen;
+  toldAtOpen = false;
   if (event === RESYNC) {
-    notifyReconnect();
+    if (!told) notifyReconnect();
     return;
   }
   const listeners = handlers.get(event);
@@ -156,15 +175,23 @@ function connect() {
       try {
         const reader = await open(signedIn, controller.signal);
         // With an id, the server replays what was missed or sends a resync itself.
-        if (connected && lastEventId === null) {
-          notifyReconnect();
-        }
+        toldAtOpen = recovered || (connected && lastEventId === null);
+        recovered = false;
+        if (toldAtOpen) notifyReconnect();
         connected = true;
+        streaming = controller;
         delay = FIRST_RETRY_MS;
         await read(reader);
       } catch (error) {
         if (controller.signal.aborted) return;
         console.warn("toodo: event stream dropped, reconnecting", error);
+      } finally {
+        if (streaming === controller) streaming = null;
+      }
+      if (recovered && recoveryCount() === recoveries) {
+        // The stream failed although the server answers; the data is not left waiting for it.
+        recovered = false;
+        notifyReconnect();
       }
       if (recoveryCount() !== recoveries) {
         continue;

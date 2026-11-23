@@ -10,7 +10,7 @@ import { UpdateBanner } from "@/components/update-banner";
 import { toodoTheme } from "@/lib/astryx-theme";
 import { initTheme, useColorMode } from "@/lib/theme";
 import { checkForNewBuild, watchBuild } from "@/web/build";
-import { onReachable, watchConnection } from "@/web/connection";
+import { watchConnection } from "@/web/connection";
 import { watchInstallOffer } from "@/web/install";
 import { indexedDbStore, pauseQueriesWhileUnreachable, restoreQueries, saveQueries } from "@/web/query-cache";
 
@@ -60,13 +60,11 @@ void Promise.all([
   restoreQueries(queryClient, savedQueries),
 ]).then(
   ([{ ServerAccess }, { ConnectionGate }, { onReconnect }]) => {
-    // Events sent while the stream was down are lost; refetch what they would have changed.
+    // Events sent while the stream was down are lost, and what failed while the server was
+    // unreachable shows its data again; one recovery tells once (see event.ts).
     onReconnect(() => void queryClient.invalidateQueries());
     // A reconnect or recovery often means the server restarted, perhaps into a new build.
     onReconnect(() => void checkForNewBuild());
-    onReachable(() => void checkForNewBuild());
-    // What failed while the server was unreachable shows its data again.
-    onReachable(() => void queryClient.invalidateQueries());
     saveQueries(queryClient, savedQueries);
     // The service worker comes with the built app (see vite-pwa.ts), not the dev server.
     if (import.meta.env.PROD && "serviceWorker" in navigator) {
