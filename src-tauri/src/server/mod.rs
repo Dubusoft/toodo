@@ -1218,6 +1218,52 @@ mod tests {
         assert_eq!(workspace_names(&services), ["toodo"]);
     }
 
+    #[test]
+    fn stalled_clients_are_cut_off() {
+        use std::io::{Read, Write};
+        let (address, temp, services) = serve_services(None);
+        add_workspace(&services, "toodo");
+        let limit = mcp::READ_TIMEOUT * 5;
+
+        // Headers that never end: the server closes the connection.
+        let started = std::time::Instant::now();
+        let mut stream = std::net::TcpStream::connect(address).unwrap();
+        stream.set_read_timeout(Some(limit)).unwrap();
+        stream
+            .write_all(b"POST /api/rpc/list_workspaces HTTP/1.1\r\nHost: localhost\r\n")
+            .unwrap();
+        let mut reply = Vec::new();
+        stream
+            .read_to_end(&mut reply)
+            .expect("the server closes a connection whose headers stall");
+        assert!(started.elapsed() < limit, "{:?}", started.elapsed());
+
+        // A body that stops arriving: the restore fails and its upload is removed.
+        let started = std::time::Instant::now();
+        let (status, _, body) = exchange(
+            address,
+            "POST /api/backups/restore HTTP/1.1\r\nAuthorization: Bearer web\r\n\
+             Content-Length: 4096",
+            b"the first bytes of a database",
+        );
+        assert!(status.contains(" 408 "), "{status}");
+        assert!(String::from_utf8_lossy(&body).contains("stalled"));
+        assert!(started.elapsed() < limit, "{:?}", started.elapsed());
+        let mut dirs = vec![temp.path().to_path_buf()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else {
+                    let name = path.file_name().unwrap().to_string_lossy();
+                    assert!(!name.starts_with(".upload-"), "left behind: {name}");
+                }
+            }
+        }
+        assert_eq!(workspace_names(&services), ["toodo"]);
+    }
+
     fn post_json(
         address: SocketAddr,
         path: &str,
