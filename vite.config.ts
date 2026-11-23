@@ -30,6 +30,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
-    include: ["src/**/*.{test,spec}.{ts,tsx}"],
+    // scripts/ and npm/ hold the release tooling; their tests set the node environment.
+    include: ["src/**/*.{test,spec}.{ts,tsx}", "scripts/**/*.test.ts", "npm/**/*.test.ts"],
   },
 });
