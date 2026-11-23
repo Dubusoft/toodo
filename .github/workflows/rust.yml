@@ -37,7 +37,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the Rust toolchain in rust-toolchain.toml
+        run: rustup toolchain install
 
       - uses: swatinem/rust-cache@v2
         with:

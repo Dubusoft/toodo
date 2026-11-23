@@ -130,6 +130,9 @@ Run from the repository root unless noted. Package manager is npm.
 - Test (Rust, also regenerates `src/lib/bindings.ts`): `cargo test --lib` in `src-tauri/`
 - Lint / format (Rust): `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check`
   in `src-tauri/`
+- Audit (dependencies): `cargo audit` in `src-tauri/` (install with
+  `cargo install cargo-audit --locked`) and `npm audit`, part of the release checklist in
+  `README.md`. The Rust version is pinned in `rust-toolchain.toml`.
 - Release: `npm run bump <major|minor|patch|X.Y.Z>` on `dev`, commit `Release X.Y.Z`,
   merge `dev` into `main`; see the "Releases" section of `README.md`.
   `npm run check-version` checks that the version files agree. A release carries

@@ -174,9 +174,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust-target }}
+      - name: Install the Rust toolchain in rust-toolchain.toml
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.rust-target }}
 
       - name: Install the musl C toolchain
         if: endsWith(matrix.rust-target, '-musl')

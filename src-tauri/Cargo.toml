@@ -25,7 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 specta = { version = "=2.0.0-rc.25", features = ["derive", "function"] }
 specta-typescript = "0.0.12"
-rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+rusqlite = { version = "0.43", features = ["bundled", "backup"] }
 tower-http = { version = "0.6", features = ["fs", "timeout", "add-extension"] }
 # Serving connections with read timeouts, which `axum::serve` cannot set.
 hyper = { version = "1", features = ["server", "http1"] }
@@ -60,7 +60,7 @@ strip = true
 
 [dev-dependencies]
 # Statement traces for ordering a write between the reads of a test.
-rusqlite = { version = "0.40", features = ["trace"] }
+rusqlite = { version = "0.43", features = ["trace"] }
 tempfile = "3"
 # Paused time for tests of deadlines.
 tokio = { version = "1.53.3", features = ["test-util"] }

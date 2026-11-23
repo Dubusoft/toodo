@@ -1701,10 +1701,13 @@ fn a_task_is_ready_only_from_the_finish_of_its_last_dependency_while_others_writ
     WRITE_AFTER_THE_CHANGES_READ.set(Some(Box::new(move || {
         storage.complete_task(b.id, None, &[]).unwrap();
     })));
-    reader.conn.trace_v2(
-        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
-        Some(write_after_the_changes_are_read),
-    );
+    reader
+        .conn
+        .trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(write_after_the_changes_are_read),
+        )
+        .unwrap();
     let StatusChanges {
         changes,
         ready,
