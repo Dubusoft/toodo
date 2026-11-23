@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::backup::Backup;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 use super::{BUSY_TIMEOUT, Result, Storage, StorageError, migrations, tasks};
 use crate::domain::backup::{self, BackupKind};
@@ -167,7 +167,9 @@ fn check_integrity(path: &Path) -> Result<()> {
 }
 
 /// Reads the backup at `path` into memory, migrates it to the latest schema, and checks
-/// its integrity and that the dependencies of its live tasks do not loop. Fails with
+/// its integrity, that no task waits with only one of `wait_until` and `wait_status`
+/// after the migration (as in a file that claims the latest schema without its
+/// constraints), and that the dependencies of its live tasks do not loop. Fails with
 /// [`StorageError::InvalidBackup`] for a file that is not a Toodo database or fails a
 /// check, so the live data stays untouched.
 pub fn stage_backup(path: &Path) -> Result<StagedBackup> {
@@ -189,6 +191,20 @@ pub fn stage_backup(path: &Path) -> Result<StagedBackup> {
     let integrity: String = staged.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     if integrity != "ok" {
         return Err(invalid(&format!("integrity check failed: {integrity}")));
+    }
+    let half_waits: Option<String> = staged
+        .query_row(
+            "SELECT group_concat(id, ', ') FROM (SELECT id FROM tasks
+             WHERE (wait_until IS NULL) <> (wait_status IS NULL) ORDER BY id)",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    if let Some(ids) = half_waits {
+        return Err(invalid(&format!(
+            "tasks {ids} have only one of wait_until and wait_status"
+        )));
     }
     if let Some(path) = tasks::live_cycle(&staged).map_err(|error| invalid(&error))? {
         let ids: Vec<String> = path.iter().map(ToString::to_string).collect();
@@ -438,6 +454,78 @@ mod tests {
             storage.get_workspace(workspace.id).unwrap(),
             Some(workspace)
         );
+    }
+
+    /// Writes `storage`'s data to `path` with tasks 1 and 2 waiting with only one of
+    /// `wait_until` and `wait_status`, at schema `version` and without the triggers of
+    /// version 50 that refuse such waits.
+    fn export_with_half_waits(storage: &Storage, path: &Path, version: i64) {
+        storage.export_to(path).unwrap();
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(
+            "DROP TRIGGER tasks_wait_pair_inserted;
+             DROP TRIGGER tasks_wait_pair_updated;
+             UPDATE tasks SET wait_until = 100 WHERE id = 1;
+             UPDATE tasks SET wait_status = 'in_progress' WHERE id = 2;",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", version).unwrap();
+    }
+
+    #[test]
+    fn half_waits_of_an_older_backup_are_cleared_with_a_note_on_their_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open(dir.path());
+        add_workspace(&mut storage, "toodo");
+        let old = dir.path().join("old.sqlite3");
+        export_with_half_waits(&storage, &old, 49);
+
+        storage.restore(stage_backup(&old).unwrap()).unwrap();
+
+        let workspace = storage.list_workspaces().unwrap().pop().unwrap();
+        let tasks = storage.list_tasks(workspace.id).unwrap();
+        assert!(tasks.iter().all(|task| task.wait.is_none()));
+        assert_eq!(storage.end_due_waits().unwrap(), []);
+        let notes = |id: i64| -> Vec<String> {
+            let mut statement = storage
+                .conn
+                .prepare("SELECT body FROM task_notes WHERE task_id = ?1 ORDER BY id")
+                .unwrap();
+            statement
+                .query_map([id], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(
+            notes(1),
+            ["Wait cleared on upgrade: it had only wait_until 100"]
+        );
+        assert_eq!(
+            notes(2),
+            ["Wait cleared on upgrade: it had only wait_status in_progress"]
+        );
+    }
+
+    #[test]
+    fn a_latest_schema_backup_with_half_waits_is_rejected_naming_its_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open(dir.path());
+        add_workspace(&mut storage, "toodo");
+        let before = snapshot(&storage);
+        let tampered = dir.path().join("tampered.sqlite3");
+        export_with_half_waits(&storage, &tampered, migrations::LATEST_VERSION);
+
+        let error = stage_backup(&tampered).err().expect("backup is rejected");
+
+        assert!(matches!(error, StorageError::InvalidBackup(_)), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("tasks 1, 2 have only one of wait_until and wait_status"),
+            "{error}"
+        );
+        assert_eq!(snapshot(&storage), before);
     }
 
     #[test]

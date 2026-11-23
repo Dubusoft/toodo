@@ -2246,7 +2246,7 @@ fn version_49_leaves_existing_tasks_off_autopilot_and_keeps_its_time_with_the_fl
 
     super::migrate(&mut conn).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), 49);
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
     let flag: (i64, Option<i64>) = conn
         .query_row(
             "SELECT autopilot, autopilot_at FROM tasks WHERE id = 1",
@@ -2261,4 +2261,80 @@ fn version_49_leaves_existing_tasks_off_autopilot_and_keeps_its_time_with_the_fl
     assert!(set("UPDATE tasks SET autopilot = 2, autopilot_at = 5 WHERE id = 1").is_err());
     set("UPDATE tasks SET autopilot = 1, autopilot_at = 5 WHERE id = 1").unwrap();
     set("UPDATE tasks SET autopilot = 0, autopilot_at = NULL WHERE id = 1").unwrap();
+}
+
+#[test]
+fn version_50_clears_half_waits_with_a_note_and_refuses_new_ones() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_legacy(&mut conn).unwrap();
+    for sql in &MIGRATIONS[45..49] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 49).unwrap();
+    conn.execute_batch(
+        "INSERT INTO workspaces (id, name) VALUES (1, 'toodo');
+         INSERT INTO tasks (id, workspace_id, type, title, status, wait_until, wait_status) VALUES
+             (1, 1, 'feat', 'Until only', 'planned', 100, NULL),
+             (2, 1, 'feat', 'Status only', 'planned', NULL, 'in_review'),
+             (3, 1, 'feat', 'Waiting', 'planned', 200, 'in_progress'),
+             (4, 1, 'feat', 'Not waiting', 'planned', NULL, NULL);",
+    )
+    .unwrap();
+
+    super::migrate(&mut conn).unwrap();
+
+    assert_eq!(schema_version(&conn).unwrap(), 50);
+    let waits: Vec<(i64, Option<i64>, Option<String>)> = conn
+        .prepare("SELECT id, wait_until, wait_status FROM tasks ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        waits,
+        [
+            (1, None, None),
+            (2, None, None),
+            (3, Some(200), Some("in_progress".into())),
+            (4, None, None),
+        ]
+    );
+    let notes: Vec<(i64, String, String)> = conn
+        .prepare("SELECT task_id, kind, body FROM task_notes ORDER BY task_id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        notes,
+        [
+            (
+                1,
+                "progress".into(),
+                "Wait cleared on upgrade: it had only wait_until 100".into()
+            ),
+            (
+                2,
+                "progress".into(),
+                "Wait cleared on upgrade: it had only wait_status in_review".into()
+            ),
+        ]
+    );
+    let set = |sql: &str| conn.execute(sql, []);
+    assert!(set("UPDATE tasks SET wait_until = 5 WHERE id = 4").is_err());
+    assert!(set("UPDATE tasks SET wait_status = 'planned' WHERE id = 4").is_err());
+    assert!(set("UPDATE tasks SET wait_status = NULL WHERE id = 3").is_err());
+    assert!(
+        set("INSERT INTO tasks (workspace_id, type, title, status, wait_until) VALUES (1, 'feat', 'New', 'planned', 5)")
+            .is_err()
+    );
+    assert!(
+        set("INSERT INTO tasks (workspace_id, type, title, status, wait_status) VALUES (1, 'feat', 'New', 'planned', 'planned')")
+            .is_err()
+    );
+    set("UPDATE tasks SET wait_until = 5, wait_status = 'planned' WHERE id = 4").unwrap();
+    set("UPDATE tasks SET wait_until = NULL, wait_status = NULL WHERE id = 3").unwrap();
+    set("INSERT INTO tasks (workspace_id, type, title, status, wait_until, wait_status) VALUES (1, 'feat', 'New', 'planned', 5, 'planned')").unwrap();
 }
