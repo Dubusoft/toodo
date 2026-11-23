@@ -7,6 +7,8 @@
  * `onReconnect` subscribers are told to refetch everything; so are they after a reconnect
  * without an id. It reconnects at once when the server answers again (see `connection.ts`).
  * A token the server rejects is forgotten, so the app asks for it again.
+ * A listener that throws or rejects, or an event whose payload is not JSON, is logged and
+ * skipped: the stream stays open and the other listeners and events are still delivered.
  */
 import { onReachable, recoveryCount, serverFetch } from "@/web/connection";
 import { credentials, forgetToken, rejectedByServer, subscribeToken } from "@/web/session";
@@ -60,17 +62,39 @@ export function parseServerSentEvents(buffer: string): { events: ServerSentEvent
   return { events, rest };
 }
 
+/** Calls `listener`, logging what it throws or rejects with instead of passing it on. */
+function run(event: string, listener: () => unknown) {
+  const failed = (error: unknown) => console.error(`toodo: a listener for ${event} failed`, error);
+  try {
+    const result = listener();
+    if (result instanceof Promise) result.catch(failed);
+  } catch (error) {
+    failed(error);
+  }
+}
+
+function notifyReconnect() {
+  reconnectListeners.forEach((listener) => run(RESYNC, listener));
+}
+
+// The id moves on even when the event cannot be delivered: a replay would fail the same way.
 function deliver({ event, data, id }: ServerSentEvent) {
   if (id !== undefined) lastEventId = id;
   if (event === RESYNC) {
-    reconnectListeners.forEach((listener) => listener());
+    notifyReconnect();
     return;
   }
   const listeners = handlers.get(event);
   if (!listeners) return;
-  const payload: unknown = data ? JSON.parse(data) : null;
+  let payload: unknown = null;
+  try {
+    if (data) payload = JSON.parse(data);
+  } catch (error) {
+    console.error(`toodo: dropped a ${event} event whose payload is not JSON`, error);
+    return;
+  }
   for (const listener of listeners) {
-    listener({ event, id: nextId++, payload });
+    run(event, () => listener({ event, id: nextId++, payload }));
   }
 }
 
@@ -113,7 +137,7 @@ function connect() {
         const reader = await open(signedIn, controller.signal);
         // With an id, the server replays what was missed or sends a resync itself.
         if (connected && lastEventId === null) {
-          reconnectListeners.forEach((listener) => listener());
+          notifyReconnect();
         }
         connected = true;
         delay = FIRST_RETRY_MS;

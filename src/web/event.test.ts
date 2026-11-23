@@ -132,6 +132,53 @@ describe("event stream connection", () => {
     unlisten();
   });
 
+  it("keeps the stream open past a payload that is not JSON and a listener that throws", async () => {
+    localStorage.setItem(TOKEN_KEY, "secret");
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(
+        eventStreamOf("event: tasks-changed\ndata: {oops\n\nevent: tasks-changed\ndata: 1\n\nevent: tasks-changed\ndata: 2\n\n", true),
+      );
+    vi.stubGlobal("fetch", fetch);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { listen } = await freshEventModule();
+    const unlistenThrowing = await listen("tasks-changed", (event) => {
+      if (event.payload === 1) throw new Error("listener failed");
+    });
+    const payloads: unknown[] = [];
+    let resolve = () => {};
+    const lastDelivered = new Promise<void>((done) => (resolve = done));
+    const unlisten = await listen("tasks-changed", (event) => {
+      payloads.push(event.payload);
+      if (event.payload === 2) resolve();
+    });
+
+    await lastDelivered;
+    expect(payloads).toEqual([1, 2]);
+    expect(error).toHaveBeenCalledTimes(2);
+    expect(warn).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    unlisten();
+    unlistenThrowing();
+  });
+
+  it("logs a listener that rejects instead of leaving the rejection unhandled", async () => {
+    localStorage.setItem(TOKEN_KEY, "secret");
+    vi.stubGlobal("fetch", () => Promise.resolve(eventStreamOf("event: tasks-changed\ndata: 1\n\n", true)));
+    const failure = new Error("refetch failed");
+    const logged = new Promise<unknown[]>((resolve) => {
+      vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => resolve(args));
+    });
+    const { listen } = await freshEventModule();
+    const unlisten = await listen("tasks-changed", async () => {
+      throw failure;
+    });
+
+    await expect(logged).resolves.toContain(failure);
+    unlisten();
+  });
+
   it("forgets a token the server rejects and stops retrying", async () => {
     vi.useFakeTimers();
     localStorage.setItem(TOKEN_KEY, "revoked");
