@@ -10,12 +10,14 @@ use std::io;
 use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
+use hyper_util::rt::{TokioIo, TokioTimer};
+use hyper_util::service::TowerToHyperService;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
@@ -32,6 +34,8 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router};
 use serde::Serialize;
 use serde_json::Value;
+use tower_http::add_extension::AddExtension;
+use tower_http::timeout::RequestBodyTimeout;
 
 use crate::commands::events::Notifier;
 use crate::commands::types::Task;
@@ -161,12 +165,58 @@ pub(crate) fn bind(address: SocketAddr) -> io::Result<TcpListener> {
     Ok(listener)
 }
 
+/// How long a client may take to send a request's headers, and to send each next piece of a
+/// request body. A client that stalls longer is cut off, so a slow one cannot hold a
+/// connection, or an upload being stored, open indefinitely.
+pub(crate) const READ_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(1)
+} else {
+    Duration::from_secs(30)
+};
+
+/// Serves `app` on `listener` over HTTP/1.1 with [`READ_TIMEOUT`], giving handlers the
+/// client's address as [`ConnectInfo`]. `axum::serve` gives hyper no timer, which leaves
+/// hyper's header timeout off.
 pub(crate) async fn serve(listener: TcpListener, app: axum::Router) -> io::Result<()> {
-    axum::serve(
-        tokio::net::TcpListener::from_std(listener)?,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
+    let listener = tokio::net::TcpListener::from_std(listener)?;
+    loop {
+        let (stream, remote) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                accept_failed(error).await;
+                continue;
+            }
+        };
+        let service = TowerToHyperService::new(RequestBodyTimeout::new(
+            AddExtension::new(app.clone(), ConnectInfo(remote)),
+            READ_TIMEOUT,
+        ));
+        tokio::spawn(async move {
+            let connection = hyper::server::conn::http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(READ_TIMEOUT)
+                .serve_connection(TokioIo::new(stream), service)
+                .with_upgrades();
+            // A connection that breaks off or times out only ends; the client sees it closed.
+            drop(connection.await);
+        });
+    }
+}
+
+/// Waits out an accept failure as `axum::serve` does: a connection that went away before
+/// it was accepted is skipped, other errors (such as running out of file descriptors) are
+/// logged and retried after a second.
+async fn accept_failed(error: io::Error) {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+    ) {
+        return;
+    }
+    eprintln!("toodo-server: cannot accept a connection: {error}");
+    tokio::time::sleep(Duration::from_secs(1)).await;
 }
 
 /// The token in `path`, created with 32 random bytes on first use. On Unix only the owner

@@ -19,10 +19,12 @@ use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
+use tower_http::timeout::TimeoutError;
 
 use super::Services;
 use super::rpc::Reply;
 use crate::commands::{CommandError, CommandResult, backup};
+use crate::mcp;
 
 /// The largest database file a restore accepts.
 pub const RESTORE_LIMIT: u64 = 256 * 1024 * 1024;
@@ -164,7 +166,9 @@ fn too_large(limit: u64) -> Response {
 /// Why an upload did not arrive whole.
 enum UploadError {
     TooLarge,
-    BrokenOff(axum::Error),
+    /// No more of the body arrived within [`mcp::READ_TIMEOUT`].
+    Stalled,
+    BrokenOff(axum::BoxError),
     Store(std::io::Error),
 }
 
@@ -172,6 +176,14 @@ impl UploadError {
     fn into_response(self, limit: u64) -> Response {
         match self {
             Self::TooLarge => too_large(limit),
+            Self::Stalled => (
+                StatusCode::REQUEST_TIMEOUT,
+                format!(
+                    "the upload stalled: nothing arrived for {} seconds",
+                    mcp::READ_TIMEOUT.as_secs()
+                ),
+            )
+                .into_response(),
             Self::BrokenOff(error) => (
                 StatusCode::BAD_REQUEST,
                 format!("the upload broke off: {error}"),
@@ -192,7 +204,14 @@ async fn receive(body: Body, path: &Path, limit: u64) -> Result<(), UploadError>
     let mut chunks = body.into_data_stream();
     let mut received: u64 = 0;
     while let Some(chunk) = chunks.next().await {
-        let chunk = chunk.map_err(UploadError::BrokenOff)?;
+        let chunk = chunk.map_err(|error| {
+            let error = error.into_inner();
+            if error.is::<TimeoutError>() {
+                UploadError::Stalled
+            } else {
+                UploadError::BrokenOff(error)
+            }
+        })?;
         received += chunk.len() as u64;
         if received > limit {
             return Err(UploadError::TooLarge);

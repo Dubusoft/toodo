@@ -905,7 +905,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   request body (`application/octet-stream`, at most 256 MB, else `413`). The current data
   is saved as a pre-restore backup first, which is the JSON result, like `restore_backup`.
   A file that is not a Toodo database, or whose live tasks have dependencies that loop,
-  is `422` and changes nothing.
+  is `422` and changes nothing. An upload that stops arriving for 30 seconds is `408`
+  and changes nothing.
 - `GET /api/devices`: every device as `{ id, label, createdAt, lastSeenAt, revokedAt,
   current }` (Unix seconds; `current` marks the device whose token the request bears),
   active ones first.

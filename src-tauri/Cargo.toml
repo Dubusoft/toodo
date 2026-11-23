@@ -26,7 +26,10 @@ serde_json = "1"
 specta = { version = "=2.0.0-rc.25", features = ["derive", "function"] }
 specta-typescript = "0.0.12"
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
-tower-http = { version = "0.6", features = ["fs"] }
+tower-http = { version = "0.6", features = ["fs", "timeout", "add-extension"] }
+# Serving connections with read timeouts, which `axum::serve` cannot set.
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
 futures-util = { version = "0.3", default-features = false }
 sha2 = "0.10"
 # Web Push: message encryption and VAPID signing, and posting to push services.

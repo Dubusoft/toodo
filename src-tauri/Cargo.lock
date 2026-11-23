@@ -1889,6 +1889,8 @@ dependencies = [
  "futures-util",
  "getrandom 0.3.4",
  "heck",
+ "hyper",
+ "hyper-util",
  "jiff",
  "libc",
  "reqwest",
