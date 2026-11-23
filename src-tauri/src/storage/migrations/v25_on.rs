@@ -910,4 +910,28 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
         CHECK ((autopilot = 1) = (autopilot_at IS NOT NULL));
     CREATE INDEX tasks_autopilot ON tasks (id) WHERE autopilot = 1;
     ",
+    // Version 50: a task waits with both `wait_until` and `wait_status` or with neither.
+    // A half wait from before, with only one of them set, is cleared with a progress note
+    // on its task naming what was dropped: a waiting task stays `planned`, so it is left
+    // planned without a wait. Triggers refuse every later write that would set only one.
+    r"
+    INSERT INTO task_notes (task_id, kind, body, at)
+        SELECT id, 'progress', 'Wait cleared on upgrade: it had only ' || CASE
+                WHEN wait_until IS NULL THEN 'wait_status ' || wait_status
+                ELSE 'wait_until ' || wait_until
+            END, unixepoch()
+        FROM tasks WHERE (wait_until IS NULL) <> (wait_status IS NULL);
+    UPDATE tasks SET wait_until = NULL, wait_status = NULL
+        WHERE (wait_until IS NULL) <> (wait_status IS NULL);
+    CREATE TRIGGER tasks_wait_pair_inserted BEFORE INSERT ON tasks
+        WHEN (NEW.wait_until IS NULL) <> (NEW.wait_status IS NULL)
+    BEGIN
+        SELECT RAISE(ABORT, 'a task waits with both wait_until and wait_status or neither');
+    END;
+    CREATE TRIGGER tasks_wait_pair_updated BEFORE UPDATE OF wait_until, wait_status ON tasks
+        WHEN (NEW.wait_until IS NULL) <> (NEW.wait_status IS NULL)
+    BEGIN
+        SELECT RAISE(ABORT, 'a task waits with both wait_until and wait_status or neither');
+    END;
+    ",
 ];
