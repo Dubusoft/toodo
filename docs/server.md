@@ -564,8 +564,10 @@ since the app registers itself. The app finds the authorization server from the 
 at `/mcp`, which points at `/.well-known/oauth-protected-resource/mcp`. It then opens the
 consent page at `/oauth/authorize` in the browser: it names the app and where it returns
 to, lists the scopes (read is always granted; untick write for a read-only app), and asks
-for `web-token`. Approve, and the browser returns to the app. After 5 wrong tokens the
-request is dropped; start the connection again from the app.
+for `web-token`. Approve, and the browser returns to the app. After 5 wrong tokens within
+a minute from one address, on any consent request, the consent page answers that address
+`429` with `Retry-After` until the minute since the first of them is over, even with the
+right token; wait, then go back and approve again.
 
 **Tokens and revoking.** An access token lasts an hour and a refresh token 30 days. Each
 refresh replaces both, and a refresh token presented twice revokes the whole grant, so a
