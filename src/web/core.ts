@@ -7,6 +7,9 @@ import { credentials, forgetToken, proxyRefused, rejectedByServer } from "@/web/
 
 type CommandError = { kind: string; code: string; message: string };
 
+/** How long a command may take, answer included: a request a dead connection holds never ends. */
+const INVOKE_TIMEOUT_MS = 30_000;
+
 function isCommandError(value: unknown): value is CommandError {
   return (
     typeof value === "object" &&
@@ -20,24 +23,40 @@ function isCommandError(value: unknown): value is CommandError {
 /**
  * Runs a command on the server. It resolves with the result and
  * rejects with the command's error object (not an `Error`), which the bindings turn into
- * `{ status: "error" }`; transport failures reject with an `Error`.
+ * `{ status: "error" }`; transport failures reject with an `Error`, and so does a command
+ * the server does not answer within `INVOKE_TIMEOUT_MS`.
  */
 export async function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   const signedIn = credentials();
   if (signedIn === null) {
     throw new Error("No access token for the Toodo server.");
   }
-  const response = await serverFetch(`/api/rpc/${encodeURIComponent(command)}`, {
-    method: "POST",
-    headers: { ...signedIn, "Content-Type": "application/json" },
-    body: JSON.stringify(args),
-  });
-  if (response.status === 401) {
-    if (!(await rejectedByServer(response))) throw proxyRefused();
-    forgetToken();
-    throw new Error("The Toodo server did not accept the access token.");
+  // A timer of its own rather than `AbortSignal.timeout`, so that fake timers drive it in tests.
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), INVOKE_TIMEOUT_MS);
+  let response: Response;
+  let text: string;
+  try {
+    response = await serverFetch(`/api/rpc/${encodeURIComponent(command)}`, {
+      method: "POST",
+      headers: { ...signedIn, "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+      signal: timeout.signal,
+    });
+    if (response.status === 401) {
+      if (!(await rejectedByServer(response))) throw proxyRefused();
+      forgetToken();
+      throw new Error("The Toodo server did not accept the access token.");
+    }
+    text = await response.text();
+  } catch (error) {
+    if (timeout.signal.aborted) {
+      throw new Error(`The Toodo server did not answer ${command} within ${INVOKE_TIMEOUT_MS / 1000} s.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  const text = await response.text();
   if (response.ok) {
     return (text ? JSON.parse(text) : null) as T;
   }
