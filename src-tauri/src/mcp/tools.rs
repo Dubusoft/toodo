@@ -1200,28 +1200,6 @@ pub fn create_plan(storage: &StorageState, request: CreatePlan) -> CommandResult
         related.push(links);
     }
     check_plan_order(&request.tasks, &depends_on)?;
-    {
-        let storage = lock(storage);
-        for item in &request.tasks {
-            if storage.get_workspace(item.workspace_id.into())?.is_none() {
-                return Err(CommandError::new(
-                    CommandErrorCode::WorkspaceNotFound,
-                    format!(
-                        "task `{}` of the plan is in workspace {}, which does not exist; take a workspace id from list_workspaces",
-                        item.key, item.workspace_id.0
-                    ),
-                ));
-            }
-            for &id in item.depends_on.iter().chain(&item.related) {
-                if storage.get_task(id.into())?.is_none() {
-                    return Err(CommandError::not_found(format!(
-                        "task `{}` of the plan links to task {}, which does not exist; find the task with search_tasks, or link a task of the plan by its key in depends_on_keys or related_keys",
-                        item.key, id.0
-                    )));
-                }
-            }
-        }
-    }
     let mut plan = Vec::with_capacity(count);
     for ((item, depends_on), related) in request.tasks.iter().zip(depends_on).zip(related) {
         let in_item = |mut error: CommandError| {
@@ -1233,7 +1211,28 @@ pub fn create_plan(storage: &StorageState, request: CreatePlan) -> CommandResult
         task.related = related;
         plan.push(task);
     }
+    // The checks and the writes share one lock, so a workspace or task archived in
+    // between cannot slip past the checks.
     let mut storage = lock(storage);
+    for item in &request.tasks {
+        if storage.get_workspace(item.workspace_id.into())?.is_none() {
+            return Err(CommandError::new(
+                CommandErrorCode::WorkspaceNotFound,
+                format!(
+                    "task `{}` of the plan is in workspace {}, which does not exist; take a workspace id from list_workspaces",
+                    item.key, item.workspace_id.0
+                ),
+            ));
+        }
+        for &id in item.depends_on.iter().chain(&item.related) {
+            if storage.get_task(id.into())?.is_none() {
+                return Err(CommandError::not_found(format!(
+                    "task `{}` of the plan links to task {}, which does not exist; find the task with search_tasks, or link a task of the plan by its key in depends_on_keys or related_keys",
+                    item.key, id.0
+                )));
+            }
+        }
+    }
     let created = storage.create_tasks(&plan)?;
     let tasks = request
         .tasks
@@ -3463,6 +3462,86 @@ mod tests {
         assert!(error.message.contains("`api`, `ui`"), "{}", error.message);
         assert!(create_plan(&storage, plan(serde_json::json!([]))).is_err());
         assert_eq!(lock(&storage).list_all_tasks().unwrap(), []);
+    }
+
+    /// A plan is checked and written under one lock, and the write itself refuses an
+    /// archived workspace, so no task of a plan lands in or links to an archived workspace.
+    #[test]
+    fn create_plan_creates_nothing_in_or_linked_to_an_archived_workspace() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let old: WorkspaceId = storage
+            .create_workspace(&NewWorkspace {
+                name: "Old".to_owned(),
+                description: None,
+                repository: None,
+            })
+            .unwrap()
+            .id
+            .into();
+        let old_task = create(&mut storage, old, "Old work", vec![]).unwrap();
+        storage.archive_workspace(old.into()).unwrap();
+        let new_task = |workspace_id: WorkspaceId| crate::storage::NewPlanTask {
+            task: crate::storage::NewTask {
+                workspace_id: workspace_id.into(),
+                task_type: model::TaskType::Feat,
+                title: "Task".to_owned(),
+                description: String::new(),
+                estimate: None,
+                due_date: None,
+                autopilot: false,
+                criteria: Vec::new(),
+            },
+            labels: Vec::new(),
+            refs: Vec::new(),
+            depends_on: Vec::new(),
+            related: Vec::new(),
+        };
+        assert!(matches!(
+            storage.create_tasks(&[new_task(workspace), new_task(old)]),
+            Err(StorageError::WorkspaceNotFound(_))
+        ));
+        let storage = StorageState::new(storage);
+        let task = |fields: serde_json::Value| {
+            let mut task = serde_json::json!(
+                {"key": "api", "workspace_id": workspace, "task_type": "feat", "title": "API"}
+            );
+            task.as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            task
+        };
+        let cases = [
+            (
+                "archived workspace",
+                serde_json::json!({"workspace_id": old}),
+                CommandErrorCode::WorkspaceNotFound,
+            ),
+            (
+                "archived prerequisite",
+                serde_json::json!({"depends_on": [old_task.id]}),
+                CommandErrorCode::NotFound,
+            ),
+            (
+                "archived related task",
+                serde_json::json!({"related": [old_task.id]}),
+                CommandErrorCode::NotFound,
+            ),
+        ];
+        for (name, fields, code) in cases {
+            let error = create_plan(&storage, plan(serde_json::json!([task(fields)]))).unwrap_err();
+            assert_eq!(error.code, code, "{name}");
+        }
+
+        let mut storage = lock(&storage);
+        storage.restore_workspace(old.into()).unwrap();
+        let ids: Vec<i64> = storage
+            .list_all_tasks()
+            .unwrap()
+            .iter()
+            .map(|t| t.id.0)
+            .collect();
+        assert_eq!(ids, [old_task.id.0]);
+        assert_eq!(storage.list_relations().unwrap(), []);
     }
 
     /// The tasks of a plan are written in one transaction: a failure after the first task
