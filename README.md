@@ -162,7 +162,25 @@ To publish a release:
    `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, and
    `src-tauri/Cargo.lock`. Commit it as `Release X.Y.Z`. `npm run check-version` checks
    that the four files agree; the workflow runs it first.
-2. Check that the npm packages install and start, on Linux x64 with Node.js and npm. Build
+2. Refresh and audit the dependencies; CI does neither. Update the lockfiles within the
+   declared version ranges, check that nothing broke, and look for known advisories
+   (install `cargo-audit` once with `cargo install cargo-audit --locked`):
+
+   ```sh
+   (cd src-tauri && cargo update && cargo check --all-targets && cargo test --lib)
+   npm update && npm run typecheck && npm test
+   (cd src-tauri && cargo audit)
+   npm audit
+   ```
+
+   Commit the updated `src-tauri/Cargo.lock`, `package-lock.json`, and `src/lib/bindings.ts`
+   in one change before the release commit. Fix what the audits report, or name each
+   advisory you leave open and why in the pull request. Exact pins (`specta` in
+   `src-tauri/Cargo.toml`, `@astryxdesign/core` in `package.json`) and major versions move
+   only in their own change. The Rust version is pinned in `rust-toolchain.toml`, which
+   local builds, CI, and the release workflows all use; raise it in its own change after
+   a Rust release, with the same checks.
+3. Check that the npm packages install and start, on Linux x64 with Node.js and npm. Build
    both binaries with the release version and the web app, stage the packages, and run
    the smoke script on them:
 
@@ -180,8 +198,8 @@ To publish a release:
    answers the API and serves the web app. It stops the server and removes the temporary
    directory afterwards (`--keep` leaves the directory). Fix what it reports before
    releasing.
-3. Open a pull request from `dev` to `main` and merge it.
-4. On every push to `main`, the `Release` workflow (`.github/workflows/release.yml`)
+4. Open a pull request from `dev` to `main` and merge it.
+5. On every push to `main`, the `Release` workflow (`.github/workflows/release.yml`)
    releases the version in `package.json` unless it is already published: on Ubuntu it
    builds the web app (`npm run build`) and the x86_64 Linux `toodo-server`, packages
    them with `scripts/package-server.sh`, creates the release "Toodo vX.Y.Z" as a draft if
