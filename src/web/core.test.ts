@@ -9,6 +9,7 @@ function reply(status: number, body: string) {
 describe("invoke", () => {
   beforeEach(() => setToken("secret"));
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     localStorage.clear();
   });
@@ -47,6 +48,26 @@ describe("invoke", () => {
 
     await expect(invoke("list_tasks")).rejects.toThrow("A proxy in front of the Toodo server");
     expect(getToken()).toBe("secret");
+  });
+
+  it("rejects with an Error when the server does not answer within 30 s", async () => {
+    vi.useFakeTimers();
+    // A request on a dead connection: it ends only when aborted.
+    const fetch = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_, reject) => init.signal?.addEventListener("abort", () => reject(init.signal?.reason))),
+    );
+    vi.stubGlobal("fetch", fetch);
+
+    const result = invoke("list_tasks");
+    const settled = vi.fn();
+    result.then(settled, settled);
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(settled).not.toHaveBeenCalled();
+
+    const rejected = expect(result).rejects.toThrow("The Toodo server did not answer list_tasks within 30 s.");
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
   });
 
   it("rejects with an Error for a reply that is not a command error", async () => {
