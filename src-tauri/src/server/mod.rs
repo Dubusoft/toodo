@@ -456,12 +456,12 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let served = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(async move {
-            tokio::select! {
-                served = mcp::serve(listener, app) => served,
-                () = interrupted() => Ok(()),
-            }
-        });
+        .block_on(mcp::serve(
+            listener,
+            app,
+            interrupted(),
+            mcp::SHUTDOWN_DEADLINE,
+        ));
     Ok(served?)
 }
 
@@ -873,7 +873,12 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(mcp::serve(listener, app))
+                .block_on(mcp::serve(
+                    listener,
+                    app,
+                    std::future::pending(),
+                    mcp::SHUTDOWN_DEADLINE,
+                ))
         });
         address
     }
