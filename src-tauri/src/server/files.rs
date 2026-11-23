@@ -23,22 +23,13 @@ use tower_http::timeout::TimeoutError;
 
 use super::Services;
 use super::rpc::Reply;
-use crate::commands::{CommandError, CommandResult, backup};
+use crate::commands::{CommandError, backup, blocking};
 use crate::mcp;
 
 /// The largest database file a restore accepts.
 pub const RESTORE_LIMIT: u64 = 256 * 1024 * 1024;
 
 const SQLITE: &str = "application/vnd.sqlite3";
-
-/// Runs `run`, which blocks on the database or the disk, off the async threads.
-pub(super) async fn blocking<T: Send + 'static>(
-    run: impl FnOnce() -> CommandResult<T> + Send + 'static,
-) -> CommandResult<T> {
-    tokio::task::spawn_blocking(run)
-        .await
-        .unwrap_or_else(|error| Err(CommandError::internal(format!("panicked: {error}"))))
-}
 
 pub(super) fn failed(error: CommandError) -> Response {
     Reply::Failed(error).into_response()

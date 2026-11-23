@@ -620,24 +620,25 @@ impl ToodoMcp {
     }
 
     /// Runs a tool that changes a task and announces the change to the frontend.
-    fn change(
+    async fn change(
         &self,
-        apply: impl FnOnce(&mut crate::storage::Storage) -> CommandResult<Task>,
+        apply: impl FnOnce(&mut crate::storage::Storage) -> CommandResult<Task> + Send + 'static,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = apply(&mut lock(self.backend.storage()));
+        let result = self
+            .blocking(move |backend| apply(&mut lock(backend.storage())))
+            .await;
         self.announce(result)
     }
 
-    /// Runs `apply` on a blocking thread, since it waits on the database and, for URL
-    /// criteria, on an HTTP GET.
+    /// Runs `apply` on the backend off the async threads, since it waits on the database and,
+    /// for URL criteria, on an HTTP GET; see [`crate::commands::blocking`]. Every tool that
+    /// reads or writes storage goes through here.
     async fn blocking<T: Send + 'static>(
         &self,
         apply: impl FnOnce(&dyn Backend) -> CommandResult<T> + Send + 'static,
-    ) -> Result<CommandResult<T>, ErrorData> {
+    ) -> CommandResult<T> {
         let backend = self.backend.clone();
-        Ok(tokio::task::spawn_blocking(move || apply(backend.as_ref()))
-            .await
-            .unwrap_or_else(|error| Err(CommandError::panicked(error))))
+        crate::commands::blocking(move || apply(backend.as_ref())).await
     }
 
     /// Tells the frontend that the links of a task changed.
@@ -701,8 +702,11 @@ impl ToodoMcp {
     }
 
     #[tool(description = "List workspace records.")]
-    fn list_workspaces(&self) -> Result<CallToolResult, ErrorData> {
-        reply(tools::list_workspaces(&lock(self.backend.reader())))
+    async fn list_workspaces(&self) -> Result<CallToolResult, ErrorData> {
+        reply(
+            self.blocking(|backend| tools::list_workspaces(&lock(backend.reader())))
+                .await,
+        )
     }
 
     #[tool(
@@ -714,7 +718,7 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::create_workspace(backend.storage(), request))
-            .await?;
+            .await;
         if result.is_ok() {
             self.backend.workspaces_changed();
         }
@@ -728,7 +732,7 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::update_workspace(backend.storage(), request))
-            .await?;
+            .await;
         if result.is_ok() {
             self.backend.workspaces_changed();
         }
@@ -742,7 +746,11 @@ impl ToodoMcp {
         &self,
         Parameters(request): Parameters<tools::ArchiveWorkspace>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = tools::archive_workspace(&mut lock(self.backend.storage()), request);
+        let result = self
+            .blocking(move |backend| {
+                tools::archive_workspace(&mut lock(backend.storage()), request)
+            })
+            .await;
         if let Ok(change) = &result
             && change.confirmed
         {
@@ -754,41 +762,53 @@ impl ToodoMcp {
     #[tool(
         description = "List tasks with status and depends_on, of one workspace or of all workspaces, by ascending ID. Each task has ready (planned, not waiting until a time, and nothing blocks it, so start_task or resume_task can begin it now) and blockedBy: the tasks it depends on that are not done yet, or done as not_adopted, which never unblocks it. Narrow the list to keep it short: status (e.g. [\"planned\", \"in_progress\"]), ready (true for tasks to start now), autopilot (true for tasks marked for autopilot), and limit (the newest matching tasks). When a page holds limit tasks, pass its first ID as before_id to read older ones."
     )]
-    fn list_tasks(
+    async fn list_tasks(
         &self,
         Parameters(request): Parameters<tools::ListTasks>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::list_tasks(&lock(self.backend.reader()), request))
+        reply(
+            self.blocking(move |backend| tools::list_tasks(&lock(backend.reader()), request))
+                .await,
+        )
     }
 
     #[tool(
         description = "Search tasks of all workspaces (or one) by words in their title, description, notes, completion note, branch, refs, and pull request, best match first. Every word must appear, as a substring in any language; words are literal, not operators. A task number alone (431 or #431) returns that task first, in any workspace. Use it before planning or create_task to find earlier tasks on the same subject, then get_task to read what was decided. Each result lists its depends_on, dependents, and related task IDs."
     )]
-    fn search_tasks(
+    async fn search_tasks(
         &self,
         Parameters(request): Parameters<tools::SearchTasks>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::search_tasks(&lock(self.backend.reader()), request))
+        reply(
+            self.blocking(move |backend| tools::search_tasks(&lock(backend.reader()), request))
+                .await,
+        )
     }
 
     #[tool(
         description = "Read one task with its whole history: description, refs, status timeline with the reasons given for starts, pauses, and completions, progress, decision, and blocker notes, completion note (the conclusion of a task done as not_adopted), pull request, commits, and the tasks it depends on, that depend on it, and that are related to it (id, title, status). ready says whether it can start (or resume) now, and blockedBy which of the tasks it depends on keep it from that: not done yet, or done as not_adopted, which never unblocks it. Use it to learn what an earlier task decided, and follow its links with further get_task calls. guidelines lists the guidelines of the task's workspace: follow its rules and read its memories before working on the task."
     )]
-    fn get_task(
+    async fn get_task(
         &self,
         Parameters(request): Parameters<tools::GetTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::task_details(&lock(self.backend.reader()), request))
+        reply(
+            self.blocking(move |backend| tools::task_details(&lock(backend.reader()), request))
+                .await,
+        )
     }
 
     #[tool(
         description = "Read the guidelines of a workspace: rules its owner sets, which you must follow, then memories, durable lessons and facts recorded for it, each by ascending id. Read them before working on a task of the workspace; start_task and get_task already include them. Returns {workspace: {id, name}, guidelines}."
     )]
-    fn get_guidelines(
+    async fn get_guidelines(
         &self,
         Parameters(request): Parameters<tools::GetGuidelines>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::get_guidelines(&lock(self.backend.reader()), request))
+        reply(
+            self.blocking(move |backend| tools::get_guidelines(&lock(backend.reader()), request))
+                .await,
+        )
     }
 
     #[tool(
@@ -800,7 +820,7 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::add_guideline(backend.storage(), request))
-            .await?;
+            .await;
         self.announce_guideline(result)
     }
 
@@ -813,7 +833,7 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::update_guideline(backend.storage(), request))
-            .await?;
+            .await;
         self.announce_guideline(result)
     }
 
@@ -826,18 +846,20 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::remove_guideline(backend.storage(), request))
-            .await?;
+            .await;
         self.announce_guideline(result)
     }
 
     #[tool(
         description = "Link two tasks, from any workspaces, as related: context worth reading together, e.g. an earlier task whose decisions a new one builds on. The link goes both ways and never blocks either task; for work that must be done first, use add_dependency instead. Returns task_id's details."
     )]
-    fn add_related(
+    async fn add_related(
         &self,
         Parameters(request): Parameters<tools::Related>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = tools::add_related(&mut lock(self.backend.storage()), request);
+        let result = self
+            .blocking(move |backend| tools::add_related(&mut lock(backend.storage()), request))
+            .await;
         self.announce_links(&result);
         reply(result)
     }
@@ -845,11 +867,13 @@ impl ToodoMcp {
     #[tool(
         description = "Remove the related link between two tasks, given in either order. A link that does not exist is rejected. Returns task_id's details."
     )]
-    fn remove_related(
+    async fn remove_related(
         &self,
         Parameters(request): Parameters<tools::Related>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = tools::remove_related(&mut lock(self.backend.storage()), request);
+        let result = self
+            .blocking(move |backend| tools::remove_related(&mut lock(backend.storage()), request))
+            .await;
         self.announce_links(&result);
         reply(result)
     }
@@ -857,11 +881,14 @@ impl ToodoMcp {
     #[tool(
         description = "Find a task by ref, a stored reference string. Omit ref only to receive instructions to use ref or get_task with id."
     )]
-    fn current_task(
+    async fn current_task(
         &self,
         Parameters(request): Parameters<tools::CurrentTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::current_task(&lock(self.backend.reader()), request))
+        reply(
+            self.blocking(move |backend| tools::current_task(&lock(backend.reader()), request))
+                .await,
+        )
     }
 
     #[tool(
@@ -873,7 +900,7 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::create_task(backend.storage(), request))
-            .await?;
+            .await;
         self.announce(result)
     }
 
@@ -886,7 +913,7 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::create_plan(backend.storage(), request))
-            .await?;
+            .await;
         if let Ok(plan) = &result {
             let workspaces: std::collections::BTreeSet<i64> = plan
                 .tasks
@@ -903,11 +930,12 @@ impl ToodoMcp {
     #[tool(
         description = "Check (met true, the default) or uncheck a manual completion criterion of a task that is not done, with evidence of what shows it holds, e.g. {\"criterion_id\": 2, \"evidence\": \"...\"}. criterion_id (or id) alone finds its task; task_id is optional and must be that task when given. Toodo checks the other kinds itself. Once every criterion of an in_progress task is met, it awaits completion (in_review) until the user, or complete_task, confirms it. Returns the task with its criteria."
     )]
-    fn check_criterion(
+    async fn check_criterion(
         &self,
         Parameters(request): Parameters<tools::CheckCriterion>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::check_criterion(storage, request))
+        self.change(move |storage| tools::check_criterion(storage, request))
+            .await
     }
 
     #[tool(
@@ -919,18 +947,19 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::add_criterion(&mut lock(backend.storage()), request))
-            .await?;
+            .await;
         self.announce(result)
     }
 
     #[tool(
         description = "Remove a criterion from an unfinished task with criterion_id. Read get_task first to inspect its criteria."
     )]
-    fn remove_criterion(
+    async fn remove_criterion(
         &self,
         Parameters(request): Parameters<tools::RemoveCriterion>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::remove_criterion(storage, request))
+        self.change(move |storage| tools::remove_criterion(storage, request))
+            .await
     }
 
     #[tool(
@@ -942,7 +971,7 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::update_task(&mut lock(backend.storage()), request))
-            .await?;
+            .await;
         self.announce(result)
     }
 
@@ -955,7 +984,7 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::move_task(&mut lock(backend.storage()), request))
-            .await?;
+            .await;
         if let Ok(moved) = &result {
             self.backend
                 .tasks_changed(model::WorkspaceId(moved.from_workspace_id.0));
@@ -966,63 +995,70 @@ impl ToodoMcp {
     #[tool(
         description = "Make task_id depend on depends_on. Cycles are rejected. An unfinished prerequisite pauses an in_progress task; resume_task when ready."
     )]
-    fn add_dependency(
+    async fn add_dependency(
         &self,
         Parameters(request): Parameters<tools::AddDependencies>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = tools::add_dependencies(&mut lock(self.backend.storage()), request);
+        let result = self
+            .blocking(move |backend| tools::add_dependencies(&mut lock(backend.storage()), request))
+            .await;
         self.announce_with(result, |reply| &reply.task.task)
     }
 
     #[tool(
         description = "Record progress or a decision (what and why) on a task's history, e.g. your current task. Call it at every milestone of your task: when you start (your plan, before your first edit), when you take a decision (kind \"decision\", which the app and reviews list apart as the task's decisions), when you finish a meaningful step, and when you open the pull request (with its URL); use report_blocker for what stops you. task_id is a number, e.g. {\"task_id\": 5, \"note\": \"Plan: ...\"} or {\"task_id\": 5, \"kind\": \"decision\", \"note\": \"Chose SQLite over files: ...\"}; kind is progress when omitted. When the call is rejected, fix the arguments and call it again. Returns the task with its notes."
     )]
-    fn add_progress_note(
+    async fn add_progress_note(
         &self,
         Parameters(request): Parameters<tools::AddProgressNote>,
     ) -> Result<CallToolResult, ErrorData> {
         let (kind, note) = request.into_note();
-        self.change(|storage| tools::add_note(storage, kind, note))
+        self.change(move |storage| tools::add_note(storage, kind, note))
+            .await
     }
 
     #[tool(
         description = "Record on a task's history what blocks the work on it and what is needed to continue. Does not change the task's status. Returns the task with its notes."
     )]
-    fn report_blocker(
+    async fn report_blocker(
         &self,
         Parameters(request): Parameters<tools::AddNote>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::add_note(storage, model::NoteKind::Blocker, request))
+        self.change(move |storage| tools::add_note(storage, model::NoteKind::Blocker, request))
+            .await
     }
 
     #[tool(
         description = "Pause an in_progress or in_review task with a required non-empty reason, e.g. {\"id\": 5, \"reason\": \"Waiting for the API design\"}. The task moves back to planned and shows as paused; the reason is recorded in its status history and notes. To wait for other tasks, use add_dependency, then resume_task when its prerequisites are done. Returns the task with its notes."
     )]
-    fn pause_task(
+    async fn pause_task(
         &self,
         Parameters(request): Parameters<tools::PauseTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::pause_task(storage, request))
+        self.change(move |storage| tools::pause_task(storage, request))
+            .await
     }
 
     #[tool(
         description = "Make a planned, in_progress, or in_review task wait until a time, e.g. {\"id\": 5, \"until\": \"2026-11-10T09:00:00+09:00\", \"reason\": \"Waiting for the vendor's reply\"}. An active task is paused (planned) until then; when the time passes Toodo returns it to the status it had, also after a server restart. Call again on a waiting task to move the time; call end_wait to return it now. Returns the task; its wait shows until and the status it returns to."
     )]
-    fn wait_task(
+    async fn wait_task(
         &self,
         Parameters(request): Parameters<tools::WaitTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::wait_task(storage, request))
+        self.change(move |storage| tools::wait_task(storage, request))
+            .await
     }
 
     #[tool(
         description = "End the wait of a waiting task now, e.g. {\"id\": 5}: it returns to the status it had when the wait began, as when the time passes. A task that was in_progress stays paused while a prerequisite is not done. An optional note records why. Returns the task."
     )]
-    fn end_wait(
+    async fn end_wait(
         &self,
         Parameters(request): Parameters<tools::EndWait>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.change(|storage| tools::end_wait(storage, request))
+        self.change(move |storage| tools::end_wait(storage, request))
+            .await
     }
 
     #[tool(
@@ -1034,7 +1070,7 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::resume_task(backend.storage(), request))
-            .await?;
+            .await;
         self.announce(result)
     }
 
@@ -1047,18 +1083,22 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::delete_task(backend.storage(), request))
-            .await?;
+            .await;
         self.announce_confirmed(result)
     }
 
     #[tool(
         description = "Archive every done (completed or concluded) task of a workspace, e.g. {\"workspace_id\": 1}. Without confirm nothing changes and the reply lists the tasks it would archive; call again with confirm true to archive them. History stays in review_report and the user can restore them."
     )]
-    fn delete_done_tasks(
+    async fn delete_done_tasks(
         &self,
         Parameters(request): Parameters<tools::DeleteDoneTasks>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = tools::delete_done_tasks(&mut lock(self.backend.storage()), request);
+        let result = self
+            .blocking(move |backend| {
+                tools::delete_done_tasks(&mut lock(backend.storage()), request)
+            })
+            .await;
         if let Ok(change) = &result
             && change.confirmed
         {
@@ -1071,11 +1111,13 @@ impl ToodoMcp {
     #[tool(
         description = "Reopen a done task with a reason and confirm true. Earlier outcomes remain in its notes."
     )]
-    fn reopen_task(
+    async fn reopen_task(
         &self,
         Parameters(request): Parameters<tools::ReopenTask>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = tools::reopen_task(&mut lock(self.backend.storage()), request);
+        let result = self
+            .blocking(move |backend| tools::reopen_task(&mut lock(backend.storage()), request))
+            .await;
         self.announce_confirmed(result)
     }
 
@@ -1088,7 +1130,7 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::start_task(backend.storage(), request))
-            .await?;
+            .await;
         self.announce_with(result, |started| &started.task)
     }
 
@@ -1101,7 +1143,7 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::complete_task(backend.storage(), request))
-            .await?;
+            .await;
         self.announce(result)
     }
 
@@ -1114,29 +1156,36 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let result = self
             .blocking(move |backend| tools::conclude_task(backend.storage(), request))
-            .await?;
+            .await;
         self.announce_with(result, |concluded| &concluded.task)
     }
 
     #[tool(
         description = "Remove the dependency of task_id on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": 3}. A dependency that does not exist is rejected, and so is a done task_id (reopen_task it first); then none is removed. Returns {task, paused, message} like add_dependency; message says whether the task is now ready, e.g. a paused task that resume_task can resume."
     )]
-    fn remove_dependency(
+    async fn remove_dependency(
         &self,
         Parameters(request): Parameters<tools::Dependency>,
     ) -> Result<CallToolResult, ErrorData> {
-        let result = tools::remove_dependency(&mut lock(self.backend.storage()), request);
+        let result = self
+            .blocking(move |backend| {
+                tools::remove_dependency(&mut lock(backend.storage()), request)
+            })
+            .await;
         self.announce_with(result, |reply| &reply.task.task)
     }
 
     #[tool(
         description = "Render the review of a period across all workspaces (or one workspace or label) as Markdown (the default) or CSV, the same report the Toodo app's Review exports: a summary of outcomes, commits, durations, plan vs actual, late tasks, a Year in review for a year, and each task under its outcome with its pull request, notes, and commits. period is week (from its Monday, or from from), month, quarter, year, or custom (from and to, both included); date (YYYY-MM-DD) picks the period containing that day, today when omitted. Days and times are in time_zone (IANA, e.g. Europe/Berlin), the server's when omitted. e.g. {\"period\": \"week\"} or {\"period\": \"year\", \"date\": \"2026-01-01\", \"format\": \"csv\"}. Returns {fileName, mediaType, from, to, contents}."
     )]
-    fn review_report(
+    async fn review_report(
         &self,
         Parameters(request): Parameters<tools::ReviewReportRequest>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(tools::review_report(&lock(self.backend.reader()), request))
+        reply(
+            self.blocking(move |backend| tools::review_report(&lock(backend.reader()), request))
+                .await,
+        )
     }
 }
 
@@ -1186,7 +1235,10 @@ impl ServerHandler for ToodoMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
         check_read(&context)?;
-        let resources = resources::list(&lock(self.backend.reader())).map_err(internal)?;
+        let resources = self
+            .blocking(|backend| resources::list(&lock(backend.reader())))
+            .await
+            .map_err(internal)?;
         Ok(ListResourcesResult::with_all_items(resources))
     }
 
@@ -1209,7 +1261,10 @@ impl ServerHandler for ToodoMcp {
         check_read(&context)?;
         let not_found = || ErrorData::resource_not_found(resources::unknown(&request.uri), None);
         let uri = resources::Uri::parse(&request.uri).ok_or_else(not_found)?;
-        match resources::read(&lock(self.backend.reader()), uri) {
+        match self
+            .blocking(move |backend| resources::read(&lock(backend.reader()), uri))
+            .await
+        {
             Ok(text) => Ok(ReadResourceResult::new(vec![
                 ResourceContents::text(text, request.uri.clone())
                     .with_mime_type("application/json"),
@@ -1236,6 +1291,9 @@ impl ServerHandler for ToodoMcp {
         let accepted = accepted.build();
         // The SDK acknowledges the subscription before it calls `listen`; what the stream
         // compares against is read now, so no change after the acknowledgment is missed.
+        // This is the one storage read on an async thread: the SDK calls this synchronously
+        // and acknowledges with its result, so it cannot wait for a blocking thread. It reads
+        // the watched tasks once per subscription on the reader connection.
         *self.watch.lock().unwrap_or_else(PoisonError::into_inner) =
             Some(resources::Watch::start(self.backend.as_ref(), &accepted));
         Some(accepted)
@@ -1250,8 +1308,15 @@ impl ServerHandler for ToodoMcp {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
-        let mut watch = started
-            .unwrap_or_else(|| resources::Watch::start(self.backend.as_ref(), context.accepted()));
+        let mut watch = match started {
+            Some(watch) => watch,
+            None => {
+                let accepted = context.accepted().clone();
+                self.blocking(move |backend| Ok(resources::Watch::start(backend, &accepted)))
+                    .await
+                    .map_err(internal)?
+            }
+        };
         loop {
             tokio::select! {
                 () = context.cancelled() => return Ok(()),
@@ -1262,7 +1327,14 @@ impl ServerHandler for ToodoMcp {
                 }
                 () = tokio::time::sleep(resources::POLL) => {}
             }
-            let (updated, list_changed) = watch.next(self.backend.as_ref());
+            let (next, (updated, list_changed)) = self
+                .blocking(move |backend| {
+                    let changes = watch.next(backend);
+                    Ok((watch, changes))
+                })
+                .await
+                .map_err(internal)?;
+            watch = next;
             let sink = context.sink();
             let mut sent = Ok(());
             for uri in updated {
@@ -2072,9 +2144,10 @@ mod tests {
                 .unwrap(),
         );
         let listed = text(
-            server
-                .get_guidelines(args(serde_json::json!({"workspace_id": workspace.0})))
-                .unwrap(),
+            rt.block_on(
+                server.get_guidelines(args(serde_json::json!({"workspace_id": workspace.0}))),
+            )
+            .unwrap(),
         );
         assert_eq!(
             listed["workspace"],

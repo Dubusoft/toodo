@@ -238,6 +238,19 @@ pub(crate) fn lock(storage: &StorageState) -> MutexGuard<'_, Storage> {
     storage.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Runs `run`, which waits on the database lock, SQLite, or the disk, on a blocking
+/// thread. A backup, a restore, or a long write holds the lock for seconds, and the async
+/// threads that HTTP, server-sent events, and push share must not wait for it. Every
+/// async handler that touches storage goes through here; a panic in `run` becomes
+/// [`CommandError::panicked`].
+pub(crate) async fn blocking<T: Send + 'static>(
+    run: impl FnOnce() -> CommandResult<T> + Send + 'static,
+) -> CommandResult<T> {
+    tokio::task::spawn_blocking(run)
+        .await
+        .unwrap_or_else(|error| Err(CommandError::panicked(error)))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {

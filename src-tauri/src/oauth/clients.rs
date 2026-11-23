@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -202,10 +202,15 @@ impl Metadata {
 pub(super) type Cache = Mutex<HashMap<String, (Instant, Client)>>;
 
 pub(super) async fn resolve(state: &super::routes::Server, id: &str) -> Result<Client, OAuthError> {
-    if let Some(client) = crate::commands::lock(&state.storage)
-        .oauth_client(id)
-        .map_err(|_| OAuthError::internal())?
-    {
+    let storage = state.storage.clone();
+    let owned = id.to_owned();
+    let registered = super::routes::blocking(move || {
+        crate::commands::lock(&storage)
+            .oauth_client(&owned)
+            .map_err(|_| OAuthError::internal())
+    })
+    .await?;
+    if let Some(client) = registered {
         return Ok(client);
     }
     let invalid = || {
@@ -225,7 +230,7 @@ pub(super) async fn resolve(state: &super::routes::Server, id: &str) -> Result<C
     if let Some((_, client)) = state
         .cache
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .get(id)
         .filter(|(at, _)| at.elapsed() < Duration::from_secs(600))
     {
@@ -244,10 +249,10 @@ pub(super) async fn resolve(state: &super::routes::Server, id: &str) -> Result<C
         id.to_owned(),
         method,
         None,
-        crate::commands::lock(&state.storage).now(),
+        super::routes::now(&state.storage).await?,
     );
     let now = Instant::now();
-    let mut cache = state.cache.lock().unwrap();
+    let mut cache = state.cache.lock().unwrap_or_else(PoisonError::into_inner);
     cache.retain(|_, (at, _)| now.duration_since(*at) < Duration::from_secs(600));
     cache.insert(id.to_owned(), (now, client.clone()));
     if cache.len() > 100 {

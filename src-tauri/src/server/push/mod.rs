@@ -41,9 +41,9 @@ use serde::{Deserialize, Serialize};
 use self::alerts::{Alert, Watch};
 use self::crypto::VapidKey;
 use super::Services;
-use super::devices::{Caller, blocking};
+use super::devices::Caller;
 use super::rpc::{Reply, json};
-use crate::commands::{CommandError, StorageState, lock};
+use crate::commands::{CommandError, StorageState, blocking, lock};
 use crate::domain::device::DeviceId;
 use crate::domain::push::{
     PushEndpoint, PushFailure, PushSettings, PushSubscription, subscription_keys,

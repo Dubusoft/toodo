@@ -113,7 +113,13 @@ pub async fn handle(
     };
     let reply = dispatch(services.clone(), &command, args).await;
     if changes_data(&command) {
-        services.announce_status_changes();
+        let announcer = services.clone();
+        // It fails only by panicking, which `CommandError::panicked` logs; the reply stands.
+        let _ = crate::commands::blocking(move || {
+            announcer.announce_status_changes();
+            Ok(())
+        })
+        .await;
         // Changes the user makes in the app are not news to them: notifications only
         // report what changed on its own (agents over MCP, waits that end).
         services.push.tasks_seen();
@@ -148,11 +154,11 @@ fn guidelines_changed(
 }
 
 /// Runs a command that blocks (the database, or the HTTP GET of a URL criterion) off the
-/// async threads.
+/// async threads, see [`crate::commands::blocking`].
 async fn blocking(run: impl FnOnce() -> Reply + Send + 'static) -> Reply {
-    tokio::task::spawn_blocking(run)
+    crate::commands::blocking(move || Ok(run()))
         .await
-        .unwrap_or_else(|error| Reply::Failed(CommandError::panicked(error)))
+        .unwrap_or_else(Reply::Failed)
 }
 
 /// Declares the commands: each has a name, its parameters (the JSON arguments), and how it
