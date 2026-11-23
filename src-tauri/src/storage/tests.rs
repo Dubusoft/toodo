@@ -1677,3 +1677,101 @@ fn query_tasks_filters_and_pages_back_from_the_newest() {
     let each = [c, d].map(|id| storage.get_task(id).unwrap().unwrap());
     assert_eq!(page, each);
 }
+
+fn plan_task(workspace: &Workspace, title: &str, depends_on: Vec<PlanLink>) -> NewPlanTask {
+    NewPlanTask {
+        task: NewTask {
+            workspace_id: workspace.id,
+            task_type: TaskType::Feat,
+            title: title.to_owned(),
+            description: String::new(),
+            estimate: None,
+            due_date: None,
+            autopilot: false,
+            criteria: Vec::new(),
+        },
+        labels: vec!["plan".to_owned()],
+        refs: Vec::new(),
+        depends_on,
+        related: Vec::new(),
+    }
+}
+
+#[test]
+fn a_plan_dependency_that_closes_a_cycle_with_an_earlier_one_writes_nothing() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let existing = add_task(&mut storage, &workspace, "Existing");
+    let plan = [
+        plan_task(
+            &workspace,
+            "First",
+            vec![PlanLink::Existing(existing.id), PlanLink::New(1)],
+        ),
+        plan_task(&workspace, "Second", vec![PlanLink::New(0)]),
+    ];
+
+    match storage.create_tasks(&plan) {
+        Err(StorageError::Dependency(DependencyError::Cycle(path))) => {
+            assert_eq!(path.len(), 3, "{path:?}");
+            assert_eq!(path.first(), path.last());
+        }
+        other => panic!("expected a cycle, got {other:?}"),
+    }
+    assert_eq!(storage.list_all_tasks().unwrap(), [existing]);
+    assert_eq!(row_count(&storage, "task_dependencies"), 0);
+    assert_eq!(row_count(&storage, "task_labels"), 0);
+}
+
+#[test]
+fn a_plan_depends_on_tasks_of_other_workspaces() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let library = add_workspace(&mut storage, "Library", local_location(r"C:\src\lib"));
+    let app = add_workspace(&mut storage, "App", local_location(r"C:\src\app"));
+    let api = add_task(&mut storage, &library, "Add low level API");
+    let plan = [
+        plan_task(
+            &app,
+            "Build UI on the API",
+            vec![PlanLink::Existing(api.id)],
+        ),
+        plan_task(&library, "Document the UI", vec![PlanLink::New(0)]),
+    ];
+
+    let created = storage.create_tasks(&plan).unwrap();
+    assert_eq!(created[0].workspace_id, app.id);
+    assert_eq!(created[0].depends_on, [api.id].into());
+    assert_eq!(created[1].depends_on, [created[0].id].into());
+    assert!(!ready(&storage, &created[0]));
+
+    // The edges just written count toward later checks across workspaces.
+    match storage.add_dependency(api.id, created[1].id) {
+        Err(StorageError::Dependency(error)) => assert_eq!(
+            error,
+            DependencyError::Cycle(vec![api.id, created[1].id, created[0].id, api.id])
+        ),
+        other => panic!("expected a cycle, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_plan_link_past_the_end_of_the_plan_is_rejected_and_writes_nothing() {
+    let mut storage = Storage::open_in_memory().unwrap();
+    let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
+    let mut related = plan_task(&workspace, "Related", Vec::new());
+    related.related = vec![PlanLink::New(2)];
+    for plan in [
+        vec![
+            plan_task(&workspace, "First", Vec::new()),
+            plan_task(&workspace, "Second", vec![PlanLink::New(2)]),
+        ],
+        vec![plan_task(&workspace, "First", Vec::new()), related],
+    ] {
+        assert!(matches!(
+            storage.create_tasks(&plan),
+            Err(StorageError::PlanLinkOutOfRange { index: 2, tasks: 2 })
+        ));
+        assert_eq!(storage.list_all_tasks().unwrap(), []);
+        assert_eq!(row_count(&storage, "task_labels"), 0);
+    }
+}
