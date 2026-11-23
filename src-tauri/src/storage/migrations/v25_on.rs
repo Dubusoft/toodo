@@ -940,4 +940,15 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     ALTER TABLE push_subscriptions DROP COLUMN agent;
     ALTER TABLE push_subscriptions DROP COLUMN pull_requests;
     ",
+    // Version 52: adoptions, corrections of a done task's outcome from not adopted to
+    // adopted. Its status history stays as it was, so these records are what announces
+    // the dependents such a correction makes ready.
+    r"
+    CREATE TABLE task_adoptions (
+        id INTEGER PRIMARY KEY,
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        at INTEGER NOT NULL
+    );
+    CREATE INDEX task_adoptions_task_id ON task_adoptions (task_id);
+    ",
 ];

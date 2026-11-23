@@ -49,7 +49,7 @@ pub use reviews::{ReviewSnapshot, ReviewSnapshotInfo};
 pub use search::TaskSearch;
 pub use tasks::{
     AddedDependencies, DependencyChange, NewPlanTask, NewTask, PauseRule, PlanLink, ReadyTask,
-    StatusChange, TaskQuery,
+    StatusChange, StatusChanges, StatusCursor, TaskQuery,
 };
 pub use workspaces::NewWorkspace;
 

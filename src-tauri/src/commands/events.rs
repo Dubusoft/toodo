@@ -34,14 +34,14 @@ pub struct TaskStatusChanged {
 }
 
 /// A planned task became ready: the last of its unfinished dependencies, `unblockedBy`,
-/// moved to `done`.
+/// moved to `done`, or was adopted after it was concluded as not adopted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskReady {
     pub task_id: TaskId,
     pub workspace_id: WorkspaceId,
     pub unblocked_by: TaskId,
-    /// When `unblockedBy` moved to `done`.
+    /// When `unblockedBy` moved to `done` or was adopted.
     pub at: Timestamp,
 }
 

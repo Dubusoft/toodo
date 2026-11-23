@@ -109,6 +109,8 @@ pub(super) const SKIPPED: &[&str] = &[
     // Settings and saved reviews belong to the server that kept them.
     "settings",
     "review_snapshots",
+    // Adoptions only drive the ready announcements of the server that recorded them.
+    "task_adoptions",
 ];
 
 impl Storage {
