@@ -1097,6 +1097,11 @@ mod tests {
             "{headers}"
         );
         assert!(export.starts_with(SQLITE_MAGIC));
+        // The snapshot is removed once opened; the open file still sends all of it.
+        assert!(
+            headers.contains(&format!("content-length: {}", export.len())),
+            "{headers}"
+        );
 
         add_workspace(&services, "after");
         let (status, _, body) = upload(address, "web", &export);
@@ -1128,6 +1133,35 @@ mod tests {
             .filter(|name| name.starts_with('.'))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    #[test]
+    fn backups_larger_than_a_chunk_download_whole() {
+        let (address, temp, _services) = serve_services(None);
+        // Many read chunks long, not a multiple of the chunk size, and not repeating.
+        let mut state: u32 = 1;
+        let content: Vec<u8> = (0..1024 * 1024 + 17)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            })
+            .collect();
+        let name = "toodo-auto-20261014-093005.sqlite3";
+        let dir = temp.path().join("backups");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(name), &content).unwrap();
+
+        let (status, headers, body) = get(address, &format!("/api/backups/{name}"), Some("web"));
+        assert!(status.contains(" 200 "), "{status}");
+        assert!(
+            headers.contains(&format!("content-length: {}", content.len())),
+            "{headers}"
+        );
+        assert_eq!(body.len(), content.len());
+        assert!(
+            body == content,
+            "the downloaded bytes differ from the backup"
+        );
     }
 
     #[test]
