@@ -110,13 +110,70 @@ async function browserSubscription(key: Uint8Array): Promise<PushSubscription | 
   return null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isSettings(value: unknown): value is PushSettings {
+  return (
+    isRecord(value) &&
+    typeof value.agent === "boolean" &&
+    typeof value.pullRequests === "boolean" &&
+    typeof value.completion === "boolean"
+  );
+}
+
+function isFailure(value: unknown): value is PushFailure {
+  return isRecord(value) && typeof value.message === "string" && typeof value.at === "number";
+}
+
+function isSubscription(value: unknown): value is ServerSubscription {
+  return (
+    isRecord(value) &&
+    typeof value.endpoint === "string" &&
+    isSettings(value.settings) &&
+    (value.lastFailure === null || isFailure(value.lastFailure))
+  );
+}
+
+function isServerPush(value: unknown): value is { publicKey: string; subscription: ServerSubscription | null } {
+  return (
+    isRecord(value) &&
+    typeof value.publicKey === "string" &&
+    (value.subscription === null || isSubscription(value.subscription))
+  );
+}
+
+/**
+ * The body of the server's answer to `request`, which has to be JSON that `expected` accepts.
+ * Anything else, such as a proxy's HTML page or an older server's shape, is rejected with an
+ * error that says so instead of failing later on a missing field.
+ */
+async function answer<T>(request: string, response: Response, expected: (value: unknown) => value is T): Promise<T> {
+  const text = await response.text();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error(
+      `The answer to ${request} is not JSON; a proxy in front of the Toodo server may have answered instead.`,
+    );
+  }
+  if (!expected(body)) {
+    throw new Error(
+      `The answer to ${request} is not the push data this app expects; the Toodo server may be older or newer than the app. Reload the app.`,
+    );
+  }
+  return body;
+}
+
 async function sendSubscription(subscription: PushSubscription): Promise<ServerSubscription> {
   const response = await apiRequest("/api/push/subscription", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(subscription.toJSON()),
   });
-  return (await response.json()) as ServerSubscription;
+  return answer("PUT /api/push/subscription", response, isSubscription);
 }
 
 /**
@@ -124,10 +181,7 @@ async function sendSubscription(subscription: PushSubscription): Promise<ServerS
  * one the browser renewed while Toodo was closed, is sent to it again.
  */
 export async function getPushState(): Promise<PushState> {
-  const server = (await (await apiRequest("/api/push")).json()) as {
-    publicKey: string;
-    subscription: ServerSubscription | null;
-  };
+  const server = await answer("GET /api/push", await apiRequest("/api/push"), isServerPush);
   const browser = await browserSubscription(decodeBase64Url(server.publicKey));
   const subscription =
     browser === null
@@ -137,6 +191,33 @@ export async function getPushState(): Promise<PushState> {
         : await sendSubscription(browser);
   pushed = subscription?.settings ?? null;
   return { publicKey: server.publicKey, permission: Notification.permission, subscription };
+}
+
+/** How long turning push on waits for the service worker to become active. */
+const workerReadyMs = 10_000;
+
+/**
+ * The registration once its service worker is active. A worker that never activates, such as
+ * one whose install failed, would otherwise keep `navigator.serviceWorker.ready` pending forever.
+ */
+async function activeWorker(): Promise<ServiceWorkerRegistration> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `The service worker did not become active within ${workerReadyMs / 1000} seconds. Reload the app and try again.`,
+          ),
+        ),
+      workerReadyMs,
+    );
+  });
+  try {
+    return await Promise.race([navigator.serviceWorker.ready, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -153,7 +234,7 @@ export async function enablePush(
   if ((await registration()) === undefined) {
     throw new Error("Notifications need the service worker, which only the built app installs.");
   }
-  const { pushManager } = await navigator.serviceWorker.ready;
+  const { pushManager } = await activeWorker();
   const key = decodeBase64Url(publicKey);
   const subscription =
     (await browserSubscription(key)) ??
@@ -186,7 +267,7 @@ export async function saveSettings(settings: PushSettings): Promise<ServerSubscr
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings),
   });
-  const saved = (await response.json()) as ServerSubscription;
+  const saved = await answer("PUT /api/push/settings", response, isSubscription);
   pushed = saved.settings;
   return saved;
 }

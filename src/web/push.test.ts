@@ -121,13 +121,13 @@ describe("push on this device", () => {
 
   it.each([
     { server: "none", known: null },
-    { server: "another endpoint", known: { endpoint: "https://push.example/old", settings } },
+    { server: "another endpoint", known: { endpoint: "https://push.example/old", settings, lastFailure: null } },
   ])("sends the browser's subscription again when the server has $server", async ({ known }) => {
     const browser = browserSubscription("https://push.example/a");
     installServiceWorker(browser);
     const fetch = serve({
       "GET /api/push": () => json({ publicKey, subscription: known }),
-      "PUT /api/push/subscription": () => json({ endpoint: browser.endpoint, settings }),
+      "PUT /api/push/subscription": () => json({ endpoint: browser.endpoint, settings, lastFailure: null }),
     });
     const push = await freshPush();
 
@@ -135,7 +135,7 @@ describe("push on this device", () => {
 
     expect(requests(fetch)).toEqual(["GET /api/push", "PUT /api/push/subscription"]);
     expect(body(fetch, 1)).toEqual(browser.toJSON());
-    expect(state.subscription).toEqual({ endpoint: browser.endpoint, settings });
+    expect(state.subscription).toEqual({ endpoint: browser.endpoint, settings, lastFailure: null });
     expect(push.pushActive()).toBe(true);
   });
 
@@ -143,14 +143,14 @@ describe("push on this device", () => {
     const browser = browserSubscription("https://push.example/a");
     installServiceWorker(browser);
     const fetch = serve({
-      "GET /api/push": () => json({ publicKey, subscription: { endpoint: browser.endpoint, settings } }),
+      "GET /api/push": () => json({ publicKey, subscription: { endpoint: browser.endpoint, settings, lastFailure: null } }),
     });
     const push = await freshPush();
 
     const state = await push.getPushState();
 
     expect(requests(fetch)).toEqual(["GET /api/push"]);
-    expect(state).toEqual({ publicKey, permission: "granted", subscription: { endpoint: browser.endpoint, settings } });
+    expect(state).toEqual({ publicKey, permission: "granted", subscription: { endpoint: browser.endpoint, settings, lastFailure: null } });
     expect(push.pushActive()).toBe(true);
   });
 
@@ -158,7 +158,7 @@ describe("push on this device", () => {
     const stale = browserSubscription("https://push.example/a", [4, 1, 2]);
     installServiceWorker(stale);
     const fetch = serve({
-      "GET /api/push": () => json({ publicKey, subscription: { endpoint: stale.endpoint, settings } }),
+      "GET /api/push": () => json({ publicKey, subscription: { endpoint: stale.endpoint, settings, lastFailure: null } }),
     });
     const push = await freshPush();
 
@@ -172,7 +172,7 @@ describe("push on this device", () => {
 
   it("subscribes with the server's key and registers the subscription", async () => {
     const { pushManager, created } = installServiceWorker(null);
-    const fetch = serve({ "PUT /api/push/subscription": () => json({ endpoint: created.endpoint, settings }) });
+    const fetch = serve({ "PUT /api/push/subscription": () => json({ endpoint: created.endpoint, settings, lastFailure: null }) });
     const push = await freshPush();
 
     const subscription = await push.enablePush(Promise.resolve("granted"), publicKey);
@@ -183,7 +183,7 @@ describe("push on this device", () => {
     });
     expect(requests(fetch)).toEqual(["PUT /api/push/subscription"]);
     expect(body(fetch, 0)).toEqual(created.toJSON());
-    expect(subscription).toEqual({ endpoint: created.endpoint, settings });
+    expect(subscription).toEqual({ endpoint: created.endpoint, settings, lastFailure: null });
     expect(push.pushActive()).toBe(true);
   });
 
@@ -216,7 +216,7 @@ describe("push on this device", () => {
     const browser = browserSubscription("https://push.example/a");
     installServiceWorker(browser);
     const fetch = serve({
-      "GET /api/push": () => json({ publicKey, subscription: { endpoint: browser.endpoint, settings } }),
+      "GET /api/push": () => json({ publicKey, subscription: { endpoint: browser.endpoint, settings, lastFailure: null } }),
       "DELETE /api/push/subscription": () => json(null),
     });
     const push = await freshPush();
@@ -234,8 +234,8 @@ describe("push on this device", () => {
     installServiceWorker(browser);
     const off = { ...settings, completion: false };
     serve({
-      "GET /api/push": () => json({ publicKey, subscription: { endpoint: browser.endpoint, settings } }),
-      "PUT /api/push/settings": () => json({ endpoint: browser.endpoint, settings: off }),
+      "GET /api/push": () => json({ publicKey, subscription: { endpoint: browser.endpoint, settings, lastFailure: null } }),
+      "PUT /api/push/settings": () => json({ endpoint: browser.endpoint, settings: off, lastFailure: null }),
       "DELETE /api/push/subscription": () => json(null),
     });
     const push = await freshPush();
@@ -252,12 +252,69 @@ describe("push on this device", () => {
   });
 
   it("saves the settings of this device", async () => {
-    const fetch = serve({ "PUT /api/push/settings": () => json({ endpoint: "https://push.example/a", settings }) });
+    const fetch = serve({ "PUT /api/push/settings": () => json({ endpoint: "https://push.example/a", settings, lastFailure: null }) });
     const push = await freshPush();
 
-    await expect(push.saveSettings(settings)).resolves.toEqual({ endpoint: "https://push.example/a", settings });
+    await expect(push.saveSettings(settings)).resolves.toEqual({ endpoint: "https://push.example/a", settings, lastFailure: null });
 
     expect(body(fetch, 0)).toEqual(settings);
+  });
+
+  const htmlPage = () => new Response("<!doctype html><title>Sign in</title>", { headers: { "Content-Type": "text/html" } });
+
+  it.each([
+    { answer: "a proxy's HTML page", response: htmlPage, error: "GET /api/push is not JSON" },
+    { answer: "a body without the subscription", response: () => json({ publicKey }), error: "GET /api/push is not the push data" },
+    {
+      answer: "a subscription without its last failure",
+      response: () => json({ publicKey, subscription: { endpoint: "https://push.example/a", settings } }),
+      error: "GET /api/push is not the push data",
+    },
+  ])("rejects $answer for the push state", async ({ response, error }) => {
+    installServiceWorker(null);
+    serve({ "GET /api/push": response });
+    const push = await freshPush();
+
+    await expect(push.getPushState()).rejects.toThrow(error);
+
+    expect(push.pushActive()).toBe(false);
+  });
+
+  it.each([
+    { answer: "a proxy's HTML page", response: htmlPage, error: "PUT /api/push/settings is not JSON" },
+    {
+      answer: "settings of another shape",
+      response: () => json({ endpoint: "https://push.example/a", settings: { completion: true }, lastFailure: null }),
+      error: "PUT /api/push/settings is not the push data",
+    },
+  ])("rejects $answer for saved settings", async ({ response, error }) => {
+    serve({ "PUT /api/push/settings": response });
+    const push = await freshPush();
+
+    await expect(push.saveSettings(settings)).rejects.toThrow(error);
+
+    expect(push.pushActive()).toBe(false);
+  });
+
+  it("gives up on a service worker that never becomes active", async () => {
+    vi.useFakeTimers();
+    try {
+      const { pushManager } = installServiceWorker(null);
+      Object.assign(navigator.serviceWorker, { ready: new Promise<never>(() => {}) });
+      const fetch = serve({});
+      const push = await freshPush();
+
+      const enabling = expect(push.enablePush(Promise.resolve("granted"), publicKey)).rejects.toThrow(
+        "did not become active within 10 seconds",
+      );
+      await vi.advanceTimersByTimeAsync(10_000);
+      await enabling;
+
+      expect(pushManager.subscribe).not.toHaveBeenCalled();
+      expect(requests(fetch)).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports why the test push failed", async () => {
