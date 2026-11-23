@@ -132,6 +132,17 @@ fn is_server(pid: u32) -> bool {
     }
 }
 
+/// The executable `pid` runs, with symlinks resolved. macOS has no `/proc`, so there `ps`
+/// tells the path the program was started from; a relative one cannot be resolved.
+fn program_of(pid: u32) -> Option<PathBuf> {
+    if cfg!(target_os = "linux") {
+        return fs::read_link(format!("/proc/{pid}/exe")).ok();
+    }
+    let output = output("ps", &["-p", &pid.to_string(), "-o", "comm="]).ok()?;
+    let path = PathBuf::from(OsStr::from_bytes(output.stdout.trim_ascii_end()));
+    (output.status.success() && path.is_absolute()).then(|| fs::canonicalize(&path).unwrap_or(path))
+}
+
 /// The pid of the server started by `toodo start`, when it is still running.
 pub(super) fn running_pid(data: &DataDir) -> Option<u32> {
     let pid = fs::read_to_string(data.pid()).ok()?.trim().parse().ok()?;
@@ -142,7 +153,7 @@ pub(super) fn running_pid(data: &DataDir) -> Option<u32> {
 /// `bundle`, e.g. one npx started from npm's cache.
 pub(super) fn foreign_server(data: &DataDir, bundle: &Bundle) -> Option<PathBuf> {
     let pid = running_pid(data)?;
-    let program = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    let program = program_of(pid)?;
     let ours = fs::canonicalize(&bundle.server).unwrap_or_else(|_| bundle.server.clone());
     (program != ours).then_some(program)
 }
@@ -278,6 +289,24 @@ mod tests {
         assert_eq!(running_pid(&data), None);
         assert!(!stop(&data).unwrap());
         assert!(!data.pid().exists());
+    }
+
+    #[test]
+    fn a_server_of_another_bundle_is_foreign() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = DataDir(dir.path().to_path_buf());
+        // A toodo-server that is the system's sleep under another name.
+        let server = dir.path().join("toodo-server");
+        std::os::unix::fs::symlink("/bin/sleep", &server).unwrap();
+        let mut child = Command::new(&server).arg("30").spawn().unwrap();
+        fs::write(data.pid(), format!("{}\n", child.id())).unwrap();
+        let bundle = |server: PathBuf| Bundle { server, web: None };
+        let other = foreign_server(&data, &bundle(dir.path().join("other/toodo-server")));
+        let ours = foreign_server(&data, &bundle(server.clone()));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(other, Some(fs::canonicalize(&server).unwrap()));
+        assert_eq!(ours, None);
     }
 
     #[test]
