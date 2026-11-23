@@ -1153,20 +1153,23 @@ impl Storage {
 
     /// Ends every wait whose time has come, earliest first, in one transaction: each task
     /// returns to the status it had when its wait began. Returns the workspaces of those
-    /// tasks, each once, for change notifications.
+    /// tasks, each once, for change notifications. An archived task, or one of an archived
+    /// workspace, keeps its wait until it is restored: it is not in the dependency DAG
+    /// that decides whether it may return to `in_progress`.
     pub fn end_due_waits(&mut self) -> Result<Vec<WorkspaceId>> {
         let at = self.now();
         let tx = self.conn.transaction()?;
         let ids = tx
-            .prepare_cached(
-                "SELECT id FROM tasks WHERE wait_until IS NOT NULL AND wait_until <= ?1
-                 ORDER BY wait_until, id",
-            )?
+            .prepare_cached(&format!(
+                "SELECT t.id FROM tasks t
+                 WHERE t.wait_until IS NOT NULL AND t.wait_until <= ?1 AND {LIVE_TASK}
+                 ORDER BY t.wait_until, t.id"
+            ))?
             .query_map([at], |row| row.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut workspaces = Vec::new();
         for id in ids {
-            let Some(task) = load_tasks(&tx, "t.id = ?", &[id], Scope::All)?.pop() else {
+            let Some(task) = find_task(&tx, TaskId(id))? else {
                 continue;
             };
             let Some(wait) = task.wait else {
