@@ -363,7 +363,8 @@ pub fn spawn(app: Arc<dyn Runtime>) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{NewWorkspace, Storage};
+    use crate::domain::model::TaskType;
+    use crate::storage::{NewTask, NewWorkspace, Storage};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -517,6 +518,113 @@ mod tests {
         );
         assert_eq!(fixture.workspace_names(), ["toodo"]);
         assert!(storage::list_backups(&backups.dir()).unwrap().is_empty());
+    }
+
+    /// Writes a backup to `path` with three tasks over two workspaces, each depending on
+    /// the next; `close_loop` adds the edge from the last back to the first, which only an
+    /// edit of the file outside Toodo can make.
+    fn write_chain_backup(path: &Path, close_loop: bool) {
+        let mut other = Storage::open(path).unwrap();
+        let mut tasks = Vec::new();
+        for (workspace, title) in [("app", "first"), ("site", "second"), ("app", "third")] {
+            let workspace = match other
+                .list_workspaces()
+                .unwrap()
+                .into_iter()
+                .find(|existing| existing.name == workspace)
+            {
+                Some(existing) => existing,
+                None => other
+                    .create_workspace(&NewWorkspace {
+                        name: workspace.to_owned(),
+                        description: None,
+                        repository: None,
+                    })
+                    .unwrap(),
+            };
+            let task = other
+                .create_task(&NewTask {
+                    workspace_id: workspace.id,
+                    task_type: TaskType::Feat,
+                    title: title.to_owned(),
+                    description: String::new(),
+                    estimate: None,
+                    due_date: None,
+                    autopilot: false,
+                    criteria: Vec::new(),
+                })
+                .unwrap();
+            tasks.push(task.id);
+        }
+        other.add_dependency(tasks[0], tasks[1]).unwrap();
+        other.add_dependency(tasks[1], tasks[2]).unwrap();
+        drop(other);
+        if close_loop {
+            rusqlite::Connection::open(path)
+                .unwrap()
+                .execute(
+                    "INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+                    [tasks[2].0, tasks[0].0],
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_backup_whose_dependencies_loop_leaves_data_and_backups_alone() {
+        let fixture = Fixture::new();
+        let backups = Backups::load(&fixture.data_dir);
+        fixture.add_workspace("toodo");
+        let looping = fixture.data_dir.join("looping.sqlite3");
+        write_chain_backup(&looping, true);
+
+        let errors = [
+            restore(&fixture.storage, &backups, &looping).unwrap_err(),
+            import_file(&fixture.storage, &backups, &looping).unwrap_err(),
+        ];
+
+        for error in errors {
+            assert!(
+                matches!(&error, storage::StorageError::InvalidBackup(reason)
+                    if reason.ends_with("task dependencies loop: 1 -> 2 -> 3 -> 1")),
+                "{error}"
+            );
+        }
+        assert_eq!(fixture.workspace_names(), ["toodo"]);
+        assert!(lock(&fixture.storage).list_all_tasks().unwrap().is_empty());
+        assert!(storage::list_backups(&backups.dir()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn dependencies_across_workspaces_are_imported_and_restored() {
+        let fixture = Fixture::new();
+        let backups = Backups::load(&fixture.data_dir);
+        fixture.add_workspace("toodo");
+        let chain = fixture.data_dir.join("chain.sqlite3");
+        write_chain_backup(&chain, false);
+        let depends_on = |storage: &StorageState| -> Vec<(i64, Vec<i64>)> {
+            lock(storage)
+                .list_all_tasks()
+                .unwrap()
+                .into_iter()
+                .map(|task| (task.id.0, task.depends_on.iter().map(|id| id.0).collect()))
+                .collect()
+        };
+
+        let (_, summary) = import_file(&fixture.storage, &backups, &chain).unwrap();
+
+        assert_eq!(summary.tasks, 3);
+        assert_eq!(fixture.workspace_names(), ["toodo", "app", "site"]);
+        assert_eq!(
+            depends_on(&fixture.storage),
+            [(1, vec![2]), (2, vec![3]), (3, vec![])]
+        );
+        restore(&fixture.storage, &backups, &chain).unwrap();
+        assert_eq!(fixture.workspace_names(), ["app", "site"]);
+        assert_eq!(
+            depends_on(&fixture.storage),
+            [(1, vec![2]), (2, vec![3]), (3, vec![])]
+        );
     }
 
     #[test]

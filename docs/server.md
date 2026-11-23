@@ -330,8 +330,8 @@ transaction, after writing a pre-restore backup into `<data>/backups/`. Devices,
 subscriptions, connected OAuth apps, settings, saved reviews, and chat messages are not
 imported. Records of the removed execution backend (herdr workspaces, runs, machine
 settings) are not imported either. The file is checked and migrated to the latest
-schema in memory first; a newer schema than the server's is refused, and the file itself
-is never modified.
+schema in memory first; a newer schema than the server's is refused, as is a file whose
+live tasks have dependencies that loop, and the file itself is never modified.
 
 Imported IDs go after every ID the server has used: task #N becomes #(N + offset), and the
 command prints the offset. Into an empty server, tasks keep their numbers. Stop the
@@ -894,7 +894,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
 - `POST /api/backups/restore`: replaces all data with the Toodo database sent as the
   request body (`application/octet-stream`, at most 256 MB, else `413`). The current data
   is saved as a pre-restore backup first, which is the JSON result, like `restore_backup`.
-  A file that is not a Toodo database is `422` and changes nothing.
+  A file that is not a Toodo database, or whose live tasks have dependencies that loop,
+  is `422` and changes nothing.
 - `GET /api/devices`: every device as `{ id, label, createdAt, lastSeenAt, revokedAt,
   current }` (Unix seconds; `current` marks the device whose token the request bears),
   active ones first.

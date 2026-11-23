@@ -613,9 +613,19 @@ fn queried_tasks(conn: &Connection, query: &TaskQuery) -> Result<Vec<Task>> {
 /// Rejects live dependencies that loop, e.g. after a restore brought back edges that close
 /// a cycle with edges added in the meantime.
 pub(super) fn ensure_acyclic(conn: &Connection) -> Result<()> {
+    match live_cycle(conn)? {
+        None => Ok(()),
+        Some(path) => Err(StorageError::RestoreClosesCycle(path)),
+    }
+}
+
+/// A loop among the dependencies of live tasks (see [`dag::DependencyError::Cycle`]), if
+/// there is one. Edges to archived tasks do not count: they come back only through a
+/// restore, which checks them then.
+pub(super) fn live_cycle(conn: &Connection) -> Result<Option<Vec<TaskId>>> {
     match dag::topological_order(&all_tasks(conn)?) {
-        Ok(_) => Ok(()),
-        Err(dag::DependencyError::Cycle(path)) => Err(StorageError::RestoreClosesCycle(path)),
+        Ok(_) => Ok(None),
+        Err(dag::DependencyError::Cycle(path)) => Ok(Some(path)),
         Err(error) => Err(error.into()),
     }
 }

@@ -11,7 +11,7 @@ use std::time::Duration;
 use rusqlite::backup::Backup;
 use rusqlite::{Connection, OpenFlags};
 
-use super::{BUSY_TIMEOUT, Result, Storage, StorageError, migrations};
+use super::{BUSY_TIMEOUT, Result, Storage, StorageError, migrations, tasks};
 use crate::domain::backup::{self, BackupKind};
 
 /// A backup Toodo wrote into its backup directory.
@@ -167,8 +167,9 @@ fn check_integrity(path: &Path) -> Result<()> {
 }
 
 /// Reads the backup at `path` into memory, migrates it to the latest schema, and checks
-/// its integrity. Fails with [`StorageError::InvalidBackup`] for a file that is not a
-/// Toodo database, so the live data stays untouched.
+/// its integrity and that the dependencies of its live tasks do not loop. Fails with
+/// [`StorageError::InvalidBackup`] for a file that is not a Toodo database or fails a
+/// check, so the live data stays untouched.
 pub fn stage_backup(path: &Path) -> Result<StagedBackup> {
     let invalid = |reason: &dyn std::fmt::Display| {
         StorageError::InvalidBackup(format!("{}: {reason}", path.display()))
@@ -188,6 +189,13 @@ pub fn stage_backup(path: &Path) -> Result<StagedBackup> {
     let integrity: String = staged.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     if integrity != "ok" {
         return Err(invalid(&format!("integrity check failed: {integrity}")));
+    }
+    if let Some(path) = tasks::live_cycle(&staged).map_err(|error| invalid(&error))? {
+        let ids: Vec<String> = path.iter().map(ToString::to_string).collect();
+        return Err(invalid(&format!(
+            "task dependencies loop: {}",
+            ids.join(" -> ")
+        )));
     }
     Ok(StagedBackup(staged))
 }
@@ -254,7 +262,7 @@ fn remove_if_exists(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::model::TaskType;
+    use crate::domain::model::{TaskId, TaskType};
     use crate::storage::{NewTask, NewWorkspace};
 
     fn open(dir: &Path) -> Storage {
@@ -362,6 +370,32 @@ mod tests {
             assert!(matches!(error, StorageError::InvalidBackup(_)), "{error}");
         }
         assert!(!missing.exists());
+    }
+
+    #[test]
+    fn a_loop_through_an_archived_task_is_staged_and_checked_on_its_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut storage = open(dir.path());
+        add_workspace(&mut storage, "toodo");
+        let (first, second) = (TaskId(1), TaskId(2));
+        storage.archive_task(second).unwrap();
+        storage
+            .conn
+            .execute(
+                "INSERT INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
+                [first.0, second.0],
+            )
+            .unwrap();
+        let export = dir.path().join("export.sqlite3");
+        storage.export_to(&export).unwrap();
+
+        let mut restored = Storage::open_in_memory().unwrap();
+        restored.restore(stage_backup(&export).unwrap()).unwrap();
+
+        assert!(matches!(
+            restored.restore_task(second),
+            Err(StorageError::RestoreClosesCycle(_))
+        ));
     }
 
     #[test]
