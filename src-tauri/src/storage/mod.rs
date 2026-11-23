@@ -126,6 +126,12 @@ impl Storage {
         self.clock = Box::new(clock);
     }
 
+    /// The connection, for tests that inspect rows or make writes fail.
+    #[cfg(test)]
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.conn
+    }
+
     pub(crate) fn now(&self) -> i64 {
         (self.clock)()
     }

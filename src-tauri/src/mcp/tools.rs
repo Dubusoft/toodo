@@ -1228,7 +1228,7 @@ pub fn create_plan(storage: &StorageState, request: CreatePlan) -> CommandResult
             error.message = format!("task `{}` of the plan: {}", item.key, error.message);
             error
         };
-        let mut task = plan_task(storage, item).map_err(in_item)?;
+        let mut task = plan_task(item).map_err(in_item)?;
         task.depends_on = depends_on;
         task.related = related;
         plan.push(task);
@@ -1340,7 +1340,7 @@ fn check_plan_order(
 }
 
 /// The task `item` of a plan creates, with its labels and without links.
-fn plan_task(_storage: &StorageState, item: &PlanTask) -> CommandResult<storage::NewPlanTask> {
+fn plan_task(item: &PlanTask) -> CommandResult<storage::NewPlanTask> {
     let labels = types::labels(&item.labels)?;
     let refs = types::merge_refs(&[], &item.refs, &[])?;
     let task: storage::NewTask = types::NewTask {
@@ -1364,64 +1364,42 @@ fn plan_task(_storage: &StorageState, item: &PlanTask) -> CommandResult<storage:
     })
 }
 
-/// Creates the task of `request` with its labels, refs, and links.
+/// Creates the task of `request` with its labels, refs, dependencies, and related links
+/// in one transaction, as a plan of one task: any failure writes nothing.
 fn insert_task(storage: &mut Storage, request: CreateTask) -> CommandResult<Task> {
     for &linked in request.depends_on.iter().chain(&request.related) {
         storage
             .get_task(linked.into())?
             .ok_or(StorageError::TaskNotFound(linked.into()))?;
     }
-    let labels = types::labels(&request.labels)?;
-    let refs = types::merge_refs(&[], &request.refs, &[])?;
-    let new: storage::NewTask = types::NewTask {
+    let existing = |ids: &[TaskId]| {
+        ids.iter()
+            .map(|&id| storage::PlanLink::Existing(id.into()))
+            .collect::<Vec<_>>()
+    };
+    let depends_on = existing(&request.depends_on);
+    let related = existing(&request.related);
+    let mut task = plan_task(&PlanTask {
+        key: String::new(),
         workspace_id: request.workspace_id,
         task_type: request.task_type,
         title: request.title,
         description: request.description,
+        depends_on: Vec::new(),
+        depends_on_keys: Vec::new(),
+        related: Vec::new(),
+        related_keys: Vec::new(),
         estimate: request.estimate,
         due_date: request.due_date,
-        labels: Vec::new(),
+        labels: request.labels,
+        refs: request.refs,
         autopilot: request.autopilot,
         criteria: request.criteria,
-    }
-    .try_into()?;
-    let task = storage.create_task(&new)?;
-    let labelled = if labels.is_empty() {
-        Ok(())
-    } else {
-        storage.set_task_labels(task.id, &labels).map(drop)
-    }
-    .and_then(|()| {
-        if refs.is_empty() {
-            Ok(())
-        } else {
-            storage.set_task_refs(task.id, &refs).map(drop)
-        }
-    });
-    let linked = labelled
-        .and_then(|()| {
-            request.depends_on.iter().try_for_each(|&prerequisite| {
-                storage
-                    .add_dependency(task.id, prerequisite.into())
-                    .map(drop)
-            })
-        })
-        .and_then(|()| {
-            request
-                .related
-                .iter()
-                .try_for_each(|&related| storage.add_related(task.id, related.into()))
-        });
-    if let Err(error) = linked {
-        if let Err(cleanup) = storage.delete_task(task.id) {
-            eprintln!(
-                "toodo: failed to delete task {} after a failed MCP create: {cleanup}",
-                task.id
-            );
-        }
-        return Err(error.into());
-    }
-    get_task(storage, task.id.into())
+    })?;
+    task.depends_on = depends_on;
+    task.related = related;
+    let created = storage.create_tasks(&[task])?;
+    get_task(storage, created[0].id.into())
 }
 
 /// Edits a task as `update_task` does; `completion` is the completion of its workspace
@@ -3520,6 +3498,56 @@ mod tests {
             assert!(storage.create_tasks(&plan).is_err());
             assert_eq!(storage.list_all_tasks().unwrap(), []);
         }
+    }
+
+    #[test]
+    fn create_task_writes_nothing_when_a_related_link_fails() {
+        let (mut storage, workspace) = storage_with_workspace();
+        let prerequisite = create(&mut storage, workspace, "Schema", Vec::new()).unwrap();
+        let linked = create(&mut storage, workspace, "Search", Vec::new()).unwrap();
+        let count = |storage: &Storage, table: &str| -> i64 {
+            storage
+                .connection()
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        };
+        let tables = [
+            "tasks",
+            "task_events",
+            "task_labels",
+            "task_dependencies",
+            "task_relations",
+            "task_criteria",
+            "task_notes",
+        ];
+        let before = tables.map(|table| count(&storage, table));
+        // The related link fails, and so would deleting a task to undo the create.
+        storage
+            .connection()
+            .execute_batch(
+                "CREATE TEMP TRIGGER fail_related BEFORE INSERT ON task_relations
+                 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;
+                 CREATE TEMP TRIGGER keep_tasks BEFORE DELETE ON tasks
+                 BEGIN SELECT RAISE(ABORT, 'injected delete failure'); END;",
+            )
+            .unwrap();
+        let request: CreateTask = serde_json::from_value(serde_json::json!({
+            "workspace_id": workspace,
+            "task_type": "feat",
+            "title": "API",
+            "labels": ["search"],
+            "refs": ["lane:api"],
+            "depends_on": [prerequisite.id],
+            "related": [linked.id],
+            "criteria": [{"text": "Deployed", "kind": "manual"}],
+        }))
+        .unwrap();
+
+        let error = insert_task(&mut storage, request).unwrap_err();
+        assert!(error.message.contains("injected failure"), "{error:?}");
+        assert_eq!(tables.map(|table| count(&storage, table)), before);
     }
 
     #[test]
