@@ -57,6 +57,8 @@ strip = true
 
 [dev-dependencies]
 tempfile = "3"
+# Paused time for tests of deadlines.
+tokio = { version = "1.53.3", features = ["test-util"] }
 # Generating the frontend's bindings (src/bindings.rs).
 heck = "0.5"
 specta-serde = "0.0.12"
