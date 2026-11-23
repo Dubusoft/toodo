@@ -934,4 +934,10 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
         SELECT RAISE(ABORT, 'a task waits with both wait_until and wait_status or neither');
     END;
     ",
+    // Version 51: push subscriptions keep only the completion setting. Agent and pull
+    // request notifications went with the execution backend; nothing raises them.
+    r"
+    ALTER TABLE push_subscriptions DROP COLUMN agent;
+    ALTER TABLE push_subscriptions DROP COLUMN pull_requests;
+    ",
 ];

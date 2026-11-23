@@ -2283,7 +2283,7 @@ fn version_50_clears_half_waits_with_a_note_and_refuses_new_ones() {
 
     super::migrate(&mut conn).unwrap();
 
-    assert_eq!(schema_version(&conn).unwrap(), 50);
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
     let waits: Vec<(i64, Option<i64>, Option<String>)> = conn
         .prepare("SELECT id, wait_until, wait_status FROM tasks ORDER BY id")
         .unwrap()
@@ -2337,4 +2337,68 @@ fn version_50_clears_half_waits_with_a_note_and_refuses_new_ones() {
     set("UPDATE tasks SET wait_until = 5, wait_status = 'planned' WHERE id = 4").unwrap();
     set("UPDATE tasks SET wait_until = NULL, wait_status = NULL WHERE id = 3").unwrap();
     set("INSERT INTO tasks (workspace_id, type, title, status, wait_until, wait_status) VALUES (1, 'feat', 'New', 'planned', 5, 'planned')").unwrap();
+}
+
+#[test]
+fn version_51_keeps_subscriptions_and_their_completion_setting_without_the_other_kinds() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_legacy(&mut conn).unwrap();
+    for sql in &MIGRATIONS[45..50] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 50).unwrap();
+    for (device, label) in [(1, "Phone"), (2, "Laptop")] {
+        conn.execute(
+            "INSERT INTO devices (id, label, token_hash, created_at, last_seen_at)
+                 VALUES (?1, ?2, ?3, 1, 1)",
+            params![device, label, device.to_string().repeat(64)],
+        )
+        .unwrap();
+    }
+    for (device, completion) in [(1, 0), (2, 1)] {
+        conn.execute(
+            "INSERT INTO push_subscriptions
+                 (device_id, endpoint, p256dh, auth, agent, pull_requests, completion, created_at)
+                 VALUES (?1, ?2, ?3, ?4, 0, 1, ?5, 2)",
+            params![
+                device,
+                format!("https://push.example/{device}"),
+                vec![4u8; 65],
+                vec![1u8; 16],
+                completion
+            ],
+        )
+        .unwrap();
+    }
+
+    super::migrate(&mut conn).unwrap();
+
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    let rows: Vec<(i64, String, i64)> = conn
+        .prepare(
+            "SELECT device_id, endpoint, completion FROM push_subscriptions ORDER BY device_id",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (1, "https://push.example/1".to_owned(), 0),
+            (2, "https://push.example/2".to_owned(), 1)
+        ]
+    );
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('push_subscriptions')")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(
+        !columns.iter().any(|c| c == "agent" || c == "pull_requests"),
+        "{columns:?}"
+    );
 }

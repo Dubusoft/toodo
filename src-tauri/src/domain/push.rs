@@ -8,11 +8,6 @@ use super::device::DeviceId;
 /// The kinds of notification a device can turn on and off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PushKind {
-    /// An agent finished its turn or needs input.
-    Agent,
-    /// The CI checks of a task's pull request passed or failed, or a reviewer approved it
-    /// or requested changes.
-    PullRequests,
     /// A task is awaiting completion.
     Completion,
 }
@@ -20,26 +15,18 @@ pub enum PushKind {
 /// Which kinds of notification a device receives. New subscriptions receive every kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PushSettings {
-    pub agent: bool,
-    pub pull_requests: bool,
     pub completion: bool,
 }
 
 impl Default for PushSettings {
     fn default() -> Self {
-        Self {
-            agent: true,
-            pull_requests: true,
-            completion: true,
-        }
+        Self { completion: true }
     }
 }
 
 impl PushSettings {
     pub fn allows(self, kind: PushKind) -> bool {
         match kind {
-            PushKind::Agent => self.agent,
-            PushKind::PullRequests => self.pull_requests,
             PushKind::Completion => self.completion,
         }
     }
@@ -210,12 +197,8 @@ mod tests {
 
     #[test]
     fn settings_filter_their_kind() {
-        let settings = PushSettings {
-            agent: false,
-            ..PushSettings::default()
-        };
-        assert!(!settings.allows(PushKind::Agent));
-        assert!(settings.allows(PushKind::PullRequests));
-        assert!(settings.allows(PushKind::Completion));
+        assert!(PushSettings::default().allows(PushKind::Completion));
+        let settings = PushSettings { completion: false };
+        assert!(!settings.allows(PushKind::Completion));
     }
 }

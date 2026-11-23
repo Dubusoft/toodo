@@ -7,8 +7,8 @@
 //!   asking device's (`{ endpoint, settings }` or `null`).
 //! - `PUT /api/push/subscription` with the browser's `PushSubscription` JSON subscribes
 //!   the asking device; `DELETE` unsubscribes it.
-//! - `PUT /api/push/settings` with `{ agent, pullRequests, completion }` chooses which
-//!   kinds of notification the device gets.
+//! - `PUT /api/push/settings` with `{ completion }` chooses which kinds of notification
+//!   the device gets.
 //! - `POST /api/push/test` sends a test notification to the asking device.
 //!
 //! A subscription also carries `lastFailure` (`{ message, at }` or `null`): why the latest
@@ -474,16 +474,12 @@ fn watch_tasks(services: &Services, watch: &mut Watch) -> Vec<Alert> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SettingsView {
-    agent: bool,
-    pull_requests: bool,
     completion: bool,
 }
 
 impl From<PushSettings> for SettingsView {
     fn from(settings: PushSettings) -> Self {
         Self {
-            agent: settings.agent,
-            pull_requests: settings.pull_requests,
             completion: settings.completion,
         }
     }
@@ -492,8 +488,6 @@ impl From<PushSettings> for SettingsView {
 impl From<SettingsView> for PushSettings {
     fn from(view: SettingsView) -> Self {
         Self {
-            agent: view.agent,
-            pull_requests: view.pull_requests,
             completion: view.completion,
         }
     }
@@ -1055,10 +1049,7 @@ pub(crate) mod tests {
             &storage,
             "Laptop",
             "https://push.example/laptop",
-            PushSettings {
-                completion: false,
-                ..PushSettings::default()
-            },
+            PushSettings { completion: false },
         );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
