@@ -59,6 +59,8 @@ panic = "abort"
 strip = true
 
 [dev-dependencies]
+# Statement traces for ordering a write between the reads of a test.
+rusqlite = { version = "0.40", features = ["trace"] }
 tempfile = "3"
 # Paused time for tests of deadlines.
 tokio = { version = "1.53.3", features = ["test-util"] }

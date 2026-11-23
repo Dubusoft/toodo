@@ -818,10 +818,21 @@ impl Storage {
             })?)
     }
 
-    /// The status changes recorded after the history record `after`, oldest first, and the
-    /// planned tasks that one of their moves to `done` made ready.
-    pub fn status_changes_after(&self, after: i64) -> Result<(Vec<StatusChange>, Vec<ReadyTask>)> {
-        let mut statement = self.conn.prepare_cached(
+    /// The id of the latest status history record, the status changes recorded after the
+    /// history record `after` (oldest first), and the planned tasks that one of their moves
+    /// to `done` made ready. All three come from one read transaction, so a change
+    /// committed meanwhile by another connection is in none of them: a task waiting on two
+    /// dependencies that finish one after the other is ready only from the second finish.
+    pub fn status_changes_after(
+        &mut self,
+        after: i64,
+    ) -> Result<(i64, Vec<StatusChange>, Vec<ReadyTask>)> {
+        // Only reads: dropping the transaction ends it.
+        let tx = self.conn.transaction()?;
+        let last = tx.query_row("SELECT coalesce(max(id), 0) FROM task_events", [], |row| {
+            row.get(0)
+        })?;
+        let mut statement = tx.prepare_cached(
             "SELECT e.id, e.task_id, t.workspace_id, e.status, e.at,
                  (SELECT p.status FROM task_events p
                   WHERE p.task_id = e.task_id AND p.id < e.id ORDER BY p.id DESC LIMIT 1)
@@ -857,9 +868,9 @@ impl Storage {
             .map(|change| (change.task, change))
             .collect();
         if finished.is_empty() {
-            return Ok((changes, Vec::new()));
+            return Ok((last, changes, Vec::new()));
         }
-        let tasks = all_tasks(&self.conn)?;
+        let tasks = all_tasks(&tx)?;
         let mut ready = Vec::new();
         for task in &tasks {
             if task.status != TaskStatus::Planned {
@@ -887,7 +898,11 @@ impl Storage {
             }
         }
         ready.sort_by_key(|(id, ready)| (*id, ready.task));
-        Ok((changes, ready.into_iter().map(|(_, ready)| ready).collect()))
+        Ok((
+            last,
+            changes,
+            ready.into_iter().map(|(_, ready)| ready).collect(),
+        ))
     }
 
     /// Rejects starting a task while one of its dependencies is not done.

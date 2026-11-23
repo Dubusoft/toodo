@@ -180,14 +180,8 @@ impl Services {
             .announced_status
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let storage = crate::commands::lock(self.reader());
-        let found = storage.last_status_change().and_then(|last| {
-            // A restored backup can have fewer records than were announced.
-            *announced = (*announced).min(last);
-            storage.status_changes_after(*announced)
-        });
-        drop(storage);
-        let (changes, ready) = match found {
+        let found = crate::commands::lock(self.reader()).status_changes_after(*announced);
+        let (last, changes, ready) = match found {
             Ok(found) => found,
             Err(error) => {
                 eprintln!("toodo-server: cannot read task status changes: {error}");
@@ -203,8 +197,10 @@ impl Services {
                 at: Timestamp(change.at),
             };
             self.emit(names::TASK_STATUS_CHANGED, &event);
-            *announced = change.id;
         }
+        // The latest record, not the last change: a restored backup can have fewer records
+        // than were announced.
+        *announced = last;
         for task in &ready {
             let event = TaskReady {
                 task_id: task.task.into(),
