@@ -1,6 +1,7 @@
 //! Review reports of a period as Markdown and CSV, rendered from the entries of
 //! `review_period` in the time zone of the reader (see `docs/architecture.md`, Review).
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use jiff::ToSpan;
@@ -1102,15 +1103,32 @@ const CSV_COLUMNS: [&str; 26] = [
     "Completion note",
 ];
 
+/// Spreadsheet apps evaluate a cell that starts with one of these as a formula.
+const CSV_FORMULA_STARTS: [char; 6] = ['=', '+', '-', '@', '\t', '\r'];
+
+/// A text cell an app would evaluate as a formula gets a leading `'`, so titles and
+/// notes written by agents stay text. Numbers, negative ones included, stay as they are.
+fn neutralize_csv_formula(field: &str) -> Cow<'_, str> {
+    let number = field.parse::<f64>().is_ok()
+        && field
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'-' | b'.'));
+    if field.starts_with(CSV_FORMULA_STARTS) && !number {
+        Cow::Owned(format!("'{field}"))
+    } else {
+        Cow::Borrowed(field)
+    }
+}
+
 fn push_csv_row(text: &mut String, fields: &[Option<String>]) {
     let row: Vec<String> = fields
         .iter()
         .map(|field| {
-            let field = field.as_deref().unwrap_or_default();
+            let field = neutralize_csv_formula(field.as_deref().unwrap_or_default());
             if field.contains(['"', ',', '\r', '\n']) {
                 format!("\"{}\"", field.replace('"', "\"\""))
             } else {
-                field.to_owned()
+                field.into_owned()
             }
         })
         .collect();
@@ -1683,7 +1701,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_one_csv_row_per_task_with_local_times_and_quotes_fields_that_need_it() {
+    fn writes_one_csv_row_per_task_with_local_times_quoted_fields_and_formulas_kept_as_text() {
         let at = local(2026, 10, 13, 15);
         let mut done = completed(7, at);
         done.task.milestones.planned_at = Some(Timestamp(local(2026, 10, 1, 9)));
@@ -1713,10 +1731,17 @@ mod tests {
         let mut working = entry(8, ReviewOutcome::Planned);
         working.task.workspace_id = WorkspaceId(9);
         working.task.title = "Plan café".to_owned();
+        let mut link = entry(9, ReviewOutcome::Planned);
+        link.task.title = "=HYPERLINK(\"https://evil.example\",\"Open\")".to_owned();
+        link.task.completion_note = Some("@SUM(1+1)".to_owned());
+        link.task.estimate = Some(Estimate {
+            unit: EstimateUnit::Days,
+            amount: -1.5,
+        });
         working.task.timeline = vec![event(TaskStatus::InProgress, at - 1800)];
         // Two hours east of UTC: the times are local to the reader.
         let tz = TimeZone::fixed(jiff::tz::offset(2));
-        let entries = [done, working];
+        let entries = [done, working, link];
 
         let csv = render(&week(), &entries, &tz, at).csv();
 
@@ -1727,6 +1752,7 @@ mod tests {
                     "Task,Workspace,Type,Title,Outcome,Outcome at,Resolution,Planned,Started,Awaiting completion,Completed,Merged,Pull request,Issue,Commits in period,Active hours,Waiting hours,Estimate,Estimate unit,Due date,Due status,Additions,Deletions,Changed files,Reviews,Completion note",
                     "7,toodo,feat,\"Fix \"\"login\"\", then\nlogout\",Completed,2026-10-13 17:00,Not adopted,2026-10-01 11:00,,,2026-10-13 17:00,,https://github.com/acme/toodo/pull/3,https://github.com/acme/toodo/issues/12,0,3,0,2,hours,2026-10-12,Late,120,30,4,2,\"Cut login time in half, finally\"",
                     "8,workspace 9,feat,Plan café,Planned,2026-10-13 17:00,,,,,,,,,0,0.5,0,,,,,,,,,",
+                    "9,toodo,feat,\"'=HYPERLINK(\"\"https://evil.example\"\",\"\"Open\"\")\",Planned,2026-10-13 17:00,,,,,,,,,0,,,-1.5,days,,,,,,,'@SUM(1+1)",
                 ]
                 .join("\r\n")
                 + "\r\n"
