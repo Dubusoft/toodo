@@ -27,6 +27,36 @@ The server listens on loopback only by default, so `http://127.0.0.1:47616` work
 server itself. From another device, reach it through a tunnel; see
 [Off the Machine](server.md#off-the-machine-cloudflare-tunnel-and-access).
 
+### The server does not start: restore a backup by hand
+
+When the database is damaged, the server stops at start and the web app and
+`POST /api/backups/restore` cannot restore a backup. `toodo start` then ends with
+`toodo-server exited (exit status: 1) before it accepted connections`, and `toodo logs`
+shows the cause, e.g.
+`cannot back up .../toodo.sqlite3 before migrating it to the schema of this version: database error: file is not a database`.
+Put a backup in its place by hand:
+
+```sh
+toodo stop
+toodo status                  # must say stopped and exit 3 before you touch the files
+cd ~/.local/share/toodo-server  # or the Data directory toodo status prints
+damaged=damaged-$(date +%Y%m%d-%H%M%S)
+mkdir "$damaged"
+mv toodo.sqlite3* "$damaged"/  # the database with its -wal and -shm files
+ls backups/                   # toodo-auto-*, toodo-pre-restore-*, toodo-pre-migration-*
+cp backups/toodo-auto-20261123-080310.sqlite3 toodo.sqlite3
+toodo start
+toodo doctor                  # ends with "No problems found." and exits 0
+```
+
+Move the `-wal` and `-shm` files together with `toodo.sqlite3`: they hold changes of the
+damaged file, which SQLite would otherwise apply to the backup. Pick the newest backup
+from before the trouble; the time in its name is UTC, and anything changed after it is
+lost. When *Settings > Backups* names another directory, the backups are there (the
+`directory` in `backup-settings.json`). A backup of an older version is migrated on
+start, after a pre-migration backup of it. The damaged files stay in `damaged-<time>/`;
+delete them once the restored data looks right.
+
 ### Sign-in says the token is wrong
 
 The access token is the content of `web-token` in the data directory:

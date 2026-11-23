@@ -308,7 +308,9 @@ directory stay there and are no longer listed. There are three kinds:
   adds data.
 - `toodo-pre-migration-<time>.sqlite3`: on start, right before a newer version migrates
   the database to its schema. If this backup cannot be written, the server does not start
-  and leaves the database unchanged; its error names the directory to fix.
+  and leaves the database unchanged; its error names the directory to fix. When the
+  database itself is damaged, restore a backup by hand; see
+  [Troubleshooting](troubleshooting.md#the-server-does-not-start-restore-a-backup-by-hand).
 
 Each backup is a `VACUUM INTO` snapshot that must pass `PRAGMA integrity_check` before it
 takes its name; a damaged one is deleted. Automatic backups and exports read the
