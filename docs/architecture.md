@@ -383,7 +383,9 @@ or guessed by an agent.
 - The review can be copied as Markdown, or saved as a Markdown or CSV file (one row per
   task with its milestones as local times, its resolution, its active hours so far, its
   estimate and unit, its due date and whether it was met (`On time`, `Late`, `Overdue`,
-  or `Not due yet`), and its completion note; UTF-8 with a byte order mark). The server
+  or `Not due yet`), and its completion note; UTF-8 with a byte order mark; a text cell
+  that starts with `=`, `+`, `-`, `@`, a tab, or a carriage return gets a leading `'` so
+  spreadsheet apps don't evaluate it as a formula, while numbers stay as they are). The server
   renders both reports with the `review_report` command, in the review time zone unless
   the caller names another IANA time zone, and the browser downloads the file. Agents get
   the same report from the MCP tool `review_report`, and the CLI prints it with
