@@ -6,8 +6,9 @@ name: Release
 # workflow by hand on main to retry a failed release.
 #
 # A release vX.Y.Z carries the Linux toodo-server and toodo CLI with the web app (a tarball + its
-# sha256). It is skipped when both assets are already there, so a re-run completes a
-# half-done release.
+# sha256). The release stays a draft until both assets are uploaded, so the latest release
+# always has them. It is skipped when it is published with both assets, so a re-run
+# completes a half-done release.
 on:
   push:
     branches:
@@ -42,15 +43,17 @@ jobs:
           version=$(jq -r .version package.json)
           tag="v$version"
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
-          assets=$(gh release view "$tag" --json assets --jq '.assets[].name' 2>/dev/null || true)
+          release=$(gh release view "$tag" --json assets,isDraft 2>/dev/null || echo '{}')
+          assets=$(jq -r '.assets[]?.name' <<<"$release")
+          draft=$(jq -r '.isDraft // false' <<<"$release")
           has() { grep -qxF "$1" <<<"$assets"; }
           server="toodo-server-$tag-linux-x86_64.tar.gz"
-          if has "$server" && has "$server.sha256"; then
+          if [ "$draft" = false ] && has "$server" && has "$server.sha256"; then
             echo "server-done=true" >>"$GITHUB_OUTPUT"
           else
             echo "server-done=false" >>"$GITHUB_OUTPUT"
           fi
-          echo "$tag assets: ${assets:-none}"
+          echo "$tag (draft: $draft) assets: ${assets:-none}"
 
   server:
     needs: version
@@ -92,7 +95,7 @@ jobs:
           [ "$tarball" = "$expected" ] || { echo "::error::built $tarball, expected $expected"; exit 1; }
           echo "tarball=$tarball" >>"$GITHUB_OUTPUT"
 
-      - name: Upload toodo-server to the release
+      - name: Upload toodo-server and publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -100,11 +103,14 @@ jobs:
           TARBALL: ${{ steps.package.outputs.tarball }}
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "Toodo $TAG" --target "$GITHUB_SHA" --notes ""
+            # A draft has no tag yet and is not the latest release, so nothing installs
+            # from it before it is published below.
+            gh release create "$TAG" --draft --title "Toodo $TAG" --target "$GITHUB_SHA" --notes ""
           fi
           # The checksum goes last: a release with both assets is complete.
           gh release upload "$TAG" "$TARBALL" --clobber
           gh release upload "$TAG" "$TARBALL.sha256" --clobber
+          gh release edit "$TAG" --draft=false
 
   # Starts the npm workflow on main for the latest channel once the release assets exist
   # (built now or already there). It is dispatched, not called with "uses:", because npm

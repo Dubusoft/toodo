@@ -183,14 +183,15 @@ To publish a release:
 4. On every push to `main`, the `Release` workflow (`.github/workflows/release.yml`)
    releases the version in `package.json` unless it is already published: on Ubuntu it
    builds the web app (`npm run build`) and the x86_64 Linux `toodo-server`, packages
-   them with `scripts/package-server.sh`, uploads
-   `toodo-server-vX.Y.Z-linux-x86_64.tar.gz` and then its `.sha256`, and creates the
-   release "Toodo vX.Y.Z" if it is missing. A push to `main` without a version bump does
-   nothing.
+   them with `scripts/package-server.sh`, creates the release "Toodo vX.Y.Z" as a draft if
+   it is missing, uploads `toodo-server-vX.Y.Z-linux-x86_64.tar.gz` and then its
+   `.sha256`, and publishes the release. Until then it has no tag and is not the latest
+   release, so `install-server.sh --release latest` keeps installing the previous one. A
+   push to `main` without a version bump does nothing.
 
 Releases run from `main` rather than from tags so the Rust build cache of one release is
 reused by the next. If a release fails, run the `Release` workflow by hand on `main`; it
-completes a release whose server assets were not uploaded yet.
+completes a release whose server assets were not uploaded yet or that is still a draft.
 
 The `Release` workflow also starts the `npm` workflow on `main` with dist-tag `latest` to
 publish the release to npm. If that publish fails or is skipped, run the `npm` workflow by
