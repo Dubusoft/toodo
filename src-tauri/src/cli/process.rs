@@ -2,13 +2,13 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -42,6 +42,74 @@ pub(super) fn output(program: &str, args: &[&str]) -> io::Result<Output> {
         .output()
 }
 
+/// Like [`output`], but kills the program once it has run for `limit`, failing with
+/// [`io::ErrorKind::TimedOut`].
+pub(super) fn output_within(program: &str, args: &[&str], limit: Duration) -> io::Result<Output> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    // Read both pipes while the program runs, so it never blocks on a full one.
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let status = wait_within(&mut child, limit)?;
+    Ok(Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    })
+}
+
+/// Runs `program args` with this process's stdout and stderr, and kills it once it has run
+/// for `limit`, failing with [`io::ErrorKind::TimedOut`].
+pub(super) fn status_within(
+    program: &Path,
+    args: &[&str],
+    limit: Duration,
+) -> io::Result<ExitStatus> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .spawn()?;
+    wait_within(&mut child, limit)
+}
+
+/// Waits until `child` exits, killing and reaping it once `limit` has passed.
+fn wait_within(child: &mut Child, limit: Duration) -> io::Result<ExitStatus> {
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "did not finish within {} s and was stopped; check that the command \
+                     works when you run it yourself and that your network is up",
+                    limit.as_secs()
+                ),
+            ));
+        }
+        thread::sleep(POLL);
+    }
+}
+
+/// Reads `pipe` to its end on another thread.
+fn drain(pipe: Option<impl Read + Send + 'static>) -> thread::JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut pipe) = pipe {
+            drop(pipe.read_to_end(&mut bytes));
+        }
+        bytes
+    })
+}
+
 /// Whether `program args` runs and exits with success.
 pub(super) fn succeeds(program: &str, args: &[&str]) -> bool {
     output(program, args).is_ok_and(|output| output.status.success())
@@ -49,9 +117,36 @@ pub(super) fn succeeds(program: &str, args: &[&str]) -> bool {
 
 /// Runs `program args` and returns its stdout; on failure the error ends with `next_step`.
 pub(super) fn run(program: &str, args: &[&str], next_step: &str) -> Result<String, String> {
+    finish(program, args, output(program, args), next_step)
+}
+
+/// Like [`run`], but kills the program once it has run for `limit`.
+pub(super) fn run_within(
+    program: &str,
+    args: &[&str],
+    limit: Duration,
+    next_step: &str,
+) -> Result<String, String> {
+    finish(
+        program,
+        args,
+        output_within(program, args, limit),
+        next_step,
+    )
+}
+
+/// The stdout of `program args` that ended with `output`, or the error [`run`] reports.
+fn finish(
+    program: &str,
+    args: &[&str],
+    output: io::Result<Output>,
+    next_step: &str,
+) -> Result<String, String> {
     let command = format!("{program} {}", args.join(" "));
-    let output = output(program, args)
-        .map_err(|error| format!("cannot run `{command}`: {error}; {next_step}"))?;
+    let output = output.map_err(|error| match error.kind() {
+        io::ErrorKind::TimedOut => format!("`{command}` {error}; {next_step}"),
+        _ => format!("cannot run `{command}`: {error}; {next_step}"),
+    })?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
@@ -320,6 +415,61 @@ mod tests {
         fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(find_on_path("tool", &var), Some(tool));
         assert_eq!(find_on_path("missing", &var), None);
+    }
+
+    #[test]
+    fn a_program_past_its_limit_is_killed_and_named_in_the_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let npm = dir.path().join("npm");
+        let pid_file = dir.path().join("pid");
+        fs::write(
+            &npm,
+            format!(
+                "#!/bin/sh\necho $$ > {}\nexec sleep 30\n",
+                pid_file.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&npm, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.path().display().to_string();
+        let var = |name: &str| (name == "PATH").then(|| path.clone());
+        let npm = find_on_path("npm", &var).unwrap().display().to_string();
+
+        let started = Instant::now();
+        let error = run_within(
+            &npm,
+            &["view", "@dubusoft/toodo@latest", "version"],
+            Duration::from_secs(1),
+            "rerun toodo update",
+        )
+        .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(
+            error,
+            format!(
+                "`{npm} view @dubusoft/toodo@latest version` did not finish within 1 s and \
+                 was stopped; check that the command works when you run it yourself and that \
+                 your network is up; rerun toodo update"
+            )
+        );
+        let pid = fs::read_to_string(&pid_file).unwrap();
+        assert!(
+            !succeeds("kill", &["-0", pid.trim()]),
+            "pid {pid} still runs"
+        );
+    }
+
+    #[test]
+    fn a_program_within_its_limit_gives_its_output() {
+        let output = output_within(
+            "sh",
+            &["-c", "echo out; echo err >&2"],
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"out\n");
+        assert_eq!(output.stderr, b"err\n");
     }
 
     #[test]

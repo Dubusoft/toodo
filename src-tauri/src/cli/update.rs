@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::Duration;
 
 use super::Var;
@@ -23,6 +23,11 @@ use crate::commands::updates::{PACKAGE, channel_of, compare_versions};
 const PLATFORM_PACKAGE: &str = "@dubusoft/toodo-";
 /// The API command the health check calls, as `scripts/install-server.sh` does.
 const HEALTH_PATH: &str = "/api/rpc/list_tasks";
+/// How long `npm view` and `npm root -g` get before they are stopped.
+const NPM_QUERY_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long `npm i -g` gets before it is stopped: a download of every platform package on
+/// a slow link, with room to spare.
+const NPM_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// An npm dist-tag of [`PACKAGE`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,26 +113,17 @@ pub(super) fn leave_npx_cache(args: &[String], var: Var) -> Result<(), String> {
         "npx runs toodo from npm's cache, which npm may clean; installing {spec} globally \
          first..."
     );
-    let status = Command::new(&npm)
-        .args(["i", "-g", &spec, "--include=optional"])
-        .stdin(Stdio::null())
-        .status()
-        .map_err(|error| {
-            format!(
-                "cannot run {}: {error}; nothing was set up; check your npm and rerun {rerun}",
-                npm.display()
-            )
-        })?;
-    if !status.success() {
-        return Err(format!(
-            "`npm i -g {spec} --include=optional` failed ({status}); nothing was set up; fix \
-             the npm error above (for EACCES, give npm a prefix you own: npm config set \
-             prefix ~/.local, with ~/.local/bin on PATH) and rerun {rerun}"
-        ));
-    }
-    let root = process::run(
+    npm_install(&npm, &spec).map_err(|cause| {
+        format!(
+            "{cause}; nothing was set up; fix the npm error above (for EACCES, give npm a \
+             prefix you own: npm config set prefix ~/.local, with ~/.local/bin on PATH) and \
+             rerun {rerun}"
+        )
+    })?;
+    let root = process::run_within(
         &npm.display().to_string(),
         &["root", "-g"],
+        NPM_QUERY_TIMEOUT,
         &format!("check your npm and rerun {rerun}"),
     )?;
     let global = global_cli(Path::new(root.trim()), &installed.name)
@@ -302,25 +298,13 @@ pub(super) fn update(
 
     let verb = if downgrade { "Downgrading" } else { "Updating" };
     println!("{verb} toodo {old} to {target} ({PACKAGE}@{tag})...");
-    let status = Command::new(&npm)
-        .args(["i", "-g", &spec, "--include=optional"])
-        .stdin(Stdio::null())
-        .status()
-        .map_err(|error| {
-            format!(
-                "cannot run {}: {error}; nothing changed, and toodo-server keeps running {}; \
-                 check your npm and rerun toodo update",
-                npm.display(),
-                installed.version
-            )
-        })?;
-    if !status.success() {
-        return Err(format!(
-            "`npm i -g {spec} --include=optional` failed ({status}); toodo-server was not \
-             restarted and keeps running {}; fix the npm error above and rerun toodo update",
-            installed.version
-        ));
-    }
+    npm_install(&npm, &spec).map_err(|cause| {
+        format!(
+            "{cause}; toodo-server was not restarted and keeps running {old}; fix the npm \
+             error above and rerun toodo update, or go back to {old} with: npm i -g \
+             {PACKAGE}@{old} --include=optional"
+        )
+    })?;
 
     let new = Package::of(&bin.join("toodo")).ok_or_else(|| {
         format!(
@@ -350,9 +334,14 @@ pub(super) fn update(
         super::agents::refresh(data, listen, var);
         return Ok(());
     }
-    let restarted = restart(supervisor, &bundle, data, listen, flag, var).and_then(|()| {
-        healthy(listen).map_err(|cause| format!("toodo-server does not answer: {cause}"))
-    });
+    let server = Server {
+        supervisor,
+        data,
+        listen,
+        flag,
+        var,
+    };
+    let restarted = server.restart(&bundle);
     match restarted {
         Ok(()) => {
             println!(
@@ -363,24 +352,17 @@ pub(super) fn update(
             super::agents::refresh(data, listen, var);
             Ok(())
         }
-        Err(cause) => Err(roll_back(
-            &npm, &bin, old, supervisor, data, listen, flag, var, &changed, &cause,
-        )),
+        Err(cause) => Err(roll_back(&npm, &bin, old, &server, &changed, &cause)),
     }
 }
 
 /// Installs `old` again after the server did not come back on the update `changed`
 /// for `cause`, restarts the server on it, and returns the error `toodo update` reports.
-#[allow(clippy::too_many_arguments)]
 fn roll_back(
     npm: &Path,
     bin: &Path,
     old: &str,
-    supervisor: Supervisor,
-    data: &DataDir,
-    listen: SocketAddr,
-    flag: &str,
-    var: Var,
+    server: &Server,
     changed: &str,
     cause: &str,
 ) -> String {
@@ -389,10 +371,13 @@ fn roll_back(
     let spec = format!("{PACKAGE}@{old}");
     let restored = npm_install(npm, &spec)
         .and_then(|()| Bundle::beside(&bin.join("toodo")))
-        .and_then(|bundle| restart(supervisor, &bundle, data, listen, flag, var))
-        .and_then(|()| {
-            healthy(listen).map_err(|cause| format!("toodo-server does not answer: {cause}"))
-        });
+        .and_then(|bundle| server.restart(&bundle));
+    let Server {
+        supervisor,
+        listen,
+        flag,
+        ..
+    } = *server;
     match restored {
         Ok(()) => format!(
             "updated {changed}, but the server did not come back: {cause}; went back to \
@@ -408,13 +393,19 @@ fn roll_back(
     }
 }
 
-/// Runs `npm i -g <spec> --include=optional`.
+/// Runs `npm i -g <spec> --include=optional`, stopping it after [`NPM_INSTALL_TIMEOUT`].
 fn npm_install(npm: &Path, spec: &str) -> Result<(), String> {
-    let status = Command::new(npm)
-        .args(["i", "-g", spec, "--include=optional"])
-        .stdin(Stdio::null())
-        .status()
-        .map_err(|error| format!("cannot run {}: {error}", npm.display()))?;
+    npm_install_within(npm, spec, NPM_INSTALL_TIMEOUT)
+}
+
+fn npm_install_within(npm: &Path, spec: &str, limit: Duration) -> Result<(), String> {
+    let status = process::status_within(npm, &["i", "-g", spec, "--include=optional"], limit)
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::TimedOut => {
+                format!("`npm i -g {spec} --include=optional` {error}")
+            }
+            _ => format!("cannot run {}: {error}", npm.display()),
+        })?;
     if status.success() {
         Ok(())
     } else {
@@ -426,9 +417,10 @@ fn npm_install(npm: &Path, spec: &str) -> Result<(), String> {
 
 /// The version npm resolves `spec` (`name@tag` or `name@version`) to.
 fn published_version(npm: &Path, spec: &str) -> Result<String, String> {
-    let output = process::run(
+    let output = process::run_within(
         &npm.display().to_string(),
         &["view", spec, "version"],
+        NPM_QUERY_TIMEOUT,
         "nothing changed; check your network and npm registry, then rerun toodo update",
     )?;
     match output.trim() {
@@ -443,9 +435,10 @@ fn published_version(npm: &Path, spec: &str) -> Result<String, String> {
 /// Fails unless npm's global packages are where this CLI is installed: otherwise npm
 /// would update another copy.
 fn check_global_root(npm: &Path, package: &Path) -> Result<(), String> {
-    let output = process::run(
+    let output = process::run_within(
         &npm.display().to_string(),
         &["root", "-g"],
+        NPM_QUERY_TIMEOUT,
         "check your npm and rerun toodo update",
     )?;
     let root = PathBuf::from(output.trim());
@@ -499,32 +492,46 @@ fn describe(supervisor: Supervisor) -> String {
     }
 }
 
-/// Restarts the server on the files of `bundle`, and waits until it accepts connections.
-fn restart(
+/// The server `toodo update` restarts: who runs it, its data directory, where it
+/// listens, and the `--data-dir` option of the commands it suggests.
+#[derive(Clone, Copy)]
+struct Server<'a> {
     supervisor: Supervisor,
-    bundle: &Bundle,
-    data: &DataDir,
+    data: &'a DataDir,
     listen: SocketAddr,
-    flag: &str,
-    var: Var,
-) -> Result<(), String> {
-    match supervisor {
-        Supervisor::Systemd => {
-            // The unit runs copies of the server and the web app; refresh them first.
-            service::install_bundle(bundle, var)?;
-            service::systemctl("restart")?;
-            service::wait_until_up(listen)
-        }
-        Supervisor::Launchd => {
-            // The job runs copies of the server and the web app; refresh them first.
-            service::install_bundle(bundle, var)?;
-            launchd::kickstart(true)?;
-            launchd::wait_until_up(listen, var)
-        }
-        Supervisor::PidFile => {
-            process::stop(data)?;
-            process::spawn(bundle, data, listen, flag).map(drop)
-        }
+    flag: &'a str,
+    var: Var<'a>,
+}
+
+impl Server<'_> {
+    /// Restarts the server on the files of `bundle`, and waits until it answers.
+    fn restart(&self, bundle: &Bundle) -> Result<(), String> {
+        let Self {
+            supervisor,
+            data,
+            listen,
+            flag,
+            var,
+        } = *self;
+        match supervisor {
+            Supervisor::Systemd => {
+                // The unit runs copies of the server and the web app; refresh them first.
+                service::install_bundle(bundle, var)?;
+                service::systemctl("restart")?;
+                service::wait_until_up(listen)
+            }
+            Supervisor::Launchd => {
+                // The job runs copies of the server and the web app; refresh them first.
+                service::install_bundle(bundle, var)?;
+                launchd::kickstart(true)?;
+                launchd::wait_until_up(listen, var)
+            }
+            Supervisor::PidFile => {
+                process::stop(data)?;
+                process::spawn(bundle, data, listen, flag).map(drop)
+            }
+        }?;
+        healthy(listen).map_err(|cause| format!("toodo-server does not answer: {cause}"))
     }
 }
 
@@ -697,6 +704,31 @@ mod tests {
         assert_eq!(
             global_cli(root.path(), platform),
             Some(nested.join("toodo"))
+        );
+    }
+
+    #[test]
+    fn an_install_past_its_limit_is_stopped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let npm = dir.path().join("npm");
+        fs::write(&npm, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        fs::set_permissions(&npm, fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.path().display().to_string();
+        let var = |name: &str| (name == "PATH").then(|| path.clone());
+        let npm = process::find_on_path("npm", &var).unwrap();
+
+        let started = std::time::Instant::now();
+        let error =
+            npm_install_within(&npm, "@dubusoft/toodo@1.0.0", Duration::from_secs(1)).unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(
+            error.starts_with(
+                "`npm i -g @dubusoft/toodo@1.0.0 --include=optional` did not finish within 1 s \
+                 and was stopped; check that the command works"
+            ),
+            "{error}"
         );
     }
 
