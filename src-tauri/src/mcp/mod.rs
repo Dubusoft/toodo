@@ -771,7 +771,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Create a planned task in a workspace with its completion criteria, optionally depending on existing tasks (depends_on) and related to others (related). Without merge_criterion false, its first criterion is the merge, which follows the workspace completion: the pull request is merged (pr_merge), or the branch is merged into the base branch locally (local_merge); a workspace with completion manual gets no merge criterion and accepts only manual, url, and command criteria."
+        description = "Create a planned task in a workspace with its completion criteria, optionally depending on existing tasks (depends_on) and related to others (related). Criteria are manual, checked by a person or the executor with evidence, or url, an HTTP GET of the target that passes on a 2xx response; the task gets no other criterion."
     )]
     async fn create_task(
         &self,

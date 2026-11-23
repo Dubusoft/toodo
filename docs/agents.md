@@ -59,7 +59,6 @@ that every fragment appears in both texts and that no placeholder is left.
      "title": "Send push notifications for blocked tasks",
      "description": "## Purpose\n\nTell the user when a task reports a blocker.\n\n## Background\n\nBlocker notes already exist.",
      "criteria": [{ "text": "A blocker note sends a push notification", "kind": "manual" }],
-     "merge_criterion": false,
      "depends_on": [41],
      "related": [37],
      "labels": ["notifications"],

@@ -1339,8 +1339,7 @@ fn check_plan_order(
     )))
 }
 
-/// The task `item` of a plan creates, with its merge criterion and labels and without
-/// links.
+/// The task `item` of a plan creates, with its labels and without links.
 fn plan_task(_storage: &StorageState, item: &PlanTask) -> CommandResult<storage::NewPlanTask> {
     let labels = types::labels(&item.labels)?;
     let refs = types::merge_refs(&[], &item.refs, &[])?;
@@ -1365,8 +1364,7 @@ fn plan_task(_storage: &StorageState, item: &PlanTask) -> CommandResult<storage:
     })
 }
 
-/// Creates the task of `request` with `merge`, its merge criterion if it gets one, in
-/// front of its criteria.
+/// Creates the task of `request` with its labels, refs, and links.
 fn insert_task(storage: &mut Storage, request: CreateTask) -> CommandResult<Task> {
     for &linked in request.depends_on.iter().chain(&request.related) {
         storage

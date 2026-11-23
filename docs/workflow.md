@@ -84,9 +84,8 @@ and records it as a `manual` criterion if the task needs it written down.
 
 Criteria are set when the task is created (`create_task`) and can be edited until the
 task is done (`update_task`, or one at a time with `add_criterion` and
-`remove_criterion`). Pass `merge_criterion: false` to `create_task` so no merge criterion
-is added. Criteria of older kinds were turned into `manual` criteria by a migration, met
-when they had been met before.
+`remove_criterion`). Criteria of older kinds were turned into `manual` criteria by a
+migration, met when they had been met before.
 
 `complete_task` is rejected while a `manual` criterion is unchecked or a `url` criterion
 fails, and the error lists what isn't met. A task without criteria completes when someone
