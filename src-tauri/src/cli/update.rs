@@ -11,7 +11,8 @@ use std::net::{SocketAddr, TcpStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use super::Var;
 use super::launchd;
@@ -28,6 +29,9 @@ const NPM_QUERY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long `npm i -g` gets before it is stopped: a download of every platform package on
 /// a slow link, with room to spare.
 const NPM_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// How long a server that accepts connections gets to answer an API command.
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(20);
+const HEALTH_RETRY: Duration = Duration::from_millis(250);
 
 /// An npm dist-tag of [`PACKAGE`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -535,12 +539,51 @@ impl Server<'_> {
     }
 }
 
-/// Calls an API command without a token, which the server answers with `401`.
+/// Calls an API command without a token, which the server answers with `401`. A server
+/// that was just restarted may accept connections before it answers (or an old process may
+/// still be closing them), so this asks again until [`HEALTH_TIMEOUT`] passes.
 pub(super) fn healthy(listen: SocketAddr) -> Result<(), String> {
-    let address = settings::local_address(listen);
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5))
+    answers_unauthorized(settings::local_address(listen), HEALTH_TIMEOUT)
+}
+
+/// Asks `address` until it answers `401` or `timeout` passes. An answer with another status
+/// ends the wait at once; the timeout error carries the cause of the last attempt.
+fn answers_unauthorized(address: SocketAddr, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let cause = match status_without_token(address, deadline) {
+            Ok(401) => return Ok(()),
+            Ok(code) => {
+                return Err(format!(
+                    "POST http://{address}{HEALTH_PATH} without a token answered {code} instead \
+                     of 401"
+                ));
+            }
+            Err(cause) => cause,
+        };
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(format!(
+                "POST http://{address}{HEALTH_PATH} got no HTTP response within {timeout:?}; \
+                 last attempt: {cause}"
+            ));
+        }
+        thread::sleep(HEALTH_RETRY.min(left));
+    }
+}
+
+/// The status `address` answers an API command without a token with, waiting at most until
+/// `deadline`.
+fn status_without_token(address: SocketAddr, deadline: Instant) -> Result<u16, String> {
+    // Socket timeouts must not be zero; a spent deadline still gets a last short try.
+    let left = || {
+        deadline
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1))
+    };
+    let mut stream = TcpStream::connect_timeout(&address, left().min(Duration::from_secs(5)))
         .map_err(|error| format!("cannot connect to {address}: {error}"))?;
-    let timeout = Some(Duration::from_secs(10));
+    let timeout = Some(left().min(Duration::from_secs(10)));
     drop(stream.set_read_timeout(timeout));
     drop(stream.set_write_timeout(timeout));
     let request = format!(
@@ -551,14 +594,12 @@ pub(super) fn healthy(listen: SocketAddr) -> Result<(), String> {
         .write_all(request.as_bytes())
         .map_err(|error| format!("cannot send a request to {address}: {error}"))?;
     let mut response = Vec::new();
-    drop(stream.take(4096).read_to_end(&mut response));
-    match status_code(&response) {
-        Some(401) => Ok(()),
-        Some(code) => Err(format!(
-            "POST http://{address}{HEALTH_PATH} without a token answered {code} instead of 401"
-        )),
-        None => Err(format!(
-            "POST http://{address}{HEALTH_PATH} got no HTTP response"
+    let read = stream.take(4096).read_to_end(&mut response);
+    match (status_code(&response), read) {
+        (Some(code), _) => Ok(code),
+        (None, Err(error)) => Err(format!("cannot read the answer of {address}: {error}")),
+        (None, Ok(_)) => Err(format!(
+            "{address} closed the connection without an HTTP response"
         )),
     }
 }
@@ -738,5 +779,68 @@ mod tests {
         assert_eq!(status_code(b"HTTP/1.0 200 OK\r\n"), Some(200));
         assert_eq!(status_code(b"SSH-2.0-OpenSSH\r\n"), None);
         assert_eq!(status_code(b""), None);
+    }
+
+    /// Reads a request up to its `{}` body, so that closing the connection sends no reset.
+    fn read_request(stream: &mut TcpStream) {
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        while !request.ends_with(b"{}") {
+            let read = stream.read(&mut buffer).expect("read the request");
+            assert!(read > 0, "the request ended early");
+            request.extend_from_slice(&buffer[..read]);
+        }
+    }
+
+    #[test]
+    fn a_server_that_answers_late_is_healthy() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || {
+            // Like an old server going away: the first connection gets no answer.
+            drop(listener.accept().expect("accept the first connection"));
+            let (mut stream, _) = listener.accept().expect("accept the second connection");
+            read_request(&mut stream);
+            thread::sleep(Duration::from_millis(300));
+            stream
+                .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                .expect("answer");
+        });
+        assert_eq!(
+            answers_unauthorized(address, Duration::from_secs(5)),
+            Ok(())
+        );
+        server.join().expect("the server thread");
+    }
+
+    #[test]
+    fn a_server_that_never_answers_times_out_with_the_cause() {
+        // The kernel accepts connections to a listener nobody serves.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        let error = answers_unauthorized(address, Duration::from_millis(500))
+            .expect_err("a silent server is not healthy");
+        assert!(
+            error.contains("got no HTTP response within 500ms; last attempt: cannot read"),
+            "{error}"
+        );
+        drop(listener);
+    }
+
+    #[test]
+    fn another_status_fails_at_once() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            read_request(&mut stream);
+            stream
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .expect("answer");
+        });
+        let error = answers_unauthorized(address, Duration::from_secs(5))
+            .expect_err("404 is not the server");
+        assert!(error.contains("answered 404 instead of 401"), "{error}");
+        server.join().expect("the server thread");
     }
 }
