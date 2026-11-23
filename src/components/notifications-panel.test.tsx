@@ -13,7 +13,7 @@ vi.mock("@/web/push", () => ({
   sendTest: vi.fn(),
 }));
 
-const settings = { agent: true, pullRequests: true, completion: true };
+const settings = { completion: true };
 const subscription = { endpoint: "https://push.example/a", settings, lastFailure: null };
 const off: PushState = { publicKey: "BP8A-_w", permission: "default", subscription: null };
 const on: PushState = { ...off, permission: "granted", subscription };
@@ -63,7 +63,7 @@ describe("NotificationsPanel", () => {
     fireEvent.click(await screen.findByRole("checkbox", { name: "Task awaiting completion" }));
 
     await waitFor(() => expect(saveSettings).toHaveBeenCalledOnce());
-    expect(vi.mocked(saveSettings).mock.calls[0][0]).toEqual({ agent: true, pullRequests: true, completion: false });
+    expect(vi.mocked(saveSettings).mock.calls[0][0]).toEqual({ completion: false });
     expect(screen.getByRole("checkbox", { name: "Task awaiting completion" })).not.toBeChecked();
   });
 

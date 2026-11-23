@@ -1,7 +1,7 @@
 [package]
 name = "toodo"
 version = "1.11.0"
-description = "Turn a task plan into implemented, reviewed code with herdr"
+description = "Task tracker for planned work: task dependencies and work memory for people and coding agents"
 authors = []
 license = "AGPL-3.0-only"
 edition = "2024"

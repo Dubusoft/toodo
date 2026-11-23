@@ -339,7 +339,7 @@ mod tests {
         let export = dir.path().join("export.sqlite3");
         storage.export_to(&export).unwrap();
 
-        add_workspace(&mut storage, "herdr");
+        add_workspace(&mut storage, "notes");
         assert_ne!(snapshot(&storage), exported);
         storage.restore(stage_backup(&export).unwrap()).unwrap();
 
@@ -458,7 +458,8 @@ mod tests {
 
     /// Writes `storage`'s data to `path` with tasks 1 and 2 waiting with only one of
     /// `wait_until` and `wait_status`, at schema `version` and without the triggers of
-    /// version 50 that refuse such waits.
+    /// version 50 that refuse such waits. Below version 51 the push subscriptions get back
+    /// the setting columns that version drops.
     fn export_with_half_waits(storage: &Storage, path: &Path, version: i64) {
         storage.export_to(path).unwrap();
         let conn = Connection::open(path).unwrap();
@@ -469,6 +470,13 @@ mod tests {
              UPDATE tasks SET wait_status = 'in_progress' WHERE id = 2;",
         )
         .unwrap();
+        if version < 51 {
+            conn.execute_batch(
+                "ALTER TABLE push_subscriptions ADD COLUMN agent INTEGER NOT NULL DEFAULT 1;
+                 ALTER TABLE push_subscriptions ADD COLUMN pull_requests INTEGER NOT NULL DEFAULT 1;",
+            )
+            .unwrap();
+        }
         conn.pragma_update(None, "user_version", version).unwrap();
     }
 

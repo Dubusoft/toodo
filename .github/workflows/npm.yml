@@ -41,12 +41,6 @@ on:
           - dev
           - latest
         default: dev
-  workflow_call:
-    inputs:
-      dist-tag:
-        description: Channel to publish to, dev or latest
-        type: string
-        default: latest
 
 permissions:
   contents: read

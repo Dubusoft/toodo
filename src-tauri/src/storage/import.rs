@@ -4,8 +4,9 @@
 //! Imported rows get IDs after every ID this database has used, so nothing here changes;
 //! references between imported rows move along. Devices, push subscriptions, connected
 //! OAuth apps, settings, saved reviews, and the lead chat of the other database are not
-//! imported: they belong to the server that kept them. Tasks forget their herdr workspace: runtime records are not
-//! imported, since their IDs only meant something to the other machine's herdr.
+//! imported: they belong to the server that kept them. Records of the removed execution
+//! backend are not imported either, since their IDs only meant something on the other
+//! machine.
 
 use std::collections::HashSet;
 use std::time::Duration;

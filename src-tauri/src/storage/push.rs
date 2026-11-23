@@ -9,8 +9,8 @@ use crate::domain::push::{
     PushEndpoint, PushFailure, PushSettings, PushSubscription, subscription_keys,
 };
 
-const COLUMNS: &str = "device_id, endpoint, p256dh, auth, agent, pull_requests, completion, \
-                       created_at, last_failure, last_failure_at";
+const COLUMNS: &str =
+    "device_id, endpoint, p256dh, auth, completion, created_at, last_failure, last_failure_at";
 
 fn subscription(row: &Row<'_>) -> rusqlite::Result<PushSubscription> {
     let invalid = |column: usize, error: Box<dyn std::error::Error + Send + Sync>| {
@@ -28,12 +28,10 @@ fn subscription(row: &Row<'_>) -> rusqlite::Result<PushSubscription> {
         p256dh,
         auth,
         settings: PushSettings {
-            agent: row.get(4)?,
-            pull_requests: row.get(5)?,
-            completion: row.get(6)?,
+            completion: row.get(4)?,
         },
-        created_at: row.get(7)?,
-        last_failure: match (row.get(8)?, row.get(9)?) {
+        created_at: row.get(5)?,
+        last_failure: match (row.get(6)?, row.get(7)?) {
             (Some(message), Some(at)) => Some(PushFailure { message, at }),
             _ => None,
         },
@@ -165,14 +163,8 @@ impl Storage {
     ) -> Result<PushSubscription> {
         let tx = self.conn.transaction()?;
         tx.execute(
-            "UPDATE push_subscriptions SET agent = ?2, pull_requests = ?3, completion = ?4
-             WHERE device_id = ?1",
-            params![
-                device.0,
-                settings.agent,
-                settings.pull_requests,
-                settings.completion
-            ],
+            "UPDATE push_subscriptions SET completion = ?2 WHERE device_id = ?1",
+            params![device.0, settings.completion],
         )?;
         let saved = find(&tx, device)?.ok_or(StorageError::PushSubscriptionNotFound(device))?;
         tx.commit()?;
@@ -221,10 +213,7 @@ mod tests {
             .save_push_subscription(phone, &new("https://push.example/a", 1))
             .unwrap();
         assert_eq!(first.settings, PushSettings::default());
-        let quiet = PushSettings {
-            pull_requests: false,
-            ..PushSettings::default()
-        };
+        let quiet = PushSettings { completion: false };
         storage.set_push_settings(phone, quiet).unwrap();
 
         let second = storage

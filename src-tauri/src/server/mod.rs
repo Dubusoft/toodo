@@ -1625,11 +1625,11 @@ mod tests {
             saved,
             serde_json::json!({
                 "endpoint": "https://push.example/send/1",
-                "settings": { "agent": true, "pullRequests": true, "completion": true },
+                "settings": { "completion": true },
                 "lastFailure": null
             })
         );
-        let quiet = serde_json::json!({ "agent": true, "pullRequests": false, "completion": true });
+        let quiet = serde_json::json!({ "completion": false });
         let (status, saved) = send_json(address, "PUT", "/api/push/settings", &token, &quiet);
         assert!(status.contains(" 200 "), "{status}");
         assert_eq!(saved["settings"], quiet);

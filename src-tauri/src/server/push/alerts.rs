@@ -1,8 +1,6 @@
-//! What deserves a push notification: the changes between two snapshots of task statuses,
-//! agent statuses, and pull request statuses. The first snapshot only sets the baseline,
-//! so starting the server is silent, and a newly seen task or agent raises nothing; a pull
-//! request first seen after the baseline counts as one whose checks and reviews had not
-//! finished, so CI that already failed when Toodo first reads it still raises an alert.
+//! What deserves a push notification: the changes between two snapshots of task statuses.
+//! The first snapshot only sets the baseline, so starting the server is silent, and a
+//! newly seen task raises nothing.
 
 use std::collections::HashMap;
 
@@ -47,8 +45,6 @@ impl Alert {
 
     fn task(kind: PushKind, urgent: bool, title: &str, task: TaskId, name: Option<&str>) -> Self {
         let tag = match kind {
-            PushKind::Agent => "agent",
-            PushKind::PullRequests => "pull-request",
             PushKind::Completion => "completion",
         };
         let body = match name {

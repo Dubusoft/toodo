@@ -7,7 +7,7 @@ const TOKEN_KEY = "toodo-server-token";
 const publicKey = "BP8A-_w";
 const keyBytes = [4, 255, 0, 251, 252];
 
-const settings = { agent: true, pullRequests: false, completion: true };
+const settings = { completion: true };
 
 /** A fresh copy of the module, since it remembers whether push is on. */
 async function freshPush() {
@@ -284,7 +284,7 @@ describe("push on this device", () => {
     { answer: "a proxy's HTML page", response: htmlPage, error: "PUT /api/push/settings is not JSON" },
     {
       answer: "settings of another shape",
-      response: () => json({ endpoint: "https://push.example/a", settings: { completion: true }, lastFailure: null }),
+      response: () => json({ endpoint: "https://push.example/a", settings: { completion: "yes" }, lastFailure: null }),
       error: "PUT /api/push/settings is not the push data",
     },
   ])("rejects $answer for saved settings", async ({ response, error }) => {

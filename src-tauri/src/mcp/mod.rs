@@ -545,7 +545,7 @@ fn rejection_message(surface: Surface, rejection: Rejection) -> &'static str {
             "Toodo MCP: the request has no Authorization header. Send \
              `Authorization: Bearer <MCP token>`: copy the MCP config from Settings > Agent \
              access in the Toodo app, or use the token in `mcp-token` in the server's data \
-             directory (panes Toodo starts agents in have it as TOODO_MCP_TOKEN)."
+             directory."
         }
         (Surface::Mcp, Rejection::NotBearer) => {
             "Toodo MCP: the Authorization header is not `Bearer <token>`. Send \
@@ -628,7 +628,8 @@ impl ToodoMcp {
         self.announce(result)
     }
 
-    /// Runs `apply` on a blocking thread, since git, gh, and herdr take seconds.
+    /// Runs `apply` on a blocking thread, since it waits on the database and, for URL
+    /// criteria, on an HTTP GET.
     async fn blocking<T: Send + 'static>(
         &self,
         apply: impl FnOnce(&dyn Backend) -> CommandResult<T> + Send + 'static,
@@ -1088,19 +1089,7 @@ impl ToodoMcp {
         let result = self
             .blocking(move |backend| tools::start_task(backend.storage(), request))
             .await?;
-        if let Ok(started) = &result {
-            self.backend
-                .tasks_changed(model::WorkspaceId(started.task.workspace_id.0));
-        }
-        let result = result.map(|task| {
-            let mut value = serde_json::to_value(task).expect("task serializes");
-            value
-                .as_object_mut()
-                .expect("task is an object")
-                .remove("worktreePath");
-            value
-        });
-        reply(result)
+        self.announce_with(result, |started| &started.task)
     }
 
     #[tool(

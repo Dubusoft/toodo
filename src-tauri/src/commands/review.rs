@@ -503,14 +503,14 @@ mod tests {
                 .unwrap()
         };
         let started = add_task("toodo");
-        let committed = add_task("herdr");
+        let committed = add_task("search");
         storage
             .set_task_status(started.id, TaskStatus::InProgress)
             .unwrap();
         let record = CommitRecord {
             task_id: committed.id,
             sha: "abc".to_owned(),
-            message: "Add herdr".to_owned(),
+            message: "Add search".to_owned(),
             author: "Dev <dev@example.com>".to_owned(),
             committed_at: 1500,
         };
@@ -523,7 +523,7 @@ mod tests {
             .iter()
             .map(|entry| (entry.task.title.as_str(), entry.outcome, entry.at.0))
             .collect();
-        assert_eq!(summary, [("Work on herdr", ReviewOutcome::WorkedOn, 1500)]);
+        assert_eq!(summary, [("Work on search", ReviewOutcome::WorkedOn, 1500)]);
         assert_eq!(entries[0].commits, [(&record).into()]);
 
         let entries = review_entries(&storage, Timestamp(0), Timestamp(1000)).unwrap();
@@ -535,7 +535,7 @@ mod tests {
             summary,
             [
                 ("Work on toodo", ReviewOutcome::Started),
-                ("Work on herdr", ReviewOutcome::Planned),
+                ("Work on search", ReviewOutcome::Planned),
             ]
         );
 
@@ -546,7 +546,7 @@ mod tests {
             .iter()
             .map(|entry| (entry.task.title.as_str(), entry.archived))
             .collect();
-        assert_eq!(summary, [("Work on herdr", true)]);
+        assert_eq!(summary, [("Work on search", true)]);
         storage.purge_task(committed.id).unwrap();
         assert!(
             review_entries(&storage, Timestamp(1000), Timestamp(2000))

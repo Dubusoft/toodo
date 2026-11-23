@@ -128,7 +128,7 @@ cpSync(path.join(templateDir, 'README.md'), path.join(mainDir, 'README.md'));
 writeJson(path.join(mainDir, 'package.json'), {
   name: '@dubusoft/toodo',
   version: args.version,
-  description: 'Toodo command line: task planning that turns a plan into reviewed code',
+  description: 'Toodo command line: a task tracker for planned work, used by people and coding agents',
   license: 'AGPL-3.0-only',
   homepage: HOMEPAGE,
   repository: { type: 'git', url: 'git+https://github.com/Dubusoft/toodo.git' },
