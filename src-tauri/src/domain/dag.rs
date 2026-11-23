@@ -45,59 +45,78 @@ fn index(tasks: &[Task]) -> HashMap<TaskId, &Task> {
     tasks.iter().map(|task| (task.id, task)).collect()
 }
 
-pub fn validate_dependency(
-    tasks: &[Task],
-    task: TaskId,
-    depends_on: TaskId,
-) -> Result<(), DependencyError> {
-    if task == depends_on {
-        return Err(DependencyError::SelfDependency(task));
-    }
-    let by_id = index(tasks);
-    for id in [task, depends_on] {
-        if !by_id.contains_key(&id) {
-            return Err(DependencyError::UnknownTask(id));
-        }
-    }
-    if let Some(path) = dependency_path(&by_id, depends_on, task) {
-        let mut cycle = vec![task];
-        cycle.extend(path);
-        return Err(DependencyError::Cycle(cycle));
-    }
-    Ok(())
+/// The tasks and `depends_on` edges of the DAG without the rest of each task: what
+/// checking a new edge needs. Edges are added one at a time, each checked against the
+/// ones before it, so a batch of edges is checked against a single load of the graph.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DependencyGraph {
+    depends_on: HashMap<TaskId, BTreeSet<TaskId>>,
 }
 
-/// Path from `from` to `to` following `depends_on` edges, both ends included.
-fn dependency_path(
-    by_id: &HashMap<TaskId, &Task>,
-    from: TaskId,
-    to: TaskId,
-) -> Option<Vec<TaskId>> {
-    let mut parent: HashMap<TaskId, TaskId> = HashMap::new();
-    let mut visited = HashSet::from([from]);
-    let mut stack = vec![from];
-    while let Some(current) = stack.pop() {
-        if current == to {
-            let mut path = vec![to];
-            let mut node = to;
-            while let Some(&previous) = parent.get(&node) {
-                path.push(previous);
-                node = previous;
-            }
-            path.reverse();
-            return Some(path);
+impl DependencyGraph {
+    /// The graph of `tasks` with `edges`, each a task and a task it depends on.
+    pub fn new(
+        tasks: impl IntoIterator<Item = TaskId>,
+        edges: impl IntoIterator<Item = (TaskId, TaskId)>,
+    ) -> Self {
+        let mut depends_on: HashMap<TaskId, BTreeSet<TaskId>> = tasks
+            .into_iter()
+            .map(|task| (task, BTreeSet::new()))
+            .collect();
+        for (task, dependency) in edges {
+            depends_on.entry(task).or_default().insert(dependency);
         }
-        let Some(task) = by_id.get(&current) else {
-            continue;
-        };
-        for &next in &task.depends_on {
-            if visited.insert(next) {
-                parent.insert(next, current);
-                stack.push(next);
-            }
-        }
+        Self { depends_on }
     }
-    None
+
+    /// Adds the edge `task -> depends_on`, rejecting a self edge, an unknown task, and an
+    /// edge that would close a cycle; a rejected edge leaves the graph as it was.
+    pub fn add(&mut self, task: TaskId, depends_on: TaskId) -> Result<(), DependencyError> {
+        if task == depends_on {
+            return Err(DependencyError::SelfDependency(task));
+        }
+        for id in [task, depends_on] {
+            if !self.depends_on.contains_key(&id) {
+                return Err(DependencyError::UnknownTask(id));
+            }
+        }
+        if let Some(path) = self.dependency_path(depends_on, task) {
+            let mut cycle = vec![task];
+            cycle.extend(path);
+            return Err(DependencyError::Cycle(cycle));
+        }
+        self.depends_on.entry(task).or_default().insert(depends_on);
+        Ok(())
+    }
+
+    /// Path from `from` to `to` following `depends_on` edges, both ends included.
+    fn dependency_path(&self, from: TaskId, to: TaskId) -> Option<Vec<TaskId>> {
+        let mut parent: HashMap<TaskId, TaskId> = HashMap::new();
+        let mut visited = HashSet::from([from]);
+        let mut stack = vec![from];
+        while let Some(current) = stack.pop() {
+            if current == to {
+                let mut path = vec![to];
+                let mut node = to;
+                while let Some(&previous) = parent.get(&node) {
+                    path.push(previous);
+                    node = previous;
+                }
+                path.reverse();
+                return Some(path);
+            }
+            let Some(dependencies) = self.depends_on.get(&current) else {
+                continue;
+            };
+            for &next in dependencies {
+                if visited.insert(next) {
+                    parent.insert(next, current);
+                    stack.push(next);
+                }
+            }
+        }
+        None
+    }
 }
 
 /// A dependency that keeps a task from starting.
@@ -250,6 +269,32 @@ mod tests {
 
     fn ids(raw: &[i64]) -> Vec<TaskId> {
         raw.iter().copied().map(TaskId).collect()
+    }
+
+    /// Adds `task -> depends_on` to the graph of `tasks`.
+    fn validate_dependency(
+        tasks: &[Task],
+        task: TaskId,
+        depends_on: TaskId,
+    ) -> Result<(), DependencyError> {
+        let edges = tasks.iter().flat_map(|task| {
+            task.depends_on
+                .iter()
+                .map(move |&dependency| (task.id, dependency))
+        });
+        DependencyGraph::new(tasks.iter().map(|task| task.id), edges).add(task, depends_on)
+    }
+
+    #[test]
+    fn added_edges_count_toward_the_next_check() {
+        let mut graph = DependencyGraph::new(ids(&[1, 2, 3]), [(TaskId(2), TaskId(1))]);
+        assert_eq!(graph.add(TaskId(3), TaskId(2)), Ok(()));
+        assert_eq!(
+            graph.add(TaskId(1), TaskId(3)),
+            Err(DependencyError::Cycle(ids(&[1, 3, 2, 1])))
+        );
+        // The rejected edge was not added: the other direction is still fine.
+        assert_eq!(graph.add(TaskId(3), TaskId(1)), Ok(()));
     }
 
     use TaskStatus::*;

@@ -234,9 +234,9 @@ impl From<StorageError> for CommandError {
             | StorageError::DependencyOfDoneTask { .. }
             | StorageError::CriteriaOfDoneTask(_)
             | StorageError::AutomaticCriterion { .. } => CommandErrorCode::Rejected,
-            StorageError::SelfRelation(_) | StorageError::InvalidBackup(_) => {
-                CommandErrorCode::InvalidInput
-            }
+            StorageError::SelfRelation(_)
+            | StorageError::PlanLinkOutOfRange { .. }
+            | StorageError::InvalidBackup(_) => CommandErrorCode::InvalidInput,
             StorageError::Io(_) => CommandErrorCode::External,
             StorageError::Sqlite(_)
             | StorageError::BackupCheckFailed(_)

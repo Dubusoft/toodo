@@ -548,6 +548,25 @@ fn all_tasks(conn: &Connection) -> Result<Vec<Task>> {
     query_tasks(conn, "1 = 1", &[])
 }
 
+/// The live dependency DAG of every workspace, as [`all_tasks`] has it, but only the task
+/// IDs and edges: checking new edges needs no history, notes, or criteria.
+fn dependency_graph(conn: &Connection) -> Result<dag::DependencyGraph> {
+    let mut statement =
+        conn.prepare_cached(&format!("SELECT t.id FROM tasks t WHERE {LIVE_TASK}"))?;
+    let tasks = statement
+        .query_map([], |row| Ok(TaskId(row.get(0)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut statement = conn.prepare_cached(&format!(
+        "SELECT d.task_id, d.depends_on_id
+         FROM task_dependencies d JOIN tasks t ON t.id = d.task_id
+         WHERE {LIVE_TASK} AND {LIVE_PREREQUISITE}"
+    ))?;
+    let edges = statement
+        .query_map([], |row| Ok((TaskId(row.get(0)?), TaskId(row.get(1)?))))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(dag::DependencyGraph::new(tasks, edges))
+}
+
 pub(super) fn find_task(conn: &Connection, id: TaskId) -> Result<Option<Task>> {
     Ok(query_tasks(conn, "t.id = ?", &[id.0])?.pop())
 }
@@ -685,8 +704,9 @@ impl Storage {
     }
 
     /// Creates every task of `plan` as `planned`, with its labels, dependencies, and
-    /// related links, in one transaction: an unknown workspace or task, or a dependency
-    /// that would close a cycle, writes nothing. Returns the tasks in the order of `plan`.
+    /// related links, in one transaction: an unknown workspace or task, a dependency that
+    /// would close a cycle, or a link to an index past the end of `plan` writes nothing.
+    /// Returns the tasks in the order of `plan`.
     pub fn create_tasks(&mut self, plan: &[NewPlanTask]) -> Result<Vec<Task>> {
         let at = self.now();
         let tx = self.conn.transaction()?;
@@ -705,19 +725,28 @@ impl Storage {
             ids.push(id);
         }
         let resolve = |link: &PlanLink| match *link {
-            PlanLink::Existing(id) => id,
-            PlanLink::New(index) => ids[index],
+            PlanLink::Existing(id) => Ok(id),
+            PlanLink::New(index) => {
+                ids.get(index)
+                    .copied()
+                    .ok_or(StorageError::PlanLinkOutOfRange {
+                        index,
+                        tasks: ids.len(),
+                    })
+            }
         };
+        let mut graph = dependency_graph(&tx)?;
         for (item, &id) in plan.iter().zip(&ids) {
-            for prerequisite in item.depends_on.iter().map(resolve) {
-                dag::validate_dependency(&all_tasks(&tx)?, id, prerequisite)?;
+            for link in &item.depends_on {
+                let prerequisite = resolve(link)?;
+                graph.add(id, prerequisite)?;
                 tx.execute(
                     "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
                     [id.0, prerequisite.0],
                 )?;
             }
-            for related in item.related.iter().map(resolve) {
-                super::search::link_related(&tx, id, related)?;
+            for link in &item.related {
+                super::search::link_related(&tx, id, resolve(link)?)?;
             }
         }
         let created = ids
@@ -1411,8 +1440,9 @@ impl Storage {
     ) -> Result<DependencyChange> {
         let at = self.now();
         let tx = self.conn.transaction()?;
+        let mut graph = dependency_graph(&tx)?;
         for &prerequisite in depends_on {
-            dag::validate_dependency(&all_tasks(&tx)?, task, prerequisite)?;
+            graph.add(task, prerequisite)?;
             tx.execute(
                 "INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_id) VALUES (?1, ?2)",
                 [task.0, prerequisite.0],

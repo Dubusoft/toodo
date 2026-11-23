@@ -161,6 +161,12 @@ pub enum StorageError {
     /// [`DependencyError::Cycle`]) with edges added while the tasks were archived.
     RestoreClosesCycle(Vec<TaskId>),
     Dependency(DependencyError),
+    /// A task of a plan links to the plan's task at `index`, but the plan has only
+    /// `tasks` tasks.
+    PlanLinkOutOfRange {
+        index: usize,
+        tasks: usize,
+    },
     Transition(TransitionError),
     /// A task cannot start while one of its dependencies is not done or was concluded
     /// without being adopted. `blockers` lists those dependencies.
@@ -257,6 +263,11 @@ impl fmt::Display for StorageError {
                 )
             }
             Self::Dependency(error) => error.fmt(f),
+            Self::PlanLinkOutOfRange { index, tasks } => write!(
+                f,
+                "a task of the plan links to plan task {index}, but the plan has {tasks} tasks (indexes 0 to {})",
+                tasks.saturating_sub(1)
+            ),
             Self::Transition(error) => error.fmt(f),
             Self::DependenciesNotDone { task, blockers } => {
                 let blockers: Vec<String> = blockers
