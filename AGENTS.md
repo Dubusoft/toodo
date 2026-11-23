@@ -95,7 +95,7 @@ Layout:
     completion criteria, plans, refs, timeline, review, slugs). Pure logic: no I/O or
     storage.
   - `src-tauri/src/mcp/`: MCP server for coding agents (rmcp over loopback HTTP with a
-    bearer token); `tools.rs` holds the tool logic over `Storage`. Rules the `initialize`
+    bearer token); `tools/` holds the tool logic over `Storage`. Rules the `initialize`
     instructions and the `toodo-skill.md` skill both state live once in `shared/` and are
     filled in where a template says `{{name}}`; see `docs/agents.md`.
   - `src-tauri/src/oauth/`: OAuth authorization server for chat apps on `/mcp`, mounted
