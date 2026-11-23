@@ -170,8 +170,7 @@ state (`pending`, `met`, `failed`), evidence, and who checked it when.
 criterion passes. Toodo doesn't check whether a pull request merged; the executor checks
 that before it calls `complete_task`. Older criterion kinds (`pr_merged`,
 `pr_open_ci_green`, `branch_merged_locally`, `command`) were turned into `manual`
-criteria by a migration, checked when they had been met. `create_task` takes
-`merge_criterion: false` to add no merge criterion. See
+criteria by a migration, checked when they had been met. See
 [workflow.md](workflow.md#completion-criteria).
 
 ### Task Timeline

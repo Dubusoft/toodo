@@ -69,10 +69,7 @@ export const commands = {
 	/**  Removes the related link between two tasks, given in either order. */
 	removeTaskRelation: (taskId: TaskId, relatedId: TaskId) => typedError<null, CommandError>(invoke("remove_task_relation", { taskId, relatedId })),
 	getTask: (id: TaskId) => typedError<Task, CommandError>(invoke("get_task", { id })),
-	/**
-	 *  Creates a `planned` task without dependencies, with its completion criteria. The merge
-	 *  criterion follows the completion mode of the workspace: none for `manual`.
-	 */
+	/**  Creates a `planned` task without dependencies, with its completion criteria. */
 	createTask: (task: NewTask) => typedError<Task, CommandError>(invoke("create_task", { task })),
 	updateTask: (task: TaskEdit) => typedError<Task, CommandError>(invoke("update_task", { task })),
 	/**

@@ -33,15 +33,13 @@ pub fn get_task(storage: State<'_, StorageState>, id: TaskId) -> CommandResult<T
     Ok((&task).into())
 }
 
-/// Creates a `planned` task without dependencies, with its completion criteria. The merge
-/// criterion follows the completion mode of the workspace: none for `manual`.
+/// Creates a `planned` task without dependencies, with its completion criteria.
 #[specta::specta]
 pub fn create_task(storage: State<'_, StorageState>, task: NewTask) -> CommandResult<Task> {
     Ok((&create(&storage, task)?).into())
 }
 
-/// Creates a task as [`create_task`] does. Its merge criterion follows the completion of
-/// its workspace (see [`merge_criterion`]); git does not run.
+/// Creates a task as [`create_task`] does; git does not run.
 pub(crate) fn create(storage: &StorageState, task: NewTask) -> CommandResult<model::Task> {
     let labels = types::labels(&task.labels)?;
     let new: storage::NewTask = task.try_into()?;
