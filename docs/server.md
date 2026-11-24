@@ -839,9 +839,10 @@ itself: its RS256 signature against the team's keys at
 hour or when a JWT names an unknown key, at most every 30 seconds), the team domain as
 issuer, the AUD tag among its audiences, and its `exp` and `nbf` times, allowing 60 seconds
 of clock difference. A request with a valid JWT is signed in: as the device whose token it
-bears, if it bears one that works, else with the access of the shared web token. A request
-without a valid JWT, such as one that reaches the loopback port directly, goes through the
-token rules as before.
+bears, if it bears one that works, else with the access of the shared web token. A device
+token that works keeps its own limits: a read-only device still gets `403` for a change,
+whatever the JWT. A request without a valid JWT, such as one that reaches the loopback
+port directly, goes through the token rules as before.
 
 The web app asks the server (`GET /api/session`) whether Access signed it in before it
 asks for a token, and skips the token form when it did. A browser that already has a

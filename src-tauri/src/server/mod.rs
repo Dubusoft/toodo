@@ -985,6 +985,30 @@ mod tests {
         );
         assert!(status.contains(" 201 "), "{status}");
 
+        // A device token that works decides alone: Access does not lift a read-only
+        // device's limits.
+        let reader = r#"{"label":"Reader","scope":"read"}"#;
+        let (_, _, body) = exchange(
+            address,
+            &format!(
+                "POST /api/devices HTTP/1.1\r\nAuthorization: Bearer web\r\n\
+                 Content-Type: application/json\r\nContent-Length: {}",
+                reader.len()
+            ),
+            reader.as_bytes(),
+        );
+        let reader: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let reader = reader["token"].as_str().unwrap();
+        assert!(ask(rpc, Some(&valid), Some(reader)).0.contains(" 200 "));
+        for command in ["create_workspace", "mcp_server_info"] {
+            let head = format!("POST /api/rpc/{command} HTTP/1.1");
+            let (status, body) = with_access(address, &head, Some(&valid), Some(reader));
+            assert!(status.contains(" 403 "), "{command}: {status}");
+            assert!(body.contains("read-only"), "{body}");
+        }
+        let (_, body) = ask("GET /api/session HTTP/1.1", Some(&valid), Some(reader));
+        assert_eq!(body, r#"{"via":"token"}"#);
+
         // Without a valid JWT the token rules hold as before.
         for jwt in [None, Some(expired.as_str()), Some("not.a.jwt")] {
             let (status, body) = ask(rpc, jwt, None);
