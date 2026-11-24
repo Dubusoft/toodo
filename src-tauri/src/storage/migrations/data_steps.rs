@@ -11,6 +11,31 @@ type DataStep = fn(&Transaction<'_>) -> Result<()>;
 
 pub(super) const DATA_STEPS: &[(i64, DataStep)] = &[(16, import_criteria)];
 
+/// Data steps that run right before the SQL of the migration to the given version, for
+/// data that migration drops.
+pub(super) const DATA_STEPS_BEFORE: &[(i64, DataStep)] = &[(46, keep_shipped_with_refs)];
+
+/// Keeps what a task shipped with, the task and the pull request it was merged with, as
+/// `task:<id>` and `pr:<url>` references before version 46 drops those columns, the
+/// references a shipped-with conclusion writes now. References a task has already are
+/// not added twice.
+fn keep_shipped_with_refs(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute_batch(
+        "UPDATE tasks SET refs = (SELECT json_group_array(value) FROM (
+             SELECT value FROM json_each(tasks.refs)
+             UNION ALL SELECT 'task:' || tasks.merged_with_task_id
+                 WHERE tasks.merged_with_task_id IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM json_each(tasks.refs)
+                                   WHERE value = 'task:' || tasks.merged_with_task_id)
+             UNION ALL SELECT 'pr:' || tasks.merged_with_pull_request_url
+                 WHERE tasks.merged_with_pull_request_url IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM json_each(tasks.refs)
+                                   WHERE value = 'pr:' || tasks.merged_with_pull_request_url)))
+         WHERE merged_with_task_id IS NOT NULL OR merged_with_pull_request_url IS NOT NULL",
+    )?;
+    Ok(())
+}
+
 /// Gives every existing task the criteria it had so far: its pull request is merged
 /// (met for tasks done as merged, through their own or another task's pull request),
 /// followed by the `- [ ]` and `- [x]` items of the `Done when` section of its
