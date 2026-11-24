@@ -571,6 +571,14 @@ fn unknown_arguments_are_rejected_with_the_accepted_ones() {
             .to_string();
     assert!(error.contains("unknown field `dueDate`"), "{error}");
     assert!(error.contains("`due_date`"), "{error}");
+
+    let error = serde_json::from_value::<UpdateTask>(serde_json::json!({
+        "id": 1, "criteria": [{"idd": 7, "text": "Docs updated", "kind": "manual"}]
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("unknown field `idd`"), "{error}");
+    assert!(error.contains("`id`"), "{error}");
 }
 
 #[test]
