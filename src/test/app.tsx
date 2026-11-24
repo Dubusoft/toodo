@@ -161,7 +161,7 @@ export function commit(taskId: number, sha: string, message: string): CommitReco
 
 export function renderApp() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  return render(
     <QueryClientProvider client={queryClient}>
       <App />
     </QueryClientProvider>,
