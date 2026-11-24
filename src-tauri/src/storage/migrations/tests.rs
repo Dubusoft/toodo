@@ -2366,6 +2366,111 @@ fn version_50_clears_half_waits_with_a_note_and_refuses_new_ones() {
 }
 
 #[test]
+fn version_53_keeps_history_and_adoptions_and_never_reuses_a_deleted_id() {
+    type Event = (
+        i64,
+        i64,
+        String,
+        i64,
+        i64,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    );
+    fn events(conn: &Connection) -> Vec<Event> {
+        conn.prepare(
+            "SELECT id, task_id, status, at, for_lead, taken_at, request_id, reason
+             FROM task_events ORDER BY id",
+        )
+        .unwrap()
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+                r.get(7)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    }
+    fn adoptions(conn: &Connection) -> Vec<(i64, i64, i64)> {
+        conn.prepare("SELECT id, task_id, at FROM task_adoptions ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_legacy(&mut conn).unwrap();
+    for sql in &MIGRATIONS[45..52] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 52).unwrap();
+    conn.execute_batch(
+        "INSERT INTO workspaces (name) VALUES ('toodo');
+         INSERT INTO tasks (workspace_id, type, title, status) VALUES (1, 'feat', 'A', 'planned');
+         INSERT INTO tasks (workspace_id, type, title, status, resolution)
+             VALUES (1, 'fix', 'B', 'done', 'completed');
+         INSERT INTO task_events (task_id, status, at) VALUES (1, 'planned', 10);
+         INSERT INTO task_events (task_id, status, at, for_lead, request_id)
+             VALUES (2, 'planned', 20, 1, 'request-1');
+         INSERT INTO task_events (task_id, status, at, reason) VALUES (2, 'done', 30, 'Shipped');
+         INSERT INTO task_adoptions (task_id, at) VALUES (1, 40), (2, 50);",
+    )
+    .unwrap();
+    let events_before = events(&conn);
+    let adoptions_before = adoptions(&conn);
+
+    super::migrate(&mut conn).unwrap();
+
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    assert_eq!(events(&conn), events_before);
+    assert_eq!(adoptions(&conn), adoptions_before);
+    let indexes: Vec<String> = conn
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'index'
+                 AND tbl_name IN ('task_events', 'task_adoptions') ORDER BY name",
+        )
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        indexes,
+        [
+            "task_adoptions_task_id",
+            "task_events_for_lead",
+            "task_events_request_id",
+            "task_events_task_id"
+        ]
+    );
+    // The latest records go with their task; the next ones still get new IDs.
+    conn.execute_batch(
+        "DELETE FROM task_events WHERE task_id = 2;
+         DELETE FROM task_adoptions WHERE task_id = 2;
+         INSERT INTO task_events (task_id, status, at) VALUES (1, 'in_progress', 60);
+         INSERT INTO task_adoptions (task_id, at) VALUES (1, 70);",
+    )
+    .unwrap();
+    assert_eq!(
+        events(&conn).last().map(|event| event.0),
+        Some(events_before.last().unwrap().0 + 1)
+    );
+    assert_eq!(
+        adoptions(&conn).last().map(|adoption| adoption.0),
+        Some(adoptions_before.last().unwrap().0 + 1)
+    );
+}
+
+#[test]
 fn version_51_keeps_subscriptions_and_their_completion_setting_without_the_other_kinds() {
     let mut conn = Connection::open_in_memory().unwrap();
     migrate_legacy(&mut conn).unwrap();

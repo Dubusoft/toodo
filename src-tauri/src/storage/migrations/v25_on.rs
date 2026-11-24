@@ -951,4 +951,44 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     );
     CREATE INDEX task_adoptions_task_id ON task_adoptions (task_id);
     ",
+    // Version 53: status history records and adoptions never reuse an ID. Announcements
+    // read the records after the latest one announced, so an ID freed by deleting the task
+    // with the latest records would hide the next record. Both tables are rebuilt with
+    // AUTOINCREMENT, keeping their rows and IDs; the counters start at the largest ID kept.
+    r"
+    CREATE TABLE task_events_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        status TEXT NOT NULL
+            CHECK (status IN
+                ('planned', 'ready', 'in_progress', 'in_review', 'done', 'cancelled')),
+        at INTEGER NOT NULL,
+        for_lead INTEGER NOT NULL DEFAULT 0 CHECK (for_lead IN (0, 1)),
+        taken_at INTEGER CHECK (taken_at IS NULL OR for_lead = 1),
+        request_id TEXT,
+        report_id INTEGER REFERENCES chat_messages (id)
+            CHECK (report_id IS NULL OR status = 'done'),
+        reason TEXT
+    );
+    INSERT INTO task_events_new
+        (id, task_id, status, at, for_lead, taken_at, request_id, report_id, reason)
+        SELECT id, task_id, status, at, for_lead, taken_at, request_id, report_id, reason
+        FROM task_events;
+    DROP TABLE task_events;
+    ALTER TABLE task_events_new RENAME TO task_events;
+    CREATE INDEX task_events_task_id ON task_events (task_id);
+    CREATE UNIQUE INDEX task_events_request_id ON task_events (request_id)
+        WHERE request_id IS NOT NULL;
+    CREATE INDEX task_events_for_lead ON task_events (id)
+        WHERE for_lead = 1 AND taken_at IS NULL;
+    CREATE TABLE task_adoptions_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER NOT NULL REFERENCES tasks (id) ON DELETE CASCADE,
+        at INTEGER NOT NULL
+    );
+    INSERT INTO task_adoptions_new (id, task_id, at) SELECT id, task_id, at FROM task_adoptions;
+    DROP TABLE task_adoptions;
+    ALTER TABLE task_adoptions_new RENAME TO task_adoptions;
+    CREATE INDEX task_adoptions_task_id ON task_adoptions (task_id);
+    ",
 ];
