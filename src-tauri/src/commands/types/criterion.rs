@@ -117,7 +117,7 @@ impl From<&criteria::Criterion> for Criterion {
 /// A completion criterion given when creating or editing a task: an existing one by `id`
 /// (only when editing), or a new one.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Type, JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CriterionInput {
     /// An existing criterion of the task, which keeps its state unless its kind or
     /// target changes; omit it for a new criterion. `{"id": N}` alone keeps criterion N
