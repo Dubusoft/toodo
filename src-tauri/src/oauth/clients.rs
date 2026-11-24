@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -11,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::routes::OAuthError;
 use super::{Scopes, valid_web_url};
+use crate::net::{PublicOnly, is_public, literal_ip};
 use crate::storage::oauth::Client;
 
 pub type FetchFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
@@ -45,10 +45,7 @@ impl ClientMetadataFetcher for HttpClientMetadataFetcher {
                 "Publish a JSON client metadata document at the HTTPS client_id URL, without redirects and below 64 KiB.".to_owned()
             };
             // Host names go through `PublicOnly`; an address in the URL skips the resolver.
-            let literal = reqwest::Url::parse(url).ok().and_then(|url| {
-                url.host_str()
-                    .and_then(|host| host.trim_matches(['[', ']']).parse::<IpAddr>().ok())
-            });
+            let literal = reqwest::Url::parse(url).ok().as_ref().and_then(literal_ip);
             if literal.is_some_and(|ip| !is_public(ip)) {
                 return Err(invalid());
             }
@@ -78,60 +75,6 @@ impl ClientMetadataFetcher for HttpClientMetadataFetcher {
             .await
             .map_err(|_| invalid())?
         })
-    }
-}
-
-/// Resolves names only to public addresses, so a client_id URL cannot make the server fetch
-/// from itself or its private network.
-struct PublicOnly;
-
-impl reqwest::dns::Resolve for PublicOnly {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let host = name.as_str().to_owned();
-        Box::pin(async move {
-            let addresses: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
-                .await?
-                .filter(|address| is_public(address.ip()))
-                .collect();
-            if addresses.is_empty() {
-                return Err(format!(
-                    "{host} has no public address; publish the client metadata document on a \
-                     public HTTPS host"
-                )
-                .into());
-            }
-            Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
-        })
-    }
-}
-
-/// Whether `ip` is reachable on the public internet, not loopback, private, link-local,
-/// shared (CGNAT), or otherwise reserved.
-fn is_public(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            let [a, b, ..] = ip.octets();
-            !(ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-                || ip.is_multicast()
-                || a == 0
-                || (a == 100 && b & 0xc0 == 64))
-        }
-        IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
-            Some(ip) => is_public(IpAddr::V4(ip)),
-            None => {
-                let first = ip.segments()[0];
-                !(ip.is_loopback()
-                    || ip.is_unspecified()
-                    || ip.is_multicast()
-                    || first & 0xfe00 == 0xfc00
-                    || first & 0xffc0 == 0xfe80)
-            }
-        },
     }
 }
 
@@ -269,28 +212,6 @@ pub(super) async fn resolve(state: &super::routes::Server, id: &str) -> Result<C
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_public_addresses_count_as_public() {
-        for public in ["93.184.216.34", "2606:4700::1111", "::ffff:93.184.216.34"] {
-            assert!(is_public(public.parse().unwrap()), "{public}");
-        }
-        for private in [
-            "127.0.0.1",
-            "10.1.2.3",
-            "172.16.0.1",
-            "192.168.1.1",
-            "169.254.169.254",
-            "100.64.0.1",
-            "0.0.0.0",
-            "::1",
-            "fd00::1",
-            "fe80::1",
-            "::ffff:127.0.0.1",
-        ] {
-            assert!(!is_public(private.parse().unwrap()), "{private}");
-        }
-    }
 
     #[test]
     fn metadata_urls_with_private_address_literals_are_not_fetched() {

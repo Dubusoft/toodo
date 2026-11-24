@@ -1605,6 +1605,20 @@ mod tests {
         bad["endpoint"] = "http://push.example/send/1".into();
         let bad = send_json(address, "PUT", "/api/push/subscription", &token, &bad);
         assert!(bad.0.contains(" 422 "), "{}", bad.0);
+        for endpoint in [
+            "https://127.0.0.1/send/1",
+            "https://[::1]/send/1",
+            "https://169.254.169.254/latest",
+            "https://10.0.0.5:8443/send/1",
+            "https://user:secret@push.example/send/1",
+            "https://push.example/send/1#x",
+            "https://private.example/send/1",
+        ] {
+            let mut private = subscription.clone();
+            private["endpoint"] = endpoint.into();
+            let refused = send_json(address, "PUT", "/api/push/subscription", &token, &private);
+            assert!(refused.0.contains(" 422 "), "{endpoint}: {}", refused.0);
+        }
         let mut off_curve = subscription.clone();
         off_curve["keys"]["p256dh"] = push::crypto::base64url(&[4; 65]).into();
         let off_curve = send_json(address, "PUT", "/api/push/subscription", &token, &off_curve);

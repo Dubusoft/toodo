@@ -19,6 +19,10 @@
 //! service holds up neither the other devices nor the next change.
 //!
 //! Subscriptions belong to devices: a browser signed in with the shared web token gets 403.
+//!
+//! Push services are on the public internet, so the server posts only there: an endpoint
+//! with credentials, a fragment, or a host that is not a public address is refused when a
+//! device subscribes (422) and before every message, and redirects are not followed.
 
 pub mod alerts;
 pub mod crypto;
@@ -48,6 +52,7 @@ use crate::domain::device::DeviceId;
 use crate::domain::push::{
     PushEndpoint, PushFailure, PushSettings, PushSubscription, subscription_keys,
 };
+use crate::net::{PublicOnly, is_public, literal_ip};
 use crate::storage::NewPushSubscription;
 
 /// The file in the data directory that holds the VAPID key.
@@ -61,6 +66,9 @@ const TIME_TO_LIVE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long a VAPID token is valid; push services accept at most 24 hours.
 const TOKEN_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
+
+/// How much of a refusal's body is kept to show the device.
+const MAX_FAILURE_BODY: usize = 1024;
 
 /// How long to wait before each new try of a message that failed for a while, doubling.
 pub const RETRY_DELAYS: [Duration; 3] = [
@@ -97,8 +105,31 @@ pub trait Transport: Send + Sync {
         &self,
         request: PushRequest,
     ) -> Pin<Box<dyn Future<Output = Result<PushResponse, String>> + Send + '_>>;
+
+    /// Checks that the host name `host` resolves to a public address.
+    fn admit<'a>(
+        &'a self,
+        host: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 }
 
+/// The URL of `endpoint` when its form lets the server post to it: no credentials, no
+/// fragment, and no address outside the public internet. A host name is checked when it
+/// is resolved.
+fn public_url(endpoint: &PushEndpoint) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(endpoint.as_str())
+        .map_err(|_| "push endpoint is not a valid URL".to_owned())?;
+    if !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
+        return Err("push endpoint must not carry credentials or a fragment".to_owned());
+    }
+    if literal_ip(&url).is_some_and(|ip| !is_public(ip)) {
+        return Err("push endpoint must be on a public address".to_owned());
+    }
+    Ok(url)
+}
+
+/// Posts over HTTPS to public addresses only, without following redirects or using a
+/// proxy from the environment.
 pub struct Http(reqwest::Client);
 
 impl Http {
@@ -107,6 +138,9 @@ impl Http {
         drop(rustls::crypto::ring::default_provider().install_default());
         reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .dns_resolver(PublicOnly)
             .build()
             .map(Self)
             .map_err(|error| format!("cannot create the push client: {error}"))
@@ -119,7 +153,7 @@ impl Transport for Http {
         request: PushRequest,
     ) -> Pin<Box<dyn Future<Output = Result<PushResponse, String>> + Send + '_>> {
         Box::pin(async move {
-            let response = self
+            let mut response = self
                 .0
                 .post(&request.endpoint)
                 .header("Authorization", request.authorization)
@@ -132,8 +166,30 @@ impl Transport for Http {
                 .await
                 .map_err(|error| error.to_string())?;
             let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default();
+            let mut body = Vec::new();
+            if !response.status().is_success() {
+                while let Ok(Some(chunk)) = response.chunk().await {
+                    body.extend_from_slice(&chunk);
+                    if body.len() >= MAX_FAILURE_BODY {
+                        body.truncate(MAX_FAILURE_BODY);
+                        break;
+                    }
+                }
+            }
+            let body = String::from_utf8_lossy(&body).into_owned();
             Ok(PushResponse { status, body })
+        })
+    }
+
+    fn admit<'a>(
+        &'a self,
+        host: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            crate::net::public_addresses(host)
+                .await
+                .map(drop)
+                .map_err(|_| format!("push endpoint host {host} has no public address"))
         })
     }
 }
@@ -237,12 +293,24 @@ impl Push {
         self.changed(Change::TasksSeen);
     }
 
-    /// Encrypts `alert` for `subscription` and posts it.
+    /// Checks that the server may post to `endpoint`: its form, then where its host name
+    /// resolves.
+    async fn admit(&self, endpoint: &PushEndpoint) -> Result<(), String> {
+        let url = public_url(endpoint)?;
+        match url.host_str() {
+            Some(host) if literal_ip(&url).is_none() => self.transport.admit(host).await,
+            _ => Ok(()),
+        }
+    }
+
+    /// Encrypts `alert` for `subscription` and posts it, unless its endpoint is not one the
+    /// server posts to.
     pub async fn send(
         &self,
         subscription: &PushSubscription,
         alert: &Alert,
     ) -> Result<(), SendError> {
+        public_url(&subscription.endpoint).map_err(SendError::Failed)?;
         let payload = serde_json::to_vec(alert)
             .map_err(|error| SendError::Failed(format!("cannot encode the message: {error}")))?;
         let body =
@@ -627,6 +695,9 @@ pub async fn subscribe(
         Ok(new) => new,
         Err(error) => return Reply::Failed(error).into_response(),
     };
+    if let Err(error) = services.push.admit(&new.endpoint).await {
+        return Reply::Failed(CommandError::invalid_input(error)).into_response();
+    }
     let saved = blocking(move || {
         Ok(lock(&services.storage)
             .save_push_subscription(device, &new)
@@ -751,7 +822,7 @@ pub(crate) mod tests {
 
     /// Records every request and answers each with the next queued status (201 when none
     /// is queued); a queued 0 fails as an unreachable push service. A stalled endpoint
-    /// never answers.
+    /// never answers. Host names resolve to public addresses, except `private.example`.
     #[derive(Default)]
     pub(crate) struct FakeTransport {
         pub requests: Arc<Mutex<Vec<PushRequest>>>,
@@ -791,6 +862,18 @@ pub(crate) mod tests {
                     status,
                     body: "nope".to_owned(),
                 })
+            })
+        }
+
+        fn admit<'a>(
+            &'a self,
+            host: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+            Box::pin(async move {
+                if host == "private.example" {
+                    return Err(format!("push endpoint host {host} has no public address"));
+                }
+                Ok(())
             })
         }
     }
@@ -1028,6 +1111,70 @@ pub(crate) mod tests {
         let next = now();
         assert_eq!(deliver(&storage, &push, &runtime, &[Alert::test()]), 1);
         assert_eq!(phone_at(&posted_at.lock().unwrap()), next);
+    }
+
+    #[test]
+    fn nothing_is_posted_to_an_endpoint_off_the_public_internet() {
+        let temp = tempfile::tempdir().unwrap();
+        let transport = FakeTransport::default();
+        let requests = transport.requests.clone();
+        let push = push(temp.path(), transport);
+        let storage: StorageState =
+            std::sync::Mutex::new(crate::storage::Storage::open_in_memory().unwrap());
+        // Subscriptions stored before endpoints were checked.
+        subscribed(
+            &storage,
+            "Metadata",
+            "https://169.254.169.254/latest",
+            PushSettings::default(),
+        );
+        subscribed(
+            &storage,
+            "Loopback",
+            "https://[::1]:8443/push",
+            PushSettings::default(),
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        assert_eq!(deliver(&storage, &push, &runtime, &[Alert::test()]), 0);
+        assert!(requests.lock().unwrap().is_empty());
+        let failures: Vec<Option<String>> = lock(&storage)
+            .active_push_subscriptions()
+            .unwrap()
+            .into_iter()
+            .map(|subscription| subscription.last_failure.map(|failure| failure.message))
+            .collect();
+        let refused = Some("push endpoint must be on a public address".to_owned());
+        assert_eq!(failures, [refused.clone(), refused]);
+    }
+
+    #[test]
+    fn http_resolves_push_services_to_public_addresses_only() {
+        let http = Http::new().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert!(runtime.block_on(http.admit("localhost")).is_err());
+        // A service listening on loopback never sees a connection.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let posted = runtime.block_on(http.post(PushRequest {
+            endpoint: format!("https://localhost:{port}/push"),
+            authorization: String::new(),
+            urgency: "normal",
+            ttl: 0,
+            body: Vec::new(),
+        }));
+        assert!(posted.is_err());
+        assert_eq!(
+            listener.accept().map(drop).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
     }
 
     #[test]
