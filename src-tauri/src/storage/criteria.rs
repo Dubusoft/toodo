@@ -28,9 +28,18 @@ pub struct CriterionCheck {
     pub id: CriterionId,
     pub state: CriterionState,
     pub evidence: Option<String>,
-    /// A target the check found, e.g. the commit a branch started from; `None` keeps the
-    /// stored one.
+    /// The target the check examined. A result for a criterion whose target is now a
+    /// different one is ignored; `None` applies to the stored target.
     pub target: Option<String>,
+}
+
+impl CriterionCheck {
+    /// Whether this result is about `known` as it is stored now.
+    fn applies_to(&self, known: &Criterion) -> bool {
+        known.id == self.id
+            && known.kind.is_automatic()
+            && (self.target.is_none() || self.target == known.target)
+    }
 }
 
 /// The criteria of the tasks matching `filter` (see `query_tasks`), by task ID, in order.
@@ -234,8 +243,9 @@ impl Storage {
 
     /// Stores what automatic checks of a task's criteria found, as checked by Toodo, and
     /// moves a task in progress whose criteria are then all met, one of them manual, to
-    /// `in_review`. A met criterion stays met, results for criteria that no longer exist
-    /// or are manual are ignored, and so are all results for a task that is done by now. Returns the task and whether anything changed.
+    /// `in_review`. A met criterion stays met, results for criteria that no longer exist,
+    /// are manual, or have another target by now are ignored, and so are all results for a
+    /// task that is done by now. Returns the task and whether anything changed.
     pub fn record_criterion_checks(
         &mut self,
         id: TaskId,
@@ -249,17 +259,10 @@ impl Storage {
         }
         let mut changed = false;
         for check in checks {
-            let Some(known) = task.criteria.iter().find(|known| known.id == check.id) else {
+            let Some(known) = task.criteria.iter().find(|known| check.applies_to(known)) else {
                 continue;
             };
-            if !known.kind.is_automatic() || known.is_met() {
-                continue;
-            }
-            let target = check.target.as_ref().or(known.target.as_ref());
-            if known.state == check.state
-                && known.evidence == check.evidence
-                && known.target.as_ref() == target
-            {
+            if known.is_met() || (known.state == check.state && known.evidence == check.evidence) {
                 continue;
             }
             let checked_at = if known.state == check.state {
@@ -269,13 +272,12 @@ impl Storage {
             };
             tx.execute(
                 "UPDATE task_criteria
-                 SET state = ?2, evidence = ?3, target = ?4, checked_by = ?5, checked_at = ?6
+                 SET state = ?2, evidence = ?3, checked_by = ?4, checked_at = ?5
                  WHERE id = ?1",
                 params![
                     check.id.0,
                     check.state.as_str(),
                     check.evidence,
-                    target,
                     CheckedBy::Toodo.as_str(),
                     checked_at
                 ],
@@ -290,7 +292,8 @@ impl Storage {
 
     /// Stores what checking met automatic criteria again before completion found: a
     /// result that is not met replaces the met state, checked by Toodo. Results for
-    /// criteria that are not met or manual, and for a task that is done, are ignored.
+    /// criteria that are not met, are manual, or have another target by now, and for a task
+    /// that is done, are ignored.
     pub fn record_criterion_rechecks(
         &mut self,
         id: TaskId,
@@ -306,7 +309,7 @@ impl Storage {
             let rechecked = task
                 .criteria
                 .iter()
-                .any(|known| known.id == check.id && known.kind.is_automatic() && known.is_met());
+                .any(|known| check.applies_to(known) && known.is_met());
             if !rechecked || check.state == CriterionState::Met {
                 continue;
             }
@@ -467,29 +470,37 @@ mod tests {
             .record_criterion_checks(
                 task.id,
                 &[check(
-                    CriterionState::Pending,
-                    None,
-                    Some("https://example.com/check"),
+                    CriterionState::Met,
+                    Some("GET https://example.com/old: 200 OK"),
+                    Some("https://example.com/old"),
                 )],
             )
             .unwrap();
-        assert!(changed);
+        assert!(!changed, "a result for another target is ignored");
+        assert_eq!(pending.criteria[0].state, CriterionState::Pending);
         assert_eq!(
             pending.criteria[0].target.as_deref(),
-            Some("https://example.com/check")
+            Some("https://example.com")
         );
         let (_, changed) = storage
             .record_criterion_checks(task.id, &[check(CriterionState::Pending, None, None)])
             .unwrap();
         assert!(!changed, "the same result changes nothing");
         let (met, changed) = storage
-            .record_criterion_checks(task.id, &[check(CriterionState::Met, Some("merged"), None)])
+            .record_criterion_checks(
+                task.id,
+                &[check(
+                    CriterionState::Met,
+                    Some("merged"),
+                    Some("https://example.com"),
+                )],
+            )
             .unwrap();
         assert!(changed);
         assert_eq!(met.criteria[0].state, CriterionState::Met);
         assert_eq!(
             met.criteria[0].target.as_deref(),
-            Some("https://example.com/check")
+            Some("https://example.com")
         );
         assert_eq!(met.criteria[0].checked_by, Some(CheckedBy::Toodo));
         // Only automatic criteria: Toodo completes the task itself, it does not await one.

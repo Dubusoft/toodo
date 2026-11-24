@@ -1,8 +1,41 @@
 use super::*;
+use crate::domain::criteria::{CheckKind, CriterionId, NewCriterion};
 use crate::domain::model::TaskType;
 use crate::domain::status::TaskStatus;
-use crate::storage::{NewTask, NewWorkspace, Storage};
+use crate::storage::{CriterionEdit, NewTask, NewWorkspace, Storage};
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::sync::Mutex;
+
+const OK: &str = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+/// Sets the task's only criterion to a URL one with `target`, keeping `criterion` if given.
+fn set_url(
+    storage: &StorageState,
+    id: model::TaskId,
+    criterion: Option<CriterionId>,
+    target: &str,
+) -> model::Task {
+    lock(storage)
+        .set_criteria(
+            id,
+            &[CriterionEdit {
+                id: criterion,
+                criterion: NewCriterion::parse("Deployed", CheckKind::Url, Some(target)).unwrap(),
+            }],
+        )
+        .unwrap()
+}
+
+/// Accepts one request on `listener` and answers it with `response` after running `during`.
+fn answer_once(listener: &TcpListener, response: &str, during: impl FnOnce()) {
+    let (mut stream, _) = listener.accept().unwrap();
+    let mut request = [0; 2048];
+    let length = stream.read(&mut request).unwrap();
+    assert!(request[..length].starts_with(b"GET /ready "));
+    during();
+    stream.write_all(response.as_bytes()).unwrap();
+}
 
 fn fixture() -> (StorageState, model::TaskId) {
     let mut storage = Storage::open_in_memory().unwrap();
@@ -139,8 +172,7 @@ fn manual_criteria_must_be_checked_before_completion() {
 
 #[test]
 fn url_criteria_are_rechecked_with_http_and_do_not_require_execution_tools() {
-    use crate::domain::criteria::{CheckKind, CriterionState, NewCriterion};
-    use std::io::{Read, Write};
+    use crate::domain::criteria::CriterionState;
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let target = format!("http://{}/ready", listener.local_addr().unwrap());
     let server = std::thread::spawn(move || {
@@ -179,7 +211,7 @@ fn url_criteria_are_rechecked_with_http_and_do_not_require_execution_tools() {
         )
         .unwrap();
     assert!(
-        complete(&storage, id, None, &[])
+        complete_reaching(&storage, id, None, &[], Outbound::any_address)
             .unwrap_err()
             .message
             .contains("complete_task")
@@ -188,10 +220,92 @@ fn url_criteria_are_rechecked_with_http_and_do_not_require_execution_tools() {
         lock(&storage).get_task(id).unwrap().unwrap().criteria[0].state,
         CriterionState::Failed
     );
-    let done = complete(&storage, id, None, &[]).unwrap();
+    let done = complete_reaching(&storage, id, None, &[], Outbound::any_address).unwrap();
     assert_eq!(done.status, TaskStatus::Done);
     assert_eq!(done.criteria[0].state, CriterionState::Met);
     server.join().unwrap();
+}
+
+#[test]
+fn a_url_check_does_not_count_for_a_target_changed_during_it() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let old = format!("http://{}/ready", listener.local_addr().unwrap());
+    let (storage, id) = fixture();
+    let criterion = set_url(&storage, id, None, &old).criteria[0].id;
+    let error = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            answer_once(&listener, OK, || {
+                set_url(&storage, id, Some(criterion), "https://example.com/new");
+            })
+        });
+        complete_reaching(&storage, id, None, &[], Outbound::any_address).unwrap_err()
+    });
+    assert!(error.message.contains("fix its URL"), "{}", error.message);
+    let task = lock(&storage).get_task(id).unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::InProgress);
+    assert_eq!(
+        task.criteria[0].target.as_deref(),
+        Some("https://example.com/new")
+    );
+    assert_eq!(task.criteria[0].state, CriterionState::Pending);
+    assert_eq!(task.criteria[0].evidence, None);
+}
+
+#[test]
+fn completion_keeps_refs_added_during_the_url_check() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let target = format!("http://{}/ready", listener.local_addr().unwrap());
+    let (storage, id) = fixture();
+    set_url(&storage, id, None, &target);
+    let done = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            answer_once(&listener, OK, || {
+                lock(&storage)
+                    .set_task_refs(id, &["lane:test".into(), "lane:added".into()])
+                    .unwrap();
+            })
+        });
+        complete_reaching(&storage, id, None, &["pr:1".into()], Outbound::any_address).unwrap()
+    });
+    assert_eq!(done.status, TaskStatus::Done);
+    assert_eq!(done.refs, ["lane:test", "lane:added", "pr:1"]);
+}
+
+#[test]
+fn url_checks_do_not_reach_private_addresses() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let target = format!("http://{}/ready", listener.local_addr().unwrap());
+    let (storage, id) = fixture();
+    set_url(&storage, id, None, &target);
+    complete(&storage, id, None, &[]).unwrap_err();
+    let task = lock(&storage).get_task(id).unwrap().unwrap();
+    assert_eq!(task.criteria[0].state, CriterionState::Failed);
+    let evidence = task.criteria[0].evidence.as_deref().unwrap();
+    assert!(evidence.contains("not public"), "{evidence}");
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "no request reached the private address"
+    );
+}
+
+#[test]
+fn url_checks_do_not_follow_redirects() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let target = format!("http://{}/ready", listener.local_addr().unwrap());
+    let (storage, id) = fixture();
+    set_url(&storage, id, None, &target);
+    let redirect = "HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    std::thread::scope(|scope| {
+        scope.spawn(|| answer_once(&listener, redirect, || {}));
+        complete_reaching(&storage, id, None, &[], Outbound::any_address).unwrap_err();
+    });
+    let task = lock(&storage).get_task(id).unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::InProgress);
+    assert_eq!(task.criteria[0].state, CriterionState::Failed);
+    let evidence = task.criteria[0].evidence.as_deref().unwrap();
+    assert!(evidence.contains("302 Found"), "{evidence}");
 }
 
 #[test]

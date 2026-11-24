@@ -52,7 +52,7 @@ use crate::domain::device::DeviceId;
 use crate::domain::push::{
     PushEndpoint, PushFailure, PushSettings, PushSubscription, subscription_keys,
 };
-use crate::net::{PublicOnly, is_public, literal_ip};
+use crate::net::{is_public, literal_ip};
 use crate::storage::NewPushSubscription;
 
 /// The file in the data directory that holds the VAPID key.
@@ -134,14 +134,7 @@ pub struct Http(reqwest::Client);
 
 impl Http {
     pub fn new() -> Result<Self, String> {
-        // reqwest uses the process-wide rustls provider; another one may already be set.
-        drop(rustls::crypto::ring::default_provider().install_default());
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .dns_resolver(PublicOnly)
-            .build()
+        crate::net::public_client(Duration::from_secs(30))
             .map(Self)
             .map_err(|error| format!("cannot create the push client: {error}"))
     }
