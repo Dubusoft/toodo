@@ -1,7 +1,5 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import App from "@/App";
 import {
   chooseOption,
   goBack,
@@ -273,11 +271,7 @@ describe("App: search, command palette, and navigation", () => {
       status: "ok",
       data: [task(1, 1, "Add storage"), task(2, 1, "Fix redirect")],
     });
-    const { unmount } = render(
-      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-        <App />
-      </QueryClientProvider>,
-    );
+    const { unmount } = renderApp();
     fireEvent.click(await screen.findByRole("button", { name: /^toodo/ }, { timeout: 5000 }));
     expect(window.location.search).toBe("?workspace=1");
     let details = await openDetails("Fix redirect");
