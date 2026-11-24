@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::routes::OAuthError;
 use super::{Scopes, valid_web_url};
-use crate::net::{PublicOnly, is_public, literal_ip};
+use crate::net::Outbound;
 use crate::storage::oauth::Client;
 
 pub type FetchFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send + 'a>>;
@@ -19,21 +19,15 @@ pub trait ClientMetadataFetcher: Send + Sync {
     fn fetch<'a>(&'a self, url: &'a str) -> FetchFuture<'a>;
 }
 
-/// Fetches at most 64 KiB within five seconds and never follows redirects.
+/// Fetches at most 64 KiB within five seconds from a public address, without redirects.
 pub struct HttpClientMetadataFetcher {
-    client: reqwest::Client,
+    client: Outbound,
 }
 
 impl HttpClientMetadataFetcher {
     pub fn new() -> Result<Self, reqwest::Error> {
-        // reqwest uses the process-wide rustls provider; another one may already be set.
-        drop(rustls::crypto::ring::default_provider().install_default());
         Ok(Self {
-            client: reqwest::Client::builder()
-                .timeout(Duration::from_secs(5))
-                .redirect(reqwest::redirect::Policy::none())
-                .dns_resolver(PublicOnly)
-                .build()?,
+            client: Outbound::public(Duration::from_secs(5))?,
         })
     }
 }
@@ -44,14 +38,9 @@ impl ClientMetadataFetcher for HttpClientMetadataFetcher {
             let invalid = || {
                 "Publish a JSON client metadata document at the HTTPS client_id URL, without redirects and below 64 KiB.".to_owned()
             };
-            // Host names go through `PublicOnly`; an address in the URL skips the resolver.
-            let literal = reqwest::Url::parse(url).ok().as_ref().and_then(literal_ip);
-            if literal.is_some_and(|ip| !is_public(ip)) {
-                return Err(invalid());
-            }
             // The outer timeout also bounds a slow response body.
             tokio::time::timeout(Duration::from_secs(5), async {
-                let mut response = self.client.get(url).send().await.map_err(|_| invalid())?;
+                let mut response = self.client.get(url).await.map_err(|_| invalid())?;
                 if !response.status().is_success()
                     || !response
                         .headers()

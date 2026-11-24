@@ -78,7 +78,7 @@ who checked it when. There are two kinds:
 | Kind | Checked by | Met when |
 | --- | --- | --- |
 | `manual` | a person in the app, or the executor through MCP (`check_criterion`, evidence required) | someone checks it |
-| `url` | Toodo, when the task is completed | a GET of its target, an http(s) URL, answers 2xx |
+| `url` | Toodo, when the task is completed | a GET of its target, an http(s) URL on a public address, answers 2xx without a redirect |
 
 The `url` check is the only outside call the server makes. Toodo never checks whether a
 pull request merged or CI passed; the executor checks that before it completes the task,

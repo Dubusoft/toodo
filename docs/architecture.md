@@ -167,7 +167,7 @@ state (`pending`, `met`, `failed`), evidence, and who checked it when.
 | Kind | Checked by |
 | --- | --- |
 | `manual` | A person or the executor, with `check_criterion` and evidence. |
-| `url` | Toodo itself: an HTTP GET of the target passes on a 2xx response. This is the only outside call the server makes. |
+| `url` | Toodo itself: an HTTP GET of the target passes on a 2xx response. This is the only outside call the server makes; it reaches only public addresses, without a proxy, and does not follow redirects. A result counts only for the target it checked. |
 
 `complete_task` succeeds once every `manual` criterion is checked and every `url`
 criterion passes. Toodo doesn't check whether a pull request merged; the executor checks
