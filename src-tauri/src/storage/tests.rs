@@ -1264,6 +1264,57 @@ fn adopting_work_concluded_as_not_adopted_makes_its_dependents_ready_once() {
 }
 
 #[test]
+fn deleting_the_task_with_the_latest_records_hides_no_later_status_change_or_adoption() {
+    let (mut storage, now) = clocked_storage(100);
+    let workspace = add_workspace(&mut storage, "Toodo", local_location("/src/toodo"));
+    let kept = add_task(&mut storage, &workspace, "Kept");
+    let waits_on_kept = add_task(&mut storage, &workspace, "Waits on kept");
+    storage.add_dependency(waits_on_kept.id, kept.id).unwrap();
+    let deleted = add_task(&mut storage, &workspace, "Deleted");
+    storage
+        .conclude_task(deleted.id, "Not needed", None)
+        .unwrap();
+    storage
+        .set_task_outcome(
+            deleted.id,
+            TaskResolution::Completed,
+            "Adopted after all",
+            "Outcome changed",
+        )
+        .unwrap();
+    // Everything so far is announced, up to the deleted task's records.
+    let announced = storage.status_cursor().unwrap();
+    storage.delete_task(deleted.id).unwrap();
+
+    set_now(&now, 200);
+    storage.conclude_task(kept.id, "Not needed", None).unwrap();
+    storage
+        .set_task_outcome(
+            kept.id,
+            TaskResolution::Completed,
+            "Adopted after all",
+            "Outcome changed",
+        )
+        .unwrap();
+    let after = storage.status_changes_after(announced).unwrap();
+    let moves: Vec<_> = after
+        .changes
+        .iter()
+        .map(|change| (change.task, change.to))
+        .collect();
+    assert_eq!(moves, [(kept.id, Done)]);
+    assert_eq!(
+        after.ready,
+        [ReadyTask {
+            task: waits_on_kept.id,
+            workspace: workspace.id,
+            unblocked_by: kept.id,
+            at: 200,
+        }]
+    );
+}
+
+#[test]
 fn only_status_changes_are_recorded_and_rejected_changes_record_nothing() {
     let (mut storage, now) = clocked_storage(100);
     let workspace = add_workspace(&mut storage, "Toodo", local_location(r"C:\src\toodo"));
