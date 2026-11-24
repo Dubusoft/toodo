@@ -538,6 +538,34 @@ mod tests {
     }
 
     #[test]
+    fn backups_from_before_references_keep_what_a_task_shipped_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("other.sqlite3");
+        {
+            let conn = rusqlite::Connection::open(&source).unwrap();
+            for sql in &super::super::migrations::MIGRATIONS[..45] {
+                conn.execute_batch(sql).unwrap();
+            }
+            conn.execute_batch(r#"PRAGMA user_version = 45;
+                INSERT INTO workspaces (id, name, kind, path, default_base_branch) VALUES (1, 'app', 'local', '/repo', 'main');
+                INSERT INTO tasks (id, workspace_id, type, title, status, resolution, pull_request_url) VALUES (1, 1, 'feat', 'Shipped', 'done', 'merged', 'https://example.com/pull/1');
+                INSERT INTO tasks (id, workspace_id, type, title, status, resolution, merged_with_task_id) VALUES (2, 1, 'feat', 'Concluded', 'done', 'completed', 1);
+            "#).unwrap();
+        }
+        let mut server = Storage::open_in_memory().unwrap();
+        let workspace = add_workspace(&mut server, "Existing", "repository".to_owned());
+        add_task(&mut server, &workspace, "Existing work");
+        add_task(&mut server, &workspace, "More existing work");
+
+        let summary = server.import(&stage_backup(&source).unwrap()).unwrap();
+
+        assert_eq!(summary.task_id_offset, 2);
+        let concluded = server.get_task(TaskId(4)).unwrap().unwrap();
+        assert_eq!(concluded.title, "Concluded");
+        assert_eq!(concluded.refs, ["task:3"]);
+    }
+
+    #[test]
     fn task_refs_to_tasks_missing_from_the_import_are_dropped_and_others_kept() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("other.sqlite3");

@@ -5,7 +5,7 @@
 use rusqlite::{Connection, OptionalExtension};
 
 use super::{Result, StorageError};
-use data_steps::DATA_STEPS;
+use data_steps::{DATA_STEPS, DATA_STEPS_BEFORE};
 use v01_v24::VERSIONS_1_TO_24;
 use v25_on::VERSIONS_25_ON;
 
@@ -55,8 +55,14 @@ pub(super) fn migrate(conn: &mut Connection) -> Result<()> {
     conn.pragma_update(None, "foreign_keys", false)?;
     let tx = conn.transaction()?;
     for (index, sql) in MIGRATIONS.iter().enumerate().skip(version as usize) {
-        tx.execute_batch(sql)?;
         let version = index as i64 + 1;
+        for (_, step) in DATA_STEPS_BEFORE
+            .iter()
+            .filter(|(before, _)| *before == version)
+        {
+            step(&tx)?;
+        }
+        tx.execute_batch(sql)?;
         for (_, step) in DATA_STEPS.iter().filter(|(after, _)| *after == version) {
             step(&tx)?;
         }

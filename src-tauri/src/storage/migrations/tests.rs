@@ -2231,6 +2231,32 @@ fn version_46_preserves_references_criteria_and_historical_reports() {
 }
 
 #[test]
+fn version_46_keeps_what_a_task_shipped_with_as_references() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_legacy(&mut conn).unwrap();
+    conn.execute_batch(r#"INSERT INTO workspaces (id, name, kind, path, default_base_branch) VALUES (1, 'Planning', 'local', '/repo', 'main');
+        INSERT INTO tasks (id, workspace_id, type, title, status, resolution, pull_request_url) VALUES (1, 1, 'feat', 'Ship', 'done', 'merged', 'https://example.com/pull/1');
+        INSERT INTO tasks (id, workspace_id, type, title, status, resolution, merged_with_task_id, refs) VALUES (2, 1, 'feat', 'Along', 'done', 'completed', 1, '["lane:along"]');
+        INSERT INTO tasks (id, workspace_id, type, title, status, resolution, merged_with_pull_request_url, merged_with_task_id, refs) VALUES (3, 1, 'fix', 'Also along', 'done', 'merged', 'https://example.com/pull/1', 1, '["task:1"]');"#).unwrap();
+    super::migrate(&mut conn).unwrap();
+    let refs = conn
+        .prepare("SELECT refs FROM tasks ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|refs| serde_json::from_str::<Vec<String>>(&refs.unwrap()).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        refs,
+        [
+            vec!["pr:https://example.com/pull/1"],
+            vec!["lane:along", "task:1"],
+            vec!["task:1", "pr:https://example.com/pull/1"],
+        ]
+    );
+}
+
+#[test]
 fn version_49_leaves_existing_tasks_off_autopilot_and_keeps_its_time_with_the_flag() {
     let mut conn = Connection::open_in_memory().unwrap();
     migrate_legacy(&mut conn).unwrap();
