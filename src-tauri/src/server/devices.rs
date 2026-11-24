@@ -22,7 +22,8 @@
 //!
 //! With Cloudflare Access configured (see [`access`]), a request with a valid Access JWT
 //! needs no token: it counts as the device whose token it bears, else as
-//! [`Caller::Access`].
+//! [`Caller::Access`]. A token that works decides alone, so Access does not lift a
+//! read-only device's limits.
 
 use std::sync::Arc;
 
@@ -143,10 +144,10 @@ pub async fn require_access(
         path: request.uri().path(),
         peer,
     };
-    let caller = match (by_token(&gate, asked, through_access).await, through_access) {
-        (Ok(caller), _) => caller,
-        (Err(_), true) => Caller::Access,
-        (Err(refused), false) => return *refused,
+    let caller = match by_token(&gate, asked, through_access).await {
+        Ok(caller) => caller,
+        Err(Refused::Unauthenticated(_)) if through_access => Caller::Access,
+        Err(Refused::Unauthenticated(response) | Refused::Final(response)) => return *response,
     };
     request.extensions_mut().insert(caller);
     next.run(request).await
@@ -161,17 +162,30 @@ struct Asked<'a> {
     peer: std::net::IpAddr,
 }
 
+/// Why [`by_token`] refused a request.
+enum Refused {
+    /// The token named no caller that may sign in; Access may sign the request in instead.
+    Unauthenticated(Box<Response>),
+    /// An active device may not make the request, or its token could not be checked; Access
+    /// does not override that.
+    Final(Box<Response>),
+}
+
 /// The caller the request's token stands for, or the response refusing it. Wrong tokens
 /// count towards the lockout unless Access signed the request in.
-async fn by_token(
-    gate: &Gate,
-    asked: Asked<'_>,
-    through_access: bool,
-) -> Result<Caller, Box<Response>> {
-    let rejected = |rejection| Box::new(mcp::unauthorized(mcp::Surface::Api, rejection, None));
+async fn by_token(gate: &Gate, asked: Asked<'_>, through_access: bool) -> Result<Caller, Refused> {
+    let rejected = |rejection| {
+        Refused::Unauthenticated(Box::new(mcp::unauthorized(
+            mcp::Surface::Api,
+            rejection,
+            None,
+        )))
+    };
     let peer = asked.peer;
     if !through_access && let Some(wait) = gate.attempts.locked_out(peer) {
-        return Err(Box::new(attempts::too_many("API", wait)));
+        return Err(Refused::Unauthenticated(Box::new(attempts::too_many(
+            "API", wait,
+        ))));
     }
     let presented = mcp::bearer(asked.headers).map_err(rejected)?;
     if mcp::same_secret(presented, &gate.shared_token) {
@@ -187,18 +201,20 @@ async fn by_token(
             if device.scope == DeviceScope::ReadOnly
                 && !read_only_allows(asked.method, asked.path, device.id)
             {
-                return Err(Box::new(read_only_refused()));
+                return Err(Refused::Final(Box::new(read_only_refused())));
             }
             Ok(Caller::Device(device.id))
         }
-        Ok(DeviceAuth::Expired(_)) => Err(Box::new(expired())),
+        Ok(DeviceAuth::Expired(_)) => Err(Refused::Unauthenticated(Box::new(expired()))),
         Ok(DeviceAuth::Unknown) => {
             if !through_access {
                 gate.attempts.record(peer);
             }
             Err(rejected(mcp::Rejection::WrongToken))
         }
-        Err(error) => Err(Box::new(Reply::Failed(error).into_response())),
+        Err(error) => Err(Refused::Final(Box::new(
+            Reply::Failed(error).into_response(),
+        ))),
     }
 }
 
