@@ -12,7 +12,10 @@ import { reachability, subscribeReachability } from "@/web/connection";
 import { activeServer } from "@/web/server";
 import { isSignedIn, subscribeToken } from "@/web/session";
 
-/** The first part of the keys of kept queries: workspaces, tasks, and task details (see `queryKeys`). */
+/**
+ * The first part of the keys of kept queries (see `queryKeys`): workspaces, the task pages and
+ * the tasks loaded by ID under them, and the task links and archive.
+ */
 const KEPT_QUERIES = ["workspaces", "task-list", "tasks"];
 
 /** How long a kept query nobody shows stays in memory, so the next save still has it. */

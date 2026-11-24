@@ -196,8 +196,21 @@ export function useArchive() {
 }
 
 /**
+ * Refetches what a change of tasks can change, whether this app made it or the server reports
+ * it (tasks-changed, e.g. after an MCP call): the task pages and what loads under them, the
+ * task links and the archive (under "tasks"), and reviews.
+ */
+function invalidateTasks(queryClient: QueryClient) {
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+    queryClient.invalidateQueries({ queryKey: ["tasks"] }),
+    queryClient.invalidateQueries({ queryKey: ["review"] }),
+  ]);
+}
+
+/**
  * Commands that move workspaces or tasks into or out of the archive, which changes the
- * workspaces, the tasks, the archive, and what reviews show.
+ * workspaces as well as the tasks.
  */
 function useArchiveMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
   const queryClient = useQueryClient();
@@ -205,10 +218,8 @@ function useArchiveMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
     mutationFn,
     onSuccess: () =>
       Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+        invalidateTasks(queryClient),
         queryClient.invalidateQueries({ queryKey: queryKeys.workspaces, exact: true }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.archive }),
-        queryClient.invalidateQueries({ queryKey: ["review"] }),
       ]),
   });
 }
@@ -445,7 +456,7 @@ export function useServerEvents() {
     const subscriptions = [
       events.tasksChanged.listen(async () => {
         const previous = cachedTasks(queryClient);
-        await queryClient.invalidateQueries({ queryKey: queryKeys.tasks });
+        await invalidateTasks(queryClient);
         // The app being in focus means the user already sees the change on the task.
         if (previous === undefined || document.hasFocus()) {
           return;
@@ -474,7 +485,7 @@ export function useStartTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: TaskId) => unwrap(commands.startTask(id, null, null)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+    onSuccess: () => invalidateTasks(queryClient),
   });
 }
 
@@ -486,11 +497,7 @@ export function useCompleteTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: TaskId) => unwrap(commands.completeTask(id, null, null)),
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
-        queryClient.invalidateQueries({ queryKey: ["review"] }),
-      ]),
+    onSuccess: () => invalidateTasks(queryClient),
   });
 }
 
@@ -510,11 +517,7 @@ export function useConcludeTask() {
       note: string;
       shippedWith?: TaskId | null;
     }) => unwrap(commands.concludeTask(id, note, shippedWith === null ? "not_adopted" : "shipped_with", shippedWith)),
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
-        queryClient.invalidateQueries({ queryKey: ["review"] }),
-      ]),
+    onSuccess: () => invalidateTasks(queryClient),
   });
 }
 
@@ -523,11 +526,7 @@ export function useSetCompletionNote() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, note }: { id: TaskId; note: string }) => unwrap(commands.setCompletionNote(id, note)),
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
-        queryClient.invalidateQueries({ queryKey: ["review"] }),
-      ]),
+    onSuccess: () => invalidateTasks(queryClient),
   });
 }
 
@@ -539,11 +538,7 @@ export function useReopenTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, reason }: { id: TaskId; reason: string }) => unwrap(commands.reopenTask(id, reason)),
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
-        queryClient.invalidateQueries({ queryKey: ["review"] }),
-      ]),
+    onSuccess: () => invalidateTasks(queryClient),
   });
 }
 
@@ -553,11 +548,7 @@ export function useSetTaskOutcome() {
   return useMutation({
     mutationFn: ({ id, resolution, note }: { id: TaskId; resolution: TaskResolution; note: string }) =>
       unwrap(commands.setTaskOutcome(id, resolution, note)),
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
-        queryClient.invalidateQueries({ queryKey: ["review"] }),
-      ]),
+    onSuccess: () => invalidateTasks(queryClient),
   });
 }
 
@@ -565,12 +556,7 @@ export function useUpdateTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (task: TaskEdit) => unwrap(commands.updateTask(task)),
-    // Reviews compare a task's estimate and due date with what happened.
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
-        queryClient.invalidateQueries({ queryKey: ["review"] }),
-      ]),
+    onSuccess: () => invalidateTasks(queryClient),
   });
 }
 
@@ -580,11 +566,7 @@ export function useMoveTask() {
   return useMutation({
     mutationFn: ({ id, workspaceId }: { id: TaskId; workspaceId: WorkspaceId }) =>
       unwrap(commands.moveTask(id, workspaceId)),
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
-        queryClient.invalidateQueries({ queryKey: ["review"] }),
-      ]),
+    onSuccess: () => invalidateTasks(queryClient),
   });
 }
 
@@ -593,7 +575,7 @@ function useTasksMutation<T>(mutationFn: (variables: T) => Promise<unknown>) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+    onSuccess: () => invalidateTasks(queryClient),
   });
 }
 
@@ -701,6 +683,6 @@ export function useCreateTask() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (task: NewTask) => unwrap(commands.createTask(task)),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.tasks }),
+    onSuccess: () => invalidateTasks(queryClient),
   });
 }
