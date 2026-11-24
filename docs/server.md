@@ -409,8 +409,16 @@ nothing. Opening a notification opens its task. While notifications are on, the 
 no notifications of its own on that device, so nothing arrives twice.
 
 Subscriptions belong to devices: a browser signed in with the shared `web-token` signs
-in again to get a device token first. Revoking a device ends its subscription, and a
-subscription the push service reports gone is dropped.
+in again to get a device token first. Revoking a device ends its subscription, a device
+whose token expired gets no notifications, and a subscription the push service reports
+gone is dropped.
+
+Push services are on the public internet, so the server posts only there. A
+subscription whose endpoint carries credentials or a fragment, or whose host is or
+resolves to a loopback, private, link-local, or otherwise reserved address, is refused;
+the same check runs before every notification, on the address the server connects to.
+The server follows no redirects from a push service and ignores proxy settings in its
+environment.
 
 A notification the push service cannot take for a while (it cannot be reached, or it
 answers 429 or 5xx) is tried again after 1, 2, and 4 seconds; while a device's push
