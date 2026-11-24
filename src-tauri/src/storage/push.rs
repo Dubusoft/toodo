@@ -106,15 +106,16 @@ impl Storage {
         find(&self.conn, device)
     }
 
-    /// Every subscription of a device that is not revoked.
+    /// Every subscription of a device that is neither revoked nor expired.
     pub fn active_push_subscriptions(&self) -> Result<Vec<PushSubscription>> {
         let mut statement = self.conn.prepare(&format!(
             "SELECT {COLUMNS} FROM push_subscriptions
-             WHERE device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL)
+             WHERE device_id IN (SELECT id FROM devices WHERE revoked_at IS NULL
+                 AND (expires_at IS NULL OR expires_at > ?1))
              ORDER BY device_id"
         ))?;
         let subscriptions = statement
-            .query_map([], subscription)?
+            .query_map([self.now()], subscription)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(subscriptions)
     }
@@ -296,6 +297,39 @@ mod tests {
             storage.save_push_subscription(DeviceId(99), &new("https://push.example/c", 3)),
             Err(StorageError::DeviceNotFound(_))
         ));
+    }
+
+    #[test]
+    fn expired_devices_get_no_pushes() {
+        let mut storage = Storage::open_in_memory().unwrap();
+        let clock = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(100));
+        let now = clock.clone();
+        storage.set_clock(move || now.load(std::sync::atomic::Ordering::SeqCst));
+        let phone = storage
+            .create_device(
+                &DeviceLabel::parse("Phone").unwrap(),
+                &"1".repeat(64),
+                crate::domain::device::DeviceScope::Full,
+                Some(1),
+            )
+            .unwrap();
+        storage
+            .save_push_subscription(phone.id, &new("https://push.example/a", 1))
+            .unwrap();
+        let expires_at = phone.expires_at.unwrap();
+        let devices = |storage: &Storage| -> Vec<DeviceId> {
+            storage
+                .active_push_subscriptions()
+                .unwrap()
+                .into_iter()
+                .map(|subscription| subscription.device)
+                .collect()
+        };
+
+        clock.store(expires_at - 1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(devices(&storage), [phone.id]);
+        clock.store(expires_at, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(devices(&storage), []);
     }
 
     #[test]
