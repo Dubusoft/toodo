@@ -1,10 +1,86 @@
-//! The chat between the people using Toodo and an agent connected over MCP: who wrote a
-//! message, and the receipts of the agent's work on a person's message.
+//! The chat between the people using Toodo and an agent connected over MCP: its channels
+//! and the threads under them, who wrote a message, and the receipts of the agent's work on
+//! a person's message.
 
 use super::model::TaskId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChatMessageId(pub i64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChatChannelId(pub i64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChatThreadId(pub i64);
+
+/// The channel every chat has: the one chat of earlier versions, which cannot be removed.
+pub const FIRST_CHANNEL: ChatChannelId = ChatChannelId(1);
+
+/// Where a message is: in a channel itself, or in one of its threads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChatPlace {
+    Channel(ChatChannelId),
+    Thread(ChatThreadId),
+}
+
+/// A channel of the chat.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatChannel {
+    pub id: ChatChannelId,
+    pub name: String,
+    /// Whether the agent's messages in the channel and its threads notify devices.
+    pub push: bool,
+    pub created_at: i64,
+    /// Messages of the agent and Toodo not read yet, in the channel and its threads that
+    /// are not archived.
+    pub unread: i64,
+}
+
+/// Whether a thread takes messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadStatus {
+    /// It takes messages.
+    Open,
+    /// Its conversation is over; it takes messages again once reopened.
+    Closed,
+    /// Closed and put away: left out of the channel's thread list unless asked for.
+    Archived,
+}
+
+impl ThreadStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::Archived => "archived",
+        }
+    }
+
+    pub fn parse(stored: &str) -> Option<Self> {
+        [Self::Open, Self::Closed, Self::Archived]
+            .into_iter()
+            .find(|status| status.as_str() == stored)
+    }
+}
+
+/// A thread under a channel, which may follow a task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatThread {
+    pub id: ChatThreadId,
+    pub channel_id: ChatChannelId,
+    pub title: String,
+    pub task_id: Option<TaskId>,
+    pub status: ThreadStatus,
+    pub created_at: i64,
+    /// Set while it is closed or archived.
+    pub closed_at: Option<i64>,
+    /// Set while it is archived.
+    pub archived_at: Option<i64>,
+    /// Messages of the agent and Toodo in it not read yet.
+    pub unread: i64,
+    /// When its latest message was posted.
+    pub last_message_at: Option<i64>,
+}
 
 /// Who wrote a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +119,8 @@ pub const ANSWER_WITHIN: i64 = 10 * 60;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChatMessage {
     pub id: ChatMessageId,
+    pub channel_id: ChatChannelId,
+    pub thread_id: Option<ChatThreadId>,
     pub author: ChatAuthor,
     pub body: String,
     /// Unix seconds, as are the receipts.
@@ -81,9 +159,23 @@ mod tests {
     }
 
     #[test]
+    fn thread_statuses_round_trip_their_stored_names() {
+        for status in [
+            ThreadStatus::Open,
+            ThreadStatus::Closed,
+            ThreadStatus::Archived,
+        ] {
+            assert_eq!(ThreadStatus::parse(status.as_str()), Some(status));
+        }
+        assert_eq!(ThreadStatus::parse("deleted"), None);
+    }
+
+    #[test]
     fn only_unhandled_messages_past_their_due_time_are_overdue() {
         let message = ChatMessage {
             id: ChatMessageId(1),
+            channel_id: FIRST_CHANNEL,
+            thread_id: None,
             author: ChatAuthor::User,
             body: "Hi".to_owned(),
             at: 0,

@@ -452,7 +452,7 @@ ones it gets, and sends itself a test notification:
 | Setting | Notifications |
 | --- | --- |
 | Task awaiting completion | A task moved to `in_review`, so its work awaits review and completion |
-| Agent messages in the chat | The agent posted a message in the [chat](#chat); opening it opens the chat |
+| Agent messages in the chat | The agent posted a message in the [chat](#chat), in a channel whose notifications are on; opening it opens the chat |
 
 The settings **Agent finished or needs input** and **Pull request checks and reviews** are
 still listed, but the server no longer watches agents or pull requests, so they send
@@ -534,7 +534,8 @@ The MCP server has 44 tools:
 - Guidelines: `get_guidelines`, `add_guideline`, `update_guideline`, `remove_guideline`.
 - Review: `review_report`.
 - Chat (see [Chat](#chat)): `peek_pending`, `take_pending`, `ack_chat`, `reply_in_chat`,
-  `mark_chat_handled`, `list_chat`, `set_typing`.
+  `mark_chat_handled`, `list_chat`, `set_typing`, `list_channels`, `create_channel`,
+  `list_threads`, `create_thread`, `update_thread`.
 
 Two of them help an agent wire a plan:
 
@@ -571,10 +572,20 @@ shares with the `initialize` instructions come from `src-tauri/src/mcp/shared/` 
 ### Chat
 
 The web app has a chat with the agent connected over MCP: the round button at the bottom
-right opens it, and shows how many of the agent's messages are unread. Toodo does not run
-the agent; any agent with the `mcp-token` can take the chat's messages and answer them.
-The chat shows the agent under the name and avatar of `TOODO_CHAT_AGENT_NAME` and
-`TOODO_CHAT_AGENT_AVATAR`.
+right opens it, and shows how many of the agent's messages are unread in every channel.
+Toodo does not run the agent; any agent with the `mcp-token` can take the chat's messages
+and answer them. The chat shows the agent under the name and avatar of
+`TOODO_CHAT_AGENT_NAME` and `TOODO_CHAT_AGENT_AVATAR`.
+
+**Channels and threads.** The chat has channels, starting with `#general` (channel 1,
+which holds the messages of versions before channels), and threads under each channel.
+People and the agent add channels and threads; a thread may follow a task, and the task's
+details show its threads and their conversations. Each channel and thread keeps how far
+people read it, so the app shows unread counts per channel and per thread; an archived
+thread no longer counts. A channel's bell turns its notifications on or off for every
+device. A thread is `open`, `closed` when its conversation is over, or `archived`, which
+also leaves it out of its channel's list unless asked for; closed and archived threads
+take no messages until reopened.
 
 An agent works through the chat tools:
 
@@ -582,11 +593,19 @@ An agent works through the chat tools:
    received; `peek_pending` returns them without marking them.
 2. `ack_chat` with their `ids` tells the people it read them.
 3. `reply_in_chat` posts its answer; `handles` lists the messages it answers, which are
-   marked handled by it. `mark_chat_handled` marks a message handled by an earlier reply
-   (`reply_id`) or by a task made for it (`task_id`).
+   marked handled by it. It posts in `channel_id` or `thread_id` when given, else where the
+   first answered message is, else in channel 1. `mark_chat_handled` marks a message
+   handled by an earlier reply (`reply_id`) or by a task made for it (`task_id`).
 4. `set_typing` shows that it is writing, for 30 seconds unless sent again; a reply ends it.
 
-`list_chat` lists the latest messages with their receipts, and `before` pages back.
+Each message carries its `channelId` and `threadId`. `list_chat` lists the latest messages
+with their receipts, of every place or only of `channel_id` (the channel itself) or
+`thread_id`, and `before` pages back. `list_channels` lists the channels with `push` and
+`unread`, and `create_channel` adds one. `create_thread` opens a thread under `channel_id`
+(channel 1 when omitted), following `task_id` if given; `list_threads` lists threads by
+`channel_id` or `task_id` with their `status`, `closedAt`, and `archivedAt`
+(`include_archived` adds archived ones); and `update_thread` changes a thread's `title`,
+its task (`task_id`, or `unlink_task`), or its `status`.
 Each person's message shows its receipts in the app: sent, delivered (received by the
 agent), read (acknowledged), and handled. One not handled within 10 minutes shows that it
 waits for an answer. A message the agent posts reaches the devices that turned on **Agent

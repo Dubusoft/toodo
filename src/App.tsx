@@ -399,7 +399,14 @@ export default function App() {
       )}
       {!settingsOpen && (
         <ErrorBoundary label="the chat">
-          <Chat open={chatOpen} onOpenChange={setChatOpen} />
+          <Chat
+            open={chatOpen}
+            onOpenChange={setChatOpen}
+            onShowTask={(id) => {
+              setChatOpen(false);
+              showTask(id);
+            }}
+          />
         </ErrorBoundary>
       )}
       {paletteOpen && <CommandPalette commands={paletteCommands()} onClose={() => setPaletteOpen(false)} />}

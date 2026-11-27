@@ -3,7 +3,8 @@
 //! Workspaces and tasks with their history are added next to the data already here.
 //! Imported rows get IDs after every ID this database has used, so nothing here changes;
 //! references between imported rows move along. Devices, push subscriptions, connected
-//! OAuth apps, settings, saved reviews, and the lead chat of the other database are not
+//! OAuth apps, settings, saved reviews, and the chat (its channels, threads, and messages)
+//! of the other database are not
 //! imported: they belong to the server that kept them. Records of the removed execution
 //! backend are not imported either, since their IDs only meant something on the other
 //! machine.
@@ -103,6 +104,8 @@ pub(super) const SKIPPED: &[&str] = &[
     "oauth_grants",
     "oauth_tokens",
     "chat_messages",
+    "chat_channels",
+    "chat_threads",
     "task_results",
     "task_search",
     // Runtime handles and runs belong to the other server's hosts.

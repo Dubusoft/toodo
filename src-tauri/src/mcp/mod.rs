@@ -1214,7 +1214,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Post a message to the people in the Toodo app chat; they get it at once and as a push notification. handles lists the IDs of their messages it answers, which are marked handled by it. Returns the posted message."
+        description = "Post a message to the people in the Toodo app chat; they get it at once and as a push notification unless its channel's notifications are off. handles lists the IDs of their messages it answers, which are marked handled by it. channel_id or thread_id (an open thread) says where to post; without them it goes where the first answered message is, else to the first channel. Returns the posted message."
     )]
     async fn reply_in_chat(
         &self,
@@ -1223,10 +1223,10 @@ impl ToodoMcp {
         let result = self
             .blocking(move |backend| tools::reply_in_chat(&mut lock(backend.storage()), request))
             .await;
-        if let Ok(message) = &result {
-            self.backend.agent_posted(message);
+        if let Ok((message, notice)) = &result {
+            self.backend.agent_posted(message, notice.as_ref());
         }
-        reply(result)
+        reply(result.map(|(message, _)| message))
     }
 
     #[tool(
@@ -1264,7 +1264,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "List the latest chat messages of people, you (author agent) and Toodo (author system), oldest first, with the receipts of people's messages; before pages back."
+        description = "List the latest chat messages of people, you (author agent) and Toodo (author system), oldest first, with the receipts of people's messages; channel_id limits them to a channel itself, thread_id to a thread, and before pages back."
     )]
     async fn list_chat(
         &self,
@@ -1287,6 +1287,77 @@ impl ToodoMcp {
         reply(Ok(tools::Typing {
             typing: request.typing,
         }))
+    }
+
+    #[tool(
+        description = "List the chat's channels in the order they were made, with whether the agent's messages there notify people (push) and how many of the agent's messages people have not read (unread). Channel 1 always exists."
+    )]
+    async fn list_channels(&self) -> Result<CallToolResult, ErrorData> {
+        reply(
+            self.blocking(|backend| tools::list_channels(&lock(backend.reader())))
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Create a chat channel named name (shown after #; a leading # is dropped). Names are unique regardless of case. Returns the channel."
+    )]
+    async fn create_channel(
+        &self,
+        Parameters(request): Parameters<tools::CreateChannel>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| tools::create_channel(&mut lock(backend.storage()), request))
+            .await;
+        if result.is_ok() {
+            self.backend.chat_changed();
+        }
+        reply(result)
+    }
+
+    #[tool(
+        description = "List chat threads, the latest active first, with status (open, closed, archived), closedAt, archivedAt, taskId, and unread; channel_id or task_id narrows them, and include_archived adds archived threads."
+    )]
+    async fn list_threads(
+        &self,
+        Parameters(request): Parameters<tools::ListThreads>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(
+            self.blocking(move |backend| tools::list_threads(&lock(backend.reader()), request))
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Open a chat thread titled title under channel_id (the first channel when omitted). task_id makes it follow a task, so the task's detail in the app shows its conversation. Post in it with reply_in_chat thread_id. Returns the thread."
+    )]
+    async fn create_thread(
+        &self,
+        Parameters(request): Parameters<tools::CreateThread>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| tools::create_thread(&mut lock(backend.storage()), request))
+            .await;
+        if result.is_ok() {
+            self.backend.chat_changed();
+        }
+        reply(result)
+    }
+
+    #[tool(
+        description = "Change a chat thread: title, the task it follows (task_id, or unlink_task true), or status: closed when its conversation is over, archived to also put it away, open to take messages again. Closed and archived threads refuse new messages. Returns the thread."
+    )]
+    async fn update_thread(
+        &self,
+        Parameters(request): Parameters<tools::UpdateThread>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| tools::update_thread(&mut lock(backend.storage()), request))
+            .await;
+        if result.is_ok() {
+            self.backend.chat_changed();
+        }
+        reply(result)
     }
 }
 
@@ -1871,11 +1942,16 @@ mod tests {
         fn chat_changed(&self) {
             self.chat.lock().unwrap().push("changed".to_owned());
         }
-        fn agent_posted(&self, message: &crate::commands::types::ChatMessage) {
+        fn agent_posted(
+            &self,
+            message: &crate::commands::types::ChatMessage,
+            notice: Option<&crate::storage::ChatNotice>,
+        ) {
+            let place = notice.map_or("quiet".to_owned(), |notice| notice.channel.clone());
             self.chat
                 .lock()
                 .unwrap()
-                .push(format!("posted {}", message.body));
+                .push(format!("posted {} in {place}", message.body));
         }
         fn agent_typing(&self, typing: bool) {
             self.chat.lock().unwrap().push(format!("typing {typing}"));
@@ -1976,6 +2052,11 @@ mod tests {
             "mark_chat_handled",
             "list_chat",
             "set_typing",
+            "list_channels",
+            "create_channel",
+            "list_threads",
+            "create_thread",
+            "update_thread",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -2278,8 +2359,9 @@ mod tests {
     #[test]
     fn chat_tools_take_acknowledge_and_answer_messages_and_announce_each_step() {
         let mut storage = crate::storage::Storage::open_in_memory().unwrap();
-        let hi = storage.post_user_message("Hi", "c1").unwrap();
-        let later = storage.post_user_message("Also", "c2").unwrap();
+        let general = crate::domain::chat::ChatPlace::Channel(crate::domain::chat::FIRST_CHANNEL);
+        let hi = storage.post_user_message(general, "Hi", "c1").unwrap();
+        let later = storage.post_user_message(general, "Also", "c2").unwrap();
         let backend = Arc::new(TestBackend::new(storage));
         let server = ToodoMcp::new(backend.clone());
         let text = |result: CallToolResult| -> Value {
@@ -2335,7 +2417,7 @@ mod tests {
                 "changed",
                 "changed",
                 "typing true",
-                "posted Hello",
+                "posted Hello in general",
                 "changed"
             ]
         );
@@ -2346,6 +2428,94 @@ mod tests {
         .unwrap();
         assert_eq!(refused["isError"], true);
         assert_eq!(refused["structuredContent"]["error"]["code"], "rejected");
+    }
+
+    #[test]
+    fn thread_tools_open_close_and_archive_a_thread_that_follows_a_task() {
+        let backend = Arc::new(TestBackend::new(
+            crate::storage::Storage::open_in_memory().unwrap(),
+        ));
+        let server = ToodoMcp::new(backend.clone());
+        let text = |result: CallToolResult| -> Value {
+            let result = serde_json::to_value(result).unwrap();
+            assert_ne!(result["isError"], true, "{result}");
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        fn args<T: serde::de::DeserializeOwned>(value: Value) -> Parameters<T> {
+            Parameters(serde_json::from_value(value).unwrap())
+        }
+        let rt = runtime();
+        let work = text(
+            rt.block_on(server.create_channel(args(serde_json::json!({"name": "#work"}))))
+                .unwrap(),
+        );
+        assert_eq!(work["name"], "work");
+        let thread = text(
+            rt.block_on(server.create_thread(args(
+                serde_json::json!({"channel_id": work["id"], "title": "Deploy"}),
+            )))
+            .unwrap(),
+        );
+        assert_eq!(thread["status"], "open");
+        let posted = text(
+            rt.block_on(server.reply_in_chat(args(
+                serde_json::json!({"body": "Starting", "thread_id": thread["id"]}),
+            )))
+            .unwrap(),
+        );
+        assert_eq!(
+            (&posted["channelId"], &posted["threadId"]),
+            (&work["id"], &thread["id"])
+        );
+        for status in ["closed", "archived"] {
+            let updated = text(
+                rt.block_on(server.update_thread(args(
+                    serde_json::json!({"id": thread["id"], "status": status}),
+                )))
+                .unwrap(),
+            );
+            assert_eq!(updated["status"], status);
+        }
+        assert_eq!(
+            text(
+                rt.block_on(server.list_threads(args(serde_json::json!({}))))
+                    .unwrap()
+            ),
+            serde_json::json!([])
+        );
+        let archived = text(
+            rt.block_on(server.list_threads(args(serde_json::json!({"include_archived": true}))))
+                .unwrap(),
+        );
+        assert_eq!(archived[0]["status"], "archived");
+        assert_ne!(archived[0]["closedAt"], Value::Null);
+        assert_ne!(archived[0]["archivedAt"], Value::Null);
+        let refused = serde_json::to_value(
+            rt.block_on(server.reply_in_chat(args(
+                serde_json::json!({"body": "Late", "thread_id": thread["id"]}),
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(refused["structuredContent"]["error"]["code"], "rejected");
+        let both = serde_json::to_value(
+            rt.block_on(server.reply_in_chat(args(serde_json::json!(
+                {"body": "Hi", "channel_id": 1, "thread_id": thread["id"]}
+            ))))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(both["isError"], true);
+        assert_eq!(
+            *backend.chat.lock().unwrap(),
+            [
+                "changed",
+                "changed",
+                "posted Starting in work",
+                "changed",
+                "changed"
+            ]
+        );
     }
 
     #[test]

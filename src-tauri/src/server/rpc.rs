@@ -14,8 +14,9 @@ use serde::de::DeserializeOwned;
 use super::Services;
 use crate::commands::events::Notifier as _;
 use crate::commands::types::{
-    BackupSettings, ChatMessage, ChatMessageId, CriterionId, Guideline, GuidelineId,
-    GuidelineUpdate, NewGuideline, NewTask, NewWorkspace, OAuthGrantId, ReviewReportRequest,
+    BackupSettings, ChatChannelEdit, ChatChannelId, ChatMessageId, ChatPlace, ChatThreadEdit,
+    ChatThreadFilter, ChatThreadId, CriterionId, Guideline, GuidelineId, GuidelineUpdate,
+    NewChatThread, NewGuideline, NewTask, NewWorkspace, OAuthGrantId, ReviewReportRequest,
     ReviewSnapshotId, SaveReviewSnapshotRequest, TaskEdit, TaskId, TaskListFilter, TaskResolution,
     Timestamp, Workspace, WorkspaceId,
 };
@@ -154,11 +155,9 @@ fn guidelines_changed(
     result
 }
 
-/// Announces a person's chat message to connected clients and the agent.
-fn chat_changed(
-    services: &Services,
-    result: CommandResult<ChatMessage>,
-) -> CommandResult<ChatMessage> {
+/// Announces a change of the chat (a person's message, a channel, a thread, or what people
+/// read) to connected clients and the agent.
+fn chat_changed<T>(services: &Services, result: CommandResult<T>) -> CommandResult<T> {
     if result.is_ok() {
         services.chat_changed();
     }
@@ -237,6 +236,8 @@ pub const READ_COMMANDS: &[&str] = &[
     "get_backup_settings",
     "list_backups",
     "list_chat",
+    "list_chat_channels",
+    "list_chat_threads",
 ];
 
 commands!(s => {
@@ -354,13 +355,31 @@ commands!(s => {
         review::delete_review_snapshot(State(&s.storage), id)
     );
 
-    "list_chat"(before: Option<ChatMessageId>) => sync Reply::result(
-        chat::list_chat(State(s.reader()), State(&s.chat), before)
+    "list_chat"(place: ChatPlace, before: Option<ChatMessageId>) => sync Reply::result(
+        chat::list_chat(State(s.reader()), State(&s.chat), place, before)
     );
-    "send_chat_message"(body: String, client_id: String) => sync Reply::result(chat_changed(
-        s,
-        chat::send_chat_message(State(&s.storage), body, client_id),
-    ));
+    "send_chat_message"(place: ChatPlace, body: String, client_id: String) => sync Reply::result(
+        chat_changed(s, chat::send_chat_message(State(&s.storage), place, body, client_id))
+    );
+    "mark_chat_read"(place: ChatPlace, up_to: ChatMessageId) => sync Reply::result(
+        chat_changed(s, chat::mark_chat_read(State(&s.storage), place, up_to))
+    );
+    "list_chat_channels"() => sync Reply::result(chat::list_chat_channels(State(s.reader())));
+    "create_chat_channel"(name: String) => sync Reply::result(
+        chat_changed(s, chat::create_chat_channel(State(&s.storage), name))
+    );
+    "update_chat_channel"(id: ChatChannelId, edit: ChatChannelEdit) => sync Reply::result(
+        chat_changed(s, chat::update_chat_channel(State(&s.storage), id, edit))
+    );
+    "list_chat_threads"(filter: ChatThreadFilter) => sync Reply::result(
+        chat::list_chat_threads(State(s.reader()), filter)
+    );
+    "create_chat_thread"(thread: NewChatThread) => sync Reply::result(
+        chat_changed(s, chat::create_chat_thread(State(&s.storage), thread))
+    );
+    "update_chat_thread"(id: ChatThreadId, edit: ChatThreadEdit) => sync Reply::result(
+        chat_changed(s, chat::update_chat_thread(State(&s.storage), id, edit))
+    );
 
     "get_backup_settings"() => sync Reply::value(backup::get_backup_settings(State(&s.backups)));
     "get_backup_status"() => sync Reply::value(backup::get_backup_status(State(&s.backups)));

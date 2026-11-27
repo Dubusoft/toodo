@@ -44,7 +44,9 @@ id_schema!(
     TaskId,
     super::CriterionId,
     super::GuidelineId,
-    super::ChatMessageId
+    super::ChatMessageId,
+    super::ChatChannelId,
+    super::ChatThreadId
 );
 
 /// A related link between two tasks, which may belong to different workspaces. The link

@@ -97,6 +97,8 @@ pub enum CommandErrorCode {
     RunNotFound,
     GuidelineNotFound,
     ChatMessageNotFound,
+    ChatChannelNotFound,
+    ChatThreadNotFound,
     /// The request breaks a rule.
     Rejected,
     /// The dependency would make the task DAG cyclic or make a task depend on itself.
@@ -130,7 +132,9 @@ impl CommandErrorCode {
             | Self::RelationNotFound
             | Self::RunNotFound
             | Self::GuidelineNotFound
-            | Self::ChatMessageNotFound => CommandErrorKind::NotFound,
+            | Self::ChatMessageNotFound
+            | Self::ChatChannelNotFound
+            | Self::ChatThreadNotFound => CommandErrorKind::NotFound,
             Self::Rejected
             | Self::DependencyCycle
             | Self::InvalidTransition
@@ -205,6 +209,8 @@ impl From<StorageError> for CommandError {
             StorageError::RelationNotFound { .. } => CommandErrorCode::RelationNotFound,
             StorageError::GuidelineNotFound(_) => CommandErrorCode::GuidelineNotFound,
             StorageError::ChatMessageNotFound(_) => CommandErrorCode::ChatMessageNotFound,
+            StorageError::ChatChannelNotFound(_) => CommandErrorCode::ChatChannelNotFound,
+            StorageError::ChatThreadNotFound(_) => CommandErrorCode::ChatThreadNotFound,
             StorageError::DeviceNotFound(_) | StorageError::PushSubscriptionNotFound(_) => {
                 CommandErrorCode::NotFound
             }
@@ -223,7 +229,9 @@ impl From<StorageError> for CommandError {
             | StorageError::CriteriaOfDoneTask(_)
             | StorageError::AutomaticCriterion { .. }
             | StorageError::NotAPersonsMessage(_)
-            | StorageError::NotAnAgentsMessage(_) => CommandErrorCode::Rejected,
+            | StorageError::NotAnAgentsMessage(_)
+            | StorageError::ChatChannelNameTaken(_)
+            | StorageError::ChatThreadNotOpen { .. } => CommandErrorCode::Rejected,
             StorageError::SelfRelation(_)
             | StorageError::PlanLinkOutOfRange { .. }
             | StorageError::InvalidBackup(_) => CommandErrorCode::InvalidInput,

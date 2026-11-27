@@ -2571,3 +2571,56 @@ fn version_54_turns_agent_message_notifications_on_for_existing_subscriptions() 
             .is_err()
     );
 }
+
+#[test]
+fn version_55_moves_the_one_chat_into_a_general_channel_read_up_to_its_end() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_legacy(&mut conn).unwrap();
+    for sql in &MIGRATIONS[45..54] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 54).unwrap();
+    conn.execute_batch(
+        "INSERT INTO chat_messages (author, body, at) VALUES ('user', 'Hi', 10);
+         INSERT INTO chat_messages (author, body, at) VALUES ('lead', 'Hello', 11);",
+    )
+    .unwrap();
+
+    super::migrate(&mut conn).unwrap();
+
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    let channel: (i64, String, i64, i64, i64) = conn
+        .query_row(
+            "SELECT id, name, push, read_id, created_at FROM chat_channels",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(channel, (1, "general".to_owned(), 1, 2, 10));
+    let places: Vec<(i64, Option<i64>)> = conn
+        .prepare("SELECT channel_id, thread_id FROM chat_messages ORDER BY id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(places, [(1, None), (1, None)]);
+    let set = |sql: &str| conn.execute_batch(sql);
+    assert!(set("INSERT INTO chat_channels (name, created_at) VALUES ('GENERAL', 1)").is_err());
+    assert!(
+        set("INSERT INTO chat_threads (channel_id, title, status, created_at) VALUES (1, 'T', 'closed', 1)")
+            .is_err(),
+        "a closed thread needs closed_at"
+    );
+    assert!(
+        set("INSERT INTO chat_threads (channel_id, title, status, created_at, closed_at, archived_at)
+             VALUES (1, 'T', 'closed', 1, 2, 3)")
+            .is_err(),
+        "only an archived thread has archived_at"
+    );
+    assert!(
+        set("INSERT INTO chat_threads (channel_id, title, status, created_at, closed_at, archived_at)
+             VALUES (1, 'T', 'archived', 1, 2, 3)")
+            .is_ok()
+    );
+}

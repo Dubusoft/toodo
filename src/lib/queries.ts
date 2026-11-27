@@ -11,9 +11,16 @@ import {
   commands,
   events,
   type BackupSettings,
+  type ChatChannelEdit,
+  type ChatChannelId,
   type ChatMessage,
   type ChatMessageId,
+  type ChatPlace,
+  type ChatThreadEdit,
+  type ChatThreadFilter,
+  type ChatThreadId,
   type ChatView,
+  type NewChatThread,
   type CommandError,
   type CriterionId,
   type Guideline,
@@ -83,20 +90,79 @@ export const queryKeys = {
   /** Not under "review": saved reviews never change with the tasks. */
   reviewSnapshots: ["review-snapshots"] as const,
   reviewSnapshot: (id: ReviewSnapshotId) => ["review-snapshots", id] as const,
-  /** The chat with the agent, loaded in pages back from the latest message. */
+  /** Everything of the chat with the agent: its channels, threads, and messages. */
   chat: ["chat"] as const,
+  /** The messages of a channel or thread, loaded in pages back from the latest message. */
+  chatMessages: (place: ChatPlace) => ["chat", "messages", place] as const,
+  chatChannels: ["chat", "channels"] as const,
+  chatThreads: (filter: ChatThreadFilter) => ["chat", "threads", filter] as const,
 };
 
 /**
- * The chat with the agent connected over MCP: pages of messages, the latest first, refetched on
- * chat-changed events (see `useServerEvents`).
+ * The messages of a channel or thread of the chat with the agent connected over MCP: pages, the
+ * latest first, refetched on chat-changed events (see `useServerEvents`).
  */
-export function useChat() {
+export function useChat(place: ChatPlace) {
   return useInfiniteQuery({
-    queryKey: queryKeys.chat,
-    queryFn: ({ pageParam }) => unwrap(commands.listChat(pageParam)),
+    queryKey: queryKeys.chatMessages(place),
+    queryFn: ({ pageParam }) => unwrap(commands.listChat(place, pageParam)),
     initialPageParam: null as ChatMessageId | null,
     getNextPageParam: (page) => (page.hasEarlier ? (page.messages[0]?.id ?? null) : null),
+  });
+}
+
+/** The chat's channels with their unread counts. */
+export function useChatChannels() {
+  return useQuery({ queryKey: queryKeys.chatChannels, queryFn: () => unwrap(commands.listChatChannels()) });
+}
+
+/** The threads `filter` selects, the latest active first. */
+export function useChatThreads(filter: ChatThreadFilter) {
+  return useQuery({ queryKey: queryKeys.chatThreads(filter), queryFn: () => unwrap(commands.listChatThreads(filter)) });
+}
+
+/** Records that a channel or thread was read up to a message, which clears its unread count. */
+export function useMarkChatRead() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ place, upTo }: { place: ChatPlace; upTo: ChatMessageId }) =>
+      unwrap(commands.markChatRead(place, upTo)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chatChannels }),
+  });
+}
+
+export function useCreateChatChannel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) => unwrap(commands.createChatChannel(name)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chatChannels }),
+  });
+}
+
+/** Renames a channel or turns its notifications on or off. */
+export function useUpdateChatChannel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, edit }: { id: ChatChannelId; edit: ChatChannelEdit }) =>
+      unwrap(commands.updateChatChannel(id, edit)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chatChannels }),
+  });
+}
+
+export function useCreateChatThread() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (thread: NewChatThread) => unwrap(commands.createChatThread(thread)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chat }),
+  });
+}
+
+/** Retitles a thread, links or unlinks its task, or opens, closes, or archives it. */
+export function useUpdateChatThread() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, edit }: { id: ChatThreadId; edit: ChatThreadEdit }) => unwrap(commands.updateChatThread(id, edit)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chat }),
   });
 }
 
@@ -105,12 +171,15 @@ export function chatMessages(data: InfiniteData<ChatView, unknown>): ChatMessage
   return [...data.pages].reverse().flatMap((page) => page.messages);
 }
 
-/** Sends a person's message; `clientId` names it, so a retry after a lost answer stores it once. */
-export function useSendChatMessage() {
+/**
+ * Sends a person's message to a channel or open thread; `clientId` names it, so a retry after a
+ * lost answer stores it once.
+ */
+export function useSendChatMessage(place: ChatPlace) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ body, clientId }: { body: string; clientId: string }) =>
-      unwrap(commands.sendChatMessage(body, clientId)),
+      unwrap(commands.sendChatMessage(place, body, clientId)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chat }),
   });
 }

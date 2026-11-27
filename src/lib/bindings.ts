@@ -203,15 +203,29 @@ export const commands = {
 	 */
 	restoreBackup: (name: string) => typedError<BackupEntry, CommandError>(invoke("restore_backup", { name })),
 	/**
-	 *  The latest messages before `before` (the latest of all without it), and what the agent
-	 *  is doing.
+	 *  The latest messages of `place` before `before` (the latest of all without it), and what
+	 *  the agent is doing.
 	 */
-	listChat: (before: number | null) => typedError<ChatView, CommandError>(invoke("list_chat", { before })),
+	listChat: (place: ChatPlace, before: number | null) => typedError<ChatView, CommandError>(invoke("list_chat", { place, before })),
 	/**
-	 *  Sends a person's message to the agent. `client_id` names it, so sending it again after a
-	 *  lost answer stores it once.
+	 *  Sends a person's message to the agent in `place`, a channel or an open thread.
+	 *  `client_id` names it, so sending it again after a lost answer stores it once.
 	 */
-	sendChatMessage: (body: string, clientId: string) => typedError<ChatMessage, CommandError>(invoke("send_chat_message", { body, clientId })),
+	sendChatMessage: (place: ChatPlace, body: string, clientId: string) => typedError<ChatMessage, CommandError>(invoke("send_chat_message", { place, body, clientId })),
+	/**  Records that people read `place` up to message `up_to`, which clears its unread count. */
+	markChatRead: (place: ChatPlace, upTo: ChatMessageId) => typedError<null, CommandError>(invoke("mark_chat_read", { place, upTo })),
+	/**  Every channel, in the order they were made, with its unread count. */
+	listChatChannels: () => typedError<ChatChannel[], CommandError>(invoke("list_chat_channels")),
+	/**  Makes a channel; its name is shown after `#`, which it may start with. */
+	createChatChannel: (name: string) => typedError<ChatChannel, CommandError>(invoke("create_chat_channel", { name })),
+	/**  Renames a channel or turns its notifications on or off. */
+	updateChatChannel: (id: ChatChannelId, edit: ChatChannelEdit) => typedError<ChatChannel, CommandError>(invoke("update_chat_channel", { id, edit })),
+	/**  The threads `filter` selects, the latest active first. */
+	listChatThreads: (filter: ChatThreadFilter) => typedError<ChatThread[], CommandError>(invoke("list_chat_threads", { filter })),
+	/**  Opens a thread under a channel, following a task if one is given. */
+	createChatThread: (thread: NewChatThread) => typedError<ChatThread, CommandError>(invoke("create_chat_thread", { thread })),
+	/**  Retitles a thread, links or unlinks its task, or opens, closes, or archives it. */
+	updateChatThread: (id: ChatThreadId, edit: ChatThreadEdit) => typedError<ChatThread, CommandError>(invoke("update_chat_thread", { id, edit })),
 };
 
 /** Events */
@@ -284,8 +298,34 @@ export type ChatAgent = {
 /**  Who wrote a chat message: a person in the app, the agent connected over MCP, or Toodo. */
 export type ChatAuthor = "user" | "agent" | "system";
 
-/**  The chat got a message, or the agent's receipts on one changed. */
+/**
+ *  The chat got a message, a channel or thread changed, people read some of it, or the
+ *  agent's receipts on a message changed.
+ */
 export type ChatChanged = null;
+
+/**  A channel of the chat. */
+export type ChatChannel = {
+	id: ChatChannelId,
+	name: string,
+	/**  Whether the agent's messages in it and its threads notify devices. */
+	push: boolean,
+	createdAt: Timestamp,
+	/**
+	 *  Messages of the agent and Toodo not read yet, in it and its threads that are not
+	 *  archived.
+	 */
+	unread: number,
+};
+
+/**  What changes on a channel; an omitted or `null` field stays. */
+export type ChatChannelEdit = {
+	name?: string | null,
+	/**  Whether the agent's messages in the channel notify devices. */
+	push?: boolean | null,
+};
+
+export type ChatChannelId = number;
 
 /**
  *  A chat message. The receipts are set only on a person's messages: when the agent
@@ -293,6 +333,9 @@ export type ChatChanged = null;
  */
 export type ChatMessage = {
 	id: ChatMessageId,
+	channelId: ChatChannelId,
+	/**  The thread it is in; unset for a message in the channel itself. */
+	threadId: ChatThreadId | null,
 	author: ChatAuthor,
 	body: string,
 	at: Timestamp,
@@ -306,6 +349,58 @@ export type ChatMessage = {
 };
 
 export type ChatMessageId = number;
+
+/**
+ *  Where a message is: a channel itself (`{ "channel": 1 }`) or one of its threads
+ *  (`{ "thread": 3 }`).
+ */
+export type ChatPlace = ({ channel: ChatChannelId }) & { thread?: never } | ({ thread: ChatThreadId }) & { channel?: never };
+
+/**  A thread under a channel, which may follow a task. */
+export type ChatThread = {
+	id: ChatThreadId,
+	channelId: ChatChannelId,
+	title: string,
+	taskId: TaskId | null,
+	status: ChatThreadStatus,
+	createdAt: Timestamp,
+	/**  Set while it is closed or archived. */
+	closedAt: Timestamp | null,
+	/**  Set while it is archived. */
+	archivedAt: Timestamp | null,
+	/**  Messages of the agent and Toodo in it not read yet. */
+	unread: number,
+	lastMessageAt: Timestamp | null,
+};
+
+/**
+ *  What changes on a thread; an omitted or `null` field stays. `unlinkTask` drops its task
+ *  and cannot go with `taskId`.
+ */
+export type ChatThreadEdit = {
+	title?: string | null,
+	status?: ChatThreadStatus | null,
+	taskId?: TaskId | null,
+	unlinkTask?: boolean,
+};
+
+/**
+ *  Which threads to list: of a channel, of a task, or all; archived ones only when
+ *  `archived` is set.
+ */
+export type ChatThreadFilter = {
+	channelId?: ChatChannelId | null,
+	taskId?: TaskId | null,
+	archived?: boolean,
+};
+
+export type ChatThreadId = number;
+
+/**
+ *  Whether a thread takes messages: open, closed, or archived (closed and left out of its
+ *  channel's thread list unless asked for).
+ */
+export type ChatThreadStatus = "open" | "closed" | "archived";
 
 /**
  *  The agent started or stopped writing a message: `until` is when it counts as stopped
@@ -359,7 +454,7 @@ export type CommandErrorCode =
 /**  A referenced object does not exist. */
 "notFound" | 
 /**  No command or tool has this name. */
-"unknownCommand" | "workspaceNotFound" | "taskNotFound" | "criterionNotFound" | "dependencyNotFound" | "relationNotFound" | "runNotFound" | "guidelineNotFound" | "chatMessageNotFound" | 
+"unknownCommand" | "workspaceNotFound" | "taskNotFound" | "criterionNotFound" | "dependencyNotFound" | "relationNotFound" | "runNotFound" | "guidelineNotFound" | "chatMessageNotFound" | "chatChannelNotFound" | "chatThreadNotFound" | 
 /**  The request breaks a rule. */
 "rejected" | 
 /**  The dependency would make the task DAG cyclic or make a task depend on itself. */
@@ -568,6 +663,13 @@ export type McpServerInfo = {
 	instance: string,
 	/**  The last request `/mcp` turned away, from agents here or on SSH machines. */
 	lastRejection: McpRejection | null,
+};
+
+/**  A thread to open under a channel, following a task if `taskId` is given. */
+export type NewChatThread = {
+	channelId: ChatChannelId,
+	title: string,
+	taskId?: TaskId | null,
 };
 
 export type NewGuideline = {

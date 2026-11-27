@@ -68,6 +68,9 @@ vi.mock("@/lib/bindings", () => ({
     deleteReviewSnapshot: vi.fn(),
     listChat: vi.fn(),
     sendChatMessage: vi.fn(),
+    markChatRead: vi.fn(),
+    listChatChannels: vi.fn(),
+    listChatThreads: vi.fn(),
   },
   events: {
     tasksChanged: { listen: vi.fn() },
@@ -314,6 +317,12 @@ beforeEach(() => {
     status: "ok",
     data: { agent: { name: "Agent", avatarUrl: null }, messages: [], hasEarlier: false, typingUntil: null },
   });
+  mocked.listChatChannels.mockResolvedValue({
+    status: "ok",
+    data: [{ id: 1, name: "general", push: true, createdAt: 1, unread: 0 }],
+  });
+  mocked.listChatThreads.mockResolvedValue({ status: "ok", data: [] });
+  mocked.markChatRead.mockResolvedValue({ status: "ok", data: null });
   mocked.listGuidelines.mockResolvedValue({ status: "ok", data: [] });
 });
 }
