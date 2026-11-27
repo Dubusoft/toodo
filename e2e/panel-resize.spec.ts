@@ -30,7 +30,8 @@ async function openBoth(app: Page, title: string) {
   return { chat, details };
 }
 
-test.use({ viewport: { width: 1440, height: 900 } });
+// Wide enough that the chat and the details fit side by side at their default sizes.
+test.use({ viewport: { width: 1920, height: 1000 } });
 
 test("resizes the chat and the details on desktop, keeps them docked, and remembers the sizes", async ({ app, server }) => {
   const task = await createTask(server, { workspaceId: 1, title: "Tune the chat layout" });
@@ -98,11 +99,61 @@ test("keeps both panels on screen and part of the list in view however far they 
   // The sidebar is 16rem wide; past it at least 12rem of the list stays in view.
   expect(stretched.details.x).toBeGreaterThanOrEqual(448);
   expect(stretched.chat.y).toBeGreaterThanOrEqual(0);
-  expect(stretched.chat.right).toBeLessThanOrEqual(1440);
+  expect(stretched.chat.right).toBeLessThanOrEqual(1920);
 
   // Dragging back moves the edge at once, with no dead stretch past the limit.
   await drag(app, chat.getByRole("separator", { name: "Resize the chat", exact: true }), 50);
   expect((await box(chat)).width).toBeCloseTo(stretched.chat.width - 50, 0);
+});
+
+async function openTaskFromChat(app: Page, sizes: Record<string, number>, viewport: { width: number; height: number }, title: string) {
+  await app.evaluate((saved) => localStorage.setItem("toodo-panel-sizes", JSON.stringify(saved)), sizes);
+  await app.setViewportSize(viewport);
+  await app.reload();
+  await app.getByRole("button", { name: /^alpha/ }).click();
+  await app.getByRole("button", { name: /^Open chat/ }).click();
+  const chat = app.getByRole("dialog", { name: "Chat" });
+  await expect(chat).toBeVisible();
+  await expect.poll(async () => (await chat.evaluate((element) => element.getAnimations().length))).toBe(0);
+  const alone = await box(chat);
+  // The open chat covers the row's middle; click its title where the list shows.
+  await app.getByRole("region", { name: "Tasks" }).getByRole("button", { name: title }).click({ position: { x: 8, y: 8 } });
+  const details = app.getByRole("complementary", { name: "Task details" });
+  await expect(details).toBeVisible();
+  return { chat, details, alone };
+}
+
+test("keeps the chat's and the details' sizes when a task opens beside the chat and both fit", async ({ app, server }) => {
+  const task = await createTask(server, { workspaceId: 1, title: "Open beside the chat" });
+  const sizes = { "chat-width": 800, "details-width": 560 };
+  const { chat, details, alone } = await openTaskFromChat(app, sizes, { width: 1920, height: 1000 }, task.title);
+  const beside = { chat: await box(chat), details: await box(details) };
+  expect(alone.width).toBeCloseTo(800, 0);
+  expect(beside.chat.width).toBeCloseTo(800, 0);
+  expect(beside.chat.right).toBeCloseTo(alone.right, 0);
+  expect(beside.details.width).toBeCloseTo(560, 0);
+  expect(beside.chat.x - beside.details.right).toBeCloseTo(16, 0);
+  expect(await app.evaluate(() => localStorage.getItem("toodo-panel-sizes"))).toBe(JSON.stringify(sizes));
+});
+
+test("narrows the panels only while the details beside the chat would not fit, keeping the saved sizes", async ({ app, server }) => {
+  const task = await createTask(server, { workspaceId: 1, title: "Open beside a wide chat" });
+  const sizes = { "chat-width": 800, "details-width": 560 };
+  const { chat, details, alone } = await openTaskFromChat(app, sizes, { width: 1440, height: 900 }, task.title);
+  const beside = { chat: await box(chat), details: await box(details) };
+  expect(alone.width).toBeCloseTo(800, 0);
+  // The sidebar is 16rem wide; past it at least 12rem of the list stays in view.
+  expect(beside.details.x).toBeGreaterThanOrEqual(448);
+  expect(beside.chat.right).toBeCloseTo(alone.right, 0);
+  expect(beside.chat.x - beside.details.right).toBeCloseTo(16, 0);
+  // The details give way first, down to 20rem, then the chat.
+  expect(beside.details.width).toBeCloseTo(320, 0);
+  expect(beside.chat.width).toBeCloseTo(1440 - 48 - 448 - 320, 0);
+  expect(await app.evaluate(() => localStorage.getItem("toodo-panel-sizes"))).toBe(JSON.stringify(sizes));
+
+  await app.keyboard.press("Escape");
+  await expect(details).toBeHidden();
+  expect((await box(chat)).width).toBeCloseTo(800, 0);
 });
 
 for (const viewport of [
@@ -112,7 +163,7 @@ for (const viewport of [
   test(`leaves the panels at their default sizes at ${viewport.width}px wide`, async ({ app, server }) => {
     const task = await createTask(server, { workspaceId: 1, title: "Check the tablet layout" });
     await app.evaluate(() =>
-      localStorage.setItem("toodo-panel-sizes", JSON.stringify({ "chat-width": 900, "chat-beside-width": 700, "details-width": 700 })),
+      localStorage.setItem("toodo-panel-sizes", JSON.stringify({ "chat-width": 900, "details-width": 700 })),
     );
     await app.setViewportSize(viewport);
     await app.reload();

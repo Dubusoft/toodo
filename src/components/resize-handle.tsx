@@ -11,23 +11,22 @@ type Axis = "width" | "height";
  * along its top edge with `height`, and at its top-left corner with both. From `lg` up dragging it,
  * or the arrow keys while it has the focus, resize the panel toward the window's left or top (the
  * corner both ways in one drag), and a double click brings back its default size. Each size is saved
- * under the name `width()` or `height()` gives, read as the resizing starts, as the window clamps it
- * (see `src/index.css`).
+ * under the name `width` or `height` gives, as the window clamps it (see `src/index.css`).
  */
 export function ResizeHandle({
   width,
   height,
   label,
 }: {
-  width?: () => PanelSize;
-  height?: () => PanelSize;
+  width?: PanelSize;
+  height?: PanelSize;
   label: string;
 }) {
   const [shown, setShown] = useState<Partial<Record<Axis, number>>>({});
   const sizes = () => {
     const found: { axis: Axis; name: PanelSize }[] = [];
-    if (width !== undefined) found.push({ axis: "width", name: width() });
-    if (height !== undefined) found.push({ axis: "height", name: height() });
+    if (width !== undefined) found.push({ axis: "width", name: width });
+    if (height !== undefined) found.push({ axis: "height", name: height });
     return found;
   };
   const measure = (panel: Element, axis: Axis) => panel.getBoundingClientRect()[axis];

@@ -40,38 +40,29 @@
  * left of it. A saved size (`--*-saved`) is clamped to the window so both stay on screen and at
  * least `--list-room` of the window, the sidebar and some of the list, stays in view; `--chat-width` and the others are left unset while
  * nothing is saved, so the panels keep their default sizes.
+ *
+ * Side by side each keeps its own size, so opening a task from the chat resizes neither, as long as
+ * both fit beside `--list-room`. Only when they would not do the details give way, down to 20rem,
+ * and then the chat; that is shown only, the saved sizes stay as they are.
  */
 @media (width >= 64rem) {
     :root {
         --list-room: 28rem;
         --chat-width: clamp(24rem, var(--chat-width-saved), calc(100vw - 2rem - var(--list-room)));
         --chat-height: clamp(20rem, var(--chat-height-saved), calc(100dvh - 7rem));
-        --chat-beside-width: clamp(
-            20rem,
-            var(--chat-beside-width-saved),
-            calc(100vw - 3rem - var(--list-room) - 20rem)
-        );
         --details-alone-width: clamp(
             20rem,
             var(--details-width-saved),
             calc(100vw - 2rem - var(--list-room))
         );
-        --details-beside-width: clamp(
+        --beside-room: calc(100vw - 3rem - var(--list-room));
+        --chat-beside-details: max(20rem, min(var(--chat-width, 46rem), calc(var(--beside-room) - 20rem)));
+        --details-beside-chat: max(
             20rem,
-            var(--details-beside-width-saved),
-            calc(100vw - 3rem - var(--list-room) - var(--chat-beside-width, 24rem))
-        );
-        --details-beside-chat: var(
-            --details-beside-width,
             min(
                 var(--details-alone-width, var(--details-width, 0px)),
-                max(22.5rem, 30vw),
-                calc(100vw - 3rem - var(--list-room) - var(--chat-beside-width, 0px))
+                calc(var(--beside-room) - var(--chat-beside-details))
             )
-        );
-        --chat-beside-details: min(
-            var(--chat-beside-width, 24rem),
-            calc(100vw - var(--details-beside-chat) - 3rem)
         );
     }
 }
