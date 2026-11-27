@@ -44,7 +44,7 @@ import { supervisorToodoChat, TOODO_CHAT_POLL_MS, TOODO_CHAT_WAKE_EVENTS, toodoC
 import { postOwnerLine } from "./lane-finish.ts";
 import { appendFollowUp, pruneThreadFollowups, redirectIfClosed } from "./thread-followup.ts";
 import { autoReportPoster } from "./auto-report.ts";
-import { postLaneToodo } from "./lane-toodo.ts";
+import { postLaneReportToodo } from "./lane-toodo.ts";
 import { taskBlocker, taskFinisher } from "./task-finish.ts";
 import { ToodoWriter } from "./toodo-client.ts";
 import { writeGatewayStatus } from "./gateway-status.ts";
@@ -651,7 +651,7 @@ const sweepTask = (p: SweepTaskParts): (() => Promise<void>) => {
   // A clean done claim of a lane config autoReport covers is posted as its report by the supervisor (auto-report.ts).
   const autoReport = autoReportPoster({
     config: deps.config, discord: p.discord, now: deps.clock.now, home: home || homedir(), language: () => deps.config.ownerLanguage,
-    toodo: (lane, text) => postLaneToodo(deps, lane, "report", text),
+    toodo: (lane, text) => postLaneReportToodo(deps, lane, text),
   });
   // The watch sweep holds a lane whose review is pending through the same gate CI follow-up merges with (D11).
   const sweepDeps: FlowDeps = withReviewHold({ ...deps, leadDelivered: (id) => supervisor.leadDelivered(id), finishTask, blockTask: taskBlocker(toodoWriter), autoReport }, p.review);
@@ -997,6 +997,7 @@ export const supervise = async (
     const toodoChatOn = (): boolean => deps.config.platforms.includes("toodo");
     const toodoChatInbound = supervisorToodoChat({
       chat: () => toodoChat(deps.tunables.toodoWriter), enqueue: registry.enqueueFor("toodo"), now: deps.clock.now,
+      attachmentDir: join(deps.config.stateDir, "toodo-attachments"),
       pollMs: TOODO_CHAT_POLL_MS, log: (line) => { console.error(line); },
     });
     const autopilot = autopilotTask(deps, ops, registry, (event) => { if (toodoChatOn() && TOODO_CHAT_WAKE_EVENTS.has(event)) toodoChatInbound.wake(); });

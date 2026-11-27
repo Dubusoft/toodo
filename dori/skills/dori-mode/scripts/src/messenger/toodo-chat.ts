@@ -1,4 +1,7 @@
-import { type ToodoClientConfig, type ToodoFetch, ToodoMcp, ToodoWriteFailed } from "../toodo-client.ts";
+import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { type ToodoAttachment, type ToodoClientConfig, type ToodoFetch, type ToodoFile, ToodoMcp, ToodoWriteFailed, toAttachment } from "../toodo-client.ts";
 import { guardText } from "./http.ts";
 
 /*
@@ -35,14 +38,17 @@ export const parseToodoRef = (ref: string): ToodoPlace => {
 
 const placeArgs = (place: ToodoPlace): Record<string, number> => (place.kind === "channel" ? { channel_id: place.id } : { thread_id: place.id });
 
-/** A chat message as Dori reads it: where it is, who wrote it, its text and the names of its attached files. */
+/** A chat message as Dori reads it: where it is, who wrote it, its text and its attached files. */
 export type ToodoChatMessage = {
   readonly id: number;
   readonly place: ToodoPlace;
   readonly author: "user" | "agent" | "system";
   readonly body: string;
-  readonly attachments: readonly string[];
+  readonly attachments: readonly ToodoAttachment[];
 };
+
+/** The most files one message takes (`attachments` of `reply_in_chat`). */
+export const TOODO_FILES_MAX = 10;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isId = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) > 0;
@@ -58,7 +64,7 @@ const toMessage = (raw: unknown, tool: string): ToodoChatMessage => {
   return {
     id: raw.id, author: raw.author, body: raw.body,
     place: isId(raw.threadId) ? { kind: "thread", id: raw.threadId } : { kind: "channel", id: raw.channelId },
-    attachments: files.map((f) => (isRecord(f) && typeof f.name === "string" ? f.name : "file")),
+    attachments: files.map((f) => toAttachment(f) ?? bad(`an unreadable attachment (${raw.id})`)),
   };
 };
 
@@ -71,7 +77,7 @@ const TITLE_MAX = 100;
 
 /** The chat tools Dori calls, over one MCP connection; tests give the connection a fake fetch. */
 export class ToodoChat {
-  constructor(private readonly mcp: Pick<ToodoMcp, "call">) {}
+  constructor(private readonly mcp: Pick<ToodoMcp, "call" | "uploadAttachment" | "attachment">) {}
 
   /** People's messages not taken yet, oldest first; `take` also marks them taken and delivered (the app's "read"). */
   async pending(take: boolean): Promise<ToodoChatMessage[]> {
@@ -79,11 +85,27 @@ export class ToodoChat {
     return toMessages(await this.mcp.call(tool, {}), tool);
   }
 
-  /** Posts Dori's message at `place`; `handles` are the people's messages it answers, which it marks handled. */
-  async reply(place: ToodoPlace, body: string, handles: readonly number[] = []): Promise<ToodoChatMessage> {
+  /**
+   * Posts Dori's message at `place`; `handles` are the people's messages it answers, which it marks handled, and
+   * `attachments` the ids of files uploaded for it (`upload`). A message with files may have no text.
+   */
+  async reply(place: ToodoPlace, body: string, handles: readonly number[] = [], attachments: readonly number[] = []): Promise<ToodoChatMessage> {
     const text = guardText(body).trim();
-    if (!text) throw new ToodoChatError("a Toodo chat message needs text");
-    return toMessage(await this.mcp.call("reply_in_chat", { body: text, ...placeArgs(place), handles: [...handles] }), "reply_in_chat");
+    if (!text && !attachments.length) throw new ToodoChatError("a Toodo chat message needs text or a file");
+    if (attachments.length > TOODO_FILES_MAX) throw new ToodoChatError(`a Toodo chat message takes at most ${TOODO_FILES_MAX} files`);
+    return toMessage(await this.mcp.call("reply_in_chat", {
+      body: text, ...placeArgs(place), handles: [...handles], ...(attachments.length ? { attachments: [...attachments] } : {}),
+    }), "reply_in_chat");
+  }
+
+  /** Uploads a file for Dori's next message; `reply` takes the returned id. */
+  upload(file: ToodoFile): Promise<ToodoAttachment> {
+    return this.mcp.uploadAttachment(file);
+  }
+
+  /** The bytes of an attachment of a chat message. */
+  download(id: number): Promise<Uint8Array> {
+    return this.mcp.attachment(id);
   }
 
   async ack(ids: readonly number[]): Promise<void> {
@@ -123,15 +145,59 @@ export const toodoChat = (config: ToodoClientConfig, deps: { readonly fetch?: To
 export const toodoErrorText = (e: unknown): string =>
   (e instanceof ToodoChatError || e instanceof ToodoWriteFailed || e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").slice(0, 200);
 
+/** An owner's attached file as the lead gets it: saved at `path` on this host, or `error` when it could not be saved. */
+export type ToodoSavedFile = { readonly attachment: ToodoAttachment } & ({ readonly path: string } | { readonly error: string });
+
 /**
- * The journal event of an owner's chat message: `INBOUND <ref> <id> owner <text>` like a Discord owner message, with the
- * names of attached files. The id `toodo-chat:<id>` differs from the removed Toodo Lead chat's `toodo:chat:<n>`, whose
- * rows an old journal may still hold.
+ * A file name safe as one path segment that the INBOUND line can carry as `path=<path>`: no separators, control
+ * characters, whitespace, brackets or leading dots, at most 120 characters.
  */
-export const toodoInbound = (m: ToodoChatMessage): { readonly id: string; readonly line: string } => {
+const safeFileName = (name: string): string => {
+  const cleaned = name.trim().replace(/[\u0000-\u001f\u007f/\\\s[\]]/g, "_").replace(/^\.+/, "").slice(-120);
+  return cleaned || "file";
+};
+
+/**
+ * Saves the files attached to owner message `m` under `dir/<message id>/<attachment id>-<name>`, so the lead reads them
+ * by path (the server serves them only with the MCP token). A file already saved with its size is not fetched again; a
+ * failed one is reported with its error instead of failing the message.
+ */
+export const saveToodoAttachments = async (chat: Pick<ToodoChat, "download">, m: ToodoChatMessage, dir: string): Promise<ToodoSavedFile[]> => {
+  const saved: ToodoSavedFile[] = [];
+  for (const attachment of m.attachments) {
+    const folder = join(dir, String(m.id));
+    const path = join(folder, `${attachment.id}-${safeFileName(attachment.name)}`);
+    try {
+      if (!existsSync(path) || statSync(path).size !== attachment.size) {
+        const data = await chat.download(attachment.id);
+        mkdirSync(folder, { recursive: true, mode: 0o700 });
+        const partial = `${path}.partial`;
+        writeFileSync(partial, data, { mode: 0o600 });
+        renameSync(partial, path);
+      }
+      saved.push({ attachment, path });
+    } catch (e) {
+      saved.push({ attachment, error: toodoErrorText(e) });
+    }
+  }
+  return saved;
+};
+
+/** One ` [attachment name=<file> type=<mime> path=<saved path>]` per file (`error=<why>` when unsaved), as Discord's lines name a url. */
+const inboundFiles = (files: readonly ToodoSavedFile[]): string =>
+  files.map((f) => {
+    const where = "path" in f ? `path=${f.path}` : `id=${f.attachment.id} error=${f.error}`;
+    return ` [attachment name=${f.attachment.name.replace(/[\s\]]+/g, "_")} type=${f.attachment.contentType} ${where}]`;
+  }).join("");
+
+/**
+ * The journal event of an owner's chat message: `INBOUND <ref> <id> owner <text>` like a Discord owner message, with its
+ * attached files as saved (saveToodoAttachments). The id `toodo-chat:<id>` differs from the removed Toodo Lead chat's
+ * `toodo:chat:<n>`, whose rows an old journal may still hold.
+ */
+export const toodoInbound = (m: ToodoChatMessage, files: readonly ToodoSavedFile[] = []): { readonly id: string; readonly line: string } => {
   const text = m.body.replace(/\s+/g, " ").trim();
-  const files = m.attachments.length ? ` [attachments: ${m.attachments.join(", ")}]` : "";
-  return { id: `toodo-chat:${m.id}`, line: `INBOUND ${toodoRef(m.place)} ${m.id} owner ${text || "(no text)"}${files}` };
+  return { id: `toodo-chat:${m.id}`, line: `INBOUND ${toodoRef(m.place)} ${m.id} owner ${text || "(no text)"}${inboundFiles(files)}` };
 };
 
 /** How often the pending messages are read without an event, for a `chat-changed` event the stream missed. */
@@ -143,6 +209,8 @@ export type ToodoChatInboundDeps = {
   readonly chat: () => ToodoChat;
   /** The source registry's enqueue: durable when it returns, and an id already journaled is dropped. */
   readonly enqueue: (id: string, line: string) => void;
+  /** Where the owner's attached files are saved for the lead (saveToodoAttachments). */
+  readonly attachmentDir: string;
   readonly now: () => number;
   /** Milliseconds between safety passes when no `chat-changed` event wakes one. */
   readonly pollMs: number;
@@ -159,9 +227,9 @@ export const supervisorToodoChat = (deps: ToodoChatInboundDeps) => {
   let running: Promise<void> | undefined;
   let again = false;
   let lastPass = -Infinity;
-  const journal = (messages: readonly ToodoChatMessage[]): void => {
+  const journal = async (chat: ToodoChat, messages: readonly ToodoChatMessage[]): Promise<void> => {
     for (const m of messages) {
-      const event = toodoInbound(m);
+      const event = toodoInbound(m, await saveToodoAttachments(chat, m, deps.attachmentDir));
       deps.enqueue(event.id, event.line);
     }
   };
@@ -175,8 +243,8 @@ export const supervisorToodoChat = (deps: ToodoChatInboundDeps) => {
         const chat = deps.chat();
         const peeked = await chat.pending(false);
         if (!peeked.length) continue;
-        journal(peeked);
-        journal(await chat.pending(true));
+        await journal(chat, peeked);
+        await journal(chat, await chat.pending(true));
       }
     })().finally(() => { running = undefined; });
     return running;

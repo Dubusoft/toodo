@@ -15,6 +15,8 @@ import type { ToodoTask } from "./autopilot.ts";
  */
 
 export const TOODO_TIMEOUT_MS = 10_000;
+/** A chat attachment's upload or download: files run to toodo-server's 25 MB limit, so they get longer than a tool call. */
+export const TOODO_FILE_TIMEOUT_MS = 120_000;
 /** Kept small: the autopilot executor reads under the launch lock, so every retry holds it longer. */
 export const TOODO_READ_ATTEMPTS = 2;
 export const TOODO_RETRY_DELAY_MS = 500;
@@ -281,6 +283,18 @@ const toTaskRecord = (reply: unknown): ToodoTaskRecord => {
 
 const hasRefs = (task: ToodoTaskRecord, refs: readonly string[]): boolean => refs.every((r) => task.refs.includes(r));
 
+/** A chat attachment as toodo-server lists it on a message and answers an upload with. */
+export type ToodoAttachment = { readonly id: number; readonly name: string; readonly contentType: string; readonly size: number };
+
+/** A file to attach to a chat message: its name, bytes and media type. */
+export type ToodoFile = { readonly name: string; readonly data: Uint8Array; readonly contentType: string };
+
+/** The attachment `raw` describes, or undefined when it is not one. */
+export const toAttachment = (raw: unknown): ToodoAttachment | undefined =>
+  isRecord(raw) && isId(raw.id) && raw.id > 0 && typeof raw.name === "string" && typeof raw.contentType === "string" && isId(raw.size)
+    ? { id: raw.id, name: raw.name, contentType: raw.contentType, size: raw.size }
+    : undefined;
+
 /**
  * One stateless JSON-RPC `tools/call` to toodo-server's MCP endpoint (`POST <url>/mcp`) with the bearer token read from
  * `tokenFile` on every call. That is the server's `mcp-token`: `/mcp` refuses the web token, and `/api` refuses the MCP
@@ -290,16 +304,65 @@ const hasRefs = (task: ToodoTaskRecord, refs: readonly string[]): boolean => ref
 export class ToodoMcp {
   private readonly fetch: ToodoFetch;
   private readonly timeoutMs: number;
+  private readonly fileTimeoutMs: number;
   private requestId = 0;
 
-  constructor(private readonly config: ToodoClientConfig, deps: { readonly fetch?: ToodoFetch; readonly timeoutMs?: number } = {}) {
+  constructor(private readonly config: ToodoClientConfig, deps: { readonly fetch?: ToodoFetch; readonly timeoutMs?: number; readonly fileTimeoutMs?: number } = {}) {
     this.fetch = deps.fetch ?? ((url, init) => fetch(url, init));
     this.timeoutMs = deps.timeoutMs ?? TOODO_TIMEOUT_MS;
+    this.fileTimeoutMs = deps.fileTimeoutMs ?? TOODO_FILE_TIMEOUT_MS;
+  }
+
+  private url(path: string): string {
+    return `${this.config.url.replace(/\/+$/, "")}${path}`;
+  }
+
+  private token(): string {
+    return readToken(this.config.tokenFile, (message) => new ToodoWriteFailed(message));
+  }
+
+  /** One request to a `/mcp/attachments` route with the MCP token; ToodoWriteFailed when it gets no answer or not `ok`. */
+  private async file(what: string, path: string, init: RequestInit, ok: number): Promise<Response> {
+    const url = this.url(path);
+    let response: Response;
+    try {
+      response = await this.fetch(url, { ...init, headers: { ...init.headers as Record<string, string>, authorization: `Bearer ${this.token()}` }, signal: AbortSignal.timeout(this.fileTimeoutMs) });
+    } catch (e) {
+      if (e instanceof ToodoWriteFailed) throw e;
+      throw new ToodoWriteFailed(`toodo-server ${what} at ${url} failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (response.status !== ok) {
+      const detail = (await response.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 160);
+      throw new ToodoWriteFailed(`toodo-server ${what} answered HTTP ${response.status}${response.status === 401 ? " (the token was refused)" : ""}${detail ? `: ${detail}` : ""}`);
+    }
+    return response;
+  }
+
+  /**
+   * Uploads a file for a chat message (`POST /mcp/attachments?name=`): the returned attachment's id goes into the
+   * message's `attachments`. An upload no message takes within a day is dropped by the server.
+   */
+  async uploadAttachment(file: ToodoFile): Promise<ToodoAttachment> {
+    const what = `upload of ${JSON.stringify(file.name)}`;
+    const response = await this.file(what, `/mcp/attachments?name=${encodeURIComponent(file.name)}`, {
+      method: "POST", headers: { "content-type": file.contentType || "application/octet-stream" }, body: file.data,
+    }, 201);
+    let raw: unknown;
+    try { raw = JSON.parse(await response.text()); } catch { throw new ToodoWriteFailed(`toodo-server ${what} answered non-JSON`); }
+    const attachment = toAttachment(raw);
+    if (!attachment) throw new ToodoWriteFailed(`toodo-server ${what} answered no attachment`);
+    return attachment;
+  }
+
+  /** The bytes of chat attachment `id` (`GET /mcp/attachments/<id>`). */
+  async attachment(id: number): Promise<Uint8Array> {
+    const response = await this.file(`attachment ${id}`, `/mcp/attachments/${id}`, { method: "GET" }, 200);
+    return new Uint8Array(await response.arrayBuffer());
   }
 
   async call(name: string, args: Record<string, unknown>): Promise<unknown> {
-    const url = `${this.config.url.replace(/\/+$/, "")}/mcp`;
-    const token = readToken(this.config.tokenFile, (message) => new ToodoWriteFailed(message));
+    const url = this.url("/mcp");
+    const token = this.token();
     let response: Response;
     let text: string;
     try {
