@@ -18,7 +18,7 @@ const titles = [
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test("shows a cut chat list title beside its item, so the items above and below stay in reach", async ({
+test("shows a cut chat list title to the right of its item, so the items above and below stay in reach", async ({
   app,
   server,
 }, testInfo) => {
@@ -40,8 +40,8 @@ test("shows a cut chat list title beside its item, so the items above and below 
   await expect(tooltip).toHaveText((await item.textContent()) ?? "");
   await expect.poll(async () => await tooltip.evaluate((element) => element.getAnimations().length)).toBe(0);
   const tip = await box(tooltip);
-  // Beside the item, level with it, and over no item of the list.
-  expect(tip.right).toBeLessThanOrEqual(at.x);
+  // To the right of the item, over the conversation, level with it, and over no item of the list.
+  expect(tip.x).toBeGreaterThanOrEqual(at.right);
   expect(tip.y).toBeLessThan(at.bottom);
   expect(tip.bottom).toBeGreaterThan(at.y);
   for (const other of await items.all()) expect(overlaps(tip, await box(other))).toBe(false);
@@ -62,4 +62,36 @@ test("shows a cut chat list title beside its item, so the items above and below 
   expect(hit).toBe(aboveTitle);
   await expect(tooltip).toHaveText(aboveTitle);
   await testInfo.attach("tooltip of the item above", { body: await app.screenshot(), contentType: "image/png" });
+});
+
+test("shows a cut chat list title to the left of its item when there is no room to its right", async ({
+  app,
+  server,
+}, testInfo) => {
+  // Long enough to be cut even when the list spans the whole chat.
+  for (const title of titles)
+    await server.rpc("create_chat_thread", { thread: { channelId: 1, title: `${title}, ${title}`, taskId: null } });
+  // Narrow enough that the list fills the chat on its own, up against the window's right edge.
+  await app.evaluate(() => localStorage.setItem("toodo-panel-sizes", JSON.stringify({ "chat-width": 600 })));
+  await app.reload();
+  await app.getByRole("button", { name: /^Open chat/ }).click();
+  const chat = app.getByRole("dialog", { name: "Chat" });
+  await expect.poll(async () => await chat.evaluate((element) => element.getAnimations().length)).toBe(0);
+  await chat.getByRole("button", { name: "Channels" }).click();
+  const list = chat.getByRole("list", { name: "Threads in #general" });
+  const items = list.getByRole("button");
+  await expect(items).toHaveCount(titles.length);
+
+  const item = items.nth(1);
+  const at = await box(item);
+  await app.mouse.move(at.x + at.width / 2, at.y + at.height / 2);
+  const tooltip = app.getByRole("tooltip");
+  await expect(tooltip).toHaveText((await item.textContent()) ?? "");
+  await expect.poll(async () => await tooltip.evaluate((element) => element.getAnimations().length)).toBe(0);
+  const tip = await box(tooltip);
+  expect(tip.right).toBeLessThanOrEqual(at.x);
+  expect(tip.y).toBeLessThan(at.bottom);
+  expect(tip.bottom).toBeGreaterThan(at.y);
+  for (const other of await items.all()) expect(overlaps(tip, await box(other))).toBe(false);
+  await testInfo.attach("tooltip left of the item", { body: await app.screenshot(), contentType: "image/png" });
 });

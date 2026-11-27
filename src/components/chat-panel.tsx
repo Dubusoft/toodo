@@ -744,8 +744,8 @@ function placeItem(selected: boolean, waiting = false) {
 /**
  * A listed place's button. While its `data-place-title` text is cut, a hover or keyboard focus
  * shows the full `title` in the app's tooltip. The tooltip mounts only then and unmounts as it
- * closes, so a long list mounts no tooltips up front. It opens beside the item (to its start, or
- * its end when there is no room there) rather than above it, so it never covers the item above
+ * closes, so a long list mounts no tooltips up front. It opens beside the item (to its end, over
+ * the conversation, or its start when there is no room there) rather than above it, so it never covers the item above
  * and a pointer moving up or down the list reaches the next item instead of the tooltip.
  */
 function PlaceButton({
@@ -790,7 +790,7 @@ function PlaceButton({
         {children}
       </button>
       {tip && (
-        <Tooltip anchorRef={ref} content={title} placement="start" isDefaultOpen onOpenChange={(open) => setTip(open)} />
+        <Tooltip anchorRef={ref} content={title} placement="end" isDefaultOpen onOpenChange={(open) => setTip(open)} />
       )}
     </>
   );
