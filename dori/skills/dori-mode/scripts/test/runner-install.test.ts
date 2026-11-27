@@ -617,6 +617,131 @@ test("the script's DORI_HC line is the install result's hc, named on the RUNNER_
   expect(hcInstallNote(undefined)).toBe("hc=unknown");
 });
 
+/** A supervisor host's hc: `answer` gets each hc argv (without `hc` and `--json`) and its stdin; the rest exit 0. */
+const hcHost = (answer: (args: readonly string[], stdin?: string) => Partial<Ran> | undefined = () => undefined) => {
+  const calls: Call[] = [];
+  const run = async (argv: readonly string[], opts?: RunOptions): Promise<Ran> => {
+    calls.push({ argv, ...(opts ? { opts } : {}) });
+    expect(argv[0]).toBe("hc");
+    const args = argv.slice(1).filter((a) => a !== "--json");
+    const fixed = args[0] === "kill" || args[0] === "get" ? { code: 3, err: '{"error":{"kind":"not_found"}}' } : undefined;
+    return { code: 0, out: "", err: "", ...(answer(args, opts?.stdin) ?? fixed ?? {}) } as Ran;
+  };
+  const args = (verb: string) => calls.map((c) => c.argv.slice(1).filter((a) => a !== "--json")).filter((a) => a[0] === verb);
+  return { run, calls, args };
+};
+const HC_OK = { out: "DORI_INSTALL_START\nDORI_BUN /opt/bun/bun\n" };
+const hcRequest = () => ({ ...request({ count: 0 }), transport: "hc" as const });
+
+test("over hc, the machine is added once, files go up with hc file write, the script runs on hc exec stdin, and the runner starts in the kept terminal", async () => {
+  const host = hcHost((args) => (args[0] === "machine" && args[1] === "ls" ? { out: '{"machines":[]}' } : args[0] === "exec" ? HC_OK : undefined));
+  const req = hcRequest();
+  const result = await installRunner({ run: host.run, bundle: async () => BUNDLE, laneSandbox: "linux-wrapper\n", laneSandboxMacos: "macos-wrapper\n" }, req);
+  expect(result).toEqual({ ok: true, version: bundleVersion(BUNDLE), hc: "terminal" });
+  expect(host.args("machine")).toEqual([["machine", "ls"], ["machine", "add", "--install", "--name", "worker-a", "dori@worker-a"]]);
+  const writes = host.calls.filter((c) => c.argv.includes("write"));
+  expect(writes.map((c) => [c.argv.at(-1), c.opts?.stdin])).toEqual([
+    [".dori/runner/bin/dori.js.tmp", BUNDLE], [".dori/runner/bin/lane-sandbox.linux.tmp", "linux-wrapper\n"], [".dori/runner/bin/lane-sandbox.macos.tmp", "macos-wrapper\n"],
+  ]);
+  expect(host.args("exec")).toEqual([["exec", "-i", "--on", "worker-a", "sh", "-s"]]);
+  const script = host.calls.find((c) => c.argv.includes("exec"))?.opts?.stdin ?? "";
+  expect(script).toContain(CODE);
+  expect(script).not.toContain(BUNDLE);
+  expect(script).not.toContain("systemctl --user restart");
+  for (const call of host.calls) expect(call.argv.join(" ")).not.toContain(CODE);
+  // The old terminal is ended before the new one is started under the same name.
+  const verbs = host.calls.map((c) => c.argv.slice(1).filter((a) => a !== "--json")[0]);
+  expect(verbs.lastIndexOf("kill")).toBeLessThan(verbs.lastIndexOf("run"));
+  expect(host.args("run")).toEqual([[
+    "run", "--on", "worker-a", "--bg", "--keep", "--no-parent", "--no-notify", "--name", "dori-runner", "--label", "dori.runner=worker-a",
+    "--", "sh", "-c", 'umask 077 && exec "$@"', "sh", "/opt/bun/bun", ".dori/runner/bin/dori.js", ...ARGS,
+  ]]);
+  expect(readRunnerEndpoints(req.stateDir)).toEqual({ "worker-a": req.listenAddress });
+  expect(hcInstallNote("terminal")).toBe("hc=terminal (the runner runs in the kept hc terminal dori-runner)");
+
+  const known = hcHost((args) => (args[0] === "machine" ? { out: '{"machines":[{"name":"worker-a"}]}' } : args[0] === "exec" ? HC_OK : undefined));
+  expect(await installRunner({ run: known.run, bundle: async () => BUNDLE }, hcRequest())).toMatchObject({ ok: true, hc: "terminal" });
+  expect(known.args("machine")).toEqual([["machine", "ls"]]);
+});
+
+test("over hc, a first install enrolls in a second exec pass that uploads the files again", async () => {
+  const req = hcRequest();
+  const runnerDir = join(req.stateDir, "worker");
+  mkdirSync(runnerDir, { mode: 0o700 });
+  const auth = new SupervisorAuth(req.stateDir, { now: () => 1000 });
+  const worker = new RunnerAuth(runnerDir);
+  const code = auth.issueCode(req.label).code;
+  const params = { auth: worker, code, label: req.label, hostId: "hc-host", expectedFingerprint: auth.fingerprint };
+  const host = hcHost((args, stdin) => {
+    if (args[0] === "machine") return { out: '{"machines":[{"name":"worker-a"}]}' };
+    if (args[0] !== "exec") return undefined;
+    const request = enrollOverStdio(params, /reply=([A-Za-z0-9+/=]+)/.exec(stdin ?? "")?.[1]);
+    return request ? { code: INSTALL_EXIT.enrollPending, out: `DORI_INSTALL_START\nRUNNER_ENROLL_REQUEST ${request}\n` } : HC_OK;
+  });
+  try {
+    const result = await installRunner({ run: host.run, bundle: async () => BUNDLE }, { ...req, issue: () => ({ code, fingerprint: auth.fingerprint }), enroll: (body) => auth.enroll(body) });
+    expect(result).toMatchObject({ ok: true, hc: "terminal" });
+    expect(host.args("exec")).toHaveLength(2);
+    expect(host.calls.filter((c) => c.argv.includes("write"))).toHaveLength(6);
+    expect(worker.supervisorKey()).toBe(auth.publicKey);
+    expect(host.calls.flatMap((c) => c.argv).join(" ")).not.toContain(code);
+  } finally { auth.close(); }
+});
+
+test("over hc, hc's own failures are unreachable, while the script's exit codes keep their meaning", async () => {
+  const noMachine = '{"error":{"kind":"not_found","message":"no machine \\"worker-a\\""}}';
+  const known = (args: readonly string[]) => (args[0] === "machine" ? { out: '{"machines":[{"name":"worker-a"}]}' } : undefined);
+  const cases: [(args: readonly string[]) => Partial<Ran> | undefined, string, string?][] = [
+    // hc exits 3 for an unknown machine, which is also the script's no-bun code: without the script's first line it is hc's.
+    [(a) => known(a) ?? (a[0] === "exec" ? { code: INSTALL_EXIT.noBun, err: noMachine } : undefined), "RUNNER_INSTALL_UNREACHABLE", 'hc exec: no machine "worker-a"'],
+    [(a) => known(a) ?? (a[0] === "exec" ? { code: INSTALL_EXIT.noBun, out: "DORI_INSTALL_START\n" } : undefined), "RUNNER_INSTALL_NO_BUN"],
+    [(a) => known(a) ?? (a[0] === "exec" ? { code: INSTALL_EXIT.windowsShell, out: "DORI_INSTALL_START\n" } : undefined), "RUNNER_INSTALL_UNSUPPORTED"],
+    [(a) => (a[0] === "machine" ? (a[1] === "ls" ? { out: '{"machines":[]}' } : { code: 5, err: '{"error":{"message":"ssh: connect refused"}}' }) : undefined), "RUNNER_INSTALL_UNREACHABLE", "hc machine add: ssh: connect refused"],
+    [(a) => (a[0] === "machine" ? { code: 5, err: "core down" } : undefined), "RUNNER_INSTALL_UNREACHABLE"],
+    [(a) => known(a) ?? (a[0] === "file" ? { code: 1, err: "disk full" } : undefined), "RUNNER_INSTALL_FAILED"],
+    [(a) => known(a) ?? (a[0] === "exec" ? { out: "DORI_INSTALL_START\n" } : undefined), "RUNNER_INSTALL_FAILED", "the install pass did not report its bun"],
+    [(a) => known(a) ?? (a[0] === "exec" ? HC_OK : a[0] === "run" ? { code: 1, err: '{"error":{"message":"a live terminal is already named \\"dori-runner\\""}}' } : undefined), "RUNNER_INSTALL_FAILED", 'hc run: a live terminal is already named "dori-runner"'],
+  ];
+  for (const [answer, code, detail] of cases) {
+    const host = hcHost(answer);
+    const req = hcRequest();
+    const result = await installRunner({ run: host.run, bundle: async () => BUNDLE }, req);
+    expect(result.ok ? "ok" : result.code).toBe(code);
+    if (detail !== undefined && !result.ok) expect(result.detail).toBe(detail);
+    expect(readRunnerEndpoints(req.stateDir)).toEqual({});
+    expect(host.calls.some((c) => c.argv[0] === "ssh")).toBe(false);
+  }
+});
+
+test("run by sh in its hc mode, the script moves the uploaded files into place, removes an earlier runner unit, enrolls, and starts nothing", async () => {
+  const host = fakeHost();
+  const bin = join(host.home, ".dori/runner/bin");
+  mkdirSync(bin, { recursive: true, mode: 0o755 });
+  writeFileSync(join(bin, "dori.js.tmp"), BUNDLE, { mode: 0o644 });
+  writeFileSync(join(bin, "lane-sandbox.linux.tmp"), "linux-wrapper\n", { mode: 0o644 });
+  writeFileSync(join(bin, "lane-sandbox.macos.tmp"), "macos-wrapper\n", { mode: 0o644 });
+  const unitFile = join(host.home, ".config/systemd/user/dori-runner.service");
+  mkdirSync(join(host.home, ".config/systemd/user"), { recursive: true });
+  writeFileSync(unitFile, "old unit\n");
+  const script = installScript("", "", "worker-a", "h:1", { code: CODE, fingerprint: FINGERPRINT }, "", AGENT, { unit: "", plist: "" }, "", "", "hc");
+  const r = await runScript(host, script);
+  expect(r).toEqual({ code: 0, err: "", out: `DORI_INSTALL_START\nRUNNER_UNIT_REMOVED dori-runner.service\nDORI_BUN ${join(host.bin, "bun")}\n` });
+  expect(readFileSync(join(bin, "dori.js"), "utf8")).toBe(BUNDLE);
+  expect(statSync(join(bin, "dori.js")).mode & 0o777).toBe(0o600);
+  expect(readFileSync(join(bin, "lane-sandbox"), "utf8")).toBe("linux-wrapper\n");
+  expect(statSync(join(bin, "lane-sandbox")).mode & 0o777).toBe(0o700);
+  expect(existsSync(join(bin, "lane-sandbox.macos.tmp"))).toBe(false);
+  expect(existsSync(unitFile)).toBe(false);
+  expect(readFileSync(join(host.home, "enroll-stdin"), "utf8")).toBe(`code=${CODE}\nfingerprint=${FINGERPRINT}\n`);
+  const log = readFileSync(host.log, "utf8");
+  expect(log).toContain("systemctl --user disable --now dori-runner.service");
+  expect(log).not.toMatch(/systemctl --user (enable|start|restart)|loginctl/);
+  expect(log).not.toContain(CODE);
+  checkRunnerDir(join(host.home, ".dori/runner"));
+  // The files a pass moves must be uploaded again before the next one.
+  expect((await runScript(host, script)).code).toBe(1);
+});
+
 test("the hc templates are checked against the heredoc delimiter too", () => {
   expect(() => installScript(BUNDLE, UNIT, "worker-a", "h:1", { code: CODE, fingerprint: FINGERPRINT }, "plist", [], { unit: "a\nDORI_RUNNER_EOF\n", plist: "p" })).toThrow("heredoc delimiter");
 });
