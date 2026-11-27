@@ -73,6 +73,41 @@
             opacity: 1;
         }
     }
+    /*
+     * The chat window pops out of its floating button with a slight spring and shrinks back into
+     * it when it closes; the button's chat mark turns into a close mark while the chat is open.
+     * Used only under `motion-safe`, so reduced-motion users get none of it.
+     */
+    --animate-chat-in: chat-in var(--duration-medium) var(--ease-standard);
+    --animate-chat-out: chat-out var(--duration-exit) var(--ease-exit) forwards;
+    --animate-chat-icon-turn: chat-icon-turn var(--duration-medium) var(--ease-entrance);
+
+    @keyframes chat-in {
+        from {
+            opacity: 0;
+            scale: 0.2;
+        }
+        55% {
+            opacity: 1;
+            scale: 1.05;
+        }
+        80% {
+            scale: 0.99;
+        }
+    }
+    @keyframes chat-out {
+        to {
+            opacity: 0;
+            scale: 0.2;
+        }
+    }
+    @keyframes chat-icon-turn {
+        from {
+            opacity: 0;
+            rotate: -90deg;
+            scale: 0.4;
+        }
+    }
 }
 
 /*
