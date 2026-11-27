@@ -3,12 +3,15 @@
 //! messages; the agent's side is in `mcp::tools::chat`.
 use std::sync::Mutex;
 
+use super::events::ChatActionChosen;
 use super::types::{
-    self, ChatAgent, ChatChannel, ChatChannelEdit, ChatChannelId, ChatMessage, ChatMessageId,
-    ChatPlace, ChatThread, ChatThreadEdit, ChatThreadFilter, ChatThreadId, ChatView, NewChatThread,
-    Timestamp,
+    self, ChatAgent, ChatAttachmentId, ChatChannel, ChatChannelEdit, ChatChannelId, ChatMessage,
+    ChatMessageId, ChatPlace, ChatSearchHit, ChatThread, ChatThreadEdit, ChatThreadFilter,
+    ChatThreadId, ChatView, NewChatThread, Timestamp,
 };
 use super::{CommandResult, State, StorageState, lock};
+use crate::domain::chat;
+use crate::storage::{ChatSearch, Storage, StorageError};
 
 /// How many messages the app loads at a time.
 const PAGE: usize = 50;
@@ -81,20 +84,93 @@ pub fn list_chat(
     })
 }
 
-/// Sends a person's message to the agent in `place`, a channel or an open thread.
-/// `client_id` names it, so sending it again after a lost answer stores it once.
+/// The body of a message sent with `attachments`: `body` as given, or the names of the files
+/// when it is blank, so a message of files alone reads (and is found) by them.
+pub(crate) fn body_with_files(
+    storage: &Storage,
+    body: &str,
+    attachments: &[chat::ChatAttachmentId],
+) -> CommandResult<String> {
+    if !body.trim().is_empty() || attachments.is_empty() {
+        return types::chat_body(body);
+    }
+    let names = attachments
+        .iter()
+        .map(|id| {
+            storage
+                .chat_attachment(*id)?
+                .map(|(attachment, _)| attachment.name)
+                .ok_or(StorageError::ChatAttachmentNotFound(*id))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    types::chat_body(&names.join(", "))
+}
+
+/// Sends a person's message to the agent in `place`, a channel or an open thread, with the
+/// files uploaded for it (`POST /api/chat/attachments`); `body` may be blank when there are
+/// files. `client_id` names it, so sending it again after a lost answer stores it once.
 #[specta::specta]
 pub fn send_chat_message(
     storage: State<'_, StorageState>,
     place: ChatPlace,
     body: String,
     client_id: String,
+    attachments: Vec<ChatAttachmentId>,
 ) -> CommandResult<ChatMessage> {
-    let body = types::chat_body(&body)?;
+    let client_id = types::client_id(&client_id)?;
+    let attachments = types::attachment_ids(&attachments)?;
+    let mut storage = lock(&storage);
+    let body = body_with_files(&storage, &body, &attachments)?;
+    let message = storage.post_user_message(place.into(), &body, client_id, &attachments)?;
+    Ok(ChatMessage::at(&message, storage.now()))
+}
+
+/// Chooses the action `key` on the agent's message `message_id`: the agent gets the choice
+/// as a person's message with the action's label. A message takes one choice. `client_id`
+/// names the click, so sending it again stores it once. Returns the person's message.
+#[specta::specta]
+pub fn choose_chat_action(
+    storage: State<'_, StorageState>,
+    message_id: ChatMessageId,
+    key: String,
+    client_id: String,
+) -> CommandResult<ChatMessage> {
     let client_id = types::client_id(&client_id)?;
     let mut storage = lock(&storage);
-    let message = storage.post_user_message(place.into(), &body, client_id)?;
-    Ok(ChatMessage::at(&message, storage.now()))
+    let (choice, _) = storage.choose_chat_action(message_id.into(), &key, client_id)?;
+    Ok(ChatMessage::at(&choice, storage.now()))
+}
+
+/// The event announcing `choice`, a person's message that records a choice.
+pub fn chosen_event(choice: &ChatMessage) -> Option<ChatActionChosen> {
+    let of = choice.choice_of.as_ref()?;
+    Some(ChatActionChosen {
+        message_id: of.message_id,
+        key: of.key.clone(),
+        label: choice.body.clone(),
+        choice_id: choice.id,
+        channel_id: choice.channel_id,
+        thread_id: choice.thread_id,
+        at: choice.at,
+    })
+}
+
+/// The messages matching `query` (every word, as a case-insensitive substring), best match
+/// first; `place` keeps to a channel with its threads, or one thread.
+#[specta::specta]
+pub fn search_chat(
+    storage: State<'_, StorageState>,
+    query: String,
+    place: Option<ChatPlace>,
+) -> CommandResult<Vec<ChatSearchHit>> {
+    let query = types::search_query(&query)?;
+    let storage = lock(&storage);
+    let hits = storage.search_chat(&ChatSearch {
+        query,
+        place: place.map(Into::into),
+        limit: types::SEARCH_LIMIT,
+    })?;
+    Ok(ChatSearchHit::all_at(&hits, storage.now()))
 }
 
 /// Records that people read `place` up to message `up_to`, which clears its unread count.
@@ -191,7 +267,14 @@ mod tests {
         let storage = Mutex::new(Storage::open_in_memory().unwrap());
         let chat = state();
         for n in 0..=PAGE {
-            send_chat_message(State(&storage), GENERAL, format!("m{n}"), format!("c{n}")).unwrap();
+            send_chat_message(
+                State(&storage),
+                GENERAL,
+                format!("m{n}"),
+                format!("c{n}"),
+                Vec::new(),
+            )
+            .unwrap();
         }
         let latest = list_chat(State(&storage), State(&chat), GENERAL, None).unwrap();
         assert_eq!((latest.messages.len(), latest.has_earlier), (PAGE, true));
@@ -223,9 +306,28 @@ mod tests {
     #[test]
     fn blank_messages_and_bad_client_ids_are_refused() {
         let storage = Mutex::new(Storage::open_in_memory().unwrap());
-        assert!(send_chat_message(State(&storage), GENERAL, " ".into(), "c1".into()).is_err());
-        assert!(send_chat_message(State(&storage), GENERAL, "Hi".into(), "".into()).is_err());
-        let sent = send_chat_message(State(&storage), GENERAL, " Hi ".into(), "c1".into()).unwrap();
+        assert!(
+            send_chat_message(
+                State(&storage),
+                GENERAL,
+                " ".into(),
+                "c1".into(),
+                Vec::new()
+            )
+            .is_err()
+        );
+        assert!(
+            send_chat_message(State(&storage), GENERAL, "Hi".into(), "".into(), Vec::new())
+                .is_err()
+        );
+        let sent = send_chat_message(
+            State(&storage),
+            GENERAL,
+            " Hi ".into(),
+            "c1".into(),
+            Vec::new(),
+        )
+        .unwrap();
         assert_eq!(sent.body, "Hi");
     }
 
@@ -260,6 +362,7 @@ mod tests {
             ChatPlace::Thread(thread.id),
             "Hi".into(),
             "c1".into(),
+            Vec::new(),
         )
         .unwrap_err();
         assert_eq!(refused.code, crate::commands::CommandErrorCode::Rejected);

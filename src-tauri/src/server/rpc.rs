@@ -14,11 +14,11 @@ use serde::de::DeserializeOwned;
 use super::Services;
 use crate::commands::events::Notifier as _;
 use crate::commands::types::{
-    BackupSettings, ChatChannelEdit, ChatChannelId, ChatMessageId, ChatPlace, ChatThreadEdit,
-    ChatThreadFilter, ChatThreadId, CriterionId, Guideline, GuidelineId, GuidelineUpdate,
-    NewChatThread, NewGuideline, NewTask, NewWorkspace, OAuthGrantId, ReviewReportRequest,
-    ReviewSnapshotId, SaveReviewSnapshotRequest, TaskEdit, TaskId, TaskListFilter, TaskResolution,
-    Timestamp, Workspace, WorkspaceId,
+    BackupSettings, ChatAttachmentId, ChatChannelEdit, ChatChannelId, ChatMessageId, ChatPlace,
+    ChatThreadEdit, ChatThreadFilter, ChatThreadId, CriterionId, Guideline, GuidelineId,
+    GuidelineUpdate, NewChatThread, NewGuideline, NewTask, NewWorkspace, OAuthGrantId,
+    ReviewReportRequest, ReviewSnapshotId, SaveReviewSnapshotRequest, TaskEdit, TaskId,
+    TaskListFilter, TaskResolution, Timestamp, Workspace, WorkspaceId,
 };
 use crate::commands::{
     CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, backup, chat,
@@ -164,6 +164,17 @@ fn chat_changed<T>(services: &Services, result: CommandResult<T>) -> CommandResu
     result
 }
 
+/// Announces a person's choice of an action, which also changes the chat.
+fn action_chosen(
+    services: &Services,
+    result: CommandResult<crate::commands::types::ChatMessage>,
+) -> CommandResult<crate::commands::types::ChatMessage> {
+    if let Some(event) = result.as_ref().ok().and_then(chat::chosen_event) {
+        services.action_chosen(&event);
+    }
+    result
+}
+
 /// Runs a command that blocks (the database, or the HTTP GET of a URL criterion) off the
 /// async threads, see [`crate::commands::blocking`].
 async fn blocking(run: impl FnOnce() -> Reply + Send + 'static) -> Reply {
@@ -238,6 +249,7 @@ pub const READ_COMMANDS: &[&str] = &[
     "list_chat",
     "list_chat_channels",
     "list_chat_threads",
+    "search_chat",
 ];
 
 commands!(s => {
@@ -358,8 +370,22 @@ commands!(s => {
     "list_chat"(place: ChatPlace, before: Option<ChatMessageId>) => sync Reply::result(
         chat::list_chat(State(s.reader()), State(&s.chat), place, before)
     );
-    "send_chat_message"(place: ChatPlace, body: String, client_id: String) => sync Reply::result(
-        chat_changed(s, chat::send_chat_message(State(&s.storage), place, body, client_id))
+    "send_chat_message"(
+        place: ChatPlace,
+        body: String,
+        client_id: String,
+        attachments: Vec<ChatAttachmentId>
+    ) => sync Reply::result(
+        chat_changed(
+            s,
+            chat::send_chat_message(State(&s.storage), place, body, client_id, attachments)
+        )
+    );
+    "choose_chat_action"(message_id: ChatMessageId, key: String, client_id: String) => sync Reply::result(
+        action_chosen(s, chat::choose_chat_action(State(&s.storage), message_id, key, client_id))
+    );
+    "search_chat"(query: String, place: Option<ChatPlace>) => sync Reply::result(
+        chat::search_chat(State(s.reader()), query, place)
     );
     "mark_chat_read"(place: ChatPlace, up_to: ChatMessageId) => sync Reply::result(
         chat_changed(s, chat::mark_chat_read(State(&s.storage), place, up_to))

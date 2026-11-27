@@ -18,6 +18,24 @@ const THREAD_TITLE_LIMIT: usize = 200;
 /// The longest client ID of a message, in characters.
 const CLIENT_ID_LIMIT: usize = 100;
 
+/// The most actions one message offers.
+pub const ACTION_LIMIT: usize = 10;
+
+/// The longest action key, in characters.
+const ACTION_KEY_LIMIT: usize = 100;
+
+/// The longest action label, in characters.
+const ACTION_LABEL_LIMIT: usize = 80;
+
+/// The most files one message carries.
+pub const ATTACHMENT_LIMIT: usize = 10;
+
+/// The longest file name of an upload, in characters.
+const FILE_NAME_LIMIT: usize = 200;
+
+/// The most messages one search returns.
+pub const SEARCH_LIMIT: u32 = 100;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(transparent)]
 pub struct ChatMessageId(#[specta(type = Number)] pub i64);
@@ -64,6 +82,216 @@ impl From<chat::ChatThreadId> for ChatThreadId {
     fn from(id: chat::ChatThreadId) -> Self {
         Self(id.0)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type, schemars::JsonSchema)]
+#[serde(transparent)]
+pub struct ChatAttachmentId(#[specta(type = Number)] pub i64);
+
+impl From<ChatAttachmentId> for chat::ChatAttachmentId {
+    fn from(id: ChatAttachmentId) -> Self {
+        Self(id.0)
+    }
+}
+
+impl From<chat::ChatAttachmentId> for ChatAttachmentId {
+    fn from(id: chat::ChatAttachmentId) -> Self {
+        Self(id.0)
+    }
+}
+
+/// How an action's button looks: plain (`default`), the suggested choice (`primary`), or a
+/// destructive one (`danger`).
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatActionStyle {
+    #[default]
+    Default,
+    Primary,
+    Danger,
+}
+
+impl From<chat::ActionStyle> for ChatActionStyle {
+    fn from(style: chat::ActionStyle) -> Self {
+        match style {
+            chat::ActionStyle::Default => Self::Default,
+            chat::ActionStyle::Primary => Self::Primary,
+            chat::ActionStyle::Danger => Self::Danger,
+        }
+    }
+}
+
+impl From<ChatActionStyle> for chat::ActionStyle {
+    fn from(style: ChatActionStyle) -> Self {
+        match style {
+            ChatActionStyle::Default => Self::Default,
+            ChatActionStyle::Primary => Self::Primary,
+            ChatActionStyle::Danger => Self::Danger,
+        }
+    }
+}
+
+/// A choice offered on the agent's message, shown as a button. A person's click comes back
+/// to the agent with `key`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChatAction {
+    /// What the agent gets back when this is chosen, e.g. `approve`; unique in the message.
+    pub key: String,
+    /// What the button says.
+    pub label: String,
+    #[serde(default)]
+    pub style: ChatActionStyle,
+}
+
+impl From<&chat::ChatAction> for ChatAction {
+    fn from(action: &chat::ChatAction) -> Self {
+        Self {
+            key: action.key.clone(),
+            label: action.label.clone(),
+            style: action.style.into(),
+        }
+    }
+}
+
+/// The actions of a message to post: at most [`ACTION_LIMIT`], each key and label one line,
+/// keys unique.
+pub(crate) fn chat_actions(actions: &[ChatAction]) -> CommandResult<Vec<chat::ChatAction>> {
+    if actions.len() > ACTION_LIMIT {
+        return Err(CommandError::invalid_input(format!(
+            "a message offers at most {ACTION_LIMIT} actions, not {}",
+            actions.len()
+        )));
+    }
+    let mut parsed: Vec<chat::ChatAction> = Vec::with_capacity(actions.len());
+    for action in actions {
+        let key = line(&action.key, "action key", ACTION_KEY_LIMIT, false)?;
+        if parsed.iter().any(|other| other.key == key) {
+            return Err(CommandError::invalid_input(format!(
+                "action key {key:?} is given twice; each action of a message needs its own key"
+            )));
+        }
+        parsed.push(chat::ChatAction {
+            key,
+            label: line(&action.label, "action label", ACTION_LABEL_LIMIT, false)?,
+            style: action.style.into(),
+        });
+    }
+    Ok(parsed)
+}
+
+/// The action a person chose on the agent's message, and the person's message recording it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatChoice {
+    pub key: String,
+    pub at: Timestamp,
+    pub choice_id: ChatMessageId,
+}
+
+/// The agent's message and the key of the action a person's message chose.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatChoiceOf {
+    pub message_id: ChatMessageId,
+    pub key: String,
+}
+
+/// A file uploaded to the chat. People's apps read it at
+/// `/api/chat/attachments/<id>`, the agent at `/mcp/attachments/<id>`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatAttachment {
+    pub id: ChatAttachmentId,
+    pub name: String,
+    pub content_type: String,
+    /// Bytes.
+    #[specta(type = Number)]
+    pub size: i64,
+}
+
+impl From<&chat::ChatAttachment> for ChatAttachment {
+    fn from(attachment: &chat::ChatAttachment) -> Self {
+        Self {
+            id: attachment.id.into(),
+            name: attachment.name.clone(),
+            content_type: attachment.content_type.clone(),
+            size: attachment.size,
+        }
+    }
+}
+
+/// The files of a message to post: at most [`ATTACHMENT_LIMIT`].
+pub(crate) fn attachment_ids(
+    ids: &[ChatAttachmentId],
+) -> CommandResult<Vec<chat::ChatAttachmentId>> {
+    if ids.len() > ATTACHMENT_LIMIT {
+        return Err(CommandError::invalid_input(format!(
+            "a message carries at most {ATTACHMENT_LIMIT} files, not {}",
+            ids.len()
+        )));
+    }
+    Ok(ids.iter().copied().map(Into::into).collect())
+}
+
+/// The name an upload is kept under: the last part of `name` as a path, one line of at most
+/// [`FILE_NAME_LIMIT`] characters.
+pub(crate) fn file_name(name: &str) -> CommandResult<String> {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    line(base, "file name", FILE_NAME_LIMIT, false)
+}
+
+/// The media type an upload is served with: the `type/subtype` of `declared` in lower case,
+/// or `application/octet-stream` when it is missing or malformed.
+pub fn content_type(declared: Option<&str>) -> String {
+    let essence = declared
+        .and_then(|value| value.split(';').next())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let token = |part: &str| {
+        !part.is_empty()
+            && part.len() <= 100
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$&-^_.+".contains(&b))
+    };
+    match essence.split_once('/') {
+        Some((kind, subtype)) if token(kind) && token(subtype) => essence,
+        _ => "application/octet-stream".to_owned(),
+    }
+}
+
+/// A message a search found, with the name of its channel and the title of its thread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSearchHit {
+    pub message: ChatMessage,
+    pub channel_name: String,
+    pub thread_title: Option<String>,
+}
+
+impl ChatSearchHit {
+    pub fn all_at(hits: &[crate::storage::ChatHit], now: i64) -> Vec<Self> {
+        hits.iter()
+            .map(|hit| Self {
+                message: ChatMessage::at(&hit.message, now),
+                channel_name: hit.channel.clone(),
+                thread_title: hit.thread.clone(),
+            })
+            .collect()
+    }
+}
+
+/// A search query: some words, at most 200 characters.
+pub(crate) fn search_query(query: &str) -> CommandResult<&str> {
+    if query.trim().is_empty() || query.chars().count() > 200 {
+        return Err(CommandError::invalid_input(
+            "the search query must have 1 to 200 characters",
+        ));
+    }
+    Ok(query)
 }
 
 /// Where a message is: a channel itself (`{ "channel": 1 }`) or one of its threads
@@ -320,6 +548,13 @@ pub struct ChatMessage {
     pub handled_task_id: Option<TaskId>,
     /// A person's message the agent neither handled nor answered in time.
     pub overdue: bool,
+    /// The choices the agent offers on its message, shown as buttons.
+    pub actions: Vec<ChatAction>,
+    /// The action a person chose on the agent's message; the message takes no other.
+    pub chosen: Option<ChatChoice>,
+    /// On a person's message that records a choice: the agent's message and the action.
+    pub choice_of: Option<ChatChoiceOf>,
+    pub attachments: Vec<ChatAttachment>,
 }
 
 impl ChatMessage {
@@ -338,6 +573,17 @@ impl ChatMessage {
             handled_reply_id: message.handled_reply_id.map(Into::into),
             handled_task_id: message.handled_task_id.map(Into::into),
             overdue: message.overdue(now),
+            actions: message.actions.iter().map(Into::into).collect(),
+            chosen: message.chosen.as_ref().map(|chosen| ChatChoice {
+                key: chosen.key.clone(),
+                at: Timestamp(chosen.at),
+                choice_id: chosen.choice_id.into(),
+            }),
+            choice_of: message.choice_of.as_ref().map(|of| ChatChoiceOf {
+                message_id: of.message_id.into(),
+                key: of.key.clone(),
+            }),
+            attachments: message.attachments.iter().map(Into::into).collect(),
         }
     }
 
@@ -497,6 +743,26 @@ mod tests {
             handled_reply_id: None,
             handled_task_id: None,
             due_at: None,
+            actions: vec![chat::ChatAction {
+                key: "ok".to_owned(),
+                label: "OK".to_owned(),
+                style: chat::ActionStyle::Primary,
+            }],
+            chosen: Some(chat::ChatChoice {
+                key: "ok".to_owned(),
+                at: 6,
+                choice_id: chat::ChatMessageId(4),
+            }),
+            choice_of: None,
+            attachments: vec![chat::ChatAttachment {
+                id: chat::ChatAttachmentId(7),
+                uploader: Author::Agent,
+                name: "log.txt".to_owned(),
+                content_type: "text/plain".to_owned(),
+                size: 12,
+                message_id: Some(chat::ChatMessageId(3)),
+                created_at: 5,
+            }],
         };
         assert_eq!(
             serde_json::to_value(ChatMessage::at(&stored, 5)).unwrap(),
@@ -504,8 +770,63 @@ mod tests {
                 "id": 3, "channelId": 1, "threadId": 2, "author": "agent", "body": "Hello",
                 "at": 5, "deliveredAt": null,
                 "ackedAt": null, "handledAt": null, "handledReplyId": null,
-                "handledTaskId": null, "overdue": false
+                "handledTaskId": null, "overdue": false,
+                "actions": [{ "key": "ok", "label": "OK", "style": "primary" }],
+                "chosen": { "key": "ok", "at": 6, "choiceId": 4 },
+                "choiceOf": null,
+                "attachments": [
+                    { "id": 7, "name": "log.txt", "contentType": "text/plain", "size": 12 }
+                ]
             })
         );
+    }
+
+    #[test]
+    fn actions_are_limited_single_lines_with_unique_keys() {
+        let action = |key: &str, label: &str| ChatAction {
+            key: key.to_owned(),
+            label: label.to_owned(),
+            style: ChatActionStyle::Default,
+        };
+        let parsed = chat_actions(&[action(" yes ", " Yes "), action("no", "No")]).unwrap();
+        assert_eq!(
+            parsed
+                .iter()
+                .map(|a| (a.key.as_str(), a.label.as_str()))
+                .collect::<Vec<_>>(),
+            [("yes", "Yes"), ("no", "No")]
+        );
+        assert!(chat_actions(&[action("a", "A"), action("a", "B")]).is_err());
+        assert!(chat_actions(&[action("a", "")]).is_err());
+        assert!(chat_actions(&[action("a\nb", "A")]).is_err());
+        let many: Vec<_> = (0..=ACTION_LIMIT)
+            .map(|n| action(&n.to_string(), "A"))
+            .collect();
+        assert!(chat_actions(&many).is_err());
+        assert_eq!(
+            serde_json::from_value::<ChatAction>(serde_json::json!({ "key": "k", "label": "L" }))
+                .unwrap()
+                .style,
+            ChatActionStyle::Default
+        );
+    }
+
+    #[test]
+    fn uploads_keep_the_base_name_and_a_well_formed_media_type() {
+        assert_eq!(file_name("C:\\shots\\a b.png").unwrap(), "a b.png");
+        assert_eq!(file_name("../../etc/passwd").unwrap(), "passwd");
+        for bad in ["", "dir/", "a\nb"] {
+            assert!(file_name(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(content_type(Some("Image/PNG; q=1")), "image/png");
+        for bad in [
+            None,
+            Some(""),
+            Some("png"),
+            Some("text/ html"),
+            Some("a/b/c"),
+        ] {
+            assert_eq!(content_type(bad), "application/octet-stream", "{bad:?}");
+        }
     }
 }

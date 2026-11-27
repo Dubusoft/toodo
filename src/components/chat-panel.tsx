@@ -1,9 +1,25 @@
-import { Suspense, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
-import { Archive, ArrowLeft, Bell, BellOff, Lock, MessageCircle, Plus, RotateCcw, X } from "lucide-react";
+import { Suspense, useDeferredValue, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import {
+  Archive,
+  ArrowLeft,
+  Bell,
+  BellOff,
+  Lock,
+  MessageCircle,
+  Paperclip,
+  Plus,
+  RotateCcw,
+  Search,
+  SendHorizontal,
+  X,
+} from "lucide-react";
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
+import { Thumbnail } from "@astryxdesign/core/Thumbnail";
+import { Token } from "@astryxdesign/core/Token";
 import {
   ChatComposer,
+  ChatComposerDrawer,
   ChatMessage as Message,
   ChatMessageBubble,
   ChatMessageList,
@@ -17,10 +33,12 @@ import { Markdown } from "@/components/task-common";
 import {
   events,
   type ChatAgent,
+  type ChatAttachment,
   type ChatChannel,
   type ChatChannelId,
   type ChatMessage,
   type ChatPlace,
+  type ChatSearchHit,
   type ChatThread,
   type ChatThreadId,
   type ChatThreadStatus,
@@ -29,18 +47,23 @@ import {
 } from "@/lib/bindings";
 import {
   chatMessages,
+  uploadChatAttachment,
   useChat,
+  useChatAttachmentUrl,
   useChatChannels,
   useChatThreads,
+  useChooseChatAction,
   useCreateChatChannel,
   useCreateChatThread,
   useMarkChatRead,
+  useSearchChat,
   useSendChatMessage,
   useUpdateChatChannel,
   useUpdateChatThread,
 } from "@/lib/queries";
 import { formatFull } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
+import { apiRequest } from "@/web/session";
 
 /** The channel and thread the chat shows, kept across starts. */
 type Selection = { channel: ChatChannelId; thread: ChatThreadId | null };
@@ -95,7 +118,103 @@ function Time({ at }: { at: Timestamp }) {
 }
 
 /** A message being sent, shown until the chat lists it, or with a retry when sending failed. */
-type Pending = { clientId: string; body: string; failed: boolean };
+type Pending = { clientId: string; body: string; attachments: readonly ChatAttachment[]; failed: boolean };
+
+/** The images the server sends inline, which the chat shows in place. */
+const inlineImages = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** Saves an attachment, fetched signed in, under its name. */
+async function download(attachment: ChatAttachment) {
+  const blob = await (await apiRequest(`/api/chat/attachments/${attachment.id}`)).blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = attachment.name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function ImageAttachment({ attachment }: { attachment: ChatAttachment }) {
+  const url = useChatAttachmentUrl(attachment.id);
+  if (url.data === undefined) return <Thumbnail label={attachment.name} isLoading={url.isPending} />;
+  return (
+    <a href={url.data} target="_blank" rel="noreferrer" className="block w-fit">
+      <img src={url.data} alt={attachment.name} className="max-h-48 max-w-full rounded-md" />
+    </a>
+  );
+}
+
+/** The files of a message: images in place, other files as buttons that download them. */
+function Attachments({ attachments }: { attachments: readonly ChatAttachment[] }) {
+  if (attachments.length === 0) return null;
+  return (
+    <ul aria-label="Attachments" className="mt-1.5 flex flex-col gap-1.5">
+      {attachments.map((attachment) => (
+        <li key={attachment.id}>
+          {inlineImages.includes(attachment.contentType) ? (
+            <ImageAttachment attachment={attachment} />
+          ) : (
+            <button
+              type="button"
+              className="flex max-w-full items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-left text-sm hover:bg-muted"
+              onClick={() => void download(attachment).catch((error: unknown) => console.error("toodo: download failed", error))}
+            >
+              <Paperclip aria-hidden className="size-3.5 shrink-0" />
+              <span className="min-w-0 truncate">{attachment.name}</span>
+              <span className="shrink-0 text-xs text-muted-foreground">{formatSize(attachment.size)}</span>
+            </button>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The choices the agent offers under its message; one may be chosen, which closes the others. */
+function Actions({ message }: { message: ChatMessage }) {
+  const choose = useChooseChatAction();
+  if (message.actions.length === 0) return null;
+  const chosen = message.chosen?.key ?? null;
+  return (
+    <div className="mt-2 flex flex-col gap-1">
+      <div role="group" aria-label="Choices" className="flex flex-wrap gap-1.5">
+        {message.actions.map((action) => (
+          <Button
+            key={action.key}
+            size="sm"
+            label={action.label}
+            variant={
+              chosen === action.key
+                ? "primary"
+                : chosen !== null
+                  ? "ghost"
+                  : action.style === "primary"
+                    ? "primary"
+                    : action.style === "danger"
+                      ? "destructive"
+                      : "secondary"
+            }
+            aria-pressed={chosen === action.key}
+            isDisabled={chosen !== null || choose.isPending}
+            changesData
+            onClick={() => choose.mutate({ messageId: message.id, key: action.key, clientId: crypto.randomUUID() })}
+          />
+        ))}
+      </div>
+      {choose.isError && (
+        <p role="alert" className="text-xs text-destructive">
+          {choose.error.message}
+        </p>
+      )}
+    </div>
+  );
+}
 
 const defaultAgent: ChatAgent = { name: "Agent", avatarUrl: null };
 
@@ -115,6 +234,8 @@ function Messages({ agent, messages }: { agent: ChatAgent; messages: readonly Ch
               <Suspense fallback={<span className="whitespace-pre-wrap break-words">{message.body}</span>}>
                 <Markdown source={message.body} />
               </Suspense>
+              <Attachments attachments={message.attachments} />
+              <Actions message={message} />
             </ChatMessageBubble>
           </Message>
         );
@@ -131,7 +252,15 @@ function Messages({ agent, messages }: { agent: ChatAgent; messages: readonly Ch
                 />
               }
             >
-              <span className="whitespace-pre-wrap break-words">{message.body}</span>
+              {message.choiceOf !== null ? (
+                <span className="whitespace-pre-wrap break-words">
+                  <span className="opacity-80">Chose </span>
+                  <strong>{message.body}</strong>
+                </span>
+              ) : (
+                <span className="whitespace-pre-wrap break-words">{message.body}</span>
+              )}
+              <Attachments attachments={message.attachments} />
             </ChatMessageBubble>
           </Message>
         );
@@ -139,6 +268,9 @@ function Messages({ agent, messages }: { agent: ChatAgent; messages: readonly Ch
     }
   });
 }
+
+/** A file picked for the next message: uploading, uploaded, or failed. */
+type Upload = { key: string; file: File; preview: string | null; attachment: ChatAttachment | null; error: string | null };
 
 /** Until when the agent is writing: the chat's answer, then its chat-typing events. */
 function useTypingUntil(initial: Timestamp | null | undefined): boolean {
@@ -168,6 +300,9 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
   const send = useSendChatMessage(place);
   const markRead = useMarkChatRead();
   const [pending, setPending] = useState<readonly Pending[]>([]);
+  const [draft, setDraft] = useState("");
+  const [uploads, setUploads] = useState<readonly Upload[]>([]);
+  const picker = useRef<HTMLInputElement>(null);
   const messages = chat.data === undefined ? [] : chatMessages(chat.data);
   const latest = chat.data?.pages[0];
   const agent = latest?.agent ?? defaultAgent;
@@ -188,6 +323,37 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
     marked.current = newest;
     markRead.mutate({ place, upTo: newest });
   }, [newest]);
+
+  const pick = (files: readonly File[]) => {
+    for (const file of files) {
+      const key = crypto.randomUUID();
+      const preview = inlineImages.includes(file.type) ? URL.createObjectURL(file) : null;
+      setUploads((current) => [...current, { key, file, preview, attachment: null, error: null }]);
+      const settle = (change: Partial<Upload>) =>
+        setUploads((current) => current.map((upload) => (upload.key === key ? { ...upload, ...change } : upload)));
+      uploadChatAttachment(file).then(
+        (attachment) => settle({ attachment }),
+        (error: unknown) => settle({ error: error instanceof Error ? error.message : String(error) }),
+      );
+    }
+  };
+  const unpick = (key: string) =>
+    setUploads((current) => {
+      const removed = current.find((upload) => upload.key === key);
+      if (removed?.preview) URL.revokeObjectURL(removed.preview);
+      return current.filter((upload) => upload.key !== key);
+    });
+  const uploading = uploads.some((upload) => upload.attachment === null && upload.error === null);
+  const failedUpload = uploads.find((upload) => upload.error !== null);
+  const sendDraft = (value: string) => {
+    const body = value.trim();
+    const attachments = uploads.flatMap((upload) => (upload.attachment === null ? [] : [upload.attachment]));
+    if (uploading || (body === "" && attachments.length === 0)) return;
+    submit({ clientId: crypto.randomUUID(), body, attachments, failed: false });
+    setDraft("");
+    for (const upload of uploads) if (upload.preview) URL.revokeObjectURL(upload.preview);
+    setUploads([]);
+  };
 
   const submit = (item: Pending) => {
     setPending((current) => [...current.filter((other) => other.clientId !== item.clientId), { ...item, failed: false }]);
@@ -254,6 +420,11 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
                     }
                   >
                     <span className="whitespace-pre-wrap break-words">{item.body}</span>
+                    {item.attachments.length > 0 && (
+                      <p className="text-xs opacity-80">
+                        {item.attachments.map((attachment) => attachment.name).join(", ")}
+                      </p>
+                    )}
                   </ChatMessageBubble>
                 </Message>
               ))}
@@ -264,15 +435,81 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
       </div>
       <div className="border-t p-2">
         {open ? (
-          <ChatComposer
-            density="compact"
-            elevation="none"
-            placeholder={`Message ${label}`}
-            onSubmit={(value) => {
-              const body = value.trim();
-              if (body !== "") submit({ clientId: crypto.randomUUID(), body, failed: false });
-            }}
-          />
+          <>
+            <input
+              ref={picker}
+              type="file"
+              multiple
+              hidden
+              aria-label="Files to attach"
+              onChange={(event) => {
+                pick([...(event.currentTarget.files ?? [])]);
+                event.currentTarget.value = "";
+              }}
+            />
+            <ChatComposer
+              density="compact"
+              elevation="none"
+              placeholder={`Message ${label}`}
+              value={draft}
+              onChange={setDraft}
+              onSubmit={sendDraft}
+              headerActions={
+                <IconButton
+                  variant="ghost"
+                  size="sm"
+                  label="Attach files"
+                  icon={<Paperclip />}
+                  changesData
+                  onClick={() => picker.current?.click()}
+                />
+              }
+              sendButton={
+                <IconButton
+                  variant="primary"
+                  size="sm"
+                  label="Send"
+                  icon={<SendHorizontal />}
+                  changesData
+                  isDisabled={uploading || (draft.trim() === "" && uploads.every((upload) => upload.attachment === null))}
+                  onClick={() => sendDraft(draft)}
+                />
+              }
+              drawer={
+                uploads.length > 0 ? (
+                  <ChatComposerDrawer>
+                    <ul aria-label="Files to send" className="flex flex-wrap items-center gap-1.5">
+                      {uploads.map((upload) => (
+                        <li key={upload.key}>
+                          {upload.preview !== null ? (
+                            <Thumbnail
+                              src={upload.preview}
+                              alt={upload.file.name}
+                              label={upload.file.name}
+                              isLoading={upload.attachment === null && upload.error === null}
+                              onRemove={() => unpick(upload.key)}
+                            />
+                          ) : (
+                            <Token
+                              size="sm"
+                              color={upload.error !== null ? "red" : "default"}
+                              label={upload.attachment === null && upload.error === null ? `${upload.file.name} (uploading)` : upload.file.name}
+                              onRemove={() => unpick(upload.key)}
+                            />
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </ChatComposerDrawer>
+                ) : undefined
+              }
+              status={
+                failedUpload !== undefined
+                  ? { type: "error", message: `${failedUpload.file.name} could not be uploaded: ${failedUpload.error}` }
+                  : undefined
+              }
+            />
+          </>
         ) : (
           <p className="px-1 py-2 text-center text-xs text-muted-foreground">
             This thread is closed. Reopen it to write in it.
@@ -569,9 +806,65 @@ function PlaceHeader({
   );
 }
 
+/** Where a hit is: its channel and thread. */
+function hitSelection(hit: ChatSearchHit): Selection {
+  return { channel: hit.message.channelId, thread: hit.message.threadId };
+}
+
+/** Finds earlier messages of every channel and thread; picking one opens where it is. */
+export function ChatSearch({ onOpen }: { onOpen: (selection: Selection) => void }) {
+  const [query, setQuery] = useState("");
+  const searched = useDeferredValue(query);
+  const results = useSearchChat(searched, null);
+  const hits = results.data ?? [];
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="border-b p-2">
+        <TextInput label="Search messages" isLabelHidden size="sm" value={query} onChange={setQuery} hasAutoFocus placeholder="Search messages" />
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+        {results.isError ? (
+          <p role="alert" className="text-sm text-destructive">
+            The search failed: {results.error.message}
+          </p>
+        ) : searched.trim() === "" ? (
+          <p className="p-2 text-center text-sm text-muted-foreground">Find messages by the words in them.</p>
+        ) : results.isPending ? (
+          <p className="p-2 text-center text-sm text-muted-foreground">Searching...</p>
+        ) : hits.length === 0 ? (
+          <p className="p-2 text-center text-sm text-muted-foreground">No messages match.</p>
+        ) : (
+          <ul aria-label="Search results" className="flex flex-col gap-1">
+            {hits.map((hit) => (
+              <li key={hit.message.id}>
+                <button
+                  type="button"
+                  className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left hover:bg-muted"
+                  onClick={() => onOpen(hitSelection(hit))}
+                >
+                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <span className="min-w-0 truncate">
+                      {`#${hit.channelName}`}
+                      {hit.threadTitle !== null && ` / ${hit.threadTitle}`}
+                    </span>
+                    <span aria-hidden>·</span>
+                    <span className="shrink-0">{formatFull(hit.message.at)}</span>
+                  </span>
+                  <span className="line-clamp-2 whitespace-pre-wrap break-words text-sm">{hit.message.body}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ChatPanel({ onClose, onShowTask }: { onClose: () => void; onShowTask: (id: TaskId) => void }) {
   const channels = useChatChannels();
   const [selection, setSelection] = useState(storedSelection);
+  const [searching, setSearching] = useState(false);
   const threads = useChatThreads({ channelId: selection.channel, archived: true });
   // On a phone the panel shows either the channels or one conversation.
   const [listShown, setListShown] = useState(false);
@@ -591,6 +884,7 @@ function ChatPanel({ onClose, onShowTask }: { onClose: () => void; onShowTask: (
     setSelection(next);
     localStorage.setItem(selectionKey, JSON.stringify(next));
     setListShown(false);
+    setSearching(false);
   };
 
   useEffect(() => {
@@ -615,7 +909,19 @@ function ChatPanel({ onClose, onShowTask }: { onClose: () => void; onShowTask: (
     >
       <header className="flex items-center gap-2 border-b px-3 py-2">
         <h2 className="text-sm font-semibold">Chat</h2>
-        <IconButton variant="ghost" size="sm" className="ml-auto" label="Close chat" icon={<X />} onClick={onClose} />
+        <IconButton
+          variant="ghost"
+          size="sm"
+          className="ml-auto"
+          label={searching ? "Close search" : "Search messages"}
+          icon={<Search />}
+          aria-pressed={searching}
+          onClick={() => {
+            setSearching(!searching);
+            setListShown(false);
+          }}
+        />
+        <IconButton variant="ghost" size="sm" label="Close chat" icon={<X />} onClick={onClose} />
       </header>
       <div className="flex min-h-0 flex-1">
         <nav
@@ -631,13 +937,19 @@ function ChatPanel({ onClose, onShowTask }: { onClose: () => void; onShowTask: (
           )}
         </nav>
         <div className={cn("flex min-w-0 flex-1 flex-col", listShown && "max-md:hidden")}>
-          <PlaceHeader channel={channel} thread={thread} onBack={() => setListShown(true)} onShowTask={onShowTask} />
-          <Conversation
-            key={JSON.stringify(place)}
-            place={place}
-            label={label}
-            open={thread === undefined || thread.status === "open"}
-          />
+          {searching ? (
+            <ChatSearch onOpen={select} />
+          ) : (
+            <>
+              <PlaceHeader channel={channel} thread={thread} onBack={() => setListShown(true)} onShowTask={onShowTask} />
+              <Conversation
+                key={JSON.stringify(place)}
+                place={place}
+                label={label}
+                open={thread === undefined || thread.status === "open"}
+              />
+            </>
+          )}
         </div>
       </div>
     </section>

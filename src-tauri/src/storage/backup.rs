@@ -460,7 +460,8 @@ mod tests {
     /// `wait_until` and `wait_status`, at schema `version` and without the triggers of
     /// version 50 that refuse such waits. Below version 51 the push subscriptions get back
     /// the setting columns that version drops, below version 52 it has no adoptions table,
-    /// and below version 55 no chat channels or threads.
+    /// below version 55 no chat channels or threads, and below version 56 no chat actions,
+    /// attachments, or search.
     fn export_with_half_waits(storage: &Storage, path: &Path, version: i64) {
         storage.export_to(path).unwrap();
         let conn = Connection::open(path).unwrap();
@@ -484,6 +485,18 @@ mod tests {
         if version < 54 {
             conn.execute_batch("ALTER TABLE push_subscriptions DROP COLUMN messages")
                 .unwrap();
+        }
+        if version < 56 {
+            conn.execute_batch(
+                "DROP TRIGGER chat_search_inserted;
+                 DROP TRIGGER chat_search_updated;
+                 DROP TRIGGER chat_search_deleted;
+                 DROP TABLE chat_search;
+                 DROP TABLE chat_attachments;
+                 DROP TABLE chat_choices;
+                 DROP TABLE chat_actions;",
+            )
+            .unwrap();
         }
         if version < 55 {
             conn.execute_batch(

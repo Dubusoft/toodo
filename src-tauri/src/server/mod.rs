@@ -4,6 +4,7 @@
 //! The configured web build serves the app on the same port.
 
 mod access;
+mod attachments;
 mod devices;
 mod event_log;
 mod files;
@@ -27,8 +28,8 @@ use tower_http::services::{ServeDir, ServeFile};
 use crate::commands::backup::{self, Backups};
 use crate::commands::chat::ChatState;
 use crate::commands::events::{
-    ChatChanged, ChatTyping, GuidelinesChanged, Notifier, TaskReady, TaskStatusChanged,
-    TasksChanged, WorkspacesChanged, names,
+    ChatActionChosen, ChatChanged, ChatTyping, GuidelinesChanged, Notifier, TaskReady,
+    TaskStatusChanged, TasksChanged, WorkspacesChanged, names,
 };
 use crate::commands::types::{ChatAgent, ChatMessage, Timestamp};
 use crate::commands::{Runtime, StorageState};
@@ -192,6 +193,10 @@ pub struct Services {
     announced_status: Mutex<StatusCursor>,
     /// The largest database file `POST /api/backups/restore` accepts, in bytes.
     restore_limit: u64,
+    /// Where the files attached to chat messages are kept.
+    attachment_dir: PathBuf,
+    /// The largest file a chat attachment upload accepts, in bytes.
+    attachment_limit: u64,
     push: push::Push,
     chat: ChatState,
 }
@@ -295,6 +300,11 @@ impl Notifier for Services {
             until: until.map(Timestamp),
         };
         self.emit(names::CHAT_TYPING, &event);
+    }
+
+    fn action_chosen(&self, chosen: &ChatActionChosen) {
+        self.emit(names::CHAT_ACTION_CHOSEN, chosen);
+        self.chat_changed();
     }
 }
 
@@ -462,6 +472,8 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         changes: tokio::sync::watch::Sender::new(()),
         announced_status: Mutex::new(announced_status),
         restore_limit: files::RESTORE_LIMIT,
+        attachment_dir: config.data_dir.join("attachments"),
+        attachment_limit: attachments::ATTACHMENT_LIMIT,
         push,
         chat: ChatState::new(config.chat_agent.clone()),
     });
@@ -570,6 +582,15 @@ fn router(
             post(files::restore).layer(DefaultBodyLimit::disable()),
         )
         .route("/api/backups/{name}", get(files::download))
+        // The handler streams the body to disk and enforces its own limit.
+        .route(
+            "/api/chat/attachments",
+            post(attachments::upload_by_person).layer(DefaultBodyLimit::disable()),
+        )
+        .route(
+            "/api/chat/attachments/{id}",
+            get(attachments::download_by_person),
+        )
         .route("/api/devices", get(devices::list).post(devices::register))
         .route("/api/devices/{id}/revoke", post(devices::revoke))
         .route("/api/session", get(devices::session))
@@ -592,10 +613,18 @@ fn router(
             devices::require_access,
         ))
         .with_state(services.clone());
+    let agent_files = Router::new()
+        .route(
+            "/mcp/attachments",
+            post(attachments::upload_by_agent).layer(DefaultBodyLimit::disable()),
+        )
+        .route("/mcp/attachments/{id}", get(attachments::download_by_agent))
+        .with_state(services.clone());
     let mut app = api.merge(mcp::router(
         services.clone(),
         mcp_token,
         Some(web_token.clone()),
+        agent_files,
     ));
     if let Some(issuer) = &services.public_url {
         app = app.merge(oauth::router(
@@ -889,6 +918,10 @@ mod tests {
             handled_reply_id: None,
             handled_task_id: None,
             overdue: false,
+            actions: Vec::new(),
+            chosen: None,
+            choice_of: None,
+            attachments: Vec::new(),
         };
         let notice = crate::storage::ChatNotice {
             channel: "general".to_owned(),
@@ -926,6 +959,8 @@ mod tests {
 
     const TEST_RESTORE_LIMIT: u64 = 1024 * 1024;
 
+    const TEST_ATTACHMENT_LIMIT: u64 = 64;
+
     fn services(data_dir: &Path) -> Arc<Services> {
         let storage = Arc::new(Mutex::new(Storage::open_in_memory().unwrap()));
         Arc::new(Services {
@@ -944,6 +979,8 @@ mod tests {
             changes: tokio::sync::watch::Sender::new(()),
             announced_status: Mutex::new(StatusCursor::default()),
             restore_limit: TEST_RESTORE_LIMIT,
+            attachment_dir: data_dir.join("attachments"),
+            attachment_limit: TEST_ATTACHMENT_LIMIT,
             push: push::tests::push(data_dir, push::tests::FakeTransport::default()),
             chat: ChatState::new(ChatAgent {
                 name: DEFAULT_AGENT_NAME.to_owned(),
@@ -1360,6 +1397,202 @@ mod tests {
         assert!(
             body == content,
             "the downloaded bytes differ from the backup"
+        );
+    }
+
+    fn attach(
+        address: SocketAddr,
+        path: &str,
+        token: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> (String, String, Vec<u8>) {
+        exchange(
+            address,
+            &format!(
+                "POST {path} HTTP/1.1\r\nAuthorization: Bearer {token}\r\n\
+                 Content-Type: {content_type}\r\nContent-Length: {}",
+                body.len()
+            ),
+            body,
+        )
+    }
+
+    #[test]
+    fn chat_attachments_go_up_and_come_back_to_people_and_the_agent_only() {
+        let (address, temp, services) = serve_services(None);
+        let png = b"\x89PNG\r\n\x1a\nimage";
+        let (status, _, body) = attach(
+            address,
+            "/api/chat/attachments?name=shots%2Fscreen.png",
+            "web",
+            "image/png",
+            png,
+        );
+        assert!(status.contains(" 201 "), "{status}");
+        let uploaded: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            (
+                &uploaded["name"],
+                &uploaded["contentType"],
+                &uploaded["size"]
+            ),
+            (
+                &serde_json::json!("screen.png"),
+                &serde_json::json!("image/png"),
+                &serde_json::json!(png.len())
+            )
+        );
+        let id = uploaded["id"].as_i64().unwrap();
+        crate::commands::lock(&services.storage)
+            .post_user_message(
+                crate::domain::chat::ChatPlace::Channel(crate::domain::chat::FIRST_CHANNEL),
+                "See",
+                "c1",
+                &[crate::domain::chat::ChatAttachmentId(id)],
+            )
+            .unwrap();
+
+        let (status, headers, bytes) =
+            get(address, &format!("/mcp/attachments/{id}"), Some("agent"));
+        assert!(status.contains(" 200 "), "{status}");
+        assert_eq!(bytes, png);
+        for expected in [
+            "content-type: image/png",
+            "content-disposition: inline; filename=\"screen.png\"",
+            "x-content-type-options: nosniff",
+            "content-security-policy: sandbox",
+        ] {
+            assert!(headers.contains(expected), "{expected} in {headers}");
+        }
+        let (status, _, bytes) = get(address, &format!("/api/chat/attachments/{id}"), Some("web"));
+        assert!(status.contains(" 200 "), "{status}");
+        assert_eq!(bytes, png);
+        // Each surface takes only its own token.
+        for (path, token) in [
+            ("/api/chat/attachments", None),
+            ("/api/chat/attachments", Some("agent")),
+            ("/mcp/attachments", None),
+            ("/mcp/attachments", Some("web")),
+        ] {
+            let (status, _, _) = get(address, &format!("{path}/{id}"), token);
+            assert!(status.contains(" 401 "), "{path} {token:?}: {status}");
+        }
+        let (status, _, _) = get(address, "/api/chat/attachments/999", Some("web"));
+        assert!(status.contains(" 404 "), "{status}");
+
+        // A page the agent uploads is only ever downloaded, never shown as the app.
+        let (status, _, body) = attach(
+            address,
+            "/mcp/attachments?name=page.html",
+            "agent",
+            "text/html",
+            b"<script>1</script>",
+        );
+        assert!(status.contains(" 201 "), "{status}");
+        let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let (_, headers, _) = get(
+            address,
+            &format!("/mcp/attachments/{}", page["id"]),
+            Some("agent"),
+        );
+        assert!(
+            headers.contains("content-disposition: attachment;"),
+            "{headers}"
+        );
+
+        let too_big = vec![b'x'; TEST_ATTACHMENT_LIMIT as usize + 1];
+        let (status, _, _) = attach(
+            address,
+            "/api/chat/attachments?name=big.bin",
+            "web",
+            "application/octet-stream",
+            &too_big,
+        );
+        assert!(status.contains(" 413 "), "{status}");
+        let (status, _, _) = attach(address, "/api/chat/attachments", "web", "text/plain", b"x");
+        assert!(status.contains(" 422 "), "{status}");
+        // The two uploads kept are the only files: refused ones leave nothing behind.
+        assert_eq!(
+            std::fs::read_dir(temp.path().join("attachments"))
+                .unwrap()
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn choosing_an_action_announces_it_once() {
+        let (address, _temp, services) = serve_services(None);
+        let asked = crate::commands::lock(&services.storage)
+            .post_agent_message(
+                None,
+                "Deploy?",
+                &[],
+                &[crate::domain::chat::ChatAction {
+                    key: "go".into(),
+                    label: "Go".into(),
+                    style: crate::domain::chat::ActionStyle::Primary,
+                }],
+                &[],
+            )
+            .unwrap();
+        let mut stream = Box::pin(services.events.stream(None));
+        let choose = |client: &str| {
+            let body = format!(
+                r#"{{"messageId":{},"key":"go","clientId":"{client}"}}"#,
+                asked.id.0
+            );
+            exchange(
+                address,
+                &format!(
+                    "POST /api/rpc/choose_chat_action HTTP/1.1\r\nAuthorization: Bearer web\r\n\
+                     Content-Type: application/json\r\nContent-Length: {}",
+                    body.len()
+                ),
+                body.as_bytes(),
+            )
+        };
+        let (status, _, body) = choose("k1");
+        assert!(status.contains(" 200 "), "{status}");
+        let choice: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(choice["body"], "Go");
+        assert_eq!(choice["choiceOf"]["key"], "go");
+        let (status, _, _) = choose("k2");
+        assert!(status.contains(" 409 "), "{status}");
+
+        let waker = futures_util::task::noop_waker();
+        let mut context = std::task::Context::from_waker(&waker);
+        let mut names = Vec::new();
+        let mut chosen = None;
+        while let std::task::Poll::Ready(Some(event)) = stream.as_mut().poll_next(&mut context) {
+            if event.name == names::CHAT_ACTION_CHOSEN {
+                chosen = Some(event.data.clone());
+            }
+            names.push(event.name);
+        }
+        assert_eq!(
+            names,
+            [
+                event_log::READY,
+                names::CHAT_ACTION_CHOSEN,
+                names::CHAT_CHANGED
+            ]
+        );
+        let chosen: serde_json::Value = serde_json::from_str(&chosen.unwrap()).unwrap();
+        assert_eq!(
+            (
+                &chosen["messageId"],
+                &chosen["key"],
+                &chosen["label"],
+                &chosen["choiceId"]
+            ),
+            (
+                &serde_json::json!(asked.id.0),
+                &serde_json::json!("go"),
+                &serde_json::json!("Go"),
+                &choice["id"]
+            )
         );
     }
 

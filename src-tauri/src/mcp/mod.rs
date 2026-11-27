@@ -316,10 +316,12 @@ pub(crate) fn make_private(_path: &Path) -> io::Result<()> {
 
 /// The MCP endpoint at `/mcp`, open only to requests that bear `token`. A request that
 /// bears `web_token` instead is told it sent the web token.
+/// The MCP endpoint behind the MCP token, with `extra` routes for agents behind it too.
 pub(crate) fn router(
     backend: Arc<dyn Backend>,
     token: String,
     web_token: Option<String>,
+    extra: axum::Router,
 ) -> axum::Router {
     let mut config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
@@ -344,7 +346,7 @@ pub(crate) fn router(
         LocalSessionManager::default().into(),
         config,
     );
-    axum::Router::new()
+    extra
         .nest_service("/mcp", service)
         .route_layer(middleware::from_fn_with_state(guard, require_token))
 }
@@ -1199,7 +1201,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Take the chat messages people sent in the Toodo app that you have not received yet, oldest first, and mark them received, so the next call returns only newer ones. Then ack_chat them, answer with reply_in_chat (handles marks them handled), or mark_chat_handled them with the task you made. A message not handled within 10 minutes shows overdue."
+        description = "Take the chat messages people sent in the Toodo app that you have not received yet, oldest first, and mark them received, so the next call returns only newer ones. Then ack_chat them, answer with reply_in_chat (handles marks them handled), or mark_chat_handled them with the task you made. A message not handled within 10 minutes shows overdue. A message with choiceOf records a person's click on an action of your message (choiceOf.messageId, choiceOf.key; the body is the action's label). Files on a message are listed in attachments; read each with GET /mcp/attachments/<id> on this server and the same bearer token."
     )]
     async fn take_pending(&self) -> Result<CallToolResult, ErrorData> {
         let result = self
@@ -1214,7 +1216,7 @@ impl ToodoMcp {
     }
 
     #[tool(
-        description = "Post a message to the people in the Toodo app chat; they get it at once and as a push notification unless its channel's notifications are off. handles lists the IDs of their messages it answers, which are marked handled by it. channel_id or thread_id (an open thread) says where to post; without them it goes where the first answered message is, else to the first channel. Returns the posted message."
+        description = "Post a message to the people in the Toodo app chat; they get it at once and as a push notification unless its channel's notifications are off. handles lists the IDs of their messages it answers, which are marked handled by it. channel_id or thread_id (an open thread) says where to post; without them it goes where the first answered message is, else to the first channel. actions adds up to 10 buttons ({key, label, style default|primary|danger}); a person may choose one, which take_pending then returns as their message with choiceOf. attachments lists files you uploaded with POST /mcp/attachments?name=<file name> (the raw bytes as the body, Content-Type set, same bearer token; it returns the attachment with its id). Returns the posted message."
     )]
     async fn reply_in_chat(
         &self,
@@ -1272,6 +1274,19 @@ impl ToodoMcp {
     ) -> Result<CallToolResult, ErrorData> {
         reply(
             self.blocking(move |backend| tools::list_chat(&lock(backend.reader()), request))
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Search the chat for earlier messages: every word of query must appear in a message, as a case-insensitive substring. channel_id keeps to a channel and its threads, thread_id to one thread. Returns the matches best first, each with the message, channelName, and threadTitle."
+    )]
+    async fn search_chat(
+        &self,
+        Parameters(request): Parameters<tools::SearchChat>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(
+            self.blocking(move |backend| tools::search_chat(&lock(backend.reader()), request))
                 .await,
         )
     }
@@ -1956,6 +1971,12 @@ mod tests {
         fn agent_typing(&self, typing: bool) {
             self.chat.lock().unwrap().push(format!("typing {typing}"));
         }
+        fn action_chosen(&self, chosen: &crate::commands::events::ChatActionChosen) {
+            self.chat
+                .lock()
+                .unwrap()
+                .push(format!("chose {}", chosen.key));
+        }
     }
     impl Backend for TestBackend {
         fn public_url(&self) -> Option<&PublicUrl> {
@@ -2051,6 +2072,7 @@ mod tests {
             "ack_chat",
             "mark_chat_handled",
             "list_chat",
+            "search_chat",
             "set_typing",
             "list_channels",
             "create_channel",
@@ -2192,7 +2214,12 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let storage = crate::storage::Storage::open_in_memory().unwrap();
         let backend = Arc::new(TestBackend::new(storage));
-        let app = router(backend.clone(), "secret".to_owned(), Some("web".to_owned()));
+        let app = router(
+            backend.clone(),
+            "secret".to_owned(),
+            Some("web".to_owned()),
+            axum::Router::new(),
+        );
         std::thread::spawn(move || {
             runtime().block_on(serve(
                 listener,
@@ -2357,11 +2384,76 @@ mod tests {
     }
 
     #[test]
+    fn the_agent_offers_actions_receives_the_choice_and_searches_the_chat() {
+        let backend = Arc::new(TestBackend::new(
+            crate::storage::Storage::open_in_memory().unwrap(),
+        ));
+        let server = ToodoMcp::new(backend.clone());
+        let result = |result: CallToolResult| serde_json::to_value(result).unwrap();
+        let text = |result: CallToolResult| -> Value {
+            let result = serde_json::to_value(result).unwrap();
+            assert_ne!(result["isError"], true, "{result}");
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        fn args<T: serde::de::DeserializeOwned>(value: Value) -> Parameters<T> {
+            Parameters(serde_json::from_value(value).unwrap())
+        }
+        let rt = runtime();
+        let asked = text(
+            rt.block_on(server.reply_in_chat(args(serde_json::json!({
+                "body": "Release the build?",
+                "actions": [
+                    {"key": "release", "label": "Release", "style": "primary"},
+                    {"key": "hold", "label": "Hold"}
+                ]
+            }))))
+            .unwrap(),
+        );
+        assert_eq!(asked["actions"][1]["style"], "default");
+        let duplicate = result(
+            rt.block_on(server.reply_in_chat(args(serde_json::json!({
+                "body": "Twice",
+                "actions": [{"key": "a", "label": "A"}, {"key": "a", "label": "B"}]
+            }))))
+            .unwrap(),
+        );
+        assert_eq!(duplicate["isError"], true);
+        let message = crate::domain::chat::ChatMessageId(asked["id"].as_i64().unwrap());
+        lock(backend.storage())
+            .choose_chat_action(message, "hold", "k1")
+            .unwrap();
+        let taken = text(rt.block_on(server.take_pending()).unwrap());
+        assert_eq!(
+            (
+                &taken[0]["body"],
+                &taken[0]["choiceOf"]["messageId"],
+                &taken[0]["choiceOf"]["key"]
+            ),
+            (
+                &serde_json::json!("Hold"),
+                &asked["id"],
+                &serde_json::json!("hold")
+            )
+        );
+        let hits = text(
+            rt.block_on(server.search_chat(args(serde_json::json!({"query": "release BUILD"}))))
+                .unwrap(),
+        );
+        assert_eq!(hits.as_array().unwrap().len(), 1);
+        assert_eq!(
+            (&hits[0]["message"]["id"], &hits[0]["channelName"]),
+            (&asked["id"], &serde_json::json!("general"))
+        );
+    }
+
+    #[test]
     fn chat_tools_take_acknowledge_and_answer_messages_and_announce_each_step() {
         let mut storage = crate::storage::Storage::open_in_memory().unwrap();
         let general = crate::domain::chat::ChatPlace::Channel(crate::domain::chat::FIRST_CHANNEL);
-        let hi = storage.post_user_message(general, "Hi", "c1").unwrap();
-        let later = storage.post_user_message(general, "Also", "c2").unwrap();
+        let hi = storage.post_user_message(general, "Hi", "c1", &[]).unwrap();
+        let later = storage
+            .post_user_message(general, "Also", "c2", &[])
+            .unwrap();
         let backend = Arc::new(TestBackend::new(storage));
         let server = ToodoMcp::new(backend.clone());
         let text = |result: CallToolResult| -> Value {
@@ -2672,6 +2764,7 @@ mod tests {
             Arc::new(TestBackend::new(storage)),
             "secret".to_owned(),
             None,
+            axum::Router::new(),
         );
         std::thread::spawn(move || {
             runtime().block_on(serve(
@@ -2740,7 +2833,12 @@ mod tests {
     fn test_endpoint(backend: Arc<TestBackend>, peer: Option<SocketAddr>) -> SocketAddr {
         let listener = bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
         let address = listener.local_addr().unwrap();
-        let mut app = router(backend, "secret".to_owned(), Some("web".to_owned()));
+        let mut app = router(
+            backend,
+            "secret".to_owned(),
+            Some("web".to_owned()),
+            axum::Router::new(),
+        );
         if let Some(peer) = peer {
             app = app.layer(axum::Extension(ConnectInfo(peer)));
         }

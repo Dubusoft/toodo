@@ -534,8 +534,8 @@ The MCP server has 44 tools:
 - Guidelines: `get_guidelines`, `add_guideline`, `update_guideline`, `remove_guideline`.
 - Review: `review_report`.
 - Chat (see [Chat](#chat)): `peek_pending`, `take_pending`, `ack_chat`, `reply_in_chat`,
-  `mark_chat_handled`, `list_chat`, `set_typing`, `list_channels`, `create_channel`,
-  `list_threads`, `create_thread`, `update_thread`.
+  `mark_chat_handled`, `list_chat`, `search_chat`, `set_typing`, `list_channels`,
+  `create_channel`, `list_threads`, `create_thread`, `update_thread`.
 
 Two of them help an agent wire a plan:
 
@@ -606,6 +606,31 @@ with their receipts, of every place or only of `channel_id` (the channel itself)
 `channel_id` or `task_id` with their `status`, `closedAt`, and `archivedAt`
 (`include_archived` adds archived ones); and `update_thread` changes a thread's `title`,
 its task (`task_id`, or `unlink_task`), or its `status`.
+**Actions.** `reply_in_chat` takes up to 10 `actions`, each `{ "key", "label", "style" }`
+(`style` is `default`, `primary`, or `danger`), which the app shows as buttons under the
+message: a question to decide, a request to approve, a thread to close, or any other
+choice. A person may choose one; the message then takes no other choice. The choice
+reaches the agent as a person's message in the same place, with the action's label as its
+body and `choiceOf: { messageId, key }`, so `take_pending`, the receipts, and the overdue
+note apply to it as to any message; the agent's message shows it in `chosen`
+(`{ key, at, choiceId }`). `GET /api/events` also announces it as `chat-action-chosen`.
+Toodo stores the choice only: what it means stays with the agent.
+
+**Attachments.** People attach files in the app and the agent with
+`POST /mcp/attachments?name=<file name>` (the file as the body, its `Content-Type`, and the
+MCP token), each at most 25 MB. An upload returns `{ id, name, contentType, size }`, and a
+message takes it by `id`: `attachments` of `reply_in_chat`, or of `send_chat_message` in the
+app. A message with files may have an empty body, which then reads as the file names.
+Each message lists its `attachments`; the agent reads one with `GET /mcp/attachments/{id}`
+and the MCP token, and the app with `GET /api/chat/attachments/{id}`. An upload no message
+takes within a day is dropped. The files are kept in `attachments/` of the data directory,
+which backups of the database do not include.
+
+**Search.** `search_chat` (and the search in the app's chat) finds earlier messages: every
+word of `query` must appear in a message, ignoring case; `channel_id` keeps to a channel and
+its threads, `thread_id` to a thread. Each hit carries the message, `channelName`, and
+`threadTitle`, the best match first.
+
 Each person's message shows its receipts in the app: sent, delivered (received by the
 agent), read (acknowledged), and handled. One not handled within 10 minutes shows that it
 waits for an answer. A message the agent posts reaches the devices that turned on **Agent
@@ -1007,8 +1032,9 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   that panics is `500` with code `commandPanicked`; the panic text goes only to the
   server log.
 - `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
-  `guidelines-changed`, `task-status-changed`, and `task-ready` with the payloads of the
-  events in `src/lib/bindings.ts` (see [Task Events for Other
+  `guidelines-changed`, `task-status-changed`, `task-ready`, `chat-changed`,
+  `chat-typing`, and `chat-action-chosen` with the payloads of the events in
+  `src/lib/bindings.ts` (see [Task Events for Other
   Clients](#task-events-for-other-clients)). Every event has an id `<epoch>-<sequence>`; `epoch`
   changes with each server start. A request without `Last-Event-ID` starts with a
   `ready` event carrying the current id. With `Last-Event-ID`, the stream first replays
@@ -1025,6 +1051,12 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   A file that is not a Toodo database, or whose live tasks have dependencies that loop,
   is `422` and changes nothing. An upload that stops arriving for 30 seconds is `408`
   and changes nothing.
+- `POST /api/chat/attachments?name=<file name>`: uploads a file for a person's chat
+  message, the request body with its `Content-Type`, at most 25 MB (else `413`); `201` with
+  the attachment. `GET /api/chat/attachments/{id}` sends the file back: PNG, JPEG, GIF, and
+  WebP images inline, other files as downloads, all with `nosniff` and a sandboxing
+  `Content-Security-Policy`. The agent's side is `/mcp/attachments` with the MCP token
+  (see [Chat](#chat)).
 - `GET /api/devices`: every device as `{ id, label, createdAt, lastSeenAt, revokedAt,
   current }` (Unix seconds; `current` marks the device whose token the request bears),
   active ones first.

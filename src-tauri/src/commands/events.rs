@@ -1,6 +1,8 @@
 //! Task and workspace changes announced to connected clients.
 
-use super::types::{TaskId, TaskStatus, Timestamp, WorkspaceId};
+use super::types::{
+    ChatChannelId, ChatMessageId, ChatThreadId, TaskId, TaskStatus, Timestamp, WorkspaceId,
+};
 use crate::domain::model;
 use serde::{Deserialize, Serialize};
 use specta::Type;
@@ -58,6 +60,21 @@ pub struct ChatTyping {
     pub until: Option<Timestamp>,
 }
 
+/// A person chose an action on the agent's message `messageId`: the action's `key` and
+/// `label`, and `choiceId`, the person's message that records it, which `take_pending` hands
+/// the agent too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatActionChosen {
+    pub message_id: ChatMessageId,
+    pub key: String,
+    pub label: String,
+    pub choice_id: ChatMessageId,
+    pub channel_id: ChatChannelId,
+    pub thread_id: Option<ChatThreadId>,
+    pub at: Timestamp,
+}
+
 pub mod names {
     pub const TASKS_CHANGED: &str = "tasks-changed";
     pub const WORKSPACES_CHANGED: &str = "workspaces-changed";
@@ -66,6 +83,7 @@ pub mod names {
     pub const TASK_READY: &str = "task-ready";
     pub const CHAT_CHANGED: &str = "chat-changed";
     pub const CHAT_TYPING: &str = "chat-typing";
+    pub const CHAT_ACTION_CHOSEN: &str = "chat-action-chosen";
 }
 
 pub trait Notifier {
@@ -82,4 +100,6 @@ pub trait Notifier {
         notice: Option<&crate::storage::ChatNotice>,
     );
     fn agent_typing(&self, typing: bool);
+    /// A person chose an action on the agent's message; the chat changed with it.
+    fn action_chosen(&self, chosen: &ChatActionChosen);
 }

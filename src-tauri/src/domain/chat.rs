@@ -1,6 +1,7 @@
 //! The chat between the people using Toodo and an agent connected over MCP: its channels
-//! and the threads under them, who wrote a message, and the receipts of the agent's work on
-//! a person's message.
+//! and the threads under them, who wrote a message, the receipts of the agent's work on a
+//! person's message, the actions the agent offers on its messages with the one a person
+//! chose, and the files attached to messages.
 
 use super::model::TaskId;
 
@@ -12,6 +13,73 @@ pub struct ChatChannelId(pub i64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChatThreadId(pub i64);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ChatAttachmentId(pub i64);
+
+/// How the button of an action looks: plain, the suggested choice, or a destructive one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionStyle {
+    Default,
+    Primary,
+    Danger,
+}
+
+impl ActionStyle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Primary => "primary",
+            Self::Danger => "danger",
+        }
+    }
+
+    pub fn parse(stored: &str) -> Option<Self> {
+        [Self::Default, Self::Primary, Self::Danger]
+            .into_iter()
+            .find(|style| style.as_str() == stored)
+    }
+}
+
+/// A choice the agent offers on its message, shown as a button: `key` is what the agent
+/// gets back when a person picks it, `label` what the button says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatAction {
+    pub key: String,
+    pub label: String,
+    pub style: ActionStyle,
+}
+
+/// The action a person chose on the agent's message: once chosen, the others are closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatChoice {
+    pub key: String,
+    pub at: i64,
+    /// The person's message that records the choice, which the agent receives.
+    pub choice_id: ChatMessageId,
+}
+
+/// The agent's message and action a person's message chose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChoiceOf {
+    pub message_id: ChatMessageId,
+    pub key: String,
+}
+
+/// A file uploaded to the chat, attached to a message once it is sent with one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatAttachment {
+    pub id: ChatAttachmentId,
+    /// Whose upload it is: a person's goes only on a person's message, the agent's only on
+    /// the agent's.
+    pub uploader: ChatAuthor,
+    pub name: String,
+    pub content_type: String,
+    /// Bytes.
+    pub size: i64,
+    pub message_id: Option<ChatMessageId>,
+    pub created_at: i64,
+}
 
 /// The channel every chat has: the one chat of earlier versions, which cannot be removed.
 pub const FIRST_CHANNEL: ChatChannelId = ChatChannelId(1);
@@ -136,6 +204,13 @@ pub struct ChatMessage {
     /// When the message becomes overdue unless it is handled; `None` for messages stored
     /// before receipts existed.
     pub due_at: Option<i64>,
+    /// The choices the agent offers on its message, in order.
+    pub actions: Vec<ChatAction>,
+    /// The action a person chose among them.
+    pub chosen: Option<ChatChoice>,
+    /// On a person's message that records a choice: what it chose.
+    pub choice_of: Option<ChoiceOf>,
+    pub attachments: Vec<ChatAttachment>,
 }
 
 impl ChatMessage {
@@ -171,6 +246,18 @@ mod tests {
     }
 
     #[test]
+    fn action_styles_round_trip_their_stored_names() {
+        for style in [
+            ActionStyle::Default,
+            ActionStyle::Primary,
+            ActionStyle::Danger,
+        ] {
+            assert_eq!(ActionStyle::parse(style.as_str()), Some(style));
+        }
+        assert_eq!(ActionStyle::parse("link"), None);
+    }
+
+    #[test]
     fn only_unhandled_messages_past_their_due_time_are_overdue() {
         let message = ChatMessage {
             id: ChatMessageId(1),
@@ -185,6 +272,10 @@ mod tests {
             handled_reply_id: None,
             handled_task_id: None,
             due_at: Some(10),
+            actions: Vec::new(),
+            chosen: None,
+            choice_of: None,
+            attachments: Vec::new(),
         };
         assert!(!message.overdue(9));
         assert!(message.overdue(10));

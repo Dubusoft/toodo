@@ -106,6 +106,10 @@ pub(super) const SKIPPED: &[&str] = &[
     "chat_messages",
     "chat_channels",
     "chat_threads",
+    "chat_actions",
+    "chat_choices",
+    "chat_attachments",
+    "chat_search",
     "task_results",
     "task_search",
     // Runtime handles and runs belong to the other server's hosts.
@@ -677,7 +681,8 @@ mod tests {
             .conn
             .prepare(
                 "SELECT name FROM sqlite_master WHERE type = 'table'
-                 AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'task_search_%'",
+                 AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'task_search_%'
+                 AND name NOT LIKE 'chat_search_%'",
             )
             .unwrap();
         let tables: BTreeSet<String> = statement
