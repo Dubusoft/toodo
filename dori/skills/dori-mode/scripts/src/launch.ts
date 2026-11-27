@@ -4,6 +4,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 
 import type { FlowDeps } from "./done-flow.ts";
 import { LaneOpsError, machineRunner, type StartInput } from "./lane-ops.ts";
+import { linkLaneTask } from "./lane-toodo.ts";
 import { LANE_KEY, type Lane, type LaneMode } from "./registry.ts";
 import { iso } from "./run.ts";
 import { runnerWorktreeRoot } from "./runner/hub.ts";
@@ -455,7 +456,13 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, existing?: 
     progress.started = true;
     // A runner profile that pins its own model runs that one instead of `model`: recovery judges the lane against it.
     const lane: Lane = { ...draft, ...(result.model ? { model: result.model } : {}), ...(input.machine && !dir && result.cwd ? { remoteCwd: result.cwd } : {}), fileRun: prepared.files.run, pendingFileRun: undefined, pane: result.pane, ...(result.tab ? { tab: result.tab } : {}) };
-    return { lane: await commitLaunched(deps, lane, existing, token, prepared), notes, startup: startupLine(input.key, result.pane, result.startup) };
+    const committed = await commitLaunched(deps, lane, existing, token, prepared);
+    // A fresh lane on the Toodo chat is linked to its task (made when it has none); a relaunch keeps its link.
+    const linked = existing ? undefined : await linkLaneTask(deps, committed);
+    return {
+      lane: linked ? (await deps.registry.read(committed.key)) ?? committed : committed,
+      notes: linked ? [...notes, linked] : notes, startup: startupLine(input.key, result.pane, result.startup),
+    };
   } catch (error) {
     if (token && !progress.started) await deps.registry.releaseReservation(input.key, token);
     if (existing && progress.proposalPersisted && !progress.started) await restoreFileProposal(deps, input.key, prepared.files.run.id, existing);

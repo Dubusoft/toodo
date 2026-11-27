@@ -28,6 +28,7 @@ export const DORI_CONFIG_KEYS: readonly KeySpec[] = [
   spec("discordChannels", "list", "Discord channel ids dori listens and reports in", { required: true }),
   spec("alertsChannel", "string", "Discord channel for system notices; blank means the first discordChannels entry"),
   spec("decisionsChannel", "string", "Discord channel where owner decisions open one thread each; blank posts them in the requesting channel"),
+  spec("platforms", "list", "Chat platforms the supervisor runs: discord (required), and toodo for the Toodo chat beside it"),
   spec("githubIssueAuthors", "list", "GitHub logins whose new or reopened issues wake the lead"),
   spec("ownerLanguage", "string", "Language the owner reads (e.g. Korean)"),
   spec("displayTimeZone", "string", "IANA time zone owner-facing system messages show times in (e.g. Asia/Seoul, shown as KST)"),

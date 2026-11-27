@@ -6,6 +6,7 @@ import { type AutopilotConfig, DEFAULT_AUTOPILOT, parseAutopilotConfig } from ".
 import { DEFAULT_DISPLAY_TIME_ZONE, validTimeZone } from "./display-time.ts";
 import { legacyPaneKeys, managedPanesPath, resolveManagedPanes } from "./managed-panes.ts";
 import { CONFIG_SCHEMA_KEY } from "./config-schema.ts";
+import { type Platform, PLATFORMS } from "./messenger/target.ts";
 import { redactSecrets } from "./redact.ts";
 import { SECRET_NAME } from "./secret-name.ts";
 
@@ -157,6 +158,11 @@ export type DiscordConfig = {
 
 export type DoriConfig = {
   readonly discord?: DiscordConfig;
+  /**
+   * The chat platforms the supervisor runs (config key `platforms`, default `["discord"]`): `toodo` adds the Toodo chat
+   * beside Discord, which stays required. Read where it is used, so a config reload switches the Toodo chat live.
+   */
+  readonly platforms: readonly Platform[];
   readonly stateDir: string;
   readonly ignorePanes: readonly string[];
   /**
@@ -305,6 +311,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   agentCommand: ["omo", "--model", "{model}", "{prompt}"],
   defaultModel: "anthropic-subscription/claude-opus-5-5",
   leadArgs: [],
+  platforms: ["discord"],
   discordChannels: [],
   githubIssueAuthors: [],
   secretCommands: {},
@@ -537,7 +544,7 @@ const placement = (raw: unknown): PlacementConfig => {
  */
 export const CONFIG_FILE_KEYS = [
   "discord", "stateDir", "leadCwd", "worktreeRoot", "agentCommand", "defaultModel", "leadModel", "leadThinking",
-  "leadArgs", "discordChannels", "alertsChannel", "decisionsChannel", "githubIssueAuthors", "ownerLanguage", "displayTimeZone", "laneRules", "laneSandbox", "guardMachines",
+  "leadArgs", "discordChannels", "alertsChannel", "decisionsChannel", "platforms", "githubIssueAuthors", "ownerLanguage", "displayTimeZone", "laneRules", "laneSandbox", "guardMachines",
   "runners", "secretCommands", "placement", "buttonHooks", "hooks", "ciMergeBase", "ignorePanes", "autopilot", "review",
   "memoryLimits", "autoReport", "reportQuietLanes", "threadCloseAfterHours",
 ] as const;
@@ -547,6 +554,16 @@ const displayTimeZone = (raw: unknown): string => {
   if (raw == null || (typeof raw === "string" && !raw.trim())) return DEFAULT_DISPLAY_TIME_ZONE;
   if (typeof raw !== "string" || !validTimeZone(raw.trim())) throw new TypeError(`displayTimeZone must be an IANA time zone name such as Asia/Seoul or UTC, not ${JSON.stringify(raw)}`);
   return raw.trim();
+};
+
+/** The config's `platforms`, each named once; absent is Discord alone. Throws TypeError on an unknown name or without discord. */
+const platforms = (raw: unknown): readonly Platform[] => {
+  if (raw === undefined || raw === null) return ["discord"];
+  if (!Array.isArray(raw) || !raw.every((p): p is Platform => (PLATFORMS as readonly unknown[]).includes(p))) {
+    throw new TypeError(`platforms must be a list of ${PLATFORMS.join(", ")}, not ${JSON.stringify(raw)}`);
+  }
+  if (!raw.includes("discord")) throw new TypeError("platforms must include discord: the Toodo chat runs beside Discord, which the supervisor still needs");
+  return [...new Set(raw)];
 };
 
 /** The config's `alertsChannel`: a trimmed channel id, undefined when absent or blank; throws TypeError on a non-string. */
@@ -624,6 +641,7 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
     ...merged,
     ...(alerts ? { alertsChannel: alerts } : {}),
     ...(decisions ? { decisionsChannel: decisions } : {}),
+    platforms: platforms(raw.platforms),
     laneRules: laneRules(raw.laneRules),
     review: reviewConfig(raw.review),
     autoReport: autoReport(raw.autoReport),

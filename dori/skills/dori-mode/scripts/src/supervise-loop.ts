@@ -40,9 +40,11 @@ import { acquireDiscordGateway } from "./messenger/discord-lock.ts";
 import { supervisorDiscord, type SupervisorDiscordOptions } from "./messenger/discord-supervisor.ts";
 import { closeThreadButton } from "./messenger/discord-commands.ts";
 import { fetchHttp } from "./messenger/http.ts";
+import { supervisorToodoChat, TOODO_CHAT_POLL_MS, TOODO_CHAT_WAKE_EVENTS, toodoChat, toodoErrorText } from "./messenger/toodo-chat.ts";
 import { postOwnerLine } from "./lane-finish.ts";
 import { appendFollowUp, pruneThreadFollowups, redirectIfClosed } from "./thread-followup.ts";
 import { autoReportPoster } from "./auto-report.ts";
+import { postLaneToodo } from "./lane-toodo.ts";
 import { taskBlocker, taskFinisher } from "./task-finish.ts";
 import { ToodoWriter } from "./toodo-client.ts";
 import { writeGatewayStatus } from "./gateway-status.ts";
@@ -558,7 +560,7 @@ const openEventSources = (deps: FlowDeps, supervisor: Supervisor, ops: Operation
  * is what toodo's marked tasks add up to. The executor's deps are rebuilt per call over the live `deps`, so a config
  * reload applies; the toodo source journals its notices.
  */
-const autopilotTask = (deps: FlowDeps, ops: OperationStore, registry: EventSources): { readonly events: ToodoEvents; readonly pass: () => Promise<void> } => {
+const autopilotTask = (deps: FlowDeps, ops: OperationStore, registry: EventSources, onToodoEvent: (event: string) => void): { readonly events: ToodoEvents; readonly pass: () => Promise<void> } => {
   const executorDeps = () => liveExecutorDeps(deps, ops, registry.enqueueFor("toodo"), (line) => { console.error(line); });
   const autopilot = new AutopilotTick({
     tickMs: () => deps.config.autopilot.tickSec * 1000,
@@ -575,7 +577,10 @@ const autopilotTask = (deps: FlowDeps, ops: OperationStore, registry: EventSourc
   const events = new ToodoEvents({
     config: deps.tunables.toodoEvents, stateDir: deps.config.stateDir, enqueue: registry.enqueueFor("toodo"),
     fail: (e) => { registry.fail("toodo", e); }, ok: () => { registry.ok("toodo"); }, log: (line) => { console.error(line); },
-    onEvent: (event) => { if (AUTOPILOT_KICK_EVENTS.has(event)) autopilot.kick(); },
+    onEvent: (event) => {
+      if (AUTOPILOT_KICK_EVENTS.has(event)) autopilot.kick();
+      onToodoEvent(event);
+    },
   });
   return {
     events,
@@ -644,7 +649,10 @@ const sweepTask = (p: SweepTaskParts): (() => Promise<void>) => {
   const toodoWriter = new ToodoWriter(deps.tunables.toodoWriter);
   const finishTask = taskFinisher({ writer: toodoWriter, append: (lane, text) => appendFollowUp(deps.config.stateDir, p.discord, lane, text), language: () => deps.config.ownerLanguage });
   // A clean done claim of a lane config autoReport covers is posted as its report by the supervisor (auto-report.ts).
-  const autoReport = autoReportPoster({ config: deps.config, discord: p.discord, now: deps.clock.now, home: home || homedir(), language: () => deps.config.ownerLanguage });
+  const autoReport = autoReportPoster({
+    config: deps.config, discord: p.discord, now: deps.clock.now, home: home || homedir(), language: () => deps.config.ownerLanguage,
+    toodo: (lane, text) => postLaneToodo(deps, lane, "report", text),
+  });
   // The watch sweep holds a lane whose review is pending through the same gate CI follow-up merges with (D11).
   const sweepDeps: FlowDeps = withReviewHold({ ...deps, leadDelivered: (id) => supervisor.leadDelivered(id), finishTask, blockTask: taskBlocker(toodoWriter), autoReport }, p.review);
   const sweeps = supervisorSweeps(sweepDeps, home, async (line, id) => { enqueue(id, line); }, p.reports, pressureIo(sweepDeps), p.runnerGuard, p.openPulls).map(([name, step]): Sweep => [name, async (emit) =>
@@ -985,7 +993,13 @@ export const supervise = async (
     const enqueueSweep = registry.enqueueFor("sweeps");
     const enqueueWait = registry.enqueueFor("waits");
     const enqueueDiscord = registry.enqueueFor("discord");
-    const autopilot = autopilotTask(deps, ops, registry);
+    // The Toodo chat beside Discord (config platforms has toodo): read on every pass, so a config reload switches it live.
+    const toodoChatOn = (): boolean => deps.config.platforms.includes("toodo");
+    const toodoChatInbound = supervisorToodoChat({
+      chat: () => toodoChat(deps.tunables.toodoWriter), enqueue: registry.enqueueFor("toodo"), now: deps.clock.now,
+      pollMs: TOODO_CHAT_POLL_MS, log: (line) => { console.error(line); },
+    });
+    const autopilot = autopilotTask(deps, ops, registry, (event) => { if (toodoChatOn() && TOODO_CHAT_WAKE_EVENTS.has(event)) toodoChatInbound.wake(); });
     const waits = probe.step("waits", () => new Waits(deps.config.stateDir, deps.tunables.waitMaxFailures, hubCall));
     const { github, review, follow, poll: pollGithub } = githubPolling(deps, probe, registry.enqueueFor("github"));
     ci = follow;
@@ -1044,6 +1058,9 @@ export const supervise = async (
       autopilot.events.run(halted),
       task("inbound", 5_000, async () => {
         try { await registry.guard("discord", discordInbound.tick()); } catch (e) { console.error(`INBOUND_ERROR ${e instanceof Error ? e.message : String(e)}`); }
+        // The Toodo chat's safety poll rides beside it, not awaited: a slow toodo-server never holds Discord inbound back,
+        // and a tick while one runs joins it.
+        if (toodoChatOn()) void registry.guard("toodo", toodoChatInbound.tick()).catch((e: unknown) => { console.error(`TOODO_CHAT_ERROR ${toodoErrorText(e)}`); });
         writeHeartbeat(deps, inbound);
       }),
       task("delivery", 5_000, async () => {

@@ -1,4 +1,6 @@
-export type Platform = "discord";
+/** The chat platforms dori talks to the owner on (config `platforms`): Discord, and the Toodo chat beside it. */
+export const PLATFORMS = ["discord", "toodo"] as const;
+export type Platform = (typeof PLATFORMS)[number];
 export type Target = { readonly to: string; readonly thread?: string };
 
 /**
