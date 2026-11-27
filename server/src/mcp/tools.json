@@ -2313,7 +2313,7 @@
   },
   {
     "name": "update_thread",
-    "description": "Change a chat thread: title, the task it follows (task_id, or unlink_task true), or status: closed when its conversation is over, archived to also put it away, open to take messages again. Closed and archived threads refuse new messages. Returns the thread.",
+    "description": "Change a chat thread's title, linked task (task_id, or unlink_task true), status, or whether the agent is awaiting an answer. Close a thread when its conversation is over, archive it to also put it away, or reopen it to take messages again. Closed and archived threads refuse new messages. Returns the thread.",
     "inputSchema": {
       "$defs": {
         "ChatThreadStatus": {
@@ -2329,6 +2329,10 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "awaiting": {
+          "description": "Set true while waiting for the people's answer (keeps the first waiting time), or false once answered. Waiting threads appear first.",
+          "type": "boolean"
+        },
         "id": {
           "pattern": "^[0-9]+$",
           "type": [

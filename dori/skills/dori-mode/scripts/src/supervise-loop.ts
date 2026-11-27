@@ -45,6 +45,8 @@ import { postOwnerLine } from "./lane-finish.ts";
 import { appendFollowUp, pruneThreadFollowups, redirectIfClosed } from "./thread-followup.ts";
 import { autoReportPoster } from "./auto-report.ts";
 import { postLaneReportToodo } from "./lane-toodo.ts";
+import { routeToodoOwnerMessage, toodoDecisionTick } from "./decision-toodo-cards.ts";
+import type { DirectRouting } from "./decision-inbound.ts";
 import { taskBlocker, taskFinisher } from "./task-finish.ts";
 import { ToodoWriter } from "./toodo-client.ts";
 import { writeGatewayStatus } from "./gateway-status.ts";
@@ -802,6 +804,13 @@ const ownerNotices = (p: NoticeParts): (() => Promise<void>) => {
     });
     // Owner decisions: a stuck post, a missing link line, a pending archive, a queued secret request.
     await isolate("OWNER_DECISION_CHECK_ERROR", () => ownerDecisionTick({ ...decisions, enqueue: (id, line) => supervisor.enqueue(id, line), log: (line) => { console.error(line); } }));
+    // With the Toodo chat on: each decision's card there, its close line, and its thread's waiting mark.
+    if (deps.config.platforms.includes("toodo")) {
+      await isolate("TOODO_DECISION_ERROR", () => toodoDecisionTick({
+        stateDir: deps.config.stateDir, chat: () => toodoChat(deps.tunables.toodoWriter), home: decisions.home, log: (line) => { console.error(line); },
+        threadTitle: async (d) => (await deps.registry.list()).find((lane) => lane.key === d.lane)?.title ?? `#${d.task ?? ""}`,
+      }));
+    }
     // Owner-closed records and closed lanes' last reports past THREAD_FOLLOWUP_KEEP_MS are dropped.
     await isolate("THREAD_FOLLOWUP_PRUNE_ERROR", async () => { pruneThreadFollowups(deps.config.stateDir, deps.clock.now(), await deps.registry.open()); });
     // A thread whose work is all finished and reported gets the owner's close button on its last report, and is closed
@@ -1012,10 +1021,19 @@ export const supervise = async (
     const enqueueDiscord = registry.enqueueFor("discord");
     // The Toodo chat beside Discord (config platforms has toodo): read on every pass, so a config reload switches it live.
     const toodoChatOn = (): boolean => deps.config.platforms.includes("toodo");
+    const laneMessageStore = (): LaneMessageStore => (laneMessages ??= openLaneMessages(deps.config));
+    const enqueueToodo = registry.enqueueFor("toodo");
+    // An owner's answer to a decision card goes the decision's way (decision-toodo-cards.ts), like an answer in Discord.
+    const toodoRouting: DirectRouting = {
+      stateDir: deps.config.stateDir, store: laneMessageStore, now: () => deps.clock.now(), log: (line) => { console.error(line); },
+      lanes: async () => (await deps.registry.open()).filter((lane) => statusOf(lane) !== "closed"),
+      emit: async (id, line) => { enqueueToodo(id, line); },
+    };
     const toodoChatInbound = supervisorToodoChat({
-      chat: () => toodoChat(deps.tunables.toodoWriter), enqueue: registry.enqueueFor("toodo"), now: deps.clock.now,
+      chat: () => toodoChat(deps.tunables.toodoWriter), enqueue: enqueueToodo, now: deps.clock.now,
       attachmentDir: join(deps.config.stateDir, "toodo-attachments"),
       pollMs: TOODO_CHAT_POLL_MS, log: (line) => { console.error(line); },
+      route: (m) => routeToodoOwnerMessage(toodoRouting, chat, m),
     });
     const autopilot = autopilotTask(deps, ops, registry, (event) => { if (toodoChatOn() && TOODO_CHAT_WAKE_EVENTS.has(event)) toodoChatInbound.wake(); });
     const waits = probe.step("waits", () => new Waits(deps.config.stateDir, deps.tunables.waitMaxFailures, hubCall));
@@ -1028,7 +1046,6 @@ export const supervise = async (
     });
     const retry = leadDelivery(deps, supervisor, systemPost, boot);
     let deliveryError: unknown;
-    const laneMessageStore = (): LaneMessageStore => (laneMessages ??= openLaneMessages(deps.config));
     const discordInbound = inbound = token === undefined ? undefined : probe.step("inbound", () => supervisorDiscord(deps, {
       ...discordOptions, token, emit: async (id, line) => { enqueueDiscord(id, line); }, laneMessages: laneMessageStore,
       http: discordOptions.http ?? ((request) => fetchHttp({

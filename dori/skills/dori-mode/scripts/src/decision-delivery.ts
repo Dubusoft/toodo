@@ -5,6 +5,7 @@ import {
   OwnerDecisionError, patchOne, readDecisions, sameTarget, type TargetLane, updateDecisions,
 } from "./decision-store.ts";
 import { type LaneMessage, type LaneMessageStore, queueLaneMessage, updateLaneMessage } from "./lane-messages.ts";
+import { isToodoRef } from "./messenger/toodo-chat.ts";
 import { RUNNER_LANE_CLI } from "./launch-footer.ts";
 import { choiceLabel, closeOwnerDecision, short, syncDecisionButtons, type TickDeps } from "./owner-decisions.ts";
 import { LOCAL_RUNNER } from "./runner/serve.ts";
@@ -311,7 +312,8 @@ export const decisionDeliveryTick = async (deps: TickDeps, store: LaneMessageSto
     const r = revisions.at(-1);
     if (!r || !d.thread) continue;
     const corrects = revisions.slice(0, -1).some((o) => reachedLane(store.get(o.delivery.id)));
-    const text = decisionNoticeText(d, r, store.get(r.delivery.id), corrects);
+    // On the Toodo chat the answer's routing posted its status line, and a message cannot be edited there.
+    const text = isToodoRef(d.thread) ? undefined : decisionNoticeText(d, r, store.get(r.delivery.id), corrects);
     if (text && text !== d.notice?.text) {
       try {
         if (d.notice) await deps.transport.edit(d.thread, d.notice.message, text);

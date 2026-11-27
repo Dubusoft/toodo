@@ -28,6 +28,7 @@ export const decisionMain = async (rest: string[], { flow: deps, die, messengerT
   const od = await import("./owner-decisions.ts");
   const ds = await import("./decision-store.ts");
   const { decisionChoicesProblem, inputRequestProblem } = await import("./runner/decision-text.ts");
+  const { toodoAnswerReceipts } = await import("./decision-toodo-cards.ts");
   const [sub, ...subArgs] = rest;
   /** Discord is reached only when a call needs it; `token` already resolved, else read on first use. A Toodo chat ref goes to the Toodo chat. */
   const decisionContext = (token?: string, withReceipts = false): import("./owner-decisions.ts").DecisionContext => {
@@ -35,12 +36,15 @@ export const decisionMain = async (rest: string[], { flow: deps, die, messengerT
     const discord = (): Discord => transport ??= new Discord(fetchHttp, realClock, token ?? messengerToken("DORI_DISCORD_TOKEN"));
     const chat = () => toodoChat(deps.tunables.toodoWriter);
     const routed = routedDecisionTransport(discord, chat);
-    // close settles the owner's answer messages with the same stale guard, ack and handled as dori send/ack/handled.
+    const toodo = toodoAnswerReceipts(config.stateDir, chat);
+    // close settles the owner's answer messages with the same stale guard, ack and handled as dori send/ack/handled; an
+    // answer given in the Toodo chat gets Toodo's receipts instead.
     const receipts: import("./owner-decisions.ts").DecisionReceipts = {
       unseen: (channel) => staleOwnerEvents(config.stateDir, channel),
-      acked: (channel, message) => ackRecorded(config.stateDir, channel, message),
-      ack: (channel, message) => ack(config.stateDir, discord(), channel, message, realClock.now()),
+      acked: (channel, message) => !toodo.owns(channel) && ackRecorded(config.stateDir, channel, message),
+      ack: (channel, message) => (toodo.owns(channel) ? toodo.ack(message) : ack(config.stateDir, discord(), channel, message, realClock.now())),
       handled: async (channel, message, tasks) => {
+        if (toodo.owns(channel)) { await toodo.handled(channel, message); return; }
         const outcome = await handled(config.stateDir, discord, channel, message, realClock.now(), { reply: true, ...(tasks > 1 ? { tasks } : {}) });
         if (outcome.autoAck === "failed") console.error(`DECISION_ACK_FAILED ${channel} ${message}: ${outcome.error}; handled is recorded anyway`);
       },

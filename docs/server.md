@@ -603,10 +603,14 @@ Each message carries its `channelId` and `threadId`. `list_chat` lists the lates
 with their receipts, of every place or only of `channel_id` (the channel itself) or
 `thread_id`, and `before` pages back. `list_channels` lists the channels with `push` and
 `unread`, and `create_channel` adds one. `create_thread` opens a thread under `channel_id`
-(channel 1 when omitted), following `task_id` if given; `list_threads` lists threads by `channel_id` or `task_id` with their `status`,
-`closedAt`, `archivedAt`, `lastMessage`, and `awaitingChoice` (`include_archived` adds
-archived ones); and `update_thread` changes a thread's `title`,
-its task (`task_id`, or `unlink_task`), or its `status`.
+(channel 1 when omitted), following `task_id` if given; `list_threads` lists threads by
+`channel_id` or `task_id` with their `status`, `closedAt`, `archivedAt`, `lastMessage`, and
+`awaitingAt` (`include_archived` adds archived ones); and `update_thread` changes a
+thread's `title`, its task (`task_id`, or `unlink_task`), its `status`, or its waiting
+state (`awaiting`). Set `awaiting: true` while the agent waits for an answer, such as a
+decision or a request: the first waiting time is kept in `awaitingAt`, waiting threads
+appear first, newest waiting time first, and the app lists the thread's task under Needs
+answer. Set `awaiting: false` once it is answered.
 **Actions.** `reply_in_chat` takes up to 10 `actions`, each `{ "key", "label", "style" }`
 (`style` is `default`, `primary`, or `danger`), which the app shows as buttons under the
 message: a question to decide, a request to approve, a thread to close, or any other

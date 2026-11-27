@@ -16,10 +16,10 @@ function thread(id: number, taskId: number | null, overrides: Partial<ChatThread
     createdAt: 1,
     closedAt: null,
     archivedAt: null,
+    awaitingAt: null,
     unread: 0,
     lastMessageAt: null,
     lastMessage: null,
-    awaitingChoice: false,
     ...overrides,
   };
 }
@@ -40,7 +40,7 @@ describe("taskChats", () => {
     const threads = [
       thread(10, 1, { lastMessageAt: 100 }),
       thread(11, 2, { lastMessageAt: 300 }),
-      thread(12, 4, { lastMessageAt: 200, awaitingChoice: true }),
+      thread(12, 4, { lastMessageAt: 200, awaitingAt: 150 }),
     ];
     expect(ids(taskChats(tasks, threads))).toEqual({
       needsAnswer: [[4, 12], [3, null]],
@@ -55,13 +55,13 @@ describe("taskChats", () => {
       task(3, "done", ["lane:done-1"]),
       task(4, "planned", ["pr:7"]),
     ];
-    const threads = [thread(10, 1), thread(11, 2), thread(12, 3, { awaitingChoice: true })];
+    const threads = [thread(10, 1), thread(11, 2), thread(12, 3, { awaitingAt: 5 })];
     expect(ids(taskChats(tasks, threads))).toEqual({ needsAnswer: [], inProgress: [] });
   });
 
   it("lists a paused task with an unanswered question", () => {
     const tasks = [task(1, "planned")];
-    const threads = [thread(5, 1, { awaitingChoice: true }), thread(6, null)];
+    const threads = [thread(5, 1, { awaitingAt: 5 }), thread(6, null)];
     expect(ids(taskChats(tasks, threads))).toEqual({ needsAnswer: [[1, 5]], inProgress: [] });
   });
 });

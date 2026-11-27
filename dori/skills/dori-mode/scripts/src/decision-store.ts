@@ -123,7 +123,22 @@ export type OwnerDecision = DecisionChoices & {
    * (its parked goal is active again), `not parked (<hold>)` (nothing to resume), or `resume <outcome>` (not confirmed).
    */
   readonly goalResume?: { readonly at: number; readonly outcome: string };
+  /** The decision's card in the Toodo chat (decision-toodo-cards.ts), set once it is posted there. */
+  readonly toodo?: ToodoCard;
 };
+
+/**
+ * An owner decision's card in the Toodo chat, beside its Discord thread: `place` is the ref it was posted at (its task's
+ * thread, else the default room) and `message` the card's message id. `awaiting` is whether the place was last marked as
+ * waiting on the owner for this decision; `closed` is set once the close line was posted under the card.
+ */
+export type ToodoCard = { readonly place: string; readonly message: number; readonly awaiting?: boolean; readonly closed?: boolean };
+
+/**
+ * Whether owner messages in `channel` may answer `d`: its Discord thread, or the Toodo chat place its card was posted at.
+ */
+export const answersIn = (d: Pick<OwnerDecision, "thread" | "toodo">, channel: string): boolean =>
+  d.thread === channel || d.toodo?.place === channel;
 
 /**
  * The close text's way to a lane decision's lane: `relayed` (typed into its pane, lane message `message`), `failed`

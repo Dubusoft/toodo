@@ -203,7 +203,7 @@ describe("schema creation and migrations", () => {
     say(1, loose[1]!);
     const before = db.query("SELECT count(*) AS n FROM chat_messages").get();
 
-    migrate(db, MIGRATIONS);
+    migrate(db, MIGRATIONS.slice(0, 1));
 
     expect(schemaVersion(db)).toBe(57);
     expect(

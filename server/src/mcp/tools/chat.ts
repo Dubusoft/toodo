@@ -131,5 +131,11 @@ export function updateThread(storage: Storage, request: ReturnType<typeof R.upda
     taskId: request.task_id,
     unlinkTask: request.unlink_task,
   });
-  return thread(threads.updateChatThread(storage.db, chatThreadId(request.id), edit, storage.now()));
+  const { awaiting } = request;
+  return thread(threads.updateChatThread(
+    storage.db,
+    chatThreadId(request.id),
+    awaiting === undefined ? edit : { ...edit, awaiting },
+    storage.now(),
+  ));
 }

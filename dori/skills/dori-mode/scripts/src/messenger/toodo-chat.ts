@@ -38,17 +38,24 @@ export const parseToodoRef = (ref: string): ToodoPlace => {
 
 const placeArgs = (place: ToodoPlace): Record<string, number> => (place.kind === "channel" ? { channel_id: place.id } : { thread_id: place.id });
 
-/** A chat message as Dori reads it: where it is, who wrote it, its text and its attached files. */
+/**
+ * A chat message as Dori reads it: where it is, who wrote it, its text and its attached files. A person's message that
+ * records a choice names the agent's message and the action key in `choiceOf`.
+ */
 export type ToodoChatMessage = {
   readonly id: number;
   readonly place: ToodoPlace;
   readonly author: "user" | "agent" | "system";
   readonly body: string;
   readonly attachments: readonly ToodoAttachment[];
+  readonly choiceOf?: { readonly message: number; readonly key: string };
 };
 
 /** The most files one message takes (`attachments` of `reply_in_chat`). */
 export const TOODO_FILES_MAX = 10;
+
+/** A button under Dori's message (toodo-server's chat action): `key` comes back in the choice, `label` is shown. */
+export type ToodoAction = { readonly key: string; readonly label: string; readonly style?: "default" | "primary" | "danger" };
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isId = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) > 0;
@@ -61,10 +68,13 @@ const toMessage = (raw: unknown, tool: string): ToodoChatMessage => {
   if (raw.author !== "user" && raw.author !== "agent" && raw.author !== "system") return bad(`author ${JSON.stringify(raw.author)} (${raw.id})`);
   if (typeof raw.body !== "string") return bad(`no body (${raw.id})`);
   const files = Array.isArray(raw.attachments) ? raw.attachments : [];
+  const choice = raw.choiceOf;
+  if (choice !== null && choice !== undefined && !(isRecord(choice) && isId(choice.messageId) && typeof choice.key === "string")) return bad(`an unreadable choiceOf (${raw.id})`);
   return {
     id: raw.id, author: raw.author, body: raw.body,
     place: isId(raw.threadId) ? { kind: "thread", id: raw.threadId } : { kind: "channel", id: raw.channelId },
     attachments: files.map((f) => toAttachment(f) ?? bad(`an unreadable attachment (${raw.id})`)),
+    ...(isRecord(choice) ? { choiceOf: { message: choice.messageId as number, key: choice.key as string } } : {}),
   };
 };
 
@@ -87,14 +97,18 @@ export class ToodoChat {
 
   /**
    * Posts Dori's message at `place`; `handles` are the people's messages it answers, which it marks handled, and
-   * `attachments` the ids of files uploaded for it (`upload`). A message with files may have no text.
+   * `attachments` the ids of files uploaded for it (`upload`). A message with files may have no text. `actions` are
+   * buttons under it, of which a person may choose one.
    */
-  async reply(place: ToodoPlace, body: string, handles: readonly number[] = [], attachments: readonly number[] = []): Promise<ToodoChatMessage> {
+  async reply(
+    place: ToodoPlace, body: string, handles: readonly number[] = [], attachments: readonly number[] = [], actions: readonly ToodoAction[] = [],
+  ): Promise<ToodoChatMessage> {
     const text = guardText(body).trim();
     if (!text && !attachments.length) throw new ToodoChatError("a Toodo chat message needs text or a file");
     if (attachments.length > TOODO_FILES_MAX) throw new ToodoChatError(`a Toodo chat message takes at most ${TOODO_FILES_MAX} files`);
     return toMessage(await this.mcp.call("reply_in_chat", {
       body: text, ...placeArgs(place), handles: [...handles], ...(attachments.length ? { attachments: [...attachments] } : {}),
+      ...(actions.length ? { actions: actions.map((a) => ({ ...a })) } : {}),
     }), "reply_in_chat");
   }
 
@@ -106,6 +120,11 @@ export class ToodoChat {
   /** The bytes of an attachment of a chat message. */
   download(id: number): Promise<Uint8Array> {
     return this.mcp.attachment(id);
+  }
+
+  /** Marks thread `thread` as waiting on the people's answer (its task listed under Needs answer) or clears the mark. */
+  async awaiting(thread: number, on: boolean): Promise<void> {
+    await this.mcp.call("update_thread", { id: thread, awaiting: on });
   }
 
   async ack(ids: readonly number[]): Promise<void> {
@@ -215,7 +234,15 @@ export type ToodoChatInboundDeps = {
   /** Milliseconds between safety passes when no `chat-changed` event wakes one. */
   readonly pollMs: number;
   readonly log: (line: string) => void;
+  /**
+   * Settles an owner message before it is journaled (decision-toodo-cards.ts routeToodoOwnerMessage): `direct` when it answered
+   * a decision card and reaches the lead no other way, `lead` to journal it. Called once per message in this process.
+   */
+  readonly route?: (m: ToodoChatMessage) => Promise<"direct" | "lead">;
 };
+
+/** How many routed message ids a supervisor remembers, so the take's repeats of the peeked messages are not routed again. */
+const ROUTED_MAX = 1_000;
 
 /**
  * The owner's chat messages into the journal. A pass peeks the pending messages, journals each, and only then takes
@@ -227,8 +254,18 @@ export const supervisorToodoChat = (deps: ToodoChatInboundDeps) => {
   let running: Promise<void> | undefined;
   let again = false;
   let lastPass = -Infinity;
+  const routed = new Map<number, "direct" | "lead">();
+  const sideOf = async (m: ToodoChatMessage): Promise<"direct" | "lead"> => {
+    const known = routed.get(m.id);
+    if (known) return known;
+    const side = deps.route ? await deps.route(m) : "lead";
+    routed.set(m.id, side);
+    if (routed.size > ROUTED_MAX) routed.delete(routed.keys().next().value ?? 0);
+    return side;
+  };
   const journal = async (chat: ToodoChat, messages: readonly ToodoChatMessage[]): Promise<void> => {
     for (const m of messages) {
+      if (await sideOf(m) === "direct") continue;
       const event = toodoInbound(m, await saveToodoAttachments(chat, m, deps.attachmentDir));
       deps.enqueue(event.id, event.line);
     }

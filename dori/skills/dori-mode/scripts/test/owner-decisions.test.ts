@@ -122,9 +122,12 @@ const open = (ctx: DecisionContext, extra: Partial<Parameters<typeof openOwnerDe
 
 /** A Toodo chat that keeps what Dori posts; task 77's thread is thread 42. */
 const fakeChat = () => {
-  const posts: { place: ToodoPlace; body: string }[] = [];
+  const posts: { place: ToodoPlace; body: string; buttons: string[] }[] = [];
   const chat: Pick<ToodoChat, "reply" | "taskThread"> = {
-    reply: async (place, body) => { posts.push({ place, body }); return { id: 900 + posts.length, place, author: "agent", body, attachments: [] }; },
+    reply: async (place, body, _handles, _attachments, actions = []) => {
+      posts.push({ place, body, buttons: actions.map((a) => a.key) });
+      return { id: 900 + posts.length, place, author: "agent", body, attachments: [] };
+    },
     taskThread: async (task) => ({ kind: "thread", id: task === 77 ? 42 : 1 }),
   };
   return { chat, posts };
@@ -142,10 +145,12 @@ test("with Discord off a decision is asked in its task's Toodo thread (else the 
   expect(decision).toMatchObject({ state: "open", channel: "toodo", thread: "toodo:thread/42", inLaneThread: true, message: "901" });
   expect(toodo.posts[0]?.place).toEqual({ kind: "thread", id: 42 });
   expect(toodo.posts[0]?.body).toContain("질문: Which path should we take?");
-  expect(toodo.posts[0]?.body).toContain("여기에 번호나 문장으로 답해 주세요.");
-  expect(toodo.posts[0]?.body).not.toContain("버튼");
+  // The decision's message is its card: the answer buttons ride on it and it is recorded as the card.
+  expect(toodo.posts[0]?.buttons).toEqual(["d1:1", "d1:2"]);
+  expect(decision.toodo).toEqual({ place: "toodo:thread/42", message: 901 });
   const request = await open(ctx, { kind: "request", question: "A one-time code", options: [], recommend: 0 });
   expect(request.decision.thread).toBe("toodo:channel/1");
+  expect(toodo.posts.at(-1)?.buttons).toEqual([]);
   const closed = await closeOwnerDecision(ctx, decision.id, { text: "Proceed with option one.", choice: 1 });
   expect(closed.decision.state).toBe("closed");
   expect(closed.archivePending).toBeUndefined();

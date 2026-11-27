@@ -218,20 +218,36 @@ describe("chat channels and threads", () => {
     expect(updateChatThread(db, thread.id, { task: null }, 100).taskId).toBeNull();
   });
 
-  test("a thread shows its latest message on one line and an unanswered question", () => {
+  test("a thread shows its latest message on one line", () => {
     const db = openMemoryDatabase();
     const thread = createChatThread(db, { channel: FIRST_CHANNEL, title: "Deploy", task: null }, 100);
     const place: ChatPlace = { kind: "thread", id: thread.id };
     const shown = () => listChatThreads(db, {})[0];
-    expect([shown()?.lastMessage, shown()?.awaitingChoice]).toEqual([null, false]);
+    expect(shown()?.lastMessage).toBeNull();
     reply(db, { place, body: "[progress] lane-1\nTests  pass" });
     expect(shown()?.lastMessage).toBe("[progress] lane-1 Tests pass");
     reply(db, { place, body: "x".repeat(300) });
     expect(shown()?.lastMessage).toBe(`${"x".repeat(197)}...`);
     const question = reply(db, { place, body: "Ship it?", actions: yesNo() });
-    expect(shown()?.awaitingChoice).toBe(true);
     chooseChatAction(db, { message: question.id, key: "yes", clientId: "c1" }, 200);
-    expect([shown()?.awaitingChoice, shown()?.lastMessage]).toEqual([false, "Yes"]);
+    expect(shown()?.lastMessage).toBe("Yes");
+  });
+
+  test("waiting threads lead by their first waiting time until cleared", () => {
+    using db = openMemoryDatabase();
+    const older = createChatThread(db, { channel: FIRST_CHANNEL, title: "Deploy", task: null }, 100);
+    const other = createChatThread(db, { channel: FIRST_CHANNEL, title: "Review", task: null }, 200);
+    const recent = createChatThread(db, { channel: FIRST_CHANNEL, title: "Release", task: null }, 300);
+    const listed = () => listChatThreads(db, {}).map(({ id, awaitingAt }) => [id, awaitingAt]);
+
+    updateChatThread(db, other.id, { awaiting: true }, 400);
+    updateChatThread(db, older.id, { awaiting: true }, 500);
+    updateChatThread(db, other.id, { awaiting: true }, 600);
+    expect(listed()).toEqual([[older.id, 500], [other.id, 400], [recent.id, null]]);
+
+    updateChatThread(db, older.id, { awaiting: false }, 700);
+    updateChatThread(db, other.id, { awaiting: false }, 800);
+    expect(listed()).toEqual([[recent.id, null], [other.id, null], [older.id, null]]);
   });
 
   test("closed and archived threads refuse messages until reopened", () => {
