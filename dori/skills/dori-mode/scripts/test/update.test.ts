@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { run, type Runner } from "../src/run.ts";
 import { updateInstall } from "../src/update.ts";
@@ -26,9 +26,9 @@ const commit = async (cwd: string, file: string, text: string) => {
   await sh(cwd, "git", "add", "-A");
   await sh(cwd, "git", "commit", "-qm", `edit ${file}`);
 };
-/** Real git; systemctl and bun are recorded and answered here. */
+/** Real git; systemctl, bun, npm and npx are recorded and answered here. */
 const runner: Runner = async (argv, opts) => {
-  if (argv[0] === "systemctl" || argv[0] === "bun") {
+  if (["systemctl", "bun", "npm", "npx"].includes(argv[0]!)) {
     calls.push(argv.join(" "));
     if (argv[1] === "update" && quotaBump) writeFileSync(join(pkg, "bun.lock"), "pi-quota newer\n");
     return { code: 0, out: argv[2] === "is-active" ? unitState : "", err: "" };
@@ -59,6 +59,43 @@ beforeEach(async () => {
   pkg = join(install, "pkg");
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+describe("with toodo.service running the supervisor", () => {
+  const hostUpdate = () => updateInstall({ run: runner, sleep: async () => undefined, log: (l) => lines.push(l) },
+    { packageDir: pkg, codeDir: join(install, "dori"), branch: "dev", force: false, unit: "toodo.service" });
+  const change = async (file: string) => {
+    mkdirSync(dirname(join(origin, file)), { recursive: true });
+    await sh(origin, "git", "checkout", "-q", "dev");
+    await commit(origin, file, `${file} changed\n`);
+  };
+
+  test("a change in dori/ alone reloads only the supervisor Worker", async () => {
+    await change("dori/x.ts");
+    expect(await hostUpdate()).toBe(0);
+    expect(calls).toEqual(["bun update pi-quota", "systemctl --user reload toodo.service", "systemctl --user is-active toodo.service"]);
+    expect(lines.at(-2)).toMatch(/ supervisor=active \(toodo\.service reloaded the supervisor Worker\)$/);
+  });
+
+  test("a change in the core restarts toodo.service", async () => {
+    await change("server/src/x.ts");
+    expect(await hostUpdate()).toBe(0);
+    expect(calls).toEqual(["bun update pi-quota", "systemctl --user restart toodo.service", "systemctl --user is-active toodo.service"]);
+    expect(lines.at(-1)).toMatch(/, toodo\.service restarted; failed: none$/);
+  });
+
+  test("a lockfile change installs the core's dependencies and builds the web app before the restart", async () => {
+    await change("package-lock.json");
+    expect(await hostUpdate()).toBe(0);
+    expect(calls).toEqual(["bun update pi-quota", "npm ci --no-audit --no-fund", "npx vite build", "systemctl --user restart toodo.service", "systemctl --user is-active toodo.service"]);
+  });
+
+  test("a change in the web app alone builds it and leaves toodo.service running", async () => {
+    await change("src/app.tsx");
+    expect(await hostUpdate()).toBe(0);
+    expect(calls).toEqual(["bun update pi-quota", "npx vite build"]);
+    expect(lines.at(-2)).toMatch(/ web app only; toodo\.service left running$/);
+  });
+});
 
 test("nothing new: UP_TO_DATE, no restart; --force restarts anyway", async () => {
   expect(await update("dev")).toBe(0);

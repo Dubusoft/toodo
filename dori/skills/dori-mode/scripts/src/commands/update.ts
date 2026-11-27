@@ -5,6 +5,7 @@ import { realClock, run } from "../run.ts";
 import { updateInstall } from "../update.ts";
 import { writeUpdateResult } from "../auto-update.ts";
 import { refreshBootPrep } from "../boot-prep-install.ts";
+import { supervisorUnit } from "../host-runtimes.ts";
 import { refreshLaneSandbox } from "../lane-sandbox-install.ts";
 import { type CliCommand, die } from "./context.ts";
 
@@ -41,7 +42,7 @@ export const updateCommand: CliCommand = {
     },
       {
         packageDir: join(import.meta.dir, "..", ".."), codeDir: join(import.meta.dir, "..", "..", "..", "..", ".."),
-        branch: flags.values.dev ? "dev" : "main", force: flags.values.force === true,
+        branch: flags.values.dev ? "dev" : "main", force: flags.values.force === true, unit: await supervisorUnit(run),
       });
     // The supervisor's automatic update (update.ts AutoUpdate) reads its outcome from here.
     if (result) writeUpdateResult(result, { at: Date.now(), code, lines: logged });

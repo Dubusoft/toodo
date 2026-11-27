@@ -15,7 +15,7 @@ import { MEMORY_FILE, resolveMemoryRepo } from "./memory-check.ts";
 import { fetchHttp, type Http } from "./messenger/http.ts";
 import { listPanes, paneRow } from "./panes.ts";
 import { HC_CORE_UNIT, HC_INSTALL_URL, HC_MIN_VERSION, hcVersion, versionAtLeast } from "./runtime/hc.ts";
-import { hostServices } from "./host-runtimes.ts";
+import { HOST_UNIT, hostServices, SUPERVISOR_UNIT, supervisorUnit } from "./host-runtimes.ts";
 import type { RecoveryLane } from "./recover.ts";
 import { Registry, statusOf } from "./registry.ts";
 import { type Clock, realClock, type Runner, run } from "./run.ts";
@@ -56,6 +56,8 @@ export type DoctorDeps = {
   /** Test seams for the secret store check: the store (default one under `home`) and the permission-bits lookup (default fs.statSync). */
   readonly secretStore?: Pick<SecretStore, "dir" | "list">;
   readonly modeOf?: (path: string) => number | undefined;
+  /** The unit that runs the supervisor (host-runtimes.ts supervisorUnit); dori-supervisor.service when unset. */
+  readonly unit?: string;
 };
 
 const ok = (id: string, detail: string): Check => ({ id, level: "OK", detail });
@@ -66,7 +68,7 @@ const T = { timeoutMs: 5_000 };
 const API = "https://discord.com/api/v10";
 const MESSAGE_CONTENT = 1 << 18;
 const MESSAGE_CONTENT_LIMITED = 1 << 19;
-const RESTART = "systemctl --user restart dori-supervisor.service";
+const restart = (d: DoctorDeps): string => `systemctl --user restart ${d.unit ?? SUPERVISOR_UNIT}`;
 const LEAD_WAKE_WARNING_THRESHOLD = 20;
 
 /**
@@ -75,7 +77,7 @@ const LEAD_WAKE_WARNING_THRESHOLD = 20;
  */
 const units = async (d: DoctorDeps): Promise<Check[]> => {
   const checks: Check[] = [];
-  const states = await Promise.all(hostServices().map((name) => unitState(d.run, name)));
+  const states = await Promise.all(hostServices(d.unit).map((name) => unitState(d.run, name)));
   const [legacy, procs] = await Promise.all([unitState(d.run, LEGACY_PRESENCE), d.run(["pgrep", "-f", "(dori|cli\\.ts) presence"], T)]);
   for (const u of states) {
     const id = `unit ${u.name.replace(/\.service$/, "")}`;
@@ -83,6 +85,12 @@ const units = async (d: DoctorDeps): Promise<Check[]> => {
     else if (u.enabled === "enabled" && u.active === "active") checks.push(ok(id, "enabled, active"));
     else if (u.enabled === "not-found" || u.active === "unknown") checks.push(fail(id, `not installed (${u.enabled}/${u.active})`, "dori setup --autostart"));
     else checks.push(fail(id, `${u.enabled}, ${u.active}`, `systemctl --user enable --now ${u.name}`));
+  }
+  if (d.unit === HOST_UNIT) {
+    const old = await unitState(d.run, SUPERVISOR_UNIT);
+    if (old.enabled === "enabled" || ["active", "activating"].includes(old.active)) {
+      checks.push(fail("unit dori-supervisor", `${old.enabled}, ${old.active} beside ${HOST_UNIT}, which runs the supervisor itself`, `systemctl --user disable --now ${SUPERVISOR_UNIT}`));
+    }
   }
   const runnerUnit = await unitState(d.run, "dori-runner.service");
   if (runnerUnit.enabled === "enabled") checks.push(warn("runner unit", "dori-runner.service is enabled; the supervisor runs the local runner itself", "systemctl --user disable --now dori-runner.service"));
@@ -334,7 +342,7 @@ const hc = async (d: DoctorDeps): Promise<Check[]> => {
 };
 
 const paths = async (d: DoctorDeps): Promise<Check[]> => {
-  const wd = await d.run(["systemctl", "--user", "show", "dori-supervisor.service", "--property=WorkingDirectory", "--value"], T);
+  const wd = await d.run(["systemctl", "--user", "show", d.unit ?? SUPERVISOR_UNIT, "--property=WorkingDirectory", "--value"], T);
   const dir = wd.out.trim();
   const checks: Check[] = [];
   if (wd.code !== 0 || !dir) checks.push(fail("supervisor WorkingDirectory", "unit has no WorkingDirectory (status 200/CHDIR)", "dori setup --autostart"));
@@ -358,7 +366,7 @@ const managedPanes = async (d: DoctorDeps): Promise<Check[]> => {
     const legacy = raw && typeof raw === "object" && !Array.isArray(raw) ? legacyPaneKeys(raw as Record<string, unknown>) : [];
     if (legacy.length) checks.push(warn("config pane keys", `${legacy.join(", ")} in ${d.configPath} are ignored; the supervisor manages them in ${where}`, `delete ${legacy.join(", ")} from ${d.configPath}`));
   } catch { /* the config check above already reports an unreadable config */ }
-  if (!c.leadPane) return [...checks, warn("leadPane", `no lead pane recorded in ${where}`, RESTART)];
+  if (!c.leadPane) return [...checks, warn("leadPane", `no lead pane recorded in ${where}`, restart(d))];
   try {
     checks.push((await paneRow(d.run, c.leadPane)) !== undefined ? ok("leadPane", `${c.leadPane} exists in hc`) : fail("leadPane", `${c.leadPane} is not an hc terminal any more`, "dori lead-restart"));
   } catch {
@@ -472,14 +480,14 @@ const discord = async (d: DoctorDeps): Promise<Check[]> => {
     ? warn("message content intent", `cannot read application flags (HTTP ${app.status})`, "check in the Developer Portal > Bot > Message Content Intent")
     : flags & (MESSAGE_CONTENT | MESSAGE_CONTENT_LIMITED)
       ? ok("message content intent", "enabled")
-      : warn("message content intent", "not enabled; inbound text falls back to REST and can be empty", `Developer Portal > your application > Bot > enable Message Content Intent, then ${RESTART}`));
+      : warn("message content intent", "not enabled; inbound text falls back to REST and can be empty", `Developer Portal > your application > Bot > enable Message Content Intent, then ${restart(d)}`));
   if (dc) {
     const cmds = await get(`/applications/${dc.applicationId}/guilds/${dc.guildId}/commands`);
     const names = Array.isArray(json(cmds.body)) ? (json(cmds.body) as { name?: unknown }[]).map((c) => c.name) : [];
     const gone = ["quota", "status"].filter((n) => !names.includes(n));
     checks.push(cmds.status !== 200
-      ? warn("slash commands", `cannot list guild commands (HTTP ${cmds.status})`, RESTART)
-      : gone.length ? warn("slash commands", `not registered: ${gone.map((n) => `/${n}`).join(", ")}`, RESTART) : ok("slash commands", "/quota and /status registered"));
+      ? warn("slash commands", `cannot list guild commands (HTTP ${cmds.status})`, restart(d))
+      : gone.length ? warn("slash commands", `not registered: ${gone.map((n) => `/${n}`).join(", ")}`, restart(d)) : ok("slash commands", "/quota and /status registered"));
   }
   return checks;
 };
@@ -487,8 +495,8 @@ const discord = async (d: DoctorDeps): Promise<Check[]> => {
 const gateway = (d: DoctorDeps): Check[] => {
   const v = gatewayView(readGatewayStatus(d.config.stateDir), d.clock.now());
   if (v.state === "live") return [ok("gateway", v.text)];
-  if (v.state === "no-content") return [warn("gateway", v.text, "enable Message Content Intent in the Developer Portal, then " + RESTART)];
-  return [fail("gateway", v.text, RESTART)];
+  if (v.state === "no-content") return [warn("gateway", v.text, "enable Message Content Intent in the Developer Portal, then " + restart(d))];
+  return [fail("gateway", v.text, restart(d))];
 };
 
 const issues = (d: DoctorDeps): Check[] => {
@@ -681,7 +689,7 @@ export const realDoctorDeps = async (): Promise<DoctorDeps> => {
   const fromFile = existsSync(envPath) ? envFileValue(readFileSync(envPath, "utf8"), "DORI_DISCORD_TOKEN") : undefined;
   const token = fromFile ?? process.env.DORI_DISCORD_TOKEN;
   return {
-    run, http: fetchHttp, clock: realClock, config: cfg, configPath: path, ...(configError ? { configError } : {}), envPath,
+    run, http: fetchHttp, clock: realClock, config: cfg, configPath: path, ...(configError ? { configError } : {}), envPath, unit: await supervisorUnit(run),
     ...(token ? { token, tokenSource: fromFile ? "file" as const : "env" as const } : {}), exists: existsSync, home: homedir(),
   };
 };

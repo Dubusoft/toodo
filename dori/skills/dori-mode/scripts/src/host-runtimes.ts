@@ -2,9 +2,16 @@ import { pruneRunnerConfig } from "./config-keys.ts";
 import { defaultRunnerDir } from "./runner/fs-safety.ts";
 import { RETIRED_POLICY_KEYS } from "./runner/policy.ts";
 import { localRunnerConfigIO } from "./runner/runner-setup.ts";
+import type { Runner } from "./run.ts";
 import { HC_CORE_UNIT } from "./runtime/hc.ts";
 
 export const SUPERVISOR_UNIT = "dori-supervisor.service";
+/** The one-process host of the Toodo repository (host/toodo.service): the core, with the supervisor in a Worker. */
+export const HOST_UNIT = "toodo.service";
+
+/** The unit that runs the supervisor on this host: toodo.service while it is active, else dori-supervisor.service. */
+export const supervisorUnit = async (run: Runner): Promise<string> =>
+  (await run(["systemctl", "--user", "is-active", HOST_UNIT], { timeoutMs: 5_000 })).out.split("\n")[0] === "active" ? HOST_UNIT : SUPERVISOR_UNIT;
 
 /**
  * The systemd user units a lead host runs, in start order: hc-core (the hc core's autostart, a oneshot `hc server start`
@@ -12,7 +19,7 @@ export const SUPERVISOR_UNIT = "dori-supervisor.service";
  * lists them. A function, not a constant: this module loads inside setup.ts's import cycle, so nothing imported may be
  * read while it initialises.
  */
-export const hostServices = (): string[] => [HC_CORE_UNIT, SUPERVISOR_UNIT];
+export const hostServices = (supervisor = SUPERVISOR_UNIT): string[] => [HC_CORE_UNIT, supervisor];
 
 /**
  * Removes the keys parsePolicy no longer reads (a retired `laneRuntime` among them) from the lead host's local runner

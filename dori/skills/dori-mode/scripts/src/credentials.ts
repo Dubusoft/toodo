@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-/** The file the supervisor unit loads with EnvironmentFile (written by `dori setup`). */
+/** The private env file `dori setup` writes: dori-supervisor.service loads it with EnvironmentFile, the supervisor Worker of toodo.service reads it itself (loadEnvFile). */
 export const envFilePath = (home = homedir()): string => join(home, ".dori", "env");
 
 const ASSIGNMENT = /^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*/gm;
@@ -37,6 +37,28 @@ export const parseEnvFile = (text: string): (readonly [name: string, value: stri
     re.lastIndex = eol < 0 ? text.length : eol;
   }
   return entries;
+};
+
+/**
+ * Sets every entry of the env file at `path` in `env`, over the values it had, as EnvironmentFile= does for a unit. The
+ * supervisor Worker of toodo.service calls it on its own `process.env`, a copy the host's main thread never sees, so the
+ * secrets stay out of the unit's environment and out of the thread that serves HTTP. Returns the names it set; none when
+ * the file does not exist. Callers must never print the values.
+ */
+export const loadEnvFile = (env: Record<string, string | undefined>, path: string): string[] => {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
+  }
+  const names: string[] = [];
+  for (const [name, value] of parseEnvFile(text)) {
+    env[name] = value;
+    names.push(name);
+  }
+  return names;
 };
 
 /** The first non-blank value of `name` in env-file text; blank counts as unset. */

@@ -1,12 +1,15 @@
 // The Toodo host: the core serves HTTP on the main thread and the Dori supervisor runs in a Worker, in one process.
-// Code on this thread must not block it, so it makes no *Sync calls (host/src/sync-check.test.ts checks).
-import { type SupervisorEvent, SupervisorHost, type SupervisorSnapshot, type SupervisorTunables, workerSpawner } from "./supervisor.ts";
+// The host's own code on this thread must not block it, so it makes no *Sync calls (host/src/sync-check.test.ts checks).
+import type { Server } from "bun";
 
-export const DEFAULT_LISTEN = "127.0.0.1:47616";
+import { type Config, configFromEnv } from "../../server/src/http/config.ts";
+import { type Core, openCore, SERVE_OPTIONS, stopServing } from "../../server/src/main.ts";
+import { doriMaxAge, gatewayProbe, healthcheckPaths, httpProbe, readPingFile, startHealthcheck } from "./healthcheck.ts";
+import { type SupervisorEvent, SupervisorHost, type SupervisorSnapshot, type SupervisorTunables, workerSpawner } from "./supervisor.ts";
 
 export const SUPERVISOR_ENTRY = new URL("../../dori/skills/dori-mode/scripts/src/supervise-worker.ts", import.meta.url);
 
-export type CoreFetch = (request: Request) => Response | Promise<Response>;
+export type CoreFetch = (request: Request, server: Server<undefined>) => Response | Promise<Response>;
 
 export type HostOptions = {
   readonly listen: { readonly hostname: string; readonly port: number };
@@ -51,7 +54,8 @@ export const startHost = (options: HostOptions): Host => {
   const server = Bun.serve({
     hostname: options.listen.hostname,
     port: options.listen.port,
-    fetch: (request) => new URL(request.url).pathname === "/api/host" ? Response.json(status()) : options.core(request),
+    ...SERVE_OPTIONS,
+    fetch: (request, server) => new URL(request.url).pathname === "/api/host" ? Response.json(status()) : options.core(request, server),
   });
   if (supervisor) supervisor.start();
   else log("HOST_SAFE_MODE TOODO_SUPERVISOR=off: the supervisor Worker is not started");
@@ -68,19 +72,9 @@ export const startHost = (options: HostOptions): Host => {
     },
     stop: async () => {
       await supervisor?.stop();
-      await server.stop(true);
+      await stopServing(server, "toodo");
     },
   };
-};
-
-/** `TOODO_LISTEN` as the Rust server reads it: `HOST:PORT`, an IPv6 host in brackets. */
-export const parseListen = (value: string): { hostname: string; port: number } => {
-  const match = /^(?:\[([^\]]+)\]|([^:]+)):(\d+)$/.exec(value);
-  const port = Number(match?.[3]);
-  if (!match || !Number.isInteger(port) || port < 0 || port > 65_535) {
-    throw new Error(`TOODO_LISTEN must be HOST:PORT, got ${JSON.stringify(value)}`);
-  }
-  return { hostname: match[1] ?? match[2] ?? "", port };
 };
 
 export const parseSupervisorSwitch = (value: string | undefined): "on" | "off" => {
@@ -89,27 +83,49 @@ export const parseSupervisorSwitch = (value: string | undefined): "on" | "off" =
   throw new Error(`TOODO_SUPERVISOR must be on or off, got ${JSON.stringify(value)}`);
 };
 
-// The core's routes come with the HTTP surface; until then the host answers only `/api/host`.
-const notFound: CoreFetch = () => new Response("Not Found", { status: 404 });
-
 if (import.meta.main) {
-  let listen: { hostname: string; port: number };
+  const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  // The core reads the same TOODO_* environment as toodo-server (server/src/http/config.ts).
+  let config: Config;
   let mode: "on" | "off";
   try {
-    listen = parseListen(process.env.TOODO_LISTEN ?? DEFAULT_LISTEN);
+    config = configFromEnv((name) => process.env[name]);
     mode = parseSupervisorSwitch(process.env.TOODO_SUPERVISOR);
   } catch (e) {
-    console.error(e instanceof Error ? e.message : String(e));
+    console.error(`toodo: ${message(e)}`);
     process.exit(2);
   }
-  const host = startHost({ listen, core: notFound, supervisor: mode === "off" ? "off" : SUPERVISOR_ENTRY });
+  let core: Core;
+  try {
+    core = await openCore(config);
+  } catch (e) {
+    console.error(`toodo: ${message(e)}`);
+    process.exit(1);
+  }
+  const host = startHost({ listen: config.listen, core: core.fetch, supervisor: mode === "off" ? "off" : SUPERVISOR_ENTRY });
+  core.listening(Number(host.url.port));
+  const paths = healthcheckPaths(process.env);
+  const urls = await readPingFile(paths.pingFile);
+  // The core is probed over loopback, whatever address it listens on.
+  const local = new URL(host.url);
+  if (local.hostname === "0.0.0.0") local.hostname = "127.0.0.1";
+  if (local.hostname === "[::]") local.hostname = "[::1]";
+  const health = urls.toodo === undefined && urls.dori === undefined ? undefined : startHealthcheck(urls, {
+    probes: { toodo: httpProbe(local), dori: gatewayProbe(paths.gatewayStatus, doriMaxAge(process.env.DORI_MAX_AGE_MS)) },
+    log: (line) => { console.log(line); },
+  });
+  console.log(health
+    ? `HOST_HEALTHCHECK_ON ${[urls.toodo && "toodo", urls.dori && "dori"].filter(Boolean).join(" and ")} every minute, ping URLs from ${paths.pingFile}`
+    : `HOST_HEALTHCHECK_OFF no HC_TOODO_URL or HC_DORI_URL in ${paths.pingFile}`);
   process.on("SIGHUP", () => { void host.reloadSupervisor(); });
   let stopping = false;
   const stop = () => {
     if (stopping) return;
     stopping = true;
     console.log("HOST_STOPPING");
-    void host.stop().then(() => {
+    // A ping in flight may retry for 40 s; stopping must not wait for it (TimeoutStopSec in host/toodo.service).
+    void health?.stop();
+    void host.stop().then(() => core.close()).then(() => {
       console.log("HOST_STOPPED");
       process.exit(0);
     });

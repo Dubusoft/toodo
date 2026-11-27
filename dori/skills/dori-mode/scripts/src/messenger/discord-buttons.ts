@@ -96,7 +96,9 @@ const pipeLines = async (stream: ReadableStream<Uint8Array>, prefix: string): Pr
 export const spawnButtonHook: HookSpawner = (argv, name) => {
   const prefix = `BUTTON_HOOK ${name}`;
   try {
-    const child = Bun.spawn([...argv], { stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
+    // env: in the supervisor Worker of toodo.service, Bun.spawn would otherwise pass the process's starting environment,
+    // without the secrets the Worker read from ~/.dori/env.
+    const child = Bun.spawn([...argv], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "pipe", detached: true });
     void Promise.all([pipeLines(child.stdout, prefix), pipeLines(child.stderr, prefix), child.exited])
       .then(([, , code]) => { console.error(`${prefix} exited ${code}`); }, () => { console.error(`${prefix} output read failed`); });
   } catch {

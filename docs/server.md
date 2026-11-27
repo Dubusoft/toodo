@@ -736,6 +736,9 @@ To publish the server through Cloudflare, see
 
 ### systemd
 
+On the owner's host, Toodo and Dori run as the one service `toodo.service` from a checkout
+instead; see [host.md](host.md). The rest of this section is the released Rust server.
+
 `toodo service install` (which `scripts/install-server.sh` runs) writes
 `~/.config/systemd/user/toodo-server.service` like this. The unit doesn't depend on any
 other service, and its `PATH` holds only the directory the server is installed in and

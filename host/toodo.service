@@ -1,0 +1,23 @@
+[Unit]
+Description=Toodo with Dori (the core serves HTTP, the Dori supervisor runs in a Worker)
+Wants=network-online.target hc-core.service
+After=network-online.target hc-core.service
+# Crash-looping stops after 5 starts in 10 minutes and alerts the owner once (dori setup installs the notifier).
+StartLimitIntervalSec=600
+StartLimitBurst=5
+OnFailure=dori-failure-notify@%n.service
+
+[Service]
+# No EnvironmentFile: the supervisor Worker reads ~/.dori/env itself, so no secret is in this unit's environment.
+WorkingDirectory={{SRC}}
+{{ENVIRONMENT}}
+ExecStart={{BUN}} {{SRC}}/host/src/main.ts
+# SIGHUP replaces only the supervisor Worker with the code on disk; dori update does this when only dori/ changed.
+ExecReload=/bin/kill -HUP $MAINPID
+# On SIGTERM the host stops the Worker (up to 20 s), then lets open requests finish (up to 5 s).
+TimeoutStopSec=45
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

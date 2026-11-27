@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { envFileValue, parseEnvFile, resolveCredential } from "../src/credentials.ts";
+import { envFileValue, loadEnvFile, parseEnvFile, resolveCredential } from "../src/credentials.ts";
 import { withState } from "./fakes.ts";
 
 const SECRET = "file-secret-value";
@@ -24,6 +24,19 @@ test("parseEnvFile keeps a quoted value whole across lines and reads every entry
 test("envFileValue matches the name exactly, not as a pattern", () => {
   expect(envFileValue("AXB=1\n", "A.B")).toBeUndefined();
   expect(envFileValue("# DORI_DISCORD_TOKEN=x\nXDORI_DISCORD_TOKEN=y\n", "DORI_DISCORD_TOKEN")).toBeUndefined();
+});
+
+test("loadEnvFile sets every entry over the inherited value and sets nothing without a file", () => {
+  const state = withState();
+  try {
+    homeWithEnv(state.dir, `DORI_DISCORD_TOKEN=${SECRET}\nexport GH_TOKEN="gh value"\n`);
+    const env: Record<string, string | undefined> = { DORI_DISCORD_TOKEN: "inherited", PATH: "/bin" };
+    expect(loadEnvFile(env, join(state.dir, ".dori", "env"))).toEqual(["DORI_DISCORD_TOKEN", "GH_TOKEN"]);
+    expect(env).toEqual({ DORI_DISCORD_TOKEN: SECRET, GH_TOKEN: "gh value", PATH: "/bin" });
+    const untouched: Record<string, string | undefined> = { PATH: "/bin" };
+    expect(loadEnvFile(untouched, join(state.dir, "missing"))).toEqual([]);
+    expect(untouched).toEqual({ PATH: "/bin" });
+  } finally { state.done(); }
 });
 
 test("resolveCredential prefers the process environment over the env file", () => {

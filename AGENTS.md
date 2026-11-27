@@ -181,16 +181,22 @@ Layout:
     module, with the Rust tests ported beside each one. `rust.ts` holds the Rust standard
     library behavior they depend on (whitespace, `{:?}` quoting, float printing, string
     order), so messages and results match the Rust server byte for byte.
-- `host/`: the one-process host (Bun) that will replace the `toodo-server` and
-  `dori-supervisor` services. `host/src/main.ts` serves the core's HTTP on the main thread at
-  `TOODO_LISTEN` (default `127.0.0.1:47616`) and runs the supervisor in a Worker
-  (`dori/skills/dori-mode/scripts/src/supervise-worker.ts`); `host/src/supervisor.ts` keeps
-  that Worker alive with a 30 second heartbeat watchdog, a restart backoff, and a breaker
-  that stops restarting a Worker that keeps failing. `TOODO_SUPERVISOR=off` is safe mode (the
-  core alone); `SIGHUP` reloads only the Worker, with the code on disk. `GET /api/host`
-  answers with the supervisor's state; the core's own routes come with the HTTP surface.
-  The main thread makes no `*Sync` calls (`host/src/sync-check.test.ts` walks its imports).
-  `host/src/protocol.ts` holds the messages both threads exchange.
+- `host/`: the one-process host (Bun) that replaces the `toodo-server` and
+  `dori-supervisor` services on the owner's host as `toodo.service` (`host/toodo.service`;
+  see `docs/host.md`). `host/src/main.ts` serves the core of `server/src/main.ts`
+  (`openCore`, on the same `TOODO_*` environment) on the main thread at `TOODO_LISTEN`
+  (default `127.0.0.1:47616`) and runs the supervisor in a Worker
+  (`dori/skills/dori-mode/scripts/src/supervise-worker.ts`), which reads `~/.dori/env`
+  itself so the unit holds no secret; `host/src/supervisor.ts` keeps that Worker alive with
+  a 30 second heartbeat watchdog, a restart backoff, and a breaker that stops restarting a
+  Worker that keeps failing. `TOODO_SUPERVISOR=off` is safe mode (the core alone); `SIGHUP`
+  reloads only the Worker, with the code on disk. `GET /api/host` answers with the
+  supervisor's state. `host/src/healthcheck.ts` pings the healthchecks.io URLs of
+  `~/.config/host-healthcheck.env` every minute. The host's own code on the main thread
+  makes no `*Sync` calls (`host/src/sync-check.test.ts` walks its imports, stopping at the
+  core). `host/src/protocol.ts` holds the messages both threads exchange. `host/src/cli.ts`
+  is the `toodo` command of the owner host (`review`, `doctor`, `service install`), linked
+  from `package.json`.
 - `dori/`: Dori, the executor that runs coding agents in lanes and reports to Toodo, moved
   here from `Dubusoft/dori-mode` with its history (`git subtree`). The skill is
   `dori/skills/dori-mode/` and the `dori` CLI (Bun) is `dori/skills/dori-mode/scripts/`;

@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { type Host, type HostOptions, type HostStatus, parseListen, parseSupervisorSwitch, startHost } from "./main.ts";
+import { type Host, type HostOptions, type HostStatus, parseSupervisorSwitch, startHost } from "./main.ts";
 
 const fixture = (name: string) => new URL(`./fixtures/${name}.ts`, import.meta.url);
 
@@ -103,14 +103,34 @@ describe("startHost", () => {
   });
 });
 
-describe("environment", () => {
-  test("TOODO_LISTEN takes HOST:PORT with IPv6 hosts in brackets", () => {
-    expect(parseListen("127.0.0.1:47616")).toEqual({ hostname: "127.0.0.1", port: 47616 });
-    expect(parseListen("[::1]:8080")).toEqual({ hostname: "::1", port: 8080 });
-    expect(() => parseListen("47616")).toThrow("TOODO_LISTEN must be HOST:PORT");
-    expect(() => parseListen("localhost:70000")).toThrow("TOODO_LISTEN must be HOST:PORT");
+describe("secrets", () => {
+  test("the Worker reads the dori env file into its own environment, which the main thread never sees", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "toodo-host-"));
+    try {
+      const envFile = join(dir, "env");
+      const seen = join(dir, "seen");
+      await writeFile(envFile, "TOODO_HOST_TEST_SECRET=from-the-env-file\n", { mode: 0o600 });
+      const credentials = new URL("../../dori/skills/dori-mode/scripts/src/credentials.ts", import.meta.url).pathname;
+      const entry = join(dir, "worker.ts");
+      await writeFile(entry, [
+        `import { loadEnvFile } from ${JSON.stringify(credentials)};`,
+        `import { runFaultWorker } from ${JSON.stringify(fixture("fault-worker").pathname)};`,
+        `loadEnvFile(process.env, ${JSON.stringify(envFile)});`,
+        `const child = Bun.spawn(["sh", "-c", 'printf %s "$TOODO_HOST_TEST_SECRET"'], { env: process.env, stdout: "pipe" });`,
+        `await Bun.write(${JSON.stringify(seen)}, await new Response(child.stdout).text());`,
+        `runFaultWorker("none");`,
+      ].join("\n"));
+      const { firstReady } = launch(entry);
+      await firstReady;
+      expect(await readFile(seen, "utf8")).toBe("from-the-env-file");
+      expect(process.env.TOODO_HOST_TEST_SECRET).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
+});
 
+describe("environment", () => {
   test("TOODO_SUPERVISOR is on unless set to off", () => {
     expect(parseSupervisorSwitch(undefined)).toBe("on");
     expect(parseSupervisorSwitch("on")).toBe("on");

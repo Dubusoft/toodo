@@ -389,6 +389,22 @@ test("doctor warns when lead wakes not from owner messages exceed the 24-hour th
   expect(doctorExit([check])).toBe(0);
 });
 
+test("with toodo.service running the supervisor, doctor checks that unit and fails dori-supervisor.service beside it", async () => {
+  const host = {
+    "systemctl --user is-enabled toodo.service": ok("enabled"),
+    "systemctl --user is-active toodo.service": ok("active"),
+    "systemctl --user show toodo.service --property=WorkingDirectory --value": ok("/work"),
+  };
+  const moved = fixture({ run: { ...host, "systemctl --user is-enabled dori-supervisor.service": no("disabled"), "systemctl --user is-active dori-supervisor.service": no("inactive", 3) }, deps: { unit: "toodo.service" } });
+  const checks = await runDoctor(moved.deps);
+  expect(find(checks, "unit toodo")).toMatchObject({ level: "OK", detail: "enabled, active" });
+  expect(checks.some((c) => c.id === "unit dori-supervisor")).toBe(false);
+  expect(find(checks, "supervisor WorkingDirectory")).toMatchObject({ level: "OK", detail: "/work" });
+  const both = fixture({ run: host, deps: { unit: "toodo.service" } });
+  const twice = await runDoctor(both.deps);
+  expect(find(twice, "unit dori-supervisor")).toMatchObject({ level: "FAIL", fix: "systemctl --user disable --now dori-supervisor.service" });
+});
+
 test("an inactive supervisor is FAIL with the enable command and exit 1; not-found points at setup", async () => {
   const down = fixture({ run: { "systemctl --user is-active dori-supervisor.service": no("inactive", 3) } });
   const checks = await runDoctor(down.deps);

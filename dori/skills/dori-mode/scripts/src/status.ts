@@ -14,7 +14,7 @@ import { pendingLeadRestart, type LeadRestartRequest } from "./lead-restart.ts";
 import { WAKE_SOURCES, wakeSource, type WakeSource } from "./lead-wakes.ts";
 import { paneRow } from "./panes.ts";
 import { HC_CORE_UNIT } from "./runtime/hc.ts";
-import { hostServices } from "./host-runtimes.ts";
+import { hostServices, supervisorUnit } from "./host-runtimes.ts";
 import type { RecoveryLane } from "./recover.ts";
 import { type Lane, type Registry, statusOf } from "./registry.ts";
 import { Repos } from "./repos.ts";
@@ -376,7 +376,7 @@ export const collectStatus = async (d: StatusDeps): Promise<Status> => {
     leadState(d),
     existsSync(d.registry.dir) ? d.registry.open() : Promise.resolve([]),
   ]);
-  const services = await Promise.all([...hostServices(), LEGACY_PRESENCE].map((name) => unitState(d.run, name)));
+  const services = await Promise.all([...hostServices(await supervisorUnit(d.run)), LEGACY_PRESENCE].map((name) => unitState(d.run, name)));
   const gh = githubSummary(d.config.stateDir);
   const pendingRestart = pendingLeadRestart(d.config.stateDir);
   const pause = readPause(autopilotPausePath(d.config.stateDir));
