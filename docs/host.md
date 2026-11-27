@@ -111,14 +111,53 @@ already moved; fix the cause and run `dori update --dev` again.
 Do this once, when the TypeScript server serves everything the Rust one does (MCP and
 OAuth included) and the parity checks pass.
 
+### Before Switching: the Baseline Schema
+
+The core opens only a database at `BASELINE_SCHEMA_VERSION` (56, where the Rust schema is
+frozen; see `AGENTS.md`). A host still on an older Rust release has an older schema, and
+the core refuses to start on it. Check the live database:
+
+```sh
+sqlite3 ~/.local/share/toodo-server/toodo.sqlite3 'PRAGMA user_version'
+```
+
+Below 56, bring it there with a Rust server at the frozen schema before anything else.
+Stable releases up to v1.11.0 predate the freeze; every dev pre-release built after it
+(`vX.Y.Z-dev.N` on the releases page, such as the newest) carries schema 56 and a Linux
+build, so no Rust toolchain is needed:
+
+1. Take a backup (Settings, Backups in the web app). The migration is the first change
+   the old server cannot undo.
+2. Install that build in place of the old one; the service restarts on it and migrates
+   the database when it opens it:
+   ```sh
+   cd ~/.dori/src && scripts/install-server.sh --release vX.Y.Z-dev.N
+   ```
+3. `PRAGMA user_version` prints `56`, and the web app works as before.
+
+That build is the last Rust server: use `~/.local/bin/toodo-server` as the reference for
+the shadow reads and the Rust binary of `rust-check` ([parity.md](parity.md)). Then run
+the shadow reads against the live database for three days before switching, from
+`~/.dori/src`:
+
+```sh
+node scripts/parity/parity.ts shadow --live ~/.local/share/toodo-server/toodo.sqlite3 \
+  --reference ~/.local/bin/toodo-server --candidate "bun server/src/main.ts" \
+  --rounds 72 --out ~/toodo-shadow
+```
+
+Switch only when every round in `shadow.jsonl` has no difference left unexplained.
+
+### Steps
+
 1. Pause autopilot and wait until no lane runs on this host (`dori status`).
 2. Update the checkout and build the web app:
    ```sh
    dori update --dev
    cd ~/.dori/src && npm ci && npx vite build && bun link
    ```
-3. Take a backup of the database (Settings, Backups in the web app, or a copy of the data
-   directory while the server is stopped).
+3. Take a backup of the database right before the switch (Settings, Backups in the web
+   app, or a copy of the data directory while the server is stopped), and note its path.
 4. Write the unit and look at it: `toodo service install`, then
    `cat ~/.config/systemd/user/toodo.service`.
 5. Replace the services, in one go:
@@ -143,9 +182,10 @@ systemctl --user enable --now toodo-server.service dori-supervisor.service host-
 
 ## Retiring the Old Deployment
 
-Once the rollback period is over, remove what only the old services used. Keep the data
-directory (`~/.local/share/toodo-server` unless `TOODO_DATA_DIR` moved it): it holds the
-database, tokens, and backups that `toodo.service` serves.
+Once the checks of step 6 pass, remove what only the old services used; after this, the
+backup from step 3 is the way back, not the old services. Keep the data directory
+(`~/.local/share/toodo-server` unless `TOODO_DATA_DIR` moved it): it holds the database,
+tokens, and backups that `toodo.service` serves.
 
 1. Check that nothing depends on the old pieces: `toodo doctor` shows `unit checkout` as
    `~/.dori/src`, and `systemctl --user is-enabled toodo-server.service
