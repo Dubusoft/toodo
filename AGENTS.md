@@ -114,6 +114,8 @@ Layout:
     on. Both open only a database at `BASELINE_SCHEMA_VERSION` and reject any other
     version; neither creates nor migrates a database.
 - `npm/toodo/`: the `@dubusoft/toodo` npm package (launcher `bin/toodo.js`, README).
+- `scripts/parity/`: the parity harness, which compares two servers (the Rust server and
+  its TypeScript port) by their replies, events, and databases; see `docs/parity.md`.
 - `scripts/package-npm.mjs`: stages the npm packages (main and per-platform) for
   publishing; `scripts/smoke-npm.mjs` installs the staged packages from a local registry
   and checks that `toodo init` brings up a working server.
@@ -149,6 +151,9 @@ Run from the repository root unless noted. Package manager is npm.
   the `npm` workflow publishes
 - Smoke test (npm): `node scripts/smoke-npm.mjs dist-npm` on the staged packages, part of
   the release checklist in `README.md`
+- Parity (two servers): `node scripts/parity/parity.ts replay --a <server> --b <server>`,
+  after `cargo build --bin toodo-server`; also `shadow`, `rust-check`, and `inventory`, see
+  `docs/parity.md`
 
 After changing a command signature, run `cargo test` in `src-tauri/` and commit the
 updated `src/lib/bindings.ts` together with the Rust change. A test in `server/rpc.rs`
