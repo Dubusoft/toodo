@@ -148,7 +148,19 @@ Layout:
     encryption and the VAPID key (`crypto.ts`, reading the Rust server's `push-key` file
     as is), what deserves a notification (`alerts.ts`), and sending with retries, the
     per-device deadline, the change worker, and the test notification (`push.ts`). Its
-    HTTP routes come with the HTTP surface.
+    HTTP routes are in `server/src/http/push.ts`.
+  - `server/src/http/`: the HTTP surface of `src-tauri/src/server/` on one `Bun.serve`
+    port (`server.ts`): every command of the bindings over `/api/rpc` (`rpc.ts`, whose
+    table is checked against `src/lib/bindings.ts` by `rpc.test.ts`), events over SSE with
+    replay and resync (`event-log.ts`), the `/api` gate of the shared web token, device
+    tokens, read-only devices, the lockout of wrong tokens, and Cloudflare Access JWTs
+    (`auth.ts`, `devices.ts`, `access.ts`), backup export, download, and restore
+    (`files.ts`), chat attachments (`attachments.ts`), Web Push routes (`push.ts`), and the
+    web build. `services.ts` holds what the routes share and announces changes;
+    `config.ts` reads the `TOODO_*` environment. MCP (`/mcp`) and OAuth are not here yet.
+  - `server/src/main.ts`: the TypeScript `toodo-server` (`bun server/src/main.ts`, same
+    environment and `import FILE` as the Rust one). It opens only a database the Rust
+    server created, since it neither creates nor migrates one.
   - `server/src/net.ts`: the public-address checks of `src-tauri/src/net.rs` for outbound
     requests to URLs from outside the server, and the GET URL criteria are checked with.
   - `server/src/domain/`: the domain model and rules of `src-tauri/src/domain/`, module for
@@ -184,6 +196,8 @@ Run from the repository root unless noted. Package manager is npm.
 - Test (web app end to end): `npm run test:e2e`, after building the server and `dist-web/`;
   see the "End-to-End Tests" section of `README.md`
 - Server: `cargo build --bin toodo-server` in `src-tauri/`
+- Server (TypeScript): `bun server/src/main.ts`, on a data directory whose database the
+  Rust server created
 - Test (Rust, also regenerates `src/lib/bindings.ts`): `cargo test --lib` in `src-tauri/`
 - Lint / format (Rust): `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check`
   in `src-tauri/`
@@ -205,7 +219,8 @@ Run from the repository root unless noted. Package manager is npm.
 
 After changing a command signature, run `cargo test` in `src-tauri/` and commit the
 updated `src/lib/bindings.ts` together with the Rust change. A test in `server/rpc.rs`
-checks that the server serves every command in the bindings.
+checks that the server serves every command in the bindings, and
+`server/src/http/rpc.test.ts` does the same for the TypeScript server.
 
 CI only typechecks (`cargo check --all-targets` for Rust, `npm run typecheck` for the
 frontend and `server/`, `bun run typecheck` for `dori/`); it runs no tests, lints, or
