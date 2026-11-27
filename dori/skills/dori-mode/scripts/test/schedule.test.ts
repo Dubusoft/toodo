@@ -8,6 +8,7 @@ import { EventSources, readSourceStatus, SourceError, SourceSpecs } from "../src
 import { openOperations, type OperationStore, plan, settleOperation } from "../src/operations.ts";
 import type { Ran, Runner } from "../src/run.ts";
 import { nextCron, nextSlot, parseCron, queueRunNow, RUN_NOW_DIR, SCHEDULE_ACTION, scheduleRow, type ScheduleSpec } from "../src/schedule.ts";
+import { handleScheduleRequest, setSchedulePaused } from "../src/schedule-admin.ts";
 import { collectStatus, renderStatus } from "../src/status.ts";
 import { supervise } from "../src/supervise-loop.ts";
 import { Supervisor } from "../src/supervise.ts";
@@ -242,6 +243,62 @@ test("run-now runs a job once as its own row and leaves its schedule as it was",
   w.clock.at = nineKst(23) + 1_000;
   await w.tick();
   expect(w.lines("DAILY_BRIEF")).toHaveLength(2);
+});
+
+test("a paused job runs no slot and skips the one it left planned; resuming never catches up, and run-now still runs", async () => {
+  const w = world();
+  w.specs.add({ name: "brief", type: "schedule", kind: "DAILY_BRIEF", cron: "0 9 * * *", text: "morning brief", since: SINCE });
+  setSchedulePaused(w.specs, "brief", true, SINCE);
+  // A slot planned just before the pause.
+  plan(w.ops(), nineKst(23), { lane: "schedule:brief", action: SCHEDULE_ACTION, target: new Date(nineKst(23)).toISOString() });
+  w.clock.at = nineKst(24) + 10_000;
+  await w.tick();
+  expect(w.lines("DAILY_BRIEF")).toEqual([]);
+  expect(w.ops().list({ lane: "schedule:brief" }).map((op) => [op.state, op.detail])).toEqual([["verified", "skipped: the job is paused"]]);
+  const paused = w.specs.list()[0] as ScheduleSpec;
+  const row = scheduleRow(paused, readSourceStatus(w.dir)?.sources.brief, w.clock.at);
+  expect([row.paused, "nextRunAt" in row]).toEqual([true, false]);
+  queueRunNow(w.dir, "brief", w.clock.at);
+  await w.tick();
+  expect(w.lines("DAILY_BRIEF")).toHaveLength(1);
+
+  // Resumed at noon three days on: the 09:00 slots it passed stay unrun, the next one runs.
+  w.clock.at = nineKst(27) + 3 * 3_600_000;
+  setSchedulePaused(w.specs, "brief", false, w.clock.at);
+  const resumed = w.specs.list()[0] as ScheduleSpec;
+  expect([resumed.since, "paused" in resumed]).toEqual([w.clock.at, false]);
+  await w.tick();
+  expect(w.lines("DAILY_BRIEF")).toHaveLength(1);
+  w.clock.at = nineKst(28) + 10_000;
+  await w.tick();
+  expect(w.lines("DAILY_BRIEF")).toHaveLength(2);
+});
+
+test("a change from the web app applies on the supervisor's next pass, and a refused one leaves the jobs as they were", async () => {
+  const w = world();
+  w.specs.add({ name: "brief", type: "schedule", kind: "DAILY_BRIEF", cron: "0 9 * * *", text: "morning brief", since: SINCE });
+  // 22:00 KST: moved to 23:30 the same evening, it runs then instead of at 09:00.
+  w.clock.at = SINCE + 3_600_000;
+  const edited = handleScheduleRequest(w.dir, { op: "edit", name: "brief", timing: { cron: "30 23 * * *" } }, w.clock.at);
+  expect(edited).toMatchObject({ ok: true, jobs: [{ name: "brief", cron: "30 23 * * *", tz: "Asia/Seoul", nextRunAt: Date.UTC(2026, 9, 22, 14, 30), paused: false }] });
+  w.clock.at = Date.UTC(2026, 9, 22, 14, 30) + 10_000;
+  await w.tick();
+  expect(w.lines("DAILY_BRIEF")).toEqual(["DAILY_BRIEF morning brief"]);
+  const listed = handleScheduleRequest(w.dir, { op: "list" }, w.clock.at);
+  expect(listed).toMatchObject({ ok: true, jobs: [{ lastResult: "emitted", nextRunAt: Date.UTC(2026, 9, 23, 14, 30) }] });
+
+  const before = readFileSync(w.specs.path, "utf8");
+  expect(handleScheduleRequest(w.dir, { op: "edit", name: "brief", timing: { cron: "0 0 31 2 *" } }, w.clock.at)).toEqual({ ok: false, error: 'schedule brief: cron "0 0 31 2 *" never fires' });
+  expect(handleScheduleRequest(w.dir, { op: "pause", name: "nope" }, w.clock.at)).toEqual({ ok: false, error: 'no schedule "nope"' });
+  expect(handleScheduleRequest(w.dir, { op: "add", job: { name: "brief", kind: "X_KIND", everySec: 3_600, text: "x" } }, w.clock.at)).toEqual({ ok: false, error: "source brief already exists; remove it first" });
+  expect(readFileSync(w.specs.path, "utf8")).toBe(before);
+
+  const added = handleScheduleRequest(w.dir, { op: "add", job: { name: "digest", kind: "GMAIL_DIGEST", cron: "0 6 * * *", command: "echo hi" } }, w.clock.at);
+  expect(added).toMatchObject({ ok: true, jobs: [{ name: "brief" }, { name: "digest", command: ["sh", "-c", "echo hi"], catchUp: "once" }] });
+  expect(handleScheduleRequest(w.dir, { op: "run-now", name: "brief" }, w.clock.at)).toMatchObject({ ok: true });
+  await w.tick();
+  expect(w.lines("DAILY_BRIEF")).toHaveLength(2);
+  expect(handleScheduleRequest(w.dir, { op: "remove", name: "digest" }, w.clock.at)).toMatchObject({ ok: true, jobs: [{ name: "brief" }] });
 });
 
 test("a run-now request whose time is no date is set aside and the schedules keep ticking", async () => {

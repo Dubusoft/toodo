@@ -151,6 +151,17 @@ export class SourceSpecs {
     return spec;
   }
 
+  /** Swaps source `name` for `raw` in one write, keeping its place; throws SourceError when it is missing or invalid. */
+  replace(name: string, raw: unknown): SourceSpec {
+    const spec = validateSpec(raw);
+    const specs = this.list();
+    const at = specs.findIndex((s) => s.name === name);
+    if (at < 0) throw new SourceError(`no source ${name}`);
+    if (spec.name !== name) throw new SourceError(`source ${name} cannot be renamed to ${spec.name}`);
+    writeAtomic(this.stateDir, this.path, `${JSON.stringify(specs.with(at, spec), null, 2)}\n`);
+    return spec;
+  }
+
   remove(name: string): boolean {
     const specs = this.list();
     const kept = specs.filter((s) => s.name !== name);

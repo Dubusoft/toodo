@@ -24,6 +24,9 @@ import type { RunnerCall } from "./runner/call.ts";
  * Slots missed while the supervisor was down (more than one slot passed, or the due slot is older than
  * SCHEDULE_GRACE_MS) follow the job's `catchUp`: `once` runs the latest missed slot once, `skip` records it as skipped.
  * `dori schedule run-now` spools a request that runs as its own row (`now@<ISO>`) and leaves the schedule as it was.
+ *
+ * A `paused` job plans no slot; a scheduled row it left planned is recorded skipped, while a run-now still runs. Resuming
+ * or editing a job moves its `since` to that moment (schedule-admin.ts), so the slots it passed meanwhile never catch up.
  */
 
 export const SCHEDULE_TZ = "Asia/Seoul";
@@ -49,8 +52,10 @@ export type ScheduleSpec = {
   /** A command job's runner (`job.run`, in `cwd` on that machine); absent: the supervisor host. */
   readonly machine?: string;
   readonly catchUp: CatchUp;
-  /** When the job was added: no earlier slot ever runs, and every-N slots count from here. */
+  /** When the job was added (or last resumed or edited): no earlier slot ever runs, and every-N slots count from here. */
   readonly since: number;
+  /** Disabled: no slot runs until it is resumed. */
+  readonly paused?: true;
 };
 
 type Cron = {
@@ -196,6 +201,7 @@ export const validateSchedule = (r: Record<string, unknown>, name: string, kind:
   const catchUp = r.catchUp === undefined ? "once" : r.catchUp;
   if (catchUp !== "once" && catchUp !== "skip") throw new SourceError(`schedule ${name}: catchUp must be once or skip`);
   if (typeof r.since !== "number" || !Number.isFinite(r.since)) throw new SourceError(`schedule ${name}: since must be a time in ms`);
+  if (r.paused !== undefined && r.paused !== true) throw new SourceError(`schedule ${name}: paused must be true or absent`);
   const spec: ScheduleSpec = {
     name, type: "schedule", kind,
     ...(hasCron ? { cron: (r.cron as string).trim() } : { everySec: r.everySec as number }),
@@ -206,6 +212,7 @@ export const validateSchedule = (r: Record<string, unknown>, name: string, kind:
     ...(typeof timeout === "number" ? { timeoutSec: timeout } : {}),
     ...(machine ? { machine } : {}),
     catchUp, since: r.since,
+    ...(r.paused === true ? { paused: true as const } : {}),
   };
   if (hasCron) parseCron(spec.cron ?? "");
   if (nextSlot(spec, spec.since) === undefined) throw new SourceError(`schedule ${name}: cron "${spec.cron}" never fires`);
@@ -226,14 +233,16 @@ export const queueRunNow = (stateDir: string, name: string, now: number): void =
 /** One job as `dori schedule list` and `dori status` show it. */
 export type ScheduleRow = {
   readonly name: string; readonly kind: string; readonly when: string; readonly catchUp: CatchUp; readonly heavy?: true;
+  readonly paused?: true;
   readonly nextRunAt?: number; readonly lastRunAt?: number; readonly lastResult?: string; readonly waiting?: string;
   readonly machine?: string;
 };
 
 export const scheduleRow = (spec: ScheduleSpec, status: Partial<SourceStatus> | undefined, now: number): ScheduleRow => {
-  const next = nextSlot(spec, Math.max(status?.lastSlot ?? 0, now));
+  const next = spec.paused ? undefined : nextSlot(spec, Math.max(status?.lastSlot ?? 0, now));
   return {
     name: spec.name, kind: spec.kind, when: scheduleWhen(spec), catchUp: spec.catchUp, ...(spec.heavy ? { heavy: true as const } : {}),
+    ...(spec.paused ? { paused: true as const } : {}),
     ...(next !== undefined ? { nextRunAt: next } : {}),
     ...(status?.lastRunAt !== undefined ? { lastRunAt: status.lastRunAt } : {}),
     ...(status?.lastResult !== undefined ? { lastResult: status.lastResult } : {}),
@@ -298,8 +307,8 @@ export class Scheduler {
     for (const spec of specs) {
       try {
         const rows = this.rows(spec.name);
-        const planned = this.planDue(spec, rows, now);
-        const all = (planned ? [...rows, planned] : rows).map((op) => this.skipMissed(spec, op, now));
+        const planned = spec.paused ? undefined : this.planDue(spec, rows, now);
+        const all = (planned ? [...rows, planned] : rows).map((op) => (spec.paused ? this.skipPaused(op, now) : this.skipMissed(spec, op, now)));
         const lastSlot = Math.max(spec.since, ...all.map(slotOf).filter(Number.isFinite));
         const settled = all.filter((op) => !OPEN_STATES.includes(op.state)).sort((a, b) => a.updatedAt - b.updatedAt).at(-1);
         this.host.update(spec.name, { lastSlot, ...(settled ? { lastRunAt: settled.updatedAt } : {}) });
@@ -331,6 +340,12 @@ export class Scheduler {
     if (op.state !== "planned" || !missed || spec.catchUp === "once") return op;
     this.host.update(spec.name, { lastResult: `skipped ${missed} missed` });
     return settleOperation(this.deps.operations, now, op.id, "verified", `skipped: ${missed} slot(s) missed while the supervisor was down (catchUp skip)`)!;
+  }
+
+  /** Records a scheduled row a paused job left planned as skipped; a run-now row still runs. */
+  private skipPaused(op: Operation, now: number): Operation {
+    if (op.state !== "planned" || isManual(op)) return op;
+    return settleOperation(this.deps.operations, now, op.id, "verified", "skipped: the job is paused")!;
   }
 
   private drainRunNow(byName: ReadonlyMap<string, ScheduleSpec>): void {
