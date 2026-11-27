@@ -80,6 +80,7 @@ test("dori update restarts the supervisor before it upgrades any runner", async 
     if (a.startsWith("rev-parse --show-toplevel")) return { code: 0, out: "/repo", err: "" };
     if (a === "rev-parse HEAD") return { code: 0, out: order.includes("merge") ? "new" : "old", err: "" };
     if (a === "branch --show-current") return { code: 0, out: "dev", err: "" };
+    if (a === "diff --name-only old new -- /repo") return { code: 0, out: "skills/dori-mode/scripts/src/cli.ts", err: "" };
     return { code: 0, out: "", err: "" };
   };
   const run: Runner = async (argv) => {

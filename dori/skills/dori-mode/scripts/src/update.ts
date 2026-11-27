@@ -38,6 +38,8 @@ export type UpdateOptions = {
   readonly packageDir: string;
   readonly branch: "main" | "dev";
   readonly force: boolean;
+  /** The directory whose changes need the supervisor restarted (dori/ in the repo that holds it); the whole checkout when unset. */
+  readonly codeDir?: string;
 };
 
 class UpdateStop extends Error {}
@@ -48,15 +50,15 @@ const KEY_PROBLEM = /^SETUP_KEY_(MISSING|INVALID) (\S+)/;
 /**
  * Updates the install checkout that holds `packageDir` to `origin/<branch>` (fast-forward only), keeping local changes
  * through a stash, runs `bun install` when the package manifest or lockfile changed, re-resolves the unpinned pi-quota
- * dependency to its newest commit, and restarts the supervisor when HEAD or pi-quota moved (or `force`). Every outcome is
+ * dependency to its newest commit, and restarts the supervisor when `codeDir` changed or pi-quota moved (or `force`). Every outcome is
  * logged as one line; a finished run ends with `UPDATE_SUMMARY changed: ...; failed: ...`. Returns 1 when the update
  * stopped or the restarted supervisor is not active, 2 when it finished but a step failed (config migrate degraded, a
  * runner upgrade, a refresh, the restart command or pi-quota), else 0. A failed step never blocks the restart.
  */
 export const updateInstall = async (d: UpdateDeps, o: UpdateOptions): Promise<number> => {
-  const git = async (args: readonly string[], cwd = root, hint = ""): Promise<string> => {
+  const git = async (args: readonly string[], cwd = root): Promise<string> => {
     const r = await d.run(["git", ...args], { cwd, timeoutMs: 120_000 });
-    if (r.code !== 0) throw new UpdateStop(`UPDATE_FAILED git ${args.join(" ")}: ${(r.err || r.out).split("\n")[0]}${hint}`);
+    if (r.code !== 0) throw new UpdateStop(`UPDATE_FAILED git ${args.join(" ")}: ${(r.err || r.out).split("\n")[0]}`);
     return r.out;
   };
   let root = o.packageDir;
@@ -95,7 +97,7 @@ export const updateInstall = async (d: UpdateDeps, o: UpdateOptions): Promise<nu
   };
   try {
     root = await git(["rev-parse", "--show-toplevel"], o.packageDir);
-    await git(["fetch", "-q", "origin", o.branch], root, "; the repo is private: git needs a GitHub login with access to it (gh auth login or GH_TOKEN, then gh auth setup-git)");
+    await git(["fetch", "-q", "origin", o.branch]);
     const from = await git(["branch", "--show-current"]);
     const old = await git(["rev-parse", "HEAD"]);
     const stash = (await git(["status", "--porcelain", "--untracked-files=no"])) === "" ? undefined
@@ -138,7 +140,8 @@ export const updateInstall = async (d: UpdateDeps, o: UpdateOptions): Promise<nu
     if (lockClean) await git(["checkout", "-q", "--", "bun.lock"], o.packageDir);
     if (refresh.code !== 0) { d.log(`WARN bun update pi-quota: ${(refresh.err || refresh.out).split("\n").at(-1)}`); failed.push("pi-quota"); }
     else if (quotaMoved) { d.log(`PI_QUOTA_UPDATED ${o.packageDir}`); changed.push("pi-quota"); }
-    if (now === old && !quotaMoved && !o.force) {
+    const codeMoved = now !== old && (await git(["diff", "--name-only", old, now, "--", o.codeDir ?? root])) !== "";
+    if (!codeMoved && !quotaMoved && !o.force) {
       d.log(`UP_TO_DATE ${o.branch} ${short(now)}`);
       refreshSandbox();
       refreshBootPrep();

@@ -69,6 +69,20 @@ test("nothing new: UP_TO_DATE, no restart; --force restarts anyway", async () =>
   expect(calls).toContain("systemctl --user restart dori-supervisor.service");
 });
 
+test("a new commit outside codeDir fast-forwards the checkout without restarting the supervisor", async () => {
+  const old = (await sh(install, "git", "rev-parse", "HEAD")).slice(0, 7);
+  await commit(origin, "notes.txt", "one\ntwo\n");
+  const opts = { packageDir: pkg, codeDir: pkg, branch: "main" as const, force: false };
+  expect(await updateInstall({ run: runner, sleep: async () => undefined, log: (l) => lines.push(l) }, opts)).toBe(0);
+  const now = (await sh(install, "git", "rev-parse", "HEAD")).slice(0, 7);
+  expect(now).not.toBe(old);
+  expect(lines.at(-1)).toBe(`UPDATE_SUMMARY changed: checkout ${old}..${now}; failed: none`);
+  expect(calls).toEqual(["bun update pi-quota"]);
+  await commit(origin, "pkg/bun.lock", "v2\n");
+  expect(await updateInstall({ run: runner, sleep: async () => undefined, log: (l) => lines.push(l) }, opts)).toBe(0);
+  expect(calls).toContain("systemctl --user restart dori-supervisor.service");
+});
+
 test("switches dev -> main, keeps local changes, installs on a lockfile change, restarts", async () => {
   const old = (await sh(install, "git", "rev-parse", "HEAD")).slice(0, 7);
   writeFileSync(join(origin, "pkg", "bun.lock"), "v2\n");

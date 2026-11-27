@@ -39,7 +39,10 @@ export const updateCommand: CliCommand = {
       refreshLaneSandbox: () => refreshLaneSandbox(homedir()),
       refreshBootPrep: () => refreshBootPrep(homedir()),
     },
-      { packageDir: join(import.meta.dir, "..", ".."), branch: flags.values.dev ? "dev" : "main", force: flags.values.force === true });
+      {
+        packageDir: join(import.meta.dir, "..", ".."), codeDir: join(import.meta.dir, "..", "..", "..", "..", ".."),
+        branch: flags.values.dev ? "dev" : "main", force: flags.values.force === true,
+      });
     // The supervisor's automatic update (update.ts AutoUpdate) reads its outcome from here.
     if (result) writeUpdateResult(result, { at: Date.now(), code, lines: logged });
     process.exit(code);
