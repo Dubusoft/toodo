@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type * as B from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
 import {
   type BackupSettings,
   DEFAULT_BACKUP_SETTINGS,

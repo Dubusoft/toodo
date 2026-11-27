@@ -3,7 +3,7 @@
 // announcements of changes to connected clients. Port of `Services` in
 // `src-tauri/src/server/mod.rs`.
 
-import type * as B from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
 import type { Backups } from "../commands/backup.ts";
 import type { ChatState } from "../commands/chat.ts";
 import { EVENT_NAMES, type Notifier } from "../commands/events.ts";

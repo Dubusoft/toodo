@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import type { TaskId } from "../domain/model.ts";
 import type { Storage } from "../storage/storage.ts";
 import { commit, memoryStorage, newTask, seedCommits, workspace } from "../storage/storage-fixtures.ts";
-import type { ReportFormat } from "../../../src/lib/bindings.ts";
+import type { ReportFormat } from "../../../src/lib/api.ts";
 import { commandFailure } from "./command-fixtures.ts";
 import { getReviewTimeZone, reviewEntries, reviewPeriod, reviewReport, setReviewTimeZone } from "./review.ts";
 import { deleteReviewSnapshot, getReviewSnapshot, listReviewSnapshots, saveReviewSnapshot } from "./snapshots.ts";

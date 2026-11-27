@@ -8,7 +8,7 @@ import type {
   CommandError as CommandErrorBody,
   CommandErrorCode,
   CommandErrorKind,
-} from "../../../src/lib/bindings.ts";
+} from "../../../src/lib/api.ts";
 import { StorageError, type StorageFailure } from "../storage/errors.ts";
 
 export type { CommandErrorCode, CommandErrorKind };

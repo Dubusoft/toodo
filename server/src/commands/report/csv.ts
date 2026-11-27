@@ -1,7 +1,7 @@
 // The CSV report, one row per reviewed task. Port of `src-tauri/src/commands/report/csv.rs`.
 
 import { displayFloat } from "../../domain/rust.ts";
-import type { ReviewEntry } from "../../../../src/lib/bindings.ts";
+import type { ReviewEntry } from "../../../../src/lib/api.ts";
 import { activeSeconds, oneLine, outcomeLabel, resolutionLabel, round, typeName, waitingSeconds } from "./format.ts";
 import type { DueState, Report } from "./report.ts";
 

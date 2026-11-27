@@ -4,7 +4,7 @@
 // channels and the threads under them, which may follow a task; and it searches earlier
 // messages.
 
-import type * as B from "../../../../src/lib/bindings.ts";
+import type * as B from "../../../../src/lib/api.ts";
 import { bodyWithFiles } from "../../commands/chat.ts";
 import {
   SEARCH_LIMIT,

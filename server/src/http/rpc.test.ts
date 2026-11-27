@@ -6,7 +6,7 @@ import { startTestServer, type TestServer, WEB } from "./http-fixtures.ts";
 
 /** Each command the bindings invoke, with the argument keys it passes in order. */
 function boundCommands(): Map<string, string[]> {
-  const source = readFileSync(new URL("../../../src/lib/bindings.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("../../../src/lib/api.ts", import.meta.url), "utf8");
   const bound = new Map<string, string[]>();
   for (const [, name, args] of source.matchAll(/invoke(?:<[^>]*>)?\("([a-z_]+)"(?:, \{ ([^}]*) \})?\)/g)) {
     bound.set(name!, args === undefined ? [] : args.split(",").map((key) => key.trim()));

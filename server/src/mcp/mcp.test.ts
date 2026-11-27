@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type * as B from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
 import { FIRST_CHANNEL, chatMessageId } from "../domain/chat.ts";
 import type { Task } from "../domain/model.ts";
 import { chooseChatAction, postUserMessage } from "../storage/chat.ts";

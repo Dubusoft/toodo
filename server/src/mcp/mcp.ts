@@ -5,7 +5,7 @@
 // shows too. The HTTP surface mounts it at `/mcp`, with the agent's chat attachments on
 // `/mcp/attachments` behind the same guard.
 
-import type * as B from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
 import { bearer, FailedAttempts, type Rejection, sameSecret, text, tooMany, unauthorized } from "../http/auth.ts";
 import { resolveAccessToken } from "../oauth/routes.ts";
 import { type Access, McpService, type Backend } from "./protocol.ts";

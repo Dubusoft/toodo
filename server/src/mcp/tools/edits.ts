@@ -1,7 +1,7 @@
 // Editing tasks: fields, criteria, workspace, dependencies, and notes
 // (`src-tauri/src/mcp/tools/edits.rs`).
 
-import type * as B from "../../../../src/lib/bindings.ts";
+import type * as B from "../../../../src/lib/api.ts";
 import { invalidInput, rejected } from "../../commands/errors.ts";
 import * as tasks from "../../commands/tasks.ts";
 import { mergeRefs, task } from "../../commands/types.ts";

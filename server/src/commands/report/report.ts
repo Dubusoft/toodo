@@ -2,7 +2,7 @@
 // `review_period` in the time zone of the reader (see `docs/architecture.md`, Review). Port
 // of `src-tauri/src/commands/report/mod.rs`.
 
-import type { ReviewEntry, Task } from "../../../../src/lib/bindings.ts";
+import type { ReviewEntry, Task } from "../../../../src/lib/api.ts";
 import { addDays, midnight, readDay, yearMonth, zoned } from "./calendar.ts";
 import type { TimeZone } from "./calendar.ts";
 import {

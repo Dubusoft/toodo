@@ -10,7 +10,7 @@ import type {
   TaskEvent,
   TaskResolution,
   TaskType,
-} from "../../../../src/lib/bindings.ts";
+} from "../../../../src/lib/api.ts";
 
 export const OUTCOMES: readonly ReviewOutcome[] = ["completed", "opened_for_review", "started", "worked_on", "planned"];
 

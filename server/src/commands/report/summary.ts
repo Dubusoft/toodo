@@ -2,7 +2,7 @@
 // `src-tauri/src/commands/report/summary.rs`.
 
 import { displayFloat } from "../../domain/rust.ts";
-import type { PullRequestSnapshot, ReviewEntry, ReviewOutcome, Task } from "../../../../src/lib/bindings.ts";
+import type { PullRequestSnapshot, ReviewEntry, ReviewOutcome, Task } from "../../../../src/lib/api.ts";
 import {
   activeSeconds,
   countBy,

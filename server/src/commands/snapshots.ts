@@ -10,7 +10,7 @@ import type {
   ReviewSnapshotId,
   ReviewSnapshotSummary,
   ReviewWorkspaceName,
-} from "../../../src/lib/bindings.ts";
+} from "../../../src/lib/api.ts";
 import { command, internal, notFound, type CommandError } from "./errors.ts";
 import { readDay } from "./report/calendar.ts";
 import { ReportPeriod } from "./report/period.ts";

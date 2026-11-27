@@ -6,7 +6,7 @@
 // request's `_meta` with matching `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name`
 // headers. Status codes, messages, and the order of the checks are those of `rmcp` 3.11.
 
-import type * as B from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
 import { CommandError, commandError, panicked } from "../commands/errors.ts";
 import type { Notifier } from "../commands/events.ts";
 import { VERSION } from "../http/version.ts";

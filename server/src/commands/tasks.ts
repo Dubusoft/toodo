@@ -1,7 +1,7 @@
 // Commands for tasks, their dependency DAG, and their related links
 // (`src-tauri/src/commands/tasks.rs`).
 
-import type * as B from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
 import { criterionId, type CheckedBy } from "../domain/criteria.ts";
 import { taskId, workspaceId, type Task, type TaskId, type TaskResolution } from "../domain/model.ts";
 import { transitionTo, TransitionError } from "../domain/status.ts";

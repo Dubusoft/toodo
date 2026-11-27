@@ -1,6 +1,6 @@
 // Creating tasks, alone or as a plan of linked tasks (`src-tauri/src/mcp/tools/create.rs`).
 
-import type * as B from "../../../../src/lib/bindings.ts";
+import type * as B from "../../../../src/lib/api.ts";
 import { CommandError, commandError, invalidInput, notFound, rejected } from "../../commands/errors.ts";
 import { labels, mergeRefs, newTask, task } from "../../commands/types.ts";
 import { taskId, workspaceId } from "../../domain/model.ts";

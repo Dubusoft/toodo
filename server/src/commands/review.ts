@@ -1,7 +1,7 @@
 // Commands for reviewing the work done in a period, such as a week or a year
 // (`src-tauri/src/commands/review.rs`); saved reviews are in `snapshots.ts`.
 
-import type * as B from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
 import type { CommitRecord, PullRequestSnapshot, Task } from "../domain/model.ts";
 import { EmptyPeriod, Period, review, type TaskReview } from "../domain/review.ts";
 import { debugString, trim } from "../domain/rust.ts";

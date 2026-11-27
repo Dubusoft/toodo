@@ -2,7 +2,7 @@
 // `src-tauri/src/mcp/tools/requests.rs` and `src-tauri/src/mcp/tools/chat.rs` read them; their
 // JSON schemas are those of `tools.json`.
 
-import type * as B from "../../../../src/lib/bindings.ts";
+import type * as B from "../../../../src/lib/api.ts";
 import {
   aliased,
   bool,

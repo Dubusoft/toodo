@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { ReviewPeriodKind } from "../../../../src/lib/bindings.ts";
+import type { ReviewPeriodKind } from "../../../../src/lib/api.ts";
 import { CommandError } from "../errors.ts";
 import { formatDuration } from "./format.ts";
 import { ReportPeriod } from "./period.ts";

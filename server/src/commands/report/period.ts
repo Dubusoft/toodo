@@ -1,7 +1,7 @@
 // The calendar period a report covers. Port of `src-tauri/src/commands/report/period.rs`.
 
 import { invalidInput } from "../errors.ts";
-import type { ReportFormat, ReviewPeriodKind } from "../../../../src/lib/bindings.ts";
+import type { ReportFormat, ReviewPeriodKind } from "../../../../src/lib/api.ts";
 import { addDays, addMonths, midnight, yearMonth } from "./calendar.ts";
 import type { Day, TimeZone } from "./calendar.ts";
 
