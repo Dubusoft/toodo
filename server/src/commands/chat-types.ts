@@ -191,7 +191,7 @@ export function threadFilter(filter: B.ChatThreadFilter): ThreadFilter {
   return parsed;
 }
 
-function attachment(a: ChatAttachment): B.ChatAttachment {
+export function attachment(a: ChatAttachment): B.ChatAttachment {
   return { id: a.id, name: a.name, contentType: a.contentType, size: a.size };
 }
 
