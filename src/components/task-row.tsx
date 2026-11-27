@@ -58,6 +58,7 @@ const TaskNotes = lazy(() => taskDetails().then((module) => ({ default: module.T
 const TaskPlan = lazy(() => taskDetails().then((module) => ({ default: module.TaskPlan })));
 const TaskCriteria = lazy(() => taskDetails().then((module) => ({ default: module.TaskCriteria })));
 const AutopilotToggle = lazy(() => taskDetails().then((module) => ({ default: module.AutopilotToggle })));
+const TaskThreads = lazy(() => taskDetails().then((module) => ({ default: module.TaskThreads })));
 const TaskWorkspace = lazy(() => taskDetails().then((module) => ({ default: module.TaskWorkspace })));
 
 /** Statuses whose task is not being worked on, so it can be deleted. */
@@ -552,6 +553,7 @@ export function TaskRow({
       {detailed && task.issue !== null && <TaskIssue task={task} />}
       {detailed && <Suspense fallback={null}><RelatedTasks task={task} tasks={tasks} context={context} navigation={navigation} /></Suspense>}
       {detailed && <Suspense fallback={null}><TaskNotes task={task} detailed /></Suspense>}
+      {detailed && <Suspense fallback={null}><TaskThreads task={task} /></Suspense>}
       {final && !editing && (detailed || addingNote) && (
         <CompletionNote task={task} adding={addingNote} onAdded={() => setAddingNote(false)} />
       )}

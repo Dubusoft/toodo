@@ -3,3 +3,4 @@ export { TaskDetailsSheet } from "@/components/task-details/sheet";
 export { AutopilotToggle, RelatedTasks, TaskPlan, TaskTimeline, TaskWorkspace } from "@/components/task-details/fields";
 export { TaskNotes } from "@/components/task-details/activity";
 export { TaskCriteria } from "@/components/task-details/criteria";
+export { TaskThreads } from "@/components/task-details/threads";
