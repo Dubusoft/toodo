@@ -179,34 +179,6 @@ export function chatMessages(data: InfiniteData<ChatView, unknown>): ChatMessage
 }
 
 /**
- * Sends a person's message to a channel or open thread; `clientId` names it, so a retry after a
- * lost answer stores it once.
- */
-export function useSendChatMessage(place: ChatPlace) {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      body,
-      clientId,
-      attachments,
-    }: {
-      body: string;
-      clientId: string;
-      attachments: readonly ChatAttachment[];
-    }) =>
-      unwrap(
-        commands.sendChatMessage(
-          place,
-          body,
-          clientId,
-          attachments.map((attachment) => attachment.id),
-        ),
-      ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chat }),
-  });
-}
-
-/**
  * Chooses an action on the agent's message, which the agent receives as the person's message;
  * `clientId` names the click, so a retry stores it once.
  */
