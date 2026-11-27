@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Chat, receipt, totalUnread } from "@/components/chat-panel";
 import { commands, events, type ChatChannel, type ChatMessage, type ChatThread } from "@/lib/bindings";
+import { flushChatOutbox } from "@/lib/chat-outbox";
 
 vi.mock("@/lib/bindings", () => ({
   commands: {
@@ -96,6 +97,63 @@ beforeEach(() => {
   mocked.markChatRead.mockResolvedValue({ status: "ok", data: null });
 });
 
+/** A stand-in for the browser's speech recognition that the test feeds results to. */
+class FakeRecognition {
+  static started: FakeRecognition[] = [];
+  lang = "";
+  continuous = false;
+  interimResults = false;
+  onstart: (() => void) | null = null;
+  onend: (() => void) | null = null;
+  onresult: ((event: unknown) => void) | null = null;
+  start() {
+    FakeRecognition.started.push(this);
+    this.onstart?.();
+  }
+  stop() {
+    this.onend?.();
+  }
+  abort() {
+    this.onend?.();
+  }
+  say(transcript: string, isFinal: boolean) {
+    this.onresult?.({ resultIndex: 0, results: [Object.assign([{ transcript }], { isFinal })] });
+  }
+}
+
+describe("voice input", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    FakeRecognition.started = [];
+  });
+
+  it("shows no microphone where the browser has no speech recognition", async () => {
+    serve([]);
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+    await screen.findByRole("textbox");
+    expect(screen.queryByRole("button", { name: "Voice input" })).not.toBeInTheDocument();
+  });
+
+  it("writes what the person says after the draft, in the browser's language", async () => {
+    vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    serve([]);
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+    const input = await screen.findByRole("textbox");
+    fireEvent.input(input, { target: { textContent: "Note:" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+    const recognition = FakeRecognition.started[0];
+    expect(recognition.lang).toBe(navigator.language);
+    act(() => recognition.say("call the bank", false));
+    expect(await screen.findByText("call the bank")).toBeInTheDocument();
+    act(() => recognition.say("call the bank tomorrow", true));
+
+    await waitFor(() => expect(input).toHaveTextContent("Note: call the bank tomorrow"));
+  });
+});
+
 describe("receipts", () => {
   it("go from sent to delivered to read, with a note once handled or overdue", () => {
     expect(receipt(message(1, "user", "Hi"))).toEqual({ status: "sent", note: null });
@@ -150,6 +208,28 @@ describe("Chat", () => {
     expect(body).toBe("Thanks");
     expect(clientId).toMatch(/^[0-9a-f-]{36}$/);
     expect(attachments).toEqual([]);
+  });
+
+  it("keeps a message sent while the server is unreachable and sends it once, under its client id, when it answers", async () => {
+    serve([]);
+    mocked.sendChatMessage.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+    const input = await screen.findByRole("textbox");
+    fireEvent.input(input, { target: { textContent: "Offline hello" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(await screen.findByText(/Not sent yet/)).toBeInTheDocument();
+    expect(screen.getByText("Offline hello")).toBeInTheDocument();
+
+    mocked.sendChatMessage.mockResolvedValue({ status: "ok", data: message(1, "user", "Offline hello") });
+    serve([message(1, "user", "Offline hello")]);
+    expect(await flushChatOutbox(async () => {})).toBe(1);
+
+    expect(mocked.sendChatMessage).toHaveBeenCalledTimes(2);
+    const [first, second] = mocked.sendChatMessage.mock.calls;
+    expect(second[2]).toBe(first[2]);
+    await waitFor(() => expect(screen.queryByText(/Not sent yet/)).not.toBeInTheDocument());
   });
 
   it("chooses one of the agent's actions and shows a chosen one with the others closed", async () => {

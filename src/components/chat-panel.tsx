@@ -1,4 +1,14 @@
-import { Suspense, useDeferredValue, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import {
+  Suspense,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+} from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Archive,
   ArrowLeft,
@@ -20,6 +30,7 @@ import { Token } from "@astryxdesign/core/Token";
 import {
   ChatComposer,
   ChatComposerDrawer,
+  ChatDictationButton,
   ChatMessage as Message,
   ChatMessageBubble,
   ChatMessageList,
@@ -46,7 +57,17 @@ import {
   type Timestamp,
 } from "@/lib/bindings";
 import {
+  chatOutbox,
+  discardChatMessage,
+  queueChatMessage,
+  retryChatMessage,
+  samePlace,
+  subscribeChatOutbox,
+  type OutboxMessage,
+} from "@/lib/chat-outbox";
+import {
   chatMessages,
+  queryKeys,
   uploadChatAttachment,
   useChat,
   useChatAttachmentUrl,
@@ -57,12 +78,12 @@ import {
   useCreateChatThread,
   useMarkChatRead,
   useSearchChat,
-  useSendChatMessage,
   useUpdateChatChannel,
   useUpdateChatThread,
 } from "@/lib/queries";
 import { formatFull } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
+import { useVoiceInput } from "@/lib/voice";
 import { apiRequest } from "@/web/session";
 
 /** The channel and thread the chat shows, kept across starts. */
@@ -117,8 +138,27 @@ function Time({ at }: { at: Timestamp }) {
   );
 }
 
-/** A message being sent, shown until the chat lists it, or with a retry when sending failed. */
-type Pending = { clientId: string; body: string; attachments: readonly ChatAttachment[]; failed: boolean };
+/**
+ * What a message the outbox holds says under it once sending it failed: that it waits for the
+ * server, or why the server refused it, with a retry, and for a refused one a way to drop it.
+ */
+function OutboxNote({ message, refresh }: { message: OutboxMessage; refresh: () => Promise<unknown> }) {
+  return (
+    <span className="flex flex-wrap items-center gap-1">
+      <span>{message.refused ?? "Not sent yet: it goes out once the server answers."}</span>
+      <Button
+        variant="ghost"
+        size="sm"
+        label="Retry"
+        changesData
+        onClick={() => void retryChatMessage(message.clientId, refresh)}
+      />
+      {message.refused !== null && (
+        <Button variant="ghost" size="sm" label="Discard" onClick={() => discardChatMessage(message.clientId)} />
+      )}
+    </span>
+  );
+}
 
 /** The images the server sends inline, which the chat shows in place. */
 const inlineImages = ["image/png", "image/jpeg", "image/gif", "image/webp"];
@@ -297,10 +337,13 @@ function useTypingUntil(initial: Timestamp | null | undefined): boolean {
  */
 export function Conversation({ place, open = true, label }: { place: ChatPlace; open?: boolean; label: string }) {
   const chat = useChat(place);
-  const send = useSendChatMessage(place);
+  const queryClient = useQueryClient();
+  const refreshChat = () => queryClient.invalidateQueries({ queryKey: queryKeys.chat });
   const markRead = useMarkChatRead();
-  const [pending, setPending] = useState<readonly Pending[]>([]);
+  const outbox = useSyncExternalStore(subscribeChatOutbox, chatOutbox);
+  const outgoing = outbox.filter((message) => samePlace(message.place, place));
   const [draft, setDraft] = useState("");
+  const voice = useVoiceInput(setDraft);
   const [uploads, setUploads] = useState<readonly Upload[]>([]);
   const picker = useRef<HTMLInputElement>(null);
   const messages = chat.data === undefined ? [] : chatMessages(chat.data);
@@ -316,7 +359,7 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
   useLayoutEffect(() => {
     const element = scroller.current;
     if (element !== null && atBottom.current) element.scrollTop = element.scrollHeight;
-  }, [newest, pending.length, typing]);
+  }, [newest, outgoing.length, typing]);
 
   useEffect(() => {
     if (newest === undefined || newest === marked.current) return;
@@ -349,22 +392,13 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
     const body = value.trim();
     const attachments = uploads.flatMap((upload) => (upload.attachment === null ? [] : [upload.attachment]));
     if (uploading || (body === "" && attachments.length === 0)) return;
-    submit({ clientId: crypto.randomUUID(), body, attachments, failed: false });
+    // Speech still being recognized would land in the emptied draft.
+    voice.speech.abort();
+    atBottom.current = true;
+    void queueChatMessage({ clientId: crypto.randomUUID(), place, body, attachments }, refreshChat);
     setDraft("");
     for (const upload of uploads) if (upload.preview) URL.revokeObjectURL(upload.preview);
     setUploads([]);
-  };
-
-  const submit = (item: Pending) => {
-    setPending((current) => [...current.filter((other) => other.clientId !== item.clientId), { ...item, failed: false }]);
-    atBottom.current = true;
-    send.mutate(item, {
-      onSuccess: () => setPending((current) => current.filter((other) => other.clientId !== item.clientId)),
-      onError: () =>
-        setPending((current) =>
-          current.map((other) => (other.clientId === item.clientId ? { ...other, failed: true } : other)),
-        ),
-    });
   };
 
   return (
@@ -396,7 +430,7 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
           <p role="alert" className="text-sm text-destructive">
             The chat could not be loaded: {chat.error.message}
           </p>
-        ) : messages.length === 0 && pending.length === 0 && !typing ? (
+        ) : messages.length === 0 && outgoing.length === 0 && !typing ? (
           <p className="m-auto max-w-64 text-center text-sm text-muted-foreground">
             {chat.isPending ? "Loading the chat..." : "Messages here go to the agent connected to Toodo over MCP."}
           </p>
@@ -405,15 +439,15 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
           <div className="mt-auto">
             <ChatMessageList density="compact">
               <Messages agent={agent} messages={messages} />
-              {pending.map((item) => (
+              {outgoing.map((item) => (
                 <Message key={item.clientId} sender="user">
                   <ChatMessageBubble
                     metadata={
                       <ChatMessageMetadata
-                        status={item.failed ? "error" : "sending"}
+                        status={item.refused !== null ? "error" : "sending"}
                         footer={
-                          item.failed ? (
-                            <Button variant="ghost" size="sm" label="Retry" changesData onClick={() => submit(item)} />
+                          item.refused !== null || item.waiting ? (
+                            <OutboxNote message={item} refresh={refreshChat} />
                           ) : undefined
                         }
                       />
@@ -464,13 +498,21 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
                   onClick={() => picker.current?.click()}
                 />
               }
+              headerContext={
+                voice.speech.isListening ? (
+                  <span className="truncate text-xs text-muted-foreground">
+                    {voice.speech.interimTranscript || "Listening..."}
+                  </span>
+                ) : undefined
+              }
+              sendActions={<ChatDictationButton dictation={voice.speech} size="sm" label="Voice input" />}
               sendButton={
+                // Not paused while the server is unreachable: the outbox keeps the message until it answers.
                 <IconButton
                   variant="primary"
                   size="sm"
                   label="Send"
                   icon={<SendHorizontal />}
-                  changesData
                   isDisabled={uploading || (draft.trim() === "" && uploads.every((upload) => upload.attachment === null))}
                   onClick={() => sendDraft(draft)}
                 />
@@ -506,7 +548,9 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
               status={
                 failedUpload !== undefined
                   ? { type: "error", message: `${failedUpload.file.name} could not be uploaded: ${failedUpload.error}` }
-                  : undefined
+                  : voice.error !== null
+                    ? { type: "warning", message: voice.error }
+                    : undefined
               }
             />
           </>

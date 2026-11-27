@@ -8,6 +8,8 @@ import App from "@/App";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { UpdateBanner } from "@/components/update-banner";
 import { toodoTheme } from "@/lib/astryx-theme";
+import { flushChatOutbox } from "@/lib/chat-outbox";
+import { queryKeys } from "@/lib/queries";
 import { initTheme, useColorMode } from "@/lib/theme";
 import { checkForNewBuild, watchBuild } from "@/web/build";
 import { watchConnection } from "@/web/connection";
@@ -65,6 +67,11 @@ void Promise.all([
     onReconnect(() => void queryClient.invalidateQueries());
     // A reconnect or recovery often means the server restarted, perhaps into a new build.
     onReconnect(() => void checkForNewBuild());
+    // Chat messages sent while the server was unreachable, or before a reload, go out now.
+    const sendChatOutbox = () =>
+      void flushChatOutbox(() => queryClient.invalidateQueries({ queryKey: queryKeys.chat }));
+    onReconnect(sendChatOutbox);
+    sendChatOutbox();
     saveQueries(queryClient, savedQueries);
     // The service worker comes with the built app (see vite-pwa.ts), not the dev server.
     if (import.meta.env.PROD && "serviceWorker" in navigator) {
