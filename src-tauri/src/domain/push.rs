@@ -10,17 +10,23 @@ use super::device::DeviceId;
 pub enum PushKind {
     /// A task is awaiting completion.
     Completion,
+    /// The agent connected over MCP posted a chat message.
+    AgentMessage,
 }
 
 /// Which kinds of notification a device receives. New subscriptions receive every kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PushSettings {
     pub completion: bool,
+    pub messages: bool,
 }
 
 impl Default for PushSettings {
     fn default() -> Self {
-        Self { completion: true }
+        Self {
+            completion: true,
+            messages: true,
+        }
     }
 }
 
@@ -28,6 +34,7 @@ impl PushSettings {
     pub fn allows(self, kind: PushKind) -> bool {
         match kind {
             PushKind::Completion => self.completion,
+            PushKind::AgentMessage => self.messages,
         }
     }
 }
@@ -198,7 +205,12 @@ mod tests {
     #[test]
     fn settings_filter_their_kind() {
         assert!(PushSettings::default().allows(PushKind::Completion));
-        let settings = PushSettings { completion: false };
+        assert!(PushSettings::default().allows(PushKind::AgentMessage));
+        let settings = PushSettings {
+            completion: false,
+            messages: true,
+        };
         assert!(!settings.allows(PushKind::Completion));
+        assert!(settings.allows(PushKind::AgentMessage));
     }
 }

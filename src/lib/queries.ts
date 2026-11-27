@@ -11,6 +11,9 @@ import {
   commands,
   events,
   type BackupSettings,
+  type ChatMessage,
+  type ChatMessageId,
+  type ChatView,
   type CommandError,
   type CriterionId,
   type Guideline,
@@ -80,7 +83,37 @@ export const queryKeys = {
   /** Not under "review": saved reviews never change with the tasks. */
   reviewSnapshots: ["review-snapshots"] as const,
   reviewSnapshot: (id: ReviewSnapshotId) => ["review-snapshots", id] as const,
+  /** The chat with the agent, loaded in pages back from the latest message. */
+  chat: ["chat"] as const,
 };
+
+/**
+ * The chat with the agent connected over MCP: pages of messages, the latest first, refetched on
+ * chat-changed events (see `useServerEvents`).
+ */
+export function useChat() {
+  return useInfiniteQuery({
+    queryKey: queryKeys.chat,
+    queryFn: ({ pageParam }) => unwrap(commands.listChat(pageParam)),
+    initialPageParam: null as ChatMessageId | null,
+    getNextPageParam: (page) => (page.hasEarlier ? (page.messages[0]?.id ?? null) : null),
+  });
+}
+
+/** The messages the loaded pages of the chat hold, oldest first. */
+export function chatMessages(data: InfiniteData<ChatView, unknown>): ChatMessage[] {
+  return [...data.pages].reverse().flatMap((page) => page.messages);
+}
+
+/** Sends a person's message; `clientId` names it, so a retry after a lost answer stores it once. */
+export function useSendChatMessage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ body, clientId }: { body: string; clientId: string }) =>
+      unwrap(commands.sendChatMessage(body, clientId)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chat }),
+  });
+}
 
 /** Where agents reach Toodo's MCP server, and the last request it turned away. */
 export function useMcpServerInfo() {
@@ -472,6 +505,7 @@ export function useServerEvents() {
       events.guidelinesChanged.listen((event) =>
         queryClient.invalidateQueries({ queryKey: queryKeys.guidelines(event.payload.workspaceId) }),
       ),
+      events.chatChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.chat })),
     ];
     return () => {
       for (const subscription of subscriptions) {

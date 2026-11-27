@@ -2533,3 +2533,41 @@ fn version_51_keeps_subscriptions_and_their_completion_setting_without_the_other
         "{columns:?}"
     );
 }
+
+#[test]
+fn version_54_turns_agent_message_notifications_on_for_existing_subscriptions() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate_legacy(&mut conn).unwrap();
+    for sql in &MIGRATIONS[45..53] {
+        conn.execute_batch(sql).unwrap();
+    }
+    conn.pragma_update(None, "user_version", 53).unwrap();
+    conn.execute(
+        "INSERT INTO devices (id, label, token_hash, created_at, last_seen_at)
+             VALUES (1, 'Phone', ?1, 1, 1)",
+        params!["a".repeat(64)],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO push_subscriptions (device_id, endpoint, p256dh, auth, completion, created_at)
+             VALUES (1, 'https://push.example/1', ?1, ?2, 0, 2)",
+        params![vec![4u8; 65], vec![1u8; 16]],
+    )
+    .unwrap();
+
+    super::migrate(&mut conn).unwrap();
+
+    assert_eq!(schema_version(&conn).unwrap(), LATEST_VERSION);
+    let settings: (i64, i64) = conn
+        .query_row(
+            "SELECT completion, messages FROM push_subscriptions",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(settings, (0, 1));
+    assert!(
+        conn.execute("UPDATE push_subscriptions SET messages = 2", [])
+            .is_err()
+    );
+}

@@ -233,6 +233,8 @@ pub(crate) enum Change {
     Tasks,
     /// The tasks changed through the app; the baseline moves without notifications.
     TasksSeen,
+    /// A notification to send as it is, such as the agent's chat message.
+    Alert(Alert),
 }
 
 pub struct Push {
@@ -284,6 +286,10 @@ impl Push {
 
     pub fn tasks_seen(&self) {
         self.changed(Change::TasksSeen);
+    }
+
+    pub fn alert(&self, alert: Alert) {
+        self.changed(Change::Alert(alert));
     }
 
     /// Checks that the server may post to `endpoint`: its form, then where its host name
@@ -504,14 +510,23 @@ pub fn spawn(services: Arc<Services>) -> io::Result<()> {
                 // The changes announced while the last ones were delivered are read once.
                 // A batch notifies when any of its changes did not come from the app, so
                 // an agent's change is never folded into the baseline unannounced.
-                let mut notify = matches!(change, Change::Tasks);
-                while let Ok(change) = changes.try_recv() {
-                    notify |= matches!(change, Change::Tasks);
+                let mut notify = false;
+                let mut sent = Vec::new();
+                for change in
+                    std::iter::once(change).chain(std::iter::from_fn(|| changes.try_recv().ok()))
+                {
+                    match change {
+                        Change::Tasks => notify = true,
+                        Change::TasksSeen => {}
+                        Change::Alert(alert) => sent.push(alert),
+                    }
                 }
-                let alerts = watch_tasks(&services, &mut watch);
-                if notify {
-                    deliver(&services.storage, &services.push, &runtime, &alerts);
+                let mut alerts = watch_tasks(&services, &mut watch);
+                if !notify {
+                    alerts.clear();
                 }
+                alerts.extend(sent);
+                deliver(&services.storage, &services.push, &runtime, &alerts);
             }
         })?;
     Ok(())
@@ -536,12 +551,20 @@ fn watch_tasks(services: &Services, watch: &mut Watch) -> Vec<Alert> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SettingsView {
     completion: bool,
+    /// Left out by a web app from before agent messages; they stay on for it.
+    #[serde(default = "messages_on")]
+    messages: bool,
+}
+
+fn messages_on() -> bool {
+    true
 }
 
 impl From<PushSettings> for SettingsView {
     fn from(settings: PushSettings) -> Self {
         Self {
             completion: settings.completion,
+            messages: settings.messages,
         }
     }
 }
@@ -550,6 +573,7 @@ impl From<SettingsView> for PushSettings {
     fn from(view: SettingsView) -> Self {
         Self {
             completion: view.completion,
+            messages: view.messages,
         }
     }
 }
@@ -1189,7 +1213,10 @@ pub(crate) mod tests {
             &storage,
             "Laptop",
             "https://push.example/laptop",
-            PushSettings { completion: false },
+            PushSettings {
+                completion: false,
+                messages: true,
+            },
         );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

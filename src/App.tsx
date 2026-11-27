@@ -20,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { BackupStatusLabel } from "@/components/backup-panel";
+import { Chat } from "@/components/chat-panel";
 import { CommandPalette, ShortcutsDialog, type PaletteCommand } from "@/components/command-palette";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { InstallBanner } from "@/components/install-banner";
@@ -36,7 +37,7 @@ import { isPaletteKey, singleKeyShortcut } from "@/lib/shortcuts";
 import { setThemePreference } from "@/lib/theme";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
-import { listenForOpenTask } from "@/web/push";
+import { listenForOpenChat, listenForOpenTask } from "@/web/push";
 
 // The review screen loads only when it is first shown.
 const Review = lazy(() => import("@/components/review").then((module) => ({ default: module.Review })));
@@ -113,6 +114,9 @@ export default function App() {
   };
   // A clicked notification opens its task.
   useEffect(() => listenForOpenTask(showTask), []);
+  // The chat opens from its button, from a clicked chat notification, or at an address with `?chat`.
+  const [chatOpen, setChatOpen] = useState(() => new URLSearchParams(location.search).has("chat"));
+  useEffect(() => listenForOpenChat(() => setChatOpen(true)), []);
   // The first workspace can be added from the empty main view too, on the server itself.
   const [addingFirst, setAddingFirst] = useState(false);
   const addFirstButton = useRef<HTMLButtonElement>(null);
@@ -392,6 +396,11 @@ export default function App() {
             addFirstButton.current?.focus();
           }}
         />
+      )}
+      {!settingsOpen && (
+        <ErrorBoundary label="the chat">
+          <Chat open={chatOpen} onOpenChange={setChatOpen} />
+        </ErrorBoundary>
       )}
       {paletteOpen && <CommandPalette commands={paletteCommands()} onClose={() => setPaletteOpen(false)} />}
       {shortcutsOpen && <ShortcutsDialog onClose={() => setShortcutsOpen(false)} />}

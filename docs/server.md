@@ -274,6 +274,8 @@ toodo-server
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
 | `TOODO_PUBLIC_URL` | none | Public HTTPS origin, e.g. `https://toodo.example.com`; turns on OAuth for chat apps (see [Chat Apps over OAuth](#chat-apps-over-oauth)) |
 | `TOODO_PUSH_SUBJECT` | `https://github.com/Dubusoft/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
+| `TOODO_CHAT_AGENT_NAME` | `Agent` | Name the chat shows for the agent connected over MCP (see [Chat](#chat)) |
+| `TOODO_CHAT_AGENT_AVATAR` | none | Avatar of that agent: an `https:` URL, or a path on the server such as `/avatar.png` |
 
 On first start the data directory gets two access tokens:
 
@@ -402,6 +404,7 @@ ones it gets, and sends itself a test notification:
 | Setting | Notifications |
 | --- | --- |
 | Task awaiting completion | A task moved to `in_review`, so its work awaits review and completion |
+| Agent messages in the chat | The agent posted a message in the [chat](#chat); opening it opens the chat |
 
 The settings **Agent finished or needs input** and **Pull request checks and reviews** are
 still listed, but the server no longer watches agents or pull requests, so they send
@@ -467,7 +470,7 @@ names the instance in `serverInfo.title`.
 
 ### Agent MCP Tools
 
-The MCP server has 32 tools:
+The MCP server has 44 tools:
 
 - Skill: `read_toodo_skill`.
 - Workspaces: `list_workspaces`, `create_workspace`, `update_workspace`,
@@ -480,7 +483,10 @@ The MCP server has 32 tools:
 - Recording work: `start_task`, `add_progress_note`, `report_blocker`, `check_criterion`,
   `pause_task`, `resume_task`, `wait_task`, `end_wait`, `complete_task`, `conclude_task`,
   `reopen_task`, `delete_task`, `delete_done_tasks`.
+- Guidelines: `get_guidelines`, `add_guideline`, `update_guideline`, `remove_guideline`.
 - Review: `review_report`.
+- Chat (see [Chat](#chat)): `peek_pending`, `take_pending`, `ack_chat`, `reply_in_chat`,
+  `mark_chat_handled`, `list_chat`, `set_typing`.
 
 Two of them help an agent wire a plan:
 
@@ -513,6 +519,31 @@ once.
 `read_toodo_skill` returns the worker skill (`src-tauri/src/mcp/toodo-skill.md`); rules it
 shares with the `initialize` instructions come from `src-tauri/src/mcp/shared/` (see
 [docs/agents.md](agents.md)).
+
+### Chat
+
+The web app has a chat with the agent connected over MCP: the round button at the bottom
+right opens it, and shows how many of the agent's messages are unread. Toodo does not run
+the agent; any agent with the `mcp-token` can take the chat's messages and answer them.
+The chat shows the agent under the name and avatar of `TOODO_CHAT_AGENT_NAME` and
+`TOODO_CHAT_AGENT_AVATAR`.
+
+An agent works through the chat tools:
+
+1. `take_pending` returns the people's messages it has not received yet and marks them
+   received; `peek_pending` returns them without marking them.
+2. `ack_chat` with their `ids` tells the people it read them.
+3. `reply_in_chat` posts its answer; `handles` lists the messages it answers, which are
+   marked handled by it. `mark_chat_handled` marks a message handled by an earlier reply
+   (`reply_id`) or by a task made for it (`task_id`).
+4. `set_typing` shows that it is writing, for 30 seconds unless sent again; a reply ends it.
+
+`list_chat` lists the latest messages with their receipts, and `before` pages back.
+Each person's message shows its receipts in the app: sent, delivered (received by the
+agent), read (acknowledged), and handled. One not handled within 10 minutes shows that it
+waits for an answer. A message the agent posts reaches the devices that turned on **Agent
+messages in the chat** under [Notifications](#notifications). Chat apps connected over
+OAuth do not get the chat tools.
 
 ### Task Resources
 

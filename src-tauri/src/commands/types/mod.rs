@@ -2,6 +2,7 @@
 //! validated when they are converted into domain types.
 
 mod backups;
+mod chat;
 mod criterion;
 mod guidelines;
 mod ids;
@@ -13,6 +14,7 @@ mod tests;
 mod workspaces;
 
 pub use backups::*;
+pub use chat::*;
 pub use criterion::*;
 pub use guidelines::*;
 pub use ids::*;

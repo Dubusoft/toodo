@@ -1187,6 +1187,107 @@ impl ToodoMcp {
                 .await,
         )
     }
+
+    #[tool(
+        description = "Read the chat messages people sent in the Toodo app that you have not received yet, oldest first, without marking them received; take_pending marks them."
+    )]
+    async fn peek_pending(&self) -> Result<CallToolResult, ErrorData> {
+        reply(
+            self.blocking(|backend| tools::pending_chat(&mut lock(backend.storage()), false))
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Take the chat messages people sent in the Toodo app that you have not received yet, oldest first, and mark them received, so the next call returns only newer ones. Then ack_chat them, answer with reply_in_chat (handles marks them handled), or mark_chat_handled them with the task you made. A message not handled within 10 minutes shows overdue."
+    )]
+    async fn take_pending(&self) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(|backend| tools::pending_chat(&mut lock(backend.storage()), true))
+            .await;
+        if let Ok(taken) = &result
+            && !taken.is_empty()
+        {
+            self.backend.chat_changed();
+        }
+        reply(result)
+    }
+
+    #[tool(
+        description = "Post a message to the people in the Toodo app chat; they get it at once and as a push notification. handles lists the IDs of their messages it answers, which are marked handled by it. Returns the posted message."
+    )]
+    async fn reply_in_chat(
+        &self,
+        Parameters(request): Parameters<tools::ReplyInChat>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| tools::reply_in_chat(&mut lock(backend.storage()), request))
+            .await;
+        if let Ok(message) = &result {
+            self.backend.agent_posted(message);
+        }
+        reply(result)
+    }
+
+    #[tool(
+        description = "Acknowledge people's chat messages by ID, telling them you read them before you answer; all or none. Acknowledging one again keeps its first receipt."
+    )]
+    async fn ack_chat(
+        &self,
+        Parameters(request): Parameters<tools::AckChat>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| tools::ack_chat(&mut lock(backend.storage()), request))
+            .await;
+        if result.is_ok() {
+            self.backend.chat_changed();
+        }
+        reply(result)
+    }
+
+    #[tool(
+        description = "Mark a person's chat message handled, with the reply_id of your reply or the task_id of the task you created or updated for it; it is acknowledged too if it was not yet."
+    )]
+    async fn mark_chat_handled(
+        &self,
+        Parameters(request): Parameters<tools::MarkChatHandled>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let result = self
+            .blocking(move |backend| {
+                tools::mark_chat_handled(&mut lock(backend.storage()), request)
+            })
+            .await;
+        if result.is_ok() {
+            self.backend.chat_changed();
+        }
+        reply(result)
+    }
+
+    #[tool(
+        description = "List the latest chat messages of people, you (author agent) and Toodo (author system), oldest first, with the receipts of people's messages; before pages back."
+    )]
+    async fn list_chat(
+        &self,
+        Parameters(request): Parameters<tools::ListChat>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(
+            self.blocking(move |backend| tools::list_chat(&lock(backend.reader()), request))
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Show the people in the Toodo app chat that you are writing a reply (typing true), or stop showing it (false). It lapses after 30 seconds unless you send it again, and posting a reply ends it."
+    )]
+    async fn set_typing(
+        &self,
+        Parameters(request): Parameters<tools::SetTyping>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.backend.agent_typing(request.typing);
+        reply(Ok(tools::Typing {
+            typing: request.typing,
+        }))
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -1733,6 +1834,7 @@ mod tests {
         changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
         workspaces_changed: std::sync::Mutex<usize>,
         guidelines_changed: std::sync::Mutex<Vec<model::WorkspaceId>>,
+        chat: std::sync::Mutex<Vec<String>>,
         changes: tokio::sync::watch::Sender<()>,
     }
     impl TestBackend {
@@ -1750,6 +1852,7 @@ mod tests {
                 changed: std::sync::Mutex::default(),
                 workspaces_changed: std::sync::Mutex::default(),
                 guidelines_changed: std::sync::Mutex::default(),
+                chat: std::sync::Mutex::default(),
                 changes: tokio::sync::watch::Sender::new(()),
             }
         }
@@ -1764,6 +1867,18 @@ mod tests {
         }
         fn guidelines_changed(&self, workspace: model::WorkspaceId) {
             self.guidelines_changed.lock().unwrap().push(workspace);
+        }
+        fn chat_changed(&self) {
+            self.chat.lock().unwrap().push("changed".to_owned());
+        }
+        fn agent_posted(&self, message: &crate::commands::types::ChatMessage) {
+            self.chat
+                .lock()
+                .unwrap()
+                .push(format!("posted {}", message.body));
+        }
+        fn agent_typing(&self, typing: bool) {
+            self.chat.lock().unwrap().push(format!("typing {typing}"));
         }
     }
     impl Backend for TestBackend {
@@ -1806,7 +1921,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tool_list_contains_only_task_record_operations() {
+    fn the_tool_list_contains_task_record_and_chat_operations() {
         let server = ToodoMcp::new(Arc::new(TestBackend::new(
             crate::storage::Storage::open_in_memory().unwrap(),
         )));
@@ -1854,6 +1969,13 @@ mod tests {
             "add_guideline",
             "update_guideline",
             "remove_guideline",
+            "peek_pending",
+            "take_pending",
+            "reply_in_chat",
+            "ack_chat",
+            "mark_chat_handled",
+            "list_chat",
+            "set_typing",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -2057,21 +2179,17 @@ mod tests {
             "delete_task",
             "delete_done_tasks",
             "reopen_task",
-        ] {
-            assert!(server.tool_router.has_route(tool), "{tool}");
-        }
-        for tool in [
             "reply_in_chat",
             "ack_chat",
             "mark_chat_handled",
             "take_pending",
             "peek_pending",
             "list_chat",
-            "import_chat_message",
             "set_typing",
         ] {
-            assert!(!server.tool_router.has_route(tool), "{tool}");
+            assert!(server.tool_router.has_route(tool), "{tool}");
         }
+        assert!(!server.tool_router.has_route("import_chat_message"));
         let result = serde_json::to_value(server.read_toodo_skill().unwrap()).unwrap();
         assert_eq!(result["content"][0]["text"], SKILL.as_str());
         // `lines` also drops the `\r` of a CRLF checkout on Windows.
@@ -2155,6 +2273,79 @@ mod tests {
         );
         assert_eq!(listed["guidelines"], serde_json::json!([updated]));
         assert_eq!(*backend.guidelines_changed.lock().unwrap(), [workspace; 4]);
+    }
+
+    #[test]
+    fn chat_tools_take_acknowledge_and_answer_messages_and_announce_each_step() {
+        let mut storage = crate::storage::Storage::open_in_memory().unwrap();
+        let hi = storage.post_user_message("Hi", "c1").unwrap();
+        let later = storage.post_user_message("Also", "c2").unwrap();
+        let backend = Arc::new(TestBackend::new(storage));
+        let server = ToodoMcp::new(backend.clone());
+        let text = |result: CallToolResult| -> Value {
+            let result = serde_json::to_value(result).unwrap();
+            assert_ne!(result["isError"], true, "{result}");
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+        };
+        fn args<T: serde::de::DeserializeOwned>(value: Value) -> Parameters<T> {
+            Parameters(serde_json::from_value(value).unwrap())
+        }
+        let rt = runtime();
+        let peeked = text(rt.block_on(server.peek_pending()).unwrap());
+        assert_eq!(peeked.as_array().unwrap().len(), 2);
+        assert_eq!(peeked[0]["deliveredAt"], Value::Null);
+        let taken = text(rt.block_on(server.take_pending()).unwrap());
+        assert_eq!(taken[0]["id"], hi.id.0);
+        assert_ne!(taken[0]["deliveredAt"], Value::Null);
+        assert_eq!(
+            text(rt.block_on(server.take_pending()).unwrap()),
+            serde_json::json!([])
+        );
+        let acked = text(
+            rt.block_on(server.ack_chat(args(serde_json::json!({"ids": [hi.id.0]}))))
+                .unwrap(),
+        );
+        assert_ne!(acked[0]["ackedAt"], Value::Null);
+        text(
+            rt.block_on(server.set_typing(args(serde_json::json!({"typing": true}))))
+                .unwrap(),
+        );
+        let reply = text(
+            rt.block_on(server.reply_in_chat(args(
+                serde_json::json!({"body": "Hello", "handles": [hi.id.0]}),
+            )))
+            .unwrap(),
+        );
+        assert_eq!(reply["author"], "agent");
+        let handled = text(
+            rt.block_on(server.mark_chat_handled(args(
+                serde_json::json!({"id": later.id.0, "reply_id": reply["id"]}),
+            )))
+            .unwrap(),
+        );
+        assert_eq!(handled["handledReplyId"], reply["id"]);
+        let listed = text(
+            rt.block_on(server.list_chat(args(serde_json::json!({}))))
+                .unwrap(),
+        );
+        assert_eq!(listed[0]["handledReplyId"], reply["id"]);
+        assert_eq!(
+            *backend.chat.lock().unwrap(),
+            [
+                "changed",
+                "changed",
+                "typing true",
+                "posted Hello",
+                "changed"
+            ]
+        );
+        let refused = serde_json::to_value(
+            rt.block_on(server.ack_chat(args(serde_json::json!({"ids": [reply["id"]]}))))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(refused["isError"], true);
+        assert_eq!(refused["structuredContent"]["error"]["code"], "rejected");
     }
 
     #[test]

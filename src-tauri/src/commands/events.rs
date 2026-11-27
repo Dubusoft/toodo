@@ -45,16 +45,35 @@ pub struct TaskReady {
     pub at: Timestamp,
 }
 
+/// The chat got a message, or the agent's receipts on one changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ChatChanged;
+
+/// The agent started or stopped writing a message: `until` is when it counts as stopped
+/// unless it says so again, unset once it stopped or posted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatTyping {
+    pub until: Option<Timestamp>,
+}
+
 pub mod names {
     pub const TASKS_CHANGED: &str = "tasks-changed";
     pub const WORKSPACES_CHANGED: &str = "workspaces-changed";
     pub const GUIDELINES_CHANGED: &str = "guidelines-changed";
     pub const TASK_STATUS_CHANGED: &str = "task-status-changed";
     pub const TASK_READY: &str = "task-ready";
+    pub const CHAT_CHANGED: &str = "chat-changed";
+    pub const CHAT_TYPING: &str = "chat-typing";
 }
 
 pub trait Notifier {
     fn tasks_changed(&self, workspace: model::WorkspaceId);
     fn workspaces_changed(&self);
     fn guidelines_changed(&self, workspace: model::WorkspaceId);
+    /// A person's message or a receipt of the agent was stored.
+    fn chat_changed(&self);
+    /// The agent posted `message`, which also ends its writing.
+    fn agent_posted(&self, message: &super::types::ChatMessage);
+    fn agent_typing(&self, typing: bool);
 }

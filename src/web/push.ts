@@ -9,6 +9,8 @@ import { apiRequest } from "@/web/session";
 
 export interface PushSettings {
   readonly completion: boolean;
+  /** Chat messages of the agent connected over MCP. */
+  readonly messages: boolean;
 }
 
 /** Why the latest notification did not reach this device; `at` is in Unix seconds. */
@@ -59,6 +61,8 @@ export function pushActive(): boolean {
  */
 const pushedTitles: Record<keyof PushSettings, readonly string[]> = {
   completion: ["Task awaiting completion"],
+  // The page raises no alerts for chat messages; the chat shows them.
+  messages: [],
 };
 
 /** Whether the server pushes the alert titled `title` to this device, so the page need not show it as well. */
@@ -109,7 +113,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isSettings(value: unknown): value is PushSettings {
-  return isRecord(value) && typeof value.completion === "boolean";
+  return isRecord(value) && typeof value.completion === "boolean" && typeof value.messages === "boolean";
 }
 
 function isFailure(value: unknown): value is PushFailure {
@@ -267,6 +271,28 @@ export async function sendTest(): Promise<void> {
 
 /** The message the service worker sends a page that is open when a notification is clicked. */
 const openTaskMessage = "toodo-open-task";
+
+/** The message the service worker sends an open page when a chat notification is clicked. */
+const openChatMessage = "toodo-open-chat";
+
+/**
+ * Calls `open` each time a clicked chat notification asks an open page to show the chat. A page
+ * the service worker opens gets `?chat` in its address instead. Returns the function that stops
+ * listening.
+ */
+export function listenForOpenChat(open: () => void): () => void {
+  if (!("serviceWorker" in navigator)) {
+    return () => {};
+  }
+  const container = navigator.serviceWorker;
+  const onMessage = ({ data }: MessageEvent<unknown>) => {
+    if (typeof data === "object" && data !== null && "type" in data && data.type === openChatMessage) {
+      open();
+    }
+  };
+  container.addEventListener("message", onMessage);
+  return () => container.removeEventListener("message", onMessage);
+}
 
 /**
  * Calls `open` for each task a clicked notification asks for in the service worker's messages
