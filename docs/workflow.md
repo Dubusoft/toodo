@@ -6,8 +6,8 @@ along the way.
 Toodo is a tracker. It keeps the task DAG and the memory of the work: descriptions,
 notes, decisions, refs, and a timestamped status history. It doesn't run the work.
 Preparing a worktree, implementing, recording commits, opening a pull request, and
-noticing a merge all happen outside Toodo, done by the agent or person doing the work (an
-executor such as Dori, for example). That executor tells Toodo what happened by changing
+noticing a merge all happen outside Toodo, done by Dori, Toodo's executor (or by a person
+or another agent doing the work). That executor tells Toodo what happened by changing
 the task status through MCP or the web app.
 
 ## Task States

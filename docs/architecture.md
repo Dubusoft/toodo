@@ -9,9 +9,10 @@ it's always clear what can start now and what waits on what. And it keeps the wo
 memory of every task: what it's for, what was decided, what blocked it, why it started,
 paused, or ended, and when each of those happened.
 
-Executing the work isn't Toodo's job. Worktrees, branches, coding agents, pull requests,
-CI, and merges happen outside Toodo, run by the agent or person doing the work (an
-executor such as Dori, or a developer at a terminal). That executor writes the results
+Executing the work is the job of Dori, Toodo's executor, which ships in this repository
+(`dori/`) and is the agent the chat names by default. Worktrees, branches, coding agents,
+pull requests, CI, and merges happen outside the Toodo server, run by Dori (or by a
+person or another agent doing the work). That executor writes the results
 into Toodo through MCP or the web app: it starts the task, adds notes, moves the task to
 review, and completes or concludes it. The server runs no git, gh, ssh, or agent
 commands.

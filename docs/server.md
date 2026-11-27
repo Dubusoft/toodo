@@ -322,7 +322,7 @@ toodo-server
 | `TOODO_WEB_DIR` | none | Web build to serve; without it only the API and MCP are served |
 | `TOODO_PUBLIC_URL` | none | Public HTTPS origin, e.g. `https://toodo.example.com`; turns on OAuth for chat apps (see [Chat Apps over OAuth](#chat-apps-over-oauth)) |
 | `TOODO_PUSH_SUBJECT` | `https://github.com/Dubusoft/toodo` | Contact sent to push services with every notification, a `mailto:` or `https:` URL (see [Notifications](#notifications)) |
-| `TOODO_CHAT_AGENT_NAME` | `Agent` | Name the chat shows for the agent connected over MCP (see [Chat](#chat)) |
+| `TOODO_CHAT_AGENT_NAME` | `Dori` | Name the chat shows for the agent connected over MCP (see [Chat](#chat)) |
 | `TOODO_CHAT_AGENT_AVATAR` | none | Avatar of that agent: an `https:` URL, or a path on the server such as `/avatar.png` |
 
 On first start the data directory gets two access tokens:
@@ -573,9 +573,10 @@ shares with the `initialize` instructions come from `src-tauri/src/mcp/shared/` 
 
 The web app has a chat with the agent connected over MCP: the round button at the bottom
 right opens it, and shows how many of the agent's messages are unread in every channel.
-Toodo does not run the agent; any agent with the `mcp-token` can take the chat's messages
-and answer them. The chat shows the agent under the name and avatar of
-`TOODO_CHAT_AGENT_NAME` and `TOODO_CHAT_AGENT_AVATAR`.
+The chat's agent is Dori by default: the chat shows it under the name and avatar of
+`TOODO_CHAT_AGENT_NAME` (default `Dori`) and `TOODO_CHAT_AGENT_AVATAR`. The server does not
+run the agent itself; Dori, or any other agent with the `mcp-token`, takes the chat's
+messages and answers them.
 
 **Channels and threads.** The chat has channels, starting with `#general` (channel 1,
 which holds the messages of versions before channels), and threads under each channel.

@@ -7,8 +7,10 @@ keeps the memory of the work: notes, decisions, references, and a timeline of wh
 each task was planned, started, reviewed, and completed, so the year's work can be
 compiled into a performance report.
 
-Toodo does not run the work. Whoever does it, a person or an executor such as Dori that
-creates worktrees, runs agents, and opens pull requests, records the outcome in Toodo.
+Toodo's executor is Dori, which lives in this repository (`dori/`) and is the agent the
+chat names by default: it creates worktrees, runs coding agents, opens pull requests, and
+records the outcome in Toodo. The Toodo server itself runs none of that work, and a person
+or another agent records their work over MCP the same way.
 
 ## Features
 
