@@ -8,6 +8,7 @@ import { laneOps } from "../src/lane-ops.ts";
 import { ackLaneMessage, openLaneMessages } from "../src/lane-messages.ts";
 import { openOperations, operationId, plan, settleOperation } from "../src/operations.ts";
 import { decisionTargetOf, DECISIONS_FILE, readDecisions } from "../src/decision-store.ts";
+import { queueDecisionAnswer } from "../src/decision-delivery.ts";
 import { relayDecisionClose, relayLine, retryDecisionRelays } from "../src/decision-relay.ts";
 import { sendToLane } from "../src/lane-send.ts";
 import { answeredLine, ownerDecisionTick, type TickDeps } from "../src/owner-decisions.ts";
@@ -395,14 +396,31 @@ test("OWNER_DECISION_ANSWERED says the same thing for a lane's decision and requ
   expect(tail(decision)).toContain("types --text into lane demo-lane");
 });
 
-/** decisions.json holding lane decision d1 whose answer r1 (decision-d1-r1) is queued for `target`. */
-const queuedAnswer = (stateDir: string, target: ReturnType<typeof decisionTargetOf>): void => {
-  const revision = { rev: 1, channel: "1000", message: "m1", edit: 0, hash: "h", choice: 1, target, at: T0, delivery: { id: "decision-d1-r1", state: "queued", updatedAt: T0 } };
+/** decisions.json holding lane decision d1 whose answer r1 (decision-d1-r1) is queued (or only intended) for `target`. */
+const queuedAnswer = (stateDir: string, target: ReturnType<typeof decisionTargetOf>, state: "queued" | "intended" = "queued"): void => {
+  const revision = { rev: 1, channel: "1000", message: "m1", edit: 0, hash: "h", choice: 1, target, at: T0, delivery: { id: "decision-d1-r1", state, updatedAt: T0 } };
   writeFileSync(join(stateDir, DECISIONS_FILE), JSON.stringify({ nextSeq: 2, decisions: [{
     id: "d1", state: "open", source: "lane", lane: lane.key, channel: "555", thread: "1000", question: "Which?", options: ["a", "b"], recommend: 1,
     reason: "r", waiting: "w", blocking: true, openedAt: T0, target, revisions: [revision],
   }] }));
 };
+
+test("a direct decision answer reaches a lane that kept working after it asked, but never while the lane shows a question prompt", async () => {
+  const t = await setup();
+  t.world.panes = [{ ...idle, agent_status: "working" }];
+  queuedAnswer(t.deps.config.stateDir, decisionTargetOf(lane), "intended");
+  expect(queueDecisionAnswer(t.deps.config.stateDir, t.messages, "d1", T0).kind).toBe("queued");
+  t.control.pane = "asking";
+  await t.pass();
+  expect(t.messages.get("decision-d1-r1")?.state).toBe("queued");
+  expect(t.typed).toEqual([]);
+
+  t.control.pane = "take";
+  t.clock.at += MIN;
+  await t.pass();
+  expect(t.messages.get("decision-d1-r1")?.state).toBe("delivered");
+  expect(t.typed).toEqual(["[dori] Owner answered d1 (Which?): 1. a. Revision r1. Confirm with: dori report ack decision-d1-r1"]);
+});
 
 test("a direct decision answer is typed only into the lane session that asked; a relaunched lane's copy is superseded untyped", async () => {
   const t = await setup();

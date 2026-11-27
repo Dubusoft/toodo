@@ -348,7 +348,7 @@ test("a bare number answering a lane's only open question in its thread goes to 
   expect(readDecisions(w.dir).decisions[0]?.answers?.map((a) => a.message)).toBeUndefined();
 });
 
-test("d<ID>=<N> answers from any watched channel; a bare number with several open questions needs a reply; out of range, lead, request and relaunched-lane decisions go to the lead", async () => {
+test("d<ID>=<N> answers from any watched channel; a bare number with several open questions needs a reply unless only one still waits on the owner; out of range, lead, request and relaunched-lane decisions go to the lead", async () => {
   const w = decisionWorld();
   const a = await w.ask("ap-1-1");
   const b = await w.ask("ap-2-1");
@@ -365,10 +365,13 @@ test("d<ID>=<N> answers from any watched channel; a bare number with several ope
   await w.say(a.thread ?? "", "67", "1");
   expect(w.kinds()).toEqual(["DECISION_ANSWER_DIRECT ap-2-1", "INBOUND 100", "INBOUND 100", "INBOUND 100", "INBOUND 100", "INBOUND 100", `INBOUND ${a.thread}`]);
   expect(w.queue()).toEqual(["decision-d2-r1:queued"]);
-  // Two open questions in one thread: a bare number names one only as a Discord reply to that question's message.
+  // Two open questions in one thread: a bare number names one as a Discord reply to that question's message, else only
+  // the one still waiting on the owner (b's answer is already on its way to its lane).
   const [x, y] = readDecisions(w.dir).decisions.filter((d) => d.id === a.id || d.id === b.id).map((d) => ({ ...d, thread: "777" }));
   if (!x || !y) throw new Error("decisions missing");
-  expect(answeredDecision([x, y], "777", { choice: 1 })).toBeUndefined();
+  const { revisions: _sent, ...unanswered } = y;
+  expect(answeredDecision([x, unanswered], "777", { choice: 1 })).toBeUndefined();
+  expect(answeredDecision([x, y], "777", { choice: 1 })?.id).toBe(a.id);
   expect(answeredDecision([x, y], "777", { choice: 1 }, y.message)?.id).toBe(b.id);
   expect(parseDiscordMessage({ id: "70", author: { username: "Owner" }, content: "1", attachments: [], message_reference: { message_id: "77" } }).replyTo).toBe("77");
 });

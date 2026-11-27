@@ -117,6 +117,28 @@ test("pressing button 2 on the card sends the answer straight to the lane and ta
   expect(w.decision(d.id)?.revisions?.map((r) => `r${r.rev}:${r.choice}`)).toEqual(["r1:2"]);
 });
 
+test("with two cards in one thread, a bare number answers the one still waiting on the owner once the other was answered by its button", async () => {
+  const w = world();
+  await w.ask("ap-1731-1", 1731);
+  await w.ask("ap-1731-1", 1731, serializeDecisionText({ ...choices, question: "Which name?" }));
+  await w.tick();
+  const [first, second] = w.toodo.posts;
+  expect([first?.threadId, second?.threadId]).toEqual([1, 1]);
+  // Both wait on the owner: a bare number names neither.
+  expect(await w.route(w.say(1, "3"))).toBe("lead");
+
+  const v = world();
+  await v.ask("ap-1731-1", 1731);
+  await v.ask("ap-1731-1", 1731, serializeDecisionText({ ...choices, question: "Which name?" }));
+  await v.tick();
+  const card = v.toodo.posts[0]!;
+  expect(await v.route(v.say(1, "2. Replace", { message: card.id, key: "d1:2" }))).toBe("direct");
+  expect(await v.route(v.say(1, "1"))).toBe("direct");
+  expect(v.store.get("decision-d2-r1")?.text).toStartWith("[dori] Owner answered d2 (Which name?): 1. Keep. Revision r1.");
+  expect(v.decision("d1")?.revisions?.map((r) => `r${r.rev}:${r.choice}`)).toEqual(["r1:2"]);
+  expect(v.emitted.filter((l) => l.startsWith("OWNER_DECISION_ANSWERED"))).toEqual([]);
+});
+
 test("a reply on the card: a bare number answers the lane directly, any other text is the lead's answer and stays INBOUND", async () => {
   const w = world();
   await w.ask("ap-1731-1", 1731);
