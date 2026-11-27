@@ -613,8 +613,8 @@ export const runnerChecks = (d: Pick<DoctorDeps, "config" | "clock" | "home" | "
     const id = `runner ${row.label}`;
     const problems: string[] = [];
     if (row.proto !== undefined && row.proto !== PROTO && row.proto !== MIN_PROTO) problems.push(`proto ${row.proto} is not ${PROTO} or ${MIN_PROTO}`);
-    // Proto 10 adds toodo.read: the previous proto still runs lanes and secrets but its lanes cannot read Toodo.
-    else if (row.proto === MIN_PROTO) problems.push(`proto ${row.proto} gives its lanes no dori toodo reads (they need proto ${PROTO})`);
+    // Proto 11 adds the heartbeat's cmdAck: the previous proto still runs everything but its pending commands move only at hellos.
+    else if (row.proto === MIN_PROTO) problems.push(`proto ${row.proto} reports its pending commands only at hello (a heartbeat cmdAck needs proto ${PROTO})`);
     if (row.outbox && (row.outbox.unacked >= OUTBOX_LARGE_ROWS || row.outbox.oldestAgeMs >= OUTBOX_LARGE_AGE_MS)) problems.push(`outbox ${row.outbox.unacked} unacked, oldest ${Math.floor(row.outbox.oldestAgeMs / 3_600_000)} h`);
     if (restarts(row.label) >= RESTART_CIRCUIT_MAX) problems.push(`restart circuit open (${restarts(row.label)} restarts in the last hour)`);
     checks.push(problems.length

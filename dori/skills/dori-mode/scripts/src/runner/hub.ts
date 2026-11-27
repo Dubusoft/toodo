@@ -60,7 +60,7 @@ export type RunnerRow = {
   readonly cmdSeq: number;
   /** The highest gen this runner has said hello with. */
   readonly maxGen: number;
-  /** The runner's cmdAck from its last hello or cmd.result. */
+  /** The runner's cmdAck from its last hello or heartbeat. */
   readonly cmdAck: number;
   readonly proto?: number;
   readonly version?: string;
@@ -344,7 +344,7 @@ export class RunnerHub {
     return make("committed", frame.seq);
   }
 
-  /** Records a heartbeat at `monotonic()` and its outbox figures (in memory only). */
+  /** Records a heartbeat at `monotonic()` with its outbox figures, and persists its `cmdAck` when it carries one. */
   heartbeat(frame: RunnerControl<"heartbeat">): void {
     const at = this.deps.monotonic();
     const previous = this.live.get(frame.runner);
@@ -360,6 +360,7 @@ export class RunnerHub {
         ? "UPDATE runners SET lastHeartbeatAt = ?, outboxUnacked = ?, outboxOldestAgeMs = ? WHERE label = ?"
         : "UPDATE runners SET lastHeartbeatAt = ? WHERE label = ?",
     ).run(...(outbox ? [this.deps.now(), outbox.unacked, outbox.oldestAgeMs, frame.runner] : [this.deps.now(), frame.runner]));
+    if (frame.body.cmdAck !== undefined) this.db.query("UPDATE runners SET cmdAck = ? WHERE label = ?").run(frame.body.cmdAck, frame.runner);
   }
 
   /** Dispatches any runner frame and returns the reply to send, if one is due. */

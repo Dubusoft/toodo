@@ -123,21 +123,31 @@ describe("commands", () => {
 });
 
 describe("cmdAck", () => {
-  test("is the max contiguous cmdSeq with a final row; a gap stops it", () => {
+  test("stops below the lowest intent; a cmdSeq that never arrived does not stop it", () => {
     const a = make();
     for (const seq of [1, 2, 3, 5]) a.recordIntent(intent(seq));
     a.recordResult("op-1", "verified", "");
     a.recordResult("op-2", "failed", "");
     expect(a.cmdAck()).toBe(2);
-    // 5 is final but 3 (intent) and 4 (never seen) are in the way
+    // 5 is final but 3 is still at intent
     a.recordResult("op-5", "ambiguous", "");
     expect(a.cmdAck()).toBe(2);
+    // 4 never arrived and never will, since 5 came after it
     a.recordResult("op-3", "verified", "");
-    expect(a.cmdAck()).toBe(3);
-    a.recordIntent(intent(4));
-    expect(a.cmdAck()).toBe(3);
-    a.recordResult("op-4", "verified", "");
     expect(a.cmdAck()).toBe(5);
+    a.close();
+    expect(make().cmdAck()).toBe(5);
+  });
+
+  test("a cmdId sent again under a new cmdSeq records no row for it and does not hold the cursor back", () => {
+    const a = make();
+    a.recordIntent(intent(1));
+    a.recordResult("op-1", "verified", "");
+    expect(a.recordIntent(intent(2, { cmdId: "op-1" })).fresh).toBe(false);
+    a.recordIntent(intent(3));
+    a.recordResult("op-3", "verified", "");
+    expect(a.command("op-1")?.cmdSeq).toBe(1);
+    expect(a.cmdAck()).toBe(3);
   });
 
   test("an intent without a result does not advance it, even when later seqs are final", () => {

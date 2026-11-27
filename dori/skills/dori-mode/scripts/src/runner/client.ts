@@ -397,12 +397,15 @@ export class RunnerClient {
     this.transport?.close("rehello");
   }
 
-  /** Sends a heartbeat with the outbox figures when connected (the serve loop calls it every `HEARTBEAT_MS`). */
+  /**
+   * Sends a heartbeat with the outbox figures and `cmdAck` when connected (the serve loop calls it every `HEARTBEAT_MS`).
+   * Only a supervisor at this proto or later admits this runner, so every one that does reads `cmdAck`.
+   */
   heartbeat(): void {
     if (!this.connected) return;
     const stats = this.deps.outbox.stats();
     const outbox = { unacked: stats.unacked, oldestAgeMs: stats.oldestUnackedAt === undefined ? 0 : Math.max(0, this.deps.clock.now() - stats.oldestUnackedAt) };
-    this.sendFrame(runnerControl(this.head(), "heartbeat", { outbox }));
+    this.sendFrame(runnerControl(this.head(), "heartbeat", { outbox, cmdAck: this.deps.state.cmdAck() }));
   }
 
   /** Handles one received line: `hello.ok`, `hello.reject`, `ack`, `cmd.status` or a command. */

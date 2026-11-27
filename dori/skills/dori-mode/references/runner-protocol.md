@@ -35,7 +35,7 @@ frame closes the connection without an ack.
 Control frames, used in this release:
 
 - Runner to supervisor: `enroll`, `hello {proto, gen, label, hostId, cmdAck, version?, inventory?, workspaces?, detected?, worktreeRoot?, nonce, dh}`,
-  `auth.proof {sig}`, `runner.rotated {cmdId, runnerPubKey, sig}`, `heartbeat {outbox?: {unacked, oldestAgeMs}}`,
+  `auth.proof {sig}`, `runner.rotated {cmdId, runnerPubKey, sig}`, `heartbeat {outbox?: {unacked, oldestAgeMs}, cmdAck?}`,
   `cmd.status.result {cmdId, state, detail?}`, `q.result {qid, ok, detail, result?}` (protocol 3, see [Queries](#queries)),
   `secret.get {rid, key, names, repo?}` and `secret.run {rid, key, op, repo?}` (protocol 6, see [Secrets](#secrets-over-the-link)),
   `toodo.read {rid, key, op, id?, query?}` (protocol 10, see [Toodo reads](#toodo-reads-over-the-link)).
@@ -363,8 +363,12 @@ There are two cursors, each owned by the side that commits it.
 
 - `eventAck` (supervisor): the highest runner `seq` committed to the hub's journal. It's persisted per label in
   `runners.sqlite` and sent in `hello.ok` and every `ack`.
-- `cmdAck` (runner): the highest `cmdSeq` such that every command from 1 up to it has a final result row. It's
-  persisted in the runner's `state.sqlite` and sent in `hello`. No commands flow yet, so it stays 0.
+- `cmdAck` (runner): the highest `cmdSeq` such that no command up to it is still at intent. A `cmdSeq` below the
+  highest one recorded that has no row never arrives later (commands come in `cmdSeq` order on one connection at a
+  time, and each row is recorded as its frame is read), so it does not hold the cursor back: a cmdId sent again under
+  a new `cmdSeq`, a frame dropped before it was recorded, or one lost with its connection. It's persisted in the
+  runner's `state.sqlite` and sent in `hello` and, since proto 11, in every heartbeat; `dori status` shows
+  `cmdSeq - cmdAck` as the runner's pending commands.
 
 The rule is commit before ack. The runner appends each event to its outbox and only sends it once the row is
 committed. When the hub receives `seq`:
@@ -399,7 +403,8 @@ Runner events land in the hub's own `runner_events` table, never in the lead's j
 - `RUNNER_OUTBOX_LARGE unacked=<n> oldestAgeMs=<n>` flags an outbox with 100,000 or more unacked rows or an oldest
   unacked row over 24 hours old.
 
-The heartbeat carries the outbox backlog so `dori status` can show it.
+The heartbeat carries the outbox backlog so `dori status` can show it, and since proto 11 the runner's `cmdAck`, so
+its pending command count stays current between hellos.
 
 ## Runner directory
 
@@ -773,17 +778,17 @@ in the schema and bump `PROTO`. The hub accepts runners at its own protocol vers
 so a supervisor can be upgraded before its runners. An older runner never sends the new field, and code reading it
 must handle its absence. On disk, new hub columns are added with `ALTER TABLE` and read back as optional.
 
-The current protocol is 10, so a supervisor accepts runners at 10 and 9 (`checkProto`). Any other runner is refused at
-hello with `RUNNER_PROTO_MISMATCH`: one at 8 or below as too old (`dori runner update` upgrades it), one at 11 or
-above as newer than the supervisor. Protocol 10 adds `toodo.read` / `toodo.read.result`; a proto 9 runner still
-runs lanes and secrets while `dori doctor` warns that its lanes get no `dori toodo` reads. Protocol 9 added
+The current protocol is 11, so a supervisor accepts runners at 11 and 10 (`checkProto`). Any other runner is refused at
+hello with `RUNNER_PROTO_MISMATCH`: one at 9 or below as too old (`dori runner update` upgrades it), one at 12 or
+above as newer than the supervisor. Protocol 11 adds `cmdAck` to the heartbeat; a proto 10 runner sends none, so its
+pending command count moves only at its hellos. Protocol 10 added `toodo.read` / `toodo.read.result`. Protocol 9 added
 `lanes.closed` / `lanes.closed.result` (the cleanup sweep's closed lanes). Protocol 8 added `secret.put` (since
 removed; the protocol number stays).
 
-**Upgrade the supervisor before its runners**: a proto 9 runner still connects to a proto 10 supervisor, but a proto 10
-runner is refused by a proto 9 supervisor (`RUNNER_PROTO_MISMATCH`, newer than the supervisor). Bring every runner
-to the supervisor's version before the next bump: a supervisor at protocol 11 would accept 11 and 10 and refuse a
-runner still at 9.
+**Upgrade the supervisor before its runners**: a proto 10 runner still connects to a proto 11 supervisor, but a proto 11
+runner is refused by a proto 10 supervisor (`RUNNER_PROTO_MISMATCH`, newer than the supervisor). Bring every runner
+to the supervisor's version before the next bump: a supervisor at protocol 12 would accept 12 and 11 and refuse a
+runner still at 10.
 
 Historical note (runners below protocol 8 can no longer connect): protocol 3 added the queries, the `cmd.result`
 `result` and the other protocol 3 fields above, and the runner's `state.sqlite` gained the nullable
