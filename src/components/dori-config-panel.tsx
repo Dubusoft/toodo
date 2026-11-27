@@ -12,18 +12,16 @@ import {
   type DoriConfigSaved,
   type DoriConfigView,
 } from "@/lib/dori-config";
+import { doriConfigKey, fill, useMessages } from "@/lib/i18n";
+import type { Messages } from "@/locales/en";
 import { fetchDoriConfig, saveDoriConfig } from "@/web/dori-config";
 
-const doriConfigKey = ["dori-config"];
-
 /** The languages Dori also writes its fixed lines in; any other name still works as free text. */
-const LANGUAGES = ["Korean", "English", "Japanese", "Chinese"];
+const LANGUAGES = ["Korean", "English", "Japanese", "Chinese"] as const;
 const UNSET = "";
 
-function savedNotice(saved: DoriConfigSaved): string {
-  return saved.restart
-    ? "Saved. The supervisor takes this key after a restart (toodo service restart)."
-    : "Saved. Dori applies it now, without a restart.";
+function savedNotice(saved: DoriConfigSaved, m: Messages): string {
+  return saved.restart ? m.settings.savedAfterRestart : m.settings.savedNow;
 }
 
 function useSave(onSaved: (saved: DoriConfigSaved) => void) {
@@ -38,17 +36,20 @@ function useSave(onSaved: (saved: DoriConfigSaved) => void) {
 }
 
 function LanguageSetting({ entry }: { entry: DoriConfigEntry }) {
+  const m = useMessages();
   const [notice, setNotice] = useState<string | null>(null);
-  const save = useSave((saved) => setNotice(savedNotice(saved)));
+  const save = useSave((saved) => setNotice(savedNotice(saved, m)));
+  const known: readonly string[] = LANGUAGES;
   const options = [
-    { value: UNSET, label: "Not set (the language of each message)" },
-    ...[...LANGUAGES, ...(entry.value && !LANGUAGES.includes(entry.value) ? [entry.value] : [])].map((l) => ({ value: l, label: l })),
+    { value: UNSET, label: m.settings.languageUnset },
+    ...LANGUAGES.map((l) => ({ value: l, label: m.settings.languageNames[l] })),
+    ...(entry.value && !known.includes(entry.value) ? [{ value: entry.value, label: entry.value }] : []),
   ];
   return (
     <div className="flex flex-col gap-1">
       <Selector
-        label="Language"
-        description="Dori writes every reply, report and question to you in this language, and so do its lanes."
+        label={m.settings.language}
+        description={m.settings.languageDescription}
         options={options}
         value={entry.value}
         isDisabled={save.isPending || entry.access !== "edit"}
@@ -63,15 +64,26 @@ function LanguageSetting({ entry }: { entry: DoriConfigEntry }) {
   );
 }
 
-function hint(entry: DoriConfigEntry): string {
-  if (entry.kind === "list") return "Comma separated, or a JSON array.";
-  if (entry.kind === "json") return "JSON.";
-  if (entry.kind === "enum") return `One of ${entry.values?.join(", ")}.`;
-  if (entry.kind === "bool") return "true or false.";
+function hint(entry: DoriConfigEntry, m: Messages): string {
+  if (entry.kind === "list") return m.settings.hintList;
+  if (entry.kind === "json") return m.settings.hintJson;
+  if (entry.kind === "enum") return m.settings.hintEnum(entry.values?.join(", ") ?? "");
+  if (entry.kind === "bool") return m.settings.hintBool;
   return "";
 }
 
+/**
+ * The Language setting of the General section: the language of the app's screens and of what Dori
+ * writes to its owner. A server without Dori has no such setting, so nothing shows.
+ */
+export function LanguageSettingField() {
+  const config = useQuery({ queryKey: doriConfigKey, queryFn: fetchDoriConfig, retry: false, staleTime: Infinity });
+  const language = config.data?.entries.find((e) => e.key === DORI_LANGUAGE_KEY);
+  return language ? <LanguageSetting entry={language} /> : null;
+}
+
 function EntryRow({ entry }: { entry: DoriConfigEntry }) {
+  const m = useMessages();
   const [draft, setDraft] = useState(entry.value);
   const [base, setBase] = useState(entry.value);
   const [notice, setNotice] = useState<string | null>(null);
@@ -80,11 +92,11 @@ function EntryRow({ entry }: { entry: DoriConfigEntry }) {
     setBase(entry.value);
     setDraft(entry.value);
   }
-  const save = useSave((saved) => setNotice(savedNotice(saved)));
+  const save = useSave((saved) => setNotice(savedNotice(saved, m)));
   const editable = entry.access === "edit";
   const changed = draft !== entry.value;
   const describe = /[.)]$/.test(entry.describe) ? entry.describe : `${entry.describe}.`;
-  const description = [describe, editable ? hint(entry) : "Changed only on the host."].filter(Boolean).join(" ");
+  const description = [describe, editable ? hint(entry, m) : m.settings.hostOnly].filter(Boolean).join(" ");
   const field = { label: entry.key, description, value: draft, isReadOnly: !editable, isRequired: entry.required };
   const onChange = (value: string) => {
     setDraft(value);
@@ -94,9 +106,9 @@ function EntryRow({ entry }: { entry: DoriConfigEntry }) {
   return (
     <li aria-label={`Config ${entry.key}`} className="flex flex-col gap-1 border-b pb-3 last:border-b-0">
       <div className="flex flex-wrap gap-1">
-        {entry.access === "masked" && <Badge variant="warning" label="Hidden" />}
-        {entry.access === "readOnly" && <Badge label="Read-only" />}
-        {entry.restart && <Badge variant="info" label="Restart to apply" />}
+        {entry.access === "masked" && <Badge variant="warning" label={m.settings.hidden} />}
+        {entry.access === "readOnly" && <Badge label={m.settings.readOnly} />}
+        {entry.restart && <Badge variant="info" label={m.settings.restartToApply} />}
       </div>
       {entry.kind === "json" ? <TextArea {...field} onChange={onChange} /> : <TextInput {...field} size="sm" onChange={onChange} />}
       {editable && changed && (
@@ -105,14 +117,14 @@ function EntryRow({ entry }: { entry: DoriConfigEntry }) {
             changesData
             size="sm"
             variant="primary"
-            label={`Save ${entry.key}`}
+            label={m.settings.saveKey(entry.key)}
             isDisabled={save.isPending}
             onClick={() => save.mutate({ key: entry.key, value: draft })}
           >
-            Save
+            {m.common.save}
           </Button>
-          <Button size="sm" variant="ghost" label={`Revert ${entry.key}`} onClick={() => onChange(entry.value)}>
-            Revert
+          <Button size="sm" variant="ghost" label={m.settings.revertKey(entry.key)} onClick={() => onChange(entry.value)}>
+            {m.settings.revert}
           </Button>
         </div>
       )}
@@ -123,25 +135,23 @@ function EntryRow({ entry }: { entry: DoriConfigEntry }) {
 }
 
 /**
- * The Dori config of the server's host (`~/.dori/config.json`): the Language setting first, then
- * every key Dori reads. It asks the server only while shown (`active`).
+ * The Dori config of the server's host (`~/.dori/config.json`): every key Dori reads but the
+ * language, which the General section sets. It asks the server only while shown (`active`).
  */
 export function DoriConfigPanel({ active }: { active: boolean }) {
+  const m = useMessages();
   const config = useQuery({ queryKey: doriConfigKey, queryFn: fetchDoriConfig, enabled: active });
   const view = config.data;
-  const language = view?.entries.find((e) => e.key === DORI_LANGUAGE_KEY);
   return (
     <section aria-label="Dori config" className="flex flex-col gap-4 text-sm">
       {config.error && <p role="alert" className="break-words text-destructive">{config.error.message}</p>}
       {view && (
         <>
           <p className="text-muted-foreground">
-            <code className="break-all">{view.path}</code> on the server's host. Secrets stay in <code>~/.dori/env</code> and
-            are never shown here.
+            {fill(m.settings.configFile, { path: <code className="break-all">{view.path}</code>, env: <code>~/.dori/env</code> })}
           </p>
           {view.error && <p role="alert" className="break-words text-destructive">{view.error}</p>}
-          {!view.present && <p role="alert">The file does not exist yet; run <code>dori setup</code> on the host first.</p>}
-          {language && <LanguageSetting entry={language} />}
+          {!view.present && <p role="alert">{fill(m.settings.configMissing, { command: <code>dori setup</code> })}</p>}
           <ul aria-label="Dori config keys" className="flex flex-col gap-3">
             {view.entries
               .filter((e) => e.key !== DORI_LANGUAGE_KEY)

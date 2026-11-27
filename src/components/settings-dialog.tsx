@@ -6,7 +6,7 @@ import { ArchivePanel } from "@/components/archive-panel";
 import { BackupPanel, BackupStatusLabel } from "@/components/backup-panel";
 import { ConnectedAppsPanel } from "@/components/connected-apps-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
-import { DoriConfigPanel } from "@/components/dori-config-panel";
+import { DoriConfigPanel, LanguageSettingField } from "@/components/dori-config-panel";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
 import { SchedulesPanel } from "@/components/schedules-panel";
@@ -14,6 +14,8 @@ import { SupervisorStatusPanel } from "@/components/supervisor-status-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { IconButton } from "@/components/button";
 import { commands } from "@/lib/bindings";
+import { fill, useMessages } from "@/lib/i18n";
+import { en, type Messages } from "@/locales/en";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { useNarrow } from "@/lib/narrow";
 import { cn } from "@/lib/utils";
@@ -32,25 +34,27 @@ export type SettingsSection =
 
 type Section = {
   id: SettingsSection;
-  label: string;
   icon: ReactNode;
   status?: ReactNode;
 };
 
 const sections: Section[] = [
-  { id: "general", label: "General", icon: <SlidersHorizontal /> },
-  { id: "agents", label: "Agent access", icon: <Bot /> },
-  { id: "dori", label: "Dori status", icon: <Activity /> },
-  { id: "schedules", label: "Scheduled jobs", icon: <CalendarClock /> },
-  { id: "dori-config", label: "Dori config", icon: <FileCog /> },
-  { id: "apps", label: "Connected apps", icon: <Plug /> },
-  { id: "devices", label: "Devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
-  { id: "notifications", label: "Notifications", icon: <Bell />, status: <NotificationsStatus /> },
-  { id: "backups", label: "Backups", icon: <DatabaseBackup />, status: <BackupStatusLabel /> },
-  { id: "archive", label: "Archive", icon: <Archive /> },
+  { id: "general", icon: <SlidersHorizontal /> },
+  { id: "agents", icon: <Bot /> },
+  { id: "dori", icon: <Activity /> },
+  { id: "schedules", icon: <CalendarClock /> },
+  { id: "dori-config", icon: <FileCog /> },
+  { id: "apps", icon: <Plug /> },
+  { id: "devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
+  { id: "notifications", icon: <Bell />, status: <NotificationsStatus /> },
+  { id: "backups", icon: <DatabaseBackup />, status: <BackupStatusLabel /> },
+  { id: "archive", icon: <Archive /> },
 ];
 
+const sectionLabel = (id: SettingsSection, m: Messages) => m.settings.sections[id];
+
 function GeneralSettings() {
+  const m = useMessages();
   const appInfo = useQuery({ queryKey: ["app-info"], queryFn: () => commands.appInfo() });
   // The server asks the npm registry; once in a while is enough.
   const update = useQuery({
@@ -59,23 +63,27 @@ function GeneralSettings() {
     staleTime: 6 * 60 * 60 * 1000,
   });
   return (
-    <section aria-label="General" className="flex flex-col gap-5 text-sm">
+    <section aria-label={m.settings.sections.general} className="flex flex-col gap-5 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-medium">Theme</span>
+        <span className="font-medium">{m.settings.theme}</span>
         <ThemeToggle />
       </div>
+      <LanguageSettingField />
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="font-medium">Version</span>
+        <span className="font-medium">{m.settings.version}</span>
         <span className="ml-auto text-muted-foreground">
-          {appInfo.data ? `v${appInfo.data.version}` : "Connecting to backend..."}
+          {appInfo.data ? `v${appInfo.data.version}` : m.settings.connecting}
         </span>
         {update.data?.newer && (
           <p role="status" className="w-full text-muted-foreground">
-            v{update.data.latest} is available on the {update.data.channel} channel. Update the server with{" "}
-            <code>toodo update</code>.
+            {fill(m.settings.updateAvailable, {
+              version: `v${update.data.latest}`,
+              channel: update.data.channel,
+              command: <code>toodo update</code>,
+            })}
           </p>
         )}
-        {update.data?.error && <p className="w-full text-muted-foreground">Update check: {update.data.error}</p>}
+        {update.data?.error && <p className="w-full text-muted-foreground">{m.settings.updateCheckFailed(update.data.error)}</p>}
       </div>
     </section>
   );
@@ -103,6 +111,7 @@ export function SettingsDialog({
   onClose: () => void;
   returnFocus: () => HTMLElement | null | undefined;
 }) {
+  const m = useMessages();
   const dialog = useRef<HTMLDivElement>(null);
   const contentHeading = useRef<HTMLHeadingElement>(null);
   // Null shows the list below `md`.
@@ -200,18 +209,18 @@ export function SettingsDialog({
         >
           <div className="flex items-center gap-2 px-1">
             <h2 id="settings-title" className="text-lg font-semibold tracking-tight md:text-base">
-              Settings
+              {m.settings.title}
             </h2>
             <IconButton
               variant="ghost"
               size="sm"
               className="ml-auto md:hidden"
-              label="Close settings"
+              label={m.settings.close}
               icon={<X />}
               onClick={() => onClose()}
             />
           </div>
-          <div role="tablist" aria-orientation="vertical" aria-label="Settings sections" className="flex flex-col gap-0.5" onKeyDown={onTabKeyDown}>
+          <div role="tablist" aria-orientation="vertical" aria-label={m.settings.sectionsLabel} className="flex flex-col gap-0.5" onKeyDown={onTabKeyDown}>
             {sections.map((item) => {
               const selected = item.id === shown;
               return (
@@ -230,7 +239,7 @@ export function SettingsDialog({
                   )}
                 >
                   {item.icon}
-                  <span>{item.label}</span>
+                  <span>{sectionLabel(item.id, m)}</span>
                   {item.status && <span className="ml-auto text-xs text-muted-foreground">{item.status}</span>}
                   <ChevronRight aria-hidden className={cn("md:hidden", !item.status && "ml-auto")} />
                 </button>
@@ -244,19 +253,19 @@ export function SettingsDialog({
               variant="ghost"
               size="sm"
               className="md:hidden"
-              label="Back to settings"
+              label={m.settings.back}
               icon={<ChevronLeft />}
               onClick={back}
             />
             <h3 ref={contentHeading} tabIndex={-1} className="text-base font-semibold outline-none">
-              {current.label}
+              {sectionLabel(current.id, m)}
             </h3>
             <IconButton
               variant="ghost"
               size="sm"
               className="ml-auto"
-              label="Close settings"
-              tooltip="Close settings (Esc)"
+              label={m.settings.close}
+              tooltip={m.settings.closeTooltip}
               icon={<X />}
               onClick={() => onClose()}
             />
@@ -270,7 +279,7 @@ export function SettingsDialog({
                 aria-labelledby={tabId(item.id)}
                 hidden={item.id !== shown}
               >
-                <ErrorBoundary label={`the ${item.label} settings`}>
+                <ErrorBoundary label={`the ${en.settings.sections[item.id]} settings`}>
                   {item.id === "general" ? (
                     <GeneralSettings />
                   ) : item.id === "dori" ? (

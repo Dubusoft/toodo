@@ -31,6 +31,7 @@ import { Button, IconButton } from "@/components/button";
 import { NewWorkspaceDialog, WorkspaceList } from "@/components/workspace-list";
 import type { Task, TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
+import { useLocaleFromSettings } from "@/lib/i18n";
 import { useServerEvents, useTasks, useWorkspaces } from "@/lib/queries";
 import { useNarrow } from "@/lib/narrow";
 import { useRoute, type Route } from "@/lib/route";
@@ -52,6 +53,7 @@ function searchField(): HTMLInputElement | null {
 export default function App() {
   const workspaces = useWorkspaces();
   useServerEvents();
+  useLocaleFromSettings();
   // A task to select on the All workspaces timeline, until the timeline shows it.
   const [shownTask, setShownTask] = useState<ShownTask | null>(null);
   // An address opened or returned to brings its task out on the timeline, as a shown task does.
