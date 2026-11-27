@@ -20,29 +20,12 @@
 }
 
 /*
- * While the chat is open it stays beside the rest of the app (`chat-panel.tsx`): from `md` up as a
- * column at the window's right edge, which the app makes room for (`--chat-dock`); on a phone it
- * fills the screen, or the lower half over a task's details sheet. From `xl` up the details sheet
- * then docks as a column of its own left of the chat (`--details-dock`), so the list, the details,
- * and the chat sit side by side; below `xl` it floats over the list, left of the chat.
+ * From `md` up the chat popup (`chat-panel.tsx`) and a task's details sheet (`details-sheet.tsx`)
+ * share the window: while the chat is open the details float at the left edge instead of the right,
+ * and the popup keeps to the room right of them (`--details-width`, set by the open sheet).
  */
 @custom-variant chat-open (&:where(body:has([data-chat][data-state="open"]) *));
 @custom-variant details-open (&:where(body:has([data-details-sheet]) *));
-
-:root {
-    --chat-dock: 0px;
-    --details-dock: 0px;
-}
-@media screen and (width >= 48rem) {
-    :root:has([data-chat][data-state="open"]) {
-        --chat-dock: 24rem;
-    }
-}
-@media screen and (width >= 80rem) {
-    :root:has([data-chat][data-state="open"]):has([data-details-sheet]) {
-        --details-dock: 26rem;
-    }
-}
 
 @theme inline {
     --font-heading: var(--font-sans);
@@ -99,12 +82,13 @@
         }
     }
     /*
-     * On a phone the chat window pops out of its floating button with a slight spring and shrinks
-     * back into it when it closes. Used only under `motion-safe`, so reduced-motion users get none
-     * of it.
+     * The chat window pops out of its floating button with a slight spring and shrinks back into
+     * it when it closes; the button's chat mark turns into a close mark while the chat is open.
+     * Used only under `motion-safe`, so reduced-motion users get none of it.
      */
     --animate-chat-in: chat-in var(--duration-medium) var(--ease-standard);
     --animate-chat-out: chat-out var(--duration-exit) var(--ease-exit) forwards;
+    --animate-chat-icon-turn: chat-icon-turn var(--duration-medium) var(--ease-entrance);
 
     @keyframes chat-in {
         from {
@@ -125,18 +109,11 @@
             scale: 0.2;
         }
     }
-    /* From `md` up the chat is a column at the window's edge, so it slides in from there instead. */
-    --animate-chat-dock-in: chat-dock-in var(--duration-medium) var(--ease-standard);
-    --animate-chat-dock-out: chat-dock-out var(--duration-exit) var(--ease-exit) forwards;
-
-    @keyframes chat-dock-in {
+    @keyframes chat-icon-turn {
         from {
-            translate: 100% 0;
-        }
-    }
-    @keyframes chat-dock-out {
-        to {
-            translate: 100% 0;
+            opacity: 0;
+            rotate: -90deg;
+            scale: 0.4;
         }
     }
 }

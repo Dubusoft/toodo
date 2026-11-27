@@ -13,9 +13,9 @@ export const detailsSheet = "[data-details-sheet]";
  * `width` wide. Below it, a bottom sheet sized to its content up to 90% of the screen, with a
  * grabber: dragging the grabber or the header down closes it.
  *
- * With the chat open it keeps clear of the chat (see `src/index.css`): from `md` up it floats left
- * of the docked chat, from `xl` up as a column of its own between the list and the chat, and on a
- * phone it fills the screen, with room at the end to scroll past the chat's bottom sheet.
+ * With the chat open it keeps clear of the chat (see `src/index.css`): from `md` up it moves to the
+ * window's left edge, and the chat popup narrows to the room right of it (`--details-width`). On a
+ * phone opening a task closes the chat, so the two never meet there.
  *
  * Opening it moves the focus to its heading, unless `takeFocus` is false; closing it returns
  * the focus to `returnFocus()`, or to what had it before, when the focus was in the sheet.
@@ -63,6 +63,14 @@ export function DetailsSheet({
     };
   }, []);
 
+  // The chat popup reads the sheet's width to stay clear of it.
+  useLayoutEffect(() => {
+    document.documentElement.style.setProperty("--details-width", width);
+    return () => {
+      document.documentElement.style.removeProperty("--details-width");
+    };
+  }, [width]);
+
   const dragHandlers = drag.handlers;
 
   return (
@@ -81,9 +89,7 @@ export function DetailsSheet({
       className={cn(
         "fixed z-40 flex flex-col overflow-hidden border bg-card shadow-xl",
         "max-md:inset-x-0 max-md:bottom-0 max-md:max-h-[90dvh] max-md:rounded-t-2xl max-md:border-b-0 max-md:pb-[env(safe-area-inset-bottom)] max-md:transition-transform max-md:data-dragging:transition-none motion-reduce:transition-none",
-        "max-md:chat-open:top-0 max-md:chat-open:max-h-none max-md:chat-open:rounded-none max-md:chat-open:border-x-0",
-        "md:inset-y-4 md:right-[calc(var(--chat-dock)+1rem)] md:w-[min(var(--sheet-width),calc(100vw-var(--chat-dock)-2rem))] md:rounded-xl",
-        "xl:chat-open:inset-y-0 xl:chat-open:right-(--chat-dock) xl:chat-open:w-(--details-dock) xl:chat-open:rounded-none xl:chat-open:border-y-0 xl:chat-open:border-r-0 xl:chat-open:shadow-none",
+        "md:inset-y-4 md:right-4 md:w-(--sheet-width) md:rounded-xl md:chat-open:right-auto md:chat-open:left-4",
       )}
       style={
         {
@@ -112,7 +118,7 @@ export function DetailsSheet({
         />
       </div>
       {banner}
-      <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain max-md:chat-open:pb-[50dvh]">
+      <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         <ErrorBoundary label="the task details" as="li" className="m-4">
           {children}
         </ErrorBoundary>

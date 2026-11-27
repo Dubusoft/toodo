@@ -32,6 +32,7 @@ import { NewWorkspaceDialog, WorkspaceList } from "@/components/workspace-list";
 import type { Task, TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { useServerEvents, useTasks, useWorkspaces } from "@/lib/queries";
+import { useNarrow } from "@/lib/narrow";
 import { useRoute, type Route } from "@/lib/route";
 import { isPaletteKey, singleKeyShortcut } from "@/lib/shortcuts";
 import { setThemePreference } from "@/lib/theme";
@@ -117,6 +118,7 @@ export default function App() {
   // The chat opens from its button, from a clicked chat notification, from a decision under Needs
   // attention, or at an address with `?chat`; the place named is shown until the chat takes it.
   const [chatOpen, setChatOpen] = useState(() => new URLSearchParams(location.search).has("chat"));
+  const narrow = useNarrow();
   const [chatTarget, setChatTarget] = useState<ChatTarget | null>(() => chatTargetAt(location.search));
   useEffect(
     () =>
@@ -238,8 +240,7 @@ export default function App() {
   };
 
   return (
-    // The open chat, and from xl up the task details beside it, dock at the right edge (see `src/index.css`).
-    <div className="flex h-dvh bg-background pr-[calc(var(--chat-dock)+var(--details-dock))] text-foreground print:block print:h-auto print:pr-0">
+    <div className="flex h-dvh bg-background text-foreground print:block print:h-auto">
       {menuOpen && (
         <div aria-hidden className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setMenuOpen(false)} />
       )}
@@ -421,7 +422,11 @@ export default function App() {
             onOpenChange={setChatOpen}
             target={chatTarget}
             onTargetShown={() => setChatTarget(null)}
-            onShowTask={showTask}
+            onShowTask={(id) => {
+              // A phone has no room for both, so the chat gives way to the task's details.
+              if (narrow) setChatOpen(false);
+              showTask(id);
+            }}
           />
         </ErrorBoundary>
       )}

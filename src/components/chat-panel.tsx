@@ -15,8 +15,6 @@ import {
   ArrowLeft,
   Bell,
   BellOff,
-  ChevronDown,
-  ChevronUp,
   Flag,
   Lock,
   MessageCircle,
@@ -939,7 +937,7 @@ function PlaceList({
           <IconButton
             variant="ghost"
             size="sm"
-            label={showPast ? "Hide past chats" : "Past chats"}
+            label={showPast ? "Hide completed" : "Completed"}
             icon={<Archive />}
             aria-pressed={showPast}
             onClick={() => setShowPast(!showPast)}
@@ -968,11 +966,11 @@ function PastChats({
 }) {
   return (
     <div className="flex flex-col gap-0.5 pt-2">
-      <h3 className="px-2 pb-1 text-xs font-medium text-muted-foreground">Past chats</h3>
+      <h3 className="px-2 pb-1 text-xs font-medium text-muted-foreground">Completed</h3>
       {threads.length === 0 ? (
         <p className="px-2 text-xs text-muted-foreground">No finished or closed chats yet.</p>
       ) : (
-        <ul aria-label="Past chats" className="flex flex-col gap-0.5">
+        <ul aria-label="Completed" className="flex flex-col gap-0.5">
           {threads.map((thread) => (
             <li key={thread.id}>
               <button
@@ -1271,9 +1269,9 @@ export function ChatSearch({
  * The chat window. It stays drawn while it closes (`open` false) until its closing animation
  * ends, then reports `onClosed`; with no animation (reduced motion) it reports that at once.
  *
- * It stays open beside a task's details (see `src/index.css`): from `md` up it is a column at the
- * window's right edge, and on a phone it fills the screen, or the lower half of it over the
- * details, which it can expand to the whole screen. Narrower than `@2xl` it shows either the
+ * From `md` up it is a popup above the floating button, and it stays open beside a task's details,
+ * which then move to the window's left edge while the popup narrows to the room right of them (see
+ * `src/index.css`). On a phone it fills the screen. Narrower than `@2xl` it shows either the
  * channels or one conversation.
  */
 function ChatPanel({
@@ -1303,8 +1301,6 @@ function ChatPanel({
   const past = pastThreads(allThreads.data ?? [], tasks.data ?? []);
   // A narrow panel shows either the channels or one conversation.
   const [listShown, setListShown] = useState(false);
-  // On a phone, over a task's details, the panel takes the lower half of the screen unless expanded.
-  const [expanded, setExpanded] = useState(false);
   const channelList = channels.data ?? [];
   const channel = channelList.find((candidate) => candidate.id === selection.channel);
   const thread =
@@ -1376,7 +1372,6 @@ function ChatPanel({
       aria-label="Chat"
       data-chat=""
       data-state={open ? "open" : "closed"}
-      data-expanded={expanded ? "" : undefined}
       inert={!open}
       onKeyDown={(event) => {
         if (event.key === "Escape" && !event.defaultPrevented) {
@@ -1389,14 +1384,12 @@ function ChatPanel({
       }}
       className={cn(
         "fixed z-40 flex flex-col overflow-hidden bg-background shadow-xl print:hidden",
-        "inset-0 max-md:transition-[top] motion-reduce:transition-none",
-        "max-md:details-open:top-1/2 max-md:details-open:rounded-t-2xl max-md:details-open:border-t max-md:details-open:data-expanded:top-0",
-        "md:left-auto md:w-(--chat-dock) md:border-l md:shadow-none",
-        // On a phone it grows from and shrinks into the floating button's center; from md up it slides in from the edge.
-        "origin-[calc(100%-2.5rem)_calc(100%-2.5rem)]",
-        open
-          ? "motion-safe:animate-chat-in md:motion-safe:animate-chat-dock-in"
-          : "motion-safe:animate-chat-out md:motion-safe:animate-chat-dock-out",
+        "inset-0 md:inset-auto md:bottom-20 md:right-4 md:h-[min(42rem,calc(100dvh-7rem))] md:w-[46rem] md:max-w-[calc(100vw-2rem)] md:rounded-xl md:border",
+        // Beside a task's details at the left edge it keeps to the room right of them.
+        "md:details-open:max-w-[calc(100vw-var(--details-width)-3rem)]",
+        // It grows from and shrinks into the floating button's center.
+        "origin-[calc(100%-2.5rem)_calc(100%-2.5rem)] md:origin-[calc(100%-1.5rem)_calc(100%+2.5rem)]",
+        open ? "motion-safe:animate-chat-in" : "motion-safe:animate-chat-out",
       )}
     >
       <header className="flex items-center gap-2 border-b px-3 py-2">
@@ -1404,16 +1397,7 @@ function ChatPanel({
         <IconButton
           variant="ghost"
           size="sm"
-          className="ml-auto hidden max-md:details-open:inline-flex"
-          label={expanded ? "Collapse chat" : "Expand chat"}
-          icon={expanded ? <ChevronDown /> : <ChevronUp />}
-          aria-expanded={expanded}
-          onClick={() => setExpanded(!expanded)}
-        />
-        <IconButton
-          variant="ghost"
-          size="sm"
-          className="ml-auto max-md:details-open:ml-0"
+          className="ml-auto"
           label={searching ? "Close search" : "Search messages"}
           icon={<Search />}
           aria-pressed={searching}
@@ -1476,7 +1460,9 @@ function ChatPanel({
 
 /**
  * The floating chat button, with the count of unread messages in every channel, and the chat
- * it opens. The button is hidden while the chat is open, which has its own close button.
+ * it opens. A small chat mark on the button turns into a close mark while the chat is open; on a
+ * phone, where the chat fills the screen, the button is hidden then and the chat's own close button
+ * closes it.
  * While threads wait on the owner's decision it rings in amber and carries a flag with their
  * count, which stays until they are answered; the chat never opens by itself.
  * The chat opens and closes with an animation. `open` is kept by the app so a clicked notification can open it too, at the channel
@@ -1501,7 +1487,7 @@ export function Chat({
   const unread = open ? 0 : totalUnread(channels.data ?? [], taskChats(tasks.data ?? [], threads.data ?? []));
   const decisions = open ? 0 : waitingThreads(threads.data ?? []).length;
   const button = useRef<HTMLButtonElement>(null);
-  // The button is hidden while the chat is open, so closing the chat focuses it once it shows again.
+  // On a phone the button is hidden while the chat is open, so closing the chat focuses it once it shows again.
   const refocus = useRef(false);
   const close = () => {
     refocus.current = true;
@@ -1528,18 +1514,22 @@ export function Chat({
           onTargetShown={onTargetShown}
         />
       )}
-      <div className={cn("fixed bottom-4 right-4 z-40 print:hidden", open && "hidden")}>
+      <div className={cn("fixed bottom-4 right-4 z-40 print:hidden", open && "max-md:hidden")}>
         <button
           ref={button}
           type="button"
-          aria-label={[
-            "Open chat",
-            ...(decisions > 0 ? [`${decisions} waiting on your decision`] : []),
-            ...(unread > 0 ? [`${unread} unread`] : []),
-          ].join(", ")}
+          aria-label={
+            open
+              ? "Close chat"
+              : [
+                  "Open chat",
+                  ...(decisions > 0 ? [`${decisions} waiting on your decision`] : []),
+                  ...(unread > 0 ? [`${unread} unread`] : []),
+                ].join(", ")
+          }
           aria-expanded={open}
           className="relative block size-12 cursor-pointer rounded-full shadow-lg ring-2 ring-background transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-          onClick={() => onOpenChange(true)}
+          onClick={() => (open ? close() : onOpenChange(true))}
         >
           {decisions > 0 && (
             <span aria-hidden className="absolute -inset-1.5 rounded-full border-4 border-amber-400 motion-safe:animate-pulse" />
@@ -1549,7 +1539,11 @@ export function Chat({
             aria-hidden
             className="absolute -bottom-1 -right-1 grid size-5 place-items-center rounded-full border-2 border-background bg-primary text-primary-foreground"
           >
-            <MessageCircle className="size-2.5" fill="currentColor" strokeWidth={2} />
+            {open ? (
+              <X key="close" className="size-2.5 motion-safe:animate-chat-icon-turn" strokeWidth={4} />
+            ) : (
+              <MessageCircle key="chat" className="size-2.5" fill="currentColor" strokeWidth={2} />
+            )}
           </span>
         </button>
         {decisions > 0 && (

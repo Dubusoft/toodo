@@ -496,7 +496,7 @@ describe("Chat", () => {
     expect(screen.queryByText(/ap-7-1/)).not.toBeInTheDocument();
   });
 
-  it("lists past chats beside In progress and opens the one picked", async () => {
+  it("lists completed chats beside In progress and opens the one picked", async () => {
     serve([], undefined, [
       thread(5, "ap-7-1 lane title", { taskId: 7, lastMessage: "Merged", lastMessageAt: 20 }),
       thread(6, "Old talk", { status: "closed", closedAt: 10 }),
@@ -510,8 +510,8 @@ describe("Chat", () => {
     renderChat();
     fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Past chats" }));
-    const past = await screen.findByRole("list", { name: "Past chats" });
+    fireEvent.click(await screen.findByRole("button", { name: "Completed" }));
+    const past = await screen.findByRole("list", { name: "Completed" });
     await waitFor(() => expect(within(past).getAllByRole("button").map((b) => b.textContent)).toEqual(["#7 ShipMerged", "Old talkClosed"]));
 
     fireEvent.click(within(past).getByRole("button", { name: /Old talk/ }));
