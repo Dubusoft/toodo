@@ -14,13 +14,13 @@ export type TaskSearch = {
   readonly limit: number;
 };
 
-const TRIGRAM = 3;
+export const TRIGRAM = 3;
 const BM25_WEIGHTS = "10.0, 2.0, 1.0, 5.0, 5.0";
 const SEARCHED_TEXT = `(task_search.title || char(10) || task_search.description
   || char(10) || task_search.notes || char(10) || task_search.branch || char(10)
   || task_search.pull_request)`;
 
-function splitWhitespace(text: string): string[] {
+export function splitWhitespace(text: string): string[] {
   const words: string[] = [];
   let word = "";
   for (const char of text) {

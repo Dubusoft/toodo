@@ -1,6 +1,7 @@
 import type { BlockingDependency, DependencyError } from "../domain/dag.ts";
 import type { CheckKind } from "../domain/criteria.ts";
 import type { TransitionError } from "../domain/status.ts";
+import { debugString } from "../domain/rust.ts";
 
 export type StorageFailure =
   | { readonly kind: "workspace_not_found"; readonly workspace: number }
@@ -40,8 +41,33 @@ export type StorageFailure =
   /** Only manual criteria are checked by hand; Toodo checks the others. */
   | { readonly kind: "automatic_criterion"; readonly task: number; readonly criterion: number; readonly checkKind: CheckKind }
   | { readonly kind: "guideline_not_found"; readonly guideline: number }
+  | { readonly kind: "chat_message_not_found"; readonly message: number }
+  /** Only a person's message gets receipts. */
+  | { readonly kind: "not_a_persons_message"; readonly message: number }
+  /** Only the agent's message can be the reply that handled a person's message. */
+  | { readonly kind: "not_an_agents_message"; readonly message: number }
+  | { readonly kind: "chat_channel_not_found"; readonly channel: number }
+  /** Another channel has the name, in some case. */
+  | { readonly kind: "chat_channel_name_taken"; readonly name: string }
+  | { readonly kind: "chat_thread_not_found"; readonly thread: number }
+  /** Messages go only to open threads. */
+  | { readonly kind: "chat_thread_not_open"; readonly thread: number; readonly status: "closed" | "archived" }
+  /** The agent's message offers no action with the key. */
+  | { readonly kind: "chat_action_not_found"; readonly message: number; readonly key: string }
+  /** A person chose an action on the message already, the one with `key`. */
+  | { readonly kind: "chat_action_chosen"; readonly message: number; readonly key: string }
+  | { readonly kind: "chat_attachment_not_found"; readonly attachment: number }
+  /** The upload is on a message already, or was uploaded by the other side of the chat. */
+  | { readonly kind: "chat_attachment_not_free"; readonly attachment: number }
+  | { readonly kind: "device_not_found"; readonly device: number }
+  /** The device has not subscribed to push notifications. */
+  | { readonly kind: "push_subscription_not_found"; readonly device: number }
   /** A stored value cannot be converted back into the domain model. */
-  | { kind: "invalid_data"; reason: string };
+  | { kind: "invalid_data"; reason: string }
+  /** A file to restore from is not a readable Toodo database. */
+  | { readonly kind: "invalid_backup"; readonly reason: string }
+  /** A backup Toodo just wrote failed `PRAGMA integrity_check`; it was deleted. */
+  | { readonly kind: "backup_check_failed"; readonly reason: string };
 
 export class StorageError extends Error {
   readonly failure: StorageFailure;
@@ -105,8 +131,38 @@ function describe(failure: StorageFailure): string {
       return `criterion ${failure.criterion} of task ${failure.task} is a ${failure.checkKind} criterion, which Toodo checks on its own; only manual criteria are checked by hand`;
     case "guideline_not_found":
       return `guideline ${failure.guideline} does not exist; call list_guidelines with the workspace id and take the guideline id from its result`;
+    case "chat_message_not_found":
+      return `chat message ${failure.message} does not exist; take message ids from peek_pending, take_pending or list_chat`;
+    case "not_a_persons_message":
+      return `chat message ${failure.message} was not written by a person; only people's messages are acknowledged and handled`;
+    case "not_an_agents_message":
+      return `chat message ${failure.message} is not a reply of the agent; pass the id reply_in_chat returned as reply_id`;
+    case "chat_channel_not_found":
+      return `chat channel ${failure.channel} does not exist; take channel ids from list_channels`;
+    case "chat_channel_name_taken":
+      return `a chat channel named ${debugString(failure.name)} already exists; choose another name`;
+    case "chat_thread_not_found":
+      return `chat thread ${failure.thread} does not exist; take thread ids from list_threads or create_thread`;
+    case "chat_thread_not_open":
+      return `chat thread ${failure.thread} is ${failure.status}; reopen it with update_thread status open before posting to it`;
+    case "chat_action_not_found":
+      return `chat message ${failure.message} offers no action ${debugString(failure.key)}; list_chat shows a message's actions and their keys`;
+    case "chat_action_chosen":
+      return `action ${debugString(failure.key)} was chosen on chat message ${failure.message} already; a message takes one choice`;
+    case "chat_attachment_not_found":
+      return `chat attachment ${failure.attachment} does not exist; upload the file first and pass the id it returns`;
+    case "chat_attachment_not_free":
+      return `chat attachment ${failure.attachment} is attached to a message already or was uploaded by the other side of the chat; upload the file again`;
+    case "device_not_found":
+      return `device ${failure.device} does not exist`;
+    case "push_subscription_not_found":
+      return `device ${failure.device} has not subscribed to push notifications`;
     case "invalid_data":
       return `stored data is invalid: ${failure.reason}`;
+    case "invalid_backup":
+      return `invalid backup ${failure.reason}`;
+    case "backup_check_failed":
+      return `the backup failed its integrity check and was deleted (${failure.reason}); check the disk of the backup directory and back up again`;
     default:
       return assertNever(failure);
   }

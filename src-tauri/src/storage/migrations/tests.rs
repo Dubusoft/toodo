@@ -2670,7 +2670,10 @@ fn export_typescript_test_schema() {
         statements.join(";\n\n")
     );
     std::fs::write(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../server/src/storage/schema.sql"),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../server/src/storage/schema.sql"
+        ),
         schema,
     )
     .unwrap();

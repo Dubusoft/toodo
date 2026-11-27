@@ -44,9 +44,12 @@ function ascending(ids: Iterable<TaskId>): TaskId[] {
   return [...ids].sort((a, b) => a - b);
 }
 
-function index(tasks: readonly Task[]): Map<TaskId, Task> {
+function index<T extends DependencyNode>(tasks: readonly T[]): Map<TaskId, T> {
   return new Map(tasks.map((task) => [task.id, task]));
 }
+
+/** What ordering tasks by their dependencies reads of a task. */
+export type DependencyNode = Pick<Task, "id" | "dependsOn">;
 
 /** A task and a task it depends on. */
 export type DependencyEdge = { readonly task: TaskId; readonly dependsOn: TaskId };
@@ -155,7 +158,7 @@ export function isReady(tasks: readonly Task[], task: TaskId): boolean {
 
 /** Orders tasks so that every task comes after its dependencies. Ties are broken by task ID,
  * so the order is deterministic. */
-export function topologicalOrder(tasks: readonly Task[]): TaskId[] {
+export function topologicalOrder(tasks: readonly DependencyNode[]): TaskId[] {
   const byId = index(tasks);
   const pending = new Map<TaskId, number>();
   const dependents = new Map<TaskId, TaskId[]>();
@@ -193,7 +196,10 @@ export function topologicalOrder(tasks: readonly Task[]): TaskId[] {
 
 /** Walks unordered tasks along unordered dependencies until a task repeats. Every unordered
  * task has at least one unordered dependency, so the walk always loops. */
-function findCycle(byId: ReadonlyMap<TaskId, Task>, unordered: ReadonlyMap<TaskId, number>): TaskId[] {
+function findCycle(
+  byId: ReadonlyMap<TaskId, DependencyNode>,
+  unordered: ReadonlyMap<TaskId, number>,
+): TaskId[] {
   const position = new Map<TaskId, number>();
   const walk: TaskId[] = [];
   let current: TaskId | undefined = ascending(unordered.keys())[0];

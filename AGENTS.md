@@ -118,6 +118,10 @@ Layout:
     dependencies, status history, waits, notes, criteria, search, related links, and commit
     records), each module beside its ported Rust tests. Failures are a `StorageError` whose
     message is the Rust one word for word (`errors.ts`).
+  - `server/src/storage/` chat, device, push, OAuth, review, backup, and import modules:
+    the rest of `src-tauri/src/storage/`, as functions over a connection that take the
+    time they act at where Rust reads its clock. Staging a backup accepts only
+    `BASELINE_SCHEMA_VERSION`, since nothing here migrates.
   - `server/src/storage/schema.sql`: the frozen schema the Rust migrations create, which
     `cargo test --lib` regenerates; `server/src/storage/testing.ts` creates the storage
     tests' databases with it.
