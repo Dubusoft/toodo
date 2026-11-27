@@ -1,3 +1,4 @@
+import type { ScheduleReply, ScheduleRequest } from "../../src/lib/supervisor-schedules.ts";
 import { HEARTBEAT_INTERVAL_MS, type HostToWorker, type WorkerToHost } from "./protocol.ts";
 
 export type WorkerHandle = {
@@ -41,6 +42,8 @@ export type SupervisorTunables = {
   readonly breakerCooldownMs: number;
   /** How long a stop waits for the Worker's `stopped` before terminating it. */
   readonly stopDeadlineMs: number;
+  /** How long a scheduled-jobs request waits for the Worker's answer. */
+  readonly requestTimeoutMs: number;
 };
 
 export const DEFAULT_TUNABLES: SupervisorTunables = {
@@ -54,6 +57,7 @@ export const DEFAULT_TUNABLES: SupervisorTunables = {
   breakerCooldownMs: 30 * 60_000,
   // Above the supervisor's own stop deadline (SUPERVISE_STOP_DEADLINE_MS, 15 s), so a clean stop is never cut short.
   stopDeadlineMs: 20_000,
+  requestTimeoutMs: 10_000,
 };
 
 export type SupervisorState = "idle" | "starting" | "running" | "backoff" | "open" | "stopping" | "stopped";
@@ -98,6 +102,8 @@ export class SupervisorHost {
   #pending: unknown;
   #nextStartAt: number | undefined;
   #stopping: { readonly done: Promise<void>; readonly finish: (forced: boolean) => void } | undefined;
+  #lastRequest = 0;
+  readonly #requests = new Map<number, { readonly resolve: (reply: ScheduleReply) => void; readonly reject: (error: Error) => void; readonly timer: unknown }>();
 
   constructor(spawn: Spawn, options: { timers?: Timers; tunables?: Partial<SupervisorTunables> } = {}) {
     this.#spawn = spawn;
@@ -117,6 +123,21 @@ export class SupervisorHost {
       lastHeartbeatAt: this.#lastHeartbeatAt ?? null,
       nextStartAt: this.#nextStartAt ?? null,
     };
+  }
+
+  /** Hands a scheduled-jobs request to the running Worker and resolves with its answer; rejects when none is running or it does not answer. */
+  schedules(request: ScheduleRequest): Promise<ScheduleReply> {
+    const worker = this.#worker;
+    if (worker === undefined || this.#state !== "running") return Promise.reject(new Error(`the supervisor is ${this.#state}`));
+    const id = ++this.#lastRequest;
+    return new Promise((resolve, reject) => {
+      const timer = this.#timers.setTimeout(() => {
+        this.#requests.delete(id);
+        reject(new Error(`the supervisor did not answer within ${this.#tune.requestTimeoutMs} ms`));
+      }, this.#tune.requestTimeoutMs);
+      this.#requests.set(id, { resolve, reject, timer });
+      worker.post({ type: "schedules", id, request });
+    });
   }
 
   start(): void {
@@ -173,6 +194,12 @@ export class SupervisorHost {
       this.#emit({ kind: "ready", start });
     } else if (message.type === "stopped" && this.#stopping) {
       this.#stopping.finish(false);
+    } else if (message.type === "schedules") {
+      const request = this.#requests.get(message.id);
+      if (request === undefined) return;
+      this.#requests.delete(message.id);
+      this.#timers.clearTimeout(request.timer);
+      request.resolve(message.reply);
     }
   }
 
@@ -247,6 +274,11 @@ export class SupervisorHost {
     if (this.#watchdog !== undefined) this.#timers.clearTimeout(this.#watchdog);
     this.#watchdog = undefined;
     worker?.terminate();
+    for (const request of this.#requests.values()) {
+      this.#timers.clearTimeout(request.timer);
+      request.reject(new Error("the supervisor stopped before it answered"));
+    }
+    this.#requests.clear();
   }
 
   async #stopWorker(): Promise<void> {

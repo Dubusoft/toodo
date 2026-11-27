@@ -96,13 +96,18 @@ if (import.meta.main) {
     process.exit(2);
   }
   let core: Core;
+  // The core is served before the host starts the supervisor; its scheduled-jobs requests reach the Worker once it runs.
+  let supervisor: SupervisorHost | undefined;
   try {
-    core = await openCore(config);
+    core = await openCore(config, mode === "off" ? {} : {
+      schedules: (request) => supervisor?.schedules(request) ?? Promise.reject(new Error("the supervisor has not started")),
+    });
   } catch (e) {
     console.error(`toodo: ${message(e)}`);
     process.exit(1);
   }
   const host = startHost({ listen: config.listen, core: core.fetch, supervisor: mode === "off" ? "off" : SUPERVISOR_ENTRY });
+  supervisor = host.supervisor;
   core.listening(Number(host.url.port));
   const paths = healthcheckPaths(process.env);
   const urls = await readPingFile(paths.pingFile);

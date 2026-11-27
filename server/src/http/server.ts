@@ -19,6 +19,7 @@ import * as files from "./files.ts";
 import * as push from "./push.ts";
 import * as rpc from "./rpc.ts";
 import type { Services } from "./services.ts";
+import * as schedules from "./supervisor-schedules.ts";
 import { SupervisorStatusFeed } from "./supervisor-status.ts";
 
 export type RouterOptions = {
@@ -30,6 +31,8 @@ export type RouterOptions = {
   readonly webDir: string | null;
   /** Fetches the metadata documents of OAuth clients that name one as their `client_id`. */
   readonly clientMetadata: ClientMetadataFetcher;
+  /** The supervisor's scheduled jobs, when it runs beside the core (the host). */
+  readonly schedules?: schedules.ScheduleBridge;
 };
 
 /** What the server tells a request about itself: its address, and that an event stream
@@ -100,6 +103,7 @@ export function createHandler(options: RouterOptions): Handler {
     access: options.access,
   };
   const supervisorStatus = new SupervisorStatusFeed();
+  const scheduleBridge = options.schedules ?? null;
 
   // Routes behind the gate, by method and path pattern.
   const routes: Array<[string, RegExp, ApiRoute]> = [
@@ -120,6 +124,8 @@ export function createHandler(options: RouterOptions): Handler {
       connection.keepOpen();
       return supervisorStatus.stream();
     }],
+    ["GET", /^\/api\/supervisor\/schedules$/, () => schedules.list(scheduleBridge)],
+    ["POST", /^\/api\/supervisor\/schedules$/, (request) => schedules.change(scheduleBridge, request)],
     ["GET", /^\/api\/backups\/export$/, () => files.exportDatabase(services)],
     ["POST", /^\/api\/backups\/restore$/, (request) => files.restore(services, request)],
     ["GET", /^\/api\/backups\/([^/]+)$/, (_request, _caller, [name]) => {
