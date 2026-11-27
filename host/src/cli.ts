@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // `toodo`: the owner host's command for the one-process host (toodo.service) and the core's database, on the TypeScript
 // storage and commands. `bun link` in the checkout puts it on PATH beside `dori`.
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -56,6 +56,13 @@ export const unitDir = (env: Env): string =>
 
 const readText = (path: string): string => (existsSync(path) ? readFileSync(path, "utf8") : "");
 
+/** A unit file's text followed by its drop-ins (`<unit>.d/*.conf`) in name order, the order systemd applies them in. */
+const unitWithDropIns = (dir: string, unit: string): string => {
+  const dropIns = join(dir, `${unit}.d`);
+  const confs = existsSync(dropIns) ? readdirSync(dropIns).filter((name) => name.endsWith(".conf")).sort() : [];
+  return [readText(join(dir, unit)), ...confs.map((name) => readText(join(dropIns, name)))].join("\n");
+};
+
 /** The `Environment=` assignments of unit file text, quotes removed; a later one wins. */
 export const unitEnvironment = (text: string): Map<string, string> => {
   const env = new Map<string, string>();
@@ -90,7 +97,7 @@ export type UnitInputs = {
 };
 
 /**
- * toodo.service for the checkout `src`: the core's `TOODO_*` settings of toodo-server.service, its web app from the
+ * toodo.service for the checkout `src`: the core's `TOODO_*` settings of toodo-server.service (its drop-ins included), its web app from the
  * checkout's `dist-web`, and `DORI_CONFIG` and `PATH` of dori-supervisor.service. Nothing else is carried, so neither an
  * `EnvironmentFile` nor a secret of the old units reaches the new one.
  */
@@ -120,7 +127,7 @@ export const serviceInstall = async (d: InstallDeps): Promise<number> => {
   const target = join(dir, UNIT);
   const text = renderUnit(readFileSync(join(ROOT, "host", UNIT), "utf8"), {
     src: ROOT, bun: d.bun, path: d.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-    server: readText(join(dir, LEGACY_UNITS[0])), supervisor: readText(join(dir, LEGACY_UNITS[1])),
+    server: unitWithDropIns(dir, LEGACY_UNITS[0]), supervisor: unitWithDropIns(dir, LEGACY_UNITS[1]),
   });
   mkdirSync(dir, { recursive: true });
   writeFileSync(`${target}.tmp`, text, { mode: 0o644 });
