@@ -146,7 +146,9 @@ node scripts/parity/parity.ts shadow --live ~/.local/share/toodo-server/toodo.sq
   --rounds 72 --out ~/toodo-shadow
 ```
 
-Switch only when every round in `shadow.jsonl` has no difference left unexplained.
+Switch only when every round in `shadow.jsonl` has no difference left unexplained. The
+shadow reads are the check that comes before the switch; there is no rollback period
+after it.
 
 ### Steps
 
@@ -172,8 +174,9 @@ Switch only when every round in `shadow.jsonl` has no difference left unexplaine
 
 ### Rolling Back
 
-While the database is still at the Rust server's schema version, going back takes one
-step; the data stays in the same file:
+Only between step 5 and retiring the old deployment, when a check of step 6 fails: the
+database is still at the Rust server's schema version, so going back takes one step and
+the data stays in the same file:
 
 ```sh
 systemctl --user disable --now toodo.service
