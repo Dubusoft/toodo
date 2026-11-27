@@ -208,10 +208,22 @@ export const commands = {
 	 */
 	listChat: (place: ChatPlace, before: number | null) => typedError<ChatView, CommandError>(invoke("list_chat", { place, before })),
 	/**
-	 *  Sends a person's message to the agent in `place`, a channel or an open thread.
-	 *  `client_id` names it, so sending it again after a lost answer stores it once.
+	 *  Sends a person's message to the agent in `place`, a channel or an open thread, with the
+	 *  files uploaded for it (`POST /api/chat/attachments`); `body` may be blank when there are
+	 *  files. `client_id` names it, so sending it again after a lost answer stores it once.
 	 */
-	sendChatMessage: (place: ChatPlace, body: string, clientId: string) => typedError<ChatMessage, CommandError>(invoke("send_chat_message", { place, body, clientId })),
+	sendChatMessage: (place: ChatPlace, body: string, clientId: string, attachments: ChatAttachmentId[]) => typedError<ChatMessage, CommandError>(invoke("send_chat_message", { place, body, clientId, attachments })),
+	/**
+	 *  Chooses the action `key` on the agent's message `message_id`: the agent gets the choice
+	 *  as a person's message with the action's label. A message takes one choice. `client_id`
+	 *  names the click, so sending it again stores it once. Returns the person's message.
+	 */
+	chooseChatAction: (messageId: ChatMessageId, key: string, clientId: string) => typedError<ChatMessage, CommandError>(invoke("choose_chat_action", { messageId, key, clientId })),
+	/**
+	 *  The messages matching `query` (every word, as a case-insensitive substring), best match
+	 *  first; `place` keeps to a channel with its threads, or one thread.
+	 */
+	searchChat: (query: string, place: ({ channel: ChatChannelId }) & { thread?: never } | ({ thread: ChatThreadId }) & { channel?: never } | null) => typedError<ChatSearchHit[], CommandError>(invoke("search_chat", { query, place })),
 	/**  Records that people read `place` up to message `up_to`, which clears its unread count. */
 	markChatRead: (place: ChatPlace, upTo: ChatMessageId) => typedError<null, CommandError>(invoke("mark_chat_read", { place, upTo })),
 	/**  Every channel, in the order they were made, with its unread count. */
@@ -237,6 +249,7 @@ export const events = {
 	taskReady: makeEvent<TaskReady>("task-ready"),
 	chatChanged: makeEvent<ChatChanged>("chat-changed"),
 	chatTyping: makeEvent<ChatTyping>("chat-typing"),
+	chatActionChosen: makeEvent<ChatActionChosen>("chat-action-chosen"),
 };
 
 /* Types */
@@ -288,12 +301,59 @@ export type BackupStatus = {
 	lastFailure: BackupFailure | null,
 };
 
+/**
+ *  A choice offered on the agent's message, shown as a button. A person's click comes back
+ *  to the agent with `key`.
+ */
+export type ChatAction = {
+	/**  What the agent gets back when this is chosen, e.g. `approve`; unique in the message. */
+	key: string,
+	/**  What the button says. */
+	label: string,
+	style?: ChatActionStyle,
+};
+
+/**
+ *  A person chose an action on the agent's message `messageId`: the action's `key` and
+ *  `label`, and `choiceId`, the person's message that records it, which `take_pending` hands
+ *  the agent too.
+ */
+export type ChatActionChosen = {
+	messageId: ChatMessageId,
+	key: string,
+	label: string,
+	choiceId: ChatMessageId,
+	channelId: ChatChannelId,
+	threadId: ChatThreadId | null,
+	at: Timestamp,
+};
+
+/**
+ *  How an action's button looks: plain (`default`), the suggested choice (`primary`), or a
+ *  destructive one (`danger`).
+ */
+export type ChatActionStyle = "default" | "primary" | "danger";
+
 /**  How the app shows the agent: the name and avatar the server is configured with. */
 export type ChatAgent = {
 	name: string,
 	/**  An `https` URL or a path on the server. */
 	avatarUrl: string | null,
 };
+
+/**
+ *  A file uploaded to the chat. People's apps read it at
+ *  `/api/chat/attachments/<id>`, the agent at `/mcp/attachments/<id>`.
+ */
+export type ChatAttachment = {
+	id: ChatAttachmentId,
+	name: string,
+	contentType: string,
+	/**  Bytes. */
+	size: number,
+};
+
+export type ChatAttachmentId = number;
 
 /**  Who wrote a chat message: a person in the app, the agent connected over MCP, or Toodo. */
 export type ChatAuthor = "user" | "agent" | "system";
@@ -327,6 +387,19 @@ export type ChatChannelEdit = {
 
 export type ChatChannelId = number;
 
+/**  The action a person chose on the agent's message, and the person's message recording it. */
+export type ChatChoice = {
+	key: string,
+	at: Timestamp,
+	choiceId: ChatMessageId,
+};
+
+/**  The agent's message and the key of the action a person's message chose. */
+export type ChatChoiceOf = {
+	messageId: ChatMessageId,
+	key: string,
+};
+
 /**
  *  A chat message. The receipts are set only on a person's messages: when the agent
  *  received it, acknowledged it, and handled it with a reply or a task.
@@ -346,6 +419,13 @@ export type ChatMessage = {
 	handledTaskId: TaskId | null,
 	/**  A person's message the agent neither handled nor answered in time. */
 	overdue: boolean,
+	/**  The choices the agent offers on its message, shown as buttons. */
+	actions: ChatAction[],
+	/**  The action a person chose on the agent's message; the message takes no other. */
+	chosen: ChatChoice | null,
+	/**  On a person's message that records a choice: the agent's message and the action. */
+	choiceOf: ChatChoiceOf | null,
+	attachments: ChatAttachment[],
 };
 
 export type ChatMessageId = number;
@@ -355,6 +435,13 @@ export type ChatMessageId = number;
  *  (`{ "thread": 3 }`).
  */
 export type ChatPlace = ({ channel: ChatChannelId }) & { thread?: never } | ({ thread: ChatThreadId }) & { channel?: never };
+
+/**  A message a search found, with the name of its channel and the title of its thread. */
+export type ChatSearchHit = {
+	message: ChatMessage,
+	channelName: string,
+	threadTitle: string | null,
+};
 
 /**  A thread under a channel, which may follow a task. */
 export type ChatThread = {

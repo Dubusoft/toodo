@@ -179,7 +179,7 @@ export function useSendChatMessage(place: ChatPlace) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ body, clientId }: { body: string; clientId: string }) =>
-      unwrap(commands.sendChatMessage(place, body, clientId)),
+      unwrap(commands.sendChatMessage(place, body, clientId, [])),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chat }),
   });
 }

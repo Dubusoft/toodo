@@ -211,9 +211,10 @@ impl From<StorageError> for CommandError {
             StorageError::ChatMessageNotFound(_) => CommandErrorCode::ChatMessageNotFound,
             StorageError::ChatChannelNotFound(_) => CommandErrorCode::ChatChannelNotFound,
             StorageError::ChatThreadNotFound(_) => CommandErrorCode::ChatThreadNotFound,
-            StorageError::DeviceNotFound(_) | StorageError::PushSubscriptionNotFound(_) => {
-                CommandErrorCode::NotFound
-            }
+            StorageError::DeviceNotFound(_)
+            | StorageError::PushSubscriptionNotFound(_)
+            | StorageError::ChatActionNotFound { .. }
+            | StorageError::ChatAttachmentNotFound(_) => CommandErrorCode::NotFound,
             StorageError::Dependency(
                 DependencyError::Cycle(_) | DependencyError::SelfDependency(_),
             ) => CommandErrorCode::DependencyCycle,
@@ -231,7 +232,9 @@ impl From<StorageError> for CommandError {
             | StorageError::NotAPersonsMessage(_)
             | StorageError::NotAnAgentsMessage(_)
             | StorageError::ChatChannelNameTaken(_)
-            | StorageError::ChatThreadNotOpen { .. } => CommandErrorCode::Rejected,
+            | StorageError::ChatThreadNotOpen { .. }
+            | StorageError::ChatActionChosen { .. }
+            | StorageError::ChatAttachmentNotFree(_) => CommandErrorCode::Rejected,
             StorageError::SelfRelation(_)
             | StorageError::PlanLinkOutOfRange { .. }
             | StorageError::InvalidBackup(_) => CommandErrorCode::InvalidInput,

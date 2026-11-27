@@ -9,6 +9,7 @@
 
 mod backup;
 mod chat;
+mod chat_search;
 mod commits;
 mod criteria;
 mod devices;
@@ -31,7 +32,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags};
 
-use crate::domain::chat::{ChatChannelId, ChatMessageId, ChatThreadId, ThreadStatus};
+use crate::domain::chat::{
+    ChatAttachmentId, ChatChannelId, ChatMessageId, ChatThreadId, ThreadStatus,
+};
 use crate::domain::criteria::{CheckKind, CriterionId};
 use crate::domain::dag::{BlockingDependency, DependencyError};
 use crate::domain::device::DeviceId;
@@ -43,6 +46,7 @@ pub use backup::{
     list_backups, prune_backups, stage_backup,
 };
 pub use chat::{CHAT_PAGE_LIMIT, ChannelEdit, ChatNotice, ThreadEdit, ThreadFilter};
+pub use chat_search::{ChatHit, ChatSearch};
 pub use criteria::{CriterionCheck, CriterionEdit};
 pub use devices::DeviceAuth;
 pub use guidelines::NewGuideline;
@@ -232,6 +236,19 @@ pub enum StorageError {
         thread: ChatThreadId,
         status: ThreadStatus,
     },
+    /// The agent's message offers no action with the key.
+    ChatActionNotFound {
+        message: ChatMessageId,
+        key: String,
+    },
+    /// A person chose an action on the message already, the one with `key`.
+    ChatActionChosen {
+        message: ChatMessageId,
+        key: String,
+    },
+    ChatAttachmentNotFound(ChatAttachmentId),
+    /// The upload is on a message already, or was uploaded by the other side of the chat.
+    ChatAttachmentNotFree(ChatAttachmentId),
     DeviceNotFound(DeviceId),
     /// The device has not subscribed to push notifications.
     PushSubscriptionNotFound(DeviceId),
@@ -387,6 +404,26 @@ impl fmt::Display for StorageError {
                 "chat thread {} is {}; reopen it with update_thread status open before posting to it",
                 thread.0,
                 status.as_str()
+            ),
+            Self::ChatActionNotFound { message, key } => write!(
+                f,
+                "chat message {} offers no action {key:?}; list_chat shows a message's actions and their keys",
+                message.0
+            ),
+            Self::ChatActionChosen { message, key } => write!(
+                f,
+                "action {key:?} was chosen on chat message {} already; a message takes one choice",
+                message.0
+            ),
+            Self::ChatAttachmentNotFound(id) => write!(
+                f,
+                "chat attachment {} does not exist; upload the file first and pass the id it returns",
+                id.0
+            ),
+            Self::ChatAttachmentNotFree(id) => write!(
+                f,
+                "chat attachment {} is attached to a message already or was uploaded by the other side of the chat; upload the file again",
+                id.0
             ),
             Self::DeviceNotFound(id) => write!(f, "device {id} does not exist"),
             Self::PushSubscriptionNotFound(id) => {

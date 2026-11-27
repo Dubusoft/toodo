@@ -85,6 +85,8 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         backup::restore_backup,
         chat::list_chat,
         chat::send_chat_message,
+        chat::choose_chat_action,
+        chat::search_chat,
         chat::mark_chat_read,
         chat::list_chat_channels,
         chat::create_chat_channel,
@@ -133,6 +135,11 @@ fn collect_events(types: &mut Types) -> Vec<(&'static str, &'static str, DataTyp
             "chatTyping",
             names::CHAT_TYPING,
             events::ChatTyping::definition(types),
+        ),
+        (
+            "chatActionChosen",
+            names::CHAT_ACTION_CHOSEN,
+            events::ChatActionChosen::definition(types),
         ),
     ]
 }

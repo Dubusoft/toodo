@@ -1031,4 +1031,50 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     ALTER TABLE chat_messages ADD COLUMN thread_id INTEGER REFERENCES chat_threads (id);
     CREATE INDEX chat_messages_place ON chat_messages (channel_id, thread_id, id);
     ",
+    // Version 56: actions on the agent's chat messages, a person's one choice among them
+    // (kept with the person's message that records it), files attached to messages (stored
+    // on disk under a random key, so a restored database never names another file), and a
+    // trigram index for searching the chat, filled from the messages so far.
+    r"
+    CREATE TABLE chat_actions (
+        message_id INTEGER NOT NULL REFERENCES chat_messages (id) ON DELETE CASCADE,
+        position INTEGER NOT NULL,
+        key TEXT NOT NULL CHECK (trim(key) <> ''),
+        label TEXT NOT NULL CHECK (trim(label) <> ''),
+        style TEXT NOT NULL DEFAULT 'default' CHECK (style IN ('default', 'primary', 'danger')),
+        PRIMARY KEY (message_id, key)
+    ) WITHOUT ROWID;
+    CREATE TABLE chat_choices (
+        message_id INTEGER PRIMARY KEY REFERENCES chat_messages (id) ON DELETE CASCADE,
+        key TEXT NOT NULL,
+        choice_id INTEGER NOT NULL UNIQUE REFERENCES chat_messages (id) ON DELETE CASCADE,
+        at INTEGER NOT NULL,
+        FOREIGN KEY (message_id, key) REFERENCES chat_actions (message_id, key)
+    );
+    CREATE TABLE chat_attachments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_key TEXT NOT NULL UNIQUE,
+        message_id INTEGER REFERENCES chat_messages (id) ON DELETE CASCADE,
+        uploader TEXT NOT NULL CHECK (uploader IN ('user', 'lead')),
+        name TEXT NOT NULL CHECK (trim(name) <> ''),
+        content_type TEXT NOT NULL,
+        size INTEGER NOT NULL CHECK (size >= 0),
+        created_at INTEGER NOT NULL
+    );
+    CREATE INDEX chat_attachments_message ON chat_attachments (message_id);
+    CREATE VIRTUAL TABLE chat_search USING fts5 (
+        body, content = 'chat_messages', content_rowid = 'id', tokenize = 'trigram'
+    );
+    INSERT INTO chat_search (rowid, body) SELECT id, body FROM chat_messages;
+    CREATE TRIGGER chat_search_inserted AFTER INSERT ON chat_messages BEGIN
+        INSERT INTO chat_search (rowid, body) VALUES (NEW.id, NEW.body);
+    END;
+    CREATE TRIGGER chat_search_updated AFTER UPDATE OF body ON chat_messages BEGIN
+        INSERT INTO chat_search (chat_search, rowid, body) VALUES ('delete', OLD.id, OLD.body);
+        INSERT INTO chat_search (rowid, body) VALUES (NEW.id, NEW.body);
+    END;
+    CREATE TRIGGER chat_search_deleted AFTER DELETE ON chat_messages BEGIN
+        INSERT INTO chat_search (chat_search, rowid, body) VALUES ('delete', OLD.id, OLD.body);
+    END;
+    ",
 ];

@@ -35,7 +35,7 @@ pub(super) fn failed(error: CommandError) -> Response {
     Reply::Failed(error).into_response()
 }
 
-async fn remove(path: &Path) {
+pub(super) async fn remove(path: &Path) {
     if let Err(error) = tokio::fs::remove_file(path).await
         && error.kind() != std::io::ErrorKind::NotFound
     {
@@ -155,7 +155,7 @@ fn too_large(limit: u64) -> Response {
 }
 
 /// Why an upload did not arrive whole.
-enum UploadError {
+pub(super) enum UploadError {
     TooLarge,
     /// No more of the body arrived within [`mcp::READ_TIMEOUT`].
     Stalled,
@@ -164,7 +164,7 @@ enum UploadError {
 }
 
 impl UploadError {
-    fn into_response(self, limit: u64) -> Response {
+    pub(super) fn into_response(self, limit: u64) -> Response {
         match self {
             Self::TooLarge => too_large(limit),
             Self::Stalled => (
@@ -188,7 +188,7 @@ impl UploadError {
 }
 
 /// Writes the request body to `path`, failing once it grows past `limit` bytes.
-async fn receive(body: Body, path: &Path, limit: u64) -> Result<(), UploadError> {
+pub(super) async fn receive(body: Body, path: &Path, limit: u64) -> Result<(), UploadError> {
     let mut file = tokio::fs::File::create(path)
         .await
         .map_err(UploadError::Store)?;

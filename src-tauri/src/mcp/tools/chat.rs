@@ -1,16 +1,22 @@
 //! The agent's side of the chat: it takes people's messages, acknowledges them, replies,
-//! and marks them handled, each step a receipt the app shows on the message; and it keeps
-//! channels and the threads under them, which may follow a task.
+//! and marks them handled, each step a receipt the app shows on the message; it offers
+//! actions people choose among and attaches files; it keeps channels and the threads under
+//! them, which may follow a task; and it searches earlier messages.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::CommandResult;
+use crate::commands::chat::body_with_files;
 use crate::commands::types::{
-    self, ChatChannel, ChatChannelId, ChatMessage, ChatMessageId, ChatThread, ChatThreadEdit,
-    ChatThreadFilter, ChatThreadId, ChatThreadStatus, TaskId,
+    self, ChatAction, ChatAttachmentId, ChatChannel, ChatChannelId, ChatMessage, ChatMessageId,
+    ChatSearchHit, ChatThread, ChatThreadEdit, ChatThreadFilter, ChatThreadId, ChatThreadStatus,
+    TaskId,
 };
 use crate::domain::chat::FIRST_CHANNEL;
-use crate::storage::{CHAT_PAGE_LIMIT, ChatNotice, Storage};
+use crate::storage::{CHAT_PAGE_LIMIT, ChatNotice, ChatSearch, Storage};
+
+/// How many messages `search_chat` returns without a limit.
+const DEFAULT_SEARCH: u32 = 20;
 
 /// How many messages `list_chat` returns without a limit.
 const DEFAULT_LIST: usize = 50;
@@ -18,7 +24,9 @@ const DEFAULT_LIST: usize = 50;
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ReplyInChat {
-    /// The message to the people in the app, as text or Markdown.
+    /// The message to the people in the app, as text or Markdown; may be blank when
+    /// attachments are given.
+    #[serde(default)]
     pub body: String,
     /// IDs of people's messages this reply answers; each is marked handled by it.
     #[serde(default)]
@@ -30,6 +38,30 @@ pub struct ReplyInChat {
     /// The open thread to post in.
     #[serde(default)]
     pub thread_id: Option<ChatThreadId>,
+    /// Up to 10 choices shown as buttons under the message. A person may choose one; you
+    /// receive it from take_pending as their message with the label as body and choiceOf
+    /// naming this message and the action key.
+    #[serde(default)]
+    pub actions: Vec<ChatAction>,
+    /// IDs of files you uploaded with POST /mcp/attachments, up to 10.
+    #[serde(default)]
+    pub attachments: Vec<ChatAttachmentId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct SearchChat {
+    /// Words that must all appear in a message, as case-insensitive substrings.
+    pub query: String,
+    /// Only messages in this channel and its threads.
+    #[serde(default)]
+    pub channel_id: Option<ChatChannelId>,
+    /// Only messages in this thread.
+    #[serde(default)]
+    pub thread_id: Option<ChatThreadId>,
+    /// At most this many messages, 20 when omitted and 100 at most.
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -145,10 +177,12 @@ pub fn reply_in_chat(
     storage: &mut Storage,
     request: ReplyInChat,
 ) -> CommandResult<(ChatMessage, Option<ChatNotice>)> {
-    let body = types::chat_body(&request.body)?;
     let place = types::place(request.channel_id, request.thread_id)?;
+    let actions = types::chat_actions(&request.actions)?;
+    let attachments = types::attachment_ids(&request.attachments)?;
+    let body = body_with_files(storage, &request.body, &attachments)?;
     let handles: Vec<_> = request.handles.into_iter().map(Into::into).collect();
-    let message = storage.post_agent_message(place, &body, &handles)?;
+    let message = storage.post_agent_message(place, &body, &handles, &actions, &attachments)?;
     let notice = storage.chat_notice(message.channel_id, message.thread_id)?;
     Ok((ChatMessage::at(&message, storage.now()), notice))
 }
@@ -176,6 +210,20 @@ pub fn list_chat(storage: &Storage, request: ListChat) -> CommandResult<Vec<Chat
     let place = types::place(request.channel_id, request.thread_id)?;
     let messages = storage.list_chat_messages(place, request.before.map(Into::into), limit)?;
     Ok(ChatMessage::all_at(&messages, storage.now()))
+}
+
+pub fn search_chat(storage: &Storage, request: SearchChat) -> CommandResult<Vec<ChatSearchHit>> {
+    let query = types::search_query(&request.query)?;
+    let place = types::place(request.channel_id, request.thread_id)?;
+    let hits = storage.search_chat(&ChatSearch {
+        query,
+        place,
+        limit: request
+            .limit
+            .unwrap_or(DEFAULT_SEARCH)
+            .clamp(1, types::SEARCH_LIMIT),
+    })?;
+    Ok(ChatSearchHit::all_at(&hits, storage.now()))
 }
 
 pub fn list_channels(storage: &Storage) -> CommandResult<Vec<ChatChannel>> {

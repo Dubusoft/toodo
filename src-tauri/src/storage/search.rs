@@ -10,7 +10,7 @@ use crate::domain::status::TaskStatus;
 
 /// Words shorter than this cannot use the trigram index, so they are matched with
 /// `LIKE` instead, e.g. two-character Korean words.
-const TRIGRAM: usize = 3;
+pub(super) const TRIGRAM: usize = 3;
 
 /// How much a match counts in each column of `task_search`, for bm25: a match in the
 /// title says most about a task, then its branch and pull request, then its text.
@@ -29,7 +29,7 @@ pub struct TaskSearch<'a> {
 
 /// `word` as an FTS5 string: double quotes make operators (`AND`, `OR`, `NOT`, `NEAR`),
 /// prefixes (`*`), column filters (`:`), and parentheses plain text.
-fn fts_string(word: &str) -> String {
+pub(super) fn fts_string(word: &str) -> String {
     format!("\"{}\"", word.replace('"', "\"\""))
 }
 

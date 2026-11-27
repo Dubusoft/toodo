@@ -1,12 +1,15 @@
 //! The chat with the agent connected over MCP: its channels and the threads under them, how
 //! far people read each, and the receipts of the agent's work on each person's message:
-//! received (`delivered_at`, `taken_at`), acknowledged (`acked_at`, `seen_at`), and handled.
-use rusqlite::{OptionalExtension, Row, Transaction, params};
+//! received (`delivered_at`, `taken_at`), acknowledged (`acked_at`, `seen_at`), and handled;
+//! the actions on the agent's messages with the choice a person made, and the files
+//! attached to messages, whose bytes the server keeps on disk under `file_key`.
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use super::{Result, Storage, StorageError, invalid_data};
 use crate::domain::chat::{
-    ANSWER_WITHIN, ChatAuthor, ChatChannel, ChatChannelId, ChatMessage, ChatMessageId, ChatPlace,
-    ChatThread, ChatThreadId, FIRST_CHANNEL, ThreadStatus,
+    ANSWER_WITHIN, ActionStyle, ChatAction, ChatAttachment, ChatAttachmentId, ChatAuthor,
+    ChatChannel, ChatChannelId, ChatChoice, ChatMessage, ChatMessageId, ChatPlace, ChatThread,
+    ChatThreadId, ChoiceOf, FIRST_CHANNEL, ThreadStatus,
 };
 use crate::domain::model::TaskId;
 
@@ -38,8 +41,179 @@ fn raw_row(row: &Row<'_>) -> rusqlite::Result<RawMessage> {
             handled_reply_id: row.get::<_, Option<i64>>(7)?.map(ChatMessageId),
             handled_task_id: row.get::<_, Option<i64>>(8)?.map(TaskId),
             due_at: row.get(9)?,
+            actions: Vec::new(),
+            chosen: None,
+            choice_of: None,
+            attachments: Vec::new(),
         },
     })
+}
+
+/// The IDs of `messages` as a JSON array, for `json_each`.
+fn ids_json(messages: &[ChatMessage]) -> String {
+    let ids: Vec<String> = messages.iter().map(|m| m.id.0.to_string()).collect();
+    format!("[{}]", ids.join(","))
+}
+
+const ATTACHMENT_COLUMNS: &str =
+    "id, uploader, name, content_type, size, message_id, created_at, file_key";
+
+/// An attachment row, with the key its file is stored under.
+fn attachment_row(row: &Row<'_>) -> rusqlite::Result<(ChatAttachment, String, String)> {
+    Ok((
+        ChatAttachment {
+            id: ChatAttachmentId(row.get(0)?),
+            uploader: ChatAuthor::User,
+            name: row.get(2)?,
+            content_type: row.get(3)?,
+            size: row.get(4)?,
+            message_id: row.get::<_, Option<i64>>(5)?.map(ChatMessageId),
+            created_at: row.get(6)?,
+        },
+        row.get(1)?,
+        row.get(7)?,
+    ))
+}
+
+fn attachment(
+    (attachment, uploader, file_key): (ChatAttachment, String, String),
+) -> Result<(ChatAttachment, String)> {
+    let uploader = ChatAuthor::parse(&uploader)
+        .ok_or_else(|| invalid_data(format!("unknown attachment uploader {uploader:?}")))?;
+    Ok((
+        ChatAttachment {
+            uploader,
+            ..attachment
+        },
+        file_key,
+    ))
+}
+
+/// Fills in the actions, choices, and attachments of `messages`.
+fn decorate(conn: &Connection, messages: &mut [ChatMessage]) -> Result<()> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let ids = ids_json(messages);
+    let at = |messages: &mut [ChatMessage], id: i64| -> Option<usize> {
+        messages.iter().position(|m| m.id.0 == id)
+    };
+    let actions = conn
+        .prepare_cached(
+            "SELECT message_id, key, label, style FROM chat_actions
+             WHERE message_id IN (SELECT value FROM json_each(?1)) ORDER BY message_id, position",
+        )?
+        .query_map([&ids], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (message, key, label, style) in actions {
+        let style = ActionStyle::parse(&style)
+            .ok_or_else(|| invalid_data(format!("unknown action style {style:?}")))?;
+        if let Some(index) = at(messages, message) {
+            messages[index]
+                .actions
+                .push(ChatAction { key, label, style });
+        }
+    }
+    let choices = conn
+        .prepare_cached(
+            "SELECT message_id, key, choice_id, at FROM chat_choices
+             WHERE message_id IN (SELECT value FROM json_each(?1))
+                OR choice_id IN (SELECT value FROM json_each(?1))",
+        )?
+        .query_map([&ids], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (message, key, choice, chosen_at) in choices {
+        if let Some(index) = at(messages, message) {
+            messages[index].chosen = Some(ChatChoice {
+                key: key.clone(),
+                at: chosen_at,
+                choice_id: ChatMessageId(choice),
+            });
+        }
+        if let Some(index) = at(messages, choice) {
+            messages[index].choice_of = Some(ChoiceOf {
+                message_id: ChatMessageId(message),
+                key,
+            });
+        }
+    }
+    let attachments = conn
+        .prepare_cached(&format!(
+            "SELECT {ATTACHMENT_COLUMNS} FROM chat_attachments
+             WHERE message_id IN (SELECT value FROM json_each(?1)) ORDER BY id"
+        ))?
+        .query_map([&ids], attachment_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for row in attachments {
+        let (attachment, _) = attachment(row)?;
+        if let Some(index) = attachment.message_id.and_then(|m| at(messages, m.0)) {
+            messages[index].attachments.push(attachment);
+        }
+    }
+    Ok(())
+}
+
+/// The messages with IDs `ids`, decorated, in that order.
+pub(super) fn messages_by_id(conn: &Connection, ids: &[i64]) -> Result<Vec<ChatMessage>> {
+    let mut messages = ids
+        .iter()
+        .map(|id| {
+            conn.query_row(
+                &format!("SELECT {COLUMNS} FROM chat_messages WHERE id = ?1"),
+                [id],
+                raw_row,
+            )
+            .map_err(StorageError::from)
+            .and_then(message)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    decorate(conn, &mut messages)?;
+    Ok(messages)
+}
+
+/// Attaches the uploads `attachments` of `author` to message `id`; each must be free: not on
+/// a message yet and uploaded by the same side of the chat.
+fn attach(
+    tx: &Transaction<'_>,
+    id: ChatMessageId,
+    author: ChatAuthor,
+    attachments: &[ChatAttachmentId],
+) -> Result<()> {
+    for attachment in attachments {
+        let free = tx.execute(
+            "UPDATE chat_attachments SET message_id = ?2
+             WHERE id = ?1 AND message_id IS NULL AND uploader = ?3",
+            params![attachment.0, id.0, author.as_str()],
+        )?;
+        if free == 0 {
+            let exists = tx
+                .query_row(
+                    "SELECT 1 FROM chat_attachments WHERE id = ?1",
+                    [attachment.0],
+                    |_| Ok(()),
+                )
+                .optional()?;
+            return Err(match exists {
+                Some(()) => StorageError::ChatAttachmentNotFree(*attachment),
+                None => StorageError::ChatAttachmentNotFound(*attachment),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn message(raw: RawMessage) -> Result<ChatMessage> {
@@ -52,14 +226,20 @@ fn message(raw: RawMessage) -> Result<ChatMessage> {
 }
 
 fn find(tx: &Transaction<'_>, id: ChatMessageId) -> Result<Option<ChatMessage>> {
-    tx.query_row(
-        &format!("SELECT {COLUMNS} FROM chat_messages WHERE id = ?1"),
-        [id.0],
-        raw_row,
-    )
-    .optional()?
-    .map(message)
-    .transpose()
+    let Some(mut found) = tx
+        .query_row(
+            &format!("SELECT {COLUMNS} FROM chat_messages WHERE id = ?1"),
+            [id.0],
+            raw_row,
+        )
+        .optional()?
+        .map(message)
+        .transpose()?
+    else {
+        return Ok(None);
+    };
+    decorate(tx, std::slice::from_mut(&mut found))?;
+    Ok(Some(found))
 }
 
 /// A person's message, the only kind that gets receipts.
@@ -357,17 +537,19 @@ impl Storage {
             .map(message)
             .collect::<Result<Vec<_>>>()?;
         messages.reverse();
+        decorate(&self.conn, &mut messages)?;
         Ok(messages)
     }
 
-    /// Stores a person's message in `place`, which must exist and, for a thread, be open.
-    /// A client names each message it sends, so sending it again returns the stored one
-    /// instead of repeating it.
+    /// Stores a person's message in `place`, which must exist and, for a thread, be open,
+    /// with the person's free uploads `attachments`. A client names each message it sends,
+    /// so sending it again returns the stored one instead of repeating it.
     pub fn post_user_message(
         &mut self,
         place: ChatPlace,
         body: &str,
         client_id: &str,
+        attachments: &[ChatAttachmentId],
     ) -> Result<ChatMessage> {
         let now = self.now();
         let tx = self.conn.transaction()?;
@@ -387,6 +569,7 @@ impl Storage {
                     "UPDATE chat_messages SET client_id = ?2 WHERE id = ?1",
                     params![id.0, client_id],
                 )?;
+                attach(&tx, id, ChatAuthor::User, attachments)?;
                 id
             }
         };
@@ -395,14 +578,17 @@ impl Storage {
         Ok(stored)
     }
 
-    /// Stores the agent's message and marks the person's messages it answers handled by
-    /// it, all or nothing. Without `place` it goes where the first message it answers is,
-    /// or to the first channel.
+    /// Stores the agent's message, with the actions it offers and its free uploads
+    /// `attachments`, and marks the person's messages it answers handled by it, all or
+    /// nothing. Without `place` it goes where the first message it answers is, or to the
+    /// first channel. Action keys are unique within the message.
     pub fn post_agent_message(
         &mut self,
         place: Option<ChatPlace>,
         body: &str,
         handles: &[ChatMessageId],
+        actions: &[ChatAction],
+        attachments: &[ChatAttachmentId],
     ) -> Result<ChatMessage> {
         let now = self.now();
         let tx = self.conn.transaction()?;
@@ -418,12 +604,154 @@ impl Storage {
         };
         let at = open_place(&tx, place)?;
         let id = insert(&tx, at, ChatAuthor::Agent, body, now)?;
+        for (position, action) in actions.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO chat_actions (message_id, position, key, label, style)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    id.0,
+                    position as i64,
+                    action.key,
+                    action.label,
+                    action.style.as_str()
+                ],
+            )?;
+        }
+        attach(&tx, id, ChatAuthor::Agent, attachments)?;
         for answered in handles {
             handle(&tx, *answered, Some(id), None, now)?;
         }
         let stored = find(&tx, id)?.ok_or(StorageError::ChatMessageNotFound(id))?;
         tx.commit()?;
         Ok(stored)
+    }
+
+    /// Records that a person chose the action `key` on the agent's message `message`, as
+    /// a person's message in the same place whose body is the action's label, so the agent
+    /// receives it like any other message. A message takes one choice, and only while its
+    /// place takes messages. `client_id` names the click, so sending it again returns the
+    /// stored choice. Returns the person's message and the agent's message with its choice.
+    pub fn choose_chat_action(
+        &mut self,
+        message: ChatMessageId,
+        key: &str,
+        client_id: &str,
+    ) -> Result<(ChatMessage, ChatMessage)> {
+        let now = self.now();
+        let tx = self.conn.transaction()?;
+        let existing: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM chat_messages WHERE client_id = ?1",
+                [client_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let choice = match existing {
+            Some(id) => ChatMessageId(id),
+            None => {
+                let offered = match find(&tx, message)? {
+                    Some(found) if found.author == ChatAuthor::Agent => found,
+                    Some(_) => return Err(StorageError::NotAnAgentsMessage(message)),
+                    None => return Err(StorageError::ChatMessageNotFound(message)),
+                };
+                if let Some(chosen) = &offered.chosen {
+                    return Err(StorageError::ChatActionChosen {
+                        message,
+                        key: chosen.key.clone(),
+                    });
+                }
+                let action = offered
+                    .actions
+                    .iter()
+                    .find(|action| action.key == key)
+                    .ok_or_else(|| StorageError::ChatActionNotFound {
+                        message,
+                        key: key.to_owned(),
+                    })?;
+                let place = offered
+                    .thread_id
+                    .map_or(ChatPlace::Channel(offered.channel_id), ChatPlace::Thread);
+                let at = open_place(&tx, place)?;
+                let choice = insert(&tx, at, ChatAuthor::User, &action.label, now)?;
+                tx.execute(
+                    "UPDATE chat_messages SET client_id = ?2 WHERE id = ?1",
+                    params![choice.0, client_id],
+                )?;
+                tx.execute(
+                    "INSERT INTO chat_choices (message_id, key, choice_id, at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![message.0, key, choice.0, now],
+                )?;
+                choice
+            }
+        };
+        let recorded = find(&tx, choice)?.ok_or(StorageError::ChatMessageNotFound(choice))?;
+        let offered = recorded
+            .choice_of
+            .as_ref()
+            .map(|of| of.message_id)
+            .ok_or_else(|| {
+                invalid_data(format!(
+                    "client id {client_id:?} names a message, not a choice"
+                ))
+            })?;
+        let offered = find(&tx, offered)?.ok_or(StorageError::ChatMessageNotFound(offered))?;
+        tx.commit()?;
+        Ok((recorded, offered))
+    }
+
+    /// Records an upload of `uploader` whose bytes are stored under `file_key`; it is free
+    /// until a message of the same side is sent with it.
+    pub fn create_chat_attachment(
+        &mut self,
+        file_key: &str,
+        uploader: ChatAuthor,
+        name: &str,
+        content_type: &str,
+        size: i64,
+    ) -> Result<ChatAttachment> {
+        let now = self.now();
+        self.conn.execute(
+            "INSERT INTO chat_attachments (file_key, uploader, name, content_type, size, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![file_key, uploader.as_str(), name, content_type, size, now],
+        )?;
+        let id = ChatAttachmentId(self.conn.last_insert_rowid());
+        Ok(self
+            .chat_attachment(id)?
+            .ok_or(StorageError::ChatAttachmentNotFound(id))?
+            .0)
+    }
+
+    /// An upload with the key its bytes are stored under.
+    pub fn chat_attachment(
+        &self,
+        id: ChatAttachmentId,
+    ) -> Result<Option<(ChatAttachment, String)>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {ATTACHMENT_COLUMNS} FROM chat_attachments WHERE id = ?1"),
+                [id.0],
+                attachment_row,
+            )
+            .optional()?
+            .map(attachment)
+            .transpose()
+    }
+
+    /// Forgets the uploads no message took that were made before `before`, and returns the
+    /// keys their bytes are stored under, for removing them.
+    pub fn remove_stale_chat_attachments(&mut self, before: i64) -> Result<Vec<String>> {
+        let tx = self.conn.transaction()?;
+        let keys = tx
+            .prepare(
+                "DELETE FROM chat_attachments WHERE message_id IS NULL AND created_at < ?1
+                 RETURNING file_key",
+            )?
+            .query_map([before], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        tx.commit()?;
+        Ok(keys)
     }
 
     /// The person's messages the agent has not received yet, in every channel and thread,
@@ -711,8 +1039,8 @@ mod tests {
     #[test]
     fn a_resent_message_is_stored_once_and_gets_a_due_time() {
         let mut storage = storage_at(100);
-        let first = storage.post_user_message(GENERAL, "Hi", "c1").unwrap();
-        let again = storage.post_user_message(GENERAL, "Hi", "c1").unwrap();
+        let first = storage.post_user_message(GENERAL, "Hi", "c1", &[]).unwrap();
+        let again = storage.post_user_message(GENERAL, "Hi", "c1", &[]).unwrap();
         assert_eq!(first, again);
         assert_eq!(first.author, ChatAuthor::User);
         assert_eq!((first.channel_id, first.thread_id), (FIRST_CHANNEL, None));
@@ -723,8 +1051,10 @@ mod tests {
     #[test]
     fn taking_pending_messages_marks_them_received_once() {
         let mut storage = storage_at(100);
-        let hi = storage.post_user_message(GENERAL, "Hi", "c1").unwrap();
-        storage.post_agent_message(None, "Hello", &[]).unwrap();
+        let hi = storage.post_user_message(GENERAL, "Hi", "c1", &[]).unwrap();
+        storage
+            .post_agent_message(None, "Hello", &[], &[], &[])
+            .unwrap();
         let peeked = storage.pending_chat_messages(false).unwrap();
         assert_eq!(peeked.iter().map(|m| m.id).collect::<Vec<_>>(), [hi.id]);
         assert_eq!(peeked[0].delivered_at, None);
@@ -736,8 +1066,10 @@ mod tests {
     #[test]
     fn a_reply_handles_the_messages_it_answers_and_acknowledges_them() {
         let mut storage = storage_at(100);
-        let hi = storage.post_user_message(GENERAL, "Hi", "c1").unwrap();
-        let reply = storage.post_agent_message(None, "Hello", &[hi.id]).unwrap();
+        let hi = storage.post_user_message(GENERAL, "Hi", "c1", &[]).unwrap();
+        let reply = storage
+            .post_agent_message(None, "Hello", &[hi.id], &[], &[])
+            .unwrap();
         assert_eq!(reply.author, ChatAuthor::Agent);
         assert_eq!(reply.due_at, None);
         let handled = &storage.list_chat_messages(None, None, 50).unwrap()[0];
@@ -755,8 +1087,10 @@ mod tests {
     #[test]
     fn receipts_go_only_on_existing_messages_of_people() {
         let mut storage = storage_at(100);
-        let hi = storage.post_user_message(GENERAL, "Hi", "c1").unwrap();
-        let reply = storage.post_agent_message(None, "Hello", &[]).unwrap();
+        let hi = storage.post_user_message(GENERAL, "Hi", "c1", &[]).unwrap();
+        let reply = storage
+            .post_agent_message(None, "Hello", &[], &[], &[])
+            .unwrap();
         assert!(matches!(
             storage.ack_chat_messages(&[hi.id, reply.id]),
             Err(StorageError::NotAPersonsMessage(id)) if id == reply.id
@@ -779,7 +1113,7 @@ mod tests {
             Err(StorageError::TaskNotFound(TaskId(42)))
         ));
         assert!(matches!(
-            storage.post_agent_message(None, "Hello", &[ChatMessageId(99)]),
+            storage.post_agent_message(None, "Hello", &[ChatMessageId(99)], &[], &[]),
             Err(StorageError::ChatMessageNotFound(_))
         ));
         assert_eq!(storage.list_chat_messages(None, None, 50).unwrap().len(), 2);
@@ -788,7 +1122,7 @@ mod tests {
     #[test]
     fn acknowledging_again_keeps_the_first_receipt() {
         let mut storage = storage_at(100);
-        let hi = storage.post_user_message(GENERAL, "Hi", "c1").unwrap();
+        let hi = storage.post_user_message(GENERAL, "Hi", "c1", &[]).unwrap();
         storage.ack_chat_messages(&[hi.id]).unwrap();
         storage.set_clock(|| 200);
         let again = storage.ack_chat_messages(&[hi.id]).unwrap();
@@ -809,7 +1143,7 @@ mod tests {
         let ids: Vec<_> = (0..5)
             .map(|n| {
                 storage
-                    .post_user_message(GENERAL, &format!("m{n}"), &format!("c{n}"))
+                    .post_user_message(GENERAL, &format!("m{n}"), &format!("c{n}"), &[])
                     .unwrap()
                     .id
             })
@@ -869,9 +1203,9 @@ mod tests {
             .unwrap();
         assert_eq!(renamed.name, "Work");
         let here = ChatPlace::Channel(work.id);
-        let hi = storage.post_user_message(here, "Hi", "c1").unwrap();
+        let hi = storage.post_user_message(here, "Hi", "c1", &[]).unwrap();
         storage
-            .post_user_message(GENERAL, "Elsewhere", "c2")
+            .post_user_message(GENERAL, "Elsewhere", "c2", &[])
             .unwrap();
         assert_eq!(hi.channel_id, work.id);
         assert_eq!(
@@ -879,7 +1213,9 @@ mod tests {
             std::slice::from_ref(&hi)
         );
         // A reply without a place goes where the message it answers is.
-        let reply = storage.post_agent_message(None, "Hello", &[hi.id]).unwrap();
+        let reply = storage
+            .post_agent_message(None, "Hello", &[hi.id], &[], &[])
+            .unwrap();
         assert_eq!((reply.channel_id, reply.thread_id), (work.id, None));
         assert_eq!(
             storage
@@ -891,7 +1227,7 @@ mod tests {
             [("general", 0), ("Work", 1)]
         );
         assert!(matches!(
-            storage.post_user_message(ChatPlace::Channel(ChatChannelId(9)), "Hi", "c3"),
+            storage.post_user_message(ChatPlace::Channel(ChatChannelId(9)), "Hi", "c3", &[]),
             Err(StorageError::ChatChannelNotFound(ChatChannelId(9)))
         ));
     }
@@ -913,7 +1249,9 @@ mod tests {
             (ThreadStatus::Open, Some(ship), None, None)
         );
         let place = ChatPlace::Thread(thread.id);
-        let hi = storage.post_user_message(place, "Ready?", "c1").unwrap();
+        let hi = storage
+            .post_user_message(place, "Ready?", "c1", &[])
+            .unwrap();
         assert_eq!(
             (hi.channel_id, hi.thread_id),
             (FIRST_CHANNEL, Some(thread.id))
@@ -972,7 +1310,7 @@ mod tests {
             (ThreadStatus::Closed, Some(200), None)
         );
         assert!(matches!(
-            storage.post_user_message(place, "Hi", "c1"),
+            storage.post_user_message(place, "Hi", "c1", &[]),
             Err(StorageError::ChatThreadNotOpen {
                 status: ThreadStatus::Closed,
                 ..
@@ -987,7 +1325,7 @@ mod tests {
             (ThreadStatus::Archived, Some(200), Some(300))
         );
         assert!(matches!(
-            storage.post_agent_message(Some(place), "Hi", &[]),
+            storage.post_agent_message(Some(place), "Hi", &[], &[], &[]),
             Err(StorageError::ChatThreadNotOpen {
                 status: ThreadStatus::Archived,
                 ..
@@ -1013,7 +1351,7 @@ mod tests {
             .update_chat_thread(thread.id, &close(ThreadStatus::Open))
             .unwrap();
         assert_eq!((reopened.closed_at, reopened.archived_at), (None, None));
-        storage.post_user_message(place, "Hi", "c1").unwrap();
+        storage.post_user_message(place, "Hi", "c1", &[]).unwrap();
     }
 
     #[test]
@@ -1023,15 +1361,17 @@ mod tests {
             .create_chat_thread(FIRST_CHANNEL, "Deploy", None)
             .unwrap();
         let place = ChatPlace::Thread(thread.id);
-        storage.post_user_message(GENERAL, "Mine", "c1").unwrap();
+        storage
+            .post_user_message(GENERAL, "Mine", "c1", &[])
+            .unwrap();
         let first = storage
-            .post_agent_message(Some(GENERAL), "One", &[])
+            .post_agent_message(Some(GENERAL), "One", &[], &[], &[])
             .unwrap();
         storage
-            .post_agent_message(Some(GENERAL), "Two", &[])
+            .post_agent_message(Some(GENERAL), "Two", &[], &[], &[])
             .unwrap();
         let in_thread = storage
-            .post_agent_message(Some(place), "Three", &[])
+            .post_agent_message(Some(place), "Three", &[], &[], &[])
             .unwrap();
         let unread = |storage: &Storage| storage.list_chat_channels().unwrap()[0].unread;
         assert_eq!(unread(&storage), 3);
@@ -1046,7 +1386,7 @@ mod tests {
             0
         );
         storage
-            .post_agent_message(Some(place), "Four", &[])
+            .post_agent_message(Some(place), "Four", &[], &[], &[])
             .unwrap();
         assert_eq!(unread(&storage), 2);
         // An archived thread no longer counts toward its channel.
@@ -1093,5 +1433,171 @@ mod tests {
             None
         );
         assert!(!storage.list_chat_channels().unwrap()[0].push);
+    }
+    fn yes_no() -> Vec<ChatAction> {
+        vec![
+            ChatAction {
+                key: "yes".into(),
+                label: "Yes".into(),
+                style: ActionStyle::Primary,
+            },
+            ChatAction {
+                key: "no".into(),
+                label: "No".into(),
+                style: ActionStyle::Default,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_choice_is_recorded_once_as_a_persons_message_where_the_question_is() {
+        let mut storage = storage_at(100);
+        let thread = storage
+            .create_chat_thread(FIRST_CHANNEL, "Deploy", None)
+            .unwrap();
+        let place = ChatPlace::Thread(thread.id);
+        let asked = storage
+            .post_agent_message(Some(place), "Deploy now?", &[], &yes_no(), &[])
+            .unwrap();
+        assert_eq!(
+            asked
+                .actions
+                .iter()
+                .map(|a| a.key.as_str())
+                .collect::<Vec<_>>(),
+            ["yes", "no"]
+        );
+        storage.set_clock(|| 200);
+        let (choice, offered) = storage.choose_chat_action(asked.id, "no", "k1").unwrap();
+        assert_eq!(
+            (choice.author, choice.body.as_str(), choice.thread_id),
+            (ChatAuthor::User, "No", Some(thread.id))
+        );
+        assert_eq!(
+            choice.choice_of,
+            Some(ChoiceOf {
+                message_id: asked.id,
+                key: "no".into()
+            })
+        );
+        assert_eq!(choice.due_at, Some(200 + ANSWER_WITHIN));
+        assert_eq!(
+            offered.chosen,
+            Some(ChatChoice {
+                key: "no".into(),
+                at: 200,
+                choice_id: choice.id
+            })
+        );
+        // The agent receives the choice like any other message of a person.
+        let taken = storage.pending_chat_messages(true).unwrap();
+        assert_eq!(
+            taken
+                .iter()
+                .map(|m| (m.id, m.choice_of.clone()))
+                .collect::<Vec<_>>(),
+            [(choice.id, choice.choice_of.clone())]
+        );
+        // Sending the same click again returns it; another click is refused.
+        assert_eq!(
+            storage
+                .choose_chat_action(asked.id, "no", "k1")
+                .unwrap()
+                .0
+                .id,
+            choice.id
+        );
+        assert!(matches!(
+            storage.choose_chat_action(asked.id, "yes", "k2"),
+            Err(StorageError::ChatActionChosen { key, .. }) if key == "no"
+        ));
+        let other = storage
+            .post_agent_message(Some(place), "And?", &[], &yes_no(), &[])
+            .unwrap();
+        assert!(matches!(
+            storage.choose_chat_action(other.id, "maybe", "k3"),
+            Err(StorageError::ChatActionNotFound { .. })
+        ));
+        assert!(matches!(
+            storage.choose_chat_action(choice.id, "no", "k4"),
+            Err(StorageError::NotAnAgentsMessage(_))
+        ));
+        storage
+            .update_chat_thread(
+                thread.id,
+                &ThreadEdit {
+                    status: Some(ThreadStatus::Closed),
+                    ..ThreadEdit::default()
+                },
+            )
+            .unwrap();
+        assert!(matches!(
+            storage.choose_chat_action(other.id, "yes", "k5"),
+            Err(StorageError::ChatThreadNotOpen { .. })
+        ));
+        assert!(matches!(
+            storage.post_agent_message(
+                Some(GENERAL),
+                "Twice",
+                &[],
+                &[yes_no()[0].clone(), yes_no()[0].clone()],
+                &[]
+            ),
+            Err(StorageError::Sqlite(_))
+        ));
+    }
+
+    #[test]
+    fn uploads_go_once_on_a_message_of_their_own_side_and_stale_ones_are_dropped() {
+        let mut storage = storage_at(100);
+        let mine = storage
+            .create_chat_attachment("k-mine", ChatAuthor::User, "shot.png", "image/png", 3)
+            .unwrap();
+        let agents = storage
+            .create_chat_attachment("k-agent", ChatAuthor::Agent, "log.txt", "text/plain", 5)
+            .unwrap();
+        assert!(matches!(
+            storage.post_agent_message(None, "Here", &[], &[], &[mine.id]),
+            Err(StorageError::ChatAttachmentNotFree(id)) if id == mine.id
+        ));
+        let sent = storage
+            .post_user_message(GENERAL, "See", "c1", &[mine.id])
+            .unwrap();
+        assert_eq!(sent.attachments.len(), 1);
+        assert_eq!(
+            (
+                sent.attachments[0].name.as_str(),
+                sent.attachments[0].message_id
+            ),
+            ("shot.png", Some(sent.id))
+        );
+        assert_eq!(
+            storage.list_chat_messages(Some(GENERAL), None, 50).unwrap()[0].attachments,
+            sent.attachments
+        );
+        assert!(matches!(
+            storage.post_user_message(GENERAL, "Again", "c2", &[mine.id]),
+            Err(StorageError::ChatAttachmentNotFree(_))
+        ));
+        assert!(matches!(
+            storage.post_user_message(GENERAL, "None", "c3", &[ChatAttachmentId(99)]),
+            Err(StorageError::ChatAttachmentNotFound(ChatAttachmentId(99)))
+        ));
+        // The failed messages were not stored.
+        assert_eq!(storage.list_chat_messages(None, None, 50).unwrap().len(), 1);
+        let (found, key) = storage.chat_attachment(mine.id).unwrap().unwrap();
+        assert_eq!((found.uploader, key.as_str()), (ChatAuthor::User, "k-mine"));
+        storage.set_clock(|| 200);
+        storage
+            .create_chat_attachment("k-new", ChatAuthor::User, "new.txt", "text/plain", 1)
+            .unwrap();
+        // Only the free upload made before the cutoff goes; the new one and the sent one stay.
+        storage.set_clock(|| 300);
+        assert_eq!(
+            storage.remove_stale_chat_attachments(101).unwrap(),
+            ["k-agent"]
+        );
+        assert!(storage.chat_attachment(agents.id).unwrap().is_none());
+        assert!(storage.chat_attachment(mine.id).unwrap().is_some());
     }
 }

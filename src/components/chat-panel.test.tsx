@@ -37,6 +37,10 @@ function message(id: number, author: ChatMessage["author"], body: string, overri
     handledReplyId: null,
     handledTaskId: null,
     overdue: false,
+    actions: [],
+    chosen: null,
+    choiceOf: null,
+    attachments: [],
     ...overrides,
   };
 }
