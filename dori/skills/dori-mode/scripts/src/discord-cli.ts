@@ -39,6 +39,8 @@ export type DiscordCliDeps = {
 export const discordMain = async (args: string[], { flow: deps, die, messengerToken, flags, opt, need, key }: DiscordCliDeps): Promise<number> => {
   const [command = "", ...rest] = args;
   const { config } = deps;
+  const { toodoChatCommand, toodoChatMain } = await import("./toodo-chat-cli.ts");
+  if (toodoChatCommand(command, rest, key, opt("to"))) return toodoChatMain(args, { flow: deps, die, opt, need });
   /** Posts `text` to a resolved Discord target and returns the new message's id. */
   const postMessage = async (to: string, text: string, components?: readonly unknown[]): Promise<string> =>
     // Each post is its own message: without a unique id Discord would dedupe a repeat of the same text.
@@ -82,7 +84,8 @@ export const discordMain = async (args: string[], { flow: deps, die, messengerTo
       const followUps = await import("./thread-followup.ts");
       const { postLaneReport, redirectReport, ReportPostError } = await import("./report-post.ts");
       const discord = new Discord(fetchHttp, realClock, messengerToken("DORI_DISCORD_TOKEN"));
-      const post = { config, discord, now: realClock.now };
+      const { postLaneToodo } = await import("./lane-toodo.ts");
+      const post = { config, discord, now: realClock.now, toodo: (lane: typeof found, text: string) => postLaneToodo(deps, lane, "report", text) };
       const note = opt("note");
       const receipt = (posted: { message: string; target: string; followUp?: boolean }, kept = note): void => {
         recordReported(config.stateDir, found.key, realClock.now(), kept ? oneLine(kept) : undefined, posted);

@@ -1,6 +1,9 @@
 import { type CliCommand, die, messengerToken } from "./context.ts";
 
-/** `dori ack|reported|handled|send|thread|typing`: discord-cli.ts checks these shared flags per command and parses the rest itself. */
+/**
+ * `dori ack|reported|handled|send|thread|typing`: discord-cli.ts checks these shared flags per command and parses the rest
+ * itself; a command on the Toodo chat goes to toodo-chat-cli.ts.
+ */
 export const discordCommand: CliCommand = {
   options: {
     text: { type: "string" },
@@ -16,6 +19,7 @@ export const discordCommand: CliCommand = {
     "no-redirect": { type: "boolean" },
     force: { type: "boolean" },
     "drop-notice": { type: "boolean" },
+    handles: { type: "string" },
   },
   ownFlags: true,
   run: async ({ deps, flags, key, opt, need }) => {

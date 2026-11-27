@@ -15,6 +15,7 @@ import { parseRequestText } from "./runner/decision-text.ts";
 import { type LaneReport, type LaneReportStore, laneGeneration, type ReportRoute, UNFENCED_GENERATION } from "./lane-report-store.ts";
 import { discordStatusTransport, type LaneStatusTransport, statusChannel, upsertStatus } from "./lane-status.ts";
 import { errLine, oneLine } from "./line-text.ts";
+import { postLaneToodo } from "./lane-toodo.ts";
 export { REPORT_KINDS, isReportKind, type ReportKind } from "./runner/report-kinds.ts";
 
 /**
@@ -26,6 +27,8 @@ export const INLINE_REPORT_MAX = 200;
 export const INLINE_REPORT_LINES = 3;
 /** Where full report bodies are saved, under the state directory. */
 export const REPORT_BODIES_DIR = "reports";
+/** Report kinds posted into the lane's Toodo task thread as status messages; questions and blockers go to the lead. */
+const TOODO_THREAD_KINDS: ReadonlySet<ReportKind> = new Set<ReportKind>(["progress", "milestone", "done"]);
 
 const inline = (text: string): boolean => text.trim().split("\n").length <= INLINE_REPORT_LINES && oneLine(text).length <= INLINE_REPORT_MAX;
 
@@ -164,6 +167,8 @@ export const routeReports = async (
           catch (e) { console.error(`LANE_STATUS_ERROR ${lane.key} ${report.id} ${errLine(e, 160)}`); }
         }
       }
+      // The lane's progress, milestones and done claim land in its Toodo task thread too (the Toodo chat beside Discord).
+      if (lane && route !== "late" && TOODO_THREAD_KINDS.has(report.kind)) await postLaneToodo(deps, lane, report.kind, report.text);
       // A routed report is the lane being heard, like a thread reply: freshness neither nudges it nor raises NO-PROGRESS.
       if (route !== "late") await deps.registry.patch(report.lane, { lastReplyAt: deps.clock.now() });
       store.consume(report.id, deps.clock.now(), route, eventId);

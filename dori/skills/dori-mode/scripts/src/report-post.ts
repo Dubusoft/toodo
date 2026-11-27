@@ -34,6 +34,8 @@ export type ReportPostDeps = {
     sendFiles(channelId: string, content: string, stableId: string, files: readonly DiscordFile[]): Promise<string>;
   };
   readonly now: () => number;
+  /** Posts the report into the lane's Toodo task thread as well (lane-toodo.ts postLaneToodo); it never throws. */
+  readonly toodo?: (lane: Lane, text: string) => Promise<void>;
 };
 
 export type ReportPosted =
@@ -117,5 +119,6 @@ export const postLaneReport = async (
   const laneThread = (bound && isDiscord(bound) ? discordThreadOf(bound, deps.config.discordChannels) : undefined) ?? (threadId === to ? to : undefined);
   recordReported(deps.config.stateDir, lane.key, deps.now(), opts.note ? oneLine(opts.note) : undefined,
     { message, target: `discord:${to}${thread ? `/${thread}` : ""}`, ...(laneThread ? { thread: laneThread } : {}) });
+  await deps.toodo?.(lane, text);
   return { kind: "posted", message };
 };
