@@ -12,7 +12,10 @@ import { COMMAND_RETENTION_MS } from "./durability.ts";
  * - `commands`: `{cmdId, cmdSeq, type, key, epoch, state, result, result_json}`; the intent row is committed before
  *   the effect, the result after it. `result` is the detail text, `result_json` (nullable)
  *   the effect's structured result, so a resent cmdId can be answered again in full;
- * - `cmdAck`: the highest `cmdSeq` such that every `cmdSeq` up to it has a final (non-intent) row.
+ * - `cmdAck`: the highest `cmdSeq` such that no `cmdSeq` up to it is still at intent. A `cmdSeq` below the highest one
+ *   recorded that has no row at all never arrives later (the supervisor issues them in order on one connection at a
+ *   time and never reuses one, and every row is recorded when its frame is read), so it does not hold the cursor
+ *   back: a cmdId sent again under a new cmdSeq, a frame dropped before it was recorded or one lost with its connection.
  */
 
 export const STATE_FILE = "state.sqlite";
@@ -178,25 +181,22 @@ export class RunnerState {
     return rows.map(toRecord);
   }
 
-  /** Max contiguous cmdSeq with a final row (0 when none). */
+  /** The cmdSeq below the lowest intent, else the highest cmdSeq recorded (0 when none). */
   cmdAck(): number {
-    // `ackFloor` covers rows already pruned, which were all final and contiguous at the time.
-    let ack = this.meta("ackFloor");
-    const rows = this.db
-      .query("SELECT cmdSeq FROM commands WHERE cmdSeq > ? AND state != 'intent' ORDER BY cmdSeq")
-      .all(ack) as { cmdSeq: number }[];
-    for (const { cmdSeq } of rows) {
-      if (cmdSeq !== ack + 1) break;
-      ack = cmdSeq;
-    }
-    return ack;
+    // `ackFloor` covers rows already pruned, which were all at or below the cursor at the time.
+    const floor = this.meta("ackFloor");
+    const row = this.db
+      .query("SELECT MIN(CASE WHEN state = 'intent' THEN cmdSeq END) AS intent, MAX(cmdSeq) AS top FROM commands WHERE cmdSeq > ?")
+      .get(floor) as { intent: number | null; top: number | null };
+    if (row.intent !== null) return row.intent - 1;
+    return row.top ?? floor;
   }
 
   /** Deletes final rows at or below the ack cursor last updated before `cutoff`; returns how many went. */
   pruneCommands(cutoff: number): number {
     return this.db.transaction(() => {
-      // Remember the cursor first so deleting old rows can never lower it. A final row above it (past a gap left by an
-      // intent) stays: cmdAck must still find it once the gap closes.
+      // Remember the cursor first so deleting old rows can never lower it. A final row above it (past an unfinished
+      // intent) stays: cmdAck must still find it once that intent finishes.
       const ack = this.cmdAck();
       this.db.query("INSERT OR REPLACE INTO meta (key, value) VALUES ('ackFloor', ?)").run(ack);
       return this.db.query("DELETE FROM commands WHERE state != 'intent' AND cmdSeq <= ? AND updated_at < ?").run(ack, cutoff).changes;
