@@ -40,6 +40,20 @@ test("a valid edit applies live keys in place and reports restart-only keys with
   expect(f.events[1]?.[1]).toContain("discord changed");
 });
 
+test("an ownerLanguage change applies live and its reload line gives the lead the new language rule", async () => {
+  const f = await fixture({ ownerLanguage: "Korean" });
+  write(f.path, { discord, discordChannels: ["100"], stateDir: state.dir, ownerLanguage: "English" });
+  expect(await f.reload()).toEqual({ state: "applied", live: ["ownerLanguage"], restart: [] });
+  expect(f.config.ownerLanguage).toBe("English");
+  expect(f.events.at(-1)?.[1]).toEndWith("; The owner's language is English (config ownerLanguage): write every reply, report and question to the owner in English, whatever language their message is in.");
+  write(f.path, { discord, discordChannels: ["100"], stateDir: state.dir });
+  await f.reload();
+  expect(f.events.at(-1)?.[1]).toEndWith("; ownerLanguage is unset now: reply in the language the owner wrote in");
+  write(f.path, { discord, discordChannels: ["100", "200"], stateDir: state.dir });
+  await f.reload();
+  expect(f.events.at(-1)?.[1]).toEndWith(`from ${f.path}`);
+});
+
 test("platforms: the Toodo chat switches live, while switching Discord waits for a restart and never leaves the owner without a chat", async () => {
   const f = await fixture();
   const edit = (platforms: string[]) => { write(f.path, { discord, discordChannels: ["100"], stateDir: state.dir, platforms }); return f.reload(); };

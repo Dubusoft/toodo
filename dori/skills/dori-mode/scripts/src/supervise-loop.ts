@@ -3,7 +3,7 @@ import { replaceKnownSecrets } from "./redact.ts";
 import { SecretStore } from "./secret-store.ts";
 import { homedir } from "node:os";
 import { resolveCredential } from "./credentials.ts";
-import { alertsChannelOf, deliveryConfigError, discordOn } from "./config.ts";
+import { alertsChannelOf, deliveryConfigError, discordOn, laneLanguageChange } from "./config.ts";
 import { applyConfigPatch, configReloader, watchConfigFiles } from "./config-watch.ts";
 import { saveLeadPane } from "./managed-panes.ts";
 import { readRunnerRows } from "./runner/hub.ts";
@@ -1051,10 +1051,23 @@ export const supervise = async (
     await hub.tryOpen((name, work) => probe.step(name, work));
     // config.json edits apply without a restart: the live keys are written into the config objects every part holds
     // (this loop's and the supervisor core's), so in-flight events, waits, lanes and the gateway are untouched.
+    const tellLanesLanguage = async (language: string | undefined): Promise<void> => {
+      for (const lane of await deps.registry.open()) {
+        try {
+          console.error(`LANE_LANGUAGE_SENT ${lane.key} ${await deps.ops.send(lane, laneLanguageChange(language), { refuseWhileAsking: true })}`);
+        } catch (e) {
+          console.error(`LANE_LANGUAGE_FAILED ${lane.key}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    };
     if (configFile) {
       const reload = configReloader({
         path: configFile, current: () => deps.config,
-        apply: (patch) => { applyConfigPatch([deps.config, supervisor.config], patch); },
+        apply: (patch) => {
+          applyConfigPatch([deps.config, supervisor.config], patch);
+          // Lanes read the language from their brief's footer, written at launch: tell the open ones about a change.
+          if ("ownerLanguage" in patch) void tellLanesLanguage(patch.ownerLanguage);
+        },
         enqueue: (id, line) => { enqueueSweep(id, line); }, log: (line) => { console.error(line); },
       });
       stopConfigWatch = watchConfigFiles([configFile], reload);

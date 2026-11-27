@@ -351,6 +351,18 @@ export const languageInstruction = (ownerLanguage: string | undefined): string =
   return language ? `Write every dori report text and every todo item in ${language}; code, commands, commit messages and PR text follow the repo convention.` : "";
 };
 
+/** The lead's language rule for `ownerLanguage`: every owner-facing message in it; "" when the language is unset. */
+export const leadLanguageInstruction = (ownerLanguage: string | undefined): string => {
+  const language = typeof ownerLanguage === "string" ? ownerLanguage.trim() : "";
+  return language ? `The owner's language is ${language} (config ownerLanguage): write every reply, report and question to the owner in ${language}, whatever language their message is in.` : "";
+};
+
+/** The line an open lane gets when `ownerLanguage` changes, so its reports follow at once. */
+export const laneLanguageChange = (ownerLanguage: string | undefined): string => {
+  const rule = languageInstruction(ownerLanguage);
+  return rule ? `[LEAD] The owner's language changed. From now on: ${rule}` : "[LEAD] The owner's language setting was cleared: keep writing dori report text in the language your brief uses.";
+};
+
 /** The config's `review`: absent is no gated repo; otherwise `{ "repos"?: ["owner/repo", ...] }`, else TypeError. */
 const reviewConfig = (raw: unknown): ReviewConfig => {
   if (raw == null) return {};

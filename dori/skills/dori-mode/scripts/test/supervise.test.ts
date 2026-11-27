@@ -1603,6 +1603,18 @@ test("a cold start points the lead at the full SKILL.md and puts leadArgs on the
   expect(command).toContain("test/lead-default");
 });
 
+test.each([["Japanese", true], [undefined, false]] as const)("ownerLanguage=%s: the lead's startup prompt names the owner's language only when set", async (ownerLanguage, named) => {
+  const f = fixture(ownerLanguage ? { ownerLanguage } : {});
+  f.noAgent();
+  f.cold();
+  const supervisor = new Supervisor(f.deps);
+  supervisor.enqueue("card", "INBOUND card");
+  await supervisor.flush();
+  const prompt = f.prompt() ?? "";
+  expect(prompt.includes("The owner's language is Japanese (config ownerLanguage): write every reply, report and question to the owner in Japanese")).toBe(named);
+  expect(prompt.includes("The owner's language is")).toBe(named);
+});
+
 test("the lead runs under omo's full-access preset unless its own argv names a preset", () => {
   expect(leadPermissionArgs(["--approve", "--model", "m"])).toEqual(["--permission-preset", "full-access"]);
   expect(leadPermissionArgs(["--permission-preset", "ask"])).toEqual([]);
