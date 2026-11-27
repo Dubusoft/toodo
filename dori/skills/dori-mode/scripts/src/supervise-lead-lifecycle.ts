@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import type { FlowDeps } from "./done-flow.ts";
-import { leadModels, leadCommand, LEAD_DIET_ARGS, LEAD_DIET_ENV, qualifiedModel } from "./config.ts";
+import { leadLanguageInstruction, leadModels, leadCommand, LEAD_DIET_ARGS, LEAD_DIET_ENV, qualifiedModel } from "./config.ts";
 import { eventClass } from "./event-policy.ts";
 import { paneRow, type Pane, quoteForPane, readScreen, sendVerified } from "./panes.ts";
 import type { Runner } from "./run.ts";
@@ -539,12 +539,14 @@ export class LeadLifecycle {
     const replyFirst = "Owner messages come first, each step its own call: dori ack alone (it previews unread follow-ups in that channel), then, before your first reply, read the two files above, then one short reply that merges them (an edit replaces, a delete withdraws); dori send refuses with SEND_STALE when a newer owner message arrived, so merge it and resend; only then investigate or work and send the result as a follow-up.";
     const voice = "Follow the owner's instructions in human.md from your first reply on, and keep its speech rules, such as the honorific level, in every message: matching the owner's tone never lowers the honorific level (no casual speech when the polite form is the rule; with no rule recorded, use the polite form).";
     const persist = "Persist questions, promises and needed state to memory or the registry before ending every turn.";
+    const language = leadLanguageInstruction(this.deps.config.ownerLanguage);
     return [
       ...head,
       take,
       carried,
       replyFirst,
       voice,
+      ...(language ? [language] : []),
       ...(restart.reason ? [`The previous lead stopped: ${restart.reason}. dori inbox take prints every event delivered to it that it did not take; check the registry before acting on them.`] : []),
       persist,
       transport,

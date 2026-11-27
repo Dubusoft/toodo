@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Archive, Bell, Bot, CalendarClock, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, Plug, SlidersHorizontal, X } from "lucide-react";
+import { Activity, Archive, Bell, Bot, CalendarClock, ChevronLeft, ChevronRight, DatabaseBackup, FileCog, MonitorSmartphone, Plug, SlidersHorizontal, X } from "lucide-react";
 import { AgentAccessPanel } from "@/components/agent-access-panel";
 import { ArchivePanel } from "@/components/archive-panel";
 import { BackupPanel, BackupStatusLabel } from "@/components/backup-panel";
 import { ConnectedAppsPanel } from "@/components/connected-apps-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
+import { DoriConfigPanel } from "@/components/dori-config-panel";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
 import { SchedulesPanel } from "@/components/schedules-panel";
@@ -22,6 +23,7 @@ export type SettingsSection =
   | "agents"
   | "dori"
   | "schedules"
+  | "dori-config"
   | "apps"
   | "devices"
   | "notifications"
@@ -40,6 +42,7 @@ const sections: Section[] = [
   { id: "agents", label: "Agent access", icon: <Bot /> },
   { id: "dori", label: "Dori status", icon: <Activity /> },
   { id: "schedules", label: "Scheduled jobs", icon: <CalendarClock /> },
+  { id: "dori-config", label: "Dori config", icon: <FileCog /> },
   { id: "apps", label: "Connected apps", icon: <Plug /> },
   { id: "devices", label: "Devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
   { id: "notifications", label: "Notifications", icon: <Bell />, status: <NotificationsStatus /> },
@@ -274,6 +277,8 @@ export function SettingsDialog({
                     <SupervisorStatusPanel active={open && shown === "dori"} />
                   ) : item.id === "schedules" ? (
                     <SchedulesPanel active={open && shown === "schedules"} />
+                  ) : item.id === "dori-config" ? (
+                    <DoriConfigPanel active={open && shown === "dori-config"} />
                   ) : item.id === "agents" ? (
                     <AgentAccessPanel />
                   ) : item.id === "apps" ? (

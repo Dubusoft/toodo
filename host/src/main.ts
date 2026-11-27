@@ -4,10 +4,19 @@ import type { Server } from "bun";
 
 import { type Config, configFromEnv } from "../../server/src/http/config.ts";
 import { type Core, openCore, SERVE_OPTIONS, stopServing } from "../../server/src/main.ts";
+import type { DoriConfigStore } from "../../src/lib/dori-config.ts";
 import { doriMaxAge, gatewayProbe, healthcheckPaths, httpProbe, readPingFile, startHealthcheck } from "./healthcheck.ts";
 import { type SupervisorEvent, SupervisorHost, type SupervisorSnapshot, type SupervisorTunables, workerSpawner } from "./supervisor.ts";
 
 export const SUPERVISOR_ENTRY = new URL("../../dori/skills/dori-mode/scripts/src/supervise-worker.ts", import.meta.url);
+/** Dori's config file for the Settings page, loaded by URL like the Worker entry so Dori's code stays out of the host's. */
+export const DORI_CONFIG_EDIT = new URL("../../dori/skills/dori-mode/scripts/src/config-edit.ts", import.meta.url);
+
+/** The config file Dori reads (`DORI_CONFIG`, else `~/.dori/config.json`), as the core serves it. */
+export const loadDoriConfigStore = async (entry: URL = DORI_CONFIG_EDIT): Promise<DoriConfigStore> => {
+  const module = (await import(entry.href)) as { readonly doriConfigStore: () => DoriConfigStore };
+  return module.doriConfigStore();
+};
 
 export type CoreFetch = (request: Request, server: Server<undefined>) => Response | Promise<Response>;
 
@@ -99,8 +108,11 @@ if (import.meta.main) {
   // The core is served before the host starts the supervisor; its scheduled-jobs requests reach the Worker once it runs.
   let supervisor: SupervisorHost | undefined;
   try {
-    core = await openCore(config, mode === "off" ? {} : {
-      schedules: (request) => supervisor?.schedules(request) ?? Promise.reject(new Error("the supervisor has not started")),
+    core = await openCore(config, {
+      ...(mode === "off" ? {} : {
+        schedules: (request) => supervisor?.schedules(request) ?? Promise.reject(new Error("the supervisor has not started")),
+      }),
+      doriConfig: await loadDoriConfigStore(),
     });
   } catch (e) {
     console.error(`toodo: ${message(e)}`);

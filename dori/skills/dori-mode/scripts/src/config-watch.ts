@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { type FSWatcher, statSync, watch } from "node:fs";
 import { basename, dirname } from "node:path";
 
-import { assignConfig, CONFIG_FILE_KEYS, discordOn, type DoriConfig, loadConfig } from "./config.ts";
+import { assignConfig, CONFIG_FILE_KEYS, discordOn, type DoriConfig, leadLanguageInstruction, loadConfig } from "./config.ts";
 
 /*
  * Config hot reload. `watchConfigFiles` notices edits to a set of files (a directory watch per file, debounced, plus a
@@ -177,7 +177,10 @@ export const configReloader = (deps: ConfigReloaderDeps) => async (): Promise<Co
   const restart = [...changed.filter((key) => RESTART_CONFIG_KEYS.includes(key)), ...(discordSwitched ? ["platforms (discord)"] : [])];
   if (live.length) {
     deps.apply(Object.fromEntries(live.map((key) => [key, applied[key]])) as Partial<DoriConfig>);
-    const line = `CONFIG_RELOADED ${live.join(", ")} from ${deps.path}`;
+    // The lead keeps the language its startup prompt named until this line names the new one.
+    const language = !live.includes("ownerLanguage") ? ""
+      : `; ${leadLanguageInstruction(applied.ownerLanguage) || "ownerLanguage is unset now: reply in the language the owner wrote in"}`;
+    const line = `CONFIG_RELOADED ${live.join(", ")} from ${deps.path}${language}`;
     deps.log(line);
     deps.enqueue(`config-reloaded:${tag}`, line);
   }
