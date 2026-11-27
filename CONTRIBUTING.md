@@ -1,11 +1,12 @@
 # Contributing to Toodo
 
 Thank you for considering a contribution. Toodo is licensed under the
-[GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`).
+[GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`). The license
+and this guide cover the whole repository, Dori mode under `dori/` included.
 
 ## Contributor License Agreement
 
-Every outside contribution needs a signed
+Every outside contribution, to any part of the repository, needs a signed
 [Individual Contributor License Agreement](CLA.md) (CLA). The CLA lets the project owner
 distribute your contribution under the AGPL and under other licenses, including
 commercial ones, while you keep the copyright to your work.

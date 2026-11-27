@@ -172,7 +172,12 @@ If Dori mode is useful to you, you can support its development through
 
 ## License
 
-MIT
+Dori mode is part of Toodo and shares its license, the
+[GNU Affero General Public License v3.0 only](../LICENSE) (`AGPL-3.0-only`). Contributions
+fall under the Toodo [Contributor License Agreement](../CLA.md); see
+[`CONTRIBUTING.md`](../CONTRIBUTING.md). Code published in the archived
+[Dubusoft/dori-mode](https://github.com/Dubusoft/dori-mode) repository remains under the MIT
+License.
 
 ## Migrate from OmOMeow
 

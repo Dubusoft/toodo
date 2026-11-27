@@ -4,7 +4,8 @@ Version 1.0
 
 This agreement is modeled on the Apache Software Foundation Individual Contributor
 License Agreement. It applies to every Contribution You submit to the Toodo project
-(`https://github.com/Dubusoft/toodo`).
+(`https://github.com/Dubusoft/toodo`), in any part of its repository, including Dori mode
+under `dori/`.
 
 Thank you for your interest in Toodo. The Project Owner, dev-bokdong ("Project Owner"),
 must have a clear record of the rights granted for every Contribution so that it can
