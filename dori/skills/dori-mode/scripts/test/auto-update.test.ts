@@ -3,24 +3,17 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { eventClass } from "../src/event-policy.ts";
-import type { Lane } from "../src/registry.ts";
 import type { Ran, Runner } from "../src/run.ts";
-import { lanesBlockingUpdate } from "../src/supervise-loop.ts";
 import {
-  AUTO_UPDATE_RESULT, AUTO_UPDATE_UNIT, AutoUpdate, noteDevMerge, readAutoUpdateState, STALE_RECHECK_MS, writeUpdateResult,
+  AUTO_UPDATE_RESULT, AUTO_UPDATE_UNIT, AutoUpdate, noteDevMerge, readAutoUpdateState, writeUpdateResult,
 } from "../src/auto-update.ts";
 
 let dir = "";
 let calls: string[][] = [];
 let unit = "inactive";
 let startCode = 0;
-let busy: string[] = [];
 let events: [string, string][] = [];
 let now = 1_000;
-const STALE_MS = 6 * 60 * 60_000;
-/** staleBlocker calls (`key@since`); with `staleCloses` the check closes the lane, which then no longer blocks. */
-let stale: string[] = [];
-let staleCloses = false;
 
 const runner: Runner = async (argv): Promise<Ran> => {
   calls.push([...argv]);
@@ -35,13 +28,7 @@ const starts = (): string[][] => calls.filter((c) => c[0] === "systemd-run");
 const emit = async (line: string, id: string): Promise<void> => { events.push([id, line]); };
 const auto = (env: Record<string, string> = { PATH: "/usr/bin", HOME: "/home/u" }): AutoUpdate => new AutoUpdate({
   stateDir: dir, run: runner, now: () => now, env, log: () => {},
-  command: ["/bin/bun", "/dori/src/cli.ts", "update", "--dev"], busy: async () => busy, staleAfterMs: STALE_MS,
-  staleBlocker: async (key, since) => {
-    stale.push(`${key}@${since}`);
-    if (!staleCloses) return { closed: false, line: `AUTO_UPDATE_BLOCKER_STALE ${key} since ${since}` };
-    busy = busy.filter((k) => k !== key);
-    return { closed: true };
-  },
+  command: ["/bin/bun", "/dori/src/cli.ts", "update", "--dev"],
 });
 /** The unit finished: it wrote its result and exited. */
 const finish = (code: number, lines: string[]): void => {
@@ -51,7 +38,7 @@ const finish = (code: number, lines: string[]): void => {
 
 beforeEach(() => {
   dir = mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "dori-auto-update-"));
-  calls = []; unit = "inactive"; startCode = 0; busy = []; events = []; now = 1_000; stale = []; staleCloses = false;
+  calls = []; unit = "inactive"; startCode = 0; events = []; now = 1_000;
 });
 afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
 
@@ -64,7 +51,7 @@ test("the supervisor's GitHub tokens reach the update unit by name, never by val
   ]]);
 });
 
-test("a dev merge with no busy lane starts one detached update unit; exit 0 is a digest AUTO_UPDATE_DONE", async () => {
+test("a dev merge starts one detached update unit on the next tick; exit 0 is a digest AUTO_UPDATE_DONE", async () => {
   const a = auto();
   await a.tick(emit);
   expect(starts()).toEqual([]);
@@ -109,16 +96,11 @@ test("an update a step degraded (exit 2) wakes the lead with its summary", async
   expect(eventClass(events[0]![1])).toBe("lead-urgent");
 });
 
-test("merges while a dori lane works are deferred, then run once together when the lanes are gone", async () => {
+test("merges noted before a tick run once together", async () => {
   const a = auto();
-  busy = ["lane-a"];
   noteDevMerge(dir, "Dubusoft/dori-mode#5");
-  await a.tick(emit);
   noteDevMerge(dir, "Dubusoft/dori-mode#6");
   noteDevMerge(dir, "Dubusoft/dori-mode#6");
-  await a.tick(emit);
-  expect(starts()).toEqual([]);
-  busy = [];
   await a.tick(emit);
   await a.tick(emit);
   expect(starts()).toHaveLength(1);
@@ -173,60 +155,9 @@ test("a corrupt result is moved aside and its run ends as AUTO_UPDATE_FAILED ins
   } finally { spy.mockRestore(); }
 });
 
-test("a lane holding the update back past staleAfterMs is checked every STALE_RECHECK_MS, and the lead hears of it once, across restarts too", async () => {
-  busy = ["lane-a"];
-  noteDevMerge(dir, "Dubusoft/dori-mode#5");
+test("a state file left by an older supervisor with lanes recorded as blockers still starts the pending update", async () => {
+  writeFileSync(join(dir, "auto-update.json"), JSON.stringify({ pending: ["Dubusoft/dori-mode#5"], blocked: { "lane-a": { since: 1, escalated: true } } }));
   await auto().tick(emit);
-  now += STALE_MS - 1;
-  await auto().tick(emit);
-  expect(stale).toEqual([]);
-  now += 1;
-  const a = auto();
-  await a.tick(emit);
-  expect(stale).toEqual(["lane-a@1000"]);
-  expect(events).toEqual([["auto-update-blocker:lane-a:1000", "AUTO_UPDATE_BLOCKER_STALE lane-a since 1000"]]);
-  expect(eventClass(events[0]![1])).toBe("lead-urgent");
-  await a.tick(emit);
-  expect(stale).toHaveLength(1);
-  now += STALE_RECHECK_MS;
-  await a.tick(emit);
-  await auto().tick(emit);
-  expect(stale).toEqual(["lane-a@1000", "lane-a@1000", "lane-a@1000"]);
-  expect(events).toHaveLength(1);
-  expect(starts()).toEqual([]);
-});
-
-test("a stale blocker its check closes lets the deferred update start, and the started update forgets the blockers", async () => {
-  busy = ["lane-a"];
-  noteDevMerge(dir, "Dubusoft/dori-mode#5");
-  await auto().tick(emit);
-  expect(readAutoUpdateState(dir).blocked).toEqual({ "lane-a": { since: 1_000 } });
-  now += STALE_MS;
-  staleCloses = true;
-  const a = auto();
-  await a.tick(emit);
-  expect(stale).toEqual(["lane-a@1000"]);
-  expect(events).toEqual([]);
-  await a.tick(emit);
   expect(starts()).toHaveLength(1);
-  expect(readAutoUpdateState(dir).blocked).toBeUndefined();
-});
-
-const lane = (key: string, patch: Partial<Lane>): Lane => ({
-  key, title: key, thread: "discord:1/2", brief: "/b.md", done: "pr Dubusoft/dori-mode feat/x", machine: "m1", openedAt: "2026-01-01T00:00:00.000Z", ...patch,
-});
-
-test("working, not-done and done-claimed lanes of dori's repo hold the update back; paused, other repos and closed lanes do not", async () => {
-  const lanes = [
-    lane("working", {}), lane("not-done", { status: "not-done" }), lane("claimed", { status: "done-claimed" }),
-    lane("paused", { status: "paused" }), lane("verified", { status: "verified-done" }), lane("closed", { closedAt: "2026-01-02T00:00:00.000Z" }),
-    lane("other", { done: "pr acme/app feat/x" }),
-  ];
-  const deps = { registry: { open: async () => lanes }, ops: { inspect: async () => { throw new Error("no inspect for remote lanes"); } } };
-  expect(await lanesBlockingUpdate(deps as never, "dubusoft/dori-mode")).toEqual(["working", "not-done", "claimed"]);
-});
-
-test("a local lane whose runner cannot say its repo holds the update back", async () => {
-  const deps = { registry: { open: async () => [lane("local", { machine: undefined, done: "command true" })] }, ops: { inspect: async () => { throw new Error("runner down"); } } };
-  expect(await lanesBlockingUpdate(deps as never, "dubusoft/dori-mode")).toEqual(["local"]);
+  expect(readAutoUpdateState(dir)).toEqual({ pending: [], running: { at: 1_000, merges: ["Dubusoft/dori-mode#5"] } });
 });

@@ -29,7 +29,6 @@ import { memorySizeTrigger, memorySweep } from "./memory-check.ts";
 import { alertReasons, diskGuardPath, type GuardState, guardTick, type HostSample, memIsLow, sampleHost } from "./host-guard.ts";
 import { type Lane, statusOf } from "./registry.ts";
 import { AutoUpdate, doriRepoOf, noteDevMerge } from "./auto-update.ts";
-import { staleBlocker } from "./update-blocker.ts";
 import { type GuardMachine, listGuardMachines, loadMachineGuardState, machineGuardTick, saveMachineGuardState } from "./remote-guard.ts";
 
 import { run, type Runner, setDefaultRunTimeout } from "./run.ts";
@@ -54,7 +53,7 @@ import { collectStatus, lookupStatus, type StatusDeps } from "./status.ts";
 import { STATUS_PANEL_PASS_MS, STATUS_PANEL_SCREEN_LINES, statusPanelPass } from "./status-panel.ts";
 import { OWNER_NOTICE_AFTER_MS, RetryingDelivery, SuperviseError, Supervisor } from "./supervise.ts";
 import { Waits } from "./waits.ts";
-import { GitHubEvents, githubTargets, type OpenPull } from "./github-events.ts";
+import { GitHubEvents, type OpenPull } from "./github-events.ts";
 import { driftTick, pullOwners } from "./drift.ts";
 import { CiFollowUp, defaultCiIo } from "./ci-follow.ts";
 import { ReviewGate } from "./review-gate.ts";
@@ -209,24 +208,6 @@ const doriRepo = (deps: Pick<FlowDeps, "run">): (() => Promise<string | undefine
   return () => (repo ??= doriRepoOf(deps.run, PACKAGE_DIR).catch(() => undefined));
 };
 
-/** Lane states that hold back the automatic update: still working, told not done, or waiting on its done claim. */
-const UPDATE_BLOCKING = new Set(["working", "not-done", "done-claimed"]);
-
-/**
- * The open lanes of `repo` that hold back the automatic update. A lane whose runner cannot say which repo it works in
- * counts as one: an update is never started under a lane that may be dori's.
- */
-export const lanesBlockingUpdate = async (deps: Pick<FlowDeps, "registry" | "ops">, repo: string): Promise<string[]> => {
-  const busy: string[] = [];
-  for (const lane of await deps.registry.open()) {
-    if (!UPDATE_BLOCKING.has(statusOf(lane))) continue;
-    const unresolved = new Set<string>();
-    const targets = await githubTargets([lane], deps.ops, unresolved);
-    if (targets.has(repo) || unresolved.has(lane.key)) busy.push(lane.key);
-  }
-  return busy;
-};
-
 /** A named sweep. It may hand lines over itself through `emit` (as they happen) and/or return them. */
 export type Sweep = readonly [name: string, step: (emit: Emit) => Promise<readonly string[]>];
 
@@ -276,16 +257,9 @@ export const supervisorSweeps = (
   // runner label (the machine it serves as value), instead of one warning per lane and sweep every round.
   const admitted = (machine?: string): boolean => deps.ops.connected(machine);
   const unavailable = new Map<string, string | undefined>();
-  const ownRepo = doriRepo(deps);
   const autoUpdate = new AutoUpdate({
     stateDir: deps.config.stateDir, run: deps.run, now: deps.clock.now, env: process.env, log: (line) => { console.error(line); },
     command: [process.execPath, join(PACKAGE_DIR, "src", "cli.ts"), "update", "--dev"],
-    busy: async () => {
-      const repo = await ownRepo();
-      return repo ? lanesBlockingUpdate(deps, repo) : [];
-    },
-    staleAfterMs: deps.tunables.updateBlockerStaleMin * 60_000,
-    staleBlocker: (key, since, emit) => staleBlocker(deps, key, since, emit),
   });
   return [
     ["snapshot", async (emit) => {
@@ -353,7 +327,7 @@ export const supervisorSweeps = (
     // The size trigger runs every round in its own unit, so a failing daily check never costs its urgent line.
     ["memory-size", async () => memorySizeTrigger(deps, home)],
     ["memory", async () => memorySweep(deps, home)],
-    // `dori update --dev` after a merge of dori's own repo into dev, in its own unit once no lane of that repo is working.
+    // `dori update --dev` after a merge of dori's own repo into dev, in its own unit on the next pass, whatever lanes are open.
     ["auto-update", async (emit) => {
       await autoUpdate.tick(emit);
       return [];
