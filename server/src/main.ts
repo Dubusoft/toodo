@@ -15,6 +15,7 @@ import { createHandler } from "./http/server.ts";
 import { Services } from "./http/services.ts";
 import { createPrivateDir, loadToken, MCP_TOKEN_FILE, newInstance, WEB_TOKEN_FILE } from "./http/tokens.ts";
 import { programVersion } from "./http/version.ts";
+import { httpClientMetadataFetcher } from "./oauth/clients.ts";
 import { Push, PushWorker } from "./push/push.ts";
 import { openConnections, openWriter } from "./storage/database.ts";
 import { Storage } from "./storage/storage.ts";
@@ -169,7 +170,14 @@ export async function openCore(config: Config): Promise<Core> {
     console.log(`toodo-server: /api accepts Cloudflare Access sign-ins from ${config.access.issuer}`);
     access = new AccessVerifier(config.access, httpKeySource());
   }
-  const handle = createHandler({ services, webToken, mcpToken, access, webDir: config.webDir });
+  const handle = createHandler({
+    services,
+    webToken,
+    mcpToken,
+    access,
+    webDir: config.webDir,
+    clientMetadata: httpClientMetadataFetcher(),
+  });
   return {
     fetch: (request, server) =>
       handle(request, {

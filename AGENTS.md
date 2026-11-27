@@ -158,20 +158,30 @@ Layout:
     (`files.ts`), chat attachments (`attachments.ts`), Web Push routes (`push.ts`), and the
     web build. `services.ts` holds what the routes share and announces changes;
     `config.ts` reads the `TOODO_*` environment. `/mcp` and `/mcp/attachments` are served
-    from `server/src/mcp/`; OAuth is not here yet.
+    from `server/src/mcp/`, and `/oauth` and `/.well-known` from `server/src/oauth/` in
+    public mode.
   - `server/src/mcp/`: the MCP server of `src-tauri/src/mcp/` on `/mcp` (`McpEndpoint` in
     `mcp.ts`): loopback peers that bear the MCP token reach it, with the `401` answers and the
     lockout of `server/src/http/auth.ts`, and the agent's chat attachments are served on
-    `/mcp/attachments`. `protocol.ts` answers as the Rust server's `rmcp` stateless JSON
-    transport does, for clients that `initialize` and for the 2026-07-28 protocol with
-    per-request `_meta`, `server/discover`, and `subscriptions/listen`. `tools.json` is the
-    Rust server's `tools/list`, the tools' descriptions and input schemas, which the
+    `/mcp/attachments`. In public mode (`TOODO_PUBLIC_URL`) chat apps also reach it from
+    anywhere with an OAuth access token; they get the chat instructions and only the tools
+    their grant's scopes allow (`oauthRefusal` in `protocol.ts`), and no chat attachments.
+    `protocol.ts` answers as the Rust server's `rmcp` stateless JSON transport does, for
+    clients that `initialize` and for the 2026-07-28 protocol with per-request `_meta`,
+    `server/discover`, and `subscriptions/listen`. `tools.json` is the Rust server's
+    `tools/list`, the tools' descriptions and input schemas, which the
     TypeScript server serves as is; `tools/` holds the tool logic module for module, with the
     arguments read as the Rust `serde` derives read them (`args.ts`, `tools/requests.ts`),
     and `resources.ts` the task resources and their subscriptions. The instructions and the
     skill are rendered from `src-tauri/src/mcp/shared/` and `toodo-skill.md`
-    (`instructions.ts`), so both servers give the same text. OAuth access for chat apps is
-    not ported yet.
+    (`instructions.ts`), so both servers give the same text.
+  - `server/src/oauth/`: the OAuth authorization server of `src-tauri/src/oauth/` for chat
+    apps, mounted only in public mode: discovery metadata, dynamic registration, the
+    consent page, and the token and revocation endpoints with PKCE and refresh rotation
+    (`routes.ts`), client registration metadata and client ID metadata documents
+    (`clients.ts`, fetched from public addresses only through `server/src/net.ts`), the
+    OAuth error answers (`errors.ts`), and the owner and scopes of grants (`scopes.ts`).
+    Grants and tokens are stored by `server/src/storage/oauth.ts`.
   - `server/src/main.ts`: the TypeScript `toodo-server` (`bun server/src/main.ts`, same
     environment and `import FILE` as the Rust one). It opens only a database the Rust
     server created, since it neither creates nor migrates one.

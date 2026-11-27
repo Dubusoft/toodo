@@ -40,6 +40,17 @@ function parseListen(value: string): Listen {
   return { hostname: v4 ?? match[2]!, port };
 }
 
+/** Whether `url` is one a browser may be sent to (`valid_web_url` of the Rust server): HTTPS,
+ * or HTTP to this machine, with a host and without credentials. */
+export function isWebUrl(url: URL): boolean {
+  return (
+    url.hostname !== "" &&
+    url.username === "" &&
+    url.password === "" &&
+    (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))
+  );
+}
+
 /** The origin `TOODO_PUBLIC_URL` names, as `PublicUrl::parse` of the Rust server checks it:
  * HTTPS (HTTP only for localhost), no credentials, path, query, or fragment. */
 export function parsePublicUrl(value: string): string {
@@ -53,12 +64,7 @@ export function parsePublicUrl(value: string): string {
   } catch {
     throw invalid();
   }
-  const web =
-    url.hostname !== "" &&
-    url.username === "" &&
-    url.password === "" &&
-    (url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)));
-  if (!web || url.pathname !== "/" || value.includes("?") || value.includes("#")) throw invalid();
+  if (!isWebUrl(url) || url.pathname !== "/" || value.includes("?") || value.includes("#")) throw invalid();
   return url.href.replace(/\/+$/, "");
 }
 
