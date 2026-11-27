@@ -64,4 +64,4 @@ brings back the server's data from just before the import.
 
 ## Tests
 
-The import is covered by tests in `src-tauri/src/storage/import.rs`.
+The import is covered by tests in `server/src/storage/import.test.ts`.

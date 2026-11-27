@@ -21,6 +21,11 @@ with `toodo-server import`; see [migrate-desktop-data.md](migrate-desktop-data.m
 
 ## Versions and Releases
 
+Releases are paused. The versions published so far carry the Rust `toodo-server`, which
+this repository no longer contains; when distribution is prepared again, a Bun-compiled
+binary of `server/` replaces it (see "Releases" in the README). The install sections below
+describe those published versions; from a checkout, see [From a Checkout](#from-a-checkout).
+
 Every GitHub release `vX.Y.Z` carries
 `toodo-server-vX.Y.Z-linux-x86_64.tar.gz` (the `toodo-server` binary for x86_64 Linux and,
 under `web/`, the web app) with its `.sha256`, built from the same commit. `toodo-server --version` prints the
@@ -37,7 +42,7 @@ one platform package per target, each carrying `toodo`, `toodo-server`, and the 
 against musl, for Alpine and other musl distributions), and `@dubusoft/toodo-darwin-x64`
 and `@dubusoft/toodo-darwin-arm64` (macOS). npm installs the package whose `os`, `cpu`,
 and `libc` match the machine, and the launcher runs it.
-The `npm` workflow (`.github/workflows/npm.yml`) publishes them:
+The `npm` workflow published them, until it was removed with the Rust server:
 
 - On every push to `dev`, a prerelease `X.Y.Z-dev.N` (the next patch version of
   `package.json`, `N` the run number) under the dist-tag `dev`.
@@ -155,8 +160,8 @@ The commands of a global install (`toodo COMMAND --help` shows the options of ea
 - `toodo --version`, `toodo --help`. `--version` prints the version of the installed npm
   package (`toodo 1.3.2-dev.9 (commit 1c78b7a1a2b3)`). `toodo-server --version` and the
   server's start log line report the same version: the npm workflow builds both binaries
-  with `TOODO_VERSION` set to the version it publishes (`src-tauri/build.rs`); other builds
-  report the crate version.
+  with `TOODO_VERSION` set to the version it publishes; other builds report the version of
+  `package.json`.
 
 `@dubusoft/toodo` follows releases; `@dubusoft/toodo@dev` follows the `dev` branch
 (`X.Y.Z-dev.N` prereleases), for example `npx @dubusoft/toodo@dev init`.
@@ -285,30 +290,19 @@ the script then serves the API and MCP only.
 
 ### From a Checkout
 
-For development, run the script without `--release` from a checkout of this repository
-(Rust needed as well). It builds `toodo-server` from the checkout and installs it the same
-way:
+A checkout runs the TypeScript server with Bun (installed from https://bun.sh); there is
+nothing to build for it, only the web app:
 
 ```sh
 git pull
-scripts/install-server.sh
+npm ci && npm run build
+TOODO_WEB_DIR=dist-web bun server/src/main.ts
 ```
 
-- `--with-web`: also build the web app (needs Node.js and npm), install it to
-  `~/.local/share/toodo-server-web`, and serve it (see [Web App](#web-app)). A release
-  carries its web app already, so this option is for checkout builds only.
-
-## Build
-
-To build by hand instead, on the server (Rust installed):
-
-```sh
-cd src-tauri
-cargo build --release --bin toodo-server
-```
-
-The binary is `src-tauri/target/release/toodo-server`. It needs no other program at
-runtime.
+It takes the environment of [Run](#run), creates the database of a new data directory, and
+migrates an existing one from the schema of the last Rust release. `install-server.sh`
+installs published releases only. On the owner host the checkout runs as `toodo.service`
+instead; see [host.md](host.md).
 
 ## Run
 
@@ -566,8 +560,8 @@ status it returns to (see [workflow.md](workflow.md#task-states)). `wait_task` t
 task: there is no bulk wait, and an agent must not wait every task, or a batch of them, at
 once.
 
-`read_toodo_skill` returns the worker skill (`src-tauri/src/mcp/toodo-skill.md`); rules it
-shares with the `initialize` instructions come from `src-tauri/src/mcp/shared/` (see
+`read_toodo_skill` returns the worker skill (`server/src/mcp/toodo-skill.md`); rules it
+shares with the `initialize` instructions come from `server/src/mcp/shared/` (see
 [docs/agents.md](agents.md)).
 
 ### Chat
@@ -777,8 +771,8 @@ To set the service up by hand, run `systemctl --user enable --now toodo-server`,
 ## Web App
 
 The web build of the frontend uses the server from a browser. A release install serves it
-(`scripts/install-server.sh --release ...`); from a checkout, use `--with-web`, or
-`npm ci && npm run build` into `dist-web/` with `TOODO_WEB_DIR` pointing at it. The
+(`scripts/install-server.sh --release ...`); from a checkout, build it with
+`npm ci && npm run build` into `dist-web/` and point `TOODO_WEB_DIR` at it. The
 browser asks for `web-token` and a device name once, registers itself as a device, and
 keeps its device token in local storage.
 
