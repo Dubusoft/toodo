@@ -937,7 +937,7 @@ function PlaceList({
           <IconButton
             variant="ghost"
             size="sm"
-            label={showPast ? "Hide past chats" : "Past chats"}
+            label={showPast ? "Hide completed" : "Completed"}
             icon={<Archive />}
             aria-pressed={showPast}
             onClick={() => setShowPast(!showPast)}
@@ -966,11 +966,11 @@ function PastChats({
 }) {
   return (
     <div className="flex flex-col gap-0.5 pt-2">
-      <h3 className="px-2 pb-1 text-xs font-medium text-muted-foreground">Past chats</h3>
+      <h3 className="px-2 pb-1 text-xs font-medium text-muted-foreground">Completed</h3>
       {threads.length === 0 ? (
         <p className="px-2 text-xs text-muted-foreground">No finished or closed chats yet.</p>
       ) : (
-        <ul aria-label="Past chats" className="flex flex-col gap-0.5">
+        <ul aria-label="Completed" className="flex flex-col gap-0.5">
           {threads.map((thread) => (
             <li key={thread.id}>
               <button

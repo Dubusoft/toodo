@@ -592,7 +592,7 @@ for it, or linking it to another thread, is refused. The chat's list shows the c
 channel 1 (the default room) first, then the tasks that need an answer (`in_review`, or a
 question in their thread nobody answered) and the `in_progress` tasks a lane works on (a
 `lane:` ref), each named by its task and with the latest message of its thread on one
-line; other tasks' threads open from the task's details, and the past chats button beside In
+line; other tasks' threads open from the task's details, and the Completed button beside In
 progress lists the closed and archived threads and those of finished tasks, latest first,
 opening each one's conversation. Each channel and thread keeps how far
 people read it, so the app shows unread counts per channel and per thread; an archived
