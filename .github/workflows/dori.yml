@@ -7,10 +7,12 @@ on:
       - main
     paths:
       - "dori/**"
+      - "host/src/protocol.ts"
       - ".github/workflows/dori.yml"
   pull_request:
     paths:
       - "dori/**"
+      - "host/src/protocol.ts"
       - ".github/workflows/dori.yml"
   workflow_dispatch:
 
