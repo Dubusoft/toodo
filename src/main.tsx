@@ -10,6 +10,7 @@ import { UpdateBanner } from "@/components/update-banner";
 import { toodoTheme } from "@/lib/astryx-theme";
 import { flushChatOutbox } from "@/lib/chat-outbox";
 import { queryKeys } from "@/lib/queries";
+import { initPanelSizes } from "@/lib/panel-sizes";
 import { initTheme, useColorMode } from "@/lib/theme";
 import { checkForNewBuild, watchBuild } from "@/web/build";
 import { watchConnection } from "@/web/connection";
@@ -17,6 +18,7 @@ import { watchInstallOffer } from "@/web/install";
 import { indexedDbStore, pauseQueriesWhileUnreachable, restoreQueries, saveQueries } from "@/web/query-cache";
 
 initTheme();
+initPanelSizes();
 
 // A change waits for no reconnect: while the server is unreachable it fails at once.
 const queryClient = new QueryClient({ defaultOptions: { mutations: { networkMode: "always" } } });
