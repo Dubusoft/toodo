@@ -95,13 +95,14 @@ export const postLaneToodo = async (
 
 /**
  * The files lane `key` left in DORI_LANE_OUT, as installed on the lead (lane-files.ts laneOutputDir), in path order:
- * its report.md or not-adopted.md and any other output, which the task thread shows as attachments.
+ * its report.md or not-adopted.md and any other output, which the task thread shows as attachments. Dot files and
+ * dot directories stay out: dori's receipt (lane-file-contract.ts MARKER) and other hidden files are not outputs.
  */
 export const laneOutputFiles = (stateDir: string, key: string): ToodoFile[] => {
   const dir = laneOutputDir(stateDir, key);
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { recursive: true, encoding: "utf8" }).sort()
-    .filter((path) => statSync(join(dir, path)).isFile())
+    .filter((path) => !path.split(/[\\/]/).some((part) => part.startsWith(".")) && statSync(join(dir, path)).isFile())
     .map((path) => ({ name: basename(path), data: new Uint8Array(readFileSync(join(dir, path))), contentType: Bun.file(join(dir, path)).type }));
 };
 
