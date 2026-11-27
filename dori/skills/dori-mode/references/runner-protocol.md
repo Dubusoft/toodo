@@ -729,7 +729,9 @@ Lane worktrees are not the daily sweep's: the supervisor removes them in two sta
    each worktree's path and the checkout its `git worktree remove` runs in, and each SHA-bound branch target
    (repository, PR number, base, branch, merged head SHA, the checkout and remote to delete it from). A remote close
    queues its worktrees under the runner's reported root, each removed from inside itself (it skips the unpushed check,
-   D10).
+   D10): those its runner lists by key from the lane's cwd, and `<root>/<repo name>-<key>` (the footer's naming) for
+   each checkout the runner reported that exists there, since a remote lane's cwd is usually its lane directory, no
+   checkout, from which the runner lists nothing.
 2. **Watcher (remove).** The watcher's closed-lane pass reads each queued worktree again and removes it only when it is
    clean and has no commit that no remote has (a worktree whose unpushed commits cannot be read stays, with a
    warning). Then it deletes each queued branch, remote first with a lease on the merged head, then local with a

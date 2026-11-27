@@ -18,7 +18,7 @@ import { blockedOutcome, finishedOutcome, type LaneMerge, type LaneMergeRead, no
 import { openLaneMessages } from "./lane-messages.ts";
 import { checkLaneReportText, installLaneReports, laneNotAdoptedFile, laneReportFile, validateLaneOutput, verifyLaneFileReceipt } from "./lane-files.ts";
 import { LaneFileError } from "./lane-file-contract.ts";
-import type { LaneFileReceipt } from "./runner/protocol.ts";
+import type { LaneFileReceipt, WorkspaceEntry } from "./runner/protocol.ts";
 import type { Tunables } from "./tunables.ts";
 import { type Act, actRecorded, type LaneRead, probeWorktree, readLane, type Step, withOperations } from "./flow-io.ts";
 import { type CleanupQueue, cleanupPending, closedWorktreeSweep, type PendingCleanup, QUEUED_WORKTREE, remoteWorktrees } from "./closed-cleanup.ts";
@@ -45,6 +45,8 @@ export type FlowDeps = {
   readonly runnerOs?: (label: string) => string | undefined;
   /** The lane worktree root runner `label` last reported; absent reads the hub's runners table. */
   readonly runnerWorktreeRoot?: (label: string) => string | undefined;
+  /** The checkouts runner `label` last reported (declared, then detected); absent reads the hub's runners table. */
+  readonly runnerCheckouts?: (label: string) => readonly WorkspaceEntry[];
   readonly signalIo?: SignalIo;
   /** The operation rows; absent opens the configured store per call. */
   readonly operations?: OperationStore;

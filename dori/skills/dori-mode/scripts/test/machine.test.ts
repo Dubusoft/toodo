@@ -356,6 +356,23 @@ test("a closed remote lane's worktrees under its runner's root are queued at the
   expectRemote();
 });
 
+test("a remote close whose cwd is no checkout queues <root>/<repo name>-<key> of each checkout its runner reported that exists there", async () => {
+  const base = deps();
+  // The lane's cwd is the runner's lane directory, no checkout: its runner lists no worktree from it.
+  const inspect: LaneOps["inspect"] = async (l, want) => ({ ...(await base.ops.inspect(l, want)), git: { worktrees: [] } });
+  const d = {
+    ...base, ops: { ...base.ops, inspect },
+    runnerWorktreeRoot: (label: string) => (label === MACHINE ? "/repo/.wt" : undefined),
+    runnerCheckouts: (label: string) => (label === MACHINE ? [{ repo: "acme/App", path: "/repo" }, { repo: "acme/gone", path: "/gone" }] : []),
+  };
+  world.removed.push("/repo/.wt/gone-remote-lane");
+  expect((await closeLane(d, lane(), "verified")).closed).toBe(true);
+  const closed = (await d.registry.read("remote-lane")) as Lane;
+  expect(closed.receipt).toMatchObject({ queue: { worktrees: [{ path: "/repo/.wt/app-remote-lane", root: "/repo/.wt/app-remote-lane" }], branches: [] } });
+  expect(opsOf("exists").map((e) => e.args)).toContainEqual({ machine: MACHINE, paths: ["/repo/.wt/app-remote-lane", "/repo/.wt/gone-remote-lane"] });
+  expectRemote();
+});
+
 test("a closed remote lane's own directory is its remoteCwd: swept under its runner's root, from inside itself, once clean and pushed", async () => {
   const d = { ...deps(), runnerWorktreeRoot: (label: string) => (label === MACHINE ? "/repo/.wt" : undefined) };
   const closed = lane({ remoteCwd: WT, status: "closed", closedAt: new Date(T0).toISOString(), receipt: { cleanup: [] } });
