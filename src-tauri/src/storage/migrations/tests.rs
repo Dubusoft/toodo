@@ -29,6 +29,25 @@ pub(super) fn migrate_legacy(conn: &mut Connection) -> Result<()> {
 }
 
 #[test]
+fn schema_stays_at_the_typescript_baseline() {
+    let source = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../server/src/storage/database.ts"
+    ));
+    let baseline: i64 = source
+        .lines()
+        .find_map(|line| line.strip_prefix("export const BASELINE_SCHEMA_VERSION = "))
+        .and_then(|rest| rest.strip_suffix(';'))
+        .expect("server/src/storage/database.ts declares BASELINE_SCHEMA_VERSION")
+        .parse()
+        .unwrap();
+    assert_eq!(
+        LATEST_VERSION, baseline,
+        "the Rust schema is frozen at the TypeScript baseline; see Schema Freeze in AGENTS.md"
+    );
+}
+
+#[test]
 fn version_24_keeps_task_data_references_search_and_the_id_counter() {
     // Given a version-23 database with references, a deleted ID and searchable data.
     let mut conn = Connection::open_in_memory().unwrap();
