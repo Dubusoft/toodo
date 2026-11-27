@@ -81,6 +81,16 @@ export interface NewChatThread {
   task: TaskId | null;
 }
 
+/** Refuses to link `task` to a thread other than `except` when it already has its thread. */
+function taskThreadFree(db: Database, task: TaskId, except: ChatThreadId | null): void {
+  const row = db
+    .query<{ id: number }, [number, number | null]>("SELECT id FROM chat_threads WHERE task_id = ?1 AND id IS NOT ?2")
+    .get(task, except);
+  if (row !== null) {
+    throw new StorageError({ kind: "chat_thread_task_taken", task, thread: row.id });
+  }
+}
+
 /** The threads `filter` selects, the latest active first. */
 export function listChatThreads(db: Database, filter: ThreadFilter): ChatThread[] {
   return db
@@ -94,12 +104,14 @@ export function listChatThreads(db: Database, filter: ThreadFilter): ChatThread[
     .map(thread);
 }
 
-/** Opens a thread titled `created.title` under `created.channel`, following its task if given. */
+/** Opens a thread titled `created.title` under `created.channel`, following its task if
+ * given, which must not have a thread yet: a task has one thread. */
 export function createChatThread(db: Database, created: NewChatThread, at: number): ChatThread {
   return db.transaction(() => {
     channelExists(db, created.channel);
     if (created.task !== null) {
       taskExists(db, created.task);
+      taskThreadFree(db, created.task, null);
     }
     const id = Number(
       db.run(
@@ -113,14 +125,16 @@ export function createChatThread(db: Database, created: NewChatThread, at: numbe
 }
 
 /**
- * Retitles a thread, links or unlinks its task, or opens, closes, or archives it. Closing
- * keeps the time it was first closed, and reopening clears both times.
+ * Retitles a thread, links or unlinks its task, or opens, closes, or archives it. A task it
+ * links must have no other thread. Closing keeps the time it was first closed, and
+ * reopening clears both times.
  */
 export function updateChatThread(db: Database, id: ChatThreadId, edit: ThreadEdit, at: number): ChatThread {
   return db.transaction(() => {
     threadPlace(db, id);
     if (edit.task !== undefined && edit.task !== null) {
       taskExists(db, edit.task);
+      taskThreadFree(db, edit.task, id);
     }
     if (edit.title !== undefined) {
       db.run("UPDATE chat_threads SET title = ?2 WHERE id = ?1", [id, edit.title]);

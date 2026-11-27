@@ -203,6 +203,16 @@ describe("chat channels and threads", () => {
     expect(linked.map((t) => t.id)).toEqual([thread.id]);
     expect(linked[0]?.lastMessageAt).toBe(100);
     expect(
+      failure(() => createChatThread(db, { channel: FIRST_CHANNEL, title: "Again", task: ship }, 100)),
+    ).toEqual({ kind: "chat_thread_task_taken", task: ship, thread: thread.id });
+    const loose = createChatThread(db, { channel: FIRST_CHANNEL, title: "Loose", task: null }, 100);
+    expect(failure(() => updateChatThread(db, loose.id, { task: ship }, 100))).toEqual({
+      kind: "chat_thread_task_taken",
+      task: ship,
+      thread: thread.id,
+    });
+    expect(updateChatThread(db, thread.id, { task: ship }, 100).taskId).toBe(ship);
+    expect(
       failure(() => createChatThread(db, { channel: FIRST_CHANNEL, title: "Other", task: taskId(99) }, 100)),
     ).toEqual({ kind: "task_not_found", task: 99 });
     expect(updateChatThread(db, thread.id, { task: null }, 100).taskId).toBeNull();

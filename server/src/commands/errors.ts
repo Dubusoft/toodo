@@ -133,6 +133,7 @@ function storageCode(failure: StorageFailure): CommandErrorCode {
     case "not_an_agents_message":
     case "chat_channel_name_taken":
     case "chat_thread_not_open":
+    case "chat_thread_task_taken":
     case "chat_action_chosen":
     case "chat_attachment_not_free":
       return "rejected";

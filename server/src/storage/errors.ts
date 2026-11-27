@@ -53,6 +53,8 @@ export type StorageFailure =
   /** Messages go only to open threads. */
   | { readonly kind: "chat_thread_not_open"; readonly thread: number; readonly status: "closed" | "archived" }
   /** The agent's message offers no action with the key. */
+  /** A task has one chat thread; linking it to another is refused. */
+  | { readonly kind: "chat_thread_task_taken"; readonly task: number; readonly thread: number }
   | { readonly kind: "chat_action_not_found"; readonly message: number; readonly key: string }
   /** A person chose an action on the message already, the one with `key`. */
   | { readonly kind: "chat_action_chosen"; readonly message: number; readonly key: string }
@@ -145,6 +147,8 @@ function describe(failure: StorageFailure): string {
       return `chat thread ${failure.thread} does not exist; take thread ids from list_threads or create_thread`;
     case "chat_thread_not_open":
       return `chat thread ${failure.thread} is ${failure.status}; reopen it with update_thread status open before posting to it`;
+    case "chat_thread_task_taken":
+      return `task ${failure.task} already has chat thread ${failure.thread}, and a task has one thread; post in thread ${failure.thread} (list_threads with task_id ${failure.task}), reopening it with update_thread status open if it is closed`;
     case "chat_action_not_found":
       return `chat message ${failure.message} offers no action ${debugString(failure.key)}; list_chat shows a message's actions and their keys`;
     case "chat_action_chosen":
