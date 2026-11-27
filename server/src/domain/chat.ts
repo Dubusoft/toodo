@@ -86,8 +86,8 @@ export type ChatChannel = {
   /** Whether the agent's messages in the channel and its threads notify devices. */
   readonly push: boolean;
   readonly createdAt: number;
-  /** Messages of the agent and Toodo not read yet, in the channel and its threads that are
-   * not archived. */
+  /** Messages of the agent and Toodo not read yet, in the channel and its threads that follow
+   * no task and are not archived. */
   readonly unread: number;
 };
 

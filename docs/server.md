@@ -567,7 +567,8 @@ shares with the `initialize` instructions come from `server/src/mcp/shared/` (se
 ### Chat
 
 The web app has a chat with the agent connected over MCP: the round button at the bottom
-right opens it, and shows how many of the agent's messages are unread in every channel.
+right opens it, and shows how many of the agent's messages are unread in every channel and
+in the threads of the tasks the chat lists.
 The chat's agent is Dori by default: the chat shows it under the name and avatar of
 `TOODO_CHAT_AGENT_NAME` (default `Dori`) and `TOODO_CHAT_AGENT_AVATAR`. The server does not
 run the agent itself; Dori, or any other agent with the `mcp-token`, takes the chat's
@@ -583,8 +584,10 @@ their thread nobody answered) and the `in_progress` tasks a lane works on (a `la
 each with the latest message of its thread on one line; other tasks' threads open from
 the task's details. Each channel and thread keeps how far
 people read it, so the app shows unread counts per channel and per thread; an archived
-thread no longer counts. A channel's bell turns its notifications on or off for every
-device. A thread is `open`, `closed` when its conversation is over, or `archived`, which
+thread no longer counts. A channel counts its own messages and those of its threads that
+follow no task, which opening it reaches; a task's thread counts on its own, so the
+threads of tasks the list leaves out (finished ones, for example) do not keep the count up.
+A channel's bell turns its notifications on or off for every device. A thread is `open`, `closed` when its conversation is over, or `archived`, which
 also leaves it out of its channel's list unless asked for; closed and archived threads
 take no messages until reopened.
 
@@ -653,9 +656,8 @@ was unreachable, waits in the browser under its client id, also across reloads, 
 out when the server answers again. The server stores a message once per client id, so it
 appears once however often it is sent. One the server refused shows why, with a retry.
 
-Each person's message shows its receipts in the app: sent, delivered (received by the
-agent), read (acknowledged), and handled. One not handled within 10 minutes shows that it
-waits for an answer. A message the agent posts reaches the devices that turned on **Agent
+Each person's message shows its receipt in the app: sent, then read once the agent
+acknowledges it. One not handled within 10 minutes shows that it waits for an answer. A message the agent posts reaches the devices that turned on **Agent
 messages in the chat** under [Notifications](#notifications). Chat apps connected over
 OAuth do not get the chat tools.
 

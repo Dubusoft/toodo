@@ -14,13 +14,15 @@ import {
 import { channelExists, locate } from "./chat-places.ts";
 import { StorageError } from "./errors.ts";
 
-/** Messages of the agent and Toodo count as unread; people's own never do. */
+/** Messages of the agent and Toodo count as unread; people's own never do. A channel counts
+ * its own and those of its threads that follow no task, which reading it in the chat reaches;
+ * a task's thread counts on its own, where the chat lists its task. */
 const CHANNEL_SELECT = `SELECT c.id, c.name, c.push, c.created_at,
          (SELECT count(*) FROM chat_messages m
           WHERE m.channel_id = c.id AND m.thread_id IS NULL AND m.author <> 'user'
             AND m.id > c.read_id)
        + (SELECT count(*) FROM chat_messages m JOIN chat_threads t ON t.id = m.thread_id
-          WHERE t.channel_id = c.id AND t.status <> 'archived' AND m.author <> 'user'
+          WHERE t.channel_id = c.id AND t.task_id IS NULL AND t.status <> 'archived' AND m.author <> 'user'
             AND m.id > t.read_id) AS unread
      FROM chat_channels c`;
 
