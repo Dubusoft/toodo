@@ -141,6 +141,7 @@ class FakeRecognition {
 describe("voice input", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    Reflect.deleteProperty(navigator, "mediaDevices");
     FakeRecognition.started = [];
   });
 
@@ -168,6 +169,22 @@ describe("voice input", () => {
     act(() => recognition.say("call the bank tomorrow", true));
 
     await waitFor(() => expect(input).toHaveTextContent("Note: call the bank tomorrow"));
+  });
+
+  it("leaves the microphone to speech recognition while it listens", async () => {
+    // On Android the microphone serves one capture at a time: a second one leaves recognition deaf.
+    const getUserMedia = vi.fn(() => new Promise<MediaStream>(() => {}));
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: { getUserMedia } });
+    vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    serve([]);
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+    await screen.findByRole("textbox");
+
+    fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+    expect(FakeRecognition.started).toHaveLength(1);
+    expect(await screen.findByText("Listening...")).toBeInTheDocument();
+    expect(getUserMedia).not.toHaveBeenCalled();
   });
 });
 

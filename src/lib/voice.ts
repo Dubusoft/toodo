@@ -1,13 +1,50 @@
 /**
- * Voice input for the chat: the browser's Web Speech API, through Astryx's
- * `useSpeechRecognition`, turns what the person says into text that joins their draft. Chrome
- * has it on desktop and Android; where the browser has none, `isSupported` is false and the
- * chat shows no microphone. Chrome recognizes speech on a server, so voice input needs a
- * connection; the text it gives is sent like a typed message, through the chat outbox (see
- * `chat-outbox.ts`).
+ * Voice input for the chat: the browser's Web Speech API turns what the person says into text
+ * that joins their draft, driving Astryx's `ChatDictationButton`. Chrome has it on desktop and
+ * Android; where the browser has none, `isSupported` is false and the chat shows no microphone.
+ * Chrome recognizes speech on a server, so voice input needs a connection; the text it gives is
+ * sent like a typed message, through the chat outbox (see `chat-outbox.ts`).
+ *
+ * Recognition is the only thing that opens the microphone. Astryx's `useSpeechRecognition` also
+ * opens it with `getUserMedia` to draw a level meter, and on Android, where the microphone serves
+ * one capture at a time, that second capture leaves recognition hearing nothing; so the meter
+ * stays at rest here.
  */
-import { useRef, useState, type Dispatch, type SetStateAction } from "react";
-import { useSpeechRecognition, type UseSpeechRecognitionReturn } from "@astryxdesign/core/Chat";
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import type { UseSpeechRecognitionReturn } from "@astryxdesign/core/Chat";
+
+/** The part of the Web Speech API's `SpeechRecognition` used here; TypeScript's DOM types lack it. */
+interface Recognition {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onspeechstart: (() => void) | null;
+  onspeechend: (() => void) | null;
+  onresult: ((event: RecognitionResultEvent) => void) | null;
+  onerror: ((event: { error: string }) => void) | null;
+  onnomatch: (() => void) | null;
+  start(): void;
+  stop(): void;
+  abort(): void;
+}
+
+interface RecognitionResultEvent {
+  resultIndex: number;
+  results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>;
+}
+
+type RecognitionConstructor = new () => Recognition;
+
+/** The browser's speech recognition, under its standard or its prefixed name, if it has one. */
+function recognitionConstructor(): RecognitionConstructor | undefined {
+  const scope = window as { SpeechRecognition?: RecognitionConstructor; webkitSpeechRecognition?: RecognitionConstructor };
+  return scope.SpeechRecognition ?? scope.webkitSpeechRecognition;
+}
+
+/** The level meter's bands, at rest: measuring them would take the microphone from recognition. */
+const restingBands: number[] = [0, 0, 0, 0, 0];
 
 /** `spoken` added to the end of `draft`, with a space between them unless one is there. */
 export function appendSpoken(draft: string, spoken: string): string {
@@ -67,22 +104,76 @@ export function useVoiceInput(setDraft: Dispatch<SetStateAction<string>>): {
   error: string | null;
 } {
   const [error, setError] = useState<string | null>(null);
+  const [isListening, setListening] = useState(false);
+  const [isSpeaking, setSpeaking] = useState(false);
+  const [interimTranscript, setInterimTranscript] = useState("");
+  // The recognition in progress; one that a newer one replaced no longer changes the state.
+  const current = useRef<Recognition | null>(null);
   // Counts the attempts, so a message worked out for an earlier one never replaces a later one's.
   const attempt = useRef(0);
-  const speech = useSpeechRecognition({
-    lang: navigator.language,
-    onStart: () => {
+  const Recognition = recognitionConstructor();
+
+  useEffect(() => () => current.current?.abort(), []);
+
+  const fail = (code: string) => {
+    const failed = attempt.current;
+    void recognitionErrorMessage(code).then((message) => {
+      if (attempt.current === failed) setError(message);
+    });
+  };
+
+  const start = () => {
+    if (Recognition === undefined) return;
+    current.current?.abort();
+    const recognition = new Recognition();
+    recognition.lang = navigator.language;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.onstart = () => {
       attempt.current += 1;
       setError(null);
-    },
-    // One recognition event can finish several phrases, so each builds on the draft before it.
-    onResult: (spoken) => setDraft((draft) => appendSpoken(draft, spoken)),
-    onError: ({ error: code }) => {
-      const failed = attempt.current;
-      void recognitionErrorMessage(code).then((message) => {
-        if (attempt.current === failed) setError(message);
-      });
-    },
-  });
+      setListening(true);
+    };
+    recognition.onend = () => {
+      if (current.current !== recognition) return;
+      current.current = null;
+      setListening(false);
+      setSpeaking(false);
+      setInterimTranscript("");
+    };
+    recognition.onspeechstart = () => setSpeaking(true);
+    recognition.onspeechend = () => setSpeaking(false);
+    recognition.onresult = ({ resultIndex, results }) => {
+      let interim = "";
+      for (let index = resultIndex; index < results.length; index++) {
+        const result = results[index];
+        const spoken = result[0].transcript;
+        // One recognition event can finish several phrases, so each builds on the draft before it.
+        if (result.isFinal) setDraft((draft) => appendSpoken(draft, spoken));
+        else interim += spoken;
+      }
+      setInterimTranscript(interim);
+    };
+    recognition.onerror = ({ error: code }) => fail(code);
+    recognition.onnomatch = () => fail("no-speech");
+    current.current = recognition;
+    recognition.start();
+  };
+  const stop = () => current.current?.stop();
+  const abort = () => current.current?.abort();
+
+  const speech: UseSpeechRecognitionReturn = {
+    isSupported: Recognition !== undefined,
+    isListening,
+    isSpeaking,
+    volume: 0,
+    bands: restingBands,
+    rawBands: restingBands,
+    interimTranscript,
+    start,
+    stop,
+    abort,
+    toggle: () => (isListening ? stop() : start()),
+  };
   return { speech, error };
 }
