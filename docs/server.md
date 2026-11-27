@@ -576,7 +576,12 @@ messages and answers them.
 **Channels and threads.** The chat has channels, starting with `#general` (channel 1,
 which holds the messages of versions before channels), and threads under each channel.
 People and the agent add channels and threads; a thread may follow a task, and the task's
-details show its threads and their conversations. Each channel and thread keeps how far
+details show its thread and its conversation. A task has one thread: opening a second one
+for it, or linking it to another thread, is refused. The chat's list shows channel 1 (the
+default room) first, then the tasks that need an answer (`in_review`, or a question in
+their thread nobody answered) and the `in_progress` tasks a lane works on (a `lane:` ref),
+each with the latest message of its thread on one line; other tasks' threads open from
+the task's details. Each channel and thread keeps how far
 people read it, so the app shows unread counts per channel and per thread; an archived
 thread no longer counts. A channel's bell turns its notifications on or off for every
 device. A thread is `open`, `closed` when its conversation is over, or `archived`, which
@@ -598,9 +603,9 @@ Each message carries its `channelId` and `threadId`. `list_chat` lists the lates
 with their receipts, of every place or only of `channel_id` (the channel itself) or
 `thread_id`, and `before` pages back. `list_channels` lists the channels with `push` and
 `unread`, and `create_channel` adds one. `create_thread` opens a thread under `channel_id`
-(channel 1 when omitted), following `task_id` if given; `list_threads` lists threads by
-`channel_id` or `task_id` with their `status`, `closedAt`, and `archivedAt`
-(`include_archived` adds archived ones); and `update_thread` changes a thread's `title`,
+(channel 1 when omitted), following `task_id` if given; `list_threads` lists threads by `channel_id` or `task_id` with their `status`,
+`closedAt`, `archivedAt`, `lastMessage`, and `awaitingChoice` (`include_archived` adds
+archived ones); and `update_thread` changes a thread's `title`,
 its task (`task_id`, or `unlink_task`), or its `status`.
 **Actions.** `reply_in_chat` takes up to 10 `actions`, each `{ "key", "label", "style" }`
 (`style` is `default`, `primary`, or `danger`), which the app shows as buttons under the

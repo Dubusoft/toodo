@@ -43,7 +43,10 @@ function NewThreadForm({ task, onCreated, onCancel }: { task: Task; onCreated: (
   );
 }
 
-/** The chat threads that follow the task, each opening its conversation in place. */
+/**
+ * The chat thread that follows the task, opening its conversation in place, or a form to
+ * start it: a task has one thread.
+ */
 export function TaskThreads({ task }: { task: Task }) {
   const threads = useChatThreads({ taskId: task.id, archived: true });
   const channels = useChatChannels();
@@ -93,7 +96,7 @@ export function TaskThreads({ task }: { task: Task }) {
           );
         })}
       </ul>
-      {adding ? (
+      {list.length > 0 ? null : adding ? (
         <NewThreadForm
           task={task}
           onCancel={() => setAdding(false)}

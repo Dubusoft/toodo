@@ -20,8 +20,24 @@ const THREAD_SELECT = `SELECT t.id, t.channel_id, t.title, t.task_id, t.status,
          t.created_at, t.closed_at, t.archived_at,
          (SELECT count(*) FROM chat_messages m
           WHERE m.thread_id = t.id AND m.author <> 'user' AND m.id > t.read_id) AS unread,
-         (SELECT max(m.at) FROM chat_messages m WHERE m.thread_id = t.id) AS last_at
+         (SELECT max(m.at) FROM chat_messages m WHERE m.thread_id = t.id) AS last_at,
+         (SELECT m.body FROM chat_messages m WHERE m.thread_id = t.id
+          ORDER BY m.id DESC LIMIT 1) AS last_body,
+         EXISTS (SELECT 1 FROM chat_messages m
+                 WHERE m.thread_id = t.id
+                   AND EXISTS (SELECT 1 FROM chat_actions a WHERE a.message_id = m.id)
+                   AND NOT EXISTS (SELECT 1 FROM chat_choices c WHERE c.message_id = m.id))
+           AS awaiting_choice
      FROM chat_threads t`;
+
+/** How much of its latest message a thread carries, in characters, on one line. */
+const LAST_MESSAGE_MAX = 200;
+
+/** `body` on one line, cut to `LAST_MESSAGE_MAX` characters. */
+function oneLine(body: string): string {
+  const line = body.replace(/\s+/g, " ").trim();
+  return line.length <= LAST_MESSAGE_MAX ? line : `${line.slice(0, LAST_MESSAGE_MAX - 3)}...`;
+}
 
 interface ThreadRow {
   id: number;
@@ -34,6 +50,8 @@ interface ThreadRow {
   archived_at: number | null;
   unread: number;
   last_at: number | null;
+  last_body: string | null;
+  awaiting_choice: number;
 }
 
 function thread(row: ThreadRow): ChatThread {
@@ -48,6 +66,8 @@ function thread(row: ThreadRow): ChatThread {
     archivedAt: row.archived_at,
     unread: row.unread,
     lastMessageAt: row.last_at,
+    lastMessage: row.last_body === null ? null : oneLine(row.last_body),
+    awaitingChoice: row.awaiting_choice === 1,
   };
 }
 

@@ -482,6 +482,10 @@ export type ChatThread = {
 	/**  Messages of the agent and Toodo in it not read yet. */
 	unread: number,
 	lastMessageAt: Timestamp | null,
+	/**  Its latest message on one line, cut short; e.g. the latest status a lane reported. */
+	lastMessage: string | null,
+	/**  Whether a message of the agent in it offers actions nobody chose yet. */
+	awaitingChoice: boolean,
 };
 
 /**

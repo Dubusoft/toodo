@@ -237,5 +237,7 @@ export function thread(t: ChatThread): B.ChatThread {
     archivedAt: t.archivedAt,
     unread: t.unread,
     lastMessageAt: t.lastMessageAt,
+    lastMessage: t.lastMessage,
+    awaitingChoice: t.awaitingChoice,
   };
 }

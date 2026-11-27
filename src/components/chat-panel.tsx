@@ -7,6 +7,7 @@ import {
   useState,
   useSyncExternalStore,
   type FormEvent,
+  type ReactNode,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -14,6 +15,7 @@ import {
   ArrowLeft,
   Bell,
   BellOff,
+  Flag,
   Lock,
   MessageCircle,
   Paperclip,
@@ -78,9 +80,11 @@ import {
   useCreateChatThread,
   useMarkChatRead,
   useSearchChat,
+  useTasks,
   useUpdateChatChannel,
   useUpdateChatThread,
 } from "@/lib/queries";
+import { laneOf, taskChats, type TaskChat, type TaskChats } from "@/lib/task-chats";
 import { formatFull } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import { useVoiceInput } from "@/lib/voice";
@@ -627,33 +631,196 @@ export function ThreadStatusBadge({ status }: { status: ChatThreadStatus }) {
   return <Badge className="shrink-0" variant={status === "closed" ? "neutral" : "warning"} label={statusLabels[status]} />;
 }
 
-/** The channels with their threads under the shown one, where each is picked and added. */
+function placeItem(selected: boolean) {
+  return cn(
+    "flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted",
+    selected && "bg-muted font-semibold",
+  );
+}
+
+/** A listed task: its number and title, and under them the latest message of its thread. */
+function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boolean; onOpen: () => void }) {
+  const { task, thread } = chat;
+  const lane = laneOf(task);
+  const status = thread?.lastMessage ?? (task.status === "in_review" ? "In review" : lane !== null ? `lane:${lane}` : "");
+  return (
+    <li>
+      <button type="button" className={placeItem(selected)} aria-current={selected ? "page" : undefined} onClick={onOpen}>
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="shrink-0 text-muted-foreground">{`#${task.id}`}</span>
+            <span className="min-w-0 truncate">{task.title}</span>
+          </span>
+          {status !== "" && <span className="truncate text-xs font-normal text-muted-foreground">{status}</span>}
+        </span>
+        <UnreadBadge count={thread === null || thread.status === "archived" ? 0 : thread.unread} />
+      </button>
+    </li>
+  );
+}
+
+/** A group of listed tasks under a heading, left out while it is empty. */
+function TaskGroup({
+  label,
+  icon,
+  chats,
+  selection,
+  onOpenTask,
+}: {
+  label: string;
+  icon?: ReactNode;
+  chats: readonly TaskChat[];
+  selection: Selection;
+  onOpenTask: (chat: TaskChat) => void;
+}) {
+  if (chats.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-0.5 pt-2">
+      <h3 className="flex items-center gap-1 px-2 pb-1 text-xs font-medium text-muted-foreground">
+        {icon}
+        {label}
+      </h3>
+      <ul aria-label={label} className="flex flex-col gap-0.5">
+        {chats.map((chat) => (
+          <TaskPlace
+            key={chat.task.id}
+            chat={chat}
+            selected={chat.thread !== null && selection.thread === chat.thread.id}
+            onOpen={() => onOpenTask(chat)}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * The chat's places: the default room first, then the tasks that need an answer and the
+ * in-progress tasks a lane works on, each opening its thread, then the other channels. A
+ * channel shows the threads under it that follow no task when it is shown; a task's thread
+ * opens from the task.
+ */
 function PlaceList({
   channels,
   threads,
+  tasks,
   selection,
   onSelect,
+  onOpenTask,
 }: {
   channels: readonly ChatChannel[];
   threads: readonly ChatThread[];
+  tasks: TaskChats;
   selection: Selection;
   onSelect: (selection: Selection) => void;
+  onOpenTask: (chat: TaskChat) => void;
 }) {
   const [adding, setAdding] = useState<"channel" | "thread" | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const createChannel = useCreateChatChannel();
   const createThread = useCreateChatThread();
-  const archived = threads.filter((thread) => thread.status === "archived").length;
-  const shown = threads.filter((thread) => showArchived || thread.status !== "archived");
-  const item = (selected: boolean) =>
-    cn(
-      "flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted",
-      selected && "bg-muted font-semibold",
+  const loose = threads.filter((thread) => thread.taskId === null);
+  const archived = loose.filter((thread) => thread.status === "archived").length;
+  const shown = loose.filter((thread) => showArchived || thread.status !== "archived");
+  const defaultRoom = channels.find((channel) => channel.id === firstChannel);
+  const others = channels.filter((channel) => channel !== defaultRoom);
+
+  const place = (channel: ChatChannel) => {
+    const current = channel.id === selection.channel;
+    return (
+      <li key={channel.id}>
+        <button
+          type="button"
+          className={placeItem(current && selection.thread === null)}
+          aria-current={current && selection.thread === null ? "page" : undefined}
+          onClick={() => onSelect({ channel: channel.id, thread: null })}
+        >
+          <span className="text-muted-foreground">#</span>
+          <span className="min-w-0 truncate">{channel.name}</span>
+          {!channel.push && <BellOff aria-label="Notifications off" className="size-3 shrink-0 text-muted-foreground" />}
+          <UnreadBadge count={channel.unread} />
+        </button>
+        {current && (
+          <div className="ml-3 flex flex-col gap-0.5 border-l pl-1">
+            <ul aria-label={`Threads in #${channel.name}`} className="flex flex-col gap-0.5">
+              {shown.map((thread) => (
+                <li key={thread.id}>
+                  <button
+                    type="button"
+                    className={placeItem(selection.thread === thread.id)}
+                    aria-current={selection.thread === thread.id ? "page" : undefined}
+                    onClick={() => onSelect({ channel: channel.id, thread: thread.id })}
+                  >
+                    <span className={cn("min-w-0 truncate", thread.status !== "open" && "text-muted-foreground")}>
+                      {thread.title}
+                    </span>
+                    {thread.status !== "open" && (
+                      <span className="sr-only">{`, ${statusLabels[thread.status].toLowerCase()}`}</span>
+                    )}
+                    {thread.status === "closed" && <Lock aria-hidden className="size-3 shrink-0 text-muted-foreground" />}
+                    {thread.status === "archived" && (
+                      <Archive aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+                    )}
+                    <UnreadBadge count={thread.status === "archived" ? 0 : thread.unread} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {adding === "thread" ? (
+              <AddForm
+                label="Thread title"
+                pending={createThread.isPending}
+                error={createThread.error?.message ?? null}
+                onCancel={() => setAdding(null)}
+                onAdd={(title) =>
+                  createThread.mutate(
+                    { channelId: channel.id, title },
+                    {
+                      onSuccess: (thread) => {
+                        setAdding(null);
+                        onSelect({ channel: channel.id, thread: thread.id });
+                      },
+                    },
+                  )
+                }
+              />
+            ) : (
+              <div>
+                <Button variant="ghost" size="sm" label="New thread" onClick={() => setAdding("thread")} />
+              </div>
+            )}
+            {archived > 0 && (
+              <div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  label={showArchived ? "Hide archived threads" : `Show archived threads (${archived})`}
+                  onClick={() => setShowArchived(!showArchived)}
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </li>
     );
+  };
 
   return (
     <div className="flex flex-col gap-0.5 p-2">
-      <div className="flex items-center justify-between px-2 pb-1">
+      {defaultRoom !== undefined && (
+        <ul aria-label="Default room" className="flex flex-col gap-0.5">
+          {place(defaultRoom)}
+        </ul>
+      )}
+      <TaskGroup
+        label="Needs answer"
+        icon={<Flag aria-hidden className="size-3 text-warning" />}
+        chats={tasks.needsAnswer}
+        selection={selection}
+        onOpenTask={onOpenTask}
+      />
+      <TaskGroup label="In progress" chats={tasks.inProgress} selection={selection} onOpenTask={onOpenTask} />
+      <div className="flex items-center justify-between px-2 pb-1 pt-2">
         <h3 className="text-xs font-medium text-muted-foreground">Channels</h3>
         <IconButton
           variant="ghost"
@@ -680,85 +847,7 @@ function PlaceList({
         />
       )}
       <ul aria-label="Channels" className="flex flex-col gap-0.5">
-        {channels.map((channel) => {
-          const current = channel.id === selection.channel;
-          return (
-            <li key={channel.id}>
-              <button
-                type="button"
-                className={item(current && selection.thread === null)}
-                aria-current={current && selection.thread === null ? "page" : undefined}
-                onClick={() => onSelect({ channel: channel.id, thread: null })}
-              >
-                <span className="text-muted-foreground">#</span>
-                <span className="min-w-0 truncate">{channel.name}</span>
-                {!channel.push && <BellOff aria-label="Notifications off" className="size-3 shrink-0 text-muted-foreground" />}
-                <UnreadBadge count={channel.unread} />
-              </button>
-              {current && (
-                <div className="ml-3 flex flex-col gap-0.5 border-l pl-1">
-                  <ul aria-label={`Threads in #${channel.name}`} className="flex flex-col gap-0.5">
-                    {shown.map((thread) => (
-                      <li key={thread.id}>
-                        <button
-                          type="button"
-                          className={item(selection.thread === thread.id)}
-                          aria-current={selection.thread === thread.id ? "page" : undefined}
-                          onClick={() => onSelect({ channel: channel.id, thread: thread.id })}
-                        >
-                          <span className={cn("min-w-0 truncate", thread.status !== "open" && "text-muted-foreground")}>
-                            {thread.title}
-                          </span>
-                          {thread.status !== "open" && (
-                            <span className="sr-only">{`, ${statusLabels[thread.status].toLowerCase()}`}</span>
-                          )}
-                          {thread.status === "closed" && <Lock aria-hidden className="size-3 shrink-0 text-muted-foreground" />}
-                          {thread.status === "archived" && (
-                            <Archive aria-hidden className="size-3 shrink-0 text-muted-foreground" />
-                          )}
-                          <UnreadBadge count={thread.status === "archived" ? 0 : thread.unread} />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                  {adding === "thread" ? (
-                    <AddForm
-                      label="Thread title"
-                      pending={createThread.isPending}
-                      error={createThread.error?.message ?? null}
-                      onCancel={() => setAdding(null)}
-                      onAdd={(title) =>
-                        createThread.mutate(
-                          { channelId: channel.id, title },
-                          {
-                            onSuccess: (thread) => {
-                              setAdding(null);
-                              onSelect({ channel: channel.id, thread: thread.id });
-                            },
-                          },
-                        )
-                      }
-                    />
-                  ) : (
-                    <div>
-                      <Button variant="ghost" size="sm" label="New thread" onClick={() => setAdding("thread")} />
-                    </div>
-                  )}
-                  {archived > 0 && (
-                    <div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        label={showArchived ? "Hide archived threads" : `Show archived threads (${archived})`}
-                        onClick={() => setShowArchived(!showArchived)}
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
-            </li>
-          );
-        })}
+        {others.map(place)}
       </ul>
     </div>
   );
@@ -920,6 +1009,10 @@ function ChatPanel({
   const [selection, setSelection] = useState(() => target ?? storedSelection());
   const [searching, setSearching] = useState(false);
   const threads = useChatThreads({ channelId: selection.channel, archived: true });
+  const allThreads = useChatThreads({ archived: true });
+  const tasks = useTasks();
+  const createThread = useCreateChatThread();
+  const listed = taskChats(tasks.data ?? [], allThreads.data ?? []);
   // On a phone the panel shows either the channels or one conversation.
   const [listShown, setListShown] = useState(false);
   const channelList = channels.data ?? [];
@@ -955,6 +1048,18 @@ function ChatPanel({
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
+
+  // A listed task without a thread gets one in the default room.
+  const openTask = ({ task, thread: taskThread }: TaskChat) => {
+    if (taskThread !== null) {
+      select({ channel: taskThread.channelId, thread: taskThread.id });
+      return;
+    }
+    createThread.mutate(
+      { channelId: firstChannel, title: `#${task.id} ${task.title}`.slice(0, 200), taskId: task.id },
+      { onSuccess: (opened) => select({ channel: opened.channelId, thread: opened.id }) },
+    );
+  };
 
   const place = placeOf(selection);
   const label = thread !== undefined ? thread.title : `#${channel?.name ?? "general"}`;
@@ -994,7 +1099,14 @@ function ChatPanel({
               The channels could not be loaded: {channels.error.message}
             </p>
           ) : (
-            <PlaceList channels={channelList} threads={threads.data ?? []} selection={selection} onSelect={select} />
+            <PlaceList
+              channels={channelList}
+              threads={threads.data ?? []}
+              tasks={listed}
+              selection={selection}
+              onSelect={select}
+              onOpenTask={openTask}
+            />
           )}
         </nav>
         <div className={cn("flex min-w-0 flex-1 flex-col", listShown && "max-md:hidden")}>

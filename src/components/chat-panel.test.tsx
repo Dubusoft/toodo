@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Chat, receipt, totalUnread } from "@/components/chat-panel";
-import { commands, events, type ChatChannel, type ChatMessage, type ChatThread } from "@/lib/bindings";
+import { commands, events, type ChatChannel, type ChatMessage, type ChatThread, type Task } from "@/lib/bindings";
 import { flushChatOutbox } from "@/lib/chat-outbox";
 
 vi.mock("@/lib/bindings", () => ({
@@ -19,6 +19,7 @@ vi.mock("@/lib/bindings", () => ({
     updateChatChannel: vi.fn(),
     createChatThread: vi.fn(),
     updateChatThread: vi.fn(),
+    listTasks: vi.fn(),
   },
   events: { chatTyping: { listen: vi.fn() } },
 }));
@@ -64,8 +65,22 @@ function thread(id: number, title: string, overrides: Partial<ChatThread> = {}):
     archivedAt: null,
     unread: 0,
     lastMessageAt: null,
+    lastMessage: null,
+    awaitingChoice: false,
     ...overrides,
   };
+}
+
+function task(id: number, status: Task["status"], refs: string[] = []): Task {
+  return { id, title: `Task ${id}`, status, refs, dependsOn: [] } as unknown as Task;
+}
+
+/** The open tasks the app loads; it loads no finished ones. */
+function serveTasks(tasks: Task[]) {
+  mocked.listTasks.mockImplementation(async (filter) => ({
+    status: "ok",
+    data: filter?.statuses?.includes("done") ? [] : tasks,
+  }));
 }
 
 function serve(messages: ChatMessage[], channels = [channel(1, "general")], threads: ChatThread[] = []) {
@@ -95,6 +110,7 @@ beforeEach(() => {
   localStorage.clear();
   mockedEvents.chatTyping.listen.mockResolvedValue(() => {});
   mocked.markChatRead.mockResolvedValue({ status: "ok", data: null });
+  serveTasks([]);
 });
 
 /** A stand-in for the browser's speech recognition that the test feeds results to. */
@@ -189,6 +205,28 @@ describe("Chat", () => {
     const channels = await screen.findByRole("list", { name: "Channels" });
     expect(within(channels).getByRole("button", { name: /work/ })).toHaveTextContent("2");
     await waitFor(() => expect(mocked.markChatRead).toHaveBeenCalledWith({ channel: 1 }, 2));
+  });
+
+  it("lists tasks waiting for an answer and lanes at work, and opens a task's thread", async () => {
+    serve([], undefined, [
+      thread(5, "#7 Ship", { taskId: 7, lastMessage: "[progress] ap-7 Tests pass", lastMessageAt: 9 }),
+    ]);
+    serveTasks([task(7, "in_progress", ["lane:ap-7"]), task(8, "in_review"), task(9, "in_progress")]);
+    mocked.createChatThread.mockResolvedValue({ status: "ok", data: thread(6, "#8 Task 8", { taskId: 8 }) });
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+
+    const working = await screen.findByRole("list", { name: "In progress" });
+    expect(working).toHaveTextContent("#7Task 7[progress] ap-7 Tests pass");
+    expect(working).not.toHaveTextContent("#9");
+    const waiting = screen.getByRole("list", { name: "Needs answer" });
+    expect(waiting).toHaveTextContent("#8Task 8In review");
+
+    fireEvent.click(within(waiting).getByRole("button", { name: /#8/ }));
+    await waitFor(() =>
+      expect(mocked.createChatThread).toHaveBeenCalledWith({ channelId: 1, title: "#8 Task 8", taskId: 8 }),
+    );
+    await waitFor(() => expect(mocked.listChat).toHaveBeenCalledWith({ thread: 6 }, null));
   });
 
   it("sends a message to the shown channel under a client id", async () => {
