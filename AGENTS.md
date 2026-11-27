@@ -181,8 +181,10 @@ Layout:
   `~/.config/host-healthcheck.env` every minute. The host's own code on the main thread
   makes no `*Sync` calls (`host/src/sync-check.test.ts` walks its imports, stopping at the
   core). `host/src/protocol.ts` holds the messages both threads exchange. `host/src/cli.ts`
-  is the `toodo` command of the owner host (`review`, `doctor`, `service install`), linked
-  from `package.json`.
+  is the `toodo` command, the owner's one command on the host (`update`, `status`, `quota`,
+  `doctor`, `logs`, `restart`, `review`, `service install`), linked from `package.json`;
+  `update`, `status`, `quota`, and `doctor` run dori's CLI in the same checkout rather than
+  copying it. `dori` stays the internal CLI of the lead, lanes, and runners.
 - `dori/`: Dori, the executor that runs coding agents in lanes and reports to Toodo, moved
   here from `Dubusoft/dori-mode` with its history (`git subtree`). The skill is
   `dori/skills/dori-mode/` and the `dori` CLI (Bun) is `dori/skills/dori-mode/scripts/`;

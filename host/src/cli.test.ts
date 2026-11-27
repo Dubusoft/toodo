@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { openWriter } from "../../server/src/storage/database.ts";
 import { createDatabase } from "../../server/src/storage/testing.ts";
-import { type Check, type DoctorDeps, hostConfig, ROOT, type Ran, renderUnit, runDoctor, serviceInstall, UNIT } from "./cli.ts";
+import { type Check, type DoctorDeps, hostConfig, logsArgs, ROOT, type Ran, renderUnit, runDoctor, serviceInstall, UNIT, updateArgs } from "./cli.ts";
 
 const TEMPLATE = readFileSync(join(ROOT, "host", UNIT), "utf8");
 
@@ -90,6 +90,29 @@ describe("service install", () => {
   test("quotes a value with spaces", () => {
     const unit = renderUnit(TEMPLATE, { src: "/s", bun: "/b", path: "/p", server: "Environment=\"TOODO_CHAT_AGENT_NAME=Dori Bot\"\n", supervisor: "" });
     expect(unit).toContain('Environment="TOODO_CHAT_AGENT_NAME=Dori Bot"\n');
+  });
+});
+
+describe("toodo update", () => {
+  test("stays on the checkout's channel: a dev checkout updates from dev, a main checkout from main", () => {
+    expect(updateArgs([], "dev")).toEqual(["update", "--dev"]);
+    expect(updateArgs([], "autopilot/1762")).toEqual(["update", "--dev"]);
+    expect(updateArgs([], "main")).toEqual(["update"]);
+  });
+
+  test("takes --dev, --main, and --force over the checkout's branch", () => {
+    expect(updateArgs(["--main"], "dev")).toEqual(["update"]);
+    expect(updateArgs(["--dev", "--force"], "main")).toEqual(["update", "--dev", "--force"]);
+    expect(() => updateArgs(["--dev", "--main"], "dev")).toThrow("opposite channels");
+    expect(() => updateArgs(["--channel", "dev"], "dev")).toThrow();
+  });
+});
+
+describe("toodo logs", () => {
+  test("reads the unit's journal, following it with --follow", () => {
+    expect(logsArgs([])).toEqual(["journalctl", "--user", "-u", UNIT, "-n", "100"]);
+    expect(logsArgs(["-f", "--lines", "20"])).toEqual(["journalctl", "--user", "-u", UNIT, "-n", "20", "-f"]);
+    expect(() => logsArgs(["--lines", "all"])).toThrow("--lines");
   });
 });
 
