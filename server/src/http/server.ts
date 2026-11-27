@@ -8,7 +8,7 @@ import { join, normalize, sep } from "node:path";
 import { deviceId } from "../domain/device.ts";
 import { chatAttachmentId } from "../domain/chat.ts";
 import { CommandError } from "../commands/errors.ts";
-import { McpEndpoint } from "../mcp/mcp.ts";
+import { isLoopback, McpEndpoint } from "../mcp/mcp.ts";
 import type { ClientMetadataFetcher } from "../oauth/clients.ts";
 import { OAuthServer } from "../oauth/routes.ts";
 import * as attachments from "./attachments.ts";
@@ -19,6 +19,7 @@ import * as files from "./files.ts";
 import * as push from "./push.ts";
 import * as rpc from "./rpc.ts";
 import type { Services } from "./services.ts";
+import { SupervisorStatusFeed } from "./supervisor-status.ts";
 
 export type RouterOptions = {
   readonly services: Services;
@@ -98,6 +99,7 @@ export function createHandler(options: RouterOptions): Handler {
     attempts: new FailedAttempts(),
     access: options.access,
   };
+  const supervisorStatus = new SupervisorStatusFeed();
 
   // Routes behind the gate, by method and path pattern.
   const routes: Array<[string, RegExp, ApiRoute]> = [
@@ -113,6 +115,10 @@ export function createHandler(options: RouterOptions): Handler {
       return new Response(stream.body(), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       });
+    }],
+    ["GET", /^\/api\/supervisor\/status$/, (_request, _caller, _params, connection) => {
+      connection.keepOpen();
+      return supervisorStatus.stream();
     }],
     ["GET", /^\/api\/backups\/export$/, () => files.exportDatabase(services)],
     ["POST", /^\/api\/backups\/restore$/, (request) => files.restore(services, request)],
@@ -166,22 +172,30 @@ export function createHandler(options: RouterOptions): Handler {
 
   /** Chat apps signed in over OAuth may not use the chat, like its MCP tools: it is for the
    * agent with the MCP token. */
-  const localOnly = () =>
-    failed(new CommandError("notPermitted", "chat attachments are local-only; use the MCP token of the server"));
+  const localOnly = (refusal: string) =>
+    failed(new CommandError("notPermitted", `${refusal}; use the MCP token of the server`));
 
   /** `/mcp` and the agent's chat attachments under it, behind the MCP token. */
   function agent(request: Request, pathname: string, connection: Connection): Response | Promise<Response> {
     const access = mcp.admit(request, connection.peer);
     if (access instanceof Response) return access;
+    if (pathname === "/mcp/supervisor-status") {
+      // The supervisor Worker of this process, and nothing else: loopback and the MCP token,
+      // even in public mode, where chat apps reach /mcp from anywhere.
+      if (access.kind !== "static" || !isLoopback(connection.peer)) return localOnly("the supervisor status is local-only");
+      if (request.method === "PUT") return supervisorStatus.push(request);
+      if (request.method === "GET") return supervisorStatus.count();
+      return methodNotAllowed(["GET", "PUT"]);
+    }
     if (pathname === "/mcp/attachments") {
       if (request.method !== "POST") return methodNotAllowed(["POST"]);
-      if (access.kind !== "static") return localOnly();
+      if (access.kind !== "static") return localOnly("chat attachments are local-only");
       return attachments.upload(services, "agent", new URL(request.url).searchParams.get("name") ?? "", request);
     }
     const file = /^\/mcp\/attachments\/([^/]+)$/.exec(pathname);
     if (file !== null) {
       if (request.method !== "GET" && request.method !== "HEAD") return methodNotAllowed(["GET", "HEAD"]);
-      if (access.kind !== "static") return localOnly();
+      if (access.kind !== "static") return localOnly("chat attachments are local-only");
       return int(file[1]!, (value) => attachments.send(services, chatAttachmentId(value)));
     }
     return mcp.serve(request, access);

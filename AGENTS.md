@@ -130,7 +130,8 @@ Layout:
     replay and resync (`event-log.ts`), the `/api` gate of the shared web token, device
     tokens, read-only devices, the lockout of wrong tokens, and Cloudflare Access JWTs
     (`auth.ts`, `devices.ts`, `access.ts`), backup export, download, and restore
-    (`files.ts`), chat attachments (`attachments.ts`), Web Push routes (`push.ts`), and the
+    (`files.ts`), chat attachments (`attachments.ts`), Web Push routes (`push.ts`), the
+    Dori status panel's latest snapshot and its stream (`supervisor-status.ts`), and the
     web build. `services.ts` holds what the routes share and announces changes;
     `config.ts` reads the `TOODO_*` environment. `/mcp` and `/mcp/attachments` are served
     from `server/src/mcp/`, and `/oauth` and `/.well-known` from `server/src/oauth/` in

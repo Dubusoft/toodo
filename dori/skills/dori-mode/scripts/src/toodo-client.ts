@@ -37,7 +37,7 @@ export class ToodoUnreadable extends Error {
 }
 
 /** The token in `tokenFile`; `fail` builds the error for a file that cannot be read or is empty. */
-const readToken = (tokenFile: string, fail: (message: string) => Error): string => {
+export const readToken = (tokenFile: string, fail: (message: string) => Error): string => {
   let token: string;
   try { token = readFileSync(tokenFile, "utf8").trim(); } catch (e) {
     throw fail(`cannot read the token file ${tokenFile}: ${e instanceof Error && "code" in e ? String(e.code) : String(e)}`);
