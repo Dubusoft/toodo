@@ -67,7 +67,7 @@ export const hookInteraction = (value: unknown): HookInteraction | undefined => 
 
 const RECEIVED = " - 접수됨";
 
-/** The message's rows with every button disabled and the clicked one relabelled "<label> - 접수됨". */
+/** The message's rows with every button disabled and the clicked one relabelled "<label>" plus RECEIVED. */
 export const disabledRows = (rows: readonly unknown[], customId: string): unknown[] =>
   rows.map((row) => !record(row) || !Array.isArray(row.components) ? row : {
     ...row,

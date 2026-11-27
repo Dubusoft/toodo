@@ -183,7 +183,7 @@ export class DiscordCommands {
   /**
    * A hook button click. A non-owner (or a foreign application or guild) gets an ephemeral refusal and an unconfigured
    * hook name the unknown-button reply. The owner's click updates the message at once (every button disabled, the
-   * clicked one marked 접수됨), then spawns the hook and reports the click. A failed update leaves the buttons live
+   * clicked one marked received), then spawns the hook and reports the click. A failed update leaves the buttons live
    * and runs nothing.
    */
   private async hookButton(interaction: HookInteraction): Promise<void> {

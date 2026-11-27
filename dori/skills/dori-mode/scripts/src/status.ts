@@ -101,7 +101,7 @@ export type Status = {
 export type LaneGroup = {
   readonly machine: string;
   readonly state?: RunnerView["state"];
-  /** Not offline, lost or revoked (the same reading as a wait's "@machine 오프라인" mark). */
+  /** Not offline, lost or revoked (the same reading as a wait's "@machine offline" mark). */
   readonly online: boolean;
   /** Lane keys, in the order of Status.lanes. */
   readonly lanes: readonly string[];
@@ -446,9 +446,9 @@ const clip = (s: string, n: number): string => {
   const space = cut.lastIndexOf(" ");
   return `${(space >= room / 2 ? cut.slice(0, space) : cut).trimEnd()}...`;
 };
-/** "레인 3개": a count with its counter word. */
+/** "lanes 3" in the owner's wording: a count with its counter word. */
 const count = (n: number, word: string, unit = "개"): string => `${word} ${n}${unit}`;
-/** Whole items joined by `sep`: at most `count` of them in about `max` characters, then "외 N개". */
+/** Whole items joined by `sep`: at most `count` of them in about `max` characters, then "N more". */
 const list = (items: readonly string[], limit: number, max: number, sep = ", "): string => {
   const shown: string[] = [];
   let size = 0;
@@ -462,14 +462,14 @@ const list = (items: readonly string[], limit: number, max: number, sep = ", "):
   return `${shown.join(sep)}${hidden ? `${sep}외 ${hidden}개` : ""}`;
 };
 const kilo = (n: number): string => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
-/** "27분", "3시간", "2일". */
+/** A duration in the owner's wording: minutes below 2 h, hours below 2 days, then days ("27 min", "3 h", "2 days"). */
 const dur = (min: number): string => (min < 120 ? `${min}분` : min < 2880 ? `${Math.round(min / 60)}시간` : `${Math.round(min / 1440)}일`);
 const ago = (iso: string | undefined, now: number): string => {
   if (!iso) return "없음";
   const min = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
   return min < 1 ? "방금" : `${dur(min)} 전`;
 };
-/** "40초 전", "5분 전": an age in seconds. */
+/** "40 s ago", "5 min ago" in the owner's wording: an age in seconds. */
 const agoSec = (sec: number): string => (sec < 60 ? `${sec}초 전` : `${dur(Math.round(sec / 60))} 전`);
 
 /** "10-21 09:53 KST": `ms` in the status's time zone. */
@@ -489,7 +489,7 @@ const waitTimeoutMs = (w: Status["waits"][number]): number | null => {
   const ms = w.deadline ? Date.parse(w.deadline) : NaN;
   return Number.isFinite(ms) ? ms : null;
 };
-/** "21시간 후" or "5분 지남". */
+/** "in 21 h" or "5 min overdue" in the owner's wording. */
 const left = (ms: number, now: number): string => {
   const min = Math.round(Math.abs(ms - now) / 60_000);
   return ms >= now ? `${dur(min)} 후` : `${dur(min)} 지남`;
@@ -526,9 +526,9 @@ const LEVEL_WORDS: Readonly<Record<RunnerMachine["level"], string>> = { ok: "정
 const gb = (n: number): string => `${n < 10 ? n.toFixed(1) : Math.round(n)}GB`;
 
 /**
- * One runner's machine as two lines:
- * "- local (linux): 연결됨 · 레인 3개" and
- * "  CPU 부하 1.2 · 메모리 여유 35% · 디스크 여유 120GB · 스왑 여유 2.0/4.0GB (1분 전 측정)".
+ * One runner's machine as two lines, in the owner's wording:
+ * "- local (linux): connected · lanes 3" and
+ * "  CPU load 1.2 · memory free 35% · disk free 120GB · swap free 2.0/4.0GB (measured 1 min ago)".
  * The first line adds only what needs a look (an old heartbeat, a backlog, restarts, a local child that is not healthy).
  */
 export const machineLines = (r: RunnerView): string[] => {
@@ -622,14 +622,14 @@ const LIMITS: readonly Limits[] = [
 
 const iso = (ms: number | undefined): string | undefined => (ms === undefined ? undefined : new Date(ms).toISOString());
 
-/** "@mac-mini", or "@mac-mini 오프라인" while that machine's runner is not connected (offline, lost or revoked); empty for the supervisor host. */
+/** "@mac-mini", or "@mac-mini offline" while that machine's runner is not connected (offline, lost or revoked); empty for the supervisor host. */
 const machineMark = (s: Status, machine: string | undefined): string => {
   if (!machine) return "";
   const state = (s.runners ?? []).find((r) => r.label === machine)?.state;
   return `@${machine}${state === "offline" || state === "lost" || state === "revoked" ? " 오프라인" : ""}`;
 };
 
-/** "- 이벤트 소스: discord INBOUND 2분 전, github 이벤트 없음, deploys (poll) ... 실패": each source's last event age. */
+/** "- event sources: discord INBOUND 2 min ago, github no events, deploys (poll) ... failing" in the owner's wording: each source's last event age. */
 const sourceLine = (s: Status, now: number, max: number): string[] => {
   if (!s.sources) return [];
   const parts = s.sources.sources.map((src) => {
@@ -639,7 +639,7 @@ const sourceLine = (s: Status, now: number, max: number): string[] => {
   return parts.length ? [`- 이벤트 소스: ${list(parts, max, 400)}`] : [];
 };
 
-/** "- brief: 다음 10-24 09:00 KST (20시간 후)", "- backup: ..., 지난 실행 failed exit 1": one line per scheduled job. */
+/** "- brief: next 10-24 09:00 KST (in 20 h)", "- backup: ..., last run failed exit 1" in the owner's wording: one line per scheduled job. */
 const scheduleLines = (s: Status, now: number): string[] => (s.schedules ?? []).map((job) => {
   const next = job.waiting ? `${job.waiting} 기다리는 중` : job.nextRunAt === undefined ? "다음 실행 없음" : `다음 ${time(s, job.nextRunAt)} (${left(job.nextRunAt, now)})`;
   return clip(`- ${job.name}${job.machine ? machineMark(s, job.machine) : ""}: ${next}${job.lastResult && job.lastResult !== "ok" && job.lastResult !== "emitted" ? `, 지난 실행 ${job.lastResult}` : ""}`, 200);
@@ -649,7 +649,10 @@ const perWake = (calls: number, measured: number): string => (measured ? (calls 
 
 const SOURCE_WORDS: Readonly<Record<WakeSource, string>> = { owner: "소유자", lane: "레인", noise: "노이즈" };
 
-/** "- 리드 깨움 12회 (소유자 5 · 레인 4 · 노이즈 3), 깨울 때마다 모델 호출 8.3회" and "- 많은 순: INBOUND 이벤트 20 · 깨움 5; ..." (깨움 only for kinds that woke the lead). */
+/**
+ * "- lead woken 12 times (owner 5 · lane 4 · noise 3), 8.3 model calls per wake" and "- top: INBOUND events 20 · wakes 5; ..."
+ * in the owner's wording (the wake count only for kinds that woke the lead).
+ */
 const eventLines = (e: EventStats, max: number): string[] => {
   if (!e.kinds.length) return [];
   const split = e.wakes ? ` (${WAKE_SOURCES.map((source) => `${SOURCE_WORDS[source]} ${e.sources[source]}`).join(" · ")})` : "";
@@ -661,7 +664,10 @@ const eventLines = (e: EventStats, max: number): string[] => {
 export const STATUS_MAX_CHARS = 1900;
 
 type Lanes = Status["lanes"];
-/** "- ops (27분 · opus-5-5 · dori-mode #55 · 태스크 #949): Full run"; a lane in recovery starts with "[복구 포기]" or "[복구 대기]". */
+/**
+ * "- ops (27 min · opus-5-5 · dori-mode #55 · task #949): Full run" in the owner's wording; a lane in recovery starts
+ * with the recovery-abandoned or recovery-pending mark.
+ */
 const laneLine = (lane: Lanes[number], progress: number): string => {
   const where = [lane.repo, lane.pr !== undefined ? `#${lane.pr}` : ""].filter(Boolean).join(" ");
   const facts = [dur(lane.ageMin), lane.model ? shortModel(lane.model) : "", where, lane.task !== undefined ? `태스크 #${lane.task}` : ""].filter(Boolean).join(" · ");
@@ -669,7 +675,7 @@ const laneLine = (lane: Lanes[number], progress: number): string => {
   return `- ${flag}${lane.key} (${facts})${lane.progress ? `: ${clip(lane.progress, progress)}` : ""}`;
 };
 
-/** "▸ local: 연결됨 · 레인 2개", "▸ mac-mini: 오프라인 · 레인 없음": a runner's heading over its lanes. */
+/** "▸ local: connected · lanes 2", "▸ mac-mini: offline · no lanes" in the owner's wording: a runner's heading over its lanes. */
 const groupLine = (g: LaneGroup): string =>
   `▸ ${g.machine}: ${g.state ? RUNNER_WORDS[g.state] : "미확인"} · ${g.lanes.length ? count(g.lanes.length, "레인") : "레인 없음"}`;
 
@@ -798,7 +804,7 @@ export const statusPages = (s: Status): string[] => {
   const chunks: string[][] = [];
   let chunk: string[] = [];
   let size = 0;
-  // A runner's heading opens its group; a page that starts inside a group repeats it as "이어서".
+  // A runner's heading opens its group; a page that starts inside a group repeats it marked "continued".
   let prev = ordered[lim.lanes - 1]?.group.machine;
   for (const { lane, group } of rest) {
     const line = clip(laneLine(lane, PAGE_PROGRESS), PAGE_LINE_MAX);
