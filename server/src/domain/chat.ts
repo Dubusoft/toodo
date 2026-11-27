@@ -154,6 +154,7 @@ export const ANSWER_WITHIN = 10 * 60;
 
 /** A message of the chat. The receipts are set only on a person's messages. */
 export type ChatMessage = {
+  readonly clientId: string | null;
   readonly id: ChatMessageId;
   readonly channelId: ChatChannelId;
   readonly threadId: ChatThreadId | null;

@@ -39,6 +39,7 @@ describe("chat", () => {
 
   test("only unhandled messages past their due time are overdue", () => {
     const message: ChatMessage = {
+      clientId: null,
       id: chatMessageId(1),
       channelId: FIRST_CHANNEL,
       threadId: null,

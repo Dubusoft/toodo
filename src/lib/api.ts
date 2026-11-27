@@ -430,6 +430,8 @@ export type ChatChoiceOf = {
  */
 export type ChatMessage = {
 	id: ChatMessageId,
+	/** The original client ID, when the sender supplied one. */
+	readonly clientId?: string,
 	channelId: ChatChannelId,
 	/**  The thread it is in; unset for a message in the channel itself. */
 	threadId: ChatThreadId | null,

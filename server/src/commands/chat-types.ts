@@ -199,6 +199,7 @@ export function attachment(a: ChatAttachment): B.ChatAttachment {
 export function message(m: ChatMessage, now: number): B.ChatMessage {
   return {
     id: m.id,
+    ...(m.clientId === null ? {} : { clientId: m.clientId }),
     channelId: m.channelId,
     threadId: m.threadId,
     author: m.author,
