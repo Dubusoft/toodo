@@ -9,6 +9,8 @@ vi.mock("@/lib/bindings", () => ({
   commands: {
     listChat: vi.fn(),
     sendChatMessage: vi.fn(),
+    chooseChatAction: vi.fn(),
+    searchChat: vi.fn(),
     markChatRead: vi.fn(),
     listChatChannels: vi.fn(),
     listChatThreads: vi.fn(),
@@ -143,10 +145,60 @@ describe("Chat", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() => expect(mocked.sendChatMessage).toHaveBeenCalledOnce());
-    const [place, body, clientId] = mocked.sendChatMessage.mock.calls[0];
+    const [place, body, clientId, attachments] = mocked.sendChatMessage.mock.calls[0];
     expect(place).toEqual({ channel: 1 });
     expect(body).toBe("Thanks");
     expect(clientId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(attachments).toEqual([]);
+  });
+
+  it("chooses one of the agent's actions and shows a chosen one with the others closed", async () => {
+    const actions = [
+      { key: "approve", label: "Approve", style: "primary" as const },
+      { key: "reject", label: "Reject", style: "danger" as const },
+    ];
+    serve([
+      message(1, "agent", "Merge?", { actions }),
+      message(2, "agent", "Deploy?", { actions, chosen: { key: "reject", at: 5, choiceId: 3 } }),
+      message(3, "user", "Reject", { choiceOf: { messageId: 2, key: "reject" } }),
+    ]);
+    mocked.chooseChatAction.mockResolvedValue({
+      status: "ok",
+      data: message(4, "user", "Approve", { choiceOf: { messageId: 1, key: "approve" } }),
+    });
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+
+    const [open, chosen] = await screen.findAllByRole("group", { name: "Choices" });
+    expect(within(chosen).getByRole("button", { name: "Reject" })).toHaveAttribute("aria-pressed", "true");
+    expect(within(chosen).getByRole("button", { name: "Approve" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText("Chose")).toBeInTheDocument();
+    fireEvent.click(within(open).getByRole("button", { name: "Approve" }));
+
+    await waitFor(() => expect(mocked.chooseChatAction).toHaveBeenCalledOnce());
+    const [messageId, key, clientId] = mocked.chooseChatAction.mock.calls[0];
+    expect([messageId, key]).toEqual([1, "approve"]);
+    expect(clientId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("finds earlier messages and opens the thread of the one picked", async () => {
+    serve([], undefined, [thread(5, "Deploy")]);
+    mocked.searchChat.mockResolvedValue({
+      status: "ok",
+      data: [{ message: message(9, "agent", "Deployed to staging", { threadId: 5 }), channelName: "general", threadTitle: "Deploy" }],
+    });
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Search messages" }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Search messages" }), { target: { value: "staging" } });
+    const results = await screen.findByRole("list", { name: "Search results" });
+    expect(mocked.searchChat).toHaveBeenCalledWith("staging", null);
+    expect(within(results).getByText("#general / Deploy")).toBeInTheDocument();
+    fireEvent.click(within(results).getByRole("button", { name: /Deployed to staging/ }));
+
+    await waitFor(() => expect(mocked.listChat).toHaveBeenCalledWith({ thread: 5 }, null));
+    expect(screen.queryByRole("list", { name: "Search results" })).not.toBeInTheDocument();
   });
 
   it("turns a channel's notifications off from its bell", async () => {

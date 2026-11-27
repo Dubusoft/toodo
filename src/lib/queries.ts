@@ -11,6 +11,8 @@ import {
   commands,
   events,
   type BackupSettings,
+  type ChatAttachment,
+  type ChatAttachmentId,
   type ChatChannelEdit,
   type ChatChannelId,
   type ChatMessage,
@@ -43,6 +45,7 @@ import {
 } from "@/lib/bindings";
 import { commandErrorMessage } from "@/lib/error-messages";
 import { downloadBackup, downloadExport, uploadRestore } from "@/web/files";
+import { apiRequest } from "@/web/session";
 import { notify, taskStatusAlerts } from "@/lib/task-alerts";
 
 type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: CommandError };
@@ -96,6 +99,10 @@ export const queryKeys = {
   chatMessages: (place: ChatPlace) => ["chat", "messages", place] as const,
   chatChannels: ["chat", "channels"] as const,
   chatThreads: (filter: ChatThreadFilter) => ["chat", "threads", filter] as const,
+  /** Messages matching a search; under "chat", so new messages refresh the results. */
+  chatSearch: (query: string, place: ChatPlace | null) => ["chat", "search", query, place] as const,
+  /** The bytes of an attachment as an object URL; not under "chat": a file never changes. */
+  chatAttachment: (id: ChatAttachmentId) => ["chat-attachment", id] as const,
 };
 
 /**
@@ -178,9 +185,70 @@ export function chatMessages(data: InfiniteData<ChatView, unknown>): ChatMessage
 export function useSendChatMessage(place: ChatPlace) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ body, clientId }: { body: string; clientId: string }) =>
-      unwrap(commands.sendChatMessage(place, body, clientId, [])),
+    mutationFn: ({
+      body,
+      clientId,
+      attachments,
+    }: {
+      body: string;
+      clientId: string;
+      attachments: readonly ChatAttachment[];
+    }) =>
+      unwrap(
+        commands.sendChatMessage(
+          place,
+          body,
+          clientId,
+          attachments.map((attachment) => attachment.id),
+        ),
+      ),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chat }),
+  });
+}
+
+/**
+ * Chooses an action on the agent's message, which the agent receives as the person's message;
+ * `clientId` names the click, so a retry stores it once.
+ */
+export function useChooseChatAction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ messageId, key, clientId }: { messageId: ChatMessageId; key: string; clientId: string }) =>
+      unwrap(commands.chooseChatAction(messageId, key, clientId)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chat }),
+  });
+}
+
+/** Messages matching `query`, best first; nothing is asked while it is blank. */
+export function useSearchChat(query: string, place: ChatPlace | null) {
+  const trimmed = query.trim();
+  return useQuery({
+    queryKey: queryKeys.chatSearch(trimmed, place),
+    queryFn: () => unwrap(commands.searchChat(trimmed, place)),
+    enabled: trimmed !== "",
+  });
+}
+
+/** Uploads a file for a message to come; the message takes it by the returned attachment's ID. */
+export async function uploadChatAttachment(file: File): Promise<ChatAttachment> {
+  const response = await apiRequest(`/api/chat/attachments?name=${encodeURIComponent(file.name)}`, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  return (await response.json()) as ChatAttachment;
+}
+
+/**
+ * An object URL of an attachment's bytes, fetched signed in: an image or link cannot send the
+ * token itself. The URL is kept for as long as the app runs, as the file never changes.
+ */
+export function useChatAttachmentUrl(id: ChatAttachmentId) {
+  return useQuery({
+    queryKey: queryKeys.chatAttachment(id),
+    queryFn: async () => URL.createObjectURL(await (await apiRequest(`/api/chat/attachments/${id}`)).blob()),
+    staleTime: Infinity,
+    gcTime: Infinity,
   });
 }
 
