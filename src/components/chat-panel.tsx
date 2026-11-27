@@ -46,6 +46,7 @@ import {
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button, IconButton } from "@/components/button";
 import { detailsSheet } from "@/components/details-sheet";
+import { ResizeHandle } from "@/components/resize-handle";
 import { Markdown } from "@/components/task-common";
 import doriAvatar from "@/web/dori-avatar.png";
 import {
@@ -1445,7 +1446,8 @@ function ChatPanel({
       }}
       className={cn(
         "fixed z-40 flex flex-col overflow-hidden bg-background shadow-xl print:hidden",
-        "inset-0 md:inset-auto md:bottom-20 md:right-4 md:h-[min(42rem,calc(100dvh-7rem))] md:w-[46rem] md:max-w-[calc(100vw-2rem)] md:rounded-xl md:border",
+        // On desktop widths the owner's size, if any (`src/index.css`), replaces the default.
+        "inset-0 md:inset-auto md:bottom-20 md:right-4 md:h-[var(--chat-height,min(42rem,calc(100dvh-7rem)))] md:w-[var(--chat-width,46rem)] md:max-w-[calc(100vw-2rem)] md:rounded-xl md:border",
         // Beside a task's details, which float just left of it, it narrows to leave the list in view.
         "md:details-open:w-(--chat-beside-details)",
         // It grows from and shrinks into the floating button's center.
@@ -1453,6 +1455,12 @@ function ChatPanel({
         open ? "motion-safe:animate-chat-in" : "motion-safe:animate-chat-out",
       )}
     >
+      <ResizeHandle
+        edge="left"
+        label="Resize the chat"
+        size={() => (document.querySelector(detailsSheet) === null ? "chat-width" : "chat-beside-width")}
+      />
+      <ResizeHandle edge="top" label="Resize the chat's height" size={() => "chat-height"} />
       <header className="flex items-center gap-2 border-b px-3 py-2">
         <h2 className="text-sm font-semibold">Chat</h2>
         <IconButton

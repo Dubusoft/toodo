@@ -33,6 +33,48 @@
     --chat-beside-details: min(24rem, calc(100vw - var(--details-beside-chat) - 3rem));
 }
 
+/*
+ * On desktop widths the owner sizes both by dragging their left edges and the chat's top edge
+ * (`src/lib/panel-sizes.ts`), keeping their places: the chat at the bottom right, the details just
+ * left of it. A saved size (`--*-saved`) is clamped to the window so both stay on screen and at
+ * least `--list-room` of the window, the sidebar and some of the list, stays in view; `--chat-width` and the others are left unset while
+ * nothing is saved, so the panels keep their default sizes.
+ */
+@media (width >= 64rem) {
+    :root {
+        --list-room: 28rem;
+        --chat-width: clamp(24rem, var(--chat-width-saved), calc(100vw - 2rem - var(--list-room)));
+        --chat-height: clamp(20rem, var(--chat-height-saved), calc(100dvh - 7rem));
+        --chat-beside-width: clamp(
+            20rem,
+            var(--chat-beside-width-saved),
+            calc(100vw - 3rem - var(--list-room) - 20rem)
+        );
+        --details-alone-width: clamp(
+            20rem,
+            var(--details-width-saved),
+            calc(100vw - 2rem - var(--list-room))
+        );
+        --details-beside-width: clamp(
+            20rem,
+            var(--details-beside-width-saved),
+            calc(100vw - 3rem - var(--list-room) - var(--chat-beside-width, 24rem))
+        );
+        --details-beside-chat: var(
+            --details-beside-width,
+            min(
+                var(--details-alone-width, var(--details-width, 0px)),
+                max(22.5rem, 30vw),
+                calc(100vw - 3rem - var(--list-room) - var(--chat-beside-width, 0px))
+            )
+        );
+        --chat-beside-details: min(
+            var(--chat-beside-width, 24rem),
+            calc(100vw - var(--details-beside-chat) - 3rem)
+        );
+    }
+}
+
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: var(--font-family-body);
