@@ -103,9 +103,8 @@ export function DetailsSheet({
       }
     >
       <ResizeHandle
-        edge="left"
         label="Resize the task details"
-        size={() => (document.querySelector(chatOpen) === null ? "details-width" : "details-beside-width")}
+        width={() => (document.querySelector(chatOpen) === null ? "details-width" : "details-beside-width")}
       />
       <div className="flex shrink-0 justify-center pt-2 pb-1 md:hidden touch-none" {...dragHandlers}>
         <span data-grabber aria-hidden className="h-1 w-9 rounded-full bg-muted-foreground/40" />

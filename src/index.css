@@ -34,7 +34,8 @@
 }
 
 /*
- * On desktop widths the owner sizes both by dragging their left edges and the chat's top edge
+ * On desktop widths the owner sizes both by dragging their left edges and the chat's top edge or
+ * top-left corner
  * (`src/lib/panel-sizes.ts`), keeping their places: the chat at the bottom right, the details just
  * left of it. A saved size (`--*-saved`) is clamped to the window so both stay on screen and at
  * least `--list-room` of the window, the sidebar and some of the list, stays in view; `--chat-width` and the others are left unset while

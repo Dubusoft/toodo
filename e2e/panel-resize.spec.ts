@@ -63,6 +63,28 @@ test("resizes the chat and the details on desktop, keeps them docked, and rememb
   expect((await box(again.details)).width).toBeCloseTo(grown.width, 0);
 });
 
+test("resizes the chat's width and height together from its top-left corner and remembers both", async ({ app, server }) => {
+  const task = await createTask(server, { workspaceId: 1, title: "Stretch the chat diagonally" });
+  await app.reload();
+  const { chat, details } = await openBoth(app, task.title);
+  const before = { chat: await box(chat), details: await box(details) };
+  const corner = chat.getByRole("separator", { name: "Resize the chat's width and height" });
+  await expect(corner).toHaveCSS("cursor", "nwse-resize");
+
+  await drag(app, corner, -80, -60);
+  const after = { chat: await box(chat), details: await box(details) };
+  expect(after.chat.width).toBeCloseTo(before.chat.width + 80, 0);
+  expect(after.chat.height).toBeCloseTo(before.chat.height + 60, 0);
+  expect(after.chat.right).toBeCloseTo(before.chat.right, 0);
+  expect(after.chat.bottom).toBeCloseTo(before.chat.bottom, 0);
+  expect(after.chat.x - after.details.right).toBeCloseTo(before.chat.x - before.details.right, 0);
+
+  await app.reload();
+  const again = await openBoth(app, task.title);
+  expect((await box(again.chat)).width).toBeCloseTo(after.chat.width, 0);
+  expect((await box(again.chat)).height).toBeCloseTo(after.chat.height, 0);
+});
+
 test("keeps both panels on screen and part of the list in view however far they are dragged", async ({ app, server }) => {
   const task = await createTask(server, { workspaceId: 1, title: "Stretch the panels" });
   await app.reload();
@@ -71,6 +93,7 @@ test("keeps both panels on screen and part of the list in view however far they 
   await drag(app, chat.getByRole("separator", { name: "Resize the chat", exact: true }), -2000);
   await drag(app, details.getByRole("separator", { name: "Resize the task details" }), -2000);
   await drag(app, chat.getByRole("separator", { name: "Resize the chat's height" }), 0, -2000);
+  await drag(app, chat.getByRole("separator", { name: "Resize the chat's width and height" }), -2000, -2000);
   const stretched = { chat: await box(chat), details: await box(details) };
   // The sidebar is 16rem wide; past it at least 12rem of the list stays in view.
   expect(stretched.details.x).toBeGreaterThanOrEqual(448);
@@ -99,6 +122,12 @@ for (const viewport of [
     const details = app.getByRole("complementary", { name: "Task details" });
     await expect(details).toBeVisible();
     await expect(details.getByRole("separator", { name: "Resize the task details" })).toBeHidden();
+    if (viewport.width >= 768) {
+      await app.getByRole("button", { name: /^Open chat/ }).click();
+      const chat = app.getByRole("dialog", { name: "Chat" });
+      await expect(chat).toBeVisible();
+      await expect(chat.getByRole("separator", { name: "Resize the chat's width and height" })).toBeHidden();
+    }
     const expected = viewport.width >= 768 ? Math.min(480, Math.max(360, viewport.width * 0.4), viewport.width - 32) : viewport.width;
     expect((await box(details)).width).toBeCloseTo(expected, 0);
   });
