@@ -6,7 +6,7 @@
  * connection; the text it gives is sent like a typed message, through the chat outbox (see
  * `chat-outbox.ts`).
  */
-import { useState, type Dispatch, type SetStateAction } from "react";
+import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useSpeechRecognition, type UseSpeechRecognitionReturn } from "@astryxdesign/core/Chat";
 
 /** `spoken` added to the end of `draft`, with a space between them unless one is there. */
@@ -27,7 +27,7 @@ export function voiceErrorMessage(error: string): string | null {
     case "service-not-allowed":
       return "The browser blocked the microphone. Allow it for this site to use voice input.";
     case "audio-capture":
-      return "No microphone was found.";
+      return "No microphone was found on this device. Connect one to use voice input.";
     case "network":
       return "Voice input needs a connection to the browser's speech service.";
     case "language-not-supported":
@@ -35,6 +35,27 @@ export function voiceErrorMessage(error: string): string | null {
     default:
       return `Voice input stopped (${error}).`;
   }
+}
+
+/** Whether the device has no microphone at all; when that cannot be read, it counts as having one. */
+async function lacksMicrophone(): Promise<boolean> {
+  if (navigator.mediaDevices?.enumerateDevices === undefined) return false;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return !devices.some((device) => device.kind === "audioinput");
+  } catch {
+    // The device list is only a hint here: without it, the browser's own code stands.
+    return false;
+  }
+}
+
+/**
+ * `voiceErrorMessage` for a failed recognition, after telling a missing microphone from a
+ * blocked one: Chrome reports `not-allowed` for both, with no permission prompt to answer.
+ */
+export async function recognitionErrorMessage(error: string): Promise<string | null> {
+  if (error === "not-allowed" && (await lacksMicrophone())) return voiceErrorMessage("audio-capture");
+  return voiceErrorMessage(error);
 }
 
 /**
@@ -46,12 +67,22 @@ export function useVoiceInput(setDraft: Dispatch<SetStateAction<string>>): {
   error: string | null;
 } {
   const [error, setError] = useState<string | null>(null);
+  // Counts the attempts, so a message worked out for an earlier one never replaces a later one's.
+  const attempt = useRef(0);
   const speech = useSpeechRecognition({
     lang: navigator.language,
-    onStart: () => setError(null),
+    onStart: () => {
+      attempt.current += 1;
+      setError(null);
+    },
     // One recognition event can finish several phrases, so each builds on the draft before it.
     onResult: (spoken) => setDraft((draft) => appendSpoken(draft, spoken)),
-    onError: ({ error: code }) => setError(voiceErrorMessage(code)),
+    onError: ({ error: code }) => {
+      const failed = attempt.current;
+      void recognitionErrorMessage(code).then((message) => {
+        if (attempt.current === failed) setError(message);
+      });
+    },
   });
   return { speech, error };
 }
