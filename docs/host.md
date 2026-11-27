@@ -171,6 +171,10 @@ systemctl --user disable --now toodo.service
 systemctl --user enable --now toodo-server.service dori-supervisor.service host-healthcheck.timer
 ```
 
+A core that carries version 57 (one chat thread per task, which merges a task's extra
+threads into its first) applies it the first time it opens the database; after that, the
+Rust server refuses the database and the backup of step 3 is the way back.
+
 ## Retiring the Old Deployment
 
 Once the checks of step 6 pass, remove what only the old services used; after this, the

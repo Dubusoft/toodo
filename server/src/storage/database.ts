@@ -22,7 +22,29 @@ export const BASELINE_SCHEMA_VERSION = 56;
  * `BASELINE_SCHEMA_VERSION + i` to the next. Change the schema by appending one; never
  * edit or remove one that has shipped, since databases already carry its result.
  */
-export const MIGRATIONS: readonly string[] = [];
+export const MIGRATIONS: readonly string[] = [
+  // 57: one chat thread per task. Each task keeps its first thread, which takes the messages
+  // of the task's other threads (into its channel), the furthest read point among them, and
+  // the most open status (open, else closed, else archived); the others are deleted.
+  `UPDATE chat_threads AS k SET read_id = g.read_id, status = g.status, closed_at = g.closed_at,
+       archived_at = g.archived_at
+   FROM (SELECT min(id) AS keep, max(read_id) AS read_id,
+           CASE WHEN max(status = 'open') THEN 'open' WHEN max(status = 'closed') THEN 'closed'
+             ELSE 'archived' END AS status,
+           CASE WHEN max(status = 'open') THEN NULL ELSE min(closed_at) END AS closed_at,
+           CASE WHEN max(status <> 'archived') THEN NULL ELSE max(archived_at) END AS archived_at
+         FROM chat_threads WHERE task_id IS NOT NULL GROUP BY task_id HAVING count(*) > 1) AS g
+   WHERE k.id = g.keep;
+  UPDATE chat_messages AS m SET thread_id = k.id, channel_id = k.channel_id
+   FROM chat_threads AS d JOIN chat_threads AS k
+     ON k.id = (SELECT min(id) FROM chat_threads WHERE task_id = d.task_id)
+   WHERE d.id = m.thread_id AND d.task_id IS NOT NULL AND d.id <> k.id;
+  DELETE FROM chat_threads
+   WHERE task_id IS NOT NULL
+     AND id <> (SELECT min(k.id) FROM chat_threads AS k WHERE k.task_id = chat_threads.task_id);
+  DROP INDEX chat_threads_task;
+  CREATE UNIQUE INDEX chat_threads_task ON chat_threads (task_id) WHERE task_id IS NOT NULL;`,
+];
 
 /** The schema version this server reads and writes. */
 export const SCHEMA_VERSION = BASELINE_SCHEMA_VERSION + MIGRATIONS.length;

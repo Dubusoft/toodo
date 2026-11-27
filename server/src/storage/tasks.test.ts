@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { taskId } from "../domain/model.ts";
-import { BASELINE_SCHEMA_VERSION, openWriter, schemaVersion } from "./database.ts";
+import { SCHEMA_VERSION, openWriter, schemaVersion } from "./database.ts";
 import { Storage } from "./storage.ts";
 import { commit, expectFailure, finish, memoryStorage, newTask, seedCommits, stored, workspace } from "./storage-fixtures.ts";
 import { createDatabase } from "./testing.ts";
@@ -32,7 +32,7 @@ test("Entities survive reopening the database file", () => {
     })();
     using db = openWriter(path);
     const storage = new Storage(db);
-    expect(schemaVersion(db)).toBe(BASELINE_SCHEMA_VERSION);
+    expect(schemaVersion(db)).toBe(SCHEMA_VERSION);
     expect(storage.listWorkspaces()).toEqual([expected.local, expected.remote]);
     expect(storage.getWorkspace(expected.remote.id)).toEqual(expected.remote);
     expect(storage.listTasks(expected.local.id)).toEqual(expected.localTasks);
