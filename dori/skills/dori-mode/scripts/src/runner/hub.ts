@@ -483,6 +483,12 @@ export const forgetRunner = (stateDir: string, label: string): boolean => {
 export const runnerWorktreeRoot = (stateDir: string, label: string): string | undefined =>
   readRunnerRows(stateDir).find((row) => row.label === label)?.workspaces?.worktreeRoot;
 
+/** The checkouts runner `label` last reported (hub `workspaces` column), declared then detected; [] when none. */
+export const runnerCheckouts = (stateDir: string, label: string): readonly WorkspaceEntry[] => {
+  const reported = readRunnerRows(stateDir).find((row) => row.label === label)?.workspaces;
+  return reported ? [...reported.declared, ...reported.detected] : [];
+};
+
 /** Reads runner status rows from `<stateDir>/runners.sqlite` without a live hub (read-only; [] when absent). */
 export const readRunnerRows = (stateDir: string): RunnerRow[] => {
   const path = join(stateDir, HUB_FILE);

@@ -4,7 +4,7 @@ import { actRecorded, probeWorktree, type Step, withOperations } from "./flow-io
 import { machineRunner } from "./lane-ops.ts";
 import { operationId, type OperationState, settleOperation } from "./operations.ts";
 import { type Lane, statusOf } from "./registry.ts";
-import { runnerWorktreeRoot } from "./runner/hub.ts";
+import { runnerCheckouts, runnerWorktreeRoot } from "./runner/hub.ts";
 
 /** The worktree root a lane's cleanup may remove under: its runner's reported root, else (local lanes only) `config.worktreeRoot`. */
 const cleanupRoot = (deps: FlowDeps, lane: Lane): string => {
@@ -15,20 +15,31 @@ const cleanupRoot = (deps: FlowDeps, lane: Lane): string => {
 const under = (root: string, path: string): boolean => Boolean(root) && path.startsWith(`${root}/`) && !path.includes("..");
 
 /**
- * A remote lane's worktrees, found by its runner by key under its reported worktree root: each is queued for
- * closedWorktreeSweep, which removes it from inside itself once it is clean and pushed. A runner that cannot answer
- * never holds the close up.
+ * A remote lane's worktrees under its runner's reported worktree root: those its runner lists by key from the lane's
+ * cwd, and `<root>/<repo name>-<key>` for each checkout the runner reported (the footer's naming) that exists there,
+ * since a remote lane's cwd is usually no checkout and the runner finds nothing from it. Each is queued for
+ * closedWorktreeSweep, which reads it again and removes it from inside itself once it is clean and pushed. A runner that
+ * cannot answer never holds the close up.
  */
 export const remoteWorktrees = async (deps: FlowDeps, lane: Lane): Promise<{ readonly lines: string[]; readonly queued: string[] }> => {
   const root = cleanupRoot(deps, lane);
   if (!root) return { lines: [], queued: [] };
-  let found: readonly { readonly path: string }[];
+  const label = machineRunner(lane.machine);
+  const checkouts = (deps.runnerCheckouts ?? ((l) => runnerCheckouts(deps.config.stateDir, l)))(label);
+  // Named as launch-service.ts createLaunchWorktree names them: the repo's last segment, lowercased.
+  const named = [...new Set(checkouts.flatMap((c) => {
+    const name = c.repo.split("/").pop()?.toLowerCase() ?? "";
+    return name && !name.startsWith(".") ? [`${root}/${name}-${lane.key}`] : [];
+  }))];
+  let found: string[];
   try {
-    found = (await deps.ops.inspect(lane, { git: true })).git?.worktrees ?? [];
+    const listed = (await deps.ops.inspect(lane, { git: true })).git?.worktrees ?? [];
+    const there = named.length ? await deps.ops.exists(lane.machine, named) : [];
+    found = [...listed.map((w) => w.path), ...named.filter((_, i) => there[i])];
   } catch (e) {
     return { lines: [`remote worktrees not read on machine ${lane.machine}: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}`], queued: [] };
   }
-  const queued = [...new Set(found.map((w) => trimPath(w.path)))].filter((p) => under(root, p));
+  const queued = [...new Set(found.map(trimPath))].filter((p) => under(root, p));
   return { lines: queued.map((p) => `worktree ${p} queued: remote lane, ${QUEUED_WORKTREE}`), queued };
 };
 
