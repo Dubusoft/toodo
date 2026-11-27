@@ -84,8 +84,8 @@ export const discordMain = async (args: string[], { flow: deps, die, messengerTo
       const followUps = await import("./thread-followup.ts");
       const { postLaneReport, redirectReport, ReportPostError } = await import("./report-post.ts");
       const discord = new Discord(fetchHttp, realClock, messengerToken("DORI_DISCORD_TOKEN"));
-      const { postLaneToodo } = await import("./lane-toodo.ts");
-      const post = { config, discord, now: realClock.now, toodo: (lane: typeof found, text: string) => postLaneToodo(deps, lane, "report", text) };
+      const { postLaneReportToodo } = await import("./lane-toodo.ts");
+      const post = { config, discord, now: realClock.now, toodo: (lane: typeof found, text: string) => postLaneReportToodo(deps, lane, text) };
       const note = opt("note");
       const receipt = (posted: { message: string; target: string; followUp?: boolean }, kept = note): void => {
         recordReported(config.stateDir, found.key, realClock.now(), kept ? oneLine(kept) : undefined, posted);
@@ -155,6 +155,7 @@ export const discordMain = async (args: string[], { flow: deps, die, messengerTo
     case "send": {
       const platform = key ?? "discord";
       if (platform !== "discord") die(`unknown platform ${platform}`);
+      if ("file" in flags.values) die("--file goes only with dori send toodo; on Discord a lane's files go up with its report");
       // `--to alerts`: the system-notice channel (config alertsChannel, else the main channel), read from the config now.
       const target = need("to");
       const ref = target === "alerts" ? alertsChannelOf(config) ?? die("SEND_NOT_POSTED --to alerts: neither alertsChannel nor discordChannels is configured") : target;

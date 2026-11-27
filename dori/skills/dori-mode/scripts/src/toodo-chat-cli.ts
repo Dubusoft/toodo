@@ -1,7 +1,9 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename } from "node:path";
 import { parseArgs } from "node:util";
 
 import type { FlowDeps } from "./done-flow.ts";
-import { isToodoRef, parseToodoRef, toodoChat, toodoRef } from "./messenger/toodo-chat.ts";
+import { isToodoRef, parseToodoRef, TOODO_FILES_MAX, toodoChat, toodoRef } from "./messenger/toodo-chat.ts";
 
 /**
  * Whether `dori <command> ...` addresses the Toodo chat: `dori send toodo` or `dori send --to <toodo ref>`, and for ack,
@@ -16,7 +18,9 @@ const ids = (values: readonly string[], die: (message: string) => never, usage: 
 
 /**
  * `dori send|ack|handled|typing` on the Toodo chat, through toodo-server's MCP chat tools with the `mcp-token`:
- *   send toodo --to REF --text TEXT [--handles ID,...]   Dori's message at REF; it marks the listed messages handled
+ *   send toodo --to REF --text TEXT [--handles ID,...] [--file PATH ...]
+ *                                                        Dori's message at REF with the files attached (up to 10; then
+ *                                                        --text may be left out); it marks the listed messages handled
  *   ack REF ID [REF ID ...]                              read receipts on the owner's messages, and the typing dots on
  *   handled REF ID (--reply ID | --task ID)              the owner's message handled by Dori's reply or a task
  *   typing toodo [--off]                                 the typing dots
@@ -31,12 +35,23 @@ export const toodoChatMain = async (
   const chat = toodoChat(flow.tunables.toodoWriter);
   switch (command) {
     case "send": {
-      if (d.opt("edit") !== undefined || d.opt("buttons") !== undefined || d.opt("thread") !== undefined) die("usage: dori send toodo --to REF --text TEXT [--handles ID,...] (no --edit, --buttons or --thread on Toodo)");
+      const usage = "usage: dori send toodo --to REF --text TEXT [--handles ID,...] [--file PATH ...] (no --edit, --buttons or --thread on Toodo)";
+      if (d.opt("edit") !== undefined || d.opt("buttons") !== undefined || d.opt("thread") !== undefined) die(usage);
       const place = parseToodoRef(d.opt("to") ?? "toodo");
       const handles = d.opt("handles");
       const answered = handles === undefined ? [] : ids(handles.split(",").map((v) => v.trim()), die, "--handles takes Toodo message ids separated by commas");
-      const sent = await chat.reply(place, d.need("text"), answered);
-      console.log(`SENT toodo:${sent.id} ${toodoRef(sent.place)}`);
+      // --file repeats, which the shared flags (one --file for decision) do not read: take every one from the arguments.
+      const paths = parseArgs({ args: [...rest], allowPositionals: true, strict: false, options: { file: { type: "string", multiple: true } } }).values.file;
+      const files = (Array.isArray(paths) ? paths : []).map((p) => (typeof p === "string" ? p.trim() : ""));
+      if (files.some((p) => !p)) die("--file takes a file path");
+      if (files.length > TOODO_FILES_MAX) die(`a Toodo chat message takes at most ${TOODO_FILES_MAX} files`);
+      for (const p of files) if (!existsSync(p) || !statSync(p).isFile()) die(`SEND_NOT_POSTED --file ${p}: not a readable file`);
+      const text = d.opt("text") ?? "";
+      if (!text && !files.length) die(usage);
+      const attachments: number[] = [];
+      for (const p of files) attachments.push((await chat.upload({ name: basename(p), data: new Uint8Array(readFileSync(p)), contentType: Bun.file(p).type })).id);
+      const sent = await chat.reply(place, text, answered, attachments);
+      console.log(`SENT toodo:${sent.id} ${toodoRef(sent.place)}${attachments.length ? ` files=${sent.attachments.map((a) => a.id).join(",")}` : ""}`);
       return 0;
     }
     case "ack": {
