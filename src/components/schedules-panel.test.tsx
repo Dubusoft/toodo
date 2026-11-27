@@ -9,12 +9,12 @@ const TOKEN_KEY = "toodo-server-token";
 const timeZone = { name: "Asia/Seoul", label: "KST" };
 
 const digest: ScheduledJob = {
-  name: "gmail-digest", kind: "GMAIL_DIGEST", cron: "0 6 * * *", everySec: null, tz: "Asia/Seoul",
+  name: "gmail-digest", kind: "GMAIL_DIGEST", description: "Gmail digest posted to #daily-reports", cron: "0 6 * * *", everySec: null, tz: "Asia/Seoul",
   text: null, command: ["sh", "-c", "zele digest"], cwd: null, machine: null, heavy: false, catchUp: "once", paused: false,
   nextRunAt: Date.UTC(2026, 10, 28, 21, 0), lastRunAt: Date.UTC(2026, 10, 27, 21, 0), lastResult: "ok", waiting: null, error: null,
 };
 
-const tidy: ScheduledJob = { ...digest, name: "memory-tidy", kind: "MEMORY_TIDY", cron: "0 4 * * *", lastResult: "failed exit 1", error: "memory-tidy exited 1" };
+const tidy: ScheduledJob = { ...digest, name: "memory-tidy", kind: "MEMORY_TIDY", description: null, cron: "0 4 * * *", lastResult: "failed exit 1", error: "memory-tidy exited 1" };
 
 const office: ScheduledJob = { ...digest, name: "office-poll", kind: "OFFICE_POLL", cron: "*/15 9-18 * * 1-5", lastResult: null, error: null };
 
@@ -50,16 +50,18 @@ function renderPanel(language = "ko-KR") {
 }
 
 describe("SchedulesPanel", () => {
-  it("lists every job with its schedule as a sentence, its next and last run and result, and pauses one", async () => {
+  it("lists every job with its schedule as a sentence, its description instead of its command, its next and last run and result, and pauses one", async () => {
     const posted = serve([digest, tidy, office], () => Response.json({ ok: true, jobs: [{ ...digest, paused: true, nextRunAt: null }, tidy, office], timeZone }));
     renderPanel();
 
     const row = await screen.findByRole("listitem", { name: "Scheduled job gmail-digest" });
     expect(within(row).getByText("매일 오전 6:00 (KST)")).toBeInTheDocument();
-    expect(within(row).getByText("zele digest")).toBeInTheDocument();
+    expect(within(row).getByText("Gmail digest posted to #daily-reports")).toBeInTheDocument();
+    expect(within(row).queryByText("zele digest")).not.toBeInTheDocument();
     expect(within(row).getByText("ok")).toBeInTheDocument();
     const failing = screen.getByRole("listitem", { name: "Scheduled job memory-tidy" });
     expect(within(failing).getByText("매일 오전 4:00 (KST)")).toBeInTheDocument();
+    expect(within(failing).getByText("MEMORY_TIDY")).toBeInTheDocument();
     expect(within(failing).getByRole("alert")).toHaveTextContent("memory-tidy exited 1");
     expect(within(screen.getByRole("listitem", { name: "Scheduled job office-poll" })).getByText("*/15 9-18 * * 1-5 (Asia/Seoul)")).toBeInTheDocument();
 
@@ -69,34 +71,38 @@ describe("SchedulesPanel", () => {
     expect(posted).toEqual([{ op: "pause", name: "gmail-digest" }]);
   });
 
-  it("edits a schedule with the pickers and saves it as cron in the display time zone", async () => {
+  it("edits a description and a schedule with the pickers, shows the command, and saves the schedule as cron in the display time zone", async () => {
     const posted = serve([digest]);
     renderPanel();
     const row = await screen.findByRole("listitem", { name: "Scheduled job gmail-digest" });
-    fireEvent.click(within(row).getByRole("button", { name: "Edit the schedule of gmail-digest" }));
-    const form = within(row).getByRole("form", { name: "Edit the schedule of gmail-digest" });
+    fireEvent.click(within(row).getByRole("button", { name: "Edit gmail-digest" }));
+    const form = within(row).getByRole("form", { name: "Edit gmail-digest" });
     expect(within(form).queryByLabelText(/cron 식/)).not.toBeInTheDocument();
+    expect(within(form).getByText("zele digest")).toBeInTheDocument();
+    fireEvent.change(within(form).getByLabelText(/^Description/), { target: { value: " Weekday Gmail digest " } });
     chooseOption(within(form).getByRole("combobox", { name: "반복" }), "매주");
     fireEvent.click(within(form).getByRole("checkbox", { name: "수" }));
     chooseOption(within(form).getByRole("combobox", { name: "시" }), "오전 9시");
     chooseOption(within(form).getByRole("combobox", { name: "분" }), "30분");
     expect(within(form).getByRole("note")).toHaveTextContent("매주 월·수요일 오전 9:30 (KST)");
-    fireEvent.click(within(form).getByRole("button", { name: "Save schedule" }));
-    await vi.waitFor(() => expect(posted).toEqual([{ op: "edit", name: "gmail-digest", timing: { cron: "30 9 * * 1,3" }, tz: "Asia/Seoul" }]));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
+    await vi.waitFor(() =>
+      expect(posted).toEqual([{ op: "edit", name: "gmail-digest", timing: { cron: "30 9 * * 1,3" }, tz: "Asia/Seoul", description: "Weekday Gmail digest" }]),
+    );
   });
 
   it("edits a cron expression the pickers cannot show under Advanced, and shows why the supervisor refused it", async () => {
     const posted = serve([office], () => Response.json({ ok: false, error: 'schedule office-poll: cron "0 0 31 2 *" never fires' }, { status: 400 }));
     renderPanel("en-US");
     const row = await screen.findByRole("listitem", { name: "Scheduled job office-poll" });
-    fireEvent.click(within(row).getByRole("button", { name: "Edit the schedule of office-poll" }));
-    const form = within(row).getByRole("form", { name: "Edit the schedule of office-poll" });
+    fireEvent.click(within(row).getByRole("button", { name: "Edit office-poll" }));
+    const form = within(row).getByRole("form", { name: "Edit office-poll" });
     expect(within(form).queryByRole("combobox", { name: "Repeats" })).not.toBeInTheDocument();
     const raw = within(form).getByLabelText(/^A cron expression/);
     expect(raw).toHaveValue("*/15 9-18 * * 1-5");
     fireEvent.change(raw, { target: { value: "0 0 31 2 *" } });
-    fireEvent.click(within(form).getByRole("button", { name: "Save schedule" }));
+    fireEvent.click(within(form).getByRole("button", { name: "Save" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("never fires");
-    expect(posted).toEqual([{ op: "edit", name: "office-poll", timing: { cron: "0 0 31 2 *" }, tz: "Asia/Seoul" }]);
+    expect(posted).toEqual([{ op: "edit", name: "office-poll", timing: { cron: "0 0 31 2 *" }, tz: "Asia/Seoul", description: "Gmail digest posted to #daily-reports" }]);
   });
 });

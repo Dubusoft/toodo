@@ -15,6 +15,8 @@ export type ScheduledJob = {
   readonly name: string;
   /** The event kind the job emits. */
   readonly kind: string;
+  /** What the job does and why, in the owner's words; `null` when it has none. */
+  readonly description: string | null;
   readonly cron: string | null;
   readonly everySec: number | null;
   /** The time zone the cron expression is read in. */
@@ -45,12 +47,21 @@ export type ScheduledJob = {
 export type NewScheduledJob = ScheduleTiming & {
   readonly name: string;
   readonly kind: string;
+  readonly description?: string;
   readonly tz?: string;
   readonly text?: string;
   readonly command?: string;
   readonly cwd?: string;
   readonly catchUp?: ScheduleCatchUp;
 };
+
+/**
+ * A change to a job: a new timing (counted from the change, with `tz` for its cron expression), a new description (an
+ * empty one removes it), or both. A description alone leaves the schedule as it was.
+ */
+export type ScheduleEdit =
+  | { readonly timing: ScheduleTiming; readonly tz?: string; readonly description?: string }
+  | { readonly timing?: undefined; readonly description: string };
 
 export type ScheduleRequest =
   | { readonly op: "list" }
@@ -59,7 +70,7 @@ export type ScheduleRequest =
   | { readonly op: "run-now"; readonly name: string }
   | { readonly op: "pause"; readonly name: string }
   | { readonly op: "resume"; readonly name: string }
-  | { readonly op: "edit"; readonly name: string; readonly timing: ScheduleTiming; readonly tz?: string };
+  | ({ readonly op: "edit"; readonly name: string } & ScheduleEdit);
 
 /** Dori's `displayTimeZone`, in which the panel shows and picks times, with its label ("KST"). */
 export type ScheduleTimeZone = { readonly name: string; readonly label: string };

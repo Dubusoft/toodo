@@ -37,12 +37,15 @@ export const SCHEDULE_TIMEOUT_SEC = 600;
 export const SCHEDULE_MAX_TIMEOUT_SEC = 3_600;
 export const SCHEDULE_ACTION = "schedule-run";
 export const SCHEDULE_FAILED = "SCHEDULE_FAILED";
+export const SCHEDULE_DESCRIPTION_MAX = 500;
 export const RUN_NOW_DIR = "schedule-now";
 const MANUAL = "now@";
 
 export type CatchUp = "once" | "skip";
 export type ScheduleSpec = {
   readonly name: string; readonly type: "schedule"; readonly kind: string;
+  /** What the job does and why, for the owner to tell jobs apart; absent when it has none. */
+  readonly description?: string;
   /** Exactly one of cron (5 fields or @hourly/@daily/@weekly/@monthly) and everySec. */
   readonly cron?: string; readonly everySec?: number;
   readonly tz: string;
@@ -202,8 +205,12 @@ export const validateSchedule = (r: Record<string, unknown>, name: string, kind:
   if (catchUp !== "once" && catchUp !== "skip") throw new SourceError(`schedule ${name}: catchUp must be once or skip`);
   if (typeof r.since !== "number" || !Number.isFinite(r.since)) throw new SourceError(`schedule ${name}: since must be a time in ms`);
   if (r.paused !== undefined && r.paused !== true) throw new SourceError(`schedule ${name}: paused must be true or absent`);
+  if (r.description !== undefined && typeof r.description !== "string") throw new SourceError(`schedule ${name}: description must be text`);
+  const description = typeof r.description === "string" ? r.description.trim() : "";
+  if (description.length > SCHEDULE_DESCRIPTION_MAX) throw new SourceError(`schedule ${name}: description must be at most ${SCHEDULE_DESCRIPTION_MAX} characters`);
   const spec: ScheduleSpec = {
     name, type: "schedule", kind,
+    ...(description ? { description } : {}),
     ...(hasCron ? { cron: (r.cron as string).trim() } : { everySec: r.everySec as number }),
     tz,
     ...(command !== undefined ? { command: command as string[] } : { text: r.text as string }),
@@ -232,8 +239,8 @@ export const queueRunNow = (stateDir: string, name: string, now: number): void =
 
 /** One job as `dori schedule list` and `dori status` show it. */
 export type ScheduleRow = {
-  readonly name: string; readonly kind: string; readonly when: string; readonly catchUp: CatchUp; readonly heavy?: true;
-  readonly paused?: true;
+  readonly name: string; readonly kind: string; readonly description?: string; readonly when: string; readonly catchUp: CatchUp;
+  readonly heavy?: true; readonly paused?: true;
   readonly nextRunAt?: number; readonly lastRunAt?: number; readonly lastResult?: string; readonly waiting?: string;
   readonly machine?: string;
 };
@@ -241,7 +248,7 @@ export type ScheduleRow = {
 export const scheduleRow = (spec: ScheduleSpec, status: Partial<SourceStatus> | undefined, now: number): ScheduleRow => {
   const next = spec.paused ? undefined : nextSlot(spec, Math.max(status?.lastSlot ?? 0, now));
   return {
-    name: spec.name, kind: spec.kind, when: scheduleWhen(spec), catchUp: spec.catchUp, ...(spec.heavy ? { heavy: true as const } : {}),
+    name: spec.name, kind: spec.kind, ...(spec.description ? { description: spec.description } : {}), when: scheduleWhen(spec), catchUp: spec.catchUp, ...(spec.heavy ? { heavy: true as const } : {}),
     ...(spec.paused ? { paused: true as const } : {}),
     ...(next !== undefined ? { nextRunAt: next } : {}),
     ...(status?.lastRunAt !== undefined ? { lastRunAt: status.lastRunAt } : {}),

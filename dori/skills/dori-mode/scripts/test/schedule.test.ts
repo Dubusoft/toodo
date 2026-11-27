@@ -301,6 +301,23 @@ test("a change from the web app applies on the supervisor's next pass, and a ref
   expect(handleScheduleRequest(w.dir, "Asia/Seoul", { op: "remove", name: "digest" }, w.clock.at)).toMatchObject({ ok: true, jobs: [{ name: "brief" }] });
 });
 
+test("a job's description is optional, changes alone without moving its slots, and an empty one removes it", () => {
+  const w = world();
+  w.specs.add({ name: "brief", type: "schedule", kind: "DAILY_BRIEF", cron: "0 9 * * *", text: "morning brief", since: SINCE });
+  const added = handleScheduleRequest(w.dir, "Asia/Seoul", { op: "add", job: { name: "digest", kind: "GMAIL_DIGEST", cron: "0 6 * * *", command: "echo hi", description: " Gmail digest for #daily-reports " } }, SINCE);
+  expect(added).toMatchObject({ ok: true, jobs: [{ name: "brief", description: null }, { name: "digest", description: "Gmail digest for #daily-reports" }] });
+
+  const later = SINCE + 3_600_000;
+  expect(handleScheduleRequest(w.dir, "Asia/Seoul", { op: "edit", name: "brief", description: "Morning brief" }, later)).toMatchObject({ ok: true, jobs: [{ description: "Morning brief", cron: "0 9 * * *" }, {}] });
+  expect((w.specs.list()[0] as ScheduleSpec).since).toBe(SINCE);
+  handleScheduleRequest(w.dir, "Asia/Seoul", { op: "edit", name: "brief", timing: { cron: "30 23 * * *" } }, later);
+  expect(w.specs.list()[0]).toMatchObject({ description: "Morning brief", cron: "30 23 * * *", since: later });
+
+  expect(handleScheduleRequest(w.dir, "Asia/Seoul", { op: "edit", name: "brief", description: "x".repeat(501) }, later)).toEqual({ ok: false, error: "schedule brief: description must be at most 500 characters" });
+  handleScheduleRequest(w.dir, "Asia/Seoul", { op: "edit", name: "brief", description: " " }, later);
+  expect("description" in (w.specs.list()[0] as ScheduleSpec)).toBe(false);
+});
+
 test("a run-now request whose time is no date is set aside and the schedules keep ticking", async () => {
   const w = world();
   w.specs.add({ name: "brief", type: "schedule", kind: "DAILY_BRIEF", cron: "0 9 * * *", text: "morning brief", since: SINCE });

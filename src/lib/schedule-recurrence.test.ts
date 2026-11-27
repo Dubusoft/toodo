@@ -5,7 +5,7 @@ import type { ScheduledJob } from "@/lib/supervisor-schedules";
 const KST = { name: "Asia/Seoul", label: "KST" };
 
 const job = (fields: Partial<ScheduledJob>): ScheduledJob => ({
-  name: "digest", kind: "GMAIL_DIGEST", cron: "0 6 * * *", everySec: null, tz: "Asia/Seoul",
+  name: "digest", kind: "GMAIL_DIGEST", description: null, cron: "0 6 * * *", everySec: null, tz: "Asia/Seoul",
   text: null, command: null, cwd: null, machine: null, heavy: false, catchUp: "once", paused: false,
   nextRunAt: null, lastRunAt: null, lastResult: null, waiting: null, error: null,
   ...fields,

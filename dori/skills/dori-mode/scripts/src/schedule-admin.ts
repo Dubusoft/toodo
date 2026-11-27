@@ -1,7 +1,7 @@
 // Changes to the scheduled jobs from outside the supervisor's own pass: `dori schedule` and the Toodo web app (through the
 // host, supervise-worker.ts). Each one edits sources.json, which the supervisor reads on every pass, so it applies
 // without a restart.
-import type { ScheduledJob, ScheduleReply, ScheduleRequest, ScheduleTiming } from "../../../../../src/lib/supervisor-schedules.ts";
+import type { ScheduledJob, ScheduleEdit, ScheduleReply, ScheduleRequest } from "../../../../../src/lib/supervisor-schedules.ts";
 import { displayZone, zoneLabel } from "./display-time.ts";
 import { readSourceStatus, SourceSpecs } from "./event-sources.ts";
 import { queueRunNow, scheduleRow, type ScheduleSpec } from "./schedule.ts";
@@ -33,9 +33,20 @@ export const setSchedulePaused = (specs: SourceSpecs, name: string, paused: bool
   return update(specs, name, now, ({ paused: _, ...rest }) => rest);
 };
 
-/** Gives a job a new cron expression or interval (and time zone), counted from `now`. */
-export const editScheduleTiming = (specs: SourceSpecs, name: string, timing: ScheduleTiming, tz: string | undefined, now: number): ScheduleSpec =>
-  update(specs, name, now, ({ cron: _cron, everySec: _every, ...rest }) => ({ ...rest, ...timing, ...(tz !== undefined ? { tz } : {}) }));
+/**
+ * Gives a job a new description (an empty one removes it), a new cron expression or interval (and time zone) counted
+ * from `now`, or both. A description alone keeps the job's slots as they were.
+ */
+export const editSchedule = (specs: SourceSpecs, name: string, edit: ScheduleEdit, now: number): ScheduleSpec => {
+  // validateSchedule trims the description and drops an empty one.
+  const described = (spec: ScheduleSpec): Record<string, unknown> => (edit.description === undefined ? spec : { ...spec, description: edit.description });
+  const { timing } = edit;
+  if (timing === undefined) return specs.replace(name, described(findSchedule(specs, name))) as ScheduleSpec;
+  return update(specs, name, now, (spec) => {
+    const { cron: _cron, everySec: _every, ...rest } = described(spec);
+    return { ...rest, ...timing, ...(edit.tz !== undefined ? { tz: edit.tz } : {}) };
+  });
+};
 
 /** Every scheduled job with its next and last run, as the web app shows them. */
 export const scheduledJobs = (stateDir: string, now: number): ScheduledJob[] => {
@@ -44,7 +55,7 @@ export const scheduledJobs = (stateDir: string, now: number): ScheduledJob[] => 
     const entry = status[spec.name];
     const row = scheduleRow(spec, entry, now);
     return {
-      name: spec.name, kind: spec.kind, cron: spec.cron ?? null, everySec: spec.everySec ?? null, tz: spec.tz,
+      name: spec.name, kind: spec.kind, description: spec.description ?? null, cron: spec.cron ?? null, everySec: spec.everySec ?? null, tz: spec.tz,
       text: spec.text ?? null, command: spec.command ?? null, cwd: spec.cwd ?? null, machine: spec.machine ?? null,
       heavy: spec.heavy === true, catchUp: spec.catchUp, paused: spec.paused === true,
       nextRunAt: row.nextRunAt ?? null, lastRunAt: row.lastRunAt ?? null, lastResult: row.lastResult ?? null,
@@ -61,6 +72,7 @@ const apply = (stateDir: string, request: ScheduleRequest, now: number): void =>
       const { job } = request;
       specs.add({
         name: job.name, type: "schedule", kind: job.kind, since: now,
+        ...(job.description !== undefined ? { description: job.description } : {}),
         ...("cron" in job ? { cron: job.cron } : { everySec: job.everySec }),
         ...(job.tz !== undefined ? { tz: job.tz } : {}),
         ...(job.text !== undefined ? { text: job.text } : {}),
@@ -74,7 +86,7 @@ const apply = (stateDir: string, request: ScheduleRequest, now: number): void =>
     case "run-now": findSchedule(specs, request.name); queueRunNow(stateDir, request.name, now); return;
     case "pause": setSchedulePaused(specs, request.name, true, now); return;
     case "resume": setSchedulePaused(specs, request.name, false, now); return;
-    case "edit": editScheduleTiming(specs, request.name, request.timing, request.tz, now); return;
+    case "edit": editSchedule(specs, request.name, request, now); return;
   }
 };
 
