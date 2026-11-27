@@ -130,7 +130,7 @@ export const checkCriterion: Command<"checkCriterion"> = command((storage, task_
 
 /** Checks a manual criterion as `checkCriterion` does, as `by`. Without `taskId`, the task
  * is the one the criterion belongs to; with one, it must be that task. */
-function check(
+export function check(
   storage: Storage,
   task_: number | null,
   criterion: number,
@@ -144,7 +144,7 @@ function check(
 
 /** The task `criterion` belongs to, which must be `task_` when that is given; `tool` names
  * the call to repeat in the rejection. */
-function criterionOwner(storage: Storage, task_: number | null, criterion: number, tool: string): TaskId {
+export function criterionOwner(storage: Storage, task_: number | null, criterion: number, tool: string): TaskId {
   const owner = storage.criterionTask(criterionId(criterion));
   if (owner === null) {
     throw notFound(`criterion ${criterion} does not exist; call get_task on your task for the ids of its criteria`);
@@ -158,11 +158,14 @@ function criterionOwner(storage: Storage, task_: number | null, criterion: numbe
 }
 
 /** Pauses an `in_progress` or `in_review` task by returning it to `planned`. */
-export const pauseTask: Command<"pauseTask"> = command((storage, id) => {
+export const pauseTask: Command<"pauseTask"> = command((storage, id) => pause(storage, id, null));
+
+/** [`pauseTask`], recording `reason`, why the work stops, in the task's status history. */
+export function pause(storage: Storage, id: number, reason: string | null): B.Task {
   const current = storedTask(storage, id);
   if (current.status === "planned") throw rejected(`task ${current.id} is not being worked on`);
-  return task(storage.pauseTask(current.id, null));
-});
+  return task(storage.pauseTask(current.id, reason));
+}
 
 /** The range of seconds a Rust `jiff::Timestamp` holds: years -9999 to 9999. */
 const EARLIEST_TIMESTAMP = -377_705_116_800;
@@ -177,7 +180,10 @@ function rfc3339(seconds: number): string {
  * (`planned`) until then and returns on its own to the status it had, also after a restart
  * of the server. A task that already waits gets the new time. `reason`, if given, is kept
  * with the progress note the wait records. */
-export const waitTask: Command<"waitTask"> = command((storage, id, until, reason) => {
+export const waitTask: Command<"waitTask"> = command((storage, id, until, reason) => wait(storage, id, until, reason));
+
+/** [`waitTask`] for a caller that already holds the storage. */
+export function wait(storage: Storage, id: number, until: number, reason: string | null): B.Task {
   const current = storedTask(storage, id);
   if (current.status === "done") {
     throw rejected(`task ${current.id} is done, so it cannot wait; reopen it first if more work on it has to wait`);
@@ -188,17 +194,20 @@ export const waitTask: Command<"waitTask"> = command((storage, id, until, reason
     throw invalidInput(`the wait must end in the future, after ${rfc3339(now)}; choose a later time`);
   }
   return task(storage.waitTask(current.id, until, trimmedOrNull(reason)));
-});
+}
 
 /** Ends the wait of a task now: it returns to the status it had when the wait began, as
  * when the time passes. */
-export const endWait: Command<"endWait"> = command((storage, id) => {
+export const endWait: Command<"endWait"> = command((storage, id) => endTaskWait(storage, id, null));
+
+/** [`endWait`], recording `note`, why the wait ends early, with the progress note. */
+export function endTaskWait(storage: Storage, id: number, note: string | null): B.Task {
   const current = storedTask(storage, id);
   if (current.wait === null) {
     throw rejected(`task ${current.id} does not wait; call wait_task to make it wait until a time`);
   }
-  return task(storage.endTaskWait(current.id, null));
-});
+  return task(storage.endTaskWait(current.id, trimmedOrNull(note)));
+}
 
 /** Reopens a `done` task that was completed or concluded by mistake: it becomes `planned`
  * again, paused if it was started. Its resolution, completion note, and `merged_with` are
@@ -212,7 +221,7 @@ export const reopenTask: Command<"reopenTask"> = command((storage, id, reason) =
 
 /** Checks that task `id` can be reopened without changing anything, and returns the progress
  * note reopening it records. */
-function reopenNote(storage: Storage, id: number, rawReason: string): string {
+export function reopenNote(storage: Storage, id: number, rawReason: string): string {
   const reason = trim(rawReason);
   if (reason === "") throw invalidInput("say why the task is reopened; the reason is kept as a progress note");
   const current = storedTask(storage, id);

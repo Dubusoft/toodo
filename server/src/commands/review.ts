@@ -30,7 +30,7 @@ function pullRequest(snapshot: PullRequestSnapshot): B.PullRequestSnapshot {
   };
 }
 
-function commitRecord(record: CommitRecord): B.CommitRecord {
+export function commitRecord(record: CommitRecord): B.CommitRecord {
   return { taskId: record.taskId, sha: record.sha, message: record.message, author: record.author, committedAt: record.committedAt };
 }
 
@@ -50,6 +50,11 @@ function reviewEntry(reviewed: TaskReview, reviewedTask: Task, snapshot: PullReq
  * float the shapes hold, keeps a decimal point (`4.0`). */
 export function rustJson(value: unknown): string {
   return JSON.stringify(value).replace(/"amount":(-?\d+)(?=[,}])/g, '"amount":$1.0');
+}
+
+/** [`rustJson`] as `serde_json::to_string_pretty` writes it, indented by two spaces. */
+export function rustJsonPretty(value: unknown): string {
+  return JSON.stringify(value, null, 2).replace(/^(\s*"amount": -?\d+)(?=,?$)/gm, "$1.0");
 }
 
 /** The time zone reviews are judged in, with its IANA name: the one set, else the server's
