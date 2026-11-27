@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 
-import type { DoriConfig } from "./config.ts";
+import { discordOn, type DoriConfig } from "./config.ts";
 import { laneOutputDir } from "./lane-files.ts";
+import type { ToodoPosted } from "./lane-toodo.ts";
 import { recordReported } from "./lane-outcomes.ts";
 import { oneLine } from "./line-text.ts";
 import { DISCORD_FILES_MAX, DISCORD_UPLOAD_MAX, type DiscordFile } from "./messenger/discord.ts";
@@ -27,15 +28,19 @@ export class ReportPostError extends Error {}
 export type ReportPostDeps = {
   /**
    * The live config: its first discordChannels entry is the owner channel a closed thread's line falls back to, and
-   * ownerLanguage the language of the line naming files left unattached.
+   * ownerLanguage the language of the line naming files left unattached. Without discord in platforms the report goes
+   * only to the Toodo chat (`toodo`).
    */
-  readonly config: Pick<DoriConfig, "stateDir" | "discordChannels" | "ownerLanguage">;
+  readonly config: Pick<DoriConfig, "stateDir" | "discordChannels" | "ownerLanguage"> & { readonly platforms?: DoriConfig["platforms"] };
   readonly discord: Pick<FollowUpDiscord, "send" | "threadState"> & {
     sendFiles(channelId: string, content: string, stableId: string, files: readonly DiscordFile[]): Promise<string>;
   };
   readonly now: () => number;
-  /** Posts the report into the lane's Toodo task thread as well (lane-toodo.ts postLaneToodo); it never throws. */
-  readonly toodo?: (lane: Lane, text: string) => Promise<void>;
+  /**
+   * Posts the report into the lane's Toodo task thread as well (lane-toodo.ts postLaneToodo) and returns where it landed,
+   * undefined when it did not; it never throws. With Discord off it is the only post.
+   */
+  readonly toodo?: (lane: Lane, text: string) => Promise<ToodoPosted | undefined>;
 };
 
 export type ReportPosted =
@@ -98,6 +103,13 @@ export const reviewFiles = (stateDir: string, key: string): { readonly files: Di
 export const postLaneReport = async (
   deps: ReportPostDeps, lane: Lane, text: string, opts: { readonly to?: string; readonly thread?: string; readonly note?: string } = {},
 ): Promise<ReportPosted> => {
+  // With Discord off the report goes only to the lane's Toodo task thread, and its receipt names that place.
+  if (!discordOn(deps.config)) {
+    const posted = await deps.toodo?.(lane, text);
+    if (!posted) throw new ReportPostError(`REPORT_NOT_POSTED ${lane.key}: Discord is off and the report did not reach the lane's Toodo task thread${lane.task === undefined ? " (the lane has no task)" : ""}; nothing recorded`);
+    recordReported(deps.config.stateDir, lane.key, deps.now(), opts.note ? oneLine(opts.note) : undefined, posted);
+    return { kind: "posted", message: posted.message };
+  }
   const bound = lane.thread && lane.thread !== "none" ? lane.thread : undefined;
   const ref = opts.to ?? bound;
   if (!ref) throw new ReportPostError(`lane ${lane.key} has no bound thread; name where to post with --to TARGET (a thread ref such as discord:<channel>/<thread>)`);

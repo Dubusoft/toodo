@@ -21,11 +21,14 @@ const idleRunner: Spawn = () => {
 };
 
 /** The real supervise() with fake hc, Discord and gateway (as fixtures/startup-supervise.ts) and an injected local runner spawn. */
-const superviseWith = (stateDir: string, probe: StartupProbe, signal: AbortSignal, notify: (state: string) => Promise<boolean>, spawnRunner: Spawn = idleRunner): Promise<void> => {
+const superviseWith = (
+  stateDir: string, probe: StartupProbe, signal: AbortSignal, notify: (state: string) => Promise<boolean>, spawnRunner: Spawn = idleRunner,
+  config: { readonly platforms?: readonly ("discord" | "toodo")[] } = {}, discordCalls: string[] = [],
+): Promise<void> => {
   const world = newWorld();
   world.panes.push({ pane_id: "hc:t1", workspace_id: "test", agent: "omo", agent_status: "working" });
   const base = depsFor(world, fakeClock(1_800_000_000_000), stateDir, {
-    discord: { applicationId: "100", guildId: "200", ownerId: "123456789012345" }, discordChannels: ["11"], defaultModel: "test/model",
+    discord: { applicationId: "100", guildId: "200", ownerId: "123456789012345" }, discordChannels: ["11"], defaultModel: "test/model", ...config,
   });
   const deps = {
     ...base,
@@ -33,7 +36,10 @@ const superviseWith = (stateDir: string, probe: StartupProbe, signal: AbortSigna
       ? { code: 0, out: "Filesystem 1K-blocks Used Available\n/dev/x 1 1 209715200", err: "" }
       : base.run(argv),
   };
-  const http: Http = async (request) => ({ status: 200, headers: {}, body: request.url.endsWith("/threads/active") ? JSON.stringify({ threads: [] }) : "[]" });
+  const http: Http = async (request) => {
+    discordCalls.push(request.url);
+    return { status: 200, headers: {}, body: request.url.endsWith("/threads/active") ? JSON.stringify({ threads: [] }) : "[]" };
+  };
   return supervise(deps, signal, {
     token: `startup-test-${stateDir}`, gatewayLockDir: `${stateDir}/gateway-locks`, http, lookup: async () => "", statusLookup: async () => "",
     open: () => {
@@ -143,6 +149,37 @@ test("a normal start logs one STARTUP_TIMINGS line for the steps up to READY=1 a
   expect(lines.every((line) => /^STARTUP_TIMINGS \S+ \d+ms( \S+=\d+ms)+$/.test(line))).toBe(true);
   expect(notified[0]).toBe("READY=1");
   expect(probe.active).toBe(false);
+});
+
+test("with Discord off (platforms toodo) supervise reaches READY=1 with no gateway lock, no Discord inbound and no Discord request", async () => {
+  // Given the real supervise() on fakes whose config turns Discord off; the token it is handed must go unused.
+  const state = withState();
+  cleanups.push(state.done);
+  const home = process.env.HOME;
+  const socket = process.env.NOTIFY_SOCKET;
+  process.env.HOME = state.dir;
+  delete process.env.NOTIFY_SOCKET;
+  cleanups.push(() => {
+    if (home === undefined) delete process.env.HOME; else process.env.HOME = home;
+    if (socket === undefined) delete process.env.NOTIFY_SOCKET; else process.env.NOTIFY_SOCKET = socket;
+  });
+  spyOn(quota, "lookupQuotaResults").mockReturnValue(async () => ({ results: [], text: "" }));
+  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => new Response("[]", { status: 404 }), { preconnect: fetch.preconnect }));
+  const controller = new AbortController();
+  const lines: string[] = [];
+  const probe = new StartupProbe(STARTUP_STEP_BUDGET_MS, (line) => {
+    lines.push(line);
+    if (FIRSTS.every((name) => lines.some((l) => l.startsWith(`STARTUP_TIMINGS ${name} `)))) controller.abort();
+  });
+  const notified: string[] = [];
+  const discordCalls: string[] = [];
+  // When it starts and every task runs one pass.
+  await superviseWith(state.dir, probe, controller.signal, async (s) => { notified.push(s); return true; }, idleRunner, { platforms: ["toodo"] }, discordCalls);
+  // Then it got ready without the Discord steps, and nothing reached Discord.
+  expect(notified[0]).toBe("READY=1");
+  expect(steps(lines.find((line) => line.startsWith("STARTUP_TIMINGS ready ")))).toEqual(["lock", "supervisor", "schedules", "waits", "github", "review-gate", "ci-follow", "lane-reports", "runners", "ready"]);
+  expect(discordCalls).toEqual([]);
+  expect(existsSync(join(state.dir, "gateway-locks"))).toBe(false);
 });
 
 test("a startup that fails still logs how far it got", async () => {

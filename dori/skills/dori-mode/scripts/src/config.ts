@@ -159,8 +159,9 @@ export type DiscordConfig = {
 export type DoriConfig = {
   readonly discord?: DiscordConfig;
   /**
-   * The chat platforms the supervisor runs (config key `platforms`, default `["discord"]`): `toodo` adds the Toodo chat
-   * beside Discord, which stays required. Read where it is used, so a config reload switches the Toodo chat live.
+   * The chat platforms dori talks to the owner on (config key `platforms`, default `["discord"]`): `discord`, `toodo`
+   * (the Toodo chat), or both. Without `discord` nothing reaches Discord and the Toodo chat carries everything (discordOn).
+   * Read where it is used, so a config reload switches the Toodo chat live; Discord itself is switched at supervisor start.
    */
   readonly platforms: readonly Platform[];
   readonly stateDir: string;
@@ -556,15 +557,21 @@ const displayTimeZone = (raw: unknown): string => {
   return raw.trim();
 };
 
-/** The config's `platforms`, each named once; absent is Discord alone. Throws TypeError on an unknown name or without discord. */
+/** The config's `platforms`, each named once; absent is Discord alone. Throws TypeError on an unknown name or an empty list. */
 const platforms = (raw: unknown): readonly Platform[] => {
   if (raw === undefined || raw === null) return ["discord"];
   if (!Array.isArray(raw) || !raw.every((p): p is Platform => (PLATFORMS as readonly unknown[]).includes(p))) {
     throw new TypeError(`platforms must be a list of ${PLATFORMS.join(", ")}, not ${JSON.stringify(raw)}`);
   }
-  if (!raw.includes("discord")) throw new TypeError("platforms must include discord: the Toodo chat runs beside Discord, which the supervisor still needs");
+  if (!raw.length) throw new TypeError(`platforms must name at least one of ${PLATFORMS.join(", ")}: the owner needs a chat to reach dori on`);
   return [...new Set(raw)];
 };
+
+/** Whether Discord is on (config `platforms`; a config without the key is Discord alone). */
+export const discordOn = (config: { readonly platforms?: readonly Platform[] }): boolean => config.platforms?.includes("discord") ?? true;
+
+/** The Toodo chat's default room as a chat ref (messenger/toodo-chat.ts): where owner notices go with Discord off. */
+export const TOODO_DEFAULT_ROOM_REF = "toodo";
 
 /** The config's `alertsChannel`: a trimmed channel id, undefined when absent or blank; throws TypeError on a non-string. */
 const optionalChannel = (name: string, raw: unknown): string | undefined => {
@@ -575,11 +582,12 @@ const optionalChannel = (name: string, raw: unknown): string | undefined => {
 
 /**
  * Where the supervisor's system notices go (lead stuck or restart-capped, SUPERVISOR_STUCK, TASK_STALLED, a failed
- * unit, and what the lead posts with `dori send --to alerts`): `alertsChannel` when set, else `discordChannels[0]`.
- * Lane reports, owner replies and closed-thread redirects keep using `discordChannels[0]`.
+ * unit, and what the lead posts with `dori send --to alerts`): `alertsChannel` when set, else `discordChannels[0]`; with
+ * Discord off, the Toodo chat's default room. Lane reports, owner replies and closed-thread redirects keep using
+ * `discordChannels[0]`.
  */
-export const alertsChannelOf = (config: Pick<DoriConfig, "alertsChannel" | "discordChannels">): string | undefined =>
-  config.alertsChannel?.trim() || config.discordChannels[0];
+export const alertsChannelOf = (config: Pick<DoriConfig, "alertsChannel" | "discordChannels"> & { readonly platforms?: readonly Platform[] }): string | undefined =>
+  discordOn(config) ? config.alertsChannel?.trim() || config.discordChannels[0] : TOODO_DEFAULT_ROOM_REF;
 
 /** Where the autopilot executor opens lane threads: `autopilot.threadChannel` when set, else `discordChannels[0]`. */
 export const autopilotThreadChannelOf = (config: Pick<DoriConfig, "autopilot" | "discordChannels">): string | undefined =>

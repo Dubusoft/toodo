@@ -40,6 +40,21 @@ test("a valid edit applies live keys in place and reports restart-only keys with
   expect(f.events[1]?.[1]).toContain("discord changed");
 });
 
+test("platforms: the Toodo chat switches live, while switching Discord waits for a restart and never leaves the owner without a chat", async () => {
+  const f = await fixture();
+  const edit = (platforms: string[]) => { write(f.path, { discord, discordChannels: ["100"], stateDir: state.dir, platforms }); return f.reload(); };
+  expect(await edit(["discord", "toodo"])).toEqual({ state: "applied", live: ["platforms"], restart: [] });
+  expect(f.config.platforms).toEqual(["discord", "toodo"]);
+  expect(await edit(["toodo"])).toEqual({ state: "applied", live: [], restart: ["platforms (discord)"] });
+  expect(f.config.platforms).toEqual(["discord", "toodo"]);
+  expect(await edit(["discord"])).toEqual({ state: "applied", live: ["platforms"], restart: [] });
+  expect(f.config.platforms).toEqual(["discord"]);
+  const off = await fixture({ platforms: ["toodo"] });
+  write(off.path, { discord, discordChannels: ["100"], stateDir: state.dir, platforms: ["discord"] });
+  expect(await off.reload()).toEqual({ state: "applied", live: [], restart: ["platforms (discord)"] });
+  expect(off.config.platforms).toEqual(["toodo"]);
+});
+
 test("an unchanged file reports nothing, and the same content is reported under the same event id", async () => {
   const f = await fixture();
   expect(await f.reload()).toEqual({ state: "applied", live: [], restart: [] });

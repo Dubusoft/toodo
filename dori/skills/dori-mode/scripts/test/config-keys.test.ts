@@ -18,7 +18,8 @@ const runner = (key: string) => specOf(RUNNER_CONFIG_KEYS, key);
 test("the spec lists match the keys each file reads, in order", () => {
   expect(DORI_CONFIG_KEYS.map((s) => s.key)).toEqual([...CONFIG_FILE_KEYS]);
   expect(RUNNER_CONFIG_KEYS.map((s) => s.key)).toEqual([...RUNNER_POLICY_KEYS]);
-  expect(DORI_CONFIG_KEYS.filter((s) => s.required).map((s) => s.key).sort()).toEqual(["defaultModel", "discord", "discordChannels", "leadCwd", "stateDir"]);
+  expect(DORI_CONFIG_KEYS.filter((s) => s.required).map((s) => s.key).sort()).toEqual(["defaultModel", "leadCwd", "stateDir"]);
+  expect(DORI_CONFIG_KEYS.filter((s) => s.whenDiscord).map((s) => s.key)).toEqual(["discord", "discordChannels"]);
   expect(RUNNER_CONFIG_KEYS.filter((s) => s.required).map((s) => s.key)).toEqual(["agents"]);
 });
 
@@ -223,6 +224,15 @@ test("non-interactive asks nothing and reports required keys without a value", a
   expect(p.s.asked).toEqual([]);
   expect(r.missingRequired).toEqual(["name", "roots"]);
   expect(r.shown).toEqual(["lead"]);
+});
+
+test("the Discord keys are required while platforms has discord (or is absent), and not with Discord off", async () => {
+  const missing = async (current: Record<string, unknown>) =>
+    (await configureKeys({ specs: DORI_CONFIG_KEYS, current, patch: {}, unset: [], prompt: scripted([]), interactive: false, seen: new Set(), mode: "full", log: () => {} })).missingRequired;
+  const base = { defaultModel: "p/m", leadCwd: "~", stateDir: "~/s" };
+  expect(await missing(base)).toEqual(["discord", "discordChannels"]);
+  expect(await missing({ ...base, platforms: ["discord", "toodo"] })).toEqual(["discord", "discordChannels"]);
+  expect(await missing({ ...base, platforms: ["toodo"] })).toEqual([]);
 });
 
 test("seen keys round trip through a sorted 0600 file; missing or malformed reads as empty", () => {

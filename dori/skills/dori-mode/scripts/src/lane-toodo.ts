@@ -10,7 +10,7 @@ import { type ToodoFile, ToodoMcp, ToodoWriter } from "./toodo-client.ts";
 
 /*
  * A lane on the Toodo chat (config platforms has toodo): every lane works on one task, and its output goes to that task's
- * thread beside its Discord thread. Toodo failures never fail a launch or a report: they come back as one line.
+ * thread beside its Discord thread (alone with Discord off). Toodo failures never fail a launch: they come back as one line.
  */
 
 type LaneToodoDeps = Pick<FlowDeps, "config" | "tunables" | "registry">;
@@ -61,15 +61,19 @@ export const linkLaneTask = async (deps: LaneToodoDeps, lane: Lane): Promise<str
   }
 };
 
+/** Where a lane post landed on the Toodo chat: the message as `toodo:<id>` and its place's ref. */
+export type ToodoPosted = { readonly message: string; readonly target: string };
+
 /**
  * Posts `text` from lane `lane` into its task's thread, headed by `label` (the report kind), with `files` attached (at
- * most TOODO_FILES_MAX; the rest, and any whose upload fails, are named under the text instead). Nothing with the Toodo
- * chat off or a lane without a task; a failure is logged as TOODO_CHAT_POST_FAILED and never thrown.
+ * most TOODO_FILES_MAX; the rest, and any whose upload fails, are named under the text instead), and returns where it
+ * landed. Undefined with the Toodo chat off, for a lane without a task, and on a failure, which is logged as
+ * TOODO_CHAT_POST_FAILED and never thrown.
  */
 export const postLaneToodo = async (
   deps: Pick<FlowDeps, "config" | "tunables">, lane: Lane, label: string, text: string, files: readonly ToodoFile[] = [],
-): Promise<void> => {
-  if (!toodoOn(deps) || lane.task === undefined) return;
+): Promise<ToodoPosted | undefined> => {
+  if (!toodoOn(deps) || lane.task === undefined) return undefined;
   try {
     const chat = toodoChat(deps.tunables.toodoWriter);
     const ids: number[] = [], unsent: string[] = files.slice(TOODO_FILES_MAX).map((f) => f.name);
@@ -80,9 +84,11 @@ export const postLaneToodo = async (
       }
     }
     const body = `[${label}] ${lane.key}\n${text}${unsent.length ? `\nNot attached: ${unsent.join(", ")}` : ""}`;
-    await chat.reply(await chat.taskThread(lane.task, lane.title), body, [], ids);
+    const sent = await chat.reply(await chat.taskThread(lane.task, lane.title), body, [], ids);
+    return { message: `toodo:${sent.id}`, target: toodoRef(sent.place) };
   } catch (e) {
     console.error(`TOODO_CHAT_POST_FAILED ${lane.key} ${label}: ${toodoErrorText(e)}`);
+    return undefined;
   }
 };
 
@@ -99,5 +105,5 @@ export const laneOutputFiles = (stateDir: string, key: string): ToodoFile[] => {
 };
 
 /** A lane's outcome report (report-post.ts) into its task thread, with the files of its output attached. */
-export const postLaneReportToodo = (deps: Pick<FlowDeps, "config" | "tunables">, lane: Lane, text: string): Promise<void> =>
+export const postLaneReportToodo = (deps: Pick<FlowDeps, "config" | "tunables">, lane: Lane, text: string): Promise<ToodoPosted | undefined> =>
   postLaneToodo(deps, lane, "report", text, toodoOn(deps) && lane.task !== undefined ? laneOutputFiles(deps.config.stateDir, lane.key) : []);

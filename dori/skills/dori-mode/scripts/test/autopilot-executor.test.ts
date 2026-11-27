@@ -169,6 +169,13 @@ test("ready contract reserves, starts, threads, writes, launches and settles exa
   expect(h.calls.notify).toBe(1);
 });
 
+test("with Discord off a lane launches with no Discord thread, and no thread channel is needed", async () => {
+  const h = harness();
+  expect(await runExecutor({ ...h.fresh(), parentChannel: "", discordThreads: false }, [12])).toEqual([{ taskId: 12, laneKey: KEY, kind: "launched" }]);
+  expect(h.calls).toMatchObject({ start: 1, thread: 0, brief: 1, admit: 1, launch: 1 });
+  expect(h.inputs[0]).toMatchObject({ key: KEY, task: 12, thread: "none" });
+});
+
 test("review contract has no reservations, writes, threads, or admission", async () => {
   const h = harness(task({ refs: ["owner:discord:c/m", "repo:a/b", "repo:a/c"] }));
   expect(await runExecutor(h.fresh(), [12])).toEqual([{ taskId: 12, kind: "review", reasons: ["repo-ambiguous"] }]);

@@ -3,7 +3,7 @@ import { replaceKnownSecrets } from "./redact.ts";
 import { SecretStore } from "./secret-store.ts";
 import { homedir } from "node:os";
 import { resolveCredential } from "./credentials.ts";
-import { alertsChannelOf, deliveryConfigError } from "./config.ts";
+import { alertsChannelOf, deliveryConfigError, discordOn } from "./config.ts";
 import { applyConfigPatch, configReloader, watchConfigFiles } from "./config-watch.ts";
 import { saveLeadPane } from "./managed-panes.ts";
 import { readRunnerRows } from "./runner/hub.ts";
@@ -35,12 +35,12 @@ import { type GuardMachine, listGuardMachines, loadMachineGuardState, machineGua
 import { run, type Runner, setDefaultRunTimeout } from "./run.ts";
 import { canLaunch, clearLaunchHold, launchHeld } from "./routing.ts";
 import { machineVerdict, summaryOf } from "./placement.ts";
-import { Discord } from "./messenger/discord.ts";
+import { Discord, discordOff } from "./messenger/discord.ts";
 import { acquireDiscordGateway } from "./messenger/discord-lock.ts";
 import { supervisorDiscord, type SupervisorDiscordOptions } from "./messenger/discord-supervisor.ts";
 import { closeThreadButton } from "./messenger/discord-commands.ts";
 import { fetchHttp } from "./messenger/http.ts";
-import { supervisorToodoChat, TOODO_CHAT_POLL_MS, TOODO_CHAT_WAKE_EVENTS, toodoChat, toodoErrorText } from "./messenger/toodo-chat.ts";
+import { isToodoRef, parseToodoRef, supervisorToodoChat, TOODO_CHAT_POLL_MS, TOODO_CHAT_WAKE_EVENTS, TOODO_DEFAULT_ROOM, toodoChat, toodoErrorText } from "./messenger/toodo-chat.ts";
 import { postOwnerLine } from "./lane-finish.ts";
 import { appendFollowUp, pruneThreadFollowups, redirectIfClosed } from "./thread-followup.ts";
 import { autoReportPoster } from "./auto-report.ts";
@@ -74,6 +74,7 @@ import { criticalTick, guardAlertDetail, laneMemoryOf, MACHINE_GUARD_STATE_FILE,
 import { runnerCallsOf, SupervisorRunners } from "./supervise-runners.ts";
 import { decisionDeliveryTick, reconcileDecisionsAtStart } from "./decision-delivery.ts";
 import { type DecisionContext, openLaneDecision, ownerDecisionTick } from "./owner-decisions.ts";
+import { routedDecisionTransport } from "./decision-toodo.ts";
 import { relayLine, retryDecisionRelays } from "./decision-relay.ts";
 import { errLine } from "./line-text.ts";
 
@@ -961,25 +962,41 @@ export const supervise = async (
   let ci: CiFollowUp | undefined;
   try {
     release = probe.step("lock", () => acquireSupervisor(deps.config.stateDir));
-    const token = discordOptions.token ?? probe.step("credential", () => resolveCredential("DORI_DISCORD_TOKEN"));
-    if (!token) throw new SuperviseError("supervise requires DORI_DISCORD_TOKEN for lossless paginated Discord polling");
-    releaseGateway = probe.step("gateway-lock", () => acquireDiscordGateway(token, gatewayLockDir));
-    const discord = new Discord(fetchHttp, deps.clock, token);
+    // Discord is switched at start (config platforms): off, the supervisor needs no token, holds no gateway and reads no
+    // Discord inbound, its Discord client refuses every call, and what it tells the owner goes to the Toodo chat.
+    const onDiscord = discordOn(deps.config);
+    const token = onDiscord ? discordOptions.token ?? probe.step("credential", () => resolveCredential("DORI_DISCORD_TOKEN")) : undefined;
+    if (onDiscord && !token) throw new SuperviseError("supervise requires DORI_DISCORD_TOKEN for lossless paginated Discord polling (or drop discord from config platforms)");
+    if (token) releaseGateway = probe.step("gateway-lock", () => acquireDiscordGateway(token, gatewayLockDir));
+    const discord = token ? new Discord(fetchHttp, deps.clock, token) : discordOff(deps.clock);
+    if (!onDiscord) console.log(`DISCORD_OFF platforms=${deps.config.platforms.join(",")}: no Discord gateway or inbound; owner notices and decisions go to the Toodo chat`);
     const stateDir = deps.config.stateDir;
+    const chat = () => toodoChat(deps.tunables.toodoWriter);
+    // A line on the Toodo chat: at its ref, else (Discord off) in the default room.
+    const toodoPost = async (channel: string | undefined, body: string): Promise<void> => {
+      await chat().reply(channel && isToodoRef(channel) ? parseToodoRef(channel) : TOODO_DEFAULT_ROOM, body);
+    };
     // A [System] post of the supervisor's own into `channel`; a thread the owner closed gets nothing (a post would reopen
-    // it): one line linking it goes to its parent channel, else the owner channel (redirectIfClosed).
+    // it): one line linking it goes to its parent channel, else the owner channel (redirectIfClosed). A Toodo chat ref,
+    // and any channel with Discord off, is posted on the Toodo chat.
     const systemPost = async (channel: string, text: string, id?: string): Promise<void> => {
       const body = systemText(text);
+      if (!onDiscord || isToodoRef(channel)) return toodoPost(channel, body);
       const redirected = await redirectIfClosed(stateDir, discord, channel, body, deps.config.discordChannels[0], (target, line) => discord.send(target, line, id));
       if (redirected) console.log(`SYSTEM_POST_REDIRECTED ${channel}: closed by the owner, one line went to ${redirected}`);
       else await discord.send(channel, body, id);
     };
     const supervisor = probe.step("supervisor", () => new Supervisor(deps, {
-      react: (op, channel, message, emoji) => op === "add" ? discord.react(channel, message, emoji) : discord.unreact(channel, message, emoji),
+      // The Toodo chat has no reactions: its messages carry their read and handled receipts instead.
+      react: async (op, channel, message, emoji) => {
+        if (isToodoRef(channel)) return;
+        await (op === "add" ? discord.react(channel, message, emoji) : discord.unreact(channel, message, emoji));
+      },
       persistLeadPane: (pane) => { saveLeadPane(stateDir, pane); },
       // A line into a lane thread is appended to its last report (or status message), never a new post into a thread the owner closed.
       // A line with no thread (lead stuck, restarts capped) is a system notice: config alertsChannel, else the main channel.
       announce: async (text, id, thread) => {
+        if (!onDiscord) return toodoPost(undefined, systemText(text));
         await postOwnerLine(discord, thread ? deps.config.discordChannels[0] : alertsChannelOf(deps.config), thread, systemText(text), id, {
           stateDir,
           statusMessage: async (threadId) => (await deps.registry.open()).find((lane) => lane.thread.endsWith(`/${threadId}`))?.statusMessageId,
@@ -1012,7 +1029,7 @@ export const supervise = async (
     const retry = leadDelivery(deps, supervisor, systemPost, boot);
     let deliveryError: unknown;
     const laneMessageStore = (): LaneMessageStore => (laneMessages ??= openLaneMessages(deps.config));
-    const discordInbound = inbound = probe.step("inbound", () => supervisorDiscord(deps, {
+    const discordInbound = inbound = token === undefined ? undefined : probe.step("inbound", () => supervisorDiscord(deps, {
       ...discordOptions, token, emit: async (id, line) => { enqueueDiscord(id, line); }, laneMessages: laneMessageStore,
       http: discordOptions.http ?? ((request) => fetchHttp({
         ...request, signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
@@ -1027,7 +1044,8 @@ export const supervise = async (
     const statusTransport = statusTransportOf(discord);
     // Owner decision threads ride the same client: a lane question with choices opens one (owner-approved exception to
     // the supervisor never talking to the owner), and the decision tick runs with the report checks.
-    const decisionCtx: DecisionContext = { config: deps.config, transport: discord, now: deps.clock.now, home };
+    // With Discord off a decision goes to the Toodo chat (decision-toodo.ts): the transport sends its refs there.
+    const decisionCtx: DecisionContext = { config: deps.config, transport: routedDecisionTransport(() => discord, chat), toodo: chat, now: deps.clock.now, home };
     const routeLaneReports = laneReportsPass({
       deps, ops, reports: reportStore, review, transport: statusTransport, decisions: decisionCtx, home, enqueue: enqueueSweep, watchdog,
     });
@@ -1058,7 +1076,9 @@ export const supervise = async (
       // A long-lived stream, not a pass: it reconnects on its own and is not tracked by the watchdog.
       autopilot.events.run(halted),
       task("inbound", 5_000, async () => {
-        try { await registry.guard("discord", discordInbound.tick()); } catch (e) { console.error(`INBOUND_ERROR ${e instanceof Error ? e.message : String(e)}`); }
+        if (discordInbound) {
+          try { await registry.guard("discord", discordInbound.tick()); } catch (e) { console.error(`INBOUND_ERROR ${e instanceof Error ? e.message : String(e)}`); }
+        }
         // The Toodo chat's safety poll rides beside it, not awaited: a slow toodo-server never holds Discord inbound back,
         // and a tick while one runs joins it.
         if (toodoChatOn()) void registry.guard("toodo", toodoChatInbound.tick()).catch((e: unknown) => { console.error(`TOODO_CHAT_ERROR ${toodoErrorText(e)}`); });
