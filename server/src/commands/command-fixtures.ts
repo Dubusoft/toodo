@@ -10,3 +10,14 @@ export function commandFailure(run: () => unknown): CommandError {
   }
   throw new Error("Expected a command error");
 }
+
+/** The `CommandError` `run` rejects with; anything else fails the test. */
+export async function commandRejection(run: () => Promise<unknown>): Promise<CommandError> {
+  try {
+    await run();
+  } catch (error) {
+    if (error instanceof CommandError) return error;
+    throw error;
+  }
+  throw new Error("Expected a command error");
+}
