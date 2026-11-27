@@ -636,8 +636,14 @@ word of `query` must appear in a message, ignoring case; `channel_id` keeps to a
 its threads, `thread_id` to a thread. Each hit carries the message, `channelName`, and
 `threadTitle`, the best match first.
 
+**Composer.** The app's composer is one row, as in other messengers: a **+** button that
+attaches files, the input, and the send button. On a touch keyboard Enter starts a new
+line and only the send button sends; with a physical keyboard Enter sends and Shift+Enter
+starts a new line.
+
 **Voice input.** Where the browser offers speech recognition (Chrome on desktop and
-Android), the app's composer shows a microphone: what the person says, recognized in the
+Android), the composer shows a microphone in the send button's place while there is
+nothing to send, and keeps it while it listens: what the person says, recognized in the
 browser's language, joins the draft, which they send like typed text. The browser
 recognizes speech through its own service, so voice input needs a connection; the server
 receives only the text.
