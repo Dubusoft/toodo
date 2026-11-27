@@ -100,8 +100,8 @@ export class ToodoChat {
   }
 
   /**
-   * The thread of task `taskId`: its existing thread (reopened when closed), else a new one titled `title`. One thread
-   * per task is this rule's job: the schema does not enforce it.
+   * The thread of task `taskId`: its existing thread (reopened when closed), else a new one titled `title`. A task has
+   * one thread (toodo-server refuses a second), so the existing one is looked up first.
    */
   async taskThread(taskId: number, title: string): Promise<ToodoPlace> {
     const threads = await this.mcp.call("list_threads", { task_id: taskId });
