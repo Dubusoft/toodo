@@ -2,10 +2,15 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { replaceFileAtomic } from "./durable-write.ts";
+import { HOST_UNIT } from "./host-runtimes.ts";
 import type { Runner } from "./run.ts";
 import { errText } from "./line-text.ts";
 
 export const SUPERVISOR_UNIT = "dori-supervisor.service";
+/** What toodo.service runs besides dori/: a change here restarts it, a change in dori/ alone reloads only the Worker. */
+const CORE_PATHS = ["server", "host", "package.json", "package-lock.json"];
+/** What the web app toodo.service serves from dist-web is built from. */
+const WEB_PATHS = ["src", "public", "index.html", "vite.config.ts", "package.json", "package-lock.json"];
 const ACTIVE_POLLS = 10;
 const ACTIVE_POLL_MS = 1_000;
 
@@ -40,6 +45,13 @@ export type UpdateOptions = {
   readonly force: boolean;
   /** The directory whose changes need the supervisor restarted (dori/ in the repo that holds it); the whole checkout when unset. */
   readonly codeDir?: string;
+  /**
+   * The unit that runs the supervisor (host-runtimes.ts supervisorUnit), dori-supervisor.service when unset. With
+   * toodo.service the update also refreshes the core from the same checkout: `npm ci` when the root manifests changed,
+   * a web build when the web app's sources did, a restart when the core changed, and otherwise a reload, which replaces
+   * only the supervisor Worker.
+   */
+  readonly unit?: string;
 };
 
 class UpdateStop extends Error {}
@@ -140,8 +152,13 @@ export const updateInstall = async (d: UpdateDeps, o: UpdateOptions): Promise<nu
     if (lockClean) await git(["checkout", "-q", "--", "bun.lock"], o.packageDir);
     if (refresh.code !== 0) { d.log(`WARN bun update pi-quota: ${(refresh.err || refresh.out).split("\n").at(-1)}`); failed.push("pi-quota"); }
     else if (quotaMoved) { d.log(`PI_QUOTA_UPDATED ${o.packageDir}`); changed.push("pi-quota"); }
-    const codeMoved = now !== old && (await git(["diff", "--name-only", old, now, "--", o.codeDir ?? root])) !== "";
-    if (!codeMoved && !quotaMoved && !o.force) {
+    const movedIn = async (paths: readonly string[]): Promise<boolean> => now !== old && (await git(["diff", "--name-only", old, now, "--", ...paths])) !== "";
+    const unit = o.unit ?? SUPERVISOR_UNIT;
+    const host = unit === HOST_UNIT;
+    const codeMoved = await movedIn([o.codeDir ?? root]);
+    const coreMoved = host && await movedIn(CORE_PATHS);
+    const webMoved = host && await movedIn(WEB_PATHS);
+    if (!codeMoved && !coreMoved && !webMoved && !quotaMoved && !o.force) {
       d.log(`UP_TO_DATE ${o.branch} ${short(now)}`);
       refreshSandbox();
       refreshBootPrep();
@@ -149,20 +166,39 @@ export const updateInstall = async (d: UpdateDeps, o: UpdateOptions): Promise<nu
       await upgradeRunners();
       return finish(0);
     }
+    if (host && (await movedIn(["package.json", "package-lock.json"]))) {
+      const ci = await d.run(["npm", "ci", "--no-audit", "--no-fund"], { cwd: root, timeoutMs: 600_000 });
+      if (ci.code !== 0) throw new UpdateStop(`UPDATE_FAILED npm ci: ${(ci.err || ci.out).split("\n").at(-1)}; ${unit} not restarted`);
+      d.log(`DEPENDENCIES_INSTALLED ${root}`);
+      changed.push("core dependencies");
+    }
+    if (webMoved) {
+      const build = await d.run(["npx", "vite", "build"], { cwd: root, timeoutMs: 600_000 });
+      if (build.code !== 0) throw new UpdateStop(`UPDATE_FAILED vite build: ${(build.err || build.out).split("\n").at(-1)}; ${unit} not restarted`);
+      d.log(`WEB_BUILT ${join(root, "dist-web")}`);
+      changed.push("web app");
+    }
     refreshSandbox();
     refreshBootPrep();
     await migrateConfig();
-    const restart = await d.run(["systemctl", "--user", "restart", SUPERVISOR_UNIT], { timeoutMs: 120_000 });
-    if (restart.code !== 0) { d.log(`WARN systemctl restart ${SUPERVISOR_UNIT}: ${(restart.err || restart.out).split("\n")[0]}`); failed.push("supervisor restart"); }
+    // toodo.service: a reload (SIGHUP) replaces only the supervisor Worker and leaves the core serving.
+    const action = host && !coreMoved && !o.force ? "reload" : "restart";
+    if (host && action === "reload" && !codeMoved && !quotaMoved) {
+      d.log(`UPDATED ${o.branch} ${short(old)}..${short(now)} web app only; ${unit} left running`);
+      await upgradeRunners();
+      return finish(0);
+    }
+    const restart = await d.run(["systemctl", "--user", action, unit], { timeoutMs: 120_000 });
+    if (restart.code !== 0) { d.log(`WARN systemctl ${action} ${unit}: ${(restart.err || restart.out).split("\n")[0]}`); failed.push(`supervisor ${action}`); }
     let state = "unknown";
     for (let i = 0; i < ACTIVE_POLLS; i++) {
-      state = (await d.run(["systemctl", "--user", "is-active", SUPERVISOR_UNIT], { timeoutMs: 10_000 })).out || "unknown";
+      state = (await d.run(["systemctl", "--user", "is-active", unit], { timeoutMs: 10_000 })).out || "unknown";
       if (state !== "activating" && state !== "reloading") break;
       await d.sleep(ACTIVE_POLL_MS);
     }
-    d.log(`UPDATED ${o.branch} ${short(old)}..${short(now)} supervisor=${state}`);
+    d.log(`UPDATED ${o.branch} ${short(old)}..${short(now)} supervisor=${state}${host ? ` (${unit} ${action === "reload" ? "reloaded the supervisor Worker" : "restarted"})` : ""}`);
     if (state !== "active") { failed.push(`supervisor=${state}`); return finish(1); }
-    changed.push("supervisor restarted");
+    changed.push(action === "reload" ? "supervisor Worker reloaded" : host ? `${unit} restarted` : "supervisor restarted");
     await upgradeRunners();
     return finish(0);
   } catch (e) {

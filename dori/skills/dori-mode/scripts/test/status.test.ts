@@ -29,6 +29,7 @@ const ok = (out = ""): Ran => ({ code: 0, out, err: "" });
 type FakePane = { readonly pane_id: string; readonly agent?: string; readonly agent_status?: string; readonly cwd?: string };
 /** A pane as hc answers `ls`/`get` for it. */
 const terminal = (p: FakePane) => ({ address: p.pane_id.slice("hc:".length), state: "live", ...(p.cwd ? { cwd: p.cwd } : {}), status: p.agent ? { app: p.agent, state: p.agent_status } : null });
+let toodoActive = false;
 const fixture = async (panes: FakePane[] = [{ pane_id: "hc:t1" }]) => {
   const state = withState();
   cleanups.push(state.done);
@@ -43,6 +44,7 @@ const fixture = async (panes: FakePane[] = [{ pane_id: "hc:t1" }]) => {
     }
     if (line.startsWith("systemctl --user is-enabled")) return ok("enabled");
     if (line === "systemctl --user is-active dori-presence.service") return { code: 3, out: "inactive", err: "" };
+    if (line === "systemctl --user is-active toodo.service") return toodoActive ? ok("active") : { code: 3, out: "inactive", err: "" };
     if (line.startsWith("systemctl --user is-active")) return ok("active");
     return { code: 127, out: "", err: line };
   };
@@ -86,6 +88,16 @@ test("status lists working lanes with model, age and last progress; paused and c
   expect(text).toContain("작업 중 레인 1개");
   expect(text).toContain("\n■ 레인 (1)\n▸ local: 오프라인 · 레인 1개\n- alpha (90분 · one): Write the tests");
   expect(text).not.toContain("beta");
+});
+
+test("status lists toodo.service in place of the supervisor unit while it runs the supervisor", async () => {
+  toodoActive = true;
+  try {
+    const s = await collectStatus((await fixture()).deps);
+    expect(s.services.map((u) => u.name)).toEqual(["hc-core.service", "toodo.service", "dori-presence.service"]);
+  } finally {
+    toodoActive = false;
+  }
 });
 
 test("status lists hc-core and the supervisor, and never reads a herdr unit", async () => {
