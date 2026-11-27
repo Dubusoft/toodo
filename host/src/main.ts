@@ -4,6 +4,7 @@ import type { Server } from "bun";
 
 import { type Config, configFromEnv } from "../../server/src/http/config.ts";
 import { type Core, openCore, SERVE_OPTIONS, stopServing } from "../../server/src/main.ts";
+import { doriMaxAge, gatewayProbe, healthcheckPaths, httpProbe, readPingFile, startHealthcheck } from "./healthcheck.ts";
 import { type SupervisorEvent, SupervisorHost, type SupervisorSnapshot, type SupervisorTunables, workerSpawner } from "./supervisor.ts";
 
 export const SUPERVISOR_ENTRY = new URL("../../dori/skills/dori-mode/scripts/src/supervise-worker.ts", import.meta.url);
@@ -103,12 +104,27 @@ if (import.meta.main) {
   }
   const host = startHost({ listen: config.listen, core: core.fetch, supervisor: mode === "off" ? "off" : SUPERVISOR_ENTRY });
   core.listening(Number(host.url.port));
+  const paths = healthcheckPaths(process.env);
+  const urls = await readPingFile(paths.pingFile);
+  // The core is probed over loopback, whatever address it listens on.
+  const local = new URL(host.url);
+  if (local.hostname === "0.0.0.0") local.hostname = "127.0.0.1";
+  if (local.hostname === "[::]") local.hostname = "[::1]";
+  const health = urls.toodo === undefined && urls.dori === undefined ? undefined : startHealthcheck(urls, {
+    probes: { toodo: httpProbe(local), dori: gatewayProbe(paths.gatewayStatus, doriMaxAge(process.env.DORI_MAX_AGE_MS)) },
+    log: (line) => { console.log(line); },
+  });
+  console.log(health
+    ? `HOST_HEALTHCHECK_ON ${[urls.toodo && "toodo", urls.dori && "dori"].filter(Boolean).join(" and ")} every minute, ping URLs from ${paths.pingFile}`
+    : `HOST_HEALTHCHECK_OFF no HC_TOODO_URL or HC_DORI_URL in ${paths.pingFile}`);
   process.on("SIGHUP", () => { void host.reloadSupervisor(); });
   let stopping = false;
   const stop = () => {
     if (stopping) return;
     stopping = true;
     console.log("HOST_STOPPING");
+    // A ping in flight may retry for 40 s; stopping must not wait for it (TimeoutStopSec in host/toodo.service).
+    void health?.stop();
     void host.stop().then(() => core.close()).then(() => {
       console.log("HOST_STOPPED");
       process.exit(0);
