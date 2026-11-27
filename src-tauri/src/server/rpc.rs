@@ -14,13 +14,14 @@ use serde::de::DeserializeOwned;
 use super::Services;
 use crate::commands::events::Notifier as _;
 use crate::commands::types::{
-    BackupSettings, CriterionId, Guideline, GuidelineId, GuidelineUpdate, NewGuideline, NewTask,
-    NewWorkspace, OAuthGrantId, ReviewReportRequest, ReviewSnapshotId, SaveReviewSnapshotRequest,
-    TaskEdit, TaskId, TaskListFilter, TaskResolution, Timestamp, Workspace, WorkspaceId,
+    BackupSettings, ChatMessage, ChatMessageId, CriterionId, Guideline, GuidelineId,
+    GuidelineUpdate, NewGuideline, NewTask, NewWorkspace, OAuthGrantId, ReviewReportRequest,
+    ReviewSnapshotId, SaveReviewSnapshotRequest, TaskEdit, TaskId, TaskListFilter, TaskResolution,
+    Timestamp, Workspace, WorkspaceId,
 };
 use crate::commands::{
-    CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, backup, completion,
-    guidelines, issues, mcp, review, tasks, workspaces,
+    CommandError, CommandErrorCode, CommandErrorKind, CommandResult, State, backup, chat,
+    completion, guidelines, issues, mcp, review, tasks, workspaces,
 };
 use crate::mcp::Backend as _;
 
@@ -153,6 +154,17 @@ fn guidelines_changed(
     result
 }
 
+/// Announces a person's chat message to connected clients and the agent.
+fn chat_changed(
+    services: &Services,
+    result: CommandResult<ChatMessage>,
+) -> CommandResult<ChatMessage> {
+    if result.is_ok() {
+        services.chat_changed();
+    }
+    result
+}
+
 /// Runs a command that blocks (the database, or the HTTP GET of a URL criterion) off the
 /// async threads, see [`crate::commands::blocking`].
 async fn blocking(run: impl FnOnce() -> Reply + Send + 'static) -> Reply {
@@ -224,6 +236,7 @@ pub const READ_COMMANDS: &[&str] = &[
     "get_review_snapshot",
     "get_backup_settings",
     "list_backups",
+    "list_chat",
 ];
 
 commands!(s => {
@@ -340,6 +353,14 @@ commands!(s => {
     "delete_review_snapshot"(id: ReviewSnapshotId) => sync Reply::result(
         review::delete_review_snapshot(State(&s.storage), id)
     );
+
+    "list_chat"(before: Option<ChatMessageId>) => sync Reply::result(
+        chat::list_chat(State(s.reader()), State(&s.chat), before)
+    );
+    "send_chat_message"(body: String, client_id: String) => sync Reply::result(chat_changed(
+        s,
+        chat::send_chat_message(State(&s.storage), body, client_id),
+    ));
 
     "get_backup_settings"() => sync Reply::value(backup::get_backup_settings(State(&s.backups)));
     "get_backup_status"() => sync Reply::value(backup::get_backup_status(State(&s.backups)));

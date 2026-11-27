@@ -2,6 +2,7 @@
 //! the rules the UI follows: the dependency DAG stays acyclic and readiness stays in sync.
 //! Starting, completing, and concluding tasks run the app's own commands.
 
+mod chat;
 mod create;
 mod edits;
 mod lifecycle;
@@ -15,6 +16,7 @@ use crate::commands::CommandResult;
 use crate::commands::types::{Task, TaskId};
 use crate::storage::{Storage, StorageError};
 
+pub use chat::*;
 pub use create::*;
 pub use edits::*;
 pub use lifecycle::*;

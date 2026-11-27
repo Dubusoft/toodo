@@ -17,7 +17,7 @@ use specta_typescript::{Error, Exporter, FrameworkExporter, Typescript, define};
 
 use crate::commands::events::{self, names};
 use crate::commands::{
-    self, backup, completion, guidelines, issues, mcp, review, tasks, updates, workspaces,
+    self, backup, chat, completion, guidelines, issues, mcp, review, tasks, updates, workspaces,
 };
 
 const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/lib/bindings.ts");
@@ -83,6 +83,8 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         backup::save_backup_settings,
         backup::list_backups,
         backup::restore_backup,
+        chat::list_chat,
+        chat::send_chat_message,
     ](types)
 }
 
@@ -114,6 +116,16 @@ fn collect_events(types: &mut Types) -> Vec<(&'static str, &'static str, DataTyp
             "taskReady",
             names::TASK_READY,
             events::TaskReady::definition(types),
+        ),
+        (
+            "chatChanged",
+            names::CHAT_CHANGED,
+            events::ChatChanged::definition(types),
+        ),
+        (
+            "chatTyping",
+            names::CHAT_TYPING,
+            events::ChatTyping::definition(types),
         ),
     ]
 }

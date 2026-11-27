@@ -39,7 +39,13 @@ macro_rules! id_schema {
     )*};
 }
 
-id_schema!(WorkspaceId, TaskId, super::CriterionId, super::GuidelineId);
+id_schema!(
+    WorkspaceId,
+    TaskId,
+    super::CriterionId,
+    super::GuidelineId,
+    super::ChatMessageId
+);
 
 /// A related link between two tasks, which may belong to different workspaces. The link
 /// goes both ways; `task_id` is the lower ID.

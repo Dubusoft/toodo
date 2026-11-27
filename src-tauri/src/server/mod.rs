@@ -25,11 +25,12 @@ use futures_util::{Stream, StreamExt};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::commands::backup::{self, Backups};
+use crate::commands::chat::ChatState;
 use crate::commands::events::{
-    GuidelinesChanged, Notifier, TaskReady, TaskStatusChanged, TasksChanged, WorkspacesChanged,
-    names,
+    ChatChanged, ChatTyping, GuidelinesChanged, Notifier, TaskReady, TaskStatusChanged,
+    TasksChanged, WorkspacesChanged, names,
 };
-use crate::commands::types::Timestamp;
+use crate::commands::types::{ChatAgent, Timestamp};
 use crate::commands::{Runtime, StorageState};
 use crate::domain::model;
 use crate::mcp::{self, Backend, ServerStatus};
@@ -69,7 +70,16 @@ Environment:
                   Cloudflare Access team domain (e.g. myteam.cloudflareaccess.com)
                   and application AUD tag; with both set, /api accepts the
                   request's Access JWT instead of a token (unset by default)
+  TOODO_CHAT_AGENT_NAME
+                  name the chat shows for the agent connected over MCP
+                  (default Agent)
+  TOODO_CHAT_AGENT_AVATAR
+                  avatar of that agent, an https: URL or a path on this
+                  server such as /avatar.png (unset by default)
 ";
+
+/// The name the chat shows for the agent unless `TOODO_CHAT_AGENT_NAME` sets one.
+const DEFAULT_AGENT_NAME: &str = "Agent";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -81,6 +91,8 @@ pub struct Config {
     pub push_subject: String,
     /// The Cloudflare Access application whose JWTs sign `/api` requests in.
     pub access: Option<access::AccessConfig>,
+    /// How the chat shows the agent connected over MCP.
+    pub chat_agent: ChatAgent,
 }
 
 impl Config {
@@ -131,6 +143,25 @@ impl Config {
                 );
             }
         };
+        let name = var("TOODO_CHAT_AGENT_NAME")
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| DEFAULT_AGENT_NAME.to_owned());
+        let avatar_url = match var("TOODO_CHAT_AGENT_AVATAR") {
+            Some(url)
+                if (url.starts_with("https://")
+                    || (url.starts_with('/') && !url.starts_with("//")))
+                    && !url.chars().any(|c| c.is_whitespace() || c.is_control()) =>
+            {
+                Some(url)
+            }
+            Some(url) => {
+                return Err(format!(
+                    "TOODO_CHAT_AGENT_AVATAR {url:?} is not an https: URL or a path such as /avatar.png"
+                ));
+            }
+            None => None,
+        };
         Ok(Self {
             listen,
             data_dir,
@@ -138,6 +169,7 @@ impl Config {
             public_url,
             push_subject,
             access,
+            chat_agent: ChatAgent { name, avatar_url },
         })
     }
 }
@@ -161,6 +193,7 @@ pub struct Services {
     /// The largest database file `POST /api/backups/restore` accepts, in bytes.
     restore_limit: u64,
     push: push::Push,
+    chat: ChatState,
 }
 
 impl Services {
@@ -237,6 +270,23 @@ impl Notifier for Services {
             workspace_id: workspace.into(),
         };
         self.emit(names::GUIDELINES_CHANGED, &event);
+    }
+
+    fn chat_changed(&self) {
+        self.emit(names::CHAT_CHANGED, &ChatChanged);
+    }
+
+    fn agent_posted(&self, _body: &str) {
+        self.agent_typing(false);
+        self.chat_changed();
+    }
+
+    fn agent_typing(&self, typing: bool) {
+        let until = self.chat.set_typing(typing, crate::storage::system_clock());
+        let event = ChatTyping {
+            until: until.map(Timestamp),
+        };
+        self.emit(names::CHAT_TYPING, &event);
     }
 }
 
@@ -405,6 +455,7 @@ fn run(config: Config) -> Result<(), Box<dyn std::error::Error>> {
         announced_status: Mutex::new(announced_status),
         restore_limit: files::RESTORE_LIMIT,
         push,
+        chat: ChatState::new(config.chat_agent.clone()),
     });
     push::spawn(services.clone())?;
     backup::spawn(services.clone())?;
@@ -620,6 +671,43 @@ mod tests {
             PathBuf::from("/home/me/.local/share/toodo-server")
         );
         assert_eq!(config.public_url, None);
+        assert_eq!(
+            config.chat_agent,
+            ChatAgent {
+                name: "Agent".to_owned(),
+                avatar_url: None
+            }
+        );
+    }
+
+    #[test]
+    fn the_chat_agent_avatar_is_an_https_url_or_a_path_on_the_server() {
+        let config = |avatar: &str| {
+            Config::from_env(|name| match name {
+                "HOME" => Some("/home/me".to_owned()),
+                "TOODO_CHAT_AGENT_NAME" => Some(" Helper ".to_owned()),
+                "TOODO_CHAT_AGENT_AVATAR" => Some(avatar.to_owned()),
+                _ => None,
+            })
+        };
+        for good in ["https://cdn.example/a.png", "/avatar.png"] {
+            let agent = config(good).unwrap().chat_agent;
+            assert_eq!(
+                (agent.name.as_str(), agent.avatar_url.as_deref()),
+                ("Helper", Some(good))
+            );
+        }
+        for bad in [
+            "http://cdn.example/a.png",
+            "//cdn.example/a.png",
+            "avatar.png",
+            "/a b.png",
+        ] {
+            assert!(
+                config(bad).unwrap_err().contains("TOODO_CHAT_AGENT_AVATAR"),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -809,6 +897,10 @@ mod tests {
             announced_status: Mutex::new(StatusCursor::default()),
             restore_limit: TEST_RESTORE_LIMIT,
             push: push::tests::push(data_dir, push::tests::FakeTransport::default()),
+            chat: ChatState::new(ChatAgent {
+                name: DEFAULT_AGENT_NAME.to_owned(),
+                avatar_url: None,
+            }),
         })
     }
 

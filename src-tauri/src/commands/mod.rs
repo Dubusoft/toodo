@@ -6,6 +6,7 @@
 //! that `bindings.rs` can generate the frontend's typed bindings from its signature.
 
 pub mod backup;
+pub mod chat;
 pub mod completion;
 pub mod events;
 pub mod guidelines;

@@ -202,6 +202,16 @@ export const commands = {
 	 *  returned.
 	 */
 	restoreBackup: (name: string) => typedError<BackupEntry, CommandError>(invoke("restore_backup", { name })),
+	/**
+	 *  The latest messages before `before` (the latest of all without it), and what the agent
+	 *  is doing.
+	 */
+	listChat: (before: number | null) => typedError<ChatView, CommandError>(invoke("list_chat", { before })),
+	/**
+	 *  Sends a person's message to the agent. `client_id` names it, so sending it again after a
+	 *  lost answer stores it once.
+	 */
+	sendChatMessage: (body: string, clientId: string) => typedError<ChatMessage, CommandError>(invoke("send_chat_message", { body, clientId })),
 };
 
 /** Events */
@@ -211,6 +221,8 @@ export const events = {
 	guidelinesChanged: makeEvent<GuidelinesChanged>("guidelines-changed"),
 	taskStatusChanged: makeEvent<TaskStatusChanged>("task-status-changed"),
 	taskReady: makeEvent<TaskReady>("task-ready"),
+	chatChanged: makeEvent<ChatChanged>("chat-changed"),
+	chatTyping: makeEvent<ChatTyping>("chat-typing"),
 };
 
 /* Types */
@@ -260,6 +272,58 @@ export type BackupSettings = {
 export type BackupStatus = {
 	/**  The latest automatic backup failed; cleared once one succeeds again. */
 	lastFailure: BackupFailure | null,
+};
+
+/**  How the app shows the agent: the name and avatar the server is configured with. */
+export type ChatAgent = {
+	name: string,
+	/**  An `https` URL or a path on the server. */
+	avatarUrl: string | null,
+};
+
+/**  Who wrote a chat message: a person in the app, the agent connected over MCP, or Toodo. */
+export type ChatAuthor = "user" | "agent" | "system";
+
+/**  The chat got a message, or the agent's receipts on one changed. */
+export type ChatChanged = null;
+
+/**
+ *  A chat message. The receipts are set only on a person's messages: when the agent
+ *  received it, acknowledged it, and handled it with a reply or a task.
+ */
+export type ChatMessage = {
+	id: ChatMessageId,
+	author: ChatAuthor,
+	body: string,
+	at: Timestamp,
+	deliveredAt: Timestamp | null,
+	ackedAt: Timestamp | null,
+	handledAt: Timestamp | null,
+	handledReplyId: ChatMessageId | null,
+	handledTaskId: TaskId | null,
+	/**  A person's message the agent neither handled nor answered in time. */
+	overdue: boolean,
+};
+
+export type ChatMessageId = number;
+
+/**
+ *  The agent started or stopped writing a message: `until` is when it counts as stopped
+ *  unless it says so again, unset once it stopped or posted.
+ */
+export type ChatTyping = {
+	until: Timestamp | null,
+};
+
+/**  The latest messages of the chat and what the agent is doing. */
+export type ChatView = {
+	agent: ChatAgent,
+	/**  Oldest first. */
+	messages: ChatMessage[],
+	/**  Whether messages before the first one remain. */
+	hasEarlier: boolean,
+	/**  Until when the agent said it is writing; unset when it posted since or never said. */
+	typingUntil: Timestamp | null,
 };
 
 /**  How a completion criterion is checked: by hand (`manual`) or by Toodo. */
