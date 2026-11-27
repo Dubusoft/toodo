@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Activity, Archive, Bell, Bot, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, Plug, SlidersHorizontal, X } from "lucide-react";
 import { AgentAccessPanel } from "@/components/agent-access-panel";
@@ -81,27 +81,31 @@ const panelId = (id: SettingsSection) => `settings-panel-${id}`;
 /**
  * The settings, as a modal dialog: a tab list at the left and the chosen section at the right
  * from `md` up; below it, the full screen with the list first and a section in its place once
- * chosen (`section` null shows the list there, and General from `md` up).
+ * chosen. Each opening starts at the list there, and at General from `md` up.
  *
  * It stays mounted while closed, so the sections keep their state and the tray's update check
- * still reaches it. Escape, a click beside it, and the close button close it; an inner form that
+ * still reaches it. The chosen section is its own state, so switching sections re-renders only
+ * the dialog, not the app behind it with its timeline. Escape, a click beside it, and the close button close it; an inner form that
  * handles Escape itself goes first. Closing returns the focus to `returnFocus()`.
  */
 export function SettingsDialog({
   open,
-  section,
-  onShow,
   onClose,
   returnFocus,
 }: {
   open: boolean;
-  section: SettingsSection | null;
-  onShow: (section: SettingsSection | null) => void;
   onClose: () => void;
   returnFocus: () => HTMLElement | null | undefined;
 }) {
   const dialog = useRef<HTMLDivElement>(null);
   const contentHeading = useRef<HTMLHeadingElement>(null);
+  // Null shows the list below `md`.
+  const [section, setSection] = useState<SettingsSection | null>(null);
+  const [wasOpen, setWasOpen] = useState(open);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setSection(null);
+  }
   const shown = section ?? "general";
   const close = useRef(onClose);
   close.current = onClose;
@@ -138,11 +142,11 @@ export function SettingsDialog({
 
   // Choosing a section or going back swaps the whole screen there, so the focus moves along.
   const choose = (id: SettingsSection) => {
-    onShow(id);
+    setSection(id);
     if (narrow) requestAnimationFrame(() => contentHeading.current?.focus({ preventScroll: true }));
   };
   const back = () => {
-    onShow(null);
+    setSection(null);
     requestAnimationFrame(() => document.getElementById(tabId(shown))?.focus({ preventScroll: true }));
   };
 
@@ -161,7 +165,7 @@ export function SettingsDialog({
     if (next === null) return;
     event.preventDefault();
     const id = sections[next].id;
-    onShow(id);
+    setSection(id);
     document.getElementById(tabId(id))?.focus();
   };
 
