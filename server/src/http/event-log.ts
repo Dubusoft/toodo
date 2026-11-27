@@ -46,6 +46,11 @@ export class EventLog {
     return this.#capacity;
   }
 
+  /** How many streams are open. */
+  get streams(): number {
+    return this.#streams.size;
+  }
+
   /** The sequence of the last event; 0 before the first. */
   get last(): number {
     return this.#last;

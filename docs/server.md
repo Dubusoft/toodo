@@ -1060,6 +1060,16 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   the events after it (the server keeps the last 256); when some are gone, the id is of
   another server start, or a reader falls behind, the stream sends a `resync` event
   instead, after which the client refetches everything.
+- `GET /api/supervisor/status`: the Dori status panel (Settings > Dori status), as
+  server-sent `status` events carrying the supervisor's latest snapshot (the `/status`
+  pages, the `/quota` text, and the working lanes with their recent screens, typed in
+  `src/lib/supervisor-status.ts`), then each new one; before the supervisor's first
+  snapshot the stream starts with `ready`. The server keeps only the latest snapshot, in
+  memory. The supervisor pushes it with `PUT /mcp/supervisor-status` and asks how many
+  panels are open with `GET /mcp/supervisor-status` (`{ "watchers": n }`): both take the
+  MCP token from loopback only, even in public mode, and a push is refused with `400`
+  when it is not a snapshot or `413` above 2 MB. Lane screens and the quota are read only
+  while a panel is open.
 - `GET /api/backups/export`: a consistent snapshot of the database, as an
   `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
 - `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
