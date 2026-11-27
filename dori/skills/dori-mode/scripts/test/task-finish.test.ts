@@ -248,6 +248,31 @@ test("a lane closing with no PR still warns when its task is open, concluded oth
   expect(unread.finish?.lines[0] ?? "").toStartWith(`${why}; the task could not be read: toodo-server get_task answered HTTP 401`);
 });
 
+test("a lane whose task was opened for it at launch has that task completed when it closes with no PR; a cancelled close leaves it to the lead", async () => {
+  const created: Lane = { ...lane, key: "p1chk-1-1", pane: undefined, runner: "local", taskCreated: true };
+  const finishCreated = async (task: Task, close: Parameters<typeof closeLane>[3]) => {
+    const toodo = fakeToodo(task);
+    stops.push(toodo.stop);
+    await at(T0).registry.write(created);
+    expect((await closeLane(at(T0), created, "checked live, nothing to merge", close)).closed).toBe(true);
+    const writer = new ToodoWriter({ url: toodo.url, tokenFile: join(state.dir, "mcp-token") });
+    const finishTask = taskFinisher({ writer, append: async () => ({ appended: false, why: "no report message" }) });
+    return finishClosedTask({ ...at(T0), finishTask }, created);
+  };
+
+  const task = inProgress([manual(1), manual(2, true)]);
+  const finish = await finishCreated(task, { force: true });
+  expect(finish).toEqual({ tag: "done", lines: ["TOODO_TASK_COMPLETED p1chk-1-1 #951 closed; report not appended: no report message"] });
+  expect(task.status).toBe("done");
+  expect(task.criteria.map((c) => [c.state, c.evidence?.startsWith("lane p1chk-1-1, which this task was opened for, closed with no PR: checked live, nothing to merge") ?? false]))
+    .toEqual([["met", true], ["met", false]]);
+
+  const cancelled = inProgress([manual(1)]);
+  const left = await finishCreated(cancelled, { cancelled: { reason: "start failed" } });
+  expect(left?.tag).toBe("unmerged");
+  expect(cancelled.status).toBe("in_progress");
+});
+
 test("a thread already closed gets no append and no redirected line in its parent channel; the task is still completed", async () => {
   recordOwnerClosed(state.dir, "900", T0);
   const fake = fakeDiscord(["900"]);
