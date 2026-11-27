@@ -6,11 +6,18 @@ import { readFileSync } from "node:fs";
 
 const SCHEMA = readFileSync(new URL("./schema.sql", import.meta.url), "utf8");
 
-/** Creates an empty database file at `path`, as a new Rust server would. */
+/**
+ * The rows the Rust migrations add to a new database: the `general` chat channel of
+ * version 25, which there carries the time it was migrated at.
+ */
+const SEED = "INSERT INTO chat_channels (id, name, read_id, created_at) VALUES (1, 'general', 0, 0)";
+
+/** Creates a database file at `path` with no data of its own, as a new Rust server would. */
 export function createDatabase(path: string): void {
   const db = new Database(path, { create: true, strict: true });
   try {
     db.run(SCHEMA);
+    db.run(SEED);
   } finally {
     db.close();
   }
@@ -20,6 +27,7 @@ export function createDatabase(path: string): void {
 export function openMemoryDatabase(): Database {
   const db = new Database(":memory:", { strict: true });
   db.run(SCHEMA);
+  db.run(SEED);
   db.run("PRAGMA foreign_keys = ON");
   return db;
 }
