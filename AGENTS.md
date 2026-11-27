@@ -132,6 +132,13 @@ Layout:
     `server/src/web-bindings.d.ts` stands in for the two web modules that file imports.
     Failures are a `CommandError` with the Rust code, kind, and message (`errors.ts`);
     `types.ts` converts between those shapes and the domain model and validates inputs.
+  - `server/src/push/`: Web Push delivery of `src-tauri/src/server/push/`: `aes128gcm`
+    encryption and the VAPID key (`crypto.ts`, reading the Rust server's `push-key` file
+    as is), what deserves a notification (`alerts.ts`), and sending with retries, the
+    per-device deadline, the change worker, and the test notification (`push.ts`). Its
+    HTTP routes come with the HTTP surface.
+  - `server/src/net.ts`: the public-address checks of `src-tauri/src/net.rs` for outbound
+    requests to URLs from outside the server.
   - `server/src/domain/`: the domain model and rules of `src-tauri/src/domain/`, module for
     module, with the Rust tests ported beside each one. `rust.ts` holds the Rust standard
     library behavior they depend on (whitespace, `{:?}` quoting, float printing, string
