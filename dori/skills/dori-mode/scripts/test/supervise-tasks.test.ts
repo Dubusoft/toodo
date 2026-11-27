@@ -185,9 +185,9 @@ const setup = (stalled: SupervisorTask, before?: (home: string) => void) => {
     return () => { listeners.delete(signal); watcher.close(); };
   };
   const stop = async () => { controller.abort(); release(); await running; };
-  // Once the five working tasks, the runners and autopilot tasks (the hub always opens) and the stall check are parked, each takes its next pass.
+  // Once the five working tasks, the runners, autopilot and status panel tasks (the hub always opens) and the stall check are parked, each takes its next pass.
   const next = async () => {
-    await until(subscribe, () => pauses.parked() === 8, 10_000, "the five working tasks, the runners and autopilot tasks and the stall check parked");
+    await until(subscribe, () => pauses.parked() === 9, 10_000, "the five working tasks, the runners, autopilot and status panel tasks and the stall check parked");
     pauses.tick();
   };
   return { clock, errors, posts, hung, working, subscribe, stop, next, reportPasses: () => reportPasses };

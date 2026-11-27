@@ -50,7 +50,8 @@ import type { DirectRouting } from "./decision-inbound.ts";
 import { taskBlocker, taskFinisher } from "./task-finish.ts";
 import { ToodoWriter } from "./toodo-client.ts";
 import { writeGatewayStatus } from "./gateway-status.ts";
-import { lookupStatus } from "./status.ts";
+import { collectStatus, lookupStatus, type StatusDeps } from "./status.ts";
+import { STATUS_PANEL_PASS_MS, STATUS_PANEL_SCREEN_LINES, statusPanelPass } from "./status-panel.ts";
 import { OWNER_NOTICE_AFTER_MS, RetryingDelivery, SuperviseError, Supervisor } from "./supervise.ts";
 import { Waits } from "./waits.ts";
 import { GitHubEvents, githubTargets, type OpenPull } from "./github-events.ts";
@@ -138,6 +139,8 @@ export const RUNNERS_TASK = "runners";
 /** The autopilot tick's task (autopilot-tick.ts); it judges only while the toodo source is enabled. */
 export const AUTOPILOT_TASK = "autopilot";
 export const AUTOPILOT_PASS_MS = 5_000;
+/** The task that pushes the Toodo app's status panel snapshot (status-panel.ts). */
+export const STATUS_PANEL_TASK = "status-panel";
 /** How often the runners task runs; the hub itself answers frames as they arrive. */
 export const RUNNERS_PASS_MS = 5_000;
 /** How often the polling task delivers queued lane messages (lead steering, CI, rebase), apart from the GitHub poll. */
@@ -869,7 +872,7 @@ const pollingPass = (p: PollingParts): (() => Promise<void>) => {
   };
 };
 
-type TaskName = SupervisorTask | typeof RUNNERS_TASK | typeof AUTOPILOT_TASK;
+type TaskName = SupervisorTask | typeof RUNNERS_TASK | typeof AUTOPILOT_TASK | typeof STATUS_PANEL_TASK;
 
 /**
  * Runs each task as its own loop until `halted`, so one stuck pass costs only that task. Every pass is tracked as
@@ -1046,15 +1049,15 @@ export const supervise = async (
     });
     const retry = leadDelivery(deps, supervisor, systemPost, boot);
     let deliveryError: unknown;
+    // The lead pane is read per request: a pane recreated after startup is in the supervisor, not in deps.
+    const liveStatusDeps = (): StatusDeps => ({ ...deps, config: { ...deps.config, leadPane: supervisor.leadPane } });
     const discordInbound = inbound = token === undefined ? undefined : probe.step("inbound", () => supervisorDiscord(deps, {
       ...discordOptions, token, emit: async (id, line) => { enqueueDiscord(id, line); }, laneMessages: laneMessageStore,
       http: discordOptions.http ?? ((request) => fetchHttp({
         ...request, signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
       })),
       lookup: discordOptions.lookup ?? quotaReport(sharedQuotaLookup(deps.config), deps.config.displayTimeZone),
-      // The lead pane is read per request: a pane recreated after startup is in the supervisor, not in deps.
-      statusLookup: discordOptions.statusLookup ?? ((lookupSignal, page) =>
-        lookupStatus({ ...deps, config: { ...deps.config, leadPane: supervisor.leadPane } })(lookupSignal, page)),
+      statusLookup: discordOptions.statusLookup ?? ((lookupSignal, page) => lookupStatus(liveStatusDeps())(lookupSignal, page)),
     }));
     const reportStore = reports = probe.step("lane-reports", () => openLaneReports(deps.config));
     // The status message rides the supervisor's own Discord client, so a token from ~/.dori/env works as well as the environment.
@@ -1115,6 +1118,16 @@ export const supervise = async (
       task("reports", 5_000, routeLaneReports),
       task(AUTOPILOT_TASK, AUTOPILOT_PASS_MS, autopilot.pass),
       task(RUNNERS_TASK, RUNNERS_PASS_MS, () => hub.pass()),
+      task(STATUS_PANEL_TASK, STATUS_PANEL_PASS_MS, statusPanelPass({
+        endpoint: deps.tunables.toodoWriter, now: deps.clock.now, timeZone: deps.config.displayTimeZone,
+        status: () => collectStatus(liveStatusDeps()),
+        quota: sharedQuotaLookup(deps.config),
+        screen: async (key) => {
+          const lane = (await deps.registry.open()).find((open) => open.key === key);
+          if (!lane) throw new Error(`lane ${key} is not open`);
+          return deps.ops.screen(lane, STATUS_PANEL_SCREEN_LINES);
+        },
+      })),
     ]);
     probe.close();
     await watchTasks(deps, supervisor, watchdog, systemPost, boot, wait, halted);

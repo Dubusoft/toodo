@@ -29,6 +29,7 @@ The CLI is a thin layer over typed modules you can import in your own scripts:
 | `src/messenger/voice.ts` | `transcribe`: voice note to text through your hook |
 | `src/doctor.ts` | `runDoctor`: read-only checks (units, hc, paths, config, Discord, gateway, tools, disk) as OK/WARN/FAIL with the fix; `doctorMain` prints it and returns the exit code |
 | `src/status.ts` | `collectStatus` / `renderStatus`: the no-LLM one-screen summary behind `dori status` and `/status` |
+| `src/status-panel.ts` | `statusPanelPass`: the supervisor's push of the Toodo app's status panel snapshot (`/status` pages, `/quota` text, lane screens) to `PUT /mcp/supervisor-status` |
 | `src/gateway-status.ts` | the supervisor's `gateway-status.json` heartbeat in stateDir (written every loop, about 5 s); doctor and status read it |
 | `src/quota-cache.ts` | `sharedQuotaLookup(config)`: the quota read every caller shares; `cachedQuotaLookup` keeps it in `<stateDir>/quota-cache.json` for `autopilot.quotaCacheSec`, refreshes it once under a state lock, backs an account off after a 429 (Retry-After) and serves its last good read for up to 30 minutes; `cacheNoteLines` says so in `dori quota` and `/quota` |
 | `src/claude-quota.ts` | `lookupQuotaResults(agentDir?)`: pi-quota through senpi's native auth storage (defaults to `~/.omo/agent`); `classifyClaude` and the usage report behind `dori quota` and `/quota`: Claude 5h/7d usage and reset times for every account |

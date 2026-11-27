@@ -149,8 +149,11 @@ export const readUsage = async (lookup: UsageLookup, now: number, signal: AbortS
  * The `/quota` text: pi-quota's own usage block (it already shows reset times), after lines saying when it came from
  * the cache, which accounts are stale and which back off after a 429.
  */
-export const quotaReport = (lookup: UsageLookup, timeZone?: string, now: () => number = Date.now) => async (signal: AbortSignal): Promise<string> => {
-  const { text, cache } = await lookup(signal);
-  const notes = cacheNoteLines(cache, now(), timeZone);
+export const quotaReport = (lookup: UsageLookup, timeZone?: string, now: () => number = Date.now) => async (signal: AbortSignal): Promise<string> =>
+  quotaReportText(await lookup(signal), now(), timeZone);
+
+/** The `/quota` text of one read made at `now`; the status panel shows the same text (status-panel.ts). */
+export const quotaReportText = ({ text, cache }: { readonly text: string; readonly cache?: QuotaCacheNote }, now: number, timeZone?: string): string => {
+  const notes = cacheNoteLines(cache, now, timeZone);
   return notes.length ? `${notes.join("\n")}\n\n${text}` : text;
 };
