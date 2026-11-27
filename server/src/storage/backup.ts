@@ -167,6 +167,13 @@ export function stageBackup(path: string): StagedBackup {
         );
       }
       bytes = source.serialize();
+      // A database in WAL mode says so in its header, and SQLite cannot open such an image in
+      // memory. The image already holds every committed page, so it is marked as a rollback
+      // journal database, as the copy Rust stages through the backup API is.
+      if (bytes[18] === 2 && bytes[19] === 2) {
+        bytes[18] = 1;
+        bytes[19] = 1;
+      }
     } finally {
       source.close();
     }

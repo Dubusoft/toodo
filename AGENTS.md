@@ -126,12 +126,15 @@ Layout:
     `cargo test --lib` regenerates; `server/src/storage/testing.ts` creates the storage
     tests' databases with it.
   - `server/src/commands/`: the commands of `src-tauri/src/commands/` over `Storage`, so
-    far workspaces, guidelines, tasks, and issues. Each is typed `Command<"<name>">` from
-    `src/lib/bindings.ts`, so it takes the arguments the web app sends and returns the
-    shape it expects, and `npm run typecheck` fails when the two drift apart;
+    far workspaces, guidelines, tasks, issues, chat, backups, and the update check. Each is
+    typed `Command<"<name>">` from `src/lib/bindings.ts` (or with `Args` and `Reply` when
+    it takes more state than `Storage`), so it takes the arguments the web app sends and
+    returns the shape it expects, and `npm run typecheck` fails when the two drift apart;
     `server/src/web-bindings.d.ts` stands in for the two web modules that file imports.
     Failures are a `CommandError` with the Rust code, kind, and message (`errors.ts`);
-    `types.ts` converts between those shapes and the domain model and validates inputs.
+    `types.ts` converts between those shapes and the domain model and validates inputs,
+    and `chat-types.ts` does so for the chat. `events.ts` names the events the server
+    sends, with their payloads from the bindings.
   - `server/src/push/`: Web Push delivery of `src-tauri/src/server/push/`: `aes128gcm`
     encryption and the VAPID key (`crypto.ts`, reading the Rust server's `push-key` file
     as is), what deserves a notification (`alerts.ts`), and sending with retries, the

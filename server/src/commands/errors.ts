@@ -3,6 +3,7 @@
 // MCP tools return the same codes, so callers react to a code instead of the message text.
 
 import { SQLiteError } from "bun:sqlite";
+import { constants } from "node:os";
 import type {
   CommandError as CommandErrorBody,
   CommandErrorCode,
@@ -74,6 +75,10 @@ export function rejected(message: string): CommandError {
   return new CommandError("rejected", message);
 }
 
+export function internal(message: string): CommandError {
+  return new CommandError("internal", message);
+}
+
 /** A command that failed unexpectedly. The cause stays in the server log: it describes the
  * server's internals, not what the caller can do about it. */
 export function panicked(cause: unknown): CommandError {
@@ -141,13 +146,57 @@ function storageCode(failure: StorageFailure): CommandErrorCode {
   }
 }
 
+/** A failed file operation, as Node reports it. */
+interface SystemError extends Error {
+  code: string;
+  errno: number;
+}
+
+function isSystemError(error: unknown): error is SystemError {
+  return (
+    error instanceof Error &&
+    !(error instanceof SQLiteError) &&
+    typeof (error as Partial<SystemError>).code === "string" &&
+    typeof (error as Partial<SystemError>).errno === "number"
+  );
+}
+
+/** The C library's description of the errors whose libuv description differs from it. */
+const STRERROR: Readonly<Record<string, string>> = {
+  EEXIST: "File exists",
+  EISDIR: "Is a directory",
+};
+
+/**
+ * A failed file operation as Rust's `std::io::Error` prints it, e.g. `Not a directory (os
+ * error 20)`, so messages that quote one read as the Rust server's. Anything else is printed
+ * as it is.
+ */
+export function ioMessage(error: unknown): string {
+  if (!isSystemError(error)) return String(error instanceof Error ? error.message : error);
+  const described = /^[A-Z0-9_]+: ([^,]*)/.exec(error.message)?.[1] ?? error.message;
+  const text = STRERROR[error.code] ?? described.charAt(0).toUpperCase() + described.slice(1);
+  const errno = (constants.errno as Record<string, number | undefined>)[error.code] ?? Math.abs(error.errno);
+  return `${text} (os error ${errno})`;
+}
+
+/** What a storage operation that threw `error` reports, as Rust's `StorageError` prints it:
+ * a file error as `file error: ...`. */
+export function storageMessage(error: unknown): string {
+  if (isSystemError(error)) return `file error: ${ioMessage(error)}`;
+  if (error instanceof SQLiteError) return `database error: ${error.message}`;
+  return error instanceof Error ? error.message : String(error);
+}
+
 /** What a command reports for `error`, thrown while it ran: a `CommandError` as it is, a
- * storage failure under its code with the storage message, and a database error as
- * `storageFailed`. Anything else is a bug and is thrown again. */
+ * storage failure under its code with the storage message, a failed file operation as
+ * `external`, and a database error as `storageFailed`. Anything else is a bug and is thrown
+ * again. */
 export function commandError(error: unknown): CommandError {
   if (error instanceof CommandError) return error;
   if (error instanceof StorageError) return new CommandError(storageCode(error.failure), error.message);
-  if (error instanceof SQLiteError) return new CommandError("storageFailed", `database error: ${error.message}`);
+  if (isSystemError(error)) return new CommandError("external", storageMessage(error));
+  if (error instanceof SQLiteError) return new CommandError("storageFailed", storageMessage(error));
   throw error;
 }
 
