@@ -1,5 +1,5 @@
 // `toodo-server` on Bun: serves Toodo on one port, the web app and its API, on the database
-// of the Rust server. Port of `main` and `run` in `src-tauri/src/server/mod.rs`.
+// of its data directory.
 
 import { existsSync } from "node:fs";
 import type { Server } from "bun";
@@ -17,7 +17,7 @@ import { createPrivateDir, loadToken, MCP_TOKEN_FILE, newInstance, WEB_TOKEN_FIL
 import { programVersion } from "./http/version.ts";
 import { httpClientMetadataFetcher } from "./oauth/clients.ts";
 import { Push, PushWorker } from "./push/push.ts";
-import { openConnections, openWriter } from "./storage/database.ts";
+import { createDatabase, openConnections, openWriter } from "./storage/database.ts";
 import { Storage } from "./storage/storage.ts";
 
 export const DATABASE_FILE = "toodo.sqlite3";
@@ -67,14 +67,12 @@ function address(listen: Listen): string {
   return listen.hostname.includes(":") ? `[${listen.hostname}]:${listen.port}` : `${listen.hostname}:${listen.port}`;
 }
 
-/** The database of the data directory, which the Rust server created and migrated: this
- * server neither creates nor migrates one. */
+/** The database of the data directory, created there when it is missing; opening its
+ * writer migrates it. */
 function databasePath(config: Config): string {
   const path = join(config.dataDir, DATABASE_FILE);
   if (!existsSync(path)) {
-    throw new Error(
-      `no database at ${path}; this server neither creates nor migrates one, so start the Rust toodo-server on ${config.dataDir} once first`,
-    );
+    createDatabase(path);
   }
   return path;
 }

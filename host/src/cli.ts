@@ -218,7 +218,7 @@ const data = (d: DoctorDeps): Check[] => {
   const dir = d.config.dataDir;
   const checks: Check[] = [];
   const path = join(dir, DATABASE_FILE);
-  if (!existsSync(path)) checks.push(fail("database", `missing: ${path}`, "start the Rust toodo-server on this data directory once, or pass --data-dir"));
+  if (!existsSync(path)) checks.push(fail("database", `missing: ${path}`, "start toodo.service once, which creates it, or pass --data-dir"));
   else {
     try {
       const db = openReader(path);
