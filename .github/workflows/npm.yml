@@ -13,6 +13,13 @@ name: npm
 #   to main (it can also be started by hand). A version that is already on the registry is
 #   skipped, so re-running finishes a half-done publish.
 #
+# Every run also uploads the binaries and the web app of each target to the GitHub release
+# v<version> as toodo-server-v<version>-<platform>.tar.gz with its .sha256 (packaged by
+# scripts/package-server.sh), which `toodo update --source github` installs: a dev run
+# creates the prerelease v<version> and deletes the dev prereleases before the newest 10,
+# and a latest run adds the assets missing from the release the Release workflow
+# published. The assets are uploaded even when publishing to npm is skipped.
+#
 # Trusted publishing checks the workflow file that starts the run. Release therefore
 # dispatches this workflow instead of calling it with "uses:": a called workflow runs under
 # the caller's identity (release.yml), which the npm trusted publisher does not match.
@@ -50,6 +57,13 @@ concurrency:
   group: npm-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # Each target, and the platform its release asset is named for, as `toodo update` looks
+  # for it.
+  PLATFORMS: >-
+    linux-x64=linux-x86_64 linux-arm64=linux-aarch64 linux-x64-musl=linux-x86_64-musl
+    linux-arm64-musl=linux-aarch64-musl darwin-x64=darwin-x86_64 darwin-arm64=darwin-aarch64
+
 jobs:
   plan:
     runs-on: ubuntu-latest
@@ -58,6 +72,7 @@ jobs:
       dist-tag: ${{ steps.plan.outputs.dist-tag }}
       mode: ${{ steps.plan.outputs.mode }}
       targets: ${{ steps.plan.outputs.targets }}
+      build: ${{ steps.plan.outputs.build }}
     steps:
       - uses: actions/checkout@v4
 
@@ -68,6 +83,8 @@ jobs:
           # started by the Release workflow (or by hand) passes "latest".
           INPUT_TAG: ${{ inputs.dist-tag }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -u
           tag="${INPUT_TAG:-dev}"
@@ -92,6 +109,16 @@ jobs:
           if [ "$tag" = latest ] && [ -n "$(npm view "@dubusoft/toodo@$version" version 2>/dev/null)" ]; then
             echo "::notice::@dubusoft/toodo@$version is already on the registry; nothing to publish."
             echo "mode=skip" >>"$GITHUB_OUTPUT"
+            # The binaries are still built when the release lacks an asset.
+            assets=$(gh release view "v$version" --json assets --jq '.assets[].name' 2>/dev/null || true)
+            for pair in $PLATFORMS; do
+              if ! grep -qxF "toodo-server-v$version-${pair#*=}.tar.gz.sha256" <<<"$assets"; then
+                echo "build=true" >>"$GITHUB_OUTPUT"
+                exit 0
+              fi
+            done
+            echo "::notice::release v$version carries the assets of every platform; nothing to upload."
+            echo "build=false" >>"$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -136,6 +163,7 @@ jobs:
           fi
           echo "mode=$mode" >>"$GITHUB_OUTPUT"
           echo "targets=$targets" >>"$GITHUB_OUTPUT"
+          echo "build=true" >>"$GITHUB_OUTPUT"
           if [ "$mode" = skip ]; then
             echo "::notice::Publishing is skipped: set the NPM_TOKEN secret, or configure trusted publishing on npmjs.com for @dubusoft/toodo, @dubusoft/toodo-linux-x64, and @dubusoft/toodo-linux-arm64 (repository Dubusoft/toodo, workflow npm.yml), then rerun this workflow."
           fi
@@ -143,7 +171,7 @@ jobs:
 
   build:
     needs: plan
-    if: needs.plan.outputs.mode != 'skip'
+    if: needs.plan.outputs.build == 'true'
     strategy:
       fail-fast: true
       matrix:
@@ -311,3 +339,82 @@ jobs:
             fi
             npm publish "$dir" --access public --provenance --tag "$DIST_TAG"
           done <dirs.txt
+
+  release:
+    needs: [plan, build]
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the web app
+        run: npm run build
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: artifacts
+
+      - name: Package the release assets
+        env:
+          # Binaries of the other targets cannot run here to report their version.
+          TOODO_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          chmod +x artifacts/*/toodo artifacts/*/toodo-server
+          for pair in $PLATFORMS; do
+            scripts/package-server.sh "artifacts/binaries-${pair%%=*}/toodo-server" dist-web \
+              dist-release "${pair#*=}"
+          done
+          ls -l dist-release
+
+      - name: Upload the assets to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          DIST_TAG: ${{ needs.plan.outputs.dist-tag }}
+        run: |
+          tag="v$VERSION"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            if [ "$DIST_TAG" = latest ]; then
+              echo "::error::release $tag does not exist; the Release workflow publishes it before it starts this run, so run Release on main"
+              exit 1
+            fi
+            gh release create "$tag" --prerelease --latest=false --target "$GITHUB_SHA" \
+              --title "Toodo $tag" --notes "Prerelease of the dev branch at $GITHUB_SHA."
+          fi
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          # Each tarball goes before its checksum: toodo update installs only an asset that
+          # has both, so a release never offers a half-uploaded one.
+          for tarball in dist-release/*.tar.gz; do
+            for file in "$tarball" "$tarball.sha256"; do
+              if grep -qxF "$(basename "$file")" <<<"$assets"; then
+                echo "$(basename "$file") is already on $tag; skipping"
+              else
+                gh release upload "$tag" "$file"
+              fi
+            done
+          done
+
+      - name: Delete older dev prereleases
+        if: needs.plan.outputs.dist-tag == 'dev'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # The newest 10 stay, so an install can still go back a few versions.
+          gh release list --limit 1000 --json tagName,isPrerelease,createdAt --jq '
+            [.[] | select(.isPrerelease and (.tagName | test("^v[0-9]+[.][0-9]+[.][0-9]+-dev[.][0-9]+$")))]
+            | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' |
+            while read -r tag; do
+              gh release delete "$tag" --cleanup-tag --yes
+            done
