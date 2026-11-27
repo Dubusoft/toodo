@@ -107,9 +107,10 @@ export const USAGE = `dori <command> [options]
   source add <name> --type file --path FILE --match RE --kind KIND     each new line of FILE matching RE is one event
   source remove <name>                 stop and forget a registered source
   schedule add <name> (--cron EXPR | --every SEC) (--text T | --command CMD [--cwd DIR] [--machine M] [--heavy] [--timeout SEC]) --kind KIND
-               [--tz ZONE] [--catch-up once|skip]   a scheduled job: emit <KIND> T, or run CMD and emit its result;
+               [--description D] [--tz ZONE] [--catch-up once|skip]   a scheduled job: emit <KIND> T, or run CMD and emit its result;
                                        cron in ZONE (default Asia/Seoul); a missed slot runs once after downtime (or is skipped)
   schedule list [--json] | schedule remove <name> | schedule run-now <name>   jobs with their next and last run; run one now
+  schedule edit <name> [(--cron EXPR | --every SEC) [--tz ZONE]] [--description D]   change a job's schedule or description
   repos add/remove <owner/repo>        manage this machine's GitHub watched repos
   repos list                          print this machine's watched repos as JSON
   secret add NAME | secret update NAME   store a secret shared with every lane at launch; the value is read from stdin only (hidden prompt on a terminal), never argv

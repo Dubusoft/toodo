@@ -18,7 +18,7 @@ afterEach(() => {
 });
 
 const job: ScheduledJob = {
-  name: "gmail-digest", kind: "GMAIL_DIGEST", cron: "0 6 * * *", everySec: null, tz: "Asia/Seoul",
+  name: "gmail-digest", kind: "GMAIL_DIGEST", description: null, cron: "0 6 * * *", everySec: null, tz: "Asia/Seoul",
   text: null, command: ["sh", "-c", "digest"], cwd: null, machine: null, heavy: false, catchUp: "once", paused: false,
   nextRunAt: 1, lastRunAt: null, lastResult: null, waiting: null, error: null,
 };
@@ -28,7 +28,7 @@ describe("scheduled jobs", () => {
     const seen: ScheduleRequest[] = [];
     const server = await start(async (request) => {
       seen.push(request);
-      if (request.op === "edit") return { ok: false, error: 'schedule gmail-digest: cron "0 0 31 2 *" never fires' };
+      if (request.op === "edit" && request.timing !== undefined) return { ok: false, error: 'schedule gmail-digest: cron "0 0 31 2 *" never fires' };
       return { ok: true, jobs: [{ ...job, paused: request.op === "pause" }], timeZone: { name: "Asia/Seoul", label: "KST" } };
     });
     expect((await server.fetch("GET", "/api/supervisor/schedules")).status).toBe(401);
@@ -40,10 +40,13 @@ describe("scheduled jobs", () => {
     const refused = await server.send("POST", "/api/supervisor/schedules", WEB, { op: "edit", name: "gmail-digest", timing: { cron: "0 0 31 2 *" } });
     expect(refused.status).toBe(400);
     expect(refused.body.error).toContain("never fires");
+    const described = await server.send("POST", "/api/supervisor/schedules", WEB, { op: "edit", name: "gmail-digest", description: "Morning digest" });
+    expect(described.status).toBe(200);
     expect(seen).toEqual([
       { op: "list" },
       { op: "pause", name: "gmail-digest" },
       { op: "edit", name: "gmail-digest", timing: { cron: "0 0 31 2 *" } },
+      { op: "edit", name: "gmail-digest", description: "Morning digest" },
     ]);
   });
 
@@ -54,6 +57,10 @@ describe("scheduled jobs", () => {
       { op: "drop", name: "x" },
       { op: "pause" },
       { op: "edit", name: "x", timing: { cron: "0 6 * * *", everySec: 60 } },
+      { op: "edit", name: "x" },
+      { op: "edit", name: "x", description: 3 },
+      { op: "edit", name: "x", tz: "UTC", description: "d" },
+      { op: "add", job: { name: "x", kind: "X", cron: "0 6 * * *", text: "t", description: ["d"] } },
       { op: "add", job: { name: "x", kind: "X", cron: "0 6 * * *", catchUp: "sometimes" } },
       { op: "add", job: { name: "x", kind: "X" } },
     ]) {

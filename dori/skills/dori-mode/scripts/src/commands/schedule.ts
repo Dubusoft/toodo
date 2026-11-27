@@ -2,7 +2,7 @@ import { displayTime } from "../display-time.ts";
 import { realClock } from "../run.ts";
 import { readSourceStatus, SourceSpecs } from "../event-sources.ts";
 import { nextSlot, queueRunNow, scheduleRow, type ScheduleSpec } from "../schedule.ts";
-import { editScheduleTiming, findSchedule, setSchedulePaused } from "../schedule-admin.ts";
+import { editSchedule, findSchedule, setSchedulePaused } from "../schedule-admin.ts";
 import { type CliCommand, die, commandArgv, offlineWarn, runnerOffline } from "./context.ts";
 
 /** `dori schedule list|add|remove|run-now|pause|resume|edit`: scheduled jobs. */
@@ -13,6 +13,7 @@ export const scheduleCommand: CliCommand = {
     timeout: { type: "string" },
     machine: { type: "string" },
     kind: { type: "string" },
+    description: { type: "string" },
     cron: { type: "string" },
     text: { type: "string" },
     command: { type: "string" },
@@ -24,7 +25,7 @@ export const scheduleCommand: CliCommand = {
   run: async ({ config, flags, opt, need, machineOpt }) => {
     const [action, name, ...extra] = flags.positionals;
     const specs = new SourceSpecs(config.stateDir);
-    const usage = "usage: dori schedule list [--json] | dori schedule add <name> (--cron EXPR | --every SEC) (--text T | --command CMD [--cwd DIR] [--machine M] [--heavy] [--timeout SEC]) --kind KIND [--tz ZONE] [--catch-up once|skip] | dori schedule remove <name> | dori schedule run-now <name> | dori schedule pause|resume <name> | dori schedule edit <name> (--cron EXPR | --every SEC) [--tz ZONE]";
+    const usage = "usage: dori schedule list [--json] | dori schedule add <name> (--cron EXPR | --every SEC) (--text T | --command CMD [--cwd DIR] [--machine M] [--heavy] [--timeout SEC]) --kind KIND [--description D] [--tz ZONE] [--catch-up once|skip] | dori schedule remove <name> | dori schedule run-now <name> | dori schedule pause|resume <name> | dori schedule edit <name> [(--cron EXPR | --every SEC) [--tz ZONE]] [--description D]";
     if (extra.length) die(usage);
     const now = realClock.now();
     const find = (job: string): ScheduleSpec => findSchedule(specs, job);
@@ -36,7 +37,7 @@ export const scheduleCommand: CliCommand = {
       for (const row of rows) if (row.machine && !offline.has(row.machine)) offline.set(row.machine, await runnerOffline(config.stateDir, row.machine));
       if (flags.values.json) console.log(JSON.stringify(rows, null, 2));
       else if (!rows.length) console.log("SCHEDULES none");
-      else for (const row of rows) console.log(`${row.name} ${row.kind} ${row.when}${row.heavy ? " heavy" : ""} catch-up=${row.catchUp} next=${row.paused ? "paused" : row.waiting ? `waiting for a ${row.waiting}` : at(row.nextRunAt)} last=${at(row.lastRunAt)}${row.lastResult ? ` ${row.lastResult}` : ""}${row.machine ? ` machine=${row.machine}${offline.get(row.machine) ? " (runner offline)" : ""}` : ""}`);
+      else for (const row of rows) console.log(`${row.name} ${row.kind} ${row.when}${row.heavy ? " heavy" : ""} catch-up=${row.catchUp} next=${row.paused ? "paused" : row.waiting ? `waiting for a ${row.waiting}` : at(row.nextRunAt)} last=${at(row.lastRunAt)}${row.lastResult ? ` ${row.lastResult}` : ""}${row.machine ? ` machine=${row.machine}${offline.get(row.machine) ? " (runner offline)" : ""}` : ""}${row.description ? ` description=${JSON.stringify(row.description)}` : ""}`);
       return;
     }
     if (action === "remove" && name) {
@@ -59,8 +60,14 @@ export const scheduleCommand: CliCommand = {
     if (action === "edit" && name) {
       const cron = opt("cron");
       const every = opt("every");
-      if ((cron === undefined) === (every === undefined)) die(usage);
-      const spec = editScheduleTiming(specs, name, cron !== undefined ? { cron } : { everySec: Number(every) }, opt("tz"), now);
+      const description = opt("description");
+      const tz = opt("tz");
+      if (cron !== undefined && every !== undefined) die(usage);
+      const timing = cron !== undefined ? { cron } : every !== undefined ? { everySec: Number(every) } : undefined;
+      const edit = timing !== undefined
+        ? { timing, ...(tz !== undefined ? { tz } : {}), ...(description !== undefined ? { description } : {}) }
+        : description !== undefined && tz === undefined ? { description } : die(usage);
+      const spec = editSchedule(specs, name, edit, now);
       console.log(`SCHEDULE_EDITED ${name} next ${at(spec.paused ? undefined : nextSlot(spec, now))}`);
       return;
     }
@@ -70,6 +77,7 @@ export const scheduleCommand: CliCommand = {
     const target = await machineOpt();
     const spec = specs.add({
       name, type: "schedule", kind: need("kind"), since: now,
+      ...(opt("description") !== undefined ? { description: opt("description") } : {}),
       ...(opt("cron") ? { cron: opt("cron") } : {}), ...(every !== undefined ? { everySec: Number(every) } : {}),
       ...(opt("text") !== undefined ? { text: opt("text") } : {}),
       ...(opt("command") !== undefined ? { command: commandArgv(opt("command")) } : {}),

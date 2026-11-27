@@ -210,6 +210,8 @@ function ScheduleFields({
   );
 }
 
+const DESCRIPTION_HINT = "What the job does and why, e.g. Gmail digest posted to #daily-reports (optional)";
+
 function actionLabel(job: ScheduledJob): string {
   if (job.command !== null) {
     const line = job.command[0] === "sh" && job.command[1] === "-c" && job.command.length === 3 ? job.command[2]! : JSON.stringify(job.command);
@@ -226,7 +228,7 @@ function Moment({ ms }: { ms: number }) {
   );
 }
 
-function EditTiming({
+function EditJob({
   job,
   zone,
   language,
@@ -242,16 +244,24 @@ function EditTiming({
   onCancel: () => void;
 }) {
   const [draft, setDraft] = useState(() => draftOf(job, zone));
+  const [description, setDescription] = useState(job.description ?? "");
   const saved = draftTiming(draft, zone);
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (saved !== null) onSave({ op: "edit", name: job.name, timing: saved.timing, tz: saved.tz });
+    if (saved !== null) onSave({ op: "edit", name: job.name, timing: saved.timing, tz: saved.tz, description: description.trim() });
   }
   return (
-    <form aria-label={`Edit the schedule of ${job.name}`} className="flex flex-col gap-2 rounded-md border p-2" onSubmit={submit}>
+    <form aria-label={`Edit ${job.name}`} className="flex flex-col gap-2 rounded-md border p-2" onSubmit={submit}>
+      <TextInput size="sm" label="Description" description={DESCRIPTION_HINT} value={description} onChange={setDescription} />
       <ScheduleFields draft={draft} onChange={setDraft} zone={zone} language={language} />
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
+        <dt className="text-muted-foreground">{job.command !== null ? "Command" : "Event"}</dt>
+        <dd className="font-mono break-all">{actionLabel(job)}</dd>
+        <dt className="text-muted-foreground">Event kind</dt>
+        <dd className="font-mono break-all">{job.kind}</dd>
+      </dl>
       <div className="flex gap-1">
-        <Button changesData size="sm" variant="primary" type="submit" label={busy ? "Saving..." : "Save schedule"} isDisabled={busy || saved === null} />
+        <Button changesData size="sm" variant="primary" type="submit" label={busy ? "Saving..." : "Save"} isDisabled={busy || saved === null} />
         <Button size="sm" variant="ghost" label="Cancel" onClick={onCancel} isDisabled={busy} />
       </div>
     </form>
@@ -281,7 +291,11 @@ function Job({
         <span className={when.raw ? "font-mono text-xs text-muted-foreground" : "text-muted-foreground"}>{when.text}</span>
         {job.paused && <span className="rounded bg-muted px-1.5 text-xs font-medium">Paused</span>}
       </span>
-      <span className="font-mono text-xs break-all text-muted-foreground">{actionLabel(job)}</span>
+      {job.description !== null ? (
+        <span className="break-words">{job.description}</span>
+      ) : (
+        <span className="font-mono text-xs break-all text-muted-foreground">{job.kind}</span>
+      )}
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
         <dt className="text-muted-foreground">Next run</dt>
         <dd>
@@ -298,7 +312,7 @@ function Job({
         </p>
       )}
       {editing ? (
-        <EditTiming
+        <EditJob
           job={job}
           zone={zone}
           language={language}
@@ -329,8 +343,8 @@ function Job({
           >
             {job.paused ? "Resume" : "Pause"}
           </Button>
-          <Button size="sm" variant="secondary" label={`Edit the schedule of ${job.name}`} isDisabled={busy} onClick={() => setEditing(true)}>
-            Edit schedule
+          <Button size="sm" variant="secondary" label={`Edit ${job.name}`} isDisabled={busy} onClick={() => setEditing(true)}>
+            Edit
           </Button>
           <Button size="sm" variant="ghost" label={`Remove ${job.name}`} isDisabled={busy} onClick={() => setRemoving(true)}>
             Remove
@@ -358,6 +372,7 @@ function AddJob({
 }) {
   const [name, setName] = useState("");
   const [kind, setKind] = useState("");
+  const [description, setDescription] = useState("");
   const [draft, setDraft] = useState(() => draftOf(undefined, zone));
   const [action, setAction] = useState<Action>("command");
   const [body, setBody] = useState("");
@@ -372,6 +387,7 @@ function AddJob({
       tz: saved.tz,
       name: name.trim(),
       kind: kind.trim(),
+      ...(description.trim() ? { description: description.trim() } : {}),
       ...(action === "text" ? { text: body } : { command: body, ...(cwd.trim() ? { cwd: cwd.trim() } : {}) }),
       catchUp,
     });
@@ -380,6 +396,7 @@ function AddJob({
     <form aria-label="Add a scheduled job" className="flex flex-col gap-2 rounded-md border p-3" onSubmit={submit}>
       <TextInput size="sm" label="Name" description="Lowercase letters, digits, dots, underscores or hyphens" hasSpellCheck={false} value={name} onChange={setName} hasAutoFocus />
       <TextInput size="sm" label="Event kind" description="The event the job sends Dori, in capitals, e.g. GMAIL_DIGEST" hasSpellCheck={false} value={kind} onChange={setKind} />
+      <TextInput size="sm" label="Description" description={DESCRIPTION_HINT} value={description} onChange={setDescription} />
       <ScheduleFields draft={draft} onChange={setDraft} zone={zone} language={language} />
       <Selector
         size="sm"

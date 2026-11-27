@@ -33,13 +33,14 @@ function newJob(value: unknown): NewScheduledJob | null {
   if (!isObject(value) || typeof value.name !== "string" || typeof value.kind !== "string") return null;
   const when = timing(value);
   if (when === null) return null;
-  const { tz, text, command, cwd, catchUp } = value;
-  if (![tz, text, command, cwd].every(optionalText)) return null;
+  const { description, tz, text, command, cwd, catchUp } = value;
+  if (![description, tz, text, command, cwd].every(optionalText)) return null;
   if (catchUp !== undefined && catchUp !== "once" && catchUp !== "skip") return null;
   return {
     ...when,
     name: value.name,
     kind: value.kind,
+    ...(typeof description === "string" ? { description } : {}),
     ...(typeof tz === "string" ? { tz } : {}),
     ...(typeof text === "string" ? { text } : {}),
     ...(typeof command === "string" ? { command } : {}),
@@ -60,9 +61,20 @@ export function parseScheduleRequest(value: unknown): ScheduleRequest | null {
   }
   if (typeof value.name !== "string") return null;
   if (op !== "edit") return { op, name: value.name };
+  const { description, tz } = value;
+  if (!optionalText(description) || !optionalText(tz)) return null;
+  if (value.timing === undefined) {
+    return typeof description === "string" && tz === undefined ? { op, name: value.name, description } : null;
+  }
   const when = isObject(value.timing) ? timing(value.timing) : null;
-  if (when === null || !optionalText(value.tz)) return null;
-  return { op, name: value.name, timing: when, ...(typeof value.tz === "string" ? { tz: value.tz } : {}) };
+  if (when === null) return null;
+  return {
+    op,
+    name: value.name,
+    timing: when,
+    ...(typeof tz === "string" ? { tz } : {}),
+    ...(typeof description === "string" ? { description } : {}),
+  };
 }
 
 async function relay(bridge: ScheduleBridge | null, request: ScheduleRequest): Promise<Response> {
