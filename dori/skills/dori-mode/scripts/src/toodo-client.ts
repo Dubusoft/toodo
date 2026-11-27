@@ -282,17 +282,12 @@ const toTaskRecord = (reply: unknown): ToodoTaskRecord => {
 const hasRefs = (task: ToodoTaskRecord, refs: readonly string[]): boolean => refs.every((r) => task.refs.includes(r));
 
 /**
- * Writes to a toodo task over toodo-server's MCP endpoint: `POST <url>/mcp` with one stateless JSON-RPC `tools/call`,
- * and the bearer token read from `tokenFile`. That is the server's `mcp-token`: `/mcp` refuses the web token, and `/api`
- * refuses the MCP token. The `/api/rpc` commands have no progress note or blocker, so all writes go through MCP.
- *
- * Every write is idempotent and confirmed. It reads the task with `get_task` first, and when the task already is in the
- * wanted state it sends nothing (`wrote: false`). Otherwise it calls the tool and reads the task back, so a write whose
- * reply was lost (network error, timeout, a 5xx) still succeeds once the read-back shows it. Any other outcome throws
- * ToodoWriteFailed: a refused write (with toodo's message and code), a read-back that does not show the write, or a
- * token, read or reply that cannot be used. Notes count as written when the task has a note of the same kind and text.
+ * One stateless JSON-RPC `tools/call` to toodo-server's MCP endpoint (`POST <url>/mcp`) with the bearer token read from
+ * `tokenFile` on every call. That is the server's `mcp-token`: `/mcp` refuses the web token, and `/api` refuses the MCP
+ * token. The tool's JSON text is returned parsed; anything else (no answer, a non-200, a JSON-RPC error, a tool error
+ * with toodo's message and code, a result that is not JSON) throws ToodoWriteFailed.
  */
-export class ToodoWriter {
+export class ToodoMcp {
   private readonly fetch: ToodoFetch;
   private readonly timeoutMs: number;
   private requestId = 0;
@@ -302,8 +297,7 @@ export class ToodoWriter {
     this.timeoutMs = deps.timeoutMs ?? TOODO_TIMEOUT_MS;
   }
 
-  /** One tool call; its result parsed from the JSON text toodo answers with. */
-  private async tool(name: string, args: Record<string, unknown>): Promise<unknown> {
+  async call(name: string, args: Record<string, unknown>): Promise<unknown> {
     const url = `${this.config.url.replace(/\/+$/, "")}/mcp`;
     const token = readToken(this.config.tokenFile, (message) => new ToodoWriteFailed(message));
     let response: Response;
@@ -333,6 +327,28 @@ export class ToodoWriter {
       throw new ToodoWriteFailed(`toodo-server refused ${name}: ${body}`, typeof error?.code === "string" ? error.code : undefined);
     }
     try { return JSON.parse(body) as unknown; } catch { throw new ToodoWriteFailed(`toodo-server ${name} answered a result that is not JSON`); }
+  }
+}
+
+/**
+ * Writes to a toodo task over toodo-server's MCP endpoint (ToodoMcp). The `/api/rpc` commands have no progress note or
+ * blocker, so all writes go through MCP.
+ *
+ * Every write is idempotent and confirmed. It reads the task with `get_task` first, and when the task already is in the
+ * wanted state it sends nothing (`wrote: false`). Otherwise it calls the tool and reads the task back, so a write whose
+ * reply was lost (network error, timeout, a 5xx) still succeeds once the read-back shows it. Any other outcome throws
+ * ToodoWriteFailed: a refused write (with toodo's message and code), a read-back that does not show the write, or a
+ * token, read or reply that cannot be used. Notes count as written when the task has a note of the same kind and text.
+ */
+export class ToodoWriter {
+  private readonly mcp: ToodoMcp;
+
+  constructor(config: ToodoClientConfig, deps: { readonly fetch?: ToodoFetch; readonly timeoutMs?: number } = {}) {
+    this.mcp = new ToodoMcp(config, deps);
+  }
+
+  private tool(name: string, args: Record<string, unknown>): Promise<unknown> {
+    return this.mcp.call(name, args);
   }
 
   /** The task as toodo has it now. */
