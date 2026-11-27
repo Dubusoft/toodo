@@ -7,6 +7,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use super::release;
 use super::settings::{self, DataDir};
 use super::update::Package;
 use super::{Manager, Var, agents, launchd, process, service};
@@ -59,9 +60,14 @@ pub(super) fn uninstall(data: &DataDir, delete_data: bool, var: Var) -> Result<(
         );
     }
     let exe = std::env::current_exe().ok();
-    match exe.as_deref().and_then(Package::of) {
-        Some(_) => println!("To remove the toodo command too, run: npm rm -g {PACKAGE}"),
-        None => println!(
+    let install = exe.as_deref().and_then(release::Install::of);
+    match (exe.as_deref().and_then(Package::of), install) {
+        (Some(_), _) => println!("To remove the toodo command too, run: npm rm -g {PACKAGE}"),
+        (None, Some(install)) => println!(
+            "To remove the toodo command too, delete {} and ~/.local/bin/toodo",
+            install.dir.display()
+        ),
+        (None, None) => println!(
             "To remove the toodo command too, delete {} and the toodo-server beside it",
             exe.map_or_else(|| "toodo".to_owned(), |exe| exe.display().to_string())
         ),

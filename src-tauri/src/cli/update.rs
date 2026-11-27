@@ -1,8 +1,10 @@
-//! `toodo update`: installs the newest `@dubusoft/toodo` of an npm dist-tag and restarts
-//! the server on it.
+//! `toodo update`: installs the newest Toodo of a channel and restarts the server on it,
+//! from npm (`@dubusoft/toodo` and its dist-tags) or from GitHub releases (a release
+//! install, see [`release`]).
 //!
-//! The CLI runs from the platform package `@dubusoft/toodo-<os>-<arch>` (`bin/toodo` with
-//! `package.json` one directory up), which npm installs inside `@dubusoft/toodo`.
+//! From npm, the CLI runs from the platform package `@dubusoft/toodo-<os>-<arch>`
+//! (`bin/toodo` with `package.json` one directory up), which npm installs inside
+//! `@dubusoft/toodo`.
 
 use std::cmp::Ordering;
 use std::fs;
@@ -17,6 +19,7 @@ use std::time::{Duration, Instant};
 use super::Var;
 use super::launchd;
 use super::process;
+use super::release;
 use super::service;
 use super::settings::{self, Bundle, DataDir};
 use crate::commands::updates::{PACKAGE, channel_of, compare_versions};
@@ -65,6 +68,48 @@ impl Channel {
             Self::Latest
         }
     }
+}
+
+/// Where `toodo update` gets new versions from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Source {
+    /// The npm package [`PACKAGE`] and its dist-tags.
+    Npm,
+    /// The release assets of a GitHub repository, see [`release`].
+    Github,
+}
+
+impl Source {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "npm" => Some(Self::Npm),
+            "github" => Some(Self::Github),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Npm => "npm",
+            Self::Github => "github",
+        }
+    }
+
+    /// Where the CLI at `exe` updates from: GitHub for a release install, else npm.
+    fn of(exe: &Path) -> Self {
+        if release::Install::of(exe).is_some() {
+            Self::Github
+        } else {
+            Self::Npm
+        }
+    }
+}
+
+/// The running CLI, with links resolved: a release install is run through
+/// `~/.local/bin/toodo`.
+fn installed_exe() -> std::io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    Ok(fs::canonicalize(&exe).unwrap_or(exe))
 }
 
 /// The platform package this CLI runs from.
@@ -182,17 +227,36 @@ pub(super) fn version() -> String {
 }
 
 /// `toodo update --check`: prints whether the channel (by default the one of the installed
-/// version) has a newer version, and changes nothing.
-pub(super) fn check(channel: Option<Channel>, var: Var) -> Result<(), String> {
+/// version) of `source` (by default where the CLI came from) has a newer version, and
+/// changes nothing.
+pub(super) fn check(
+    channel: Option<Channel>,
+    source: Option<Source>,
+    var: Var,
+) -> Result<(), String> {
     let installed = version();
     let tag = channel.unwrap_or_else(|| Channel::of(&installed)).tag();
-    let npm = process::find_on_path("npm", var).ok_or_else(|| {
-        "npm is not on PATH; install Node.js with npm, or add its bin directory to PATH, \
-         and rerun toodo update --check"
-            .to_owned()
-    })?;
-    let target = published_version(&npm, &format!("{PACKAGE}@{tag}"))?;
-    let option = channel.map_or_else(String::new, |_| format!(" --channel {tag}"));
+    let exe = installed_exe().ok();
+    let target = match source.unwrap_or_else(|| exe.as_deref().map_or(Source::Npm, Source::of)) {
+        Source::Npm => {
+            let npm = process::find_on_path("npm", var).ok_or_else(|| {
+                "npm is not on PATH; install Node.js with npm, or add its bin directory to \
+                 PATH, and rerun toodo update --check"
+                    .to_owned()
+            })?;
+            published_version(&npm, &format!("{PACKAGE}@{tag}"))?
+        }
+        Source::Github => {
+            let install = exe.as_deref().and_then(release::Install::of);
+            release::Github::new(install.as_ref().map(|install| install.repo.as_str()), var)
+                .newest(tag, &release::platform())?
+                .version
+        }
+    };
+    let mut option = channel.map_or_else(String::new, |_| format!(" --channel {tag}"));
+    if let Some(source) = source {
+        option.push_str(&format!(" --source {}", source.name()));
+    }
     println!("{}", check_report(&installed, &target, tag, &option));
     Ok(())
 }
@@ -228,24 +292,41 @@ enum Supervisor {
 }
 
 /// `toodo update`. `data` is the data directory whose server is restarted, `flag` its
-/// `--data-dir` option for the commands it suggests. A channel version older than the
-/// installed one is installed only with `allow_downgrade`.
+/// `--data-dir` option for the commands it suggests. `source` defaults to where the CLI
+/// came from: GitHub releases for a release install, else npm. A channel version older
+/// than the installed one is installed only with `allow_downgrade`.
 pub(super) fn update(
+    channel: Option<Channel>,
+    source: Option<Source>,
+    allow_downgrade: bool,
+    data: &DataDir,
+    flag: &str,
+    var: Var,
+) -> Result<(), String> {
+    let exe = installed_exe().map_err(|error| {
+        format!(
+            "cannot tell where toodo is installed: {error}; update it with: \
+             npm i -g {PACKAGE} --include=optional"
+        )
+    })?;
+    match source.unwrap_or_else(|| Source::of(&exe)) {
+        Source::Npm => update_from_npm(&exe, channel, allow_downgrade, data, flag, var),
+        Source::Github => update_from_github(&exe, channel, allow_downgrade, data, flag, var),
+    }
+}
+
+fn update_from_npm(
+    exe: &Path,
     channel: Option<Channel>,
     allow_downgrade: bool,
     data: &DataDir,
     flag: &str,
     var: Var,
 ) -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|error| {
+    let installed = Package::of(exe).ok_or_else(|| {
         format!(
-            "cannot tell where toodo is installed: {error}; update it with: \
-             npm i -g {PACKAGE} --include=optional"
-        )
-    })?;
-    let installed = Package::of(&exe).ok_or_else(|| {
-        format!(
-            "{} is not from the npm package {PACKAGE}, so toodo update cannot update it; \
+            "{} is not from the npm package {PACKAGE}, so toodo update cannot update it with \
+             npm; install it from GitHub releases with: toodo update --source github, \
              install the npm package with: npm i -g {PACKAGE} --include=optional, or rebuild \
              your checkout and rerun scripts/install-server.sh (docs/server.md)",
             exe.display()
@@ -263,32 +344,15 @@ pub(super) fn update(
     })?;
     check_global_root(&npm, &installed.dir)?;
 
-    let listen = settings::listen(data)?;
-    let supervisor = supervisor(data, var)?;
-    let running = is_running(supervisor, data);
+    let server = Server::of(data, flag, var)?;
+    let running = is_running(server.supervisor, data);
 
     let old = &installed.version;
     let target = published_version(&npm, &format!("{PACKAGE}@{tag}"))?;
-    let order = compare_versions(&target, old);
-    if &target == old || order == Some(Ordering::Equal) {
-        println!("toodo {old} is the newest on {tag}; nothing to update.");
+    let rerun = format!("toodo update --channel {tag} --allow-downgrade{flag}");
+    let Some(downgrade) = plan(old, &target, tag, allow_downgrade, &rerun, false)? else {
         return Ok(());
-    }
-    let downgrade = order != Some(Ordering::Greater);
-    if downgrade && !allow_downgrade {
-        let anyway = format!("toodo update --channel {tag} --allow-downgrade{flag}");
-        if order.is_none() {
-            return Err(format!(
-                "cannot tell whether {target} on {tag} is newer than the installed {old}; \
-                 nothing changed; to install {target} anyway, run: {anyway}"
-            ));
-        }
-        println!(
-            "toodo {old} is newer than {target}, the version on {tag}; nothing changed. \
-             To install {target} anyway, run: {anyway}"
-        );
-        return Ok(());
-    }
+    };
     // npm publishes the platform packages after the main one; without its platform
     // package npm would remove the installed one and leave no toodo to run.
     let platform = format!("{}@{target}", installed.name);
@@ -320,16 +384,162 @@ pub(super) fn update(
     })?;
     let bundle = Bundle::beside(&bin.join("toodo"))?;
     let changed = format!("toodo {} -> {}", installed.version, new.version);
+    settle(&server, running, &bundle, &changed).map_err(|failure| match failure {
+        Settle::Failed(error) => error,
+        Settle::NotUp(cause) => {
+            let back = format!("npm i -g {PACKAGE}@{old} --include=optional");
+            let restore = || {
+                npm_install(&npm, &format!("{PACKAGE}@{old}"))
+                    .and_then(|()| Bundle::beside(&bin.join("toodo")))
+            };
+            roll_back(&server, old, &changed, &cause, restore, Some(&back))
+        }
+    })
+}
 
+/// Updates the release install from GitHub releases, or replaces an install from npm or
+/// a checkout (the CLI at `exe`) with one.
+fn update_from_github(
+    exe: &Path,
+    channel: Option<Channel>,
+    allow_downgrade: bool,
+    data: &DataDir,
+    flag: &str,
+    var: Var,
+) -> Result<(), String> {
+    let install = release::Install::of(exe);
+    let old = version();
+    let channel = channel.unwrap_or_else(|| Channel::of(&old));
+    let tag = channel.tag();
+    let github = release::Github::new(install.as_ref().map(|install| install.repo.as_str()), var);
+    let dir = release::install_dir(var)?;
+
+    let server = Server::of(data, flag, var)?;
+    let running = is_running(server.supervisor, data);
+
+    let target = github.newest(tag, &release::platform())?;
+    // Moving to a release install installs the same version too.
+    let switching = install.is_none();
+    let rerun = format!("toodo update --channel {tag} --source github --allow-downgrade{flag}");
+    let Some(downgrade) = plan(
+        &old,
+        &target.version,
+        tag,
+        allow_downgrade,
+        &rerun,
+        switching,
+    )?
+    else {
+        return Ok(());
+    };
+    let verb = if downgrade { "Downgrading" } else { "Updating" };
+    println!(
+        "{verb} toodo {old} to {} (release v{} of {})...",
+        target.version, target.version, github.repo
+    );
+    let staging = github.stage(&target, &dir)?;
+    let previous = release::put_in_place(&staging, &dir)?;
+    let bundle = Bundle::beside(&dir.join("bin/toodo"))?;
+    let changed = format!("toodo {old} -> {}", target.version);
+    let failed = match settle(&server, running, &bundle, &changed) {
+        Ok(()) => None,
+        Err(Settle::Failed(error)) => Some(error),
+        Err(Settle::NotUp(cause)) => {
+            let restore = || {
+                release::restore(previous.as_deref(), &dir)?;
+                Bundle::beside(exe)
+            };
+            return Err(roll_back(&server, &old, &changed, &cause, restore, None));
+        }
+    };
+    release::discard(previous.as_deref());
+    let link = release::link(&dir, var)?;
+    if switching {
+        println!(
+            "toodo now updates from the GitHub releases of {}: it is installed in {} and \
+             linked from {}.",
+            github.repo,
+            dir.display(),
+            link.display()
+        );
+        if Package::of(exe).is_some() {
+            println!("Remove the npm copy with: npm rm -g {PACKAGE}");
+        }
+        if let Some(found) = process::find_on_path("toodo", var).filter(|found| *found != link) {
+            println!(
+                "note: toodo on PATH is {}; put {} before it on PATH",
+                found.display(),
+                link.parent().unwrap_or(Path::new("/")).display()
+            );
+        }
+    }
+    failed.map_or(Ok(()), Err)
+}
+
+/// Whether to install `target`, the version on `tag`, over `old`: `Some(downgrade)` to
+/// install it, `None` after printing why not. `rerun` is the command that installs an
+/// older version anyway; with `reinstall` the same version is installed again.
+fn plan(
+    old: &str,
+    target: &str,
+    tag: &str,
+    allow_downgrade: bool,
+    rerun: &str,
+    reinstall: bool,
+) -> Result<Option<bool>, String> {
+    let order = compare_versions(target, old);
+    if target == old || order == Some(Ordering::Equal) {
+        if reinstall {
+            return Ok(Some(false));
+        }
+        println!("toodo {old} is the newest on {tag}; nothing to update.");
+        return Ok(None);
+    }
+    let downgrade = order != Some(Ordering::Greater);
+    if downgrade && !allow_downgrade {
+        if order.is_none() {
+            return Err(format!(
+                "cannot tell whether {target} on {tag} is newer than the installed {old}; \
+                 nothing changed; to install {target} anyway, run: {rerun}"
+            ));
+        }
+        println!(
+            "toodo {old} is newer than {target}, the version on {tag}; nothing changed. \
+             To install {target} anyway, run: {rerun}"
+        );
+        return Ok(None);
+    }
+    Ok(Some(downgrade))
+}
+
+/// Why the server does not run the new version after its files were installed.
+enum Settle {
+    /// The server is stopped and its service still has the old files; the error says
+    /// what to run.
+    Failed(String),
+    /// The server did not come back after the restart, for this cause.
+    NotUp(String),
+}
+
+/// Puts the server on `bundle` after the update `changed`: restarts it when it is
+/// `running`, else copies the new files where its service runs them from.
+fn settle(server: &Server, running: bool, bundle: &Bundle, changed: &str) -> Result<(), Settle> {
+    let Server {
+        supervisor,
+        data,
+        listen,
+        flag,
+        var,
+    } = *server;
     if !running {
         // The unit runs copies of the server and the web app, so `toodo start` would
         // start the old version unless they are refreshed now.
         if matches!(supervisor, Supervisor::Systemd | Supervisor::Launchd) {
-            service::install_bundle(&bundle, var).map_err(|cause| {
-                format!(
+            service::install_bundle(bundle, var).map_err(|cause| {
+                Settle::Failed(format!(
                     "updated {changed}, but the service still has the old server: {cause}; \
                      install the new one with: toodo service install{flag}"
-                )
+                ))
             })?;
         }
         println!(
@@ -338,44 +548,31 @@ pub(super) fn update(
         super::agents::refresh(data, listen, var);
         return Ok(());
     }
-    let server = Server {
-        supervisor,
-        data,
-        listen,
-        flag,
-        var,
-    };
-    let restarted = server.restart(&bundle);
-    match restarted {
-        Ok(()) => {
-            println!(
-                "Updated {changed}. toodo-server restarted ({}) and answers on {}",
-                describe(supervisor),
-                settings::web_url(listen)
-            );
-            super::agents::refresh(data, listen, var);
-            Ok(())
-        }
-        Err(cause) => Err(roll_back(&npm, &bin, old, &server, &changed, &cause)),
-    }
+    server.restart(bundle).map_err(Settle::NotUp)?;
+    println!(
+        "Updated {changed}. toodo-server restarted ({}) and answers on {}",
+        describe(supervisor),
+        settings::web_url(listen)
+    );
+    super::agents::refresh(data, listen, var);
+    Ok(())
 }
 
-/// Installs `old` again after the server did not come back on the update `changed`
-/// for `cause`, restarts the server on it, and returns the error `toodo update` reports.
+/// Goes back to `old` after the server did not come back on the update `changed` for
+/// `cause`: `restore` puts the files of `old` back and returns them, and the server is
+/// restarted on them. Returns the error `toodo update` reports. `back` is the command
+/// that installs `old` again by hand, when there is one.
 fn roll_back(
-    npm: &Path,
-    bin: &Path,
-    old: &str,
     server: &Server,
+    old: &str,
     changed: &str,
     cause: &str,
+    restore: impl FnOnce() -> Result<Bundle, String>,
+    back: Option<&str>,
 ) -> String {
     eprintln!("toodo-server did not come back after the update: {cause}");
     eprintln!("Going back to toodo {old}...");
-    let spec = format!("{PACKAGE}@{old}");
-    let restored = npm_install(npm, &spec)
-        .and_then(|()| Bundle::beside(&bin.join("toodo")))
-        .and_then(|bundle| server.restart(&bundle));
+    let restored = restore().and_then(|bundle| server.restart(&bundle));
     let Server {
         supervisor,
         listen,
@@ -392,7 +589,7 @@ fn roll_back(
         Err(again) => format!(
             "updated {changed}, but the server did not come back: {cause}; going back to {old} \
              failed too: {again}\n{}",
-            recovery(supervisor, old, flag)
+            recovery(supervisor, old, flag, back)
         ),
     }
 }
@@ -507,7 +704,18 @@ struct Server<'a> {
     var: Var<'a>,
 }
 
-impl Server<'_> {
+impl<'a> Server<'a> {
+    /// The server of `data`, and who runs it.
+    fn of(data: &'a DataDir, flag: &'a str, var: Var<'a>) -> Result<Self, String> {
+        Ok(Self {
+            supervisor: supervisor(data, var)?,
+            data,
+            listen: settings::listen(data)?,
+            flag,
+            var,
+        })
+    }
+
     /// Restarts the server on the files of `bundle`, and waits until it answers.
     fn restart(&self, bundle: &Bundle) -> Result<(), String> {
         let Self {
@@ -622,21 +830,23 @@ fn log_hint(supervisor: Supervisor, flag: &str) -> String {
 }
 
 /// What to run when the server did not come back after updating from `previous` and
-/// going back to it failed too.
-fn recovery(supervisor: Supervisor, previous: &str, flag: &str) -> String {
-    let back = format!("npm i -g {PACKAGE}@{previous} --include=optional");
+/// going back to it failed too; `back` installs `previous` again, when there is a command
+/// for it.
+fn recovery(supervisor: Supervisor, previous: &str, flag: &str, back: Option<&str>) -> String {
     let hint = log_hint(supervisor, flag);
-    match supervisor {
-        Supervisor::Systemd | Supervisor::Launchd => format!(
-            "{hint}
-Fix it and restart with: toodo restart{flag}
-Or go back to {previous} with: {back} && toodo service install{flag}"
+    let (fix, rerun) = match supervisor {
+        Supervisor::Systemd | Supervisor::Launchd => (
+            format!("Fix it and restart with: toodo restart{flag}"),
+            format!("toodo service install{flag}"),
         ),
-        Supervisor::PidFile => format!(
-            "{hint}
-Fix it and start it with: toodo start{flag}
-Or go back to {previous} with: {back} && toodo start{flag}"
+        Supervisor::PidFile => (
+            format!("Fix it and start it with: toodo start{flag}"),
+            format!("toodo start{flag}"),
         ),
+    };
+    match back {
+        Some(back) => format!("{hint}\n{fix}\nOr go back to {previous} with: {back} && {rerun}"),
+        None => format!("{hint}\n{fix}"),
     }
 }
 

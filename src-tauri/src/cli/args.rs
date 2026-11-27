@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use super::settings::ListenFlag;
-use super::update::Channel;
+use super::update::{Channel, Source};
 use super::{Command, InitArgs, LOG_LINES, LogsArgs, UpdateArgs, review};
 
 pub(super) const USAGE: &str =
@@ -16,7 +16,8 @@ pub(super) const USAGE: &str =
        toodo doctor [--data-dir DIR]
        toodo logs [--lines N] [--follow] [--data-dir DIR]
        toodo service install [--port N | --listen HOST:PORT] [--data-dir DIR]
-       toodo update [--channel dev|latest] [--allow-downgrade | --check] [--data-dir DIR]
+       toodo update [--channel dev|latest] [--source npm|github]
+                    [--allow-downgrade | --check] [--data-dir DIR]
        toodo uninstall [--delete-data] [--data-dir DIR]
        toodo review [--period week|month|quarter|year|custom] [--date DAY]
                     [--from DAY] [--to DAY] [--format markdown|csv] [--data-dir DIR]
@@ -44,9 +45,10 @@ Commands:
   logs             print the end of the server log (of journalctl for the service)
   service install  run the server as the systemd user service toodo-server.service, or
                    on macOS as the launchd agent toodo-server, which starts at login
-  update           install the newest @dubusoft/toodo of the channel with npm, restart
-                   the server on it, check that it answers, and register its MCP
-                   endpoint again like start; a failed install
+  update           install the newest toodo of the channel (from npm, or from GitHub
+                   releases for a release install), restart the server on it, check
+                   that it answers, and register its MCP endpoint again like start;
+                   a failed install
                    leaves the running server alone, a server that does not answer
                    after the update goes back to the previous version, and a channel
                    version older than the installed one is not installed; --check
@@ -67,9 +69,13 @@ Options:
                       ~/.local/share/toodo-server); init records it there, so the
                       other commands find it without the option
   --no-mcp            do not register the MCP endpoint with coding agents
-  --channel CHANNEL   npm dist-tag update installs: dev (prereleases of the dev branch)
+  --channel CHANNEL   channel update installs: dev (prereleases of the dev branch)
                       or latest (releases); default dev when the installed version is a
                       prerelease, else latest
+  --source SOURCE     where update gets toodo: npm, or github (the releases of
+                      $TOODO_RELEASE_REPO, default Dubusoft/toodo, read with $GH_TOKEN);
+                      default github for a release install, else npm; github installs
+                      to ~/.local/lib/toodo, linked from ~/.local/bin/toodo
   --allow-downgrade   let update install a channel version older than the installed one
   --check             let update only report whether the channel has a newer version
   --lines N, -n N     how many lines of the log logs prints (default 50)
@@ -171,16 +177,24 @@ saves a new listen address first, like init. On macOS it writes the launchd agen
             format!("{}\n{DATA_DIR_OPTION}", review::OPTIONS),
         ),
         _ => (
-            "toodo update [--channel dev|latest] [--allow-downgrade | --check] [--data-dir DIR]",
-            "Installs the newest @dubusoft/toodo of the channel with npm, restarts the server
-on it, and checks that it answers. A failed install leaves the running server alone; a
-server that does not answer after the update goes back to the previous version. With
---check it only reports whether the channel has a newer version.",
+            "toodo update [--channel dev|latest] [--source npm|github] [--allow-downgrade | --check]
+             [--data-dir DIR]",
+            "Installs the newest toodo of the channel, restarts the server on it, and checks
+that it answers. A failed install leaves the running server alone; a server that does
+not answer after the update goes back to the previous version. With --check it only
+reports whether the channel has a newer version.
+
+From npm it installs @dubusoft/toodo globally. From GitHub it downloads the release
+asset of this platform from $TOODO_RELEASE_REPO (default Dubusoft/toodo) with the token
+in $GH_TOKEN (else $GITHUB_TOKEN), checks its sha256, and installs it to
+~/.local/lib/toodo, linked from ~/.local/bin/toodo; --source github on another install
+moves it there.",
             format!(
-                "  --channel CHANNEL   npm dist-tag to install: dev (prereleases of the dev \
+                "  --channel CHANNEL   channel to install: dev (prereleases of the dev \
                  branch)
                       or latest (releases); default dev when the installed version is a
                       prerelease, else latest
+  --source SOURCE     npm or github; default github for a release install, else npm
   --allow-downgrade   install a channel version older than the installed one
   --check             only report whether the channel has a newer version
 {DATA_DIR_OPTION}"
@@ -242,6 +256,7 @@ pub(super) fn parse(args: &[String]) -> Result<Command, String> {
         mcp: true,
     };
     let mut channel = None;
+    let mut source = None;
     let mut allow_downgrade = false;
     let mut check = false;
     let mut lines = LOG_LINES;
@@ -255,7 +270,7 @@ pub(super) fn parse(args: &[String]) -> Result<Command, String> {
         };
         let takes_value = matches!(
             name,
-            "--port" | "--listen" | "--data-dir" | "--channel" | "--lines" | "-n"
+            "--port" | "--listen" | "--data-dir" | "--channel" | "--source" | "--lines" | "-n"
         );
         let value = if takes_value {
             match inline.or_else(|| options.next().cloned()) {
@@ -278,7 +293,11 @@ pub(super) fn parse(args: &[String]) -> Result<Command, String> {
                 "{name} is an option of toodo init, not of {command}"
             ));
         }
-        if matches!(name, "--channel" | "--allow-downgrade" | "--check") && command != "update" {
+        if matches!(
+            name,
+            "--channel" | "--source" | "--allow-downgrade" | "--check"
+        ) && command != "update"
+        {
             return Err(format!(
                 "{name} is an option of toodo update, not of {command}"
             ));
@@ -310,6 +329,12 @@ pub(super) fn parse(args: &[String]) -> Result<Command, String> {
                 Some(parsed) => channel = Some(parsed),
                 None => {
                     return Err(format!("--channel takes dev or latest, got {value:?}"));
+                }
+            },
+            "--source" => match Source::parse(&value) {
+                Some(parsed) => source = Some(parsed),
+                None => {
+                    return Err(format!("--source takes npm or github, got {value:?}"));
                 }
             },
             "--port" | "--listen" if init.listen.is_some() => {
@@ -358,6 +383,7 @@ pub(super) fn parse(args: &[String]) -> Result<Command, String> {
         "uninstall" => Command::Uninstall(delete_data, data_dir),
         "update" => Command::Update(UpdateArgs {
             channel,
+            source,
             allow_downgrade,
             check,
             data_dir,
@@ -433,6 +459,7 @@ mod tests {
             parsed(&["update"]).unwrap(),
             Command::Update(UpdateArgs {
                 channel: None,
+                source: None,
                 allow_downgrade: false,
                 check: false,
                 data_dir: None
@@ -449,15 +476,17 @@ mod tests {
             .unwrap(),
             Command::Update(UpdateArgs {
                 channel: Some(Channel::Latest),
+                source: None,
                 allow_downgrade: true,
                 check: false,
                 data_dir: dir.clone()
             })
         );
         assert_eq!(
-            parsed(&["update", "--check", "--channel", "dev"]).unwrap(),
+            parsed(&["update", "--check", "--channel", "dev", "--source=github"]).unwrap(),
             Command::Update(UpdateArgs {
                 channel: Some(Channel::Dev),
+                source: Some(Source::Github),
                 allow_downgrade: false,
                 check: true,
                 data_dir: None
