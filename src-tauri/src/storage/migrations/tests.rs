@@ -2643,3 +2643,35 @@ fn version_55_moves_the_one_chat_into_a_general_channel_read_up_to_its_end() {
             .is_ok()
     );
 }
+
+/// Regenerates `server/src/storage/schema.sql`, the schema the TypeScript server's tests
+/// create their databases with, from the migrated schema. Shadow tables of the search
+/// indexes are left out: creating their virtual table creates them.
+#[test]
+fn export_typescript_test_schema() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    migrate(&mut conn).unwrap();
+    let mut statement = conn
+        .prepare(
+            "SELECT sql FROM sqlite_master
+             WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'
+               AND name NOT IN (SELECT name FROM pragma_table_list WHERE type = 'shadow')
+             ORDER BY rowid",
+        )
+        .unwrap();
+    let statements: Vec<String> = statement
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    let schema = format!(
+        "-- Generated from the Rust migrations by `cargo test --lib` in src-tauri/; do not edit.\n\
+         PRAGMA user_version = {LATEST_VERSION};\n\n{};\n",
+        statements.join(";\n\n")
+    );
+    std::fs::write(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../server/src/storage/schema.sql"),
+        schema,
+    )
+    .unwrap();
+}

@@ -113,6 +113,9 @@ Layout:
     separate read-only reader, each with WAL, a 5 second busy timeout, and foreign keys
     on. Both open only a database at `BASELINE_SCHEMA_VERSION` and reject any other
     version; neither creates nor migrates a database.
+  - `server/src/storage/schema.sql`: the frozen schema the Rust migrations create, which
+    `cargo test --lib` regenerates; `server/src/storage/testing.ts` creates the storage
+    tests' databases with it.
   - `server/src/domain/`: the domain model and rules of `src-tauri/src/domain/`, module for
     module, with the Rust tests ported beside each one. `rust.ts` holds the Rust standard
     library behavior they depend on (whitespace, `{:?}` quoting, float printing, string
