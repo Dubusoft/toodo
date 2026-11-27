@@ -21,7 +21,11 @@ function useNow(): number {
   return now;
 }
 
-const preformatted = "overflow-x-auto rounded-md bg-muted px-2 py-1.5 font-mono text-xs leading-snug whitespace-pre";
+const monospace = "rounded-md bg-muted px-2 py-1.5 font-mono text-xs leading-snug";
+/** Quota and lane screens line up in columns, so they keep their lines and scroll sideways. */
+const preformatted = `${monospace} overflow-x-auto whitespace-pre`;
+/** `/status` is prose lines, which wrap to the width so a phone shows them whole. */
+const wrapped = `${monospace} whitespace-pre-wrap wrap-anywhere`;
 
 function Quota({ quota }: { quota: SupervisorStatusSnapshot["quota"] }) {
   if (quota === null) return <p className="text-muted-foreground">Reading the quota...</p>;
@@ -113,7 +117,7 @@ export function SupervisorStatusPanel({ active }: { active: boolean }) {
       <div className="flex flex-col gap-2">
         <h4 className="font-medium">Status</h4>
         {snapshot.status.map((page, index) => (
-          <pre key={index} aria-label={`Status page ${index + 1}`} className={preformatted}>
+          <pre key={index} aria-label={`Status page ${index + 1}`} className={wrapped}>
             {page}
           </pre>
         ))}
