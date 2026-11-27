@@ -121,12 +121,12 @@ export function totalUnread(channels: readonly ChatChannel[]): number {
 }
 
 /**
- * The receipt a person's message shows: received by the agent (delivered), acknowledged (read),
- * and a note once it is handled, or while it waits too long.
+ * The receipt a person's message shows: sent until the agent acknowledges it (read), and a note
+ * once it is handled, or while it waits too long. Received by the agent but not yet read stays
+ * sent, as in other messengers.
  */
 export function receipt(message: ChatMessage): { status: ChatMessageStatus; note: string | null } {
-  const status: ChatMessageStatus =
-    message.ackedAt !== null ? "read" : message.deliveredAt !== null ? "delivered" : "sent";
+  const status: ChatMessageStatus = message.ackedAt !== null ? "read" : "sent";
   if (message.handledAt !== null) {
     return { status, note: message.handledTaskId !== null ? `Handled in task #${message.handledTaskId}` : "Handled" };
   }
@@ -264,6 +264,30 @@ const defaultAgent: ChatAgent = { name: "Dori", avatarUrl: null };
 
 function AgentAvatar({ agent }: { agent: ChatAgent }) {
   return <Avatar size="sm" name={agent.name} src={agent.avatarUrl ?? doriAvatar} tooltip={false} />;
+}
+
+/**
+ * The agent writing a reply: bouncing dots in a bubble beside its avatar, captioned in the
+ * browser's language (Korean or English).
+ */
+function TypingMessage({ agent }: { agent: ChatAgent }) {
+  const caption = navigator.language.toLowerCase().startsWith("ko") ? "입력 중" : "Typing";
+  return (
+    <Message sender="assistant" avatar={<AgentAvatar agent={agent} />}>
+      <ChatMessageBubble metadata={<ChatMessageMetadata footer={caption} />}>
+        <span role="status" aria-label={`${agent.name} is writing`} className="flex h-5 items-center gap-1">
+          {[0, 150, 300].map((delay) => (
+            <span
+              key={delay}
+              aria-hidden
+              className="size-1.5 rounded-full bg-current opacity-60 animate-typing-dot motion-reduce:animate-none"
+              style={{ animationDelay: `${delay}ms` }}
+            />
+          ))}
+        </span>
+      </ChatMessageBubble>
+    </Message>
+  );
 }
 
 function Messages({ agent, messages }: { agent: ChatAgent; messages: readonly ChatMessage[] }) {
@@ -467,7 +491,7 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
                   </ChatMessageBubble>
                 </Message>
               ))}
-              {typing && <ChatSystemMessage>{agent.name} is writing...</ChatSystemMessage>}
+              {typing && <TypingMessage agent={agent} />}
             </ChatMessageList>
           </div>
         )}

@@ -60,6 +60,19 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+    /* The chat's typing dots: each rises and brightens in turn. */
+    --animate-typing-dot: typing-dot 1.2s ease-in-out infinite;
+
+    @keyframes typing-dot {
+        0%, 60%, 100% {
+            transform: translateY(0);
+            opacity: 0.4;
+        }
+        30% {
+            transform: translateY(-3px);
+            opacity: 1;
+        }
+    }
 }
 
 /*
