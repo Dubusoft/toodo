@@ -1,0 +1,2459 @@
+[
+  {
+    "name": "ack_chat",
+    "description": "Acknowledge people's chat messages by ID, telling them you read them before you answer; all or none. Acknowledging one again keeps its first receipt.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "ids": {
+          "description": "IDs of people's messages, e.g. from take_pending.",
+          "items": {
+            "pattern": "^[0-9]+$",
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ids"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "add_criterion",
+    "description": "Add a completion criterion to an unfinished task. Use manual or url with target.",
+    "inputSchema": {
+      "$defs": {
+        "CheckKind": {
+          "description": "How a completion criterion is checked: by hand (`manual`) or by Toodo.",
+          "oneOf": [
+            {
+              "const": "manual",
+              "description": "Checked by the user or an agent, with evidence.",
+              "type": "string"
+            },
+            {
+              "const": "url",
+              "description": "A GET of `target`, an http(s) URL, succeeds.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/CheckKind"
+        },
+        "target": {
+          "default": null,
+          "description": "The http(s) URL of a `url` criterion or the shell command of a `command`\ncriterion; omit it for other kinds.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_id": {
+          "description": "The task that gets the criterion; it must not be done.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "text": {
+          "description": "What has to hold, in words, e.g. `The server answers /health`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "task_id",
+        "text",
+        "kind"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "add_dependency",
+    "description": "Make task_id depend on depends_on. Cycles are rejected. An unfinished prerequisite pauses an in_progress task; resume_task when ready.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "depends_on": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9]+$",
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            {
+              "items": {
+                "pattern": "^[0-9]+$",
+                "type": [
+                  "integer",
+                  "string"
+                ]
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Its prerequisites, from any workspace, which must all be done before `task_id` is\nready: one task id or an array of them."
+        },
+        "task_id": {
+          "description": "The dependent task.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "depends_on"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "add_guideline",
+    "description": "Add a guideline to a workspace, e.g. {\"workspace_id\": 1, \"body\": \"Run cargo test with CARGO_BUILD_JOBS=2\"}. Record a durable lesson or fact that later work in the workspace should know as kind memory, the default. Rules are set by the owner: add kind rule only when the user asks for it. Returns the guideline.",
+    "inputSchema": {
+      "$defs": {
+        "GuidelineKind": {
+          "description": "What a workspace guideline records: a `rule` the owner sets for agents to follow, or\na `memory`, a durable lesson or fact recorded for the workspace.",
+          "enum": [
+            "rule",
+            "memory"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "description": "The guideline in Markdown, at most 4000 characters.",
+          "type": "string"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GuidelineKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "memory (the default) for a durable lesson or fact; rule only when the user asks\nfor a rule."
+        },
+        "workspace_id": {
+          "description": "The workspace, e.g. the workspaceId of the task you work on.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "workspace_id",
+        "body"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "add_progress_note",
+    "description": "Record progress or a decision (what and why) on a task's history, e.g. your current task. Call it at every milestone of your task: when you start (your plan, before your first edit), when you take a decision (kind \"decision\", which the app and reviews list apart as the task's decisions), when you finish a meaningful step, and when you open the pull request (with its URL); use report_blocker for what stops you. task_id is a number, e.g. {\"task_id\": 5, \"note\": \"Plan: ...\"} or {\"task_id\": 5, \"kind\": \"decision\", \"note\": \"Chose SQLite over files: ...\"}; kind is progress when omitted. When the call is rejected, fix the arguments and call it again. Returns the task with its notes.",
+    "inputSchema": {
+      "$defs": {
+        "ProgressNoteKind": {
+          "description": "What add_progress_note records.",
+          "oneOf": [
+            {
+              "const": "progress",
+              "description": "Progress made, e.g. a finished step or the pull request opened.",
+              "type": "string"
+            },
+            {
+              "const": "decision",
+              "description": "A decision taken, e.g. a design choice, and why.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProgressNoteKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "progress when omitted, or decision for a decision and why it was taken."
+        },
+        "note": {
+          "description": "What happened, in GitHub-flavored Markdown.",
+          "type": "string"
+        },
+        "task_id": {
+          "description": "The task the note is about, usually your current task.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "note"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "add_related",
+    "description": "Link two tasks, from any workspaces, as related: context worth reading together, e.g. an earlier task whose decisions a new one builds on. The link goes both ways and never blocks either task; for work that must be done first, use add_dependency instead. Returns task_id's details.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "related_id": {
+          "description": "The other task, from any workspace. The link goes both ways.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "task_id": {
+          "description": "One task of the link, e.g. your current task.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "related_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "archive_workspace",
+    "description": "Archive a workspace and its tasks with confirm true after inspecting the confirmation response. Finish or pause active tasks first.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "confirm": {
+          "default": false,
+          "description": "true archives the workspace. Without it nothing changes and the reply says what\narchiving would do; read it before you confirm.",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "The workspace to archive, as in list_workspaces.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "check_criterion",
+    "description": "Check (met true, the default) or uncheck a manual completion criterion of a task that is not done, with evidence of what shows it holds, e.g. {\"criterion_id\": 2, \"evidence\": \"...\"}. criterion_id (or id) alone finds its task; task_id is optional and must be that task when given. Toodo checks the other kinds itself. Once every criterion of an in_progress task is met, it awaits completion (in_review) until the user, or complete_task, confirms it. Returns the task with its criteria.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "criterion_id": {
+          "description": "A manual criterion; Toodo checks the other kinds itself. `id` is accepted too.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "evidence": {
+          "default": null,
+          "description": "What shows the criterion holds: a link, a command and its output, or what you\nverified and how. Required to check it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "met": {
+          "default": null,
+          "description": "True to check it, false to uncheck it; true when omitted.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "task_id": {
+          "default": null,
+          "description": "The task of the criterion; found from the criterion when omitted.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "criterion_id"
+      ],
+      "type": "object",
+      "x-aliases": {
+        "id": "criterion_id"
+      }
+    }
+  },
+  {
+    "name": "complete_task",
+    "description": "Complete an active task after manual criteria and URL checks succeed. Record an optional note and append refs.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The task. Never your own task, the one current_task finds.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "note": {
+          "description": "What shipped and why the task is complete, recorded with the completion in its\nstatus history; required with without_pull_request, where it also becomes the\ncompletion note.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "refs": {
+          "default": [],
+          "description": "References to append to the task's refs, e.g. [\"pr:123\"].",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "conclude_task",
+    "description": "Record an outcome with a required note, also for a planned task that was never started. Use not_adopted to leave dependents blocked, or shipped_with and a completed task id in shipped_with.",
+    "inputSchema": {
+      "$defs": {
+        "ConcludeOutcome": {
+          "description": "How work ends without completing its own criteria.",
+          "enum": [
+            "not_adopted",
+            "shipped_with"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The task. Never your own task, the one current_task finds.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "note": {
+          "description": "The conclusion in GitHub-flavored Markdown: what was tried or found and why the\nwork ends without a merge. Kept as the task's completion note.",
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConcludeOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shipped_with": {
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "note"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "create_channel",
+    "description": "Create a chat channel named name (shown after #; a leading # is dropped). Names are unique regardless of case. Returns the channel.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "The channel's name, shown after `#`; one line of at most 50 characters.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "create_plan",
+    "description": "Create a whole plan of tasks in one call, all or nothing: each task takes the fields of create_task plus a key unique in the plan, e.g. \"schema\", and links to other tasks of the plan by key in depends_on_keys and related_keys, to existing tasks by id in depends_on and related. Keys, links, criteria, and labels are checked first; a failure in any task, an unknown key or task, or depends_on_keys that form a cycle creates no task at all. Returns {tasks}: the created tasks in the order given, each with its key.",
+    "inputSchema": {
+      "$defs": {
+        "CheckKind": {
+          "description": "How a completion criterion is checked: by hand (`manual`) or by Toodo.",
+          "oneOf": [
+            {
+              "const": "manual",
+              "description": "Checked by the user or an agent, with evidence.",
+              "type": "string"
+            },
+            {
+              "const": "url",
+              "description": "A GET of `target`, an http(s) URL, succeeds.",
+              "type": "string"
+            }
+          ]
+        },
+        "CriterionInput": {
+          "additionalProperties": false,
+          "description": "A completion criterion given when creating or editing a task: an existing one by `id`\n(only when editing), or a new one.",
+          "properties": {
+            "id": {
+              "default": null,
+              "description": "An existing criterion of the task, which keeps its state unless its kind or\ntarget changes; omit it for a new criterion. `{\"id\": N}` alone keeps criterion N\nas it is.",
+              "pattern": "^[0-9]+$",
+              "type": [
+                "integer",
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CheckKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Required for a new criterion; the stored kind when omitted with `id`."
+            },
+            "target": {
+              "default": null,
+              "description": "The http(s) URL of a `url` criterion or the shell command of a `command`\ncriterion; omit it for other kinds. With `id`, the stored target when omitted and\nthe kind stays the same.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "default": null,
+              "description": "What has to hold, in words, e.g. `The server answers /health`. Required for a new\ncriterion; the stored text when omitted with `id`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "Estimate": {
+          "description": "The expected size of a task.",
+          "properties": {
+            "amount": {
+              "description": "Greater than 0 and at most 10000, e.g. 1.5. Exported as `number`: it is never NaN\nor infinite, which specta's default `number | null` allows for.",
+              "format": "double",
+              "type": "number"
+            },
+            "unit": {
+              "$ref": "#/$defs/EstimateUnit"
+            }
+          },
+          "required": [
+            "unit",
+            "amount"
+          ],
+          "type": "object"
+        },
+        "EstimateUnit": {
+          "description": "The unit of time an estimate counts, compared with the time the task spends in\nprogress or in review. A day is 24 hours, a week 7 days, and a month 30 days.",
+          "enum": [
+            "hours",
+            "days",
+            "weeks",
+            "months"
+          ],
+          "type": "string"
+        },
+        "PlanTask": {
+          "additionalProperties": false,
+          "description": "One task of `create_plan`: the fields of `create_task`, plus a key that the other\ntasks of the plan link to it by.",
+          "properties": {
+            "autopilot": {
+              "default": false,
+              "description": "Marks the task for autopilot, as in create_task.",
+              "type": "boolean"
+            },
+            "criteria": {
+              "description": "Verifiable completion criteria in order (no `id`), as in create_task.",
+              "items": {
+                "$ref": "#/$defs/CriterionInput"
+              },
+              "type": "array"
+            },
+            "depends_on": {
+              "default": [],
+              "description": "Existing tasks, from any workspace, this task depends on.",
+              "items": {
+                "pattern": "^[0-9]+$",
+                "type": [
+                  "integer",
+                  "string"
+                ]
+              },
+              "type": "array"
+            },
+            "depends_on_keys": {
+              "default": [],
+              "description": "Keys of other tasks of this plan that this task depends on.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "description": {
+              "default": "",
+              "description": "Details in GitHub-flavored Markdown.",
+              "type": "string"
+            },
+            "due_date": {
+              "default": null,
+              "description": "The day the task should be done by, as YYYY-MM-DD, if the user gave one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "estimate": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Estimate"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Your estimate of the work, in hours, days, weeks, or months of active work."
+            },
+            "key": {
+              "description": "A name for this task within the plan, e.g. \"schema\", unique among its tasks.",
+              "type": "string"
+            },
+            "labels": {
+              "default": [],
+              "description": "Labels, as in create_task.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "refs": {
+              "default": [],
+              "description": "References, as in create_task.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "related": {
+              "default": [],
+              "description": "Existing tasks, from any workspace, to link as related (see add_related).",
+              "items": {
+                "pattern": "^[0-9]+$",
+                "type": [
+                  "integer",
+                  "string"
+                ]
+              },
+              "type": "array"
+            },
+            "related_keys": {
+              "default": [],
+              "description": "Keys of other tasks of this plan to link as related.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "task_type": {
+              "$ref": "#/$defs/TaskType"
+            },
+            "title": {
+              "type": "string"
+            },
+            "workspace_id": {
+              "pattern": "^[0-9]+$",
+              "type": [
+                "integer",
+                "string"
+              ]
+            }
+          },
+          "required": [
+            "key",
+            "workspace_id",
+            "task_type",
+            "title"
+          ],
+          "type": "object"
+        },
+        "TaskType": {
+          "enum": [
+            "feat",
+            "fix",
+            "modify",
+            "refactor",
+            "docs",
+            "test",
+            "chore",
+            "rnd"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "tasks": {
+          "description": "The tasks to create, 1 to 100, in any order.",
+          "items": {
+            "$ref": "#/$defs/PlanTask"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "tasks"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "create_task",
+    "description": "Create a planned task in a workspace with its completion criteria, optionally depending on existing tasks (depends_on) and related to others (related). Criteria are manual, checked by a person or the executor with evidence, or url, an HTTP GET of the target that passes on a 2xx response; the task gets no other criterion.",
+    "inputSchema": {
+      "$defs": {
+        "CheckKind": {
+          "description": "How a completion criterion is checked: by hand (`manual`) or by Toodo.",
+          "oneOf": [
+            {
+              "const": "manual",
+              "description": "Checked by the user or an agent, with evidence.",
+              "type": "string"
+            },
+            {
+              "const": "url",
+              "description": "A GET of `target`, an http(s) URL, succeeds.",
+              "type": "string"
+            }
+          ]
+        },
+        "CriterionInput": {
+          "additionalProperties": false,
+          "description": "A completion criterion given when creating or editing a task: an existing one by `id`\n(only when editing), or a new one.",
+          "properties": {
+            "id": {
+              "default": null,
+              "description": "An existing criterion of the task, which keeps its state unless its kind or\ntarget changes; omit it for a new criterion. `{\"id\": N}` alone keeps criterion N\nas it is.",
+              "pattern": "^[0-9]+$",
+              "type": [
+                "integer",
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CheckKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Required for a new criterion; the stored kind when omitted with `id`."
+            },
+            "target": {
+              "default": null,
+              "description": "The http(s) URL of a `url` criterion or the shell command of a `command`\ncriterion; omit it for other kinds. With `id`, the stored target when omitted and\nthe kind stays the same.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "default": null,
+              "description": "What has to hold, in words, e.g. `The server answers /health`. Required for a new\ncriterion; the stored text when omitted with `id`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "Estimate": {
+          "description": "The expected size of a task.",
+          "properties": {
+            "amount": {
+              "description": "Greater than 0 and at most 10000, e.g. 1.5. Exported as `number`: it is never NaN\nor infinite, which specta's default `number | null` allows for.",
+              "format": "double",
+              "type": "number"
+            },
+            "unit": {
+              "$ref": "#/$defs/EstimateUnit"
+            }
+          },
+          "required": [
+            "unit",
+            "amount"
+          ],
+          "type": "object"
+        },
+        "EstimateUnit": {
+          "description": "The unit of time an estimate counts, compared with the time the task spends in\nprogress or in review. A day is 24 hours, a week 7 days, and a month 30 days.",
+          "enum": [
+            "hours",
+            "days",
+            "weeks",
+            "months"
+          ],
+          "type": "string"
+        },
+        "TaskType": {
+          "enum": [
+            "feat",
+            "fix",
+            "modify",
+            "refactor",
+            "docs",
+            "test",
+            "chore",
+            "rnd"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "autopilot": {
+          "default": false,
+          "description": "true marks the task for autopilot: an executor may take it up on its own once it\nis ready. Set it only when the user asked for autopilot on this task; false when\nomitted.",
+          "type": "boolean"
+        },
+        "criteria": {
+          "description": "Verifiable completion criteria in order (no `id`). Use `manual` for what a person\nor you check with evidence, and `url` for an HTTP GET completion check.",
+          "items": {
+            "$ref": "#/$defs/CriterionInput"
+          },
+          "type": "array"
+        },
+        "depends_on": {
+          "default": [],
+          "description": "Tasks the new task depends on, from any workspace.",
+          "items": {
+            "pattern": "^[0-9]+$",
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "type": "array"
+        },
+        "description": {
+          "default": "",
+          "description": "Details in GitHub-flavored Markdown.",
+          "type": "string"
+        },
+        "due_date": {
+          "default": null,
+          "description": "The day the task should be done by, as YYYY-MM-DD, if the user gave one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "estimate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Estimate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Your estimate of the work, in hours, days, weeks, or months of active work."
+        },
+        "labels": {
+          "default": [],
+          "description": "Labels such as a project or goal, e.g. [\"search\", \"q4-goal\"], that the user's\nreviews filter by; each non-empty, at most 40 characters, without commas.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "refs": {
+          "default": [],
+          "description": "References to where the work is tracked or discussed, in order, e.g.\n[\"lane:search-api\", \"discord:123/456\", \"https://example.com/spec\"]: by convention\n`<kind>:<value>` or a URL, each on one line.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "related": {
+          "default": [],
+          "description": "Tasks from any workspace to link as related (see add_related); they never block\nthe new task.",
+          "items": {
+            "pattern": "^[0-9]+$",
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "type": "array"
+        },
+        "task_type": {
+          "$ref": "#/$defs/TaskType"
+        },
+        "title": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "workspace_id",
+        "task_type",
+        "title"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "create_thread",
+    "description": "Open a chat thread titled title under channel_id (the first channel when omitted). task_id makes it follow a task, so the task's detail in the app shows its conversation. Post in it with reply_in_chat thread_id. Returns the thread.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "channel_id": {
+          "default": null,
+          "description": "The channel to open it under; the first channel when omitted.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "task_id": {
+          "default": null,
+          "description": "The task it follows; the task's detail in the app shows the thread.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "The thread's title; one line of at most 200 characters.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "create_workspace",
+    "description": "Create a workspace record using its supplied settings. Call list_workspaces first to reuse an existing workspace.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "repository": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "current_task",
+    "description": "Find a task by ref, a stored reference string. Omit ref only to receive instructions to use ref or get_task with id.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "default": null,
+          "description": "A stored task reference, such as lane:search.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "delete_done_tasks",
+    "description": "Archive every done (completed or concluded) task of a workspace, e.g. {\"workspace_id\": 1}. Without confirm nothing changes and the reply lists the tasks it would archive; call again with confirm true to archive them. History stays in review_report and the user can restore them.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "confirm": {
+          "default": false,
+          "description": "true deletes them. Without it nothing changes and the reply lists the tasks deleting\nwould archive; read it before you confirm.",
+          "type": "boolean"
+        },
+        "workspace_id": {
+          "description": "The workspace whose done (completed or concluded) tasks to delete, as in\nlist_workspaces.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "workspace_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "delete_task",
+    "description": "Archive a planned or done (completed or concluded) task with confirm true after inspecting the confirmation response; history stays in review_report and the user can restore it. Pause active work first.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "confirm": {
+          "default": false,
+          "description": "true deletes the task. Without it nothing changes and the reply says what deleting\nwould remove; read it before you confirm.",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "The planned or done task to delete, e.g. one you created by mistake or a done task\nwhose record is no longer wanted.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "end_wait",
+    "description": "End the wait of a waiting task now, e.g. {\"id\": 5}: it returns to the status it had when the wait began, as when the time passes. A task that was in_progress stays paused while a prerequisite is not done. An optional note records why. Returns the task.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The waiting task.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "note": {
+          "default": null,
+          "description": "Why the wait ends early, in GitHub-flavored Markdown; recorded with the progress\nnote.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_guidelines",
+    "description": "Read the guidelines of a workspace: rules its owner sets, which you must follow, then memories, durable lessons and facts recorded for it, each by ascending id. Read them before working on a task of the workspace; start_task and get_task already include them. Returns {workspace: {id, name}, guidelines}.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "workspace_id": {
+          "description": "The workspace, e.g. the workspaceId of the task you work on, or one from\nlist_workspaces.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "workspace_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "get_task",
+    "description": "Read one task with its whole history: description, refs, status timeline with the reasons given for starts, pauses, and completions, progress, decision, and blocker notes, completion note (the conclusion of a task done as not_adopted), pull request, commits, and the tasks it depends on, that depend on it, and that are related to it (id, title, status). ready says whether it can start (or resume) now, and blockedBy which of the tasks it depends on keep it from that: not done yet, or done as not_adopted, which never unblocks it. Use it to learn what an earlier task decided, and follow its links with further get_task calls. guidelines lists the guidelines of the task's workspace: follow its rules and read its memories before working on the task.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The task, e.g. one that search_tasks found.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_channels",
+    "description": "List the chat's channels in the order they were made, with whether the agent's messages there notify people (push) and how many of the agent's messages people have not read (unread). Channel 1 always exists.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_chat",
+    "description": "List the latest chat messages of people, you (author agent) and Toodo (author system), oldest first, with the receipts of people's messages; channel_id limits them to a channel itself, thread_id to a thread, and before pages back.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "before": {
+          "default": null,
+          "description": "Only messages before this one, to page back through the chat.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "channel_id": {
+          "default": null,
+          "description": "Only messages in this channel itself, not its threads.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "default": null,
+          "description": "At most this many messages, 50 when omitted and 200 at most.",
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "thread_id": {
+          "default": null,
+          "description": "Only messages in this thread. Without channel_id or thread_id, every message.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_tasks",
+    "description": "List tasks with status and depends_on, of one workspace or of all workspaces, by ascending ID. Each task has ready (planned, not waiting until a time, and nothing blocks it, so start_task or resume_task can begin it now) and blockedBy: the tasks it depends on that are not done yet, or done as not_adopted, which never unblocks it. Narrow the list to keep it short: status (e.g. [\"planned\", \"in_progress\"]), ready (true for tasks to start now), autopilot (true for tasks marked for autopilot), and limit (the newest matching tasks). When a page holds limit tasks, pass its first ID as before_id to read older ones.",
+    "inputSchema": {
+      "$defs": {
+        "TaskStatus": {
+          "enum": [
+            "planned",
+            "in_progress",
+            "in_review",
+            "done"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "autopilot": {
+          "default": null,
+          "description": "`true`: only tasks marked for autopilot; `false`: only the others. Every task when\nomitted.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "before_id": {
+          "default": null,
+          "description": "Only tasks with a lower ID. When a page has `limit` tasks, pass its first (lowest)\nID here to read the older ones.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "default": null,
+          "description": "At most this many tasks (1 to 500): the matching tasks with the highest IDs, still\nlisted by ascending ID. Every matching task when omitted.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ready": {
+          "default": null,
+          "description": "`true`: only tasks start_task or resume_task can begin now; `false`: only the\nothers. Every task when omitted.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "status": {
+          "default": null,
+          "description": "Only tasks with one of these statuses, e.g. `[\"planned\", \"in_progress\"]`; every\nstatus when omitted or empty.",
+          "items": {
+            "$ref": "#/$defs/TaskStatus"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "workspace_id": {
+          "description": "Only tasks of this workspace; all workspaces when omitted.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_threads",
+    "description": "List chat threads, the latest active first, with status (open, closed, archived), closedAt, archivedAt, taskId, and unread; channel_id or task_id narrows them, and include_archived adds archived threads.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "channel_id": {
+          "default": null,
+          "description": "Only threads under this channel.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "include_archived": {
+          "default": false,
+          "description": "Include archived threads, which are left out otherwise.",
+          "type": "boolean"
+        },
+        "task_id": {
+          "default": null,
+          "description": "Only threads that follow this task.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "list_workspaces",
+    "description": "List workspace records.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    }
+  },
+  {
+    "name": "mark_chat_handled",
+    "description": "Mark a person's chat message handled, with the reply_id of your reply or the task_id of the task you created or updated for it; it is acknowledged too if it was not yet.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The person's message that was handled.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "reply_id": {
+          "default": null,
+          "description": "The reply that handled it, an ID reply_in_chat returned.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "task_id": {
+          "default": null,
+          "description": "The task created or updated for it.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "move_task",
+    "description": "Move a task, in any status, into another workspace, e.g. {\"id\": 12, \"workspace_id\": 3}. Only its workspace changes: its id, status history, notes, criteria, refs, and dependency and related links stay. Refs such as branch:, lane:, or pr: are kept as recorded; Toodo creates no branch or worktree, so update them with update_task if the executor moves that work. Criteria are manual or url and do not depend on the workspace. The task follows the guidelines of its new workspace: read get_guidelines for it. An archived or unknown workspace is rejected.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The task to move, in any status.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "workspace_id": {
+          "description": "The live workspace it moves into, as in list_workspaces; archived ones are rejected.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "workspace_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "pause_task",
+    "description": "Pause an in_progress or in_review task with a required non-empty reason, e.g. {\"id\": 5, \"reason\": \"Waiting for the API design\"}. The task moves back to planned and shows as paused; the reason is recorded in its status history and notes. To wait for other tasks, use add_dependency, then resume_task when its prerequisites are done. Returns the task with its notes.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The task, e.g. your current task.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "reason": {
+          "description": "Why the work stops, in GitHub-flavored Markdown; recorded as a progress note.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "peek_pending",
+    "description": "Read the chat messages people sent in the Toodo app that you have not received yet, oldest first, without marking them received; take_pending marks them.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    }
+  },
+  {
+    "name": "read_toodo_skill",
+    "description": "Read instructions for managing tasks, notes, dependencies, references, and status.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    }
+  },
+  {
+    "name": "remove_criterion",
+    "description": "Remove a criterion from an unfinished task with criterion_id. Read get_task first to inspect its criteria.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "criterion_id": {
+          "description": "The criterion to delete with its evidence. `id` is accepted too.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "task_id": {
+          "default": null,
+          "description": "The task of the criterion; found from the criterion when omitted.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "criterion_id"
+      ],
+      "type": "object",
+      "x-aliases": {
+        "id": "criterion_id"
+      }
+    }
+  },
+  {
+    "name": "remove_dependency",
+    "description": "Remove the dependency of task_id on every task in depends_on, one task id or an array, e.g. {\"task_id\": 5, \"depends_on\": 3}. A dependency that does not exist is rejected, and so is a done task_id (reopen_task it first); then none is removed. Returns {task, paused, message} like add_dependency; message says whether the task is now ready, e.g. a paused task that resume_task can resume.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "depends_on": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9]+$",
+              "type": [
+                "integer",
+                "string"
+              ]
+            },
+            {
+              "items": {
+                "pattern": "^[0-9]+$",
+                "type": [
+                  "integer",
+                  "string"
+                ]
+              },
+              "type": "array"
+            }
+          ],
+          "description": "The prerequisites to remove: one task id or an array of them."
+        },
+        "task_id": {
+          "description": "The dependent task.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "depends_on"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "remove_guideline",
+    "description": "Remove a guideline, e.g. a memory that no longer holds. Do not remove a rule unless the user asks. Returns the guideline as it was.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The guideline, as in get_guidelines.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "remove_related",
+    "description": "Remove the related link between two tasks, given in either order. A link that does not exist is rejected. Returns task_id's details.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "related_id": {
+          "description": "The other task, from any workspace. The link goes both ways.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "task_id": {
+          "description": "One task of the link, e.g. your current task.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "related_id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "reopen_task",
+    "description": "Reopen a done task with a reason and confirm true. Earlier outcomes remain in its notes.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "confirm": {
+          "default": false,
+          "description": "true reopens the task. Without it nothing changes and the reply says what reopening\nwould do; read it before you confirm.",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "The done task to reopen, e.g. one completed or concluded by mistake.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "reason": {
+          "description": "Why the task is reopened, in GitHub-flavored Markdown; recorded as a progress note\nwith the earlier outcome.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "reply_in_chat",
+    "description": "Post a message to the people in the Toodo app chat; they get it at once and as a push notification unless its channel's notifications are off. handles lists the IDs of their messages it answers, which are marked handled by it. channel_id or thread_id (an open thread) says where to post; without them it goes where the first answered message is, else to the first channel. actions adds up to 10 buttons ({key, label, style default|primary|danger}); a person may choose one, which take_pending then returns as their message with choiceOf. attachments lists files you uploaded with POST /mcp/attachments?name=<file name> (the raw bytes as the body, Content-Type set, same bearer token; it returns the attachment with its id). Returns the posted message.",
+    "inputSchema": {
+      "$defs": {
+        "ChatAction": {
+          "additionalProperties": false,
+          "description": "A choice offered on the agent's message, shown as a button. A person's click comes back\nto the agent with `key`.",
+          "properties": {
+            "key": {
+              "description": "What the agent gets back when this is chosen, e.g. `approve`; unique in the message.",
+              "type": "string"
+            },
+            "label": {
+              "description": "What the button says.",
+              "type": "string"
+            },
+            "style": {
+              "$ref": "#/$defs/ChatActionStyle",
+              "default": "default"
+            }
+          },
+          "required": [
+            "key",
+            "label"
+          ],
+          "type": "object"
+        },
+        "ChatActionStyle": {
+          "description": "How an action's button looks: plain (`default`), the suggested choice (`primary`), or a\ndestructive one (`danger`).",
+          "enum": [
+            "default",
+            "primary",
+            "danger"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "actions": {
+          "default": [],
+          "description": "Up to 10 choices shown as buttons under the message. A person may choose one; you\nreceive it from take_pending as their message with the label as body and choiceOf\nnaming this message and the action key.",
+          "items": {
+            "$ref": "#/$defs/ChatAction"
+          },
+          "type": "array"
+        },
+        "attachments": {
+          "default": [],
+          "description": "IDs of files you uploaded with POST /mcp/attachments, up to 10.",
+          "items": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "body": {
+          "default": "",
+          "description": "The message to the people in the app, as text or Markdown; may be blank when\nattachments are given.",
+          "type": "string"
+        },
+        "channel_id": {
+          "default": null,
+          "description": "The channel to post in. Give this or thread_id, or neither to post where the first\nmessage in handles is, else in the first channel.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "handles": {
+          "default": [],
+          "description": "IDs of people's messages this reply answers; each is marked handled by it.",
+          "items": {
+            "pattern": "^[0-9]+$",
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "type": "array"
+        },
+        "thread_id": {
+          "default": null,
+          "description": "The open thread to post in.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "name": "report_blocker",
+    "description": "Record on a task's history what blocks the work on it and what is needed to continue. Does not change the task's status. Returns the task with its notes.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "note": {
+          "description": "What happened, in GitHub-flavored Markdown.",
+          "type": "string"
+        },
+        "task_id": {
+          "description": "The task the note is about, usually your current task.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        }
+      },
+      "required": [
+        "task_id",
+        "note"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "resume_task",
+    "description": "Resume a previously started planned task whose prerequisites are complete. An optional note records why work resumes.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The paused task.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "note": {
+          "default": null,
+          "description": "Why the work continues, in GitHub-flavored Markdown; recorded as a progress note.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "review_report",
+    "description": "Render the review of a period across all workspaces (or one workspace or label) as Markdown (the default) or CSV, the same report the Toodo app's Review exports: a summary of outcomes, commits, durations, plan vs actual, late tasks, a Year in review for a year, and each task under its outcome with its pull request, notes, and commits. period is week (from its Monday, or from from), month, quarter, year, or custom (from and to, both included); date (YYYY-MM-DD) picks the period containing that day, today when omitted. Days and times are in time_zone (IANA, e.g. Europe/Berlin), the server's when omitted. e.g. {\"period\": \"week\"} or {\"period\": \"year\", \"date\": \"2026-01-01\", \"format\": \"csv\"}. Returns {fileName, mediaType, from, to, contents}.",
+    "inputSchema": {
+      "$defs": {
+        "ReportFormat": {
+          "description": "The file format of a review report.",
+          "oneOf": [
+            {
+              "const": "markdown",
+              "description": "Markdown, for pasting into a status update or a year-end report.",
+              "type": "string"
+            },
+            {
+              "const": "csv",
+              "description": "One row per reviewed task (RFC 4180, CRLF line ends, led by a UTF-8 byte order\nmark), for spreadsheets.",
+              "type": "string"
+            }
+          ]
+        },
+        "ReviewPeriodKind": {
+          "description": "The kind of a reviewed period.",
+          "oneOf": [
+            {
+              "const": "week",
+              "description": "Seven days, from a Monday unless `from` names another first day.",
+              "type": "string"
+            },
+            {
+              "const": "month",
+              "description": "A calendar month.",
+              "type": "string"
+            },
+            {
+              "const": "quarter",
+              "description": "A calendar quarter.",
+              "type": "string"
+            },
+            {
+              "const": "year",
+              "description": "A calendar year.",
+              "type": "string"
+            },
+            {
+              "const": "custom",
+              "description": "The days `from` to `to`, both included.",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "date": {
+          "description": "A day inside the period as `YYYY-MM-DD`, for any period but custom; today when\nneither date nor from is given.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "format": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReportFormat"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "markdown when omitted, or csv."
+        },
+        "from": {
+          "description": "The first day as `YYYY-MM-DD`: required for custom, any first day of a week.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "Only tasks with this label; any label when omitted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "period": {
+          "$ref": "#/$defs/ReviewPeriodKind",
+          "description": "week (seven days from a Monday, or from `from`), month, quarter, year, or custom\n(`from` to `to`)."
+        },
+        "time_zone": {
+          "description": "An IANA time zone such as `Europe/Berlin` for the days and times; the server's\nreview time zone when omitted, so every client gets the same period.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "to": {
+          "description": "The last day of a custom period as `YYYY-MM-DD`, included.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace_id": {
+          "description": "Only tasks of this workspace; all workspaces when omitted.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "period"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "search_chat",
+    "description": "Search the chat for earlier messages: every word of query must appear in a message, as a case-insensitive substring. channel_id keeps to a channel and its threads, thread_id to one thread. Returns the matches best first, each with the message, channelName, and threadTitle.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "channel_id": {
+          "default": null,
+          "description": "Only messages in this channel and its threads.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "default": null,
+          "description": "At most this many messages, 20 when omitted and 100 at most.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "query": {
+          "description": "Words that must all appear in a message, as case-insensitive substrings.",
+          "type": "string"
+        },
+        "thread_id": {
+          "default": null,
+          "description": "Only messages in this thread.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "search_tasks",
+    "description": "Search tasks of all workspaces (or one) by words in their title, description, notes, completion note, branch, refs, and pull request, best match first. Every word must appear, as a substring in any language; words are literal, not operators. A task number alone (431 or #431) returns that task first, in any workspace. Use it before planning or create_task to find earlier tasks on the same subject, then get_task to read what was decided. Each result lists its depends_on, dependents, and related task IDs.",
+    "inputSchema": {
+      "$defs": {
+        "TaskStatus": {
+          "enum": [
+            "planned",
+            "in_progress",
+            "in_review",
+            "done"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "description": "At most this many results, best match first: 20 when omitted, at most 100; 0\nreturns none.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "query": {
+          "description": "Words to look for in any language, e.g. `deploy server`; short words such as\ntwo-character Korean ones work too. Every word must appear in the\ntask's title, description, notes, completion note, branch, refs, or pull request, as a\ncase-insensitive substring; words are taken literally, not as operators. Use a few\ndistinctive words and search again with others to widen the search. A task number\nalone, e.g. `431` or `#431`, also finds that task first, in any workspace.",
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only tasks with this status; any status when omitted."
+        },
+        "workspace_id": {
+          "description": "Only tasks of this workspace; all workspaces when omitted. A task found by its\nnumber is returned whatever its workspace.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "set_typing",
+    "description": "Show the people in the Toodo app chat that you are writing a reply (typing true), or stop showing it (false). It lapses after 30 seconds unless you send it again, and posting a reply ends it.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "typing": {
+          "description": "true while writing a reply (it lapses after 30 seconds unless sent again), false to stop.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "typing"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "start_task",
+    "description": "Record the start of a ready planned task: move it to in_progress, record reason in its status history, and append refs. Unfinished prerequisites must be completed with complete_task first. The reply carries guidelines, the guidelines of the task's workspace: follow its rules and read its memories before you work.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The task. Never your own task, the one current_task finds.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "reason": {
+          "default": null,
+          "description": "Why the task is started now, e.g. who picked it up and for what; recorded with the\nstart in its status history.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "refs": {
+          "default": [],
+          "description": "References to append to the task's refs, e.g. the lane or thread that works on it.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "take_pending",
+    "description": "Take the chat messages people sent in the Toodo app that you have not received yet, oldest first, and mark them received, so the next call returns only newer ones. Then ack_chat them, answer with reply_in_chat (handles marks them handled), or mark_chat_handled them with the task you made. A message not handled within 10 minutes shows overdue. A message with choiceOf records a person's click on an action of your message (choiceOf.messageId, choiceOf.key; the body is the action's label). Files on a message are listed in attachments; read each with GET /mcp/attachments/<id> on this server and the same bearer token.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    }
+  },
+  {
+    "name": "update_guideline",
+    "description": "Change the supplied kind and body of a guideline, keeping omitted values. Update a memory that became wrong or incomplete; do not rewrite a rule unless the user asks. Returns the guideline.",
+    "inputSchema": {
+      "$defs": {
+        "GuidelineKind": {
+          "description": "What a workspace guideline records: a `rule` the owner sets for agents to follow, or\na `memory`, a durable lesson or fact recorded for the workspace.",
+          "enum": [
+            "rule",
+            "memory"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "default": null,
+          "description": "The new Markdown body, at most 4000 characters; unchanged when omitted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "The guideline, as in get_guidelines.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GuidelineKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The new kind; unchanged when omitted."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "update_task",
+    "description": "Change supplied task fields and append or remove refs. Set status in_review when work awaits review. Use lifecycle tools for other status changes.",
+    "inputSchema": {
+      "$defs": {
+        "CheckKind": {
+          "description": "How a completion criterion is checked: by hand (`manual`) or by Toodo.",
+          "oneOf": [
+            {
+              "const": "manual",
+              "description": "Checked by the user or an agent, with evidence.",
+              "type": "string"
+            },
+            {
+              "const": "url",
+              "description": "A GET of `target`, an http(s) URL, succeeds.",
+              "type": "string"
+            }
+          ]
+        },
+        "CriterionInput": {
+          "additionalProperties": false,
+          "description": "A completion criterion given when creating or editing a task: an existing one by `id`\n(only when editing), or a new one.",
+          "properties": {
+            "id": {
+              "default": null,
+              "description": "An existing criterion of the task, which keeps its state unless its kind or\ntarget changes; omit it for a new criterion. `{\"id\": N}` alone keeps criterion N\nas it is.",
+              "pattern": "^[0-9]+$",
+              "type": [
+                "integer",
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CheckKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Required for a new criterion; the stored kind when omitted with `id`."
+            },
+            "target": {
+              "default": null,
+              "description": "The http(s) URL of a `url` criterion or the shell command of a `command`\ncriterion; omit it for other kinds. With `id`, the stored target when omitted and\nthe kind stays the same.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "default": null,
+              "description": "What has to hold, in words, e.g. `The server answers /health`. Required for a new\ncriterion; the stored text when omitted with `id`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "Estimate": {
+          "description": "The expected size of a task.",
+          "properties": {
+            "amount": {
+              "description": "Greater than 0 and at most 10000, e.g. 1.5. Exported as `number`: it is never NaN\nor infinite, which specta's default `number | null` allows for.",
+              "format": "double",
+              "type": "number"
+            },
+            "unit": {
+              "$ref": "#/$defs/EstimateUnit"
+            }
+          },
+          "required": [
+            "unit",
+            "amount"
+          ],
+          "type": "object"
+        },
+        "EstimateUnit": {
+          "description": "The unit of time an estimate counts, compared with the time the task spends in\nprogress or in review. A day is 24 hours, a week 7 days, and a month 30 days.",
+          "enum": [
+            "hours",
+            "days",
+            "weeks",
+            "months"
+          ],
+          "type": "string"
+        },
+        "TaskStatus": {
+          "enum": [
+            "planned",
+            "in_progress",
+            "in_review",
+            "done"
+          ],
+          "type": "string"
+        },
+        "TaskType": {
+          "enum": [
+            "feat",
+            "fix",
+            "modify",
+            "refactor",
+            "docs",
+            "test",
+            "chore",
+            "rnd"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "autopilot": {
+          "description": "true marks the task for autopilot (only when the user asked for it), false clears\nthe mark; unchanged when omitted. Marking a marked task keeps when it was marked.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "criteria": {
+          "description": "The full new list of completion criteria, replacing the current one; unchanged when\nomitted. Criteria whose `id` is left out are deleted with their evidence. Keep an\nexisting criterion by passing `{\"id\": N}`; given fields change it, omitted ones\nkeep their stored values, and it keeps its state unless its kind or target\nchanges. New criteria (no `id`) need `text` and `kind`. A done task cannot change\nat all through MCP.",
+          "items": {
+            "$ref": "#/$defs/CriterionInput"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "Details in GitHub-flavored Markdown; unchanged when omitted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "due_date": {
+          "description": "YYYY-MM-DD; unchanged when omitted, null clears it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "estimate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Estimate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Unchanged when omitted; null clears it."
+        },
+        "id": {
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "labels": {
+          "description": "The full new list of labels, replacing the current ones; unchanged when omitted,\n[] removes them all.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "refs": {
+          "description": "References to append after the task's references, e.g. [\"pr:123\"]; one the task\nalready has is not added again.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "remove_refs": {
+          "description": "References to remove from the task, given as they are listed in its refs; removed\nafter `refs` is appended.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "task_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskType"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Unchanged when omitted."
+        },
+        "title": {
+          "description": "Unchanged when omitted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "update_thread",
+    "description": "Change a chat thread: title, the task it follows (task_id, or unlink_task true), or status: closed when its conversation is over, archived to also put it away, open to take messages again. Closed and archived threads refuse new messages. Returns the thread.",
+    "inputSchema": {
+      "$defs": {
+        "ChatThreadStatus": {
+          "description": "Whether a thread takes messages: open, closed, or archived (closed and left out of its\nchannel's thread list unless asked for).",
+          "enum": [
+            "open",
+            "closed",
+            "archived"
+          ],
+          "type": "string"
+        }
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChatThreadStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "open takes messages again; closed ends the conversation; archived also puts it away."
+        },
+        "task_id": {
+          "default": null,
+          "description": "A task for it to follow, replacing any other.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "default": null,
+          "description": "A new title.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unlink_task": {
+          "default": false,
+          "description": "true drops the task it follows; cannot go with task_id.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "update_workspace",
+    "description": "Update supplied workspace settings while keeping omitted values.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "default": null,
+          "description": "Unchanged when omitted; null clears it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repository": {
+          "default": null,
+          "description": "Unchanged when omitted; null clears it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "wait_task",
+    "description": "Make a planned, in_progress, or in_review task wait until a time, e.g. {\"id\": 5, \"until\": \"2026-11-10T09:00:00+09:00\", \"reason\": \"Waiting for the vendor's reply\"}. An active task is paused (planned) until then; when the time passes Toodo returns it to the status it had, also after a server restart. Call again on a waiting task to move the time; call end_wait to return it now. Returns the task; its wait shows until and the status it returns to.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "A planned, in_progress, or in_review task.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string"
+          ]
+        },
+        "reason": {
+          "default": null,
+          "description": "Why the task waits, in GitHub-flavored Markdown; recorded with the progress note.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "until": {
+          "description": "When the wait ends: an RFC 3339 time with an offset, in the future, e.g.\n`2026-11-10T09:00:00+09:00` or `2026-11-10T00:00:00Z`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "until"
+      ],
+      "type": "object"
+    }
+  }
+]

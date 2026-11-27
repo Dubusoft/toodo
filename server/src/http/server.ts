@@ -1,12 +1,13 @@
 // The routes of the HTTP server on its one port: the API behind the web token (or a device
 // token, or Cloudflare Access), and the web app. Port of `router` and `event_stream` in
-// `src-tauri/src/server/mod.rs`. MCP (`/mcp`) and OAuth (`/oauth`, `/.well-known`) are
-// mounted by their own modules.
+// `src-tauri/src/server/mod.rs`. MCP (`/mcp`, with the agent's chat attachments) is served
+// by `server/src/mcp/`; OAuth (`/oauth`, `/.well-known`) is not mounted yet.
 
 import { statSync } from "node:fs";
 import { join, normalize, sep } from "node:path";
 import { deviceId } from "../domain/device.ts";
 import { chatAttachmentId } from "../domain/chat.ts";
+import { McpEndpoint } from "../mcp/mcp.ts";
 import * as attachments from "./attachments.ts";
 import { type Caller, FailedAttempts, text } from "./auth.ts";
 import type { AccessVerifier } from "./access.ts";
@@ -147,9 +148,28 @@ export function createHandler(options: RouterOptions): Handler {
     return allowed.length > 0 ? methodNotAllowed(allowed) : NOT_FOUND();
   }
 
+  const mcp = new McpEndpoint(services, { mcp: options.mcpToken, web: options.webToken });
+
+  /** `/mcp` and the agent's chat attachments under it, behind the MCP token. */
+  function agent(request: Request, pathname: string, connection: Connection): Response | Promise<Response> {
+    const refused = mcp.refusal(request, connection.peer);
+    if (refused !== null) return refused;
+    if (pathname === "/mcp/attachments") {
+      if (request.method !== "POST") return methodNotAllowed(["POST"]);
+      return attachments.upload(services, "agent", new URL(request.url).searchParams.get("name") ?? "", request);
+    }
+    const file = /^\/mcp\/attachments\/([^/]+)$/.exec(pathname);
+    if (file !== null) {
+      if (request.method !== "GET" && request.method !== "HEAD") return methodNotAllowed(["GET", "HEAD"]);
+      return int(file[1]!, (value) => attachments.send(services, chatAttachmentId(value)));
+    }
+    return mcp.serve(request);
+  }
+
   return async (request, connection) => {
     const { pathname } = new URL(request.url);
     if (pathname.startsWith("/api/")) return api(request, pathname, connection);
+    if (pathname === "/mcp" || pathname.startsWith("/mcp/")) return agent(request, pathname, connection);
     if (pathname.startsWith("/oauth/") || pathname.startsWith("/.well-known/")) return NOT_FOUND();
     return options.webDir === null ? NOT_FOUND() : staticFile(options.webDir, pathname, request.method);
   };

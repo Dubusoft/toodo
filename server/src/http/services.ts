@@ -57,6 +57,9 @@ export class Services implements Notifier {
   /** How far the status history records and adoptions are announced as
    * `task-status-changed` and `task-ready` events. */
   #announced: StatusCursor;
+  /** Called on every announcement, such as the MCP listen streams that read their
+   * resources again then. */
+  readonly #listeners = new Set<() => void>();
 
   constructor(init: ServicesInit) {
     this.storage = init.storage;
@@ -76,6 +79,14 @@ export class Services implements Notifier {
 
   emit(name: string, payload: unknown): void {
     this.events.send(name, JSON.stringify(payload));
+    for (const listener of this.#listeners) listener();
+  }
+
+  /** Calls `listener` on every change announced to clients, until the returned function is
+   * called. */
+  onChange(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   /**
