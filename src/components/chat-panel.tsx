@@ -256,7 +256,7 @@ function Actions({ message }: { message: ChatMessage }) {
   );
 }
 
-const defaultAgent: ChatAgent = { name: "Agent", avatarUrl: null };
+const defaultAgent: ChatAgent = { name: "Dori", avatarUrl: null };
 
 function AgentAvatar({ agent }: { agent: ChatAgent }) {
   return <Avatar size="sm" name={agent.name} src={agent.avatarUrl ?? undefined} tooltip={false} />;

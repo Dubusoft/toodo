@@ -73,14 +73,14 @@ Environment:
                   request's Access JWT instead of a token (unset by default)
   TOODO_CHAT_AGENT_NAME
                   name the chat shows for the agent connected over MCP
-                  (default Agent)
+                  (default Dori)
   TOODO_CHAT_AGENT_AVATAR
                   avatar of that agent, an https: URL or a path on this
                   server such as /avatar.png (unset by default)
 ";
 
 /// The name the chat shows for the agent unless `TOODO_CHAT_AGENT_NAME` sets one.
-const DEFAULT_AGENT_NAME: &str = "Agent";
+const DEFAULT_AGENT_NAME: &str = "Dori";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -711,7 +711,7 @@ mod tests {
         assert_eq!(
             config.chat_agent,
             ChatAgent {
-                name: "Agent".to_owned(),
+                name: "Dori".to_owned(),
                 avatar_url: None
             }
         );
