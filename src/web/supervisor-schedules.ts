@@ -1,0 +1,46 @@
+/**
+ * The scheduled jobs panel's calls: `GET /api/supervisor/schedules` lists the Dori supervisor's
+ * jobs and `POST` changes one; both answer with every job, which replaces the cached list.
+ */
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ScheduledJob, ScheduleRequest } from "@/lib/supervisor-schedules";
+import { serverFetch } from "@/web/connection";
+import { credentials, forgetToken, rejectedByServer } from "@/web/session";
+
+const SCHEDULES_PATH = "/api/supervisor/schedules";
+const queryKey = ["supervisor-schedules"] as const;
+/** Next and last runs move on their own while the panel is open. */
+const REFRESH_MS = 30_000;
+
+async function call(request?: ScheduleRequest): Promise<readonly ScheduledJob[]> {
+  const signedIn = credentials();
+  if (signedIn === null) throw new Error("No access token for the Toodo server.");
+  const response = await serverFetch(
+    SCHEDULES_PATH,
+    request === undefined
+      ? { headers: signedIn }
+      : { method: "POST", headers: { ...signedIn, "content-type": "application/json" }, body: JSON.stringify(request) },
+  );
+  if (await rejectedByServer(response)) forgetToken();
+  const body: unknown = await response.json().catch(() => null);
+  if (typeof body === "object" && body !== null && "ok" in body) {
+    if (body.ok === true && "jobs" in body) return body.jobs as readonly ScheduledJob[];
+    if ("error" in body && typeof body.error === "string") throw new Error(body.error);
+  }
+  const message = typeof body === "object" && body !== null && "message" in body && typeof body.message === "string" ? `: ${body.message}` : "";
+  throw new Error(`The scheduled jobs request failed: HTTP ${response.status}${message}`);
+}
+
+/** Every scheduled job, fetched while the panel is `active`. */
+export function useScheduledJobs(active: boolean) {
+  return useQuery({ queryKey, queryFn: () => call(), enabled: active, refetchInterval: active ? REFRESH_MS : false });
+}
+
+/** Applies one change; the answer is the new list. */
+export function useChangeSchedule() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (request: ScheduleRequest) => call(request),
+    onSuccess: (jobs) => queryClient.setQueryData(queryKey, jobs),
+  });
+}

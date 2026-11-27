@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Archive, Bell, Bot, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, Plug, SlidersHorizontal, X } from "lucide-react";
+import { Activity, Archive, Bell, Bot, CalendarClock, ChevronLeft, ChevronRight, DatabaseBackup, MonitorSmartphone, Plug, SlidersHorizontal, X } from "lucide-react";
 import { AgentAccessPanel } from "@/components/agent-access-panel";
 import { ArchivePanel } from "@/components/archive-panel";
 import { BackupPanel, BackupStatusLabel } from "@/components/backup-panel";
@@ -8,6 +8,7 @@ import { ConnectedAppsPanel } from "@/components/connected-apps-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
+import { SchedulesPanel } from "@/components/schedules-panel";
 import { SupervisorStatusPanel } from "@/components/supervisor-status-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { IconButton } from "@/components/button";
@@ -20,6 +21,7 @@ export type SettingsSection =
   | "general"
   | "agents"
   | "dori"
+  | "schedules"
   | "apps"
   | "devices"
   | "notifications"
@@ -37,6 +39,7 @@ const sections: Section[] = [
   { id: "general", label: "General", icon: <SlidersHorizontal /> },
   { id: "agents", label: "Agent access", icon: <Bot /> },
   { id: "dori", label: "Dori status", icon: <Activity /> },
+  { id: "schedules", label: "Scheduled jobs", icon: <CalendarClock /> },
   { id: "apps", label: "Connected apps", icon: <Plug /> },
   { id: "devices", label: "Devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
   { id: "notifications", label: "Notifications", icon: <Bell />, status: <NotificationsStatus /> },
@@ -269,6 +272,8 @@ export function SettingsDialog({
                     <GeneralSettings />
                   ) : item.id === "dori" ? (
                     <SupervisorStatusPanel active={open && shown === "dori"} />
+                  ) : item.id === "schedules" ? (
+                    <SchedulesPanel active={open && shown === "schedules"} />
                   ) : item.id === "agents" ? (
                     <AgentAccessPanel />
                   ) : item.id === "apps" ? (
