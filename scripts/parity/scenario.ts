@@ -1,0 +1,242 @@
+// The replay scenario: a fixed sequence of calls that invokes every command of the bindings
+// and every MCP tool at least once, through success and error paths, on objects it creates
+// itself, so it runs the same on a new database and on a copy of a live one.
+
+import { id, pick, type Results, type Step } from "./steps.ts";
+
+/** A URL criterion whose GET never leaves the machine: the servers refuse loopback targets. */
+const LOCAL_URL = "http://127.0.0.1:9/parity";
+const FAR_FUTURE = 4102444800;
+const YEAR = "2026";
+
+const rpc = (name: string, args: (own: Results) => Record<string, unknown> = () => ({})): Step => ({
+  name,
+  call: (own) => ({ rpc: name.split("#")[0], args: args(own) }),
+});
+const tool = (name: string, args: (own: Results) => Record<string, unknown> = () => ({})): Step => ({
+  name,
+  call: (own) => ({ tool: name.split("#")[0].replace(/^mcp:/, ""), args: args(own) }),
+});
+
+const newTask = (workspace: string, title: string, extra: Record<string, unknown> = {}) => (own: Results) => ({
+  task: {
+    workspaceId: id(own, workspace),
+    taskType: "feat",
+    title,
+    description: `${title}: description`,
+    estimate: null,
+    dueDate: null,
+    criteria: [],
+    ...extra,
+  },
+});
+
+const criterion = (own: Results, task: string, index = 0) => pick(own, task, "criteria", index, "id");
+const mcpTaskId = (own: Results, step: string) => (pick(own, step, "task", "id") ?? pick(own, step, "id")) as number;
+
+export const scenario: Step[] = [
+  { name: "initialize", call: () => ({ mcp: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "parity", version: "1" } } }) },
+  { name: "tools/list", call: () => ({ mcp: "tools/list" }) },
+  { name: "resources/list", call: () => ({ mcp: "resources/list" }) },
+
+  rpc("app_info"),
+  rpc("check_update"),
+  rpc("mcp_server_info"),
+  rpc("list_connected_apps"),
+  rpc("revoke_connected_app", () => ({ grantId: 999999 })),
+
+  // Restoring replaces all data, so it runs before the steps that make data: it restores the
+  // backup the server wrote when it started, which holds the database the run began with.
+  rpc("get_backup_settings"),
+  rpc("get_backup_status"),
+  rpc("save_backup_settings", () => ({ settings: { enabled: true, intervalHours: 1, keep: 3, directory: null } })),
+  rpc("list_backups"),
+  rpc("restore_backup", (own) => ({ name: (pick(own, "list_backups", 0, "path") as string | undefined)?.split("/").pop() ?? "none" })),
+  rpc("restore_backup#missing", () => ({ name: "no-such-backup.sqlite3" })),
+  rpc("save_backup_settings#off", () => ({ settings: { enabled: false, intervalHours: 24, keep: 3, directory: null } })),
+
+  rpc("create_workspace#a", () => ({ workspace: { name: "parity-a", description: "Parity A", repository: null } })),
+  rpc("create_workspace#b", () => ({ workspace: { name: "parity-b", description: null, repository: "https://github.com/example/parity" } })),
+  rpc("create_workspace#duplicate", () => ({ workspace: { name: "parity-a", description: null, repository: null } })),
+  rpc("get_workspace", (own) => ({ id: id(own, "create_workspace#a") })),
+  rpc("get_workspace#missing", () => ({ id: 999999 })),
+  rpc("update_workspace", (own) => ({ workspace: { ...(pick(own, "create_workspace#a") as object), description: "Parity A, edited" } })),
+  rpc("list_workspaces"),
+
+  rpc("add_guideline", (own) => ({ guideline: { workspaceId: id(own, "create_workspace#a"), kind: "rule", body: "Parity rule" } })),
+  rpc("add_guideline#memory", (own) => ({ guideline: { workspaceId: id(own, "create_workspace#a"), kind: "memory", body: "Parity memory" } })),
+  rpc("update_guideline", (own) => ({ guideline: { id: id(own, "add_guideline"), kind: "rule", body: "Parity rule, edited" } })),
+  rpc("delete_guideline", (own) => ({ id: id(own, "add_guideline#memory") })),
+  rpc("list_guidelines", (own) => ({ workspaceId: id(own, "create_workspace#a") })),
+
+  rpc("create_task#one", newTask("create_workspace#a", "Parity one", {
+    labels: ["parity"],
+    dueDate: "2031-01-15",
+    estimate: { unit: "days", amount: 2 },
+    criteria: [{ text: "Checked by hand", kind: "manual" }],
+  })),
+  rpc("create_task#two", newTask("create_workspace#a", "Parity two", { criteria: [{ text: "Answers", kind: "url", target: LOCAL_URL }] })),
+  rpc("create_task#three", newTask("create_workspace#a", "Parity three", { autopilot: true })),
+  rpc("create_task#four", newTask("create_workspace#a", "Parity four")),
+  rpc("create_task#blank", newTask("create_workspace#a", "  ")),
+  rpc("add_dependency", (own) => ({ taskId: id(own, "create_task#two"), dependsOn: id(own, "create_task#one"), confirmPause: false })),
+  rpc("add_dependency#cycle", (own) => ({ taskId: id(own, "create_task#one"), dependsOn: id(own, "create_task#two"), confirmPause: false })),
+  rpc("add_task_relation", (own) => ({ taskId: id(own, "create_task#one"), relatedId: id(own, "create_task#three") })),
+  rpc("list_task_relations"),
+  rpc("list_tasks", (own) => ({ filter: { workspaceId: id(own, "create_workspace#a") } })),
+  rpc("list_tasks#page", (own) => ({ filter: { workspaceId: id(own, "create_workspace#a"), statuses: ["planned"], limit: 2 } })),
+  rpc("get_task", (own) => ({ id: id(own, "create_task#one") })),
+  rpc("update_task", (own) => ({
+    task: {
+      id: id(own, "create_task#one"),
+      status: null,
+      taskType: "fix",
+      title: "Parity one, edited",
+      description: "Edited description",
+      estimate: null,
+      dueDate: null,
+      labels: ["parity", "edited"],
+      autopilot: true,
+      criteria: null,
+    },
+  })),
+  rpc("start_task", (own) => ({ id: id(own, "create_task#one"), reason: "Begin the work", refs: ["lane:parity-1"] })),
+  rpc("start_task#blocked", (own) => ({ id: id(own, "create_task#two"), reason: null, refs: null })),
+  rpc("check_criterion", (own) => ({ taskId: id(own, "create_task#one"), criterionId: criterion(own, "create_task#one"), met: true, evidence: "Seen" })),
+  rpc("complete_task", (own) => ({ id: id(own, "create_task#one"), note: "Finished", refs: ["pr:https://github.com/example/parity/pull/1"] })),
+  rpc("set_completion_note", (own) => ({ id: id(own, "create_task#one"), note: "Finished, edited" })),
+  rpc("set_task_outcome", (own) => ({ id: id(own, "create_task#one"), resolution: "not_adopted", note: "Outcome corrected" })),
+  rpc("reopen_task", (own) => ({ id: id(own, "create_task#one"), reason: "Reopened by mistake" })),
+  rpc("start_task#three", (own) => ({ id: id(own, "create_task#three"), reason: null, refs: null })),
+  rpc("pause_task", (own) => ({ id: id(own, "create_task#three") })),
+  rpc("wait_task", (own) => ({ id: id(own, "create_task#three"), until: FAR_FUTURE, reason: "Later" })),
+  rpc("end_wait", (own) => ({ id: id(own, "create_task#three") })),
+  rpc("move_task", (own) => ({ id: id(own, "create_task#four"), workspaceId: id(own, "create_workspace#b") })),
+  rpc("link_issue", (own) => ({ id: id(own, "create_task#four"), reference: "https://github.com/example/parity/issues/1" })),
+  rpc("conclude_task", (own) => ({ id: id(own, "create_task#four"), note: "Not needed", outcome: "not_adopted", shippedWith: null })),
+  rpc("remove_dependency", (own) => ({ taskId: id(own, "create_task#two"), dependsOn: id(own, "create_task#one") })),
+  rpc("start_task#two", (own) => ({ id: id(own, "create_task#two"), reason: null, refs: null })),
+  rpc("complete_task#url", (own) => ({ id: id(own, "create_task#two"), note: null, refs: null })),
+  rpc("remove_task_relation", (own) => ({ taskId: id(own, "create_task#three"), relatedId: id(own, "create_task#one") })),
+  rpc("delete_task", (own) => ({ id: id(own, "create_task#three") })),
+  rpc("list_archive"),
+  rpc("restore_task", (own) => ({ id: id(own, "create_task#three") })),
+  rpc("purge_task#live", (own) => ({ id: id(own, "create_task#three") })),
+  rpc("delete_task#again", (own) => ({ id: id(own, "create_task#three") })),
+  rpc("purge_task", (own) => ({ id: id(own, "create_task#three") })),
+  rpc("get_task#missing", () => ({ id: 999999 })),
+  rpc("delete_done_tasks", (own) => ({ workspaceId: id(own, "create_workspace#b") })),
+  rpc("delete_workspace", (own) => ({ id: id(own, "create_workspace#b") })),
+  rpc("restore_workspace", (own) => ({ id: id(own, "create_workspace#b") })),
+  rpc("purge_workspace#live", (own) => ({ id: id(own, "create_workspace#b") })),
+  rpc("delete_workspace#again", (own) => ({ id: id(own, "create_workspace#b") })),
+  rpc("purge_workspace", (own) => ({ id: id(own, "create_workspace#b") })),
+
+  rpc("get_review_time_zone"),
+  rpc("set_review_time_zone", () => ({ timeZone: "Asia/Seoul" })),
+  rpc("set_review_time_zone#invalid", () => ({ timeZone: "Not/AZone" })),
+  rpc("review_period", () => ({ from: `${YEAR}-01-01`, to: `${YEAR}-12-31` })),
+  rpc("review_report", () => ({ request: { period: "year", date: `${YEAR}-06-01`, format: "markdown" } })),
+  rpc("review_report#csv", (own) => ({ request: { period: "custom", from: `${YEAR}-01-01`, to: `${YEAR}-12-31`, format: "csv", workspaceId: id(own, "create_workspace#a") } })),
+  rpc("save_review_snapshot", () => ({ request: { period: "custom", from: `${YEAR}-01-01`, to: `${YEAR}-12-31`, title: "Parity review" } })),
+  rpc("list_review_snapshots"),
+  rpc("get_review_snapshot", (own) => ({ id: id(own, "save_review_snapshot") })),
+  rpc("delete_review_snapshot", (own) => ({ id: id(own, "save_review_snapshot") })),
+
+  rpc("list_chat_channels"),
+  rpc("create_chat_channel", () => ({ name: "parity" })),
+  rpc("update_chat_channel", (own) => ({ id: id(own, "create_chat_channel"), edit: { name: "parity-renamed", push: false } })),
+  rpc("create_chat_thread", (own) => ({ thread: { channelId: id(own, "create_chat_channel"), title: "Parity thread", taskId: id(own, "create_task#two") } })),
+  rpc("update_chat_thread", (own) => ({ id: id(own, "create_chat_thread"), edit: { title: "Parity thread, edited" } })),
+  rpc("list_chat_threads", (own) => ({ filter: { channelId: id(own, "create_chat_channel") } })),
+  { name: "upload_attachment", call: () => ({ http: { method: "POST", path: "/api/chat/attachments?name=parity.txt", body: "parity attachment", headers: { "content-type": "text/plain" } } }) },
+  rpc("send_chat_message", (own) => ({ place: { channel: id(own, "create_chat_channel") }, body: "Hello agent", clientId: "parity-1", attachments: [id(own, "upload_attachment")] })),
+  rpc("send_chat_message#again", (own) => ({ place: { channel: id(own, "create_chat_channel") }, body: "Hello agent", clientId: "parity-1", attachments: [id(own, "upload_attachment")] })),
+  rpc("send_chat_message#thread", (own) => ({ place: { thread: id(own, "create_chat_thread") }, body: "Hello in the thread", clientId: "parity-2", attachments: [] })),
+  { name: "read_attachment", call: (own) => ({ http: { method: "GET", path: `/api/chat/attachments/${id(own, "upload_attachment")}` } }) },
+  tool("mcp:peek_pending"),
+  tool("mcp:take_pending"),
+  tool("mcp:ack_chat", (own) => ({ ids: [id(own, "send_chat_message")] })),
+  tool("mcp:set_typing", () => ({ typing: true })),
+  tool("mcp:reply_in_chat", (own) => ({
+    channel_id: id(own, "create_chat_channel"),
+    body: "Reply from the agent",
+    actions: [{ key: "approve", label: "Approve", style: "primary" }, { key: "deny", label: "Deny", style: "danger" }],
+    handles: [id(own, "send_chat_message")],
+  })),
+  tool("mcp:mark_chat_handled", (own) => ({ id: id(own, "send_chat_message#thread"), task_id: id(own, "create_task#two") })),
+  tool("mcp:set_typing#off", () => ({ typing: false })),
+  rpc("choose_chat_action", (own) => ({ messageId: mcpTaskId(own, "mcp:reply_in_chat"), key: "approve", clientId: "parity-3" })),
+  rpc("list_chat", (own) => ({ place: { channel: id(own, "create_chat_channel") }, before: null })),
+  rpc("mark_chat_read", (own) => ({ place: { channel: id(own, "create_chat_channel") }, upTo: mcpTaskId(own, "mcp:reply_in_chat") })),
+  rpc("search_chat", () => ({ query: "hello", place: null })),
+  tool("mcp:list_chat", (own) => ({ channel_id: id(own, "create_chat_channel") })),
+  tool("mcp:search_chat", () => ({ query: "reply" })),
+  tool("mcp:list_channels"),
+  tool("mcp:create_channel", () => ({ name: "parity-mcp" })),
+  tool("mcp:create_thread", (own) => ({ channel_id: id(own, "create_chat_channel"), title: "Thread from the agent" })),
+  tool("mcp:update_thread", (own) => ({ id: mcpTaskId(own, "mcp:create_thread"), status: "closed" })),
+  tool("mcp:list_threads", (own) => ({ channel_id: id(own, "create_chat_channel"), include_archived: true })),
+
+  tool("mcp:list_workspaces"),
+  tool("mcp:create_workspace", () => ({ name: "parity-mcp", description: "Made over MCP" })),
+  tool("mcp:update_workspace", (own) => ({ id: mcpTaskId(own, "mcp:create_workspace"), description: "Made over MCP, edited" })),
+  tool("mcp:add_guideline", (own) => ({ workspace_id: mcpTaskId(own, "mcp:create_workspace"), body: "MCP rule", kind: "rule" })),
+  tool("mcp:update_guideline", (own) => ({ id: mcpTaskId(own, "mcp:add_guideline"), body: "MCP rule, edited" })),
+  tool("mcp:get_guidelines", (own) => ({ workspace_id: mcpTaskId(own, "mcp:create_workspace") })),
+  tool("mcp:remove_guideline", (own) => ({ id: mcpTaskId(own, "mcp:add_guideline") })),
+  tool("mcp:create_task", (own) => ({
+    workspace_id: mcpTaskId(own, "mcp:create_workspace"),
+    task_type: "feat",
+    title: "MCP one",
+    description: "Made over MCP",
+    labels: ["parity"],
+    refs: ["lane:parity-mcp"],
+    criteria: [{ text: "Checked over MCP", kind: "manual" }],
+  })),
+  tool("mcp:create_plan", (own) => ({
+    tasks: [
+      { key: "a", workspace_id: mcpTaskId(own, "mcp:create_workspace"), task_type: "feat", title: "MCP plan A" },
+      { key: "b", workspace_id: mcpTaskId(own, "mcp:create_workspace"), task_type: "docs", title: "MCP plan B", depends_on_keys: ["a"] },
+    ],
+  })),
+  tool("mcp:get_task", (own) => ({ id: mcpTaskId(own, "mcp:create_task") })),
+  tool("mcp:list_tasks", (own) => ({ workspace_id: mcpTaskId(own, "mcp:create_workspace") })),
+  tool("mcp:search_tasks", () => ({ query: "MCP plan" })),
+  tool("mcp:current_task", () => ({ ref: "lane:parity-mcp" })),
+  tool("mcp:update_task", (own) => ({ id: mcpTaskId(own, "mcp:create_task"), title: "MCP one, edited", refs: ["pr:https://github.com/example/parity/pull/2"] })),
+  tool("mcp:add_criterion", (own) => ({ task_id: mcpTaskId(own, "mcp:create_task"), text: "Second check", kind: "manual" })),
+  tool("mcp:remove_criterion", (own) => ({ task_id: mcpTaskId(own, "mcp:create_task"), criterion_id: pick(own, "mcp:add_criterion", "task", "criteria", 1, "id") ?? pick(own, "mcp:add_criterion", "criteria", 1, "id") })),
+  tool("mcp:add_dependency", (own) => ({ task_id: mcpTaskId(own, "mcp:create_task"), depends_on: pick(own, "mcp:create_plan", "tasks", 0, "id") })),
+  tool("mcp:remove_dependency", (own) => ({ task_id: mcpTaskId(own, "mcp:create_task"), depends_on: pick(own, "mcp:create_plan", "tasks", 0, "id") })),
+  tool("mcp:add_related", (own) => ({ task_id: mcpTaskId(own, "mcp:create_task"), related_id: pick(own, "mcp:create_plan", "tasks", 1, "id") })),
+  tool("mcp:remove_related", (own) => ({ task_id: mcpTaskId(own, "mcp:create_task"), related_id: pick(own, "mcp:create_plan", "tasks", 1, "id") })),
+  tool("mcp:start_task", (own) => ({ id: mcpTaskId(own, "mcp:create_task"), reason: "Begin over MCP" })),
+  tool("mcp:add_progress_note", (own) => ({ task_id: mcpTaskId(own, "mcp:create_task"), note: "A decision", kind: "decision" })),
+  tool("mcp:report_blocker", (own) => ({ task_id: mcpTaskId(own, "mcp:create_task"), note: "Waiting on something" })),
+  tool("mcp:pause_task", (own) => ({ id: mcpTaskId(own, "mcp:create_task"), reason: "Paused over MCP" })),
+  tool("mcp:resume_task", (own) => ({ id: mcpTaskId(own, "mcp:create_task"), note: "Resumed" })),
+  tool("mcp:wait_task", (own) => ({ id: mcpTaskId(own, "mcp:create_task"), until: "2100-01-01T00:00:00Z", reason: "Later" })),
+  tool("mcp:end_wait", (own) => ({ id: mcpTaskId(own, "mcp:create_task"), note: "Back" })),
+  tool("mcp:check_criterion", (own) => ({ task_id: mcpTaskId(own, "mcp:create_task"), criterion_id: pick(own, "mcp:get_task", "task", "criteria", 0, "id") ?? pick(own, "mcp:get_task", "criteria", 0, "id"), met: true, evidence: "Seen over MCP" })),
+  tool("mcp:complete_task", (own) => ({ id: mcpTaskId(own, "mcp:create_task"), note: "Done over MCP", refs: [] })),
+  tool("mcp:reopen_task", (own) => ({ id: mcpTaskId(own, "mcp:create_task"), reason: "Again", confirm: true })),
+  tool("mcp:conclude_task", (own) => ({ id: pick(own, "mcp:create_plan", "tasks", 1, "id"), note: "Not adopted over MCP", outcome: "not_adopted" })),
+  tool("mcp:move_task", (own) => ({ id: pick(own, "mcp:create_plan", "tasks", 0, "id"), workspace_id: id(own, "create_workspace#a") })),
+  tool("mcp:delete_task", (own) => ({ id: pick(own, "mcp:create_plan", "tasks", 0, "id"), confirm: true })),
+  tool("mcp:delete_done_tasks", (own) => ({ workspace_id: mcpTaskId(own, "mcp:create_workspace"), confirm: true })),
+  tool("mcp:get_task#missing", () => ({ id: 999999 })),
+  tool("mcp:review_report", () => ({ period: "year", date: `${YEAR}-06-01`, format: "csv" })),
+  tool("mcp:read_toodo_skill"),
+  tool("mcp:archive_workspace", (own) => ({ id: mcpTaskId(own, "mcp:create_workspace"), confirm: true })),
+  { name: "unknown_tool", call: () => ({ tool: "no_such_tool", args: {} }) },
+  { name: "unknown_command", call: () => ({ rpc: "no_such_command", args: {} }) },
+
+  rpc("list_backups#end"),
+  rpc("list_tasks#all", (own) => ({ filter: { workspaceId: id(own, "create_workspace#a") } })),
+];
+
+/** The last step: its event tells that every event of the steps before it has arrived. */
+export const marker: Step = rpc("update_workspace#marker", (own) => ({
+  workspace: { ...(pick(own, "create_workspace#a") as object), description: "Parity replay done" },
+}));
