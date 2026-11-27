@@ -32,6 +32,12 @@ export const validTimeZone = (tz: string): boolean => {
 /** `tz` when it is a valid zone name, else DEFAULT_DISPLAY_TIME_ZONE. */
 export const displayZone = (tz: string | undefined): string => (tz && validTimeZone(tz) ? tz : DEFAULT_DISPLAY_TIME_ZONE);
 
+/** The label times in `tz` (invalid or absent: UTC) are shown with at `ms`: "KST", "UTC", or `Intl`'s short name ("PDT"). */
+export const zoneLabel = (tz: string | undefined, ms: number): string => {
+  const zone = displayZone(tz);
+  return LABELS[zone] ?? format(zone).formatToParts(new Date(ms)).find((p) => p.type === "timeZoneName")?.value ?? zone;
+};
+
 /**
  * `ms` in `tz` (invalid or absent: UTC) with the zone's label: "2026-11-10 17:46 KST" (`date: "full"`, the default) or
  * "11-10 17:46 KST" (`date: "short"`).
@@ -40,5 +46,5 @@ export const displayTime = (ms: number, tz: string | undefined, date: "full" | "
   const zone = displayZone(tz);
   const parts = Object.fromEntries(format(zone).formatToParts(new Date(ms)).map((p) => [p.type, p.value]));
   const day = date === "full" ? `${parts.year}-${parts.month}-${parts.day}` : `${parts.month}-${parts.day}`;
-  return `${day} ${parts.hour}:${parts.minute} ${LABELS[zone] ?? parts.timeZoneName}`;
+  return `${day} ${parts.hour}:${parts.minute} ${zoneLabel(zone, ms)}`;
 };

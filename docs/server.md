@@ -1093,8 +1093,10 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   while a panel is open.
 - `GET /api/supervisor/schedules` and `POST /api/supervisor/schedules`: the scheduled jobs
   panel (Settings > Scheduled jobs), the supervisor's `dori schedule` jobs. `GET` answers
-  `{ "ok": true, "jobs": [...] }`, each job with its schedule, next and last run, and last
-  result; `POST` takes one change (`list`, `add`, `remove`, `run-now`, `pause`, `resume`,
+  `{ "ok": true, "jobs": [...], "timeZone": { "name", "label" } }`, each job with its
+  schedule, next and last run, and last result, and Dori's `displayTimeZone`, in which the
+  panel says schedules ("Every day at 4:00 AM (KST)", in Korean on a Korean browser) and picks them by repeat
+  and time; a cron expression the pickers cannot show is listed and edited as it is; `POST` takes one change (`list`, `add`, `remove`, `run-now`, `pause`, `resume`,
   or `edit` of a job's cron expression or interval, typed in
   `src/lib/supervisor-schedules.ts`) and answers the same way with every job after it. The
   server keeps none of it: the host hands each request to the supervisor Worker, which

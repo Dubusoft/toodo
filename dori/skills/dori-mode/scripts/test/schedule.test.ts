@@ -279,26 +279,26 @@ test("a change from the web app applies on the supervisor's next pass, and a ref
   w.specs.add({ name: "brief", type: "schedule", kind: "DAILY_BRIEF", cron: "0 9 * * *", text: "morning brief", since: SINCE });
   // 22:00 KST: moved to 23:30 the same evening, it runs then instead of at 09:00.
   w.clock.at = SINCE + 3_600_000;
-  const edited = handleScheduleRequest(w.dir, { op: "edit", name: "brief", timing: { cron: "30 23 * * *" } }, w.clock.at);
-  expect(edited).toMatchObject({ ok: true, jobs: [{ name: "brief", cron: "30 23 * * *", tz: "Asia/Seoul", nextRunAt: Date.UTC(2026, 9, 22, 14, 30), paused: false }] });
+  const edited = handleScheduleRequest(w.dir, "Asia/Seoul", { op: "edit", name: "brief", timing: { cron: "30 23 * * *" } }, w.clock.at);
+  expect(edited).toMatchObject({ ok: true, timeZone: { name: "Asia/Seoul", label: "KST" }, jobs: [{ name: "brief", cron: "30 23 * * *", tz: "Asia/Seoul", nextRunAt: Date.UTC(2026, 9, 22, 14, 30), paused: false }] });
   w.clock.at = Date.UTC(2026, 9, 22, 14, 30) + 10_000;
   await w.tick();
   expect(w.lines("DAILY_BRIEF")).toEqual(["DAILY_BRIEF morning brief"]);
-  const listed = handleScheduleRequest(w.dir, { op: "list" }, w.clock.at);
+  const listed = handleScheduleRequest(w.dir, "Asia/Seoul", { op: "list" }, w.clock.at);
   expect(listed).toMatchObject({ ok: true, jobs: [{ lastResult: "emitted", nextRunAt: Date.UTC(2026, 9, 23, 14, 30) }] });
 
   const before = readFileSync(w.specs.path, "utf8");
-  expect(handleScheduleRequest(w.dir, { op: "edit", name: "brief", timing: { cron: "0 0 31 2 *" } }, w.clock.at)).toEqual({ ok: false, error: 'schedule brief: cron "0 0 31 2 *" never fires' });
-  expect(handleScheduleRequest(w.dir, { op: "pause", name: "nope" }, w.clock.at)).toEqual({ ok: false, error: 'no schedule "nope"' });
-  expect(handleScheduleRequest(w.dir, { op: "add", job: { name: "brief", kind: "X_KIND", everySec: 3_600, text: "x" } }, w.clock.at)).toEqual({ ok: false, error: "source brief already exists; remove it first" });
+  expect(handleScheduleRequest(w.dir, "Asia/Seoul", { op: "edit", name: "brief", timing: { cron: "0 0 31 2 *" } }, w.clock.at)).toEqual({ ok: false, error: 'schedule brief: cron "0 0 31 2 *" never fires' });
+  expect(handleScheduleRequest(w.dir, "Asia/Seoul", { op: "pause", name: "nope" }, w.clock.at)).toEqual({ ok: false, error: 'no schedule "nope"' });
+  expect(handleScheduleRequest(w.dir, "Asia/Seoul", { op: "add", job: { name: "brief", kind: "X_KIND", everySec: 3_600, text: "x" } }, w.clock.at)).toEqual({ ok: false, error: "source brief already exists; remove it first" });
   expect(readFileSync(w.specs.path, "utf8")).toBe(before);
 
-  const added = handleScheduleRequest(w.dir, { op: "add", job: { name: "digest", kind: "GMAIL_DIGEST", cron: "0 6 * * *", command: "echo hi" } }, w.clock.at);
+  const added = handleScheduleRequest(w.dir, "Asia/Seoul", { op: "add", job: { name: "digest", kind: "GMAIL_DIGEST", cron: "0 6 * * *", command: "echo hi" } }, w.clock.at);
   expect(added).toMatchObject({ ok: true, jobs: [{ name: "brief" }, { name: "digest", command: ["sh", "-c", "echo hi"], catchUp: "once" }] });
-  expect(handleScheduleRequest(w.dir, { op: "run-now", name: "brief" }, w.clock.at)).toMatchObject({ ok: true });
+  expect(handleScheduleRequest(w.dir, "Asia/Seoul", { op: "run-now", name: "brief" }, w.clock.at)).toMatchObject({ ok: true });
   await w.tick();
   expect(w.lines("DAILY_BRIEF")).toHaveLength(2);
-  expect(handleScheduleRequest(w.dir, { op: "remove", name: "digest" }, w.clock.at)).toMatchObject({ ok: true, jobs: [{ name: "brief" }] });
+  expect(handleScheduleRequest(w.dir, "Asia/Seoul", { op: "remove", name: "digest" }, w.clock.at)).toMatchObject({ ok: true, jobs: [{ name: "brief" }] });
 });
 
 test("a run-now request whose time is no date is set aside and the schedules keep ticking", async () => {

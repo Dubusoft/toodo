@@ -61,9 +61,12 @@ export type ScheduleRequest =
   | { readonly op: "resume"; readonly name: string }
   | { readonly op: "edit"; readonly name: string; readonly timing: ScheduleTiming; readonly tz?: string };
 
+/** Dori's `displayTimeZone`, in which the panel shows and picks times, with its label ("KST"). */
+export type ScheduleTimeZone = { readonly name: string; readonly label: string };
+
 /** Every job after the request, or why it was refused. */
 export type ScheduleReply =
-  | { readonly ok: true; readonly jobs: readonly ScheduledJob[] }
+  | { readonly ok: true; readonly jobs: readonly ScheduledJob[]; readonly timeZone: ScheduleTimeZone }
   | { readonly ok: false; readonly error: string };
 
 export const SCHEDULE_OPS = ["list", "add", "remove", "run-now", "pause", "resume", "edit"] as const satisfies readonly ScheduleRequest["op"][];

@@ -3,8 +3,10 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SchedulesPanel } from "@/components/schedules-panel";
 import type { ScheduledJob, ScheduleRequest } from "@/lib/supervisor-schedules";
+import { chooseOption } from "@/test/app";
 
 const TOKEN_KEY = "toodo-server-token";
+const timeZone = { name: "Asia/Seoul", label: "KST" };
 
 const digest: ScheduledJob = {
   name: "gmail-digest", kind: "GMAIL_DIGEST", cron: "0 6 * * *", everySec: null, tz: "Asia/Seoul",
@@ -14,12 +16,31 @@ const digest: ScheduledJob = {
 
 const tidy: ScheduledJob = { ...digest, name: "memory-tidy", kind: "MEMORY_TIDY", cron: "0 4 * * *", lastResult: "failed exit 1", error: "memory-tidy exited 1" };
 
+const office: ScheduledJob = { ...digest, name: "office-poll", kind: "OFFICE_POLL", cron: "*/15 9-18 * * 1-5", lastResult: null, error: null };
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
   localStorage.clear();
 });
 
-function renderPanel() {
+/** The server: lists `jobs`; a POST is recorded and answered by `answer`. */
+function serve(jobs: readonly ScheduledJob[], answer: (request: ScheduleRequest) => Response = () => Response.json({ ok: true, jobs, timeZone })) {
+  localStorage.setItem(TOKEN_KEY, "secret");
+  const posted: ScheduleRequest[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (path: string, init?: RequestInit) => {
+    expect(path).toBe("/api/supervisor/schedules");
+    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
+    if (init?.method !== "POST") return Response.json({ ok: true, jobs, timeZone });
+    const request = JSON.parse(String(init.body)) as ScheduleRequest;
+    posted.push(request);
+    return answer(request);
+  }));
+  return posted;
+}
+
+function renderPanel(language = "ko-KR") {
+  vi.spyOn(navigator, "language", "get").mockReturnValue(language);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
@@ -29,26 +50,18 @@ function renderPanel() {
 }
 
 describe("SchedulesPanel", () => {
-  it("lists every job with its schedule, next and last run and result, and pauses one", async () => {
-    localStorage.setItem(TOKEN_KEY, "secret");
-    const posted: ScheduleRequest[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (path: string, init?: RequestInit) => {
-      expect(path).toBe("/api/supervisor/schedules");
-      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
-      if (init?.method === "POST") {
-        posted.push(JSON.parse(String(init.body)) as ScheduleRequest);
-        return Response.json({ ok: true, jobs: [{ ...digest, paused: true, nextRunAt: null }, tidy] });
-      }
-      return Response.json({ ok: true, jobs: [digest, tidy] });
-    }));
+  it("lists every job with its schedule as a sentence, its next and last run and result, and pauses one", async () => {
+    const posted = serve([digest, tidy, office], () => Response.json({ ok: true, jobs: [{ ...digest, paused: true, nextRunAt: null }, tidy, office], timeZone }));
     renderPanel();
 
     const row = await screen.findByRole("listitem", { name: "Scheduled job gmail-digest" });
-    expect(within(row).getByText("0 6 * * * (Asia/Seoul)")).toBeInTheDocument();
+    expect(within(row).getByText("매일 오전 6:00 (KST)")).toBeInTheDocument();
     expect(within(row).getByText("zele digest")).toBeInTheDocument();
     expect(within(row).getByText("ok")).toBeInTheDocument();
     const failing = screen.getByRole("listitem", { name: "Scheduled job memory-tidy" });
+    expect(within(failing).getByText("매일 오전 4:00 (KST)")).toBeInTheDocument();
     expect(within(failing).getByRole("alert")).toHaveTextContent("memory-tidy exited 1");
+    expect(within(screen.getByRole("listitem", { name: "Scheduled job office-poll" })).getByText("*/15 9-18 * * 1-5 (Asia/Seoul)")).toBeInTheDocument();
 
     fireEvent.click(within(row).getByRole("button", { name: "Pause gmail-digest" }));
     expect(await within(row).findByRole("button", { name: "Resume gmail-digest" })).toBeInTheDocument();
@@ -56,18 +69,34 @@ describe("SchedulesPanel", () => {
     expect(posted).toEqual([{ op: "pause", name: "gmail-digest" }]);
   });
 
-  it("shows why the supervisor refused a change", async () => {
-    localStorage.setItem(TOKEN_KEY, "secret");
-    vi.stubGlobal("fetch", vi.fn(async (_path: string, init?: RequestInit) =>
-      init?.method === "POST"
-        ? Response.json({ ok: false, error: 'schedule gmail-digest: cron "0 0 31 2 *" never fires' }, { status: 400 })
-        : Response.json({ ok: true, jobs: [digest] })));
+  it("edits a schedule with the pickers and saves it as cron in the display time zone", async () => {
+    const posted = serve([digest]);
     renderPanel();
     const row = await screen.findByRole("listitem", { name: "Scheduled job gmail-digest" });
     fireEvent.click(within(row).getByRole("button", { name: "Edit the schedule of gmail-digest" }));
     const form = within(row).getByRole("form", { name: "Edit the schedule of gmail-digest" });
-    fireEvent.change(within(form).getByLabelText(/^Schedule/), { target: { value: "0 0 31 2 *" } });
+    expect(within(form).queryByLabelText(/cron 식/)).not.toBeInTheDocument();
+    chooseOption(within(form).getByRole("combobox", { name: "반복" }), "매주");
+    fireEvent.click(within(form).getByRole("checkbox", { name: "수" }));
+    chooseOption(within(form).getByRole("combobox", { name: "시" }), "오전 9시");
+    chooseOption(within(form).getByRole("combobox", { name: "분" }), "30분");
+    expect(within(form).getByRole("note")).toHaveTextContent("매주 월·수요일 오전 9:30 (KST)");
+    fireEvent.click(within(form).getByRole("button", { name: "Save schedule" }));
+    await vi.waitFor(() => expect(posted).toEqual([{ op: "edit", name: "gmail-digest", timing: { cron: "30 9 * * 1,3" }, tz: "Asia/Seoul" }]));
+  });
+
+  it("edits a cron expression the pickers cannot show under Advanced, and shows why the supervisor refused it", async () => {
+    const posted = serve([office], () => Response.json({ ok: false, error: 'schedule office-poll: cron "0 0 31 2 *" never fires' }, { status: 400 }));
+    renderPanel("en-US");
+    const row = await screen.findByRole("listitem", { name: "Scheduled job office-poll" });
+    fireEvent.click(within(row).getByRole("button", { name: "Edit the schedule of office-poll" }));
+    const form = within(row).getByRole("form", { name: "Edit the schedule of office-poll" });
+    expect(within(form).queryByRole("combobox", { name: "Repeats" })).not.toBeInTheDocument();
+    const raw = within(form).getByLabelText(/^A cron expression/);
+    expect(raw).toHaveValue("*/15 9-18 * * 1-5");
+    fireEvent.change(raw, { target: { value: "0 0 31 2 *" } });
     fireEvent.click(within(form).getByRole("button", { name: "Save schedule" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("never fires");
+    expect(posted).toEqual([{ op: "edit", name: "office-poll", timing: { cron: "0 0 31 2 *" }, tz: "Asia/Seoul" }]);
   });
 });

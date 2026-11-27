@@ -29,14 +29,14 @@ describe("scheduled jobs", () => {
     const server = await start(async (request) => {
       seen.push(request);
       if (request.op === "edit") return { ok: false, error: 'schedule gmail-digest: cron "0 0 31 2 *" never fires' };
-      return { ok: true, jobs: [{ ...job, paused: request.op === "pause" }] };
+      return { ok: true, jobs: [{ ...job, paused: request.op === "pause" }], timeZone: { name: "Asia/Seoul", label: "KST" } };
     });
     expect((await server.fetch("GET", "/api/supervisor/schedules")).status).toBe(401);
     expect((await server.fetch("GET", "/api/supervisor/schedules", { token: AGENT })).status).toBe(401);
 
-    expect(await server.send("GET", "/api/supervisor/schedules", WEB, undefined)).toEqual({ status: 200, body: { ok: true, jobs: [job] } });
+    expect(await server.send("GET", "/api/supervisor/schedules", WEB, undefined)).toEqual({ status: 200, body: { ok: true, jobs: [job], timeZone: { name: "Asia/Seoul", label: "KST" } } });
     const paused = await server.send("POST", "/api/supervisor/schedules", WEB, { op: "pause", name: "gmail-digest" });
-    expect(paused).toEqual({ status: 200, body: { ok: true, jobs: [{ ...job, paused: true }] } });
+    expect(paused).toEqual({ status: 200, body: { ok: true, jobs: [{ ...job, paused: true }], timeZone: { name: "Asia/Seoul", label: "KST" } } });
     const refused = await server.send("POST", "/api/supervisor/schedules", WEB, { op: "edit", name: "gmail-digest", timing: { cron: "0 0 31 2 *" } });
     expect(refused.status).toBe(400);
     expect(refused.body.error).toContain("never fires");
@@ -49,7 +49,7 @@ describe("scheduled jobs", () => {
 
   test("refuses a body that is no request without asking the supervisor", async () => {
     let asked = 0;
-    const server = await start(async () => { asked++; return { ok: true, jobs: [] }; });
+    const server = await start(async () => { asked++; return { ok: true, jobs: [], timeZone: { name: "Asia/Seoul", label: "KST" } }; });
     for (const body of [
       { op: "drop", name: "x" },
       { op: "pause" },
