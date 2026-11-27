@@ -748,6 +748,7 @@ function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boole
         type="button"
         className={placeItem(selected, thread !== null && awaitsAnswer(thread))}
         aria-current={selected ? "page" : undefined}
+        title={`#${task.id} ${task.title}`}
         onClick={onOpen}
       >
         <span className="flex min-w-0 flex-1 flex-col">
@@ -849,6 +850,7 @@ function PlaceList({
           type="button"
           className={placeItem(current && selection.thread === null)}
           aria-current={current && selection.thread === null ? "page" : undefined}
+          title={`#${channel.name}`}
           onClick={() => onSelect({ channel: channel.id, thread: null })}
         >
           <span className="text-muted-foreground">#</span>
@@ -865,6 +867,7 @@ function PlaceList({
                     type="button"
                     className={placeItem(selection.thread === thread.id, awaitsAnswer(thread))}
                     aria-current={selection.thread === thread.id ? "page" : undefined}
+                    title={thread.title}
                     onClick={() => onSelect({ channel: channel.id, thread: thread.id })}
                   >
                     <span className={cn("min-w-0 truncate", thread.status !== "open" && "text-muted-foreground")}>
@@ -977,6 +980,7 @@ function PastChats({
                 type="button"
                 className={placeItem(selection.thread === thread.id)}
                 aria-current={selection.thread === thread.id ? "page" : undefined}
+                title={nameOf(thread)}
                 onClick={() => onSelect({ channel: thread.channelId, thread: thread.id })}
               >
                 <span className="flex min-w-0 flex-1 flex-col">
