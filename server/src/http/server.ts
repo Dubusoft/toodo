@@ -13,8 +13,10 @@ import type { ClientMetadataFetcher } from "../oauth/clients.ts";
 import { OAuthServer } from "../oauth/routes.ts";
 import * as attachments from "./attachments.ts";
 import { type Caller, FailedAttempts, failed, text } from "./auth.ts";
+import type { DoriConfigStore } from "../../../src/lib/dori-config.ts";
 import type { AccessVerifier } from "./access.ts";
 import * as devices from "./devices.ts";
+import { DoriConfigRoutes } from "./dori-config.ts";
 import * as files from "./files.ts";
 import * as push from "./push.ts";
 import * as rpc from "./rpc.ts";
@@ -33,6 +35,8 @@ export type RouterOptions = {
   readonly clientMetadata: ClientMetadataFetcher;
   /** The supervisor's scheduled jobs, when it runs beside the core (the host). */
   readonly schedules?: schedules.ScheduleBridge;
+  /** Dori's config file, which the Settings page edits (the host); without it `/api/dori/config` is 404. */
+  readonly doriConfig?: DoriConfigStore;
 };
 
 /** What the server tells a request about itself: its address, and that an event stream
@@ -104,6 +108,7 @@ export function createHandler(options: RouterOptions): Handler {
   };
   const supervisorStatus = new SupervisorStatusFeed();
   const scheduleBridge = options.schedules ?? null;
+  const doriConfig = options.doriConfig ? new DoriConfigRoutes(options.doriConfig) : null;
 
   // Routes behind the gate, by method and path pattern.
   const routes: Array<[string, RegExp, ApiRoute]> = [
@@ -126,6 +131,8 @@ export function createHandler(options: RouterOptions): Handler {
     }],
     ["GET", /^\/api\/supervisor\/schedules$/, () => schedules.list(scheduleBridge)],
     ["POST", /^\/api\/supervisor\/schedules$/, (request) => schedules.change(scheduleBridge, request)],
+    ["GET", /^\/api\/dori\/config$/, () => doriConfig?.get() ?? NOT_FOUND()],
+    ["PUT", /^\/api\/dori\/config$/, async (request) => doriConfig ? doriConfig.put(await request.text()) : NOT_FOUND()],
     ["GET", /^\/api\/backups\/export$/, () => files.exportDatabase(services)],
     ["POST", /^\/api\/backups\/restore$/, (request) => files.restore(services, request)],
     ["GET", /^\/api\/backups\/([^/]+)$/, (_request, _caller, [name]) => {

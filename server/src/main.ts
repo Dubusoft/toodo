@@ -2,6 +2,7 @@
 // of its data directory.
 
 import { existsSync } from "node:fs";
+import type { DoriConfigStore } from "../../src/lib/dori-config.ts";
 import type { Server } from "bun";
 import { join } from "node:path";
 import { Backups, importFile, startAutomaticBackups } from "./commands/backup.ts";
@@ -127,8 +128,8 @@ export async function stopServing(server: Server<undefined>, name: string): Prom
   }
 }
 
-/** What the host adds to the core it serves: the supervisor's scheduled jobs. */
-export type CoreOptions = { readonly schedules?: ScheduleBridge };
+/** What the host adds to the core it serves: the supervisor's scheduled jobs, and Dori's config file for the Settings page. */
+export type CoreOptions = { readonly schedules?: ScheduleBridge; readonly doriConfig?: DoriConfigStore };
 
 export async function openCore(config: Config, options: CoreOptions = {}): Promise<Core> {
   createPrivateDir(config.dataDir);
@@ -180,6 +181,7 @@ export async function openCore(config: Config, options: CoreOptions = {}): Promi
     webDir: config.webDir,
     clientMetadata: httpClientMetadataFetcher(),
     ...(options.schedules ? { schedules: options.schedules } : {}),
+    ...(options.doriConfig ? { doriConfig: options.doriConfig } : {}),
   });
   return {
     fetch: (request, server) =>

@@ -5,6 +5,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { DoriConfigStore } from "../../../src/lib/dori-config.ts";
 import { Backups } from "../commands/backup.ts";
 import { ChatState } from "../commands/chat.ts";
 import type { ClientMetadataFetcher } from "../oauth/clients.ts";
@@ -44,6 +45,7 @@ export type TestServerOptions = {
   clientMetadata?: ClientMetadataFetcher;
   /** The supervisor's scheduled jobs, as the host hands them over. */
   schedules?: ScheduleBridge;
+  doriConfig?: DoriConfigStore;
 };
 
 const noClientMetadata: ClientMetadataFetcher = async (url) => {
@@ -78,6 +80,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     webDir: options.webDir ?? null,
     clientMetadata: options.clientMetadata ?? noClientMetadata,
     ...(options.schedules ? { schedules: options.schedules } : {}),
+    ...(options.doriConfig ? { doriConfig: options.doriConfig } : {}),
   });
   const server = Bun.serve({
     hostname: "127.0.0.1",
