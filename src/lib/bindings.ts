@@ -295,7 +295,7 @@ export type CommandErrorCode =
 /**  A referenced object does not exist. */
 "notFound" | 
 /**  No command or tool has this name. */
-"unknownCommand" | "workspaceNotFound" | "taskNotFound" | "criterionNotFound" | "dependencyNotFound" | "relationNotFound" | "runNotFound" | "guidelineNotFound" | 
+"unknownCommand" | "workspaceNotFound" | "taskNotFound" | "criterionNotFound" | "dependencyNotFound" | "relationNotFound" | "runNotFound" | "guidelineNotFound" | "chatMessageNotFound" | 
 /**  The request breaks a rule. */
 "rejected" | 
 /**  The dependency would make the task DAG cyclic or make a task depend on itself. */

@@ -8,6 +8,7 @@
 //! line with the dependencies after every change.
 
 mod backup;
+mod chat;
 mod commits;
 mod criteria;
 mod devices;
@@ -30,6 +31,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags};
 
+use crate::domain::chat::ChatMessageId;
 use crate::domain::criteria::{CheckKind, CriterionId};
 use crate::domain::dag::{BlockingDependency, DependencyError};
 use crate::domain::device::DeviceId;
@@ -40,6 +42,7 @@ pub use backup::{
     BackupFile, StagedBackup, backup_before_migration, backup_database, export_database,
     list_backups, prune_backups, stage_backup,
 };
+pub use chat::CHAT_PAGE_LIMIT;
 pub use criteria::{CriterionCheck, CriterionEdit};
 pub use devices::DeviceAuth;
 pub use guidelines::NewGuideline;
@@ -215,6 +218,11 @@ pub enum StorageError {
         kind: CheckKind,
     },
     GuidelineNotFound(GuidelineId),
+    ChatMessageNotFound(ChatMessageId),
+    /// Only a person's message gets receipts.
+    NotAPersonsMessage(ChatMessageId),
+    /// Only the agent's message can be the reply that handled a person's message.
+    NotAnAgentsMessage(ChatMessageId),
     DeviceNotFound(DeviceId),
     /// The device has not subscribed to push notifications.
     PushSubscriptionNotFound(DeviceId),
@@ -335,6 +343,21 @@ impl fmt::Display for StorageError {
             Self::GuidelineNotFound(id) => write!(
                 f,
                 "guideline {id} does not exist; call list_guidelines with the workspace id and take the guideline id from its result"
+            ),
+            Self::ChatMessageNotFound(id) => write!(
+                f,
+                "chat message {} does not exist; take message ids from peek_pending, take_pending or list_chat",
+                id.0
+            ),
+            Self::NotAPersonsMessage(id) => write!(
+                f,
+                "chat message {} was not written by a person; only people's messages are acknowledged and handled",
+                id.0
+            ),
+            Self::NotAnAgentsMessage(id) => write!(
+                f,
+                "chat message {} is not a reply of the agent; pass the id reply_in_chat returned as reply_id",
+                id.0
             ),
             Self::DeviceNotFound(id) => write!(f, "device {id} does not exist"),
             Self::PushSubscriptionNotFound(id) => {

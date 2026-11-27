@@ -95,6 +95,7 @@ pub enum CommandErrorCode {
     RelationNotFound,
     RunNotFound,
     GuidelineNotFound,
+    ChatMessageNotFound,
     /// The request breaks a rule.
     Rejected,
     /// The dependency would make the task DAG cyclic or make a task depend on itself.
@@ -127,7 +128,8 @@ impl CommandErrorCode {
             | Self::DependencyNotFound
             | Self::RelationNotFound
             | Self::RunNotFound
-            | Self::GuidelineNotFound => CommandErrorKind::NotFound,
+            | Self::GuidelineNotFound
+            | Self::ChatMessageNotFound => CommandErrorKind::NotFound,
             Self::Rejected
             | Self::DependencyCycle
             | Self::InvalidTransition
@@ -201,6 +203,7 @@ impl From<StorageError> for CommandError {
             StorageError::DependencyNotFound { .. } => CommandErrorCode::DependencyNotFound,
             StorageError::RelationNotFound { .. } => CommandErrorCode::RelationNotFound,
             StorageError::GuidelineNotFound(_) => CommandErrorCode::GuidelineNotFound,
+            StorageError::ChatMessageNotFound(_) => CommandErrorCode::ChatMessageNotFound,
             StorageError::DeviceNotFound(_) | StorageError::PushSubscriptionNotFound(_) => {
                 CommandErrorCode::NotFound
             }
@@ -217,7 +220,9 @@ impl From<StorageError> for CommandError {
             | StorageError::PrerequisiteOfDoneTask { .. }
             | StorageError::DependencyOfDoneTask { .. }
             | StorageError::CriteriaOfDoneTask(_)
-            | StorageError::AutomaticCriterion { .. } => CommandErrorCode::Rejected,
+            | StorageError::AutomaticCriterion { .. }
+            | StorageError::NotAPersonsMessage(_)
+            | StorageError::NotAnAgentsMessage(_) => CommandErrorCode::Rejected,
             StorageError::SelfRelation(_)
             | StorageError::PlanLinkOutOfRange { .. }
             | StorageError::InvalidBackup(_) => CommandErrorCode::InvalidInput,
