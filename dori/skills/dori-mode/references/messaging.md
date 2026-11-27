@@ -9,7 +9,7 @@ Never send to a shell, a stopped agent or an approval prompt. Before you type in
 1. check it runs a live agent (the runner's process read of the pane), not a shell, a stopped agent or a startup screen;
 2. read it (`hc read <id> --lines 40`) and confirm the input line is empty and no approval or question prompt is open;
 3. send once, as one argument;
-4. confirm delivery from a state change: the pane's `agent_status` moving to working, or the message showing up in the session record. Short of that, read the input line back: only when your own text is still sitting there unsubmitted, press Enter once more; still there after that, the send failed. If the line is empty but no change shows up, treat the send as unconfirmed.
+4. confirm delivery from a state change: the pane's `agent_status` moving to working, or the message showing up in the session record. Short of that, read the input line back: only when your own text is still sitting there unsubmitted, press Enter once more; still there after that, the send failed. An agent that was already working cannot show that change: omo lists a message typed mid-turn above its input box as queued (`Steering: <start of the text>...`) and then in its transcript, so the start of your text showing up above the input box more often than before you sent it confirms delivery. If the line is empty but neither shows up, treat the send as unconfirmed.
 
 The scripts' pane sends (`sendVerified`, `sendGuarded`, the queued lane messages: CI, rebase, done-claim notice, objection, `dori lane send`) do all of this: they type nothing into an input line that holds other text or shows no prompt and retry on a later pass, and our own text left there unsubmitted only gets Enter, never a second copy.
 
