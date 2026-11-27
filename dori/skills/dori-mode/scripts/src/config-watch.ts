@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { type FSWatcher, statSync, watch } from "node:fs";
 import { basename, dirname } from "node:path";
 
-import { assignConfig, CONFIG_FILE_KEYS, type DoriConfig, loadConfig } from "./config.ts";
+import { assignConfig, CONFIG_FILE_KEYS, discordOn, type DoriConfig, loadConfig } from "./config.ts";
 
 /*
  * Config hot reload. `watchConfigFiles` notices edits to a set of files (a directory watch per file, debounced, plus a
@@ -165,11 +165,18 @@ export const configReloader = (deps: ConfigReloaderDeps) => async (): Promise<Co
   const problem = configReloadError(next);
   if (problem) return invalid(problem);
   const current = deps.current();
-  const changed = CONFIG_FILE_KEYS.filter((key) => !Bun.deepEquals(current[key], next[key]));
+  // Discord itself is switched at startup (supervise-loop.ts): a reload takes the Toodo chat's switch in `platforms` live
+  // and keeps Discord on or off as it runs until a restart (and never leaves the owner without a chat in between).
+  const discordSwitched = discordOn(current) !== discordOn(next);
+  const kept = [...next.platforms.filter((p) => p !== "discord"), ...(discordOn(current) ? ["discord" as const] : [])];
+  const keepsCurrent = !kept.length || (kept.length === current.platforms.length && kept.every((p) => current.platforms.includes(p)));
+  const platforms = !discordSwitched ? next.platforms : keepsCurrent ? current.platforms : kept;
+  const applied: DoriConfig = { ...next, platforms };
+  const changed = CONFIG_FILE_KEYS.filter((key) => !Bun.deepEquals(current[key], applied[key]));
   const live = changed.filter((key) => !RESTART_CONFIG_KEYS.includes(key));
-  const restart = changed.filter((key) => RESTART_CONFIG_KEYS.includes(key));
+  const restart = [...changed.filter((key) => RESTART_CONFIG_KEYS.includes(key)), ...(discordSwitched ? ["platforms (discord)"] : [])];
   if (live.length) {
-    deps.apply(Object.fromEntries(live.map((key) => [key, next[key]])) as Partial<DoriConfig>);
+    deps.apply(Object.fromEntries(live.map((key) => [key, applied[key]])) as Partial<DoriConfig>);
     const line = `CONFIG_RELOADED ${live.join(", ")} from ${deps.path}`;
     deps.log(line);
     deps.enqueue(`config-reloaded:${tag}`, line);

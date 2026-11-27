@@ -429,16 +429,21 @@ export const runSetup = async (d: SetupDeps, input: SetupInput = {}): Promise<nu
   };
   if (d.interactive) d.log(`SETUP ${KEY_INPUT_HINT}`);
 
+  // With Discord off (platforms without discord) nothing about Discord is asked; what is stored stays as it is.
+  const platforms = "platforms" in patch ? patch.platforms : raw.platforms;
+  const onDiscord = !Array.isArray(platforms) || platforms.includes("discord");
   const storedToken = envFileValue(envText, TOKEN_KEY);
-  const token = await askToken(d, storedToken, input.token);
+  const token = onDiscord ? await askToken(d, storedToken, input.token) : input.token ?? storedToken;
   const givenChannels = input.channels ?? givenList("discordChannels");
-  if (!givenChannels && !unset.includes("discordChannels")) asked.push("discordChannels");
-  const channels = unset.includes("discordChannels") ? [] : await askChannels(d, token, givenChannels ?? strings(raw.discordChannels), Boolean(givenChannels), advanced);
+  if (onDiscord && !givenChannels && !unset.includes("discordChannels")) asked.push("discordChannels");
+  const channels = unset.includes("discordChannels") ? [] : onDiscord
+    ? await askChannels(d, token, givenChannels ?? strings(raw.discordChannels), Boolean(givenChannels), advanced)
+    : givenChannels ?? strings(raw.discordChannels);
   let discord: unknown;
   if ("discord" in patch) {
     consumed.push("discord");
     discord = patch.discord;
-  } else if (token && channels[0] && !unset.includes("discord")) {
+  } else if (onDiscord && token && channels[0] && !unset.includes("discord")) {
     asked.push("discord");
     discord = await askDiscord(d, token, channels[0], raw.discord);
   }
@@ -482,7 +487,8 @@ export const runSetup = async (d: SetupDeps, input: SetupInput = {}): Promise<nu
     const changed = next !== envText || !existsSync(d.envPath) || modeOf(d.envPath) !== 0o600;
     if (changed) writeFileAtomic(d.envPath, next, 0o600);
     d.log(`SETUP env ${TOKEN_KEY} ${token === storedToken ? "kept" : "saved"} in ${d.envPath} (mode 600)${changed ? "" : ", unchanged"}`);
-  } else d.log(`SETUP env no bot token; set ${TOKEN_KEY} later by running dori setup again`);
+  } else if (onDiscord) d.log(`SETUP env no bot token; set ${TOKEN_KEY} later by running dori setup again`);
+  if (!onDiscord) d.log("SETUP Discord is off (platforms has no discord): its token, channels and ids were not asked; add discord to platforms to turn it on");
 
   const merged = mergeConfig(raw, {
     discordChannels: channels, defaultModel, leadModel: chain ?? (leadModel || undefined), leadCwd, stateDir, discord,
@@ -505,14 +511,16 @@ export const runSetup = async (d: SetupDeps, input: SetupInput = {}): Promise<nu
   const settled = advanced ? [] : DORI_CONFIG_KEYS.map((s) => s.key);
   if (d.interactive) writeSeenKeys(seenPath, [...seen, ...configured.shown, ...asked, ...settled, ...Object.keys(patch), ...unset]);
   if (reportMissing(d, configured.missingRequired)) problems.push("config");
-  const alertsChannel = str(config.alertsChannel).trim();
-  d.log(alertsChannel
-    ? `SETUP alertsChannel ${alertsChannel}: system notices go there`
-    : `SETUP alertsChannel unset: system notices go to the first discordChannels entry; optional, add "alertsChannel": "<channel id>" to ${d.configPath} to send them elsewhere`);
-  const decisionsChannel = str(config.decisionsChannel).trim();
-  d.log(decisionsChannel
-    ? `SETUP decisionsChannel ${decisionsChannel}: owner decisions open one thread each there`
-    : `SETUP decisionsChannel unset: owner decisions go to the requesting channel; optional, add "decisionsChannel": "<channel id>" to ${d.configPath} to open them in one channel`);
+  if (onDiscord) {
+    const alertsChannel = str(config.alertsChannel).trim();
+    d.log(alertsChannel
+      ? `SETUP alertsChannel ${alertsChannel}: system notices go there`
+      : `SETUP alertsChannel unset: system notices go to the first discordChannels entry; optional, add "alertsChannel": "<channel id>" to ${d.configPath} to send them elsewhere`);
+    const decisionsChannel = str(config.decisionsChannel).trim();
+    d.log(decisionsChannel
+      ? `SETUP decisionsChannel ${decisionsChannel}: owner decisions open one thread each there`
+      : `SETUP decisionsChannel unset: owner decisions go to the requesting channel; optional, add "decisionsChannel": "<channel id>" to ${d.configPath} to open them in one channel`);
+  } else d.log("SETUP owner decisions and system notices go to the Toodo chat: a task's thread, else its default room");
 
   if (await d.prompt.confirm("Start hc and the supervisor automatically at boot (systemd user units)?", input.autostart ?? false)) {
     problems.push(...(await autostart(d, workDir, advanced)));

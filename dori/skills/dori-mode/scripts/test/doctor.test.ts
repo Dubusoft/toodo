@@ -522,6 +522,26 @@ test("gateway: live OK; no file, stale and disconnected FAIL; without Message Co
   expect(find(await runDoctor(fixture({ gateway: "nocontent" }).deps), "gateway").level).toBe("WARN");
 });
 
+test("Discord off (platforms toodo): no Discord call or gateway is needed, nothing about Discord fails, and the Toodo chat is checked instead", async () => {
+  const f = fixture({ gateway: "none" });
+  const { token: _token, ...deps } = f.deps;
+  const { discord: _discord, decisionsChannel: _decisions, ...config } = f.deps.config;
+  const off: DoctorDeps = { ...deps, config: { ...config, platforms: ["toodo"], discordChannels: [] }, toodoChat: async () => 2 };
+  const checks = await runDoctor(off);
+  expect(f.requests).toEqual([]);
+  expect(find(checks, "discord")).toMatchObject({ level: "OK", detail: "off (platforms: toodo); not checked" });
+  expect(find(checks, "gateway").level).toBe("OK");
+  expect(find(checks, "config").level).toBe("OK");
+  expect(find(checks, "toodo chat")).toMatchObject({ level: "OK", detail: "reachable; 2 owner messages waiting" });
+  expect(checks.filter((c) => c.level !== "OK")).toEqual([]);
+  expect(find(await runDoctor({ ...off, toodoChat: async () => { throw new Error("connection refused"); } }), "toodo chat").level).toBe("FAIL");
+  // One switch line back on: Discord is checked again, and a Toodo chat that cannot be read only warns beside it.
+  const on = await runDoctor({ ...f.deps, config: { ...f.deps.config, platforms: ["discord", "toodo"] }, toodoChat: async () => { throw new Error("connection refused"); } });
+  expect(find(on, "discord token").level).toBe("OK");
+  expect(find(on, "gateway").level).toBe("FAIL");
+  expect(find(on, "toodo chat").level).toBe("WARN");
+});
+
 test("tools and disk: missing gh auth, jq or bun are FAIL; free space under the guard is WARN", async () => {
   const f = fixture({ run: { "gh auth status": no("", 1), "jq --version": { code: 127, out: "", err: "" }, "bun --version": { code: 127, out: "", err: "" } } });
   const checks = await runDoctor(f.deps);

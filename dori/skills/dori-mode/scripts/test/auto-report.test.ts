@@ -91,3 +91,19 @@ test("an auto report for a thread the owner closed is one line in its parent cha
   expect(pendingReported(state.dir)).toMatchObject([{ lane: "ap-12-1", message: "m-1", target: "discord:900", followUp: true }]);
   expect(readLastReports(state.dir)["ap-12-1"]).toBeUndefined();
 });
+
+test("with Discord off the report goes only to the lane's Toodo task thread and its receipt names that place; one that cannot land there records nothing", async () => {
+  const state = withState();
+  cleanups.push(state.done);
+  const { discord, sends } = fakeDiscord();
+  const landed: string[] = [];
+  const off = (toodo: ReportPostDeps["toodo"]) => autoReportPoster({
+    config: { stateDir: state.dir, discordChannels: ["900"], ownerLanguage: "Korean", platforms: ["toodo"] }, discord, now: () => T0, home: "/home/test", language: () => "Korean", ...(toodo ? { toodo } : {}),
+  });
+  expect(await off(async (_lane, text) => { landed.push(text); return { message: "toodo:31", target: "toodo:thread/7" }; })({ ...lane, task: 12 }, claim)).toBe("toodo:31");
+  expect(sends).toEqual([]);
+  expect(landed).toEqual(["[System] 로그인 버그(ap-12-1) 완료했습니다.\n로그인 버그를 고쳤습니다\n근거: https://github.com/acme/app/pull/1 abc1234"]);
+  expect(pendingReported(state.dir)).toMatchObject([{ lane: "ap-12-1", message: "toodo:31", target: "toodo:thread/7", note: "auto-reported by the supervisor" }]);
+  await expect(off(async () => undefined)({ ...lane, key: "ap-13-1" }, claim)).rejects.toThrow("REPORT_NOT_POSTED ap-13-1: Discord is off");
+  expect(pendingReported(state.dir).map((r) => r.lane)).toEqual(["ap-12-1"]);
+});

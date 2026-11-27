@@ -2,14 +2,14 @@ import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
 
 import { ack, AckError, AWAITING_NOTE_MAX, handled, handledLines } from "./ack.ts";
-import { alertsChannelOf } from "./config.ts";
+import { alertsChannelOf, discordOn } from "./config.ts";
 import { envFilePath, resolveCredential } from "./credentials.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { staleOwnerEvents, unreadAfterAck } from "./inbox.ts";
 import { oneLine } from "./line-text.ts";
 import { buttonRow } from "./messenger/discord-buttons.ts";
 import { discordOwnerConfigured } from "./messenger/discord-inbound.ts";
-import { Discord } from "./messenger/discord.ts";
+import { Discord, discordOff } from "./messenger/discord.ts";
 import { fetchHttp } from "./messenger/http.ts";
 import { resolveTarget } from "./messenger/target.ts";
 import type { ReportPosted } from "./report-post.ts";
@@ -40,7 +40,9 @@ export const discordMain = async (args: string[], { flow: deps, die, messengerTo
   const [command = "", ...rest] = args;
   const { config } = deps;
   const { toodoChatCommand, toodoChatMain } = await import("./toodo-chat-cli.ts");
-  if (toodoChatCommand(command, rest, key, opt("to"))) return toodoChatMain(args, { flow: deps, die, opt, need });
+  // With Discord off, `--to alerts` is the Toodo chat's default room (alertsChannelOf).
+  const to = opt("to") === "alerts" && !discordOn(config) ? alertsChannelOf(config) : opt("to");
+  if (toodoChatCommand(command, rest, key, to)) return toodoChatMain(args, { flow: deps, die, opt: (name) => (name === "to" ? to : opt(name)), need });
   /** Posts `text` to a resolved Discord target and returns the new message's id. */
   const postMessage = async (to: string, text: string, components?: readonly unknown[]): Promise<string> =>
     // Each post is its own message: without a unique id Discord would dedupe a repeat of the same text.
@@ -83,7 +85,8 @@ export const discordMain = async (args: string[], { flow: deps, die, messengerTo
       const found = (await deps.registry.read(key ?? "")) ?? die(`no registered lane "${key}"`);
       const followUps = await import("./thread-followup.ts");
       const { postLaneReport, redirectReport, ReportPostError } = await import("./report-post.ts");
-      const discord = new Discord(fetchHttp, realClock, messengerToken("DORI_DISCORD_TOKEN"));
+      // With Discord off the report goes to the lane's Toodo task thread only (postLaneReport), so no token is needed.
+      const discord = discordOn(config) ? new Discord(fetchHttp, realClock, messengerToken("DORI_DISCORD_TOKEN")) : discordOff(realClock);
       const { postLaneReportToodo } = await import("./lane-toodo.ts");
       const post = { config, discord, now: realClock.now, toodo: (lane: typeof found, text: string) => postLaneReportToodo(deps, lane, text) };
       const note = opt("note");

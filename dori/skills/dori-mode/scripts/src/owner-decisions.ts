@@ -1,4 +1,5 @@
-import { type DoriConfig } from "./config.ts";
+import { discordOn, type DoriConfig } from "./config.ts";
+import { TOODO_DECISION_CHANNEL, toodoDecisionPlace } from "./decision-toodo.ts";
 import {
   DECISION_AUTO_ARCHIVE_MIN, DECISION_KEEP_CLOSED_MS, DECISION_POSTING_STUCK_MS, DECISION_RELAY_ATTEMPTS, type DecisionTarget, type DecisionsFile, decisionTargetOf, type OwnerDecision,
   OwnerDecisionError, patchOne, readDecisions, removeOne, type TargetLane, updateDecisions,
@@ -7,6 +8,7 @@ import { recordResolved } from "./decision-obligations.ts";
 import { scrubForThread } from "./freshness.ts";
 import { decisionButtonRows, decisionButtonsKey, hasDecisionButtons, POSTED_BUTTONS_KEY } from "./messenger/decision-buttons.ts";
 import { MessengerError } from "./messenger/http.ts";
+import { isToodoRef, type ToodoChat, toodoRef } from "./messenger/toodo-chat.ts";
 import { type DecisionChoices, parseDecisionText, parseRequestText } from "./runner/decision-text.ts";
 import { appendToMessage, closedByOwner } from "./thread-followup.ts";
 
@@ -31,6 +33,8 @@ export type DecisionTransport = {
 
 export type DecisionConfig = Pick<DoriConfig, "stateDir" | "discordChannels" | "decisionsChannel" | "alertsChannel" | "displayTimeZone"> & {
   readonly discord?: { readonly ownerId?: string } | undefined;
+  /** Without discord a decision is posted on the Toodo chat (decision-toodo.ts); absent is Discord. */
+  readonly platforms?: DoriConfig["platforms"];
 };
 
 /**
@@ -54,6 +58,8 @@ export type DecisionContext = {
   /** The home directory scrubbed out of posted text. */
   readonly home: string;
   readonly receipts?: DecisionReceipts;
+  /** The Toodo chat a decision is posted on with Discord off; `transport` must then route its refs (routedDecisionTransport). */
+  readonly toodo?: () => Pick<ToodoChat, "taskThread">;
 };
 
 /** The Toodo task number in an autopilot lane key `ap-<task>-<attempt>`. */
@@ -116,8 +122,10 @@ export const decisionThreadName = (d: Pick<OwnerDecision, "id" | "task" | "quest
 export const decisionStartText = (d: OwnerDecision, home: string): string => {
   const head = [`**[${label(d)} ${d.id}]**`, d.task !== undefined ? `Toodo #${d.task}` : undefined, d.lane ? `레인 ${d.lane}` : undefined, d.attachedTo ? `별도 건(${d.attachedTo} 스레드에 함께 올림)` : undefined].filter(Boolean).join(" · ");
   const origin = refIds(d.origin)?.thread;
+  // The Toodo chat has no replies to a message and no answer buttons: the answer is any message in the same place.
+  const toodo = d.thread !== undefined && isToodoRef(d.thread);
   // A lane's own thread carries its reports and may hold another of its questions: a reply there names this one too.
-  const where = d.attachedTo || d.inLaneThread ? "이 메시지에 답장(reply)해서" : "이 스레드에";
+  const where = toodo ? "여기에" : d.attachedTo || d.inLaneThread ? "이 메시지에 답장(reply)해서" : "이 스레드에";
   const shared = d.attachedTo ? [`이 스레드에는 ${d.attachedTo} 등 다른 건도 열려 있어, ${d.id}의 답은 이 메시지에 답장해야 구분됩니다.`] : [];
   if (d.kind === "request") return scrubForThread([
     head,
@@ -138,7 +146,7 @@ export const decisionStartText = (d: OwnerDecision, home: string): string => {
     d.blocking ? `기다리는 동안 멈춘 것: ${d.waiting}` : `먼저 진행 중: 추천안(${d.recommend}번)으로 진행하고 있습니다(${d.waiting}). 다르게 정하시면 되돌립니다.`,
     ...(origin && !d.inLaneThread ? [`원래 스레드: <#${origin}>`] : []),
     ...shared,
-    hasDecisionButtons(d) ? `버튼을 누르거나, ${where} 번호나 문장으로 답해 주세요.` : `${where} 번호나 문장으로 답해 주세요.`,
+    hasDecisionButtons(d) && !toodo ? `버튼을 누르거나, ${where} 번호나 문장으로 답해 주세요.` : `${where} 번호나 문장으로 답해 주세요.`,
   ].join("\n"), home);
 };
 
@@ -291,8 +299,15 @@ const laneThreadInDecisions = async (ctx: DecisionContext, origin: string | unde
 export const openOwnerDecision = async (ctx: DecisionContext, spec: DecisionSpec): Promise<OpenResult> => {
   const { stateDir } = ctx.config;
   const now = ctx.now();
-  const channel = await decisionChannel(ctx.config, spec.origin, ctx.transport);
-  const laneThread = spec.source === "lane" ? await laneThreadInDecisions(ctx, spec.origin) : undefined;
+  // With Discord off the decision goes to the Toodo chat, into its task's thread (else the default room), like a lane's own thread.
+  let toodoPlace: string | undefined;
+  if (!discordOn(ctx.config)) {
+    if (!ctx.toodo) throw new OwnerDecisionError("DECISION_NOT_POSTED", "DECISION_NOT_POSTED Discord is off and no Toodo chat was given to post the decision on");
+    try { toodoPlace = toodoRef(await toodoDecisionPlace(ctx.toodo(), spec.task)); }
+    catch (e) { throw new OwnerDecisionError("DECISION_NOT_POSTED", `DECISION_NOT_POSTED ${errLine(e)}`); }
+  }
+  const channel = toodoPlace ? { channel: TOODO_DECISION_CHANNEL } : await decisionChannel(ctx.config, spec.origin, ctx.transport);
+  const laneThread = toodoPlace ?? (spec.source === "lane" ? await laneThreadInDecisions(ctx, spec.origin) : undefined);
   const reserved = updateDecisions(stateDir, (file) => {
     const known = spec.sourceRef ? file.decisions.find((d) => d.source === spec.source && d.sourceRef === spec.sourceRef) : undefined;
     if (known) return { result: { decision: known, duplicateOf: undefined as string | undefined } };
@@ -312,7 +327,7 @@ export const openOwnerDecision = async (ctx: DecisionContext, spec: DecisionSpec
       ...(spec.origin ? { origin: spec.origin } : {}), ...(spec.sourceRef ? { sourceRef: spec.sourceRef } : {}),
       ...(spec.target ? { target: spec.target } : {}), ...(spec.relayTo ? { relayTo: spec.relayTo } : {}),
       ...(spec.reviewCap ? { reviewCap: spec.reviewCap } : {}),
-      ...(laneThread ? { thread: laneThread, inLaneThread: true, linkSkipped: "posted in the lane's own thread" } : {}),
+      ...(laneThread ? { thread: laneThread, inLaneThread: true, linkSkipped: toodoPlace ? "posted on the Toodo chat" : "posted in the lane's own thread" } : {}),
       ...(attach ? { thread: attach.thread, attachedTo: attach.id, linkSkipped: `posted in ${attach.id}'s thread`, ...(attach.inLaneThread ? { inLaneThread: true } : {}) } : {}),
     };
     return { file: { ...file, nextSeq: file.nextSeq + 1, decisions: [...file.decisions, decision] }, result: { decision, duplicateOf: undefined } };
@@ -660,7 +675,9 @@ export const short = (text: string, max = 80): string => cut(text.replace(/\s+/g
 export const choiceLabel = (d: Pick<OwnerDecision, "options">, choice: number): string => `choice=${choice} "${short(d.options[choice - 1] ?? "", 80)}"`;
 /** The question as the lead's lines show it: a request marked `[request]`. */
 const subject = (d: OwnerDecision, max = 80): string => (d.kind === "request" ? `[request] ${short(d.question, max - 10)}` : short(d.question, max));
-const threadRef = (d: OwnerDecision): string => (d.thread ? `discord:${d.channel}/${d.thread}` : `discord:${d.channel}`);
+/** Where a decision sits: its Toodo chat ref, else its Discord thread (or channel) as a discord ref. */
+export const decisionRef = (d: Pick<OwnerDecision, "channel" | "thread">): string =>
+  d.thread && isToodoRef(d.thread) ? d.thread : d.thread ? `discord:${d.channel}/${d.thread}` : `discord:${d.channel}`;
 
 /** The event raised by the owner's first answer; its second word is the lane (`-` for none), as decision obligations read it. */
 export const answeredLine = (d: OwnerDecision): string => {
@@ -672,7 +689,7 @@ export const answeredLine = (d: OwnerDecision): string => {
     ? `; ${d.file ? `the owner says the value is in ${d.file}` : `the owner's reply is message ${answer?.channel ?? "?"}/${answer?.message ?? "?"}`} (never into a report, the repo or another thread)`
     : "";
   const close = `dori decision close ${d.id}${from}${button !== undefined ? ` --choice ${button}` : ""} --text "..."`;
-  const head = `OWNER_DECISION_ANSWERED ${d.lane ?? "-"} ${d.id} ${d.blocking ? "blocking" : "nonblocking"} ${threadRef(d)}: ${subject(d)}${from ? " (answered in the channel body)" : ""}`
+  const head = `OWNER_DECISION_ANSWERED ${d.lane ?? "-"} ${d.id} ${d.blocking ? "blocking" : "nonblocking"} ${decisionRef(d)}: ${subject(d)}${from ? " (answered in the channel body)" : ""}`
     + (button !== undefined ? ` ${choiceLabel(d, button)} via button` : "");
   // One wording for decisions and requests: the close is the first call, and for a decision that relays to its lane it
   // also types --text into that lane (decision-relay.ts), so --text is what the lane needs to go on.
@@ -688,7 +705,7 @@ export const relayFailedLine = (d: Pick<OwnerDecision, "id" | "relay">): string 
 
 /** The digest event of a decision the supervisor opened from a lane question. */
 export const openedLine = (d: OwnerDecision, duplicateOf?: string): string =>
-  `OWNER_DECISION_OPENED ${d.id} lane ${d.lane ?? "-"} ${d.blocking ? "blocking" : "nonblocking"} ${threadRef(d)} ${subject(d)}${duplicateOf ? ` (duplicate of ${duplicateOf})` : ""}${d.attachedTo && !duplicateOf ? ` (posted in ${d.attachedTo}'s thread)` : ""}`;
+  `OWNER_DECISION_OPENED ${d.id} lane ${d.lane ?? "-"} ${d.blocking ? "blocking" : "nonblocking"} ${decisionRef(d)} ${subject(d)}${duplicateOf ? ` (duplicate of ${duplicateOf})` : ""}${d.attachedTo && !duplicateOf ? ` (posted in ${d.attachedTo}'s thread)` : ""}`;
 
 const age = (ms: number): string => {
   const min = Math.max(0, Math.floor(ms / 60_000));
@@ -699,7 +716,7 @@ const age = (ms: number): string => {
 export const decisionListLine = (d: OwnerDecision, now: number): string => {
   const last = d.revisions?.at(-1);
   const answer = last ? ` answer=r${last.rev}:${last.choice ?? "withdrawn"} delivery=${last.delivery.state}` : "";
-  return `${d.id} ${d.state} ${d.blocking ? "blocking" : "nonblocking"}${d.task !== undefined ? ` task=#${d.task}` : ""}${d.lane ? ` lane=${d.lane}` : ""}${answer} age=${age(now - d.openedAt)} thread=${threadRef(d)} ${subject(d)}`;
+  return `${d.id} ${d.state} ${d.blocking ? "blocking" : "nonblocking"}${d.task !== undefined ? ` task=#${d.task}` : ""}${d.lane ? ` lane=${d.lane}` : ""}${answer} age=${age(now - d.openedAt)} thread=${decisionRef(d)} ${subject(d)}`;
 };
 
 /** Decisions not closed, oldest first. */

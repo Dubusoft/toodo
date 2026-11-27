@@ -37,6 +37,8 @@ import {
   type DecisionChoices,
 } from "../src/runner/decision-text.ts";
 import { ackLaneMessage, SqliteLaneMessages, updateLaneMessage } from "../src/lane-messages.ts";
+import { routedDecisionTransport } from "../src/decision-toodo.ts";
+import type { ToodoChat, ToodoPlace } from "../src/messenger/toodo-chat.ts";
 import { storePath } from "./fakes.ts";
 
 const dirs: string[] = [];
@@ -117,6 +119,46 @@ const context = (
 
 const open = (ctx: DecisionContext, extra: Partial<Parameters<typeof openOwnerDecision>[1]> = {}) =>
   openOwnerDecision(ctx, { ...choices, source: "lead", ...extra });
+
+/** A Toodo chat that keeps what Dori posts; task 77's thread is thread 42. */
+const fakeChat = () => {
+  const posts: { place: ToodoPlace; body: string }[] = [];
+  const chat: Pick<ToodoChat, "reply" | "taskThread"> = {
+    reply: async (place, body) => { posts.push({ place, body }); return { id: 900 + posts.length, place, author: "agent", body, attachments: [] }; },
+    taskThread: async (task) => ({ kind: "thread", id: task === 77 ? 42 : 1 }),
+  };
+  return { chat, posts };
+};
+
+test("with Discord off a decision is asked in its task's Toodo thread (else the default room) and closed there, with no Discord call", async () => {
+  const dir = stateDir();
+  const discord = fakeTransport();
+  const toodo = fakeChat();
+  const ctx: DecisionContext = {
+    ...context(dir, routedDecisionTransport(() => discord.transport, () => toodo.chat), { platforms: ["toodo"], decisionsChannel: undefined, discordChannels: [] }),
+    toodo: () => toodo.chat,
+  };
+  const { decision } = await open(ctx, { task: 77, lane: "ap-77-1" });
+  expect(decision).toMatchObject({ state: "open", channel: "toodo", thread: "toodo:thread/42", inLaneThread: true, message: "901" });
+  expect(toodo.posts[0]?.place).toEqual({ kind: "thread", id: 42 });
+  expect(toodo.posts[0]?.body).toContain("질문: Which path should we take?");
+  expect(toodo.posts[0]?.body).toContain("여기에 번호나 문장으로 답해 주세요.");
+  expect(toodo.posts[0]?.body).not.toContain("버튼");
+  const request = await open(ctx, { kind: "request", question: "A one-time code", options: [], recommend: 0 });
+  expect(request.decision.thread).toBe("toodo:channel/1");
+  const closed = await closeOwnerDecision(ctx, decision.id, { text: "Proceed with option one.", choice: 1 });
+  expect(closed.decision.state).toBe("closed");
+  expect(closed.archivePending).toBeUndefined();
+  expect(toodo.posts.at(-1)).toMatchObject({ place: { kind: "thread", id: 42 } });
+  expect(toodo.posts.at(-1)?.body).toContain("결정 반영: 1번");
+  expect(discord.calls).toEqual([]);
+  const unrouted: DecisionContext = { ...context(stateDir(), discord.transport, { platforms: ["toodo"] }) };
+  await expect(open(unrouted)).rejects.toMatchObject({ code: "DECISION_NOT_POSTED" });
+  // The switch back on: the same decision goes to Discord's decisions channel again.
+  const on = await open({ ...context(stateDir(), routedDecisionTransport(() => discord.transport, () => toodo.chat), { platforms: ["discord", "toodo"] }), toodo: () => toodo.chat });
+  expect(on.decision).toMatchObject({ channel: "555", thread: "1000" });
+  expect(discord.calls.some((call) => call.method === "startThread")).toBe(true);
+});
 
 test("decision text serializes and parses, rejecting free text and one option", () => {
   expect(parseDecisionText(serializeDecisionText(choices))).toEqual(choices);

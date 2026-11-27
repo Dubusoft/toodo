@@ -13,6 +13,17 @@ const retryAfter = (body: string): number | undefined => {
   }
 };
 
+/** The status every call of a Discord-off client (discordOff) answers with: no retry, and none of Discord's own meanings. */
+export const DISCORD_OFF_STATUS = 421;
+
+/**
+ * The client the supervisor holds with Discord off (config platforms has no discord): every call is refused at once with
+ * MessengerError DISCORD_OFF_STATUS, so a path that still reaches for Discord fails on its own and nothing is sent.
+ */
+export const discordOff = (clock: Clock): Discord => new Discord(async () => ({
+  status: DISCORD_OFF_STATUS, headers: {}, body: JSON.stringify({ message: "Discord is off: config platforms has no discord" }),
+}), clock, "");
+
 /** Message flag that posts without a push or desktop notification (Discord's SUPPRESS_NOTIFICATIONS). */
 export const DISCORD_SUPPRESS_NOTIFICATIONS = 1 << 12;
 /** Most messages one `GET /channels/{id}/messages` returns. */
