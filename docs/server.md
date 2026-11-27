@@ -569,6 +569,11 @@ shares with the `initialize` instructions come from `server/src/mcp/shared/` (se
 The web app has a chat with the agent connected over MCP: the round button at the bottom
 right opens it, and shows how many of the agent's messages are unread in every channel and
 in the threads of the tasks the chat lists.
+A thread the agent marked as waiting on an answer (a decision or request) is louder than
+an unread count: the button rings in amber with a flag and the number of such threads,
+the thread's entry in the chat's list is tinted with a Decision mark, and the sidebar's
+Needs attention lists it first, opening its thread in the chat. The chat never opens by
+itself.
 The chat's agent is Dori by default: the chat shows it under the name and avatar of
 `TOODO_CHAT_AGENT_NAME` (default `Dori`) and `TOODO_CHAT_AGENT_AVATAR`. The server does not
 run the agent itself; Dori, or any other agent with the `mcp-token`, takes the chat's

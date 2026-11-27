@@ -99,6 +99,17 @@ test("each open decision gets one card in its task's thread: a question's number
   expect([...w.toodo.awaiting]).toEqual([[1, true], [2, true]]);
 });
 
+test("a decision without a task gets its card in the Toodo thread it was asked from, and only one with neither goes to the default room", async () => {
+  const w = world();
+  await openOwnerDecision(w.ctx, { ...choices, source: "lead", origin: "toodo:thread/7" });
+  await openOwnerDecision(w.ctx, { ...choices, question: "Which name?", source: "lead", origin: "discord:100/222" });
+  await w.tick();
+  expect(w.toodo.posts.map((p) => p.threadId)).toEqual([7, null]);
+  expect(w.decision("d1")?.toodo?.place).toBe("toodo:thread/7");
+  expect(w.decision("d2")?.toodo?.place).toBe("toodo:channel/1");
+  expect(w.toodo.awaiting.get(7)).toBe(true);
+});
+
 test("pressing button 2 on the card sends the answer straight to the lane and takes the waiting mark off", async () => {
   const w = world();
   const d = await w.ask("ap-1731-1", 1731);

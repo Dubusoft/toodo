@@ -1,15 +1,16 @@
 import { decisionNoticeText } from "./decision-delivery.ts";
 import { type DirectRouting, routeDecisionClick, routeOwnerMessage } from "./decision-inbound.ts";
 import { directAnswer, type OwnerDecision, patchOne, readDecisions } from "./decision-store.ts";
-import { postToodoCard, TOODO_CHOICE_KEY } from "./decision-toodo.ts";
+import { postToodoCard, TOODO_CHOICE_KEY, toodoDecisionPlace } from "./decision-toodo.ts";
 import {
-  isToodoRef, parseToodoRef, TOODO_DEFAULT_ROOM, type ToodoChat, type ToodoChatMessage, toodoErrorText, toodoRef,
+  isToodoRef, parseToodoRef, type ToodoChat, type ToodoChatMessage, toodoErrorText, toodoRef,
 } from "./messenger/toodo-chat.ts";
 import { answeredEventId, answeredLine, decisionCloseText, recordOwnerAnswer } from "./owner-decisions.ts";
 
 /*
  * Owner decisions on the Toodo chat (config platforms has toodo), beside their Discord threads. Every decision the lead
- * or a lane opens also gets a card (decision-toodo.ts): in its task's thread, else in the default room. A question's
+ * or a lane opens also gets a card (decision-toodo.ts): in its task's thread, else in the Toodo thread it was asked from,
+ * else in the default room; never in a channel of its own. A question's
  * card offers one numbered button per option (action key `d<ID>:<N>`); a request's card has none and is answered with a
  * reply. With Discord off the card is the decision itself, posted when it opens, and its close confirmation goes there.
  *
@@ -60,7 +61,7 @@ export const toodoDecisionTick = async (deps: ToodoDecisionDeps): Promise<void> 
       continue;
     }
     try {
-      const place = d.task !== undefined ? await chat.taskThread(d.task, await deps.threadTitle(d)) : TOODO_DEFAULT_ROOM;
+      const place = await toodoDecisionPlace(chat, d, d.task !== undefined ? await deps.threadTitle(d) : "");
       const card = await postToodoCard(chat, place, d, deps.home);
       patchOne(deps.stateDir, d.id, (x) => ({ ...x, toodo: { place: toodoRef(card.place), message: card.id } }));
       deps.log(`TOODO_DECISION_CARD ${d.id} ${toodoRef(card.place)} ${card.id}`);

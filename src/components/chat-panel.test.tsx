@@ -287,6 +287,23 @@ describe("Chat", () => {
     await waitFor(() => expect(mocked.listChat).toHaveBeenCalledWith({ thread: 6 }, null));
   });
 
+  it("flags threads waiting on a decision on the chat button and in the list, apart from the unread count", async () => {
+    serve([], [channel(1, "general", { unread: 2 })], [
+      thread(5, "#7 Ship", { taskId: 7, awaitingAt: 10, unread: 1 }),
+      thread(6, "#9 Docs", { taskId: 9 }),
+    ]);
+    serveTasks([task(7, "in_progress", ["lane:ap-7"]), task(9, "in_progress", ["lane:ap-9"])]);
+    renderChat();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat, 1 waiting on your decision, 3 unread" }));
+
+    const waiting = await screen.findByRole("list", { name: "Needs answer" });
+    expect(within(waiting).getByRole("button", { name: /#7/ })).toHaveTextContent("Decision, waiting on your answer1");
+    expect(within(screen.getByRole("list", { name: "In progress" })).getByRole("button", { name: /#9/ })).not.toHaveTextContent(
+      "Decision",
+    );
+  });
+
   it("sends a message to the shown channel under a client id", async () => {
     serve([message(1, "user", "Ship it?", { deliveredAt: 2, ackedAt: 3, handledAt: 4 })]);
     mocked.sendChatMessage.mockResolvedValue({ status: "ok", data: message(2, "user", "Thanks") });

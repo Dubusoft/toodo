@@ -11,6 +11,16 @@ export type TaskChats = {
   inProgress: TaskChat[];
 };
 
+/** Whether `thread` waits on a person's answer to a decision or request the agent posted in it. */
+export function awaitsAnswer(thread: ChatThread): boolean {
+  return thread.awaitingAt !== null && thread.status !== "archived";
+}
+
+/** The threads that wait on a person's answer, the longest waiting first. */
+export function waitingThreads(threads: readonly ChatThread[]): ChatThread[] {
+  return threads.filter(awaitsAnswer).sort((a, b) => (a.awaitingAt ?? 0) - (b.awaitingAt ?? 0) || a.id - b.id);
+}
+
 /** The lane a task is worked on in, from its `lane:<key>` ref. */
 export function laneOf(task: Task): string | null {
   const ref = task.refs.find((candidate) => candidate.startsWith("lane:") && candidate.length > "lane:".length);
@@ -36,7 +46,7 @@ export function taskChats(tasks: readonly Task[], threads: readonly ChatThread[]
   for (const task of tasks) {
     if (task.status === "done") continue;
     const chat = { task, thread: threadOf.get(task.id) ?? null };
-    if (task.status === "in_review" || (chat.thread !== null && chat.thread.awaitingAt !== null)) {
+    if (task.status === "in_review" || (chat.thread !== null && awaitsAnswer(chat.thread))) {
       chats.needsAnswer.push(chat);
     } else if (task.status === "in_progress" && laneOf(task) !== null) {
       chats.inProgress.push(chat);

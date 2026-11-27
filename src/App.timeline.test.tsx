@@ -366,6 +366,23 @@ describe("App: timeline", () => {
     );
   });
 
+  it("lists the threads waiting on a decision first under Needs attention and opens one in the chat", async () => {
+    const waiting = { id: 5, channelId: 1, title: "#3 Add UI", taskId: 3, status: "open" as const, createdAt: 1, closedAt: null, archivedAt: null, awaitingAt: 10, unread: 0, lastMessageAt: 10, lastMessage: "Which path?" };
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(3, 1, "Add UI", { status: "in_progress" })] });
+    mocked.listChatThreads.mockResolvedValue({ status: "ok", data: [waiting, { ...waiting, id: 6, title: "#4 Answered", awaitingAt: null }] });
+    renderApp();
+
+    const attention = await screen.findByRole("region", { name: /Needs attention/ });
+    const decisions = await within(attention).findByRole("list", { name: "Waiting on your decision" });
+    expect(within(decisions).getAllByRole("listitem").map((item) => item.textContent)).toEqual(["#3Add UIDecision, waiting on your answer"]);
+    expect(screen.queryByRole("dialog", { name: "Chat" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(decisions).getByRole("button", { name: /Add UI/ }));
+    expect(await screen.findByRole("dialog", { name: "Chat" })).toBeInTheDocument();
+    await waitFor(() => expect(mocked.listChat).toHaveBeenCalledWith({ thread: 5 }, null));
+  });
+
   it("gathers tasks needing attention in the sidebar and shows one on the timeline", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(2026, 5, 15));
