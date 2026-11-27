@@ -101,12 +101,18 @@ Layout:
   - `src-tauri/src/oauth/`: OAuth authorization server for chat apps on `/mcp`, mounted
     only when `TOODO_PUBLIC_URL` is set (`routes.rs` endpoints, `clients.rs` client
     metadata documents).
-  - `src-tauri/src/storage/`: SQLite persistence (`rusqlite`, bundled SQLite). Schema
-    changes go in a new entry appended to `migrations.rs`; never edit a released one.
+  - `src-tauri/src/storage/`: SQLite persistence (`rusqlite`, bundled SQLite). The schema
+    is frozen (see **Schema Freeze** below); never edit a released migration.
     `import.rs` backs `toodo-server import`.
   - `src-tauri/src/cli/`: the `toodo` CLI (binary `toodo`, `src/bin/toodo.rs`): `init`,
     `start`, `stop`, `restart`, `status`, `doctor`, `logs`, `service install`, `update`,
     `uninstall`, `review`, and MCP registration with Claude Code and Codex.
+- `server/`: the TypeScript (Bun) server that is replacing the Rust one, on the same
+  database file and schema.
+  - `server/src/storage/database.ts`: `bun:sqlite` connections: one writer and a
+    separate read-only reader, each with WAL, a 5 second busy timeout, and foreign keys
+    on. Both open only a database at `BASELINE_SCHEMA_VERSION` and reject any other
+    version; neither creates nor migrates a database.
 - `npm/toodo/`: the `@dubusoft/toodo` npm package (launcher `bin/toodo.js`, README).
 - `scripts/package-npm.mjs`: stages the npm packages (main and per-platform) for
   publishing; `scripts/smoke-npm.mjs` installs the staged packages from a local registry
@@ -121,7 +127,8 @@ Run from the repository root unless noted. Package manager is npm.
   server at `TOODO_SERVER`, default `http://127.0.0.1:47616`)
 - Build (web app): `npm run build` (typecheck, then build into `dist-web/`)
 - Test (frontend): `npm test`
-- Typecheck (frontend): `npm run typecheck`
+- Typecheck (frontend and `server/`): `npm run typecheck`
+- Test (TypeScript server): `bun test ./server`
 - Astryx docs (the project's pinned version): `npm run astryx -- search '<what>'`,
   `npm run astryx -- component <Name>`, `npm run astryx -- docs <topic>`
 - Test (web app end to end): `npm run test:e2e`, after building the server and `dist-web/`;
@@ -148,8 +155,21 @@ updated `src/lib/bindings.ts` together with the Rust change. A test in `server/r
 checks that the server serves every command in the bindings.
 
 CI only typechecks (`cargo check --all-targets` for Rust, `npm run typecheck` for the
-frontend); it runs no tests, lints, or format checks. Run the tests, clippy, and
-`cargo fmt --check` locally before opening a pull request.
+frontend and `server/`); it runs no tests, lints, or format checks. Run the tests,
+clippy, and `cargo fmt --check` locally before opening a pull request.
+
+## Schema Freeze
+
+The Rust schema is frozen at version 56, its `LATEST_VERSION` when the TypeScript
+storage work started; `BASELINE_SCHEMA_VERSION` in `server/src/storage/database.ts` is
+the same number, and a test in `migrations/tests.rs` fails when the two differ. Until
+the Rust server is removed:
+
+- Add no migration to `src-tauri/src/storage/migrations/`.
+- A bug fix that needs a schema change lands together with the matching change in
+  `server/` and the parity scenarios that cover it, and moves both versions together.
+- The first new migration after the freeze is version 57, written once the Rust server
+  is gone.
 
 ## Conventions
 

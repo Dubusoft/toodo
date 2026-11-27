@@ -1,6 +1,9 @@
 //! Schema migrations. Each entry upgrades the schema by one version; the current
-//! version is stored in `PRAGMA user_version`. Never edit a released migration; append
-//! a new one instead.
+//! version is stored in `PRAGMA user_version`. Never edit a released migration.
+//!
+//! The schema is frozen at version 56: the TypeScript server in `server/` opens only this
+//! version (`BASELINE_SCHEMA_VERSION`). Add no migration here; see "Schema Freeze" in
+//! `AGENTS.md`.
 
 use rusqlite::{Connection, OptionalExtension};
 
