@@ -481,6 +481,10 @@ mod tests {
         if version < 52 {
             conn.execute_batch("DROP TABLE task_adoptions").unwrap();
         }
+        if version < 54 {
+            conn.execute_batch("ALTER TABLE push_subscriptions DROP COLUMN messages")
+                .unwrap();
+        }
         conn.pragma_update(None, "user_version", version).unwrap();
     }
 

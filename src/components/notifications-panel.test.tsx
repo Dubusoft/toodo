@@ -13,7 +13,7 @@ vi.mock("@/web/push", () => ({
   sendTest: vi.fn(),
 }));
 
-const settings = { completion: true };
+const settings = { completion: true, messages: true };
 const subscription = { endpoint: "https://push.example/a", settings, lastFailure: null };
 const off: PushState = { publicKey: "BP8A-_w", permission: "default", subscription: null };
 const on: PushState = { ...off, permission: "granted", subscription };
@@ -51,7 +51,8 @@ describe("NotificationsPanel", () => {
     await expect(permission).resolves.toBe("granted");
     expect(publicKey).toBe(off.publicKey);
     expect(await screen.findByRole("checkbox", { name: "Task awaiting completion" })).toBeChecked();
-    expect(screen.getAllByRole("checkbox")).toHaveLength(1);
+    expect(screen.getByRole("checkbox", { name: "Agent messages in the chat" })).toBeChecked();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "Disable notifications on this device" })).toBeInTheDocument();
   });
 
@@ -63,7 +64,7 @@ describe("NotificationsPanel", () => {
     fireEvent.click(await screen.findByRole("checkbox", { name: "Task awaiting completion" }));
 
     await waitFor(() => expect(saveSettings).toHaveBeenCalledOnce());
-    expect(vi.mocked(saveSettings).mock.calls[0][0]).toEqual({ completion: false });
+    expect(vi.mocked(saveSettings).mock.calls[0][0]).toEqual({ completion: false, messages: true });
     expect(screen.getByRole("checkbox", { name: "Task awaiting completion" })).not.toBeChecked();
   });
 

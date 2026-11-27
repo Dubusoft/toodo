@@ -29,6 +29,9 @@ pub struct Alert {
     /// A later notification with the same tag replaces the earlier one.
     pub tag: String,
     pub task_id: Option<i64>,
+    /// Clicking it opens the chat.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub chat: bool,
 }
 
 impl Alert {
@@ -40,12 +43,28 @@ impl Alert {
             body: "This device will get notifications even while Toodo is closed.".to_owned(),
             tag: "test".to_owned(),
             task_id: None,
+            chat: false,
+        }
+    }
+
+    /// The agent, named `agent`, posted chat message `id`; each message is its own
+    /// notification.
+    pub fn agent_message(agent: &str, id: i64, body: &str) -> Self {
+        Self {
+            kind: Some(PushKind::AgentMessage),
+            urgent: true,
+            title: agent.to_owned(),
+            body: shorten(body),
+            tag: format!("chat-{id}"),
+            task_id: None,
+            chat: true,
         }
     }
 
     fn task(kind: PushKind, urgent: bool, title: &str, task: TaskId, name: Option<&str>) -> Self {
         let tag = match kind {
             PushKind::Completion => "completion",
+            PushKind::AgentMessage => "message",
         };
         let body = match name {
             Some(name) => format!("#{task} {name}"),
@@ -58,6 +77,7 @@ impl Alert {
             body: shorten(&body),
             tag: format!("task-{task}-{tag}"),
             task_id: Some(task.0),
+            chat: false,
         }
     }
 }
@@ -175,6 +195,21 @@ mod tests {
         assert_eq!(
             json.as_object().unwrap().keys().collect::<Vec<_>>(),
             ["body", "tag", "taskId", "title"]
+        );
+    }
+
+    #[test]
+    fn agent_messages_are_urgent_shortened_and_open_the_chat() {
+        let alert = Alert::agent_message("Helper", 7, &"x".repeat(1000));
+        assert_eq!(alert.kind, Some(PushKind::AgentMessage));
+        assert!(alert.urgent);
+        assert_eq!(alert.body.chars().count(), MAX_BODY_CHARS + 3);
+        assert_eq!(
+            serde_json::to_value(&alert).unwrap(),
+            serde_json::json!({
+                "title": "Helper", "body": alert.body, "tag": "chat-7", "taskId": null,
+                "chat": true
+            })
         );
     }
 }

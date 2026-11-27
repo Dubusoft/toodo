@@ -7,7 +7,7 @@ const TOKEN_KEY = "toodo-server-token";
 const publicKey = "BP8A-_w";
 const keyBytes = [4, 255, 0, 251, 252];
 
-const settings = { completion: true };
+const settings = { completion: true, messages: true };
 
 /** A fresh copy of the module, since it remembers whether push is on. */
 async function freshPush() {

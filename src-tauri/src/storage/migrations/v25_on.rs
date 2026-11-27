@@ -991,4 +991,10 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     ALTER TABLE task_adoptions_new RENAME TO task_adoptions;
     CREATE INDEX task_adoptions_task_id ON task_adoptions (task_id);
     ",
+    // Version 54: whether a device gets a notification when the agent posts a chat message.
+    // Existing subscriptions get them, as new ones do.
+    r"
+    ALTER TABLE push_subscriptions ADD COLUMN messages INTEGER NOT NULL DEFAULT 1
+        CHECK (messages IN (0, 1));
+    ",
 ];

@@ -21,6 +21,7 @@ const pushKey = ["push"];
 
 const settingOptions = [
   { key: "completion", label: "Task awaiting completion" },
+  { key: "messages", label: "Agent messages in the chat" },
 ] as const satisfies readonly { key: keyof PushSettings; label: string }[];
 
 const unavailable: Record<Exclude<PushSupport, "supported">, string> = {

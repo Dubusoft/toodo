@@ -73,7 +73,7 @@ pub trait Notifier {
     fn guidelines_changed(&self, workspace: model::WorkspaceId);
     /// A person's message or a receipt of the agent was stored.
     fn chat_changed(&self);
-    /// The agent posted `body`, which also ends its writing.
-    fn agent_posted(&self, body: &str);
+    /// The agent posted `message`, which also ends its writing.
+    fn agent_posted(&self, message: &super::types::ChatMessage);
     fn agent_typing(&self, typing: bool);
 }

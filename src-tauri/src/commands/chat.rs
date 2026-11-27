@@ -28,6 +28,10 @@ impl ChatState {
         }
     }
 
+    pub fn agent(&self) -> &ChatAgent {
+        &self.agent
+    }
+
     /// Records whether the agent is writing, as of `now`, and returns until when.
     pub fn set_typing(&self, typing: bool, now: i64) -> Option<i64> {
         let until = typing.then_some(now + TYPING_FOR);

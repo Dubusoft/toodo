@@ -30,7 +30,7 @@ use crate::commands::events::{
     ChatChanged, ChatTyping, GuidelinesChanged, Notifier, TaskReady, TaskStatusChanged,
     TasksChanged, WorkspacesChanged, names,
 };
-use crate::commands::types::{ChatAgent, Timestamp};
+use crate::commands::types::{ChatAgent, ChatMessage, Timestamp};
 use crate::commands::{Runtime, StorageState};
 use crate::domain::model;
 use crate::mcp::{self, Backend, ServerStatus};
@@ -276,9 +276,14 @@ impl Notifier for Services {
         self.emit(names::CHAT_CHANGED, &ChatChanged);
     }
 
-    fn agent_posted(&self, _body: &str) {
+    fn agent_posted(&self, message: &ChatMessage) {
         self.agent_typing(false);
         self.chat_changed();
+        self.push.alert(push::alerts::Alert::agent_message(
+            &self.chat.agent().name,
+            message.id.0,
+            &message.body,
+        ));
     }
 
     fn agent_typing(&self, typing: bool) {
@@ -861,6 +866,36 @@ mod tests {
             serde_json::json!({ "timeZone": null }),
         );
         assert_eq!(changes.try_recv().ok(), Some(push::Change::TasksSeen));
+    }
+
+    #[test]
+    fn agent_messages_raise_a_notification_and_other_chat_changes_do_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let services = services(temp.path());
+        let changes = push::tests::changes(&services.push);
+        let message = |author, body: &str| ChatMessage {
+            id: crate::commands::types::ChatMessageId(4),
+            author,
+            body: body.to_owned(),
+            at: Timestamp(1),
+            delivered_at: None,
+            acked_at: None,
+            handled_at: None,
+            handled_reply_id: None,
+            handled_task_id: None,
+            overdue: false,
+        };
+        services.chat_changed();
+        assert_eq!(changes.try_recv().ok(), None);
+        services.agent_posted(&message(crate::commands::types::ChatAuthor::Agent, "Done"));
+        assert_eq!(
+            changes.try_recv().ok(),
+            Some(push::Change::Alert(push::alerts::Alert::agent_message(
+                DEFAULT_AGENT_NAME,
+                4,
+                "Done"
+            )))
+        );
     }
 
     #[test]
@@ -1760,11 +1795,19 @@ mod tests {
             saved,
             serde_json::json!({
                 "endpoint": "https://push.example/send/1",
-                "settings": { "completion": true },
+                "settings": { "completion": true, "messages": true },
                 "lastFailure": null
             })
         );
-        let quiet = serde_json::json!({ "completion": false });
+        // A web app from before agent messages leaves them out; they stay on for it.
+        let legacy = serde_json::json!({ "completion": false });
+        let (status, saved) = send_json(address, "PUT", "/api/push/settings", &token, &legacy);
+        assert!(status.contains(" 200 "), "{status}");
+        assert_eq!(
+            saved["settings"],
+            serde_json::json!({ "completion": false, "messages": true })
+        );
+        let quiet = serde_json::json!({ "completion": false, "messages": false });
         let (status, saved) = send_json(address, "PUT", "/api/push/settings", &token, &quiet);
         assert!(status.contains(" 200 "), "{status}");
         assert_eq!(saved["settings"], quiet);

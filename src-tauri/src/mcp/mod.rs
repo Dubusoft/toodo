@@ -1224,7 +1224,7 @@ impl ToodoMcp {
             .blocking(move |backend| tools::reply_in_chat(&mut lock(backend.storage()), request))
             .await;
         if let Ok(message) = &result {
-            self.backend.agent_posted(&message.body);
+            self.backend.agent_posted(message);
         }
         reply(result)
     }
@@ -1871,8 +1871,11 @@ mod tests {
         fn chat_changed(&self) {
             self.chat.lock().unwrap().push("changed".to_owned());
         }
-        fn agent_posted(&self, body: &str) {
-            self.chat.lock().unwrap().push(format!("posted {body}"));
+        fn agent_posted(&self, message: &crate::commands::types::ChatMessage) {
+            self.chat
+                .lock()
+                .unwrap()
+                .push(format!("posted {}", message.body));
         }
         fn agent_typing(&self, typing: bool) {
             self.chat.lock().unwrap().push(format!("typing {typing}"));
