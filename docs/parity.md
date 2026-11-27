@@ -22,8 +22,12 @@ node scripts/parity/parity.ts inventory [--bin CMD] [--write]
 ```
 
 `CMD` is a program and its arguments separated by spaces, such as
-`"bun server/main.ts"`. Every command exits `0` on success and `1` when it found a
-difference or a failure.
+`"bun server/src/main.ts"`, the TypeScript server. Every command exits `0` on success and
+`1` when it found a difference or a failure.
+
+The TypeScript server neither creates nor migrates a database, so a run against it needs
+`--db` (or `--live`): a database the Rust server created, such as a copy of a live one or
+the `toodo.sqlite3` a Rust server leaves in a new data directory.
 
 ### replay
 
