@@ -155,6 +155,16 @@ Layout:
     module, with the Rust tests ported beside each one. `rust.ts` holds the Rust standard
     library behavior they depend on (whitespace, `{:?}` quoting, float printing, string
     order), so messages and results match the Rust server byte for byte.
+- `host/`: the one-process host (Bun) that will replace the `toodo-server` and
+  `dori-supervisor` services. `host/src/main.ts` serves the core's HTTP on the main thread at
+  `TOODO_LISTEN` (default `127.0.0.1:47616`) and runs the supervisor in a Worker
+  (`dori/skills/dori-mode/scripts/src/supervise-worker.ts`); `host/src/supervisor.ts` keeps
+  that Worker alive with a 30 second heartbeat watchdog, a restart backoff, and a breaker
+  that stops restarting a Worker that keeps failing. `TOODO_SUPERVISOR=off` is safe mode (the
+  core alone); `SIGHUP` reloads only the Worker, with the code on disk. `GET /api/host`
+  answers with the supervisor's state; the core's own routes come with the HTTP surface.
+  The main thread makes no `*Sync` calls (`host/src/sync-check.test.ts` walks its imports).
+  `host/src/protocol.ts` holds the messages both threads exchange.
 - `dori/`: Dori, the executor that runs coding agents in lanes and reports to Toodo, moved
   here from `Dubusoft/dori-mode` with its history (`git subtree`). The skill is
   `dori/skills/dori-mode/` and the `dori` CLI (Bun) is `dori/skills/dori-mode/scripts/`;
@@ -175,8 +185,10 @@ Run from the repository root unless noted. Package manager is npm.
   server at `TOODO_SERVER`, default `http://127.0.0.1:47616`)
 - Build (web app): `npm run build` (typecheck, then build into `dist-web/`)
 - Test (frontend): `npm test`
-- Typecheck (frontend and `server/`): `npm run typecheck`
+- Typecheck (frontend, `server/`, and `host/`): `npm run typecheck`
 - Test (TypeScript server): `npm run test:server`
+- Test (host): `npm run test:host`
+- Host: `bun host/src/main.ts` (`TOODO_LISTEN`, `TOODO_SUPERVISOR=off` for safe mode)
 - Typecheck and test (`dori`): `bun install`, then `bun run typecheck` and `bun test` in
   `dori/skills/dori-mode/scripts/`
 - Astryx docs (the project's pinned version): `npm run astryx -- search '<what>'`,
@@ -208,7 +220,7 @@ updated `src/lib/bindings.ts` together with the Rust change. A test in `server/r
 checks that the server serves every command in the bindings.
 
 CI only typechecks (`cargo check --all-targets` for Rust, `npm run typecheck` for the
-frontend and `server/`, `bun run typecheck` for `dori/`); it runs no tests, lints, or
+frontend, `server/`, and `host/`, `bun run typecheck` for `dori/`); it runs no tests, lints, or
 format checks. Run the tests,
 clippy, and `cargo fmt --check` locally before opening a pull request.
 
