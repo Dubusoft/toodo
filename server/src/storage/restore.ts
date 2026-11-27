@@ -41,40 +41,36 @@ export function liveCycle(db: Database): readonly TaskId[] | null {
 }
 
 /**
- * Replaces every row of `db` with the rows of the database file at `source`, which has the
- * same schema, in one transaction: tables, then the AUTOINCREMENT counters. The search
- * indexes follow through their triggers. Foreign keys are checked when it commits.
+ * Replaces every row of `db` with the rows of the database attached to it as schema
+ * `source`, which has the same schema, in one transaction: tables, then the AUTOINCREMENT
+ * counters. The search indexes follow through their triggers. Foreign keys are checked
+ * when it commits.
  */
-export function copyDatabase(source: string, db: Database): void {
-  db.run("ATTACH DATABASE ? AS staged", [source]);
-  try {
-    db.transaction(() => {
-      db.run("PRAGMA defer_foreign_keys = ON");
-      const tables = db
-        .query<{ name: string }, []>(
-          `SELECT name FROM pragma_table_list
-           WHERE schema = 'main' AND type = 'table' AND name NOT LIKE 'sqlite_%'
-           ORDER BY name`,
+export function replaceWithAttached(db: Database, source: string): void {
+  db.transaction(() => {
+    db.run("PRAGMA defer_foreign_keys = ON");
+    const tables = db
+      .query<{ name: string }, []>(
+        `SELECT name FROM pragma_table_list
+         WHERE schema = 'main' AND type = 'table' AND name NOT LIKE 'sqlite_%'
+         ORDER BY name`,
+      )
+      .all()
+      .map((row) => row.name);
+    for (const table of tables) {
+      db.run(`DELETE FROM main."${table}"`);
+    }
+    for (const table of tables) {
+      const columns = db
+        .query<{ name: string }, [string]>(
+          "SELECT name FROM pragma_table_xinfo(?, 'main') WHERE hidden = 0 ORDER BY cid",
         )
-        .all()
-        .map((row) => row.name);
-      for (const table of tables) {
-        db.run(`DELETE FROM main."${table}"`);
-      }
-      for (const table of tables) {
-        const columns = db
-          .query<{ name: string }, [string]>(
-            "SELECT name FROM pragma_table_xinfo(?, 'main') WHERE hidden = 0 ORDER BY cid",
-          )
-          .all(table)
-          .map((row) => `"${row.name}"`)
-          .join(", ");
-        db.run(`INSERT INTO main."${table}" (${columns}) SELECT ${columns} FROM staged."${table}"`);
-      }
-      db.run("DELETE FROM main.sqlite_sequence");
-      db.run("INSERT INTO main.sqlite_sequence (name, seq) SELECT name, seq FROM staged.sqlite_sequence");
-    })();
-  } finally {
-    db.run("DETACH DATABASE staged");
-  }
+        .all(table)
+        .map((row) => `"${row.name}"`)
+        .join(", ");
+      db.run(`INSERT INTO main."${table}" (${columns}) SELECT ${columns} FROM ${source}."${table}"`);
+    }
+    db.run("DELETE FROM main.sqlite_sequence");
+    db.run(`INSERT INTO main.sqlite_sequence (name, seq) SELECT name, seq FROM ${source}.sqlite_sequence`);
+  })();
 }

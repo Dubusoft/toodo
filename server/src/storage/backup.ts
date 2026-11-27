@@ -8,14 +8,23 @@
 // `BASELINE_SCHEMA_VERSION`.
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { type BackupKind, fileName, parseFileName } from "../domain/backup.ts";
 import { BASELINE_SCHEMA_VERSION, BUSY_TIMEOUT_MS, integrityCheck, schemaVersion } from "./database.ts";
 import { StorageError } from "./errors.ts";
-import { copyDatabase, liveCycle } from "./restore.ts";
+import { liveCycle, replaceWithAttached } from "./restore.ts";
 
 /** A backup Toodo wrote into its backup directory. */
 export interface BackupFile {
@@ -34,8 +43,24 @@ export class StagedBackup {
     this.#bytes = bytes;
   }
 
-  open(): Database {
-    return Database.deserialize(this.#bytes);
+  /**
+   * Runs `use` while a private copy of the backup is attached to `db` as schema `name`;
+   * the copy is deleted afterwards.
+   */
+  attachTo<T>(db: Database, name: string, use: () => T): T {
+    const dir = mkdtempSync(join(tmpdir(), "toodo-staged-"));
+    try {
+      const file = join(dir, "staged.sqlite3");
+      writeFileSync(file, this.#bytes, { mode: 0o600 });
+      db.run(`ATTACH DATABASE ? AS ${name}`, [file]);
+      try {
+        return use();
+      } finally {
+        db.run(`DETACH DATABASE ${name}`);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 }
 
@@ -179,19 +204,7 @@ export function stageBackup(path: string): StagedBackup {
 
 /** Replaces all data of `db` with a staged backup, in one transaction. */
 export function restore(db: Database, staged: StagedBackup): void {
-  const dir = mkdtempSync(join(tmpdir(), "toodo-restore-"));
-  try {
-    const file = join(dir, "staged.sqlite3");
-    const copy = staged.open();
-    try {
-      copy.run("VACUUM INTO ?", [file]);
-    } finally {
-      copy.close();
-    }
-    copyDatabase(file, db);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  staged.attachTo(db, "staged", () => replaceWithAttached(db, "staged"));
 }
 
 /**
