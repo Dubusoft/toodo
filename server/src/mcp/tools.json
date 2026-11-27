@@ -1120,7 +1120,7 @@
   },
   {
     "name": "list_channels",
-    "description": "List the chat's channels in the order they were made, with whether the agent's messages there notify people (push) and how many of the agent's messages people have not read (unread). Channel 1 always exists.",
+    "description": "List the chat's channels in the order they were made, with whether the agent's messages there notify people (push) and how many of the agent's messages people have not read there and in its threads that follow no task (unread). Channel 1 always exists.",
     "inputSchema": {
       "properties": {},
       "type": "object"

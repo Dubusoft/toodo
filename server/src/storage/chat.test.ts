@@ -295,6 +295,12 @@ describe("chat channels and threads", () => {
     // An archived thread no longer counts toward its channel.
     updateChatThread(db, thread.id, { status: "archived" }, 100);
     expect(unread()).toBe(1);
+    // A task's thread counts on its own, not toward its channel.
+    const ship = taskId(insertTask(db, insertWorkspace(db, "toodo"), "Ship"));
+    const followed = createChatThread(db, { channel: FIRST_CHANNEL, title: "#1 Ship", task: ship }, 100);
+    reply(db, { place: { kind: "thread", id: followed.id }, body: "Five" });
+    expect(unread()).toBe(1);
+    expect(listChatThreads(db, { task: ship })[0]?.unread).toBe(1);
     expect(failure(() => markChatRead(db, { kind: "thread", id: chatThreadId(9) }, first.id))).toEqual({
       kind: "chat_thread_not_found",
       thread: 9,

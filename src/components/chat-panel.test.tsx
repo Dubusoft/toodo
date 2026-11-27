@@ -223,9 +223,17 @@ describe("receipts", () => {
 });
 
 describe("unread messages", () => {
-  it("add up over every channel", () => {
-    expect(totalUnread([channel(1, "general", { unread: 2 }), channel(2, "work", { unread: 3 })])).toBe(5);
-    expect(totalUnread([])).toBe(0);
+  it("add up over every channel and the threads of the listed tasks", () => {
+    const channels = [channel(1, "general", { unread: 2 }), channel(2, "work", { unread: 3 })];
+    const tasks = {
+      needsAnswer: [{ task: task(8, "in_review"), thread: thread(5, "#8 Task 8", { taskId: 8, unread: 4 }) }],
+      inProgress: [
+        { task: task(9, "in_progress", ["lane:ap-9"]), thread: null },
+        { task: task(10, "in_progress", ["lane:ap-10"]), thread: thread(6, "#10", { taskId: 10, unread: 7, status: "archived" }) },
+      ],
+    };
+    expect(totalUnread(channels, tasks)).toBe(9);
+    expect(totalUnread([], { needsAnswer: [], inProgress: [] })).toBe(0);
   });
 });
 

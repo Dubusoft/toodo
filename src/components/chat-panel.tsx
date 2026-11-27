@@ -115,9 +115,18 @@ function placeOf(selection: Selection): ChatPlace {
   return selection.thread === null ? { channel: selection.channel } : { thread: selection.thread };
 }
 
-/** The unread messages of every channel, which the floating button shows. */
-export function totalUnread(channels: readonly ChatChannel[]): number {
-  return channels.reduce((total, channel) => total + channel.unread, 0);
+/** The unread messages of a thread; an archived thread has none. */
+function threadUnread(thread: ChatThread | null): number {
+  return thread === null || thread.status === "archived" ? 0 : thread.unread;
+}
+
+/**
+ * The unread messages the chat lists, which the floating button shows: every channel's, and
+ * those of the threads of the tasks it lists. Reading each listed place clears its share.
+ */
+export function totalUnread(channels: readonly ChatChannel[], tasks: TaskChats): number {
+  const threads = [...tasks.needsAnswer, ...tasks.inProgress].map((chat) => threadUnread(chat.thread));
+  return [...channels.map((channel) => channel.unread), ...threads].reduce((total, count) => total + count, 0);
 }
 
 /**
@@ -694,7 +703,7 @@ function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boole
           </span>
           {status !== "" && <span className="truncate text-xs font-normal text-muted-foreground">{status}</span>}
         </span>
-        <UnreadBadge count={thread === null || thread.status === "archived" ? 0 : thread.unread} />
+        <UnreadBadge count={threadUnread(thread)} />
       </button>
     </li>
   );
@@ -802,7 +811,7 @@ function PlaceList({
                     {thread.status === "archived" && (
                       <Archive aria-hidden className="size-3 shrink-0 text-muted-foreground" />
                     )}
-                    <UnreadBadge count={thread.status === "archived" ? 0 : thread.unread} />
+                    <UnreadBadge count={threadUnread(thread)} />
                   </button>
                 </li>
               ))}
@@ -1214,7 +1223,9 @@ export function Chat({
   onTargetShown?: () => void;
 }) {
   const channels = useChatChannels();
-  const unread = open ? 0 : totalUnread(channels.data ?? []);
+  const threads = useChatThreads({ archived: true });
+  const tasks = useTasks();
+  const unread = open ? 0 : totalUnread(channels.data ?? [], taskChats(tasks.data ?? [], threads.data ?? []));
   const button = useRef<HTMLButtonElement>(null);
   const close = () => {
     onOpenChange(false);

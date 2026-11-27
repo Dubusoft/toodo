@@ -396,8 +396,8 @@ export type ChatChannel = {
 	push: boolean,
 	createdAt: Timestamp,
 	/**
-	 *  Messages of the agent and Toodo not read yet, in it and its threads that are not
-	 *  archived.
+	 *  Messages of the agent and Toodo not read yet, in it and its threads that follow no task
+	 *  and are not archived.
 	 */
 	unread: number,
 };
