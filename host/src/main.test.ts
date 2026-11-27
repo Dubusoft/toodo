@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -97,6 +97,33 @@ describe("startHost", () => {
       expect(after.status).toBe(200);
       expect("starts" in after.body.supervisor && after.body.supervisor.starts).toBeGreaterThanOrEqual(2);
       expect(host.url.href).toBe(server);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("secrets", () => {
+  test("the Worker reads the dori env file into its own environment, which the main thread never sees", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "toodo-host-"));
+    try {
+      const envFile = join(dir, "env");
+      const seen = join(dir, "seen");
+      await writeFile(envFile, "TOODO_HOST_TEST_SECRET=from-the-env-file\n", { mode: 0o600 });
+      const credentials = new URL("../../dori/skills/dori-mode/scripts/src/credentials.ts", import.meta.url).pathname;
+      const entry = join(dir, "worker.ts");
+      await writeFile(entry, [
+        `import { loadEnvFile } from ${JSON.stringify(credentials)};`,
+        `import { runFaultWorker } from ${JSON.stringify(fixture("fault-worker").pathname)};`,
+        `loadEnvFile(process.env, ${JSON.stringify(envFile)});`,
+        `const child = Bun.spawn(["sh", "-c", 'printf %s "$TOODO_HOST_TEST_SECRET"'], { env: process.env, stdout: "pipe" });`,
+        `await Bun.write(${JSON.stringify(seen)}, await new Response(child.stdout).text());`,
+        `runFaultWorker("none");`,
+      ].join("\n"));
+      const { firstReady } = launch(entry);
+      await firstReady;
+      expect(await readFile(seen, "utf8")).toBe("from-the-env-file");
+      expect(process.env.TOODO_HOST_TEST_SECRET).toBeUndefined();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

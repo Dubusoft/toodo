@@ -1,7 +1,10 @@
 // The supervisor as the host's Worker (host/src/main.ts): the same run as `dori supervise`, stopped by the host's
 // `stop` message instead of a signal, with a heartbeat the host's watchdog reads.
+import { homedir } from "node:os";
+
 import { HEARTBEAT_INTERVAL_MS, type HostToWorker, type WorkerToHost } from "../../../../../host/src/protocol.ts";
 import { leadContext } from "./commands/context.ts";
+import { envFilePath, loadEnvFile } from "./credentials.ts";
 import { runSupervisor } from "./commands/supervise.ts";
 import { loadConfig } from "./config.ts";
 import { Registry } from "./registry.ts";
@@ -18,6 +21,11 @@ self.addEventListener("message", (event: MessageEvent<HostToWorker>) => {
 });
 
 const heartbeat = setInterval(() => { post({ type: "heartbeat" }); }, HEARTBEAT_INTERVAL_MS);
+
+// toodo.service puts no secret in its environment: the Worker reads ~/.dori/env (the Discord token, GH_TOKEN, ...) into
+// its own process.env, which the main thread never sees. The commands it starts get them through `env: process.env`.
+const envFile = envFilePath(process.env.HOME || homedir());
+console.log(`SUPERVISOR_ENV ${loadEnvFile(process.env, envFile).length} entries from ${envFile}`);
 
 const config = await loadConfig();
 await convertJsonState(config.stateDir);
