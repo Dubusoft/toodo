@@ -157,7 +157,9 @@ export const toodoAnswerReceipts = (stateDir: string, chat: () => ToodoChat) => 
   owns: (channel: string): boolean => isToodoRef(channel),
   ack: async (message: string): Promise<void> => { await chat().ack([Number(message)]); },
   handled: async (channel: string, message: string): Promise<void> => {
-    const d = readDecisions(stateDir).decisions.find((x) => x.toodo?.place === channel && x.answers?.some((a) => a.channel === channel && a.message === message));
+    // The answer the decision recorded, or a reply its close covers with --from (which no decision recorded).
+    const d = readDecisions(stateDir).decisions.find((x) => x.toodo !== undefined
+      && (x.answers?.some((a) => a.channel === channel && a.message === message) || x.coveredAnswers?.includes(`${channel}/${message}`)));
     if (!d?.toodo) throw new Error(`no decision card in ${channel} holds answer ${message}`);
     await chat().markHandled(Number(message), { replyId: d.toodo.message });
   },

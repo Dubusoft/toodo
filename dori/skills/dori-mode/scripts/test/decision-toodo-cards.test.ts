@@ -155,6 +155,22 @@ test("a request answered by a reply reaches the lead with its value; the close s
   expect(w.toodo.posts.slice(1).map((p) => p.body)).toEqual(["[System] d1 요청 처리. 레인 ap-1731-1에 전달합니다."]);
 });
 
+test("a close's --from can name an owner reply in the Toodo chat that no decision recorded: it is acked and handled, and the close does not say the lead decided", async () => {
+  const w = world();
+  const d = await w.ask("ap-1731-1", 1731);
+  await w.tick();
+  const reply = w.say(1, "1");
+  const toodo = toodoAnswerReceipts(w.dir, () => w.toodo.chat);
+  await closeOwnerDecision({
+    ...w.ctx,
+    receipts: { unseen: () => ({ count: 0, lines: [] }), acked: () => false, ack: async (_c, m) => { await toodo.ack(m); }, handled: async (c, m) => { await toodo.handled(c, m); } },
+  }, d.id, { text: "Keep.", choice: 1, from: `toodo:thread/1/${reply.id}` });
+  expect(w.toodo.receipts).toEqual([`ack ${reply.id}`, `handled ${reply.id} reply ${w.toodo.posts[0]?.id}`]);
+  await w.tick();
+  await w.tick();
+  expect(w.toodo.posts.slice(1).map((p) => p.body)).toEqual(["[System] d1 결정 반영: 1번(Keep). 레인 ap-1731-1에 전달합니다."]);
+});
+
 test("with Discord off the decision's own message is its card: the pass posts no second card and no second close line", async () => {
   const state = withState();
   cleanups.push(state.done);
