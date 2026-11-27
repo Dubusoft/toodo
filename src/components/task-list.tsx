@@ -392,6 +392,7 @@ export function TaskList({
                   selectedTaskId={detailId}
                   onSelectedTaskChange={setDetailId}
                   shownTaskId={shownTask?.id ?? null}
+                  searchMatchId={numbered?.id}
                   onTaskShown={() => onTaskShown?.()}
                   onNearPast={allTasks.isFetchingNextPage || allTasks.isFetchNextPageError ? undefined : loadOlder}
                   renderDetail={(selected, navigation) => (

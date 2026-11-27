@@ -12,11 +12,13 @@ export function useTimelineViewport<N extends Node>({
   layout,
   chart,
   onNearPast,
+  searchBarId,
 }: {
   layout: TimelineLayout;
   /** Identifies the chart drawn, its scale and period; a new chart opens on its own. */
   chart: string;
   onNearPast?: () => void;
+  searchBarId?: TaskId;
 }) {
   const container = useRef<HTMLDivElement>(null);
   const flow = useRef<ReactFlowInstance<N> | null>(null);
@@ -106,9 +108,15 @@ export function useTimelineViewport<N extends Node>({
       if (pendingReveal.current !== null) {
         reveal(pendingReveal.current, true);
         pendingReveal.current = null;
+      } else if (searchBarId !== undefined) {
+        reveal(searchBarId, false);
       }
     });
   }
+
+  useLayoutEffect(() => {
+    if (searchBarId !== undefined) reveal(searchBarId, false);
+  }, [chart, searchBarId]);
 
   /** Pans to the bar that starts first, with its row at the top, so the history can be reached without a wheel. */
   function showEarliest() {

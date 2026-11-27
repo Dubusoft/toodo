@@ -111,6 +111,44 @@ describe("App: search, command palette, and navigation", () => {
     expect(mocked.listTasks).toHaveBeenCalledWith({ ids: [3] });
   });
 
+  it("shows a finished task found by ID on the timeline even outside the selected year", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 5, 15));
+    const milestones = task(0, 1, "").milestones;
+    const old = task(1747, 1, "Old storage work", {
+      status: "done",
+      resolution: "completed",
+      milestones: {
+        ...milestones,
+        plannedAt: new Date(2025, 5, 1).getTime() / 1000,
+        startedAt: new Date(2025, 5, 1).getTime() / 1000,
+        completedAt: new Date(2025, 5, 2).getTime() / 1000,
+      },
+    });
+    const current = task(9, 1, "Follow up on #1747", {
+      milestones: { ...milestones, plannedAt: new Date(2026, 5, 1).getTime() / 1000 },
+    });
+    mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo] });
+    mocked.listTasks.mockImplementation(async (filter) => ({
+      status: "ok",
+      data: filter?.ids?.includes(old.id) ? [old] : filter?.statuses?.includes("planned") ? [current] : [],
+    }));
+    renderApp();
+    const timeline = await screen.findByRole("region", { name: "Task timeline" });
+    chooseOption(within(timeline).getByRole("combobox", { name: "Timeline period" }), "2026");
+    const statuses = screen.getByRole("group", { name: "Status filter" });
+    fireEvent.click(within(statuses).getByRole("button", { name: "Done" }));
+    const search = screen.getByRole("searchbox", { name: "Search tasks" });
+
+    fireEvent.change(search, { target: { value: "#1747" } });
+
+    expect(await screen.findByText("Old storage work")).toBeInTheDocument();
+    fireEvent.change(search, { target: { value: "1747" } });
+    expect(screen.getByText("Old storage work")).toBeInTheDocument();
+    fireEvent.click(within(statuses).getByRole("button", { name: "Done" }));
+    expect(screen.queryByText("Old storage work")).not.toBeInTheDocument();
+  });
+
   it("jumps to a task and runs actions from the command palette opened with Ctrl+K or Cmd+K", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [toodo, herdr] });
     mocked.listTasks.mockResolvedValue({
