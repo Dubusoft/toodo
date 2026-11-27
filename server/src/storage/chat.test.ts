@@ -14,7 +14,14 @@ import {
 } from "../domain/chat.ts";
 import { taskId } from "../domain/model.ts";
 import { chatAttachment, createChatAttachment, removeStaleChatAttachments } from "./chat-attachments.ts";
-import { chatNotice, createChatChannel, listChatChannels, markChatRead, updateChatChannel } from "./chat-channels.ts";
+import {
+  chatNotice,
+  createChatChannel,
+  deleteChatChannel,
+  listChatChannels,
+  markChatRead,
+  updateChatChannel,
+} from "./chat-channels.ts";
 import { listChatMessages } from "./chat-messages.ts";
 import { createChatThread, listChatThreads, updateChatThread } from "./chat-threads.ts";
 import {
@@ -181,6 +188,44 @@ describe("chat channels and threads", () => {
     expect(failure(() => say(db, { kind: "channel", id: chatChannelId(9) }, "Hi", "c3"))).toEqual({
       kind: "chat_channel_not_found",
       channel: 9,
+    });
+  });
+
+  test("deleting a channel moves its threads and messages to the default room", () => {
+    const db = openMemoryDatabase();
+    const ship = taskId(insertTask(db, insertWorkspace(db, "toodo"), "Ship"));
+    const work = createChatChannel(db, "work", 100);
+    const here: ChatPlace = { kind: "channel", id: work.id };
+    const read = reply(db, { place: here, body: "Read" });
+    markChatRead(db, here, read.id);
+    const unread = reply(db, { place: here, body: "Unread" });
+    const thread = createChatThread(db, { channel: work.id, title: "Deploy", task: ship }, 100);
+    const inThread = reply(db, { place: { kind: "thread", id: thread.id }, body: "In thread" });
+
+    deleteChatChannel(db, work.id, 300);
+
+    expect(listChatChannels(db).map((c) => c.name)).toEqual(["general"]);
+    const threads = listChatThreads(db, { archived: true });
+    const kept = threads.find((t) => t.title === "#work");
+    expect(kept).toMatchObject({ channelId: FIRST_CHANNEL, status: "archived", archivedAt: 300, taskId: null, unread: 1 });
+    expect(allMessages(db, { kind: "thread", id: kept!.id }).map((m) => m.id)).toEqual([read.id, unread.id]);
+    // The task's thread keeps its id, so the agent's ref to it still works.
+    expect(threads.find((t) => t.id === thread.id)).toMatchObject({ channelId: FIRST_CHANNEL, taskId: ship });
+    expect(allMessages(db, { kind: "thread", id: thread.id }).map((m) => m.id)).toEqual([inThread.id]);
+    expect(allMessages(db, GENERAL)).toEqual([]);
+
+    // A channel without messages of its own leaves no thread behind.
+    const quiet = createChatChannel(db, "quiet", 100);
+    deleteChatChannel(db, quiet.id, 300);
+    expect(listChatThreads(db, { archived: true }).filter((t) => t.title === "#quiet")).toEqual([]);
+
+    expect(failure(() => deleteChatChannel(db, FIRST_CHANNEL, 300))).toEqual({
+      kind: "chat_channel_permanent",
+      channel: FIRST_CHANNEL,
+    });
+    expect(failure(() => deleteChatChannel(db, work.id, 300))).toEqual({
+      kind: "chat_channel_not_found",
+      channel: work.id,
     });
   });
 

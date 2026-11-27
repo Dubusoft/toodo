@@ -132,6 +132,7 @@ function storageCode(failure: StorageFailure): CommandErrorCode {
     case "not_a_persons_message":
     case "not_an_agents_message":
     case "chat_channel_name_taken":
+    case "chat_channel_permanent":
     case "chat_thread_not_open":
     case "chat_thread_task_taken":
     case "chat_action_chosen":

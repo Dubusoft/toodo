@@ -49,6 +49,8 @@ export type StorageFailure =
   | { readonly kind: "chat_channel_not_found"; readonly channel: number }
   /** Another channel has the name, in some case. */
   | { readonly kind: "chat_channel_name_taken"; readonly name: string }
+  /** The default room (channel 1) stays: it cannot be deleted. */
+  | { readonly kind: "chat_channel_permanent"; readonly channel: number }
   | { readonly kind: "chat_thread_not_found"; readonly thread: number }
   /** Messages go only to open threads. */
   | { readonly kind: "chat_thread_not_open"; readonly thread: number; readonly status: "closed" | "archived" }
@@ -143,6 +145,8 @@ function describe(failure: StorageFailure): string {
       return `chat channel ${failure.channel} does not exist; take channel ids from list_channels`;
     case "chat_channel_name_taken":
       return `a chat channel named ${debugString(failure.name)} already exists; choose another name`;
+    case "chat_channel_permanent":
+      return `chat channel ${failure.channel} is the default room, which cannot be deleted`;
     case "chat_thread_not_found":
       return `chat thread ${failure.thread} does not exist; take thread ids from list_threads or create_thread`;
     case "chat_thread_not_open":
