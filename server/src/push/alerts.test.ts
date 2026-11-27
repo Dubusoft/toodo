@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { chatChannelId, chatThreadId } from "../domain/chat.ts";
 import { taskId } from "../domain/model.ts";
 import type { TaskStatus } from "../domain/status.ts";
 import { MAX_BODY_CHARS, type Alert, Watch, agentMessageAlert, alertPayload } from "./alerts.ts";
@@ -29,8 +30,9 @@ describe("push alerts", () => {
     expect(Object.keys(alertPayload(alert)).sort()).toEqual(["body", "tag", "taskId", "title"]);
   });
 
-  test("agent messages are urgent, shortened, and open the chat", () => {
-    const alert = agentMessageAlert("Helper", { channel: "work", thread: "Deploy" }, 7, "가".repeat(1000));
+  test("agent messages are urgent, shortened, and open their thread", () => {
+    const notice = { channelId: chatChannelId(2), channel: "work", threadId: chatThreadId(5), thread: "Deploy" };
+    const alert = agentMessageAlert("Helper", notice, 7, "가".repeat(1000));
     expect(alert.kind).toBe("agent_message");
     expect(alert.urgent).toBe(true);
     expect([...alert.body].length).toBe(MAX_BODY_CHARS + 3);
@@ -40,7 +42,11 @@ describe("push alerts", () => {
       tag: "chat-7",
       taskId: null,
       chat: true,
+      channelId: 2,
+      threadId: 5,
     });
-    expect(agentMessageAlert("Helper", { channel: "work", thread: null }, 8, "hi").title).toBe("Helper in #work");
+    const inChannel = agentMessageAlert("Helper", { ...notice, threadId: null, thread: null }, 8, "hi");
+    expect(inChannel.title).toBe("Helper in #work");
+    expect(alertPayload(inChannel)).toMatchObject({ chat: true, channelId: 2, threadId: null });
   });
 });

@@ -905,9 +905,19 @@ export function ChatSearch({ onOpen }: { onOpen: (selection: Selection) => void 
   );
 }
 
-function ChatPanel({ onClose, onShowTask }: { onClose: () => void; onShowTask: (id: TaskId) => void }) {
+function ChatPanel({
+  onClose,
+  onShowTask,
+  target,
+  onTargetShown,
+}: {
+  onClose: () => void;
+  onShowTask: (id: TaskId) => void;
+  target: Selection | null;
+  onTargetShown: () => void;
+}) {
   const channels = useChatChannels();
-  const [selection, setSelection] = useState(storedSelection);
+  const [selection, setSelection] = useState(() => target ?? storedSelection());
   const [searching, setSearching] = useState(false);
   const threads = useChatThreads({ channelId: selection.channel, archived: true });
   // On a phone the panel shows either the channels or one conversation.
@@ -930,6 +940,13 @@ function ChatPanel({ onClose, onShowTask }: { onClose: () => void; onShowTask: (
     setListShown(false);
     setSearching(false);
   };
+
+  // A clicked notification shows its channel or thread, once.
+  useEffect(() => {
+    if (target === null) return;
+    select(target);
+    onTargetShown();
+  }, [target]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1002,16 +1019,21 @@ function ChatPanel({ onClose, onShowTask }: { onClose: () => void; onShowTask: (
 
 /**
  * The floating chat button, with the count of unread messages in every channel, and the chat
- * it opens. `open` is kept by the app so a clicked notification can open it too.
+ * it opens. `open` is kept by the app so a clicked notification can open it too, at the channel
+ * or thread in `target`, which `onTargetShown` reports the chat took.
  */
 export function Chat({
   open,
   onOpenChange,
   onShowTask,
+  target = null,
+  onTargetShown = () => {},
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onShowTask: (id: TaskId) => void;
+  target?: Selection | null;
+  onTargetShown?: () => void;
 }) {
   const channels = useChatChannels();
   const unread = open ? 0 : totalUnread(channels.data ?? []);
@@ -1023,7 +1045,7 @@ export function Chat({
 
   return (
     <>
-      {open && <ChatPanel onClose={close} onShowTask={onShowTask} />}
+      {open && <ChatPanel onClose={close} onShowTask={onShowTask} target={target} onTargetShown={onTargetShown} />}
       <div className={cn("fixed bottom-4 right-4 z-40 print:hidden", open && "max-md:hidden")}>
         <IconButton
           ref={button}

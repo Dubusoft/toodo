@@ -262,7 +262,18 @@ describe("chat channels and threads", () => {
   test("a notice names the channel and thread unless the channel is quiet", () => {
     const db = openMemoryDatabase();
     const thread = createChatThread(db, { channel: FIRST_CHANNEL, title: "Deploy", task: null }, 100);
-    expect(chatNotice(db, FIRST_CHANNEL, thread.id)).toEqual({ channel: "general", thread: "Deploy" });
+    expect(chatNotice(db, FIRST_CHANNEL, thread.id)).toEqual({
+      channelId: FIRST_CHANNEL,
+      channel: "general",
+      threadId: thread.id,
+      thread: "Deploy",
+    });
+    expect(chatNotice(db, FIRST_CHANNEL, null)).toEqual({
+      channelId: FIRST_CHANNEL,
+      channel: "general",
+      threadId: null,
+      thread: null,
+    });
     updateChatChannel(db, FIRST_CHANNEL, { push: false });
     expect(chatNotice(db, FIRST_CHANNEL, thread.id)).toBeNull();
     expect(listChatChannels(db)[0]?.push).toBe(false);

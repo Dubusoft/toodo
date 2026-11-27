@@ -37,7 +37,7 @@ import { isPaletteKey, singleKeyShortcut } from "@/lib/shortcuts";
 import { setThemePreference } from "@/lib/theme";
 import type { TimelineScale } from "@/lib/task-graph";
 import { cn } from "@/lib/utils";
-import { listenForOpenChat, listenForOpenTask } from "@/web/push";
+import { type ChatTarget, chatTargetAt, listenForOpenChat, listenForOpenTask } from "@/web/push";
 
 // The review screen loads only when it is first shown.
 const Review = lazy(() => import("@/components/review").then((module) => ({ default: module.Review })));
@@ -114,9 +114,18 @@ export default function App() {
   };
   // A clicked notification opens its task.
   useEffect(() => listenForOpenTask(showTask), []);
-  // The chat opens from its button, from a clicked chat notification, or at an address with `?chat`.
+  // The chat opens from its button, from a clicked chat notification, or at an address with `?chat`;
+  // the notification's channel or thread is shown until the chat takes it.
   const [chatOpen, setChatOpen] = useState(() => new URLSearchParams(location.search).has("chat"));
-  useEffect(() => listenForOpenChat(() => setChatOpen(true)), []);
+  const [chatTarget, setChatTarget] = useState<ChatTarget | null>(() => chatTargetAt(location.search));
+  useEffect(
+    () =>
+      listenForOpenChat((target) => {
+        if (target !== null) setChatTarget(target);
+        setChatOpen(true);
+      }),
+    [],
+  );
   // The first workspace can be added from the empty main view too, on the server itself.
   const [addingFirst, setAddingFirst] = useState(false);
   const addFirstButton = useRef<HTMLButtonElement>(null);
@@ -402,6 +411,8 @@ export default function App() {
           <Chat
             open={chatOpen}
             onOpenChange={setChatOpen}
+            target={chatTarget}
+            onTargetShown={() => setChatTarget(null)}
             onShowTask={(id) => {
               setChatOpen(false);
               showTask(id);

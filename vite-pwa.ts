@@ -63,7 +63,8 @@ const SERVER_PATHS = ${JSON.stringify(serverPaths)};
 const NOTIFICATION_ICON = ${JSON.stringify(notificationIcon)};
 // The message that asks an open page to show a task; see listenForOpenTask in src/web/push.ts.
 const OPEN_TASK = "toodo-open-task";
-// The message that asks an open page to show the chat; see listenForOpenChat in src/web/push.ts.
+// The message that asks an open page to show the chat at a channel or thread; see
+// listenForOpenChat in src/web/push.ts, which also reads the address a new window opens at.
 const OPEN_CHAT = "toodo-open-chat";
 // The message that asks a waiting worker to take over; see reloadIntoNewBuild in src/web/build.ts.
 const SKIP_WAITING = "toodo-skip-waiting";
@@ -137,11 +138,29 @@ function pushMessage(data) {
   }
 }
 
+// The channel and thread a chat notification opens; null for a notification of a task.
+function chatTarget(message) {
+  if (message.chat !== true) {
+    return null;
+  }
+  return {
+    channelId: typeof message.channelId === "number" ? message.channelId : null,
+    threadId: typeof message.threadId === "number" ? message.threadId : null,
+  };
+}
+
+function chatAddress(chat) {
+  if (chat.channelId === null) {
+    return "/?chat";
+  }
+  return "/?chat=" + chat.channelId + (chat.threadId === null ? "" : "&thread=" + chat.threadId);
+}
+
 self.addEventListener("push", (event) => {
   const message = pushMessage(event.data);
   const options = {
     body: typeof message.body === "string" ? message.body : "Open Toodo to see what changed.",
-    data: { taskId: typeof message.taskId === "number" ? message.taskId : null, chat: message.chat === true },
+    data: { taskId: typeof message.taskId === "number" ? message.taskId : null, chat: chatTarget(message) },
     icon: NOTIFICATION_ICON,
     badge: NOTIFICATION_ICON,
   };
@@ -157,16 +176,18 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const taskId = event.notification.data?.taskId ?? null;
-  const chat = event.notification.data?.chat === true;
+  // A notification shown by an earlier worker carries chat as true, without a place.
+  const shown = event.notification.data?.chat ?? null;
+  const chat = shown === true ? { channelId: null, threadId: null } : shown;
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windows) => {
       // The most recently focused window comes first.
       const open = windows[0];
       if (!open) {
-        return self.clients.openWindow(chat ? "/?chat" : taskId === null ? "/" : "/?task=" + taskId);
+        return self.clients.openWindow(chat ? chatAddress(chat) : taskId === null ? "/" : "/?task=" + taskId);
       }
       if (chat) {
-        open.postMessage({ type: OPEN_CHAT });
+        open.postMessage({ type: OPEN_CHAT, channelId: chat.channelId, threadId: chat.threadId });
       } else if (taskId !== null) {
         open.postMessage({ type: OPEN_TASK, taskId });
       }

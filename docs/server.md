@@ -453,7 +453,7 @@ ones it gets, and sends itself a test notification:
 | Setting | Notifications |
 | --- | --- |
 | Task awaiting completion | A task moved to `in_review`, so its work awaits review and completion |
-| Agent messages in the chat | The agent posted a message in the [chat](#chat), in a channel whose notifications are on; opening it opens the chat |
+| Agent messages in the chat | The agent posted a message in the [chat](#chat), in a channel whose notifications are on, such as a reply, a question with choices, or a status update; opening it opens the chat at that channel or thread |
 
 The settings **Agent finished or needs input** and **Pull request checks and reviews** are
 still listed, but the server no longer watches agents or pull requests, so they send

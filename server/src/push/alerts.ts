@@ -22,12 +22,18 @@ export type Alert = {
   /** A later notification with the same tag replaces the earlier one. */
   readonly tag: string;
   readonly taskId: number | null;
-  /** Clicking it opens the chat. */
-  readonly chat: boolean;
+  /** The channel and thread clicking it opens in the chat. */
+  readonly chat: ChatTarget | null;
+};
+
+/** A place in the chat a notification opens: a channel, or a thread under it. */
+export type ChatTarget = {
+  readonly channelId: number;
+  readonly threadId: number | null;
 };
 
 /** The notification as the service worker receives it: `kind` and `urgent` stay on the
- * server, and `chat` is sent only when set. */
+ * server, and the chat place is sent only when set, as `chat: true` beside the ids. */
 export function alertPayload(alert: Alert): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     title: alert.title,
@@ -35,7 +41,11 @@ export function alertPayload(alert: Alert): Record<string, unknown> {
     tag: alert.tag,
     taskId: alert.taskId,
   };
-  if (alert.chat) payload.chat = true;
+  if (alert.chat !== null) {
+    payload.chat = true;
+    payload.channelId = alert.chat.channelId;
+    payload.threadId = alert.chat.threadId;
+  }
   return payload;
 }
 
@@ -47,12 +57,12 @@ export function testAlert(): Alert {
     body: "This device will get notifications even while Toodo is closed.",
     tag: "test",
     taskId: null,
-    chat: false,
+    chat: null,
   };
 }
 
 /** The agent, named `agent`, posted chat message `id` where `notice` names; each message
- * is its own notification. */
+ * is its own notification, and clicking it opens that channel or thread. */
 export function agentMessageAlert(agent: string, notice: ChatNotice, id: number, body: string): Alert {
   const title =
     notice.thread === null ? `${agent} in #${notice.channel}` : `${agent} in #${notice.channel} / ${notice.thread}`;
@@ -63,7 +73,7 @@ export function agentMessageAlert(agent: string, notice: ChatNotice, id: number,
     body: shorten(body),
     tag: `chat-${id}`,
     taskId: null,
-    chat: true,
+    chat: { channelId: notice.channelId, threadId: notice.threadId },
   };
 }
 
@@ -76,7 +86,7 @@ function taskAlert(kind: PushKind, urgent: boolean, title: string, task: TaskId,
     body: shorten(name === null ? `#${task}` : `#${task} ${name}`),
     tag: `task-${task}-${tag}`,
     taskId: task,
-    chat: false,
+    chat: null,
   };
 }
 
