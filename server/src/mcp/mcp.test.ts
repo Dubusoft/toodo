@@ -6,15 +6,19 @@ import { chooseChatAction, postUserMessage } from "../storage/chat.ts";
 import type { Storage } from "../storage/storage.ts";
 import { memoryStorage, newTask, workspace } from "../storage/storage-fixtures.ts";
 import { VERSION } from "../http/version.ts";
-import { SKILL } from "./instructions.ts";
+import { tokenHash } from "../http/auth.ts";
+import { ownerKey, parseScopes, READ_SCOPES, type Scopes } from "../oauth/scopes.ts";
+import { oauthCreateGrant, oauthRegisterClient, oauthRevokeGrant } from "../storage/oauth.ts";
+import { CHAT_INSTRUCTIONS, SKILL } from "./instructions.ts";
 import { isLoopback, McpEndpoint, type Backend } from "./mcp.ts";
 import TOOL_LIST from "./tools.json" with { type: "json" };
 import { TOOLS } from "./tools/index.ts";
 
 type Json = Record<string, any>;
 
-/** An MCP endpoint over `storage` that records what it announces. */
-function endpoint(storage: Storage) {
+/** An MCP endpoint over `storage` that records what it announces, in public mode at
+ * `publicUrl` if one is given. */
+function endpoint(storage: Storage, publicUrl: string | null = null) {
   const changed: number[] = [];
   const guidelines: number[] = [];
   const chat: string[] = [];
@@ -25,6 +29,7 @@ function endpoint(storage: Storage) {
     storage,
     reader: storage,
     mcp: { url: "http://127.0.0.1:0/mcp", token: "secret", error: null, instance: "0123456789ab", lastRejection: null },
+    publicUrl,
     tasksChanged: (id) => {
       changed.push(id);
       changes();
@@ -450,4 +455,104 @@ test("Only loopback peers are served, an IPv4 one mapped into IPv6 included", as
   expect(remote.status).toBe(403);
   expect(await remote.text()).toContain("TOODO_PUBLIC_URL");
   expect((await post(served, initialize, {}, "::ffff:127.0.0.1")).status).toBe(200);
+});
+
+test("In public mode chat apps reach the tools their OAuth grant allows from anywhere", async () => {
+  const storage = memoryStorage();
+  const { served } = endpoint(storage, "https://toodo.example:8443");
+  const grant = (token: string, scopes: Scopes) => {
+    const client = {
+      clientId: `client-${token}`,
+      secretHash: null,
+      clientName: "Test app",
+      redirectUris: ["https://client.example/callback"],
+      authMethod: "none",
+      createdAt: 1,
+    };
+    oauthRegisterClient(storage.db, client, storage.now());
+    const tokens = { accessHash: tokenHash(token), refreshHash: tokenHash(`${token}-refresh`) };
+    return oauthCreateGrant(storage.db, { owner: ownerKey("test-owner"), client, scopes, tokens }, storage.now());
+  };
+  const readGrant = grant("read-access", READ_SCOPES);
+  grant("write-access", parseScopes("toodo.write"));
+  const send = (token: string | null, body: unknown, host = "toodo.example:8443") =>
+    served.handle(
+      new Request(`https://${host}/mcp`, {
+        method: "POST",
+        headers: {
+          ...(token === null ? {} : { authorization: `Bearer ${token}` }),
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify(body),
+      }),
+      "192.0.2.1",
+    );
+  const rpcAs = async (token: string, method: string, params: unknown = {}) => {
+    const response = await send(token, { jsonrpc: "2.0", id: 1, method, params });
+    expect(response.status).toBe(200);
+    return ((await response.json()) as Json).result;
+  };
+  const toolList = { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} };
+  for (const host of ["toodo.example", "toodo.example:8443", "localhost", "127.0.0.1"]) {
+    expect((await send("secret", toolList, host)).status).toBe(200);
+  }
+  expect((await send("secret", toolList, "other.example")).status).toBe(403);
+
+  const anonymous = await send(null, initialize);
+  expect(anonymous.status).toBe(401);
+  expect(anonymous.headers.get("www-authenticate")).toBe(
+    'Bearer resource_metadata="https://toodo.example:8443/.well-known/oauth-protected-resource/mcp"',
+  );
+  expect((await send("unknown", initialize)).headers.get("www-authenticate")).toEndWith(', error="invalid_token"');
+  const chat = (await (await send("read-access", initialize)).json()) as Json;
+  expect(chat.result.instructions).toBe(CHAT_INSTRUCTIONS);
+  expect(chat.result.instructions).not.toContain("Call current_task");
+
+  const names = async (token: string) =>
+    new Set(((await rpcAs(token, "tools/list")).tools as Json[]).map((tool) => tool.name as string));
+  const read = await names("read-access");
+  const READ = ["read_toodo_skill", "list_workspaces", "list_tasks", "search_tasks", "get_task", "get_guidelines", "review_report"];
+  expect(read).toEqual(new Set(READ));
+  const all = await names("secret");
+  expect(all).toEqual(new Set(TOOL_LIST.map((tool) => tool.name)));
+  const write = await names("write-access");
+  expect(write).toEqual(
+    new Set([
+      ...READ,
+      ...["create_workspace", "create_task", "create_plan", "update_task", "move_task", "add_dependency"],
+      ...["remove_dependency", "add_related", "remove_related", "add_criterion", "remove_criterion"],
+      ...["check_criterion", "add_progress_note", "report_blocker", "pause_task", "wait_task"],
+      ...["add_guideline", "update_guideline", "remove_guideline"],
+    ]),
+  );
+  for (const name of ["current_task", "start_task", "resume_task", "end_wait", "update_workspace", "archive_workspace", "complete_task", "conclude_task", "delete_task", "delete_done_tasks", "reopen_task"]) {
+    expect(write.has(name)).toBe(false);
+    expect(all.has(name)).toBe(true);
+    const refused = await rpcAs("write-access", "tools/call", { name, arguments: {} });
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0].text).toContain("local-only");
+    expect(refused.structuredContent.error.code).toBe("notPermitted");
+  }
+  const callAs = (token: string, name: string, args: unknown) => rpcAs(token, "tools/call", { name, arguments: args });
+  const refused = await callAs("read-access", "create_task", {});
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0].text).toContain("toodo.write");
+  expect((await callAs("read-access", "read_toodo_skill", {})).content[0].text).toBe(CHAT_INSTRUCTIONS);
+  for (const extra of [{ clone_url: "https://example.com/repo" }, { init: true }, { source: "github" }]) {
+    const rejected = await callAs("write-access", "create_workspace", { name: "Planning", ...extra });
+    expect(rejected.isError).toBe(true);
+    expect(rejected.content[0].text).toContain("name");
+  }
+  const created = await callAs("write-access", "create_workspace", { name: "Planning" });
+  expect(created.isError).toBe(false);
+  const workspace = JSON.parse(created.content[0].text);
+  const task = await callAs("write-access", "create_task", { workspace_id: workspace.id, task_type: "feat", title: "Plan the feature" });
+  expect(task.isError).toBe(false);
+  expect((await rpcAs("read-access", "resources/list")).resources).toHaveLength(1);
+
+  oauthRevokeGrant(storage.db, readGrant, storage.now());
+  const revoked = await send("read-access", initialize);
+  expect(revoked.status).toBe(401);
+  expect(revoked.headers.get("www-authenticate")).toContain('error="invalid_token"');
 });

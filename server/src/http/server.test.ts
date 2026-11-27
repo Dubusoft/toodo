@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -95,6 +96,123 @@ describe("routes", () => {
     await until("event: task-status-changed");
     expect(text).toContain(`"workspaceId":${workspace.id},"from":null,"to":"planned"`);
     await reader.cancel();
+  });
+});
+
+describe("public mode", () => {
+  const OAUTH_ROUTES = [
+    ["GET", "/.well-known/oauth-protected-resource/mcp"],
+    ["GET", "/.well-known/oauth-protected-resource"],
+    ["GET", "/.well-known/oauth-authorization-server"],
+    ["GET", "/.well-known/openid-configuration"],
+    ["POST", "/oauth/register"],
+    ["GET", "/oauth/authorize"],
+    ["POST", "/oauth/token"],
+    ["POST", "/oauth/revoke"],
+  ] as const;
+
+  test("OAuth routes are absent without a public URL", async () => {
+    const web = mkdtempSync(join(tmpdir(), "toodo-web-"));
+    writeFileSync(join(web, "index.html"), "Toodo");
+    for (const webDir of [undefined, web]) {
+      const server = await start({ webDir });
+      for (const [method, path] of OAUTH_ROUTES) expect((await server.fetch(method, path)).status).toBe(404);
+      const apps = await server.send("POST", "/api/rpc/list_connected_apps", WEB, {});
+      expect(apps).toEqual({ status: 200, body: { publicMcpUrl: null, apps: [] } });
+    }
+  });
+
+  test("a chat app connects over OAuth, uses /mcp, and is revoked from the app", async () => {
+    const server = await start({ publicUrl: "https://toodo.example" });
+    const verifier = "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG";
+    const redirect = "https://client.example/callback";
+    const post = (path: string, body: RequestInit["body"], headers: Record<string, string>, token?: string) =>
+      server.fetch("POST", path, { body, headers, token });
+    const form = (fields: Record<string, string>) => new URLSearchParams(fields).toString();
+    const formType = { "content-type": "application/x-www-form-urlencoded" };
+
+    const resource: any = await (await server.fetch("GET", "/.well-known/oauth-protected-resource/mcp")).json();
+    expect(resource.resource).toBe("https://toodo.example/mcp");
+    expect(resource.authorization_servers).toEqual(["https://toodo.example"]);
+    const anonymous = await post("/mcp", "{}", { "content-type": "application/json" });
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.headers.get("www-authenticate")).toBe(
+      'Bearer resource_metadata="https://toodo.example/.well-known/oauth-protected-resource/mcp"',
+    );
+
+    const registered = await post(
+      "/oauth/register",
+      JSON.stringify({ redirect_uris: [redirect], token_endpoint_auth_method: "none", client_name: "Chat app" }),
+      { "content-type": "application/json" },
+    );
+    expect(registered.status).toBe(201);
+    const clientId: string = ((await registered.json()) as any).client_id;
+    const query = new URLSearchParams({
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: redirect,
+      code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+      code_challenge_method: "S256",
+      scope: "toodo.read toodo.write",
+      state: "xyz",
+      resource: "https://toodo.example/mcp",
+    });
+    const page = await (await server.fetch("GET", `/oauth/authorize?${query}`)).text();
+    expect(page).toContain("<strong>Chat app</strong> requests access");
+    const pendingId = /name="pending_id" value="([0-9a-f]+)"/.exec(page)![1]!;
+    const consent = await fetch(`${server.url}/oauth/authorize`, {
+      method: "POST",
+      redirect: "manual",
+      headers: formType,
+      body: form({ pending_id: pendingId, web_token: WEB, decision: "approve", write: "yes" }),
+    });
+    expect(consent.status).toBe(303);
+    const back = new URL(consent.headers.get("location")!);
+    expect(`${back.origin}${back.pathname}`).toBe(redirect);
+    expect(back.searchParams.get("state")).toBe("xyz");
+    expect(back.searchParams.get("iss")).toBe("https://toodo.example");
+    const exchanged = await post(
+      "/oauth/token",
+      form({
+        grant_type: "authorization_code",
+        client_id: clientId,
+        code: back.searchParams.get("code")!,
+        redirect_uri: redirect,
+        code_verifier: verifier,
+      }),
+      formType,
+    );
+    expect(exchanged.status).toBe(200);
+    const tokens: any = await exchanged.json();
+    expect(tokens.scope).toBe("toodo.read toodo.write");
+
+    const mcp = (token: string, method: string) =>
+      post("/mcp", JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: {} }), {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      }, token);
+    const listed = await mcp(tokens.access_token, "tools/list");
+    expect(listed.status).toBe(200);
+    const names = (((await listed.json()) as any).result.tools as Array<{ name: string }>).map((tool) => tool.name);
+    expect(names).toContain("create_task");
+    expect(names).not.toContain("complete_task");
+    const upload = await server.fetch("POST", "/mcp/attachments?name=a.txt", { token: tokens.access_token, body: "x" });
+    expect(upload.status).toBe(409);
+    expect(((await upload.json()) as any).code).toBe("notPermitted");
+    expect((await server.fetch("POST", "/mcp/attachments?name=a.txt", { token: AGENT, body: "x" })).status).toBe(201);
+
+    const apps = (await server.send("POST", "/api/rpc/list_connected_apps", WEB, {})).body;
+    expect(apps.publicMcpUrl).toBe("https://toodo.example/mcp");
+    expect(apps.apps).toHaveLength(1);
+    expect(apps.apps[0].clientName).toBe("Chat app");
+    expect(apps.apps[0].scopes).toBe("toodo.read toodo.write");
+    expect(apps.apps[0].lastUsedAt).not.toBeNull();
+    const revoked = await server.send("POST", "/api/rpc/revoke_connected_app", WEB, { grantId: apps.apps[0].grantId });
+    expect(revoked.status).toBe(200);
+    const after = await mcp(tokens.access_token, "tools/list");
+    expect(after.status).toBe(401);
+    expect(after.headers.get("www-authenticate")).toEndWith(', error="invalid_token"');
+    expect((await server.fetch("GET", "/oauth/other")).status).toBe(404);
   });
 });
 
