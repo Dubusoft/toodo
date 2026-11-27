@@ -68,6 +68,16 @@ The buttons show the decision's state (`decision-buttons.ts` decisionButtonState
 
 The lead's lines for a direct answer name the option text and the button: `DECISION_ANSWER_DIRECT ap-1-1 d1 r1 choice=2 "Replace" decision-d1-r1 from <thread>/click:<id> via button: ...` (also `DECISION_ANSWER_CORRECTED` and `DECISION_ANSWER_ACKED`).
 
+### Decision cards in the Toodo chat
+
+With `toodo` in config `platforms`, every open decision and request also gets a card in the Toodo chat, beside its Discord thread (`decision-toodo-cards.ts`, from the supervisor's notices round): in its task's thread, else in the default room. A question's card carries one button per option (action key `d<ID>:<N>`, label `N. <option>`, the recommended one primary); a request's card has none and is answered with a reply. While a card waits on the owner (the decision is open and no direct answer is on its way) its thread is marked waiting: the app lists its task under Needs answer. The mark comes off once the owner answered, and a closed decision gets one `[System]` close line under its card. The card has no close button. With Discord off (`platforms` `["toodo"]`) the card is the decision's own message, posted when it opens (`decision-toodo.ts`), and its close confirmation is that close line.
+
+The owner's answers there are routed before they are journaled, the same way as in Discord:
+
+- a card button press (a choice message) is an answer-button click: a direct answer to the lane (`DECISION_ANSWER_DIRECT ... from toodo:thread/<id>/click:toodo-<message> via button`), else an answer the lead holds; the owner gets the `[System]` status line or the refusal under it, and it is never INBOUND;
+- a reply in the card's place in a qualifying form (`N`, `d<ID>=<N>`) is a direct answer with its `[System]` status line, never INBOUND;
+- any other reply there is recorded as the lead's answer (`OWNER_DECISION_ANSWERED`, its first one) and arrives as `INBOUND toodo:thread/<id> ...` as well, which is where a request's value is. `dori decision close d<ID> --text "..."` settles it as usual: it acks the reply and records it handled in Toodo (linked to the card), and relays `--text` to the lane.
+
 A click made while the supervisor restarted reaches the next process when it resumes the gateway session, past Discord's answer window, so its acknowledgement fails. It is still routed like any click: the buttons are edited with the bot's token and the reply is posted in the thread as `[System] 재시작 중에 누른 버튼(d<ID> N번)입니다. ...`; one the lane cannot take directly goes to the lead as above.
 
 A free-text answer is unchanged: it goes to the lead whole, and the lead's `dori decision close --text` relays it.

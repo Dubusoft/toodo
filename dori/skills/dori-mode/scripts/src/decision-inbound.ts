@@ -1,6 +1,6 @@
 import type { LaneMessageStore } from "./lane-messages.ts";
 import { clickMessageId, queueDecisionAnswer, type QueueOutcome, recordAnswerRevision, viaButton } from "./decision-delivery.ts";
-import { type AnswerRevision, decisionTargetOf, type OwnerDecision, readDecisions, sameTarget, type TargetLane } from "./decision-store.ts";
+import { answersIn, type AnswerRevision, decisionTargetOf, type OwnerDecision, readDecisions, sameTarget, type TargetLane } from "./decision-store.ts";
 import { decisionButtonRows, decisionButtonState } from "./messenger/decision-buttons.ts";
 import { answeredEventId, answeredLine, choiceLabel, recordButtonAnswer } from "./owner-decisions.ts";
 
@@ -50,14 +50,15 @@ const waiting = (d: OwnerDecision): boolean => d.state === "open" || d.state ===
 
 /**
  * The one decision a form names: `d<ID>=<N>` names it outright; a bare `N` names the only waiting question in thread
- * `channel`, or among several the one whose question message it replies to. Never the newest question by guess.
+ * `channel` (or the Toodo chat place of its card), or among several the one whose question message it replies to. Never
+ * the newest question by guess.
  */
 export const answeredDecision = (decisions: readonly OwnerDecision[], channel: string, form: AnswerForm, replyTo?: string): OwnerDecision | undefined => {
   if (form.id !== undefined) {
     const named = decisions.find((d) => d.id === form.id);
     return named && waiting(named) ? named : undefined;
   }
-  const here = decisions.filter((d) => d.thread === channel && waiting(d));
+  const here = decisions.filter((d) => answersIn(d, channel) && waiting(d));
   if (here.length === 1) return here[0];
   return replyTo === undefined ? undefined : here.find((d) => d.message === replyTo);
 };
@@ -167,7 +168,7 @@ export type ClickReply = { readonly content?: string; readonly components?: read
  */
 export const routeDecisionClick = async (routing: DirectRouting, click: DecisionClick): Promise<ClickReply> => {
   const d = readDecisions(routing.stateDir).decisions.find((x) => x.id === click.decision);
-  if (!d || d.thread !== click.channel) return { content: "이 스레드의 질문 버튼이 아닙니다." };
+  if (!d || !answersIn(d, click.channel)) return { content: "이 스레드의 질문 버튼이 아닙니다." };
   const reply = (content?: string): ClickReply => {
     const rows = decisionButtonRows(readDecisions(routing.stateDir).decisions.find((x) => x.id === d.id) ?? d);
     return { content, ...(rows ? { components: rows } : {}) };
