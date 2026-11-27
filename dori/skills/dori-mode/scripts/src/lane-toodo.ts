@@ -83,7 +83,8 @@ export const postLaneToodo = async (
         console.error(`TOODO_CHAT_UPLOAD_FAILED ${lane.key} ${label} ${file.name}: ${toodoErrorText(e)}`);
       }
     }
-    const body = `[${label}] ${lane.key}\n${text}${unsent.length ? `\nNot attached: ${unsent.join(", ")}` : ""}`;
+    // The thread is the task's own, so the post names no lane: people never see lane keys in the chat.
+    const body = `[${label}]\n${text}${unsent.length ? `\nNot attached: ${unsent.join(", ")}` : ""}`;
     const sent = await chat.reply(await chat.taskThread(lane.task, lane.title), body, [], ids);
     return { message: `toodo:${sent.id}`, target: toodoRef(sent.place) };
   } catch (e) {
