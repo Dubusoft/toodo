@@ -16,6 +16,8 @@ const mockedEvents = vi.mocked(events, { deep: true });
 function message(id: number, author: ChatMessage["author"], body: string, overrides: Partial<ChatMessage> = {}): ChatMessage {
   return {
     id,
+    channelId: 1,
+    threadId: null,
     author,
     body,
     at: 1700000000 + id,
@@ -102,7 +104,8 @@ describe("Chat", () => {
     fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() => expect(mocked.sendChatMessage).toHaveBeenCalledOnce());
-    const [body, clientId] = mocked.sendChatMessage.mock.calls[0];
+    const [place, body, clientId] = mocked.sendChatMessage.mock.calls[0];
+    expect(place).toEqual({ channel: 1 });
     expect(body).toBe("Thanks");
     expect(clientId).toMatch(/^[0-9a-f-]{36}$/);
   });

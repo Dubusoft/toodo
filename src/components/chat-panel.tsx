@@ -12,10 +12,13 @@ import {
 } from "@astryxdesign/core/Chat";
 import { Button, IconButton } from "@/components/button";
 import { Markdown } from "@/components/task-common";
-import { events, type ChatAgent, type ChatMessage, type Timestamp } from "@/lib/bindings";
+import { events, type ChatAgent, type ChatMessage, type ChatPlace, type Timestamp } from "@/lib/bindings";
 import { chatMessages, useChat, useSendChatMessage } from "@/lib/queries";
 import { formatFull } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
+
+/** The chat's first channel, which every chat has. */
+const general: ChatPlace = { channel: 1 };
 
 /** The ID of the latest message of the agent or Toodo this device showed, kept across starts. */
 const readKey = "toodo-chat-read";
@@ -116,8 +119,8 @@ function useTypingUntil(initial: Timestamp | null | undefined): boolean {
 }
 
 function ChatPanel({ onClose }: { onClose: () => void }) {
-  const chat = useChat();
-  const send = useSendChatMessage();
+  const chat = useChat(general);
+  const send = useSendChatMessage(general);
   const [pending, setPending] = useState<readonly Pending[]>([]);
   const messages = chat.data === undefined ? [] : chatMessages(chat.data);
   const latest = chat.data?.pages[0];
@@ -256,7 +259,7 @@ function ChatPanel({ onClose }: { onClose: () => void }) {
  * is kept by the app so a clicked notification can open it too.
  */
 export function Chat({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const chat = useChat();
+  const chat = useChat(general);
   const messages = chat.data === undefined ? [] : chatMessages(chat.data);
   const newest = messages.at(-1)?.id;
   const [read, setRead] = useState(lastRead);

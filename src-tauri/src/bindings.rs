@@ -85,6 +85,13 @@ fn collect_commands(types: &mut Types) -> Vec<Function> {
         backup::restore_backup,
         chat::list_chat,
         chat::send_chat_message,
+        chat::mark_chat_read,
+        chat::list_chat_channels,
+        chat::create_chat_channel,
+        chat::update_chat_channel,
+        chat::list_chat_threads,
+        chat::create_chat_thread,
+        chat::update_chat_thread,
     ](types)
 }
 

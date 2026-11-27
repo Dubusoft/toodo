@@ -31,7 +31,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags};
 
-use crate::domain::chat::ChatMessageId;
+use crate::domain::chat::{ChatChannelId, ChatMessageId, ChatThreadId, ThreadStatus};
 use crate::domain::criteria::{CheckKind, CriterionId};
 use crate::domain::dag::{BlockingDependency, DependencyError};
 use crate::domain::device::DeviceId;
@@ -42,7 +42,7 @@ pub use backup::{
     BackupFile, StagedBackup, backup_before_migration, backup_database, export_database,
     list_backups, prune_backups, stage_backup,
 };
-pub use chat::CHAT_PAGE_LIMIT;
+pub use chat::{CHAT_PAGE_LIMIT, ChannelEdit, ChatNotice, ThreadEdit, ThreadFilter};
 pub use criteria::{CriterionCheck, CriterionEdit};
 pub use devices::DeviceAuth;
 pub use guidelines::NewGuideline;
@@ -223,6 +223,15 @@ pub enum StorageError {
     NotAPersonsMessage(ChatMessageId),
     /// Only the agent's message can be the reply that handled a person's message.
     NotAnAgentsMessage(ChatMessageId),
+    ChatChannelNotFound(ChatChannelId),
+    /// Another channel has the name, in some case.
+    ChatChannelNameTaken(String),
+    ChatThreadNotFound(ChatThreadId),
+    /// Messages go only to open threads.
+    ChatThreadNotOpen {
+        thread: ChatThreadId,
+        status: ThreadStatus,
+    },
     DeviceNotFound(DeviceId),
     /// The device has not subscribed to push notifications.
     PushSubscriptionNotFound(DeviceId),
@@ -358,6 +367,26 @@ impl fmt::Display for StorageError {
                 f,
                 "chat message {} is not a reply of the agent; pass the id reply_in_chat returned as reply_id",
                 id.0
+            ),
+            Self::ChatChannelNotFound(id) => write!(
+                f,
+                "chat channel {} does not exist; take channel ids from list_channels",
+                id.0
+            ),
+            Self::ChatChannelNameTaken(name) => write!(
+                f,
+                "a chat channel named {name:?} already exists; choose another name"
+            ),
+            Self::ChatThreadNotFound(id) => write!(
+                f,
+                "chat thread {} does not exist; take thread ids from list_threads or create_thread",
+                id.0
+            ),
+            Self::ChatThreadNotOpen { thread, status } => write!(
+                f,
+                "chat thread {} is {}; reopen it with update_thread status open before posting to it",
+                thread.0,
+                status.as_str()
             ),
             Self::DeviceNotFound(id) => write!(f, "device {id} does not exist"),
             Self::PushSubscriptionNotFound(id) => {

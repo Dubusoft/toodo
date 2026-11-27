@@ -997,4 +997,38 @@ pub(super) const VERSIONS_25_ON: &[&str] = &[
     ALTER TABLE push_subscriptions ADD COLUMN messages INTEGER NOT NULL DEFAULT 1
         CHECK (messages IN (0, 1));
     ",
+    // Version 55: chat channels, and threads under them that may follow a task. Each keeps
+    // the last message read in it and each channel whether the agent's messages there
+    // notify devices. The one chat of earlier versions becomes channel 1, `general`, read
+    // up to its latest message.
+    r"
+    CREATE TABLE chat_channels (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE CHECK (trim(name) <> ''),
+        push INTEGER NOT NULL DEFAULT 1 CHECK (push IN (0, 1)),
+        read_id INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+    );
+    INSERT INTO chat_channels (id, name, read_id, created_at)
+        VALUES (1, 'general', coalesce((SELECT max(id) FROM chat_messages), 0),
+                coalesce((SELECT min(at) FROM chat_messages),
+                         CAST(strftime('%s', 'now') AS INTEGER)));
+    CREATE TABLE chat_threads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL REFERENCES chat_channels (id),
+        title TEXT NOT NULL CHECK (trim(title) <> ''),
+        task_id INTEGER REFERENCES tasks (id) ON DELETE SET NULL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'closed', 'archived')),
+        created_at INTEGER NOT NULL,
+        closed_at INTEGER CHECK ((closed_at IS NULL) = (status = 'open')),
+        archived_at INTEGER CHECK ((archived_at IS NULL) = (status <> 'archived')),
+        read_id INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX chat_threads_channel ON chat_threads (channel_id);
+    CREATE INDEX chat_threads_task ON chat_threads (task_id) WHERE task_id IS NOT NULL;
+    ALTER TABLE chat_messages ADD COLUMN channel_id INTEGER NOT NULL DEFAULT 1
+        REFERENCES chat_channels (id);
+    ALTER TABLE chat_messages ADD COLUMN thread_id INTEGER REFERENCES chat_threads (id);
+    CREATE INDEX chat_messages_place ON chat_messages (channel_id, thread_id, id);
+    ",
 ];

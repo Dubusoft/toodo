@@ -1,11 +1,16 @@
 //! The agent's side of the chat: it takes people's messages, acknowledges them, replies,
-//! and marks them handled; each step is a receipt the app shows on the message.
+//! and marks them handled, each step a receipt the app shows on the message; and it keeps
+//! channels and the threads under them, which may follow a task.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::commands::CommandResult;
-use crate::commands::types::{self, ChatMessage, ChatMessageId, TaskId};
-use crate::storage::{CHAT_PAGE_LIMIT, Storage};
+use crate::commands::types::{
+    self, ChatChannel, ChatChannelId, ChatMessage, ChatMessageId, ChatThread, ChatThreadEdit,
+    ChatThreadFilter, ChatThreadId, ChatThreadStatus, TaskId,
+};
+use crate::domain::chat::FIRST_CHANNEL;
+use crate::storage::{CHAT_PAGE_LIMIT, ChatNotice, Storage};
 
 /// How many messages `list_chat` returns without a limit.
 const DEFAULT_LIST: usize = 50;
@@ -18,6 +23,13 @@ pub struct ReplyInChat {
     /// IDs of people's messages this reply answers; each is marked handled by it.
     #[serde(default)]
     pub handles: Vec<ChatMessageId>,
+    /// The channel to post in. Give this or thread_id, or neither to post where the first
+    /// message in handles is, else in the first channel.
+    #[serde(default)]
+    pub channel_id: Option<ChatChannelId>,
+    /// The open thread to post in.
+    #[serde(default)]
+    pub thread_id: Option<ChatThreadId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
@@ -43,6 +55,12 @@ pub struct MarkChatHandled {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ListChat {
+    /// Only messages in this channel itself, not its threads.
+    #[serde(default)]
+    pub channel_id: Option<ChatChannelId>,
+    /// Only messages in this thread. Without channel_id or thread_id, every message.
+    #[serde(default)]
+    pub thread_id: Option<ChatThreadId>,
     /// Only messages before this one, to page back through the chat.
     #[serde(default)]
     pub before: Option<ChatMessageId>,
@@ -64,16 +82,75 @@ pub struct Typing {
     pub typing: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct CreateChannel {
+    /// The channel's name, shown after `#`; one line of at most 50 characters.
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ListThreads {
+    /// Only threads under this channel.
+    #[serde(default)]
+    pub channel_id: Option<ChatChannelId>,
+    /// Only threads that follow this task.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
+    /// Include archived threads, which are left out otherwise.
+    #[serde(default)]
+    pub include_archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct CreateThread {
+    /// The channel to open it under; the first channel when omitted.
+    #[serde(default)]
+    pub channel_id: Option<ChatChannelId>,
+    /// The thread's title; one line of at most 200 characters.
+    pub title: String,
+    /// The task it follows; the task's detail in the app shows the thread.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct UpdateThread {
+    pub id: ChatThreadId,
+    /// A new title.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// open takes messages again; closed ends the conversation; archived also puts it away.
+    #[serde(default)]
+    pub status: Option<ChatThreadStatus>,
+    /// A task for it to follow, replacing any other.
+    #[serde(default)]
+    pub task_id: Option<TaskId>,
+    /// true drops the task it follows; cannot go with task_id.
+    #[serde(default)]
+    pub unlink_task: bool,
+}
+
 pub fn pending_chat(storage: &mut Storage, take: bool) -> CommandResult<Vec<ChatMessage>> {
     let messages = storage.pending_chat_messages(take)?;
     Ok(ChatMessage::all_at(&messages, storage.now()))
 }
 
-pub fn reply_in_chat(storage: &mut Storage, request: ReplyInChat) -> CommandResult<ChatMessage> {
+/// Posts the agent's reply and returns it with how its notification names where it is, or
+/// `None` when that channel's notifications are off.
+pub fn reply_in_chat(
+    storage: &mut Storage,
+    request: ReplyInChat,
+) -> CommandResult<(ChatMessage, Option<ChatNotice>)> {
     let body = types::chat_body(&request.body)?;
+    let place = types::place(request.channel_id, request.thread_id)?;
     let handles: Vec<_> = request.handles.into_iter().map(Into::into).collect();
-    let message = storage.post_agent_message(&body, &handles)?;
-    Ok(ChatMessage::at(&message, storage.now()))
+    let message = storage.post_agent_message(place, &body, &handles)?;
+    let notice = storage.chat_notice(message.channel_id, message.thread_id)?;
+    Ok((ChatMessage::at(&message, storage.now()), notice))
 }
 
 pub fn ack_chat(storage: &mut Storage, request: AckChat) -> CommandResult<Vec<ChatMessage>> {
@@ -96,6 +173,51 @@ pub fn mark_chat_handled(
 
 pub fn list_chat(storage: &Storage, request: ListChat) -> CommandResult<Vec<ChatMessage>> {
     let limit = request.limit.unwrap_or(DEFAULT_LIST).min(CHAT_PAGE_LIMIT);
-    let messages = storage.list_chat_messages(request.before.map(Into::into), limit)?;
+    let place = types::place(request.channel_id, request.thread_id)?;
+    let messages = storage.list_chat_messages(place, request.before.map(Into::into), limit)?;
     Ok(ChatMessage::all_at(&messages, storage.now()))
+}
+
+pub fn list_channels(storage: &Storage) -> CommandResult<Vec<ChatChannel>> {
+    Ok(storage
+        .list_chat_channels()?
+        .iter()
+        .map(Into::into)
+        .collect())
+}
+
+pub fn create_channel(storage: &mut Storage, request: CreateChannel) -> CommandResult<ChatChannel> {
+    let name = types::channel_name(&request.name)?;
+    Ok((&storage.create_chat_channel(&name)?).into())
+}
+
+pub fn list_threads(storage: &Storage, request: ListThreads) -> CommandResult<Vec<ChatThread>> {
+    let filter = ChatThreadFilter {
+        channel_id: request.channel_id,
+        task_id: request.task_id,
+        archived: request.include_archived,
+    };
+    Ok(storage
+        .list_chat_threads(filter.into())?
+        .iter()
+        .map(Into::into)
+        .collect())
+}
+
+pub fn create_thread(storage: &mut Storage, request: CreateThread) -> CommandResult<ChatThread> {
+    let title = types::thread_title(&request.title)?;
+    let channel = request.channel_id.map_or(FIRST_CHANNEL, Into::into);
+    let created = storage.create_chat_thread(channel, &title, request.task_id.map(Into::into))?;
+    Ok((&created).into())
+}
+
+pub fn update_thread(storage: &mut Storage, request: UpdateThread) -> CommandResult<ChatThread> {
+    let edit = ChatThreadEdit {
+        title: request.title,
+        status: request.status,
+        task_id: request.task_id,
+        unlink_task: request.unlink_task,
+    }
+    .parse()?;
+    Ok((&storage.update_chat_thread(request.id.into(), &edit)?).into())
 }

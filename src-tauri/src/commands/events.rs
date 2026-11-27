@@ -45,7 +45,8 @@ pub struct TaskReady {
     pub at: Timestamp,
 }
 
-/// The chat got a message, or the agent's receipts on one changed.
+/// The chat got a message, a channel or thread changed, people read some of it, or the
+/// agent's receipts on a message changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ChatChanged;
 
@@ -73,7 +74,12 @@ pub trait Notifier {
     fn guidelines_changed(&self, workspace: model::WorkspaceId);
     /// A person's message or a receipt of the agent was stored.
     fn chat_changed(&self);
-    /// The agent posted `message`, which also ends its writing.
-    fn agent_posted(&self, message: &super::types::ChatMessage);
+    /// The agent posted `message`, which also ends its writing. `notice` names where it is
+    /// for a notification; `None` when its channel's notifications are off.
+    fn agent_posted(
+        &self,
+        message: &super::types::ChatMessage,
+        notice: Option<&crate::storage::ChatNotice>,
+    );
     fn agent_typing(&self, typing: bool);
 }

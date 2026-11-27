@@ -276,14 +276,17 @@ impl Notifier for Services {
         self.emit(names::CHAT_CHANGED, &ChatChanged);
     }
 
-    fn agent_posted(&self, message: &ChatMessage) {
+    fn agent_posted(&self, message: &ChatMessage, notice: Option<&crate::storage::ChatNotice>) {
         self.agent_typing(false);
         self.chat_changed();
-        self.push.alert(push::alerts::Alert::agent_message(
-            &self.chat.agent().name,
-            message.id.0,
-            &message.body,
-        ));
+        if let Some(notice) = notice {
+            self.push.alert(push::alerts::Alert::agent_message(
+                &self.chat.agent().name,
+                notice,
+                message.id.0,
+                &message.body,
+            ));
+        }
     }
 
     fn agent_typing(&self, typing: bool) {
@@ -869,12 +872,14 @@ mod tests {
     }
 
     #[test]
-    fn agent_messages_raise_a_notification_and_other_chat_changes_do_not() {
+    fn agent_messages_raise_a_notification_unless_their_channel_is_quiet() {
         let temp = tempfile::tempdir().unwrap();
         let services = services(temp.path());
         let changes = push::tests::changes(&services.push);
         let message = |author, body: &str| ChatMessage {
             id: crate::commands::types::ChatMessageId(4),
+            channel_id: crate::commands::types::ChatChannelId(1),
+            thread_id: None,
             author,
             body: body.to_owned(),
             at: Timestamp(1),
@@ -885,13 +890,21 @@ mod tests {
             handled_task_id: None,
             overdue: false,
         };
+        let notice = crate::storage::ChatNotice {
+            channel: "general".to_owned(),
+            thread: None,
+        };
+        let done = message(crate::commands::types::ChatAuthor::Agent, "Done");
         services.chat_changed();
         assert_eq!(changes.try_recv().ok(), None);
-        services.agent_posted(&message(crate::commands::types::ChatAuthor::Agent, "Done"));
+        services.agent_posted(&done, None);
+        assert_eq!(changes.try_recv().ok(), None);
+        services.agent_posted(&done, Some(&notice));
         assert_eq!(
             changes.try_recv().ok(),
             Some(push::Change::Alert(push::alerts::Alert::agent_message(
                 DEFAULT_AGENT_NAME,
+                &notice,
                 4,
                 "Done"
             )))

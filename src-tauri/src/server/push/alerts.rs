@@ -9,6 +9,7 @@ use serde::Serialize;
 use crate::domain::model::TaskId;
 use crate::domain::push::PushKind;
 use crate::domain::status::TaskStatus;
+use crate::storage::ChatNotice;
 
 /// The longest notification body, in characters; a message must fit one 4 KB record.
 const MAX_BODY_CHARS: usize = 300;
@@ -47,13 +48,17 @@ impl Alert {
         }
     }
 
-    /// The agent, named `agent`, posted chat message `id`; each message is its own
-    /// notification.
-    pub fn agent_message(agent: &str, id: i64, body: &str) -> Self {
+    /// The agent, named `agent`, posted chat message `id` where `notice` names; each message
+    /// is its own notification.
+    pub fn agent_message(agent: &str, notice: &ChatNotice, id: i64, body: &str) -> Self {
+        let title = match &notice.thread {
+            Some(thread) => format!("{agent} in #{} / {thread}", notice.channel),
+            None => format!("{agent} in #{}", notice.channel),
+        };
         Self {
             kind: Some(PushKind::AgentMessage),
             urgent: true,
-            title: agent.to_owned(),
+            title,
             body: shorten(body),
             tag: format!("chat-{id}"),
             task_id: None,
@@ -200,14 +205,19 @@ mod tests {
 
     #[test]
     fn agent_messages_are_urgent_shortened_and_open_the_chat() {
-        let alert = Alert::agent_message("Helper", 7, &"x".repeat(1000));
+        let notice = ChatNotice {
+            channel: "work".to_owned(),
+            thread: Some("Deploy".to_owned()),
+        };
+        let alert = Alert::agent_message("Helper", &notice, 7, &"x".repeat(1000));
         assert_eq!(alert.kind, Some(PushKind::AgentMessage));
         assert!(alert.urgent);
         assert_eq!(alert.body.chars().count(), MAX_BODY_CHARS + 3);
         assert_eq!(
             serde_json::to_value(&alert).unwrap(),
             serde_json::json!({
-                "title": "Helper", "body": alert.body, "tag": "chat-7", "taskId": null,
+                "title": "Helper in #work / Deploy", "body": alert.body, "tag": "chat-7",
+                "taskId": null,
                 "chat": true
             })
         );
