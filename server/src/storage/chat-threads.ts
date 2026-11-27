@@ -1,6 +1,6 @@
 // Threads under the chat's channels, which may follow a task, and whether each takes
-// messages. Port of the thread parts of `src-tauri/src/storage/chat.rs`. Functions that
-// write take the time they act at (`at`, Unix seconds) from the caller.
+// messages. Functions that write take the time they act at (`at`, Unix seconds) from the
+// caller.
 
 import type { Database } from "bun:sqlite";
 

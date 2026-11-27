@@ -1,4 +1,4 @@
-// Creating tasks, alone or as a plan of linked tasks (`src-tauri/src/mcp/tools/create.rs`).
+// Creating tasks, alone or as a plan of linked tasks.
 
 import type * as B from "../../../../src/lib/api.ts";
 import { CommandError, commandError, invalidInput, notFound, rejected } from "../../commands/errors.ts";

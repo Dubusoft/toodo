@@ -19,9 +19,6 @@ export default defineConfig({
     outDir: "dist-web",
   },
   server: {
-    watch: {
-      ignored: ["**/src-tauri/**"],
-    },
     // `ws` passes the pane view's WebSocket through; the Host header stays the dev server's,
     // which is what the server compares the Origin with.
     proxy: { "/api": { target: server, ws: true }, "/mcp": server },

@@ -1,5 +1,5 @@
 // Reading chat messages: their rows with the actions, choices, and attachments that go with
-// them, and pages of the chat. Port of the reading parts of `src-tauri/src/storage/chat.rs`.
+// them, and pages of the chat.
 
 import type { Database } from "bun:sqlite";
 

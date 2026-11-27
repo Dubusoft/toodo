@@ -1,6 +1,5 @@
 // Review reports of a period as Markdown and CSV, rendered from the entries of
-// `review_period` in the time zone of the reader (see `docs/architecture.md`, Review). Port
-// of `src-tauri/src/commands/report/mod.rs`.
+// `review_period` in the time zone of the reader (see `docs/architecture.md`, Review).
 
 import type { ReviewEntry, Task } from "../../../../src/lib/api.ts";
 import { addDays, midnight, readDay, yearMonth, zoned } from "./calendar.ts";

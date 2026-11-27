@@ -1,8 +1,7 @@
 // The chat with the agent connected over MCP: posting messages and the receipts of the
 // agent's work on each person's message: received (`delivered_at`, `taken_at`),
-// acknowledged (`acked_at`, `seen_at`), and handled; and the choice a person makes among the
-// actions on the agent's messages. Port of the writing parts of
-// `src-tauri/src/storage/chat.rs`. Every function that writes takes the time it acts at
+// acknowledged (`acked_at`, `seen_at`), and handled; and the choice a person makes among
+// the actions on the agent's messages. Every function that writes takes the time it acts at
 // (`at`, Unix seconds) from the caller.
 
 import type { Database } from "bun:sqlite";

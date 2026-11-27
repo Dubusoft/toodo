@@ -1,5 +1,4 @@
-// Reading tasks: lists, search, details with their links, and the review report
-// (`src-tauri/src/mcp/tools/queries.rs`).
+// Reading tasks: lists, search, details with their links, and the review report.
 
 import type * as B from "../../../../src/lib/api.ts";
 import { invalidInput, rejected } from "../../commands/errors.ts";

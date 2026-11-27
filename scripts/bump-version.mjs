@@ -11,8 +11,6 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const files = [
   { path: "package.json", pattern: /("version": ")([^"]+)(")/, count: 1 },
   { path: "package-lock.json", pattern: /("version": ")([^"]+)(")/, count: 2 },
-  { path: "src-tauri/Cargo.toml", pattern: /^(version = ")([^"]+)(")/m, count: 1 },
-  { path: "src-tauri/Cargo.lock", pattern: /(name = "toodo"\r?\nversion = ")([^"]+)(")/, count: 1 },
 ];
 
 function main() {

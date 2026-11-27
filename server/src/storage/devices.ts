@@ -1,6 +1,5 @@
-// Devices of the server and the hashes of their access tokens. Port of
-// `src-tauri/src/storage/devices.rs`. Every function takes the time it acts at (`at`,
-// Unix seconds) from the caller.
+// Devices of the server and the hashes of their access tokens. Every function takes the
+// time it acts at (`at`, Unix seconds) from the caller.
 
 import type { Database } from "bun:sqlite";
 

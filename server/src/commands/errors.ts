@@ -1,6 +1,6 @@
 // How a command fails: a `CommandError` with a stable code, the kind the code belongs to,
-// and a message, as `src-tauri/src/commands/mod.rs` reports it. The RPC endpoint and the
-// MCP tools return the same codes, so callers react to a code instead of the message text.
+// and a message. The RPC endpoint and the MCP tools return the same codes, so callers react
+// to a code instead of the message text.
 
 import { SQLiteError } from "bun:sqlite";
 import { constants } from "node:os";

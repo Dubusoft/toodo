@@ -1,5 +1,5 @@
-// Commands for reviewing the work done in a period, such as a week or a year
-// (`src-tauri/src/commands/review.rs`); saved reviews are in `snapshots.ts`.
+// Commands for reviewing the work done in a period, such as a week or a year; saved reviews
+// are in `snapshots.ts`.
 
 import type * as B from "../../../src/lib/api.ts";
 import type { CommitRecord, PullRequestSnapshot, Task } from "../domain/model.ts";

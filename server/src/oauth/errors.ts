@@ -1,5 +1,5 @@
-// The OAuth error responses of `src-tauri/src/oauth/routes.rs`: `{"error", "error_description"}`
-// as JSON, `401` with a Basic challenge for client authentication failures.
+// The OAuth error responses: `{"error", "error_description"}` as JSON, `401` with a Basic
+// challenge for client authentication failures.
 
 /** JSON as the Rust server writes a `serde_json::Value`, with its keys sorted, and never
  * cached. */

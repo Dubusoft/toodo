@@ -1,6 +1,5 @@
-// OAuth persistence. Only SHA-256 digests of credentials reach this module. Port of
-// `src-tauri/src/storage/oauth.rs`. Functions that act at a time take it (`at`, Unix
-// seconds) from the caller.
+// OAuth persistence. Only SHA-256 digests of credentials reach this module. Functions that
+// act at a time take it (`at`, Unix seconds) from the caller.
 
 import type { Database } from "bun:sqlite";
 

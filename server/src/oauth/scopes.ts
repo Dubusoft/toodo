@@ -1,5 +1,4 @@
-// The owner and scopes of OAuth grants. Port of `OwnerKey` and `Scopes` in
-// `src-tauri/src/oauth/mod.rs`.
+// The owner and scopes of OAuth grants.
 
 /** The single-user identity attached to OAuth grants. */
 export type OwnerKey = string & { readonly __brand: "OwnerKey" };

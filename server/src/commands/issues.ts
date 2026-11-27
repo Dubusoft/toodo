@@ -1,4 +1,4 @@
-// Issue references supplied by callers (`src-tauri/src/commands/issues.rs`).
+// Issue references supplied by callers.
 
 import { taskId } from "../domain/model.ts";
 import { StorageError } from "../storage/errors.ts";

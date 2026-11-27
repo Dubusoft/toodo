@@ -693,8 +693,7 @@ export type DependencyOutcome =
 export type Estimate = {
 	unit: EstimateUnit,
 	/**
-	 *  Greater than 0 and at most 10000, e.g. 1.5. Exported as `number`: it is never NaN
-	 *  or infinite, which specta's default `number | null` allows for.
+	 *  Greater than 0 and at most 10000, e.g. 1.5; never NaN or infinite.
 	 */
 	amount: number,
 };

@@ -1,8 +1,8 @@
-// The tools of the MCP server (`src-tauri/src/mcp/mod.rs`, `ToodoMcp`): each reads its
-// arguments, runs on the storage the Rust tool runs on (reads on the read-only connection,
-// changes on the writer), and announces the change to connected clients when it succeeds.
-// What the tools do is in the modules beside this one, over the same storage and commands as
-// the web app, so agents follow the rules the app follows.
+// The tools of the MCP server: each reads its arguments, runs on the storage the Rust tool
+// runs on (reads on the read-only connection, changes on the writer), and announces the
+// change to connected clients when it succeeds. What the tools do is in the modules beside
+// this one, over the same storage and commands as the web app, so agents follow the rules
+// the app follows.
 
 import type { Notifier } from "../../commands/events.ts";
 import { workspaceId } from "../../domain/model.ts";

@@ -1,5 +1,4 @@
-// Moving tasks through their statuses, and deleting and reopening them
-// (`src-tauri/src/mcp/tools/lifecycle.rs`).
+// Moving tasks through their statuses, and deleting and reopening them.
 
 import type * as B from "../../../../src/lib/api.ts";
 import { complete, conclude } from "../../commands/completion.ts";

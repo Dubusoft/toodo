@@ -1,9 +1,8 @@
-// `/mcp`, the MCP endpoint for agents (`src-tauri/src/mcp/mod.rs`, `router` and
-// `require_token`): requests from this machine that bear the MCP token reach the endpoint of
-// `protocol.ts`, and so, in public mode, do chat apps from anywhere that bear an OAuth access
-// token; the others are turned away with why and how to get through, which the app's status
-// shows too. The HTTP surface mounts it at `/mcp`, with the agent's chat attachments on
-// `/mcp/attachments` behind the same guard.
+// `/mcp`, the MCP endpoint for agents: requests from this machine that bear the MCP token
+// reach the endpoint of `protocol.ts`, and so, in public mode, do chat apps from anywhere
+// that bear an OAuth access token; the others are turned away with why and how to get
+// through, which the app's status shows too. The HTTP surface mounts it at `/mcp`, with the
+// agent's chat attachments on `/mcp/attachments` behind the same guard.
 
 import type * as B from "../../../src/lib/api.ts";
 import { bearer, FailedAttempts, type Rejection, sameSecret, text, tooMany, unauthorized } from "../http/auth.ts";

@@ -1,4 +1,4 @@
-// Task resources and subscriptions to task record changes (`src-tauri/src/mcp/resources.rs`).
+// Task resources and subscriptions to task record changes.
 
 import type { TaskId } from "../domain/model.ts";
 import { taskId } from "../domain/model.ts";

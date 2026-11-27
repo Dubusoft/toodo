@@ -1,4 +1,4 @@
-// Merging another Toodo database into this one. Port of `src-tauri/src/storage/import.rs`.
+// Merging another Toodo database into this one.
 //
 // Workspaces and tasks with their history are added next to the data already here.
 // Imported rows get IDs after every ID this database has used, so nothing here changes;

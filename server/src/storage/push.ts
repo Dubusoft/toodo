@@ -1,6 +1,5 @@
-// Web Push subscriptions of devices and their notification settings. Port of
-// `src-tauri/src/storage/push.rs`. Functions that act at a time take it (`at`, Unix
-// seconds) from the caller.
+// Web Push subscriptions of devices and their notification settings. Functions that act at
+// a time take it (`at`, Unix seconds) from the caller.
 
 import type { Database } from "bun:sqlite";
 

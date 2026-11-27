@@ -1,4 +1,4 @@
-// The CSV report, one row per reviewed task. Port of `src-tauri/src/commands/report/csv.rs`.
+// The CSV report, one row per reviewed task.
 
 import { displayFloat } from "../../domain/rust.ts";
 import type { ReviewEntry } from "../../../../src/lib/api.ts";

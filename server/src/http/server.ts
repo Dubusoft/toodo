@@ -1,8 +1,7 @@
 // The routes of the HTTP server on its one port: the API behind the web token (or a device
-// token, or Cloudflare Access), and the web app. Port of `router` and `event_stream` in
-// `src-tauri/src/server/mod.rs`. MCP (`/mcp`, with the agent's chat attachments) is served
-// by `server/src/mcp/`, and in public mode the OAuth server of `server/src/oauth/` answers
-// `/oauth` and `/.well-known`.
+// token, or Cloudflare Access), and the web app. MCP (`/mcp`, with the agent's chat
+// attachments) is served by `server/src/mcp/`, and in public mode the OAuth server of
+// `server/src/oauth/` answers `/oauth` and `/.well-known`.
 
 import { statSync } from "node:fs";
 import { join, normalize, sep } from "node:path";

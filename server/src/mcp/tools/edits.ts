@@ -1,5 +1,4 @@
-// Editing tasks: fields, criteria, workspace, dependencies, and notes
-// (`src-tauri/src/mcp/tools/edits.rs`).
+// Editing tasks: fields, criteria, workspace, dependencies, and notes.
 
 import type * as B from "../../../../src/lib/api.ts";
 import { invalidInput, rejected } from "../../commands/errors.ts";

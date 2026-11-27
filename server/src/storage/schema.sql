@@ -1,4 +1,5 @@
--- Generated from the Rust migrations by `cargo test --lib` in src-tauri/; do not edit.
+-- The baseline schema (version 56), the last one the Rust server migrated to. New databases
+-- start from it; change the schema with a migration in `database.ts`, never here.
 PRAGMA user_version = 56;
 
 CREATE TABLE task_dependencies (

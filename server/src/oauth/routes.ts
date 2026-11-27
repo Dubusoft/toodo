@@ -1,8 +1,6 @@
 // The authorization server chat apps connect through in public mode (`TOODO_PUBLIC_URL`):
 // discovery metadata, dynamic registration, the consent page, the token and revocation
 // endpoints, and the short-lived, server-side consent requests and authorization codes.
-// Port of `src-tauri/src/oauth/routes.rs` and `resolve_access_token` of
-// `src-tauri/src/oauth/mod.rs`.
 
 import { createHash } from "node:crypto";
 import { FailedAttempts, sameSecret, tokenHash } from "../http/auth.ts";

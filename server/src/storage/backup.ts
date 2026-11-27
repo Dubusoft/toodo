@@ -1,7 +1,6 @@
-// Backups of the database: consistent snapshots written with `VACUUM INTO` and checked
-// with `PRAGMA integrity_check`, restores that check a backup before it replaces the live
-// data, and the backup directory Toodo keeps automatic and pre-restore backups in. Port
-// of `src-tauri/src/storage/backup.rs`.
+// Backups of the database: consistent snapshots written with `VACUUM INTO` and checked with
+// `PRAGMA integrity_check`, restores that check a backup before it replaces the live data,
+// and the backup directory Toodo keeps automatic and pre-restore backups in.
 //
 // Unlike the Rust server, which migrates an older backup while staging it, the TypeScript
 // server neither migrates nor writes another schema, so it restores only backups at

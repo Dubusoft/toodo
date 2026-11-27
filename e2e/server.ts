@@ -42,8 +42,10 @@ async function freePort(): Promise<number> {
   }
 }
 
-function binary(): string {
-  return process.env.TOODO_SERVER_BIN ?? path.join(root, "src-tauri", "target", "debug", "toodo-server");
+/** The server to start: `TOODO_SERVER_BIN` when set, else the TypeScript server of this checkout on Bun. */
+function command(): [string, string[]] {
+  const bin = process.env.TOODO_SERVER_BIN;
+  return bin ? [bin, []] : ["bun", [path.join(root, "server", "src", "main.ts")]];
 }
 
 function webDir(): string {
@@ -61,7 +63,8 @@ async function until(label: string, ready: () => Promise<boolean>, child: ChildP
 }
 
 function launch(dataDir: string, port: number, env: Record<string, string> = {}) {
-  const child = spawn(binary(), [], {
+  const [program, args] = command();
+  const child = spawn(program, args, {
     env: {
       ...process.env,
       TOODO_LISTEN: `127.0.0.1:${port}`,

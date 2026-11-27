@@ -1,7 +1,6 @@
 // Everything the HTTP routes and the background work of the server share: the database
-// connections, backups, the event log, Web Push, and the chat state, and the
-// announcements of changes to connected clients. Port of `Services` in
-// `src-tauri/src/server/mod.rs`.
+// connections, backups, the event log, Web Push, and the chat state, and the announcements
+// of changes to connected clients.
 
 import type * as B from "../../../src/lib/api.ts";
 import type { Backups } from "../commands/backup.ts";

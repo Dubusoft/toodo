@@ -1,5 +1,4 @@
-// Saved reviews: a review as it was when saved, however its tasks change afterwards. Port
-// of the snapshot commands of `src-tauri/src/commands/review.rs`.
+// Saved reviews: a review as it was when saved, however its tasks change afterwards.
 
 import { debugString, trim } from "../domain/rust.ts";
 import * as reviews from "../storage/reviews.ts";

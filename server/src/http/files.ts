@@ -1,5 +1,4 @@
-// Database files over HTTP, for clients that do not share the server's filesystem. Port of
-// `src-tauri/src/server/files.rs`.
+// Database files over HTTP, for clients that do not share the server's filesystem.
 //
 // - `GET /api/backups/export` sends a consistent snapshot of the database.
 // - `GET /api/backups/{name}` sends a backup from the backup directory, by the file name

@@ -1,7 +1,7 @@
-// Reading the arguments of a tool call as the Rust server does (`src-tauri/src/mcp/mod.rs`
-// and the `serde` derives of `src-tauri/src/mcp/tools/requests.rs`): digit strings become
-// numbers where the tool's input schema takes an integer, then the arguments are read into the
-// tool's request, failing with the message `serde` gives for the same arguments.
+// Reading the arguments of a tool call as the Rust server did, with its `serde` derives:
+// digit strings become numbers where the tool's input schema takes an integer, then the
+// arguments are read into the tool's request, failing with the message `serde` gives for
+// the same arguments.
 
 import { debugString } from "../domain/rust.ts";
 

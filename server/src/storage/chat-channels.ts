@@ -1,6 +1,5 @@
-// Channels of the chat, how far people read each channel and thread, and how a
-// notification names where a message is. Port of the channel parts of
-// `src-tauri/src/storage/chat.rs`.
+// Channels of the chat, how far people read each channel and thread, and how a notification
+// names where a message is.
 
 import type { Database } from "bun:sqlite";
 

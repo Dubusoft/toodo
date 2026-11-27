@@ -1,4 +1,4 @@
-// The calendar period a report covers. Port of `src-tauri/src/commands/report/period.rs`.
+// The calendar period a report covers.
 
 import { invalidInput } from "../errors.ts";
 import type { ReportFormat, ReviewPeriodKind } from "../../../../src/lib/api.ts";

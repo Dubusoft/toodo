@@ -1,5 +1,4 @@
-// Whether a newer Toodo is published on npm (`src-tauri/src/commands/updates.rs`): the web
-// app shows it in its settings.
+// Whether a newer Toodo is published on npm: the web app shows it in its settings.
 
 import { STATUS_CODES } from "node:http";
 

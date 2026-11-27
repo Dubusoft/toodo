@@ -1,5 +1,5 @@
-// The chat's shapes in `src/lib/api.ts` and the checks on what callers send, as
-// `src-tauri/src/commands/types/chat.rs` defines them, with the Rust messages.
+// The chat's shapes in `src/lib/api.ts` and the checks on what callers send, as the Rust
+// server defined them, with the Rust messages.
 
 import type * as B from "../../../src/lib/api.ts";
 import {

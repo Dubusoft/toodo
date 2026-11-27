@@ -1,7 +1,7 @@
-// Web Push message encryption (RFC 8291: `aes128gcm` content encoding of RFC 8188 with
-// keys from an ECDH exchange with the subscription) and the application server's VAPID
-// identity (RFC 8292): an ES256 key that signs a short-lived token for each push service.
-// Port of `src-tauri/src/server/push/crypto.rs`; the key file is the same PKCS#8 document.
+// Web Push message encryption (RFC 8291: `aes128gcm` content encoding of RFC 8188 with keys
+// from an ECDH exchange with the subscription) and the application server's VAPID identity
+// (RFC 8292): an ES256 key that signs a short-lived token for each push service. The key
+// file is a PKCS#8 document.
 
 import { chmodSync, openSync, readFileSync, rmSync, writeSync, closeSync } from "node:fs";
 

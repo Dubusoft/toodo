@@ -1,5 +1,4 @@
-// Commands for tasks, their dependency DAG, and their related links
-// (`src-tauri/src/commands/tasks.rs`).
+// Commands for tasks, their dependency DAG, and their related links.
 
 import type * as B from "../../../src/lib/api.ts";
 import { criterionId, type CheckedBy } from "../domain/criteria.ts";

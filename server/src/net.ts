@@ -1,6 +1,6 @@
-// Outbound HTTP to addresses that come from outside the server (push service endpoints,
-// URL criteria, OAuth client metadata documents) reaches only the public internet, never
-// the server itself or its private network. Port of `src-tauri/src/net.rs`.
+// Outbound HTTP to addresses that come from outside the server (push service endpoints, URL
+// criteria, OAuth client metadata documents) reaches only the public internet, never the
+// server itself or its private network.
 
 import { lookup } from "node:dns/promises";
 import { STATUS_CODES } from "node:http";

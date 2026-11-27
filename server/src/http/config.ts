@@ -1,5 +1,5 @@
-// The server's configuration from `TOODO_*` environment variables. Port of `Config` in
-// `src-tauri/src/server/mod.rs`; the messages are the Rust ones.
+// The server's configuration from `TOODO_*` environment variables; the messages are the
+// Rust ones.
 
 import { join } from "node:path";
 import type * as B from "../../../src/lib/api.ts";

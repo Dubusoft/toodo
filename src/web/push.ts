@@ -57,7 +57,7 @@ export function pushActive(): boolean {
 
 /**
  * The titles of the alerts the page also raises, by the setting that has the server push them
- * (see `src-tauri/src/server/push/alerts.rs`). Every other alert only the page shows.
+ * (see `server/src/push/alerts.ts`). Every other alert only the page shows.
  */
 const pushedTitles: Record<keyof PushSettings, readonly string[]> = {
   completion: ["Task awaiting completion"],

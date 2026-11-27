@@ -1,4 +1,4 @@
-// Workspaces and their guidelines (`src-tauri/src/mcp/tools/workspaces.rs`).
+// Workspaces and their guidelines.
 
 import type * as B from "../../../../src/lib/api.ts";
 import { CommandError, rejected } from "../../commands/errors.ts";
