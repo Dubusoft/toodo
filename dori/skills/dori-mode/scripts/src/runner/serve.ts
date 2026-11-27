@@ -20,6 +20,7 @@ import type { RunnerState } from "./state.ts";
 import type { Connector, Listener, Transport } from "./transport.ts";
 import { isFileOperation, realTimers, RunnerUnavailable, type Timers } from "./call.ts";
 import { checkLaneFilesBody } from "../lane-file-contract.ts";
+import type { HcWatch } from "../runtime/hc-events.ts";
 
 /**
  * The P1 wiring between the runner modules and the product: the runner's identity file, the supervisor epoch, the hub's
@@ -29,8 +30,15 @@ import { checkLaneFilesBody } from "../lane-file-contract.ts";
 
 /** The local runner's default label. */
 export const LOCAL_RUNNER = "local";
-/** How often a runner reads its host's lanes (serveRunner's default observe period). */
+/** How often a runner reads its host's lanes while no hc event subscription is live (serveRunner's default observe period). */
 export const OBSERVE_MS = 30_000;
+/**
+ * While the hc event subscription is live, how old the last read may get before the timer reads again anyway: the backup
+ * for a change hc has no event for (a question drawn on a screen whose agent kept its status).
+ */
+export const OBSERVE_BACKUP_MS = 120_000;
+/** Reads an hc event triggers start at least this far apart, so a burst of events costs one read. */
+export const OBSERVE_EVENT_GAP_MS = 1_000;
 /**
  * How long a lane's pane may read `dead` before its agent was ever seen alive on it. hc names the agent of a fresh
  * pane `unknown` until the agent first reports its state, so a just-launched lane reads dead for its first seconds.
@@ -606,6 +614,8 @@ export type ServeDeps = {
   /** Reads the runner's lanes; absent when the runner only says hello and heartbeats. */
   readonly observe?: () => Promise<readonly ObservedLane[]>;
   readonly observeMs?: number;
+  /** Starts the host's hc event subscription (runtime/hc-events.ts `watchHcEvents`); each change it reports triggers a read. */
+  readonly watch?: (onChange: () => void) => HcWatch;
   readonly random?: () => number;
   readonly log: (line: string) => void;
 };
@@ -614,7 +624,10 @@ export type ServeDeps = {
  * The runner's serve loop, as `RunnerClient.run` but with a heartbeat right after each hello and on a timer separate
  * from any work (heartbeats never go through the outbox). With `observe` a second timer reads the lanes, keeps the
  * latest list as the hello inventory, and publishes `lane.state {key, status, pane}` for each lane whose status or pane
- * changed (published through the outbox, so nothing is lost while disconnected). A lane no longer observed is
+ * changed (published through the outbox, so nothing is lost while disconnected). With `watch` every change hc reports
+ * reads the lanes right away (OBSERVE_EVENT_GAP_MS apart at most once; a change during a read reads again after it),
+ * the timer reads only when the subscription is not live or the last read is OBSERVE_BACKUP_MS old, and a lane whose
+ * dead is held back is read again when its grace ends. A lane no longer observed is
  * forgotten, so it is published again if it comes back. A `dead` lane whose agent was never seen alive on its pane is
  * not published until STARTUP_GRACE_MS after that pane was first observed, so a lane still starting is not called dead;
  * one seen alive there is published only once it has read dead for LANE_DEAD_GRACE_MS without an alive read between.
@@ -625,10 +638,49 @@ export const serveRunner = async (deps: ServeDeps, signal: AbortSignal): Promise
   const published = new Map<string, string>();
   // Per lane: the pane it is on, when that pane was first observed, and whether its agent was seen alive there since.
   const tracked = new Map<string, { pane: string; since: number; alive: boolean; deadSince?: number }>();
+  /** A one-shot timer on `every`, so tests drive it like the observe timer. */
+  const once = (ms: number, run: () => void): void => {
+    let fired = false;
+    const stop = deps.every(Math.max(1, ms), () => {
+      if (fired) return;
+      fired = true;
+      stop();
+      run();
+    });
+  };
+  let lastObserveAt = Number.NEGATIVE_INFINITY;
+  let observing = false;
+  let again = false;
+  let gapPending = false;
+  let graceAt: number | undefined;
+  const read = async (): Promise<void> => {
+    if (observing) { again = true; return; }
+    observing = true;
+    try {
+      await observeOnce();
+    } finally {
+      observing = false;
+      if (again) { again = false; changed(); }
+    }
+  };
+  const changed = (): void => {
+    if (gapPending) return;
+    const wait = lastObserveAt + OBSERVE_EVENT_GAP_MS - deps.clock.now();
+    if (wait <= 0) { void read(); return; }
+    gapPending = true;
+    once(wait, () => { gapPending = false; void read(); });
+  };
+  const readAt = (at: number): void => {
+    if (graceAt !== undefined && graceAt <= at) return;
+    graceAt = at;
+    once(at - deps.clock.now(), () => { if (graceAt === at) { graceAt = undefined; changed(); } });
+  };
   const observeOnce = async (): Promise<void> => {
     if (!deps.observe) return;
+    lastObserveAt = deps.clock.now();
     try {
       const observed = await deps.observe();
+      let heldUntil: number | undefined;
       const keys = new Set(observed.map((lane) => lane.key));
       for (const map of [published, tracked]) for (const key of [...map.keys()]) if (!keys.has(key)) map.delete(key);
       for (const lane of observed) {
@@ -639,25 +691,26 @@ export const serveRunner = async (deps: ServeDeps, signal: AbortSignal): Promise
         else track.deadSince ??= now;
         // A pane whose agent was never seen alive is still starting until the grace ends; one seen alive gets
         // LANE_DEAD_GRACE_MS of dead reads in a row. Either way its dead is held back until then.
-        const held = lane.status === "dead"
-          && (track.alive ? now - (track.deadSince ?? now) < LANE_DEAD_GRACE_MS : now - track.since < STARTUP_GRACE_MS);
+        const releaseAt = track.alive ? (track.deadSince ?? now) + LANE_DEAD_GRACE_MS : track.since + STARTUP_GRACE_MS;
+        const held = lane.status === "dead" && now < releaseAt;
+        if (held) heldUntil = Math.min(heldUntil ?? releaseAt, releaseAt);
         const seen = JSON.stringify([lane.status, lane.pane]);
         if (!held && published.get(lane.key) !== seen) {
           published.set(lane.key, seen);
           deps.client.publish("lane.state", { key: lane.key, status: lane.status, pane: lane.pane, ...(lane.status === "dead" ? { reason: "agent-gone" as const } : {}) });
         }
       }
+      if (heldUntil !== undefined && watching) readAt(heldUntil);
     } catch (error) {
       deps.log(`RUNNER_OBSERVE_FAILED ${error instanceof Error ? error.message : String(error)}`);
     }
   };
   const stopHeartbeat = deps.every(deps.heartbeatMs, () => { deps.client.heartbeat(); });
-  let observing = false;
+  const watching = deps.observe && deps.watch ? deps.watch(changed) : undefined;
   const stopObserve = deps.observe
     ? deps.every(deps.observeMs ?? OBSERVE_MS, () => {
-        if (observing) return;
-        observing = true;
-        void observeOnce().finally(() => { observing = false; });
+        if (observing || (watching?.live() && deps.clock.now() - lastObserveAt < OBSERVE_BACKUP_MS)) return;
+        void read();
       })
     : () => {};
   const aborted = new Promise<void>((resolve) => {
@@ -666,7 +719,7 @@ export const serveRunner = async (deps: ServeDeps, signal: AbortSignal): Promise
   });
   let attempt = 0;
   try {
-    await observeOnce();
+    await read();
     while (!signal.aborted) {
       const outcome = await deps.client.connectOnce();
       if (outcome.ok) {
@@ -692,6 +745,7 @@ export const serveRunner = async (deps: ServeDeps, signal: AbortSignal): Promise
   } finally {
     stopHeartbeat();
     stopObserve();
+    watching?.stop();
   }
 };
 

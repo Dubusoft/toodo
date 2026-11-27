@@ -594,6 +594,16 @@ without a runner isn't guarded.
 Lane records store `hcInstance` (`hc:<core id>`), the hc core that opened the lane, and keep `tab` empty. With no
 known core a new launch or adoption is refused (`RUNNER_HC_INSTANCE_UNKNOWN`).
 
+Each runner follows its host's hc events (`hc events --json`) and reads its lanes (the terminal list, then the
+asking screens of the lanes it owns) as soon as hc reports a terminal created, lost, restarted, finished or removed,
+or a change of an agent's status, turn or foreground process; reads triggered this way start at least 1 s apart. A
+lane whose `dead` waits out the startup or dead grace is read again when that grace ends. While the subscription
+is live the 30 s observe timer reads only when the last read is 120 s old, as the backup for a question drawn on a
+screen whose agent kept its status. A subscription that ends or stays silent for 45 s (three missed hc heartbeats)
+is started again after 2 s, doubling to 60 s while it keeps failing (`HC_EVENTS_LOST`, `HC_EVENTS_SILENT`); until its
+first snapshot arrives the timer reads every 30 s, and that snapshot (like the one hc sends after `missed`) triggers
+a read that catches up on whatever changed meanwhile.
+
 Observe, recover, send, pause, resume, close, asking-screen reads and lane inspection compare the saved identity
 before touching the recorded pane. A mismatch means missing (`RUNNER_LANE_ABSENT` for steering); close forgets
 the lane without closing a reused pane. Recover opens the lane in a new hc terminal, on its saved session when it

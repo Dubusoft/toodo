@@ -36,6 +36,7 @@ import { enrollOverStdio, enrollRunner, RunnerAuth } from "./auth.ts";
 import { GUARD_SAMPLE_MS, RunnerGuard } from "./guard.ts";
 import { jobRunEffect, waitCheckEffect } from "./jobs.ts";
 import { sessionRuntime } from "../runtime/index.ts";
+import { spawnHcEvents, watchHcEvents } from "../runtime/hc-events.ts";
 import { selectPlatform } from "./platform.ts";
 import { processCommands } from "./cleanup-artifacts.ts";
 import { CLEANUP_STATUS_FILE, cleanupPaths, cleanupSettings, inUsePaths, runCleanup, startCleanup } from "./cleanup.ts";
@@ -410,6 +411,8 @@ const serveMain = async (values: { label?: string; enroll?: boolean; "enroll-onl
       await serveRunner({
         client, latest: tracked.latest, clock: realClock, every: realEvery, heartbeatMs: HEARTBEAT_MS,
         observe, log,
+        // hc's own event stream triggers each read; the observe timer only backs it up.
+        watch: (onChange) => watchHcEvents({ spawn: spawnHcEvents, now: realClock.now, sleep: realClock.sleep, every: realEvery, log }, onChange),
       }, controller.signal);
     } finally {
       stopConfigWatch();

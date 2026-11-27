@@ -7,7 +7,7 @@ import type { Ran } from "../src/run.ts";
 import { briefLane, observeHost, turnStop } from "../src/runner/observe.ts";
 import { RunnerClient, yieldTurn } from "../src/runner/client.ts";
 import { Outbox } from "../src/runner/outbox.ts";
-import { LANE_DEAD_GRACE_MS, serveRunner, STARTUP_GRACE_MS, type ObservedLane } from "../src/runner/serve.ts";
+import { LANE_DEAD_GRACE_MS, OBSERVE_BACKUP_MS, OBSERVE_EVENT_GAP_MS, serveRunner, STARTUP_GRACE_MS, type ObservedLane } from "../src/runner/serve.ts";
 import { RunnerState } from "../src/runner/state.ts";
 import { fakeClock } from "./fakes.ts";
 import { hcAnswer, type HcPane, type HcProc, newHcWorld } from "./runner-hc-world.ts";
@@ -253,6 +253,82 @@ test("serveRunner republishes lane.state on a pane change and after a lane was g
     ["lane.state", { key: "lane-a", status: "idle", pane: "p7" }],
     ["lane.state", { key: "lane-a", status: "idle", pane: "p7" }],
   ]);
+  outbox.close();
+  state.close();
+});
+
+test("serveRunner with an hc event subscription reads on each change, polls only as its backup, and reads a held dead when its grace ends", async () => {
+  const dir = stateDir();
+  const clock = fakeClock(1_000);
+  const state = new RunnerState(dir, { now: clock.now });
+  state.boot();
+  const outbox = new Outbox(dir, { now: clock.now });
+  const client = new RunnerClient({ label: "worker-a", hostId: "h" }, { connect: async () => { throw new Error("offline"); }, outbox, state, clock });
+  const lane = (status: ObservedLane["status"]): ObservedLane[] => [{ key: "lane-a", pane: "p1", tab: "t1", status }];
+  let view = lane("working");
+  let reads = 0;
+  let live = true;
+  let onChange: (() => void) | undefined;
+  let observeTick: (() => void) | undefined;
+  const timers: { readonly ms: number; readonly tick: () => void }[] = [];
+  const abort = new AbortController();
+  const serving = serveRunner({
+    client, latest: () => undefined, clock, heartbeatMs: 15_000, observeMs: 30_000, log: () => {},
+    every: (ms, tick) => { if (ms === 30_000) observeTick = tick; else if (ms !== 15_000) timers.push({ ms, tick }); return () => {}; },
+    observe: async () => { reads++; return view; },
+    watch: (changed) => { onChange = changed; return { live: () => live, stop: () => {} }; },
+  }, abort.signal);
+  await yieldTurn();
+  const published = (): unknown[] => outbox.unacked(0).map((r) => r.body);
+  expect(reads).toBe(1);
+  // A change hc reports is read at once: its lane.state goes out without a timer.
+  clock.at += OBSERVE_EVENT_GAP_MS;
+  view = lane("idle");
+  onChange?.();
+  await yieldTurn();
+  expect(reads).toBe(2);
+  expect(published()).toEqual([{ key: "lane-a", status: "working", pane: "p1" }, { key: "lane-a", status: "idle", pane: "p1" }]);
+  // A burst right after a read costs one read, once the gap has passed.
+  onChange?.();
+  onChange?.();
+  await yieldTurn();
+  expect(reads).toBe(2);
+  expect(timers.map((t) => t.ms)).toEqual([OBSERVE_EVENT_GAP_MS]);
+  clock.at += OBSERVE_EVENT_GAP_MS;
+  timers.shift()?.tick();
+  await yieldTurn();
+  expect(reads).toBe(3);
+  // While the subscription is live the timer reads only once the last read is OBSERVE_BACKUP_MS old.
+  clock.at += 30_000;
+  observeTick?.();
+  await yieldTurn();
+  expect(reads).toBe(3);
+  clock.at += OBSERVE_BACKUP_MS;
+  observeTick?.();
+  await yieldTurn();
+  expect(reads).toBe(4);
+  // A subscription that is down leaves the poll period in charge.
+  live = false;
+  clock.at += 30_000;
+  observeTick?.();
+  await yieldTurn();
+  expect(reads).toBe(5);
+  live = true;
+  // The agent stops: its dead is held for LANE_DEAD_GRACE_MS, and the read at the end of the grace publishes it.
+  clock.at += 30_000;
+  view = lane("dead");
+  onChange?.();
+  await yieldTurn();
+  expect(reads).toBe(6);
+  expect(published()).toHaveLength(2);
+  expect(timers.map((t) => t.ms)).toEqual([LANE_DEAD_GRACE_MS]);
+  clock.at += LANE_DEAD_GRACE_MS;
+  timers.shift()?.tick();
+  await yieldTurn();
+  expect(reads).toBe(7);
+  expect(published().at(-1)).toEqual({ key: "lane-a", status: "dead", pane: "p1", reason: "agent-gone" });
+  abort.abort();
+  await serving;
   outbox.close();
   state.close();
 });
