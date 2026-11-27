@@ -153,7 +153,7 @@ export const decisionMain = async (rest: string[], { flow: deps, die, messengerT
     const [id, ...extra] = parsed.positionals;
     const { text, "owner-text": ownerText, choice, from, cancel, tasks, force } = parsed.values;
     if (!id || extra.length || !text?.trim() || (ownerText !== undefined && !ownerText.trim()) || (choice !== undefined && !/^\d+$/.test(choice.trim()))
-      || (from !== undefined && !/^\d+\/\d+$/.test(from.trim())) || (cancel && choice !== undefined)
+      || (from !== undefined && !od.isAnswerRef(from.trim())) || (cancel && choice !== undefined)
       || (tasks !== undefined && !/^[1-9]\d*$/.test(tasks.trim()))) die(usage, 2);
     const closed = await od.closeOwnerDecision(decisionContext(undefined, true), id ?? "", {
       text: (text ?? "").trim(), ...(ownerText !== undefined ? { ownerText: ownerText.trim() } : {}), ...(choice !== undefined ? { choice: Number(choice.trim()) } : {}),

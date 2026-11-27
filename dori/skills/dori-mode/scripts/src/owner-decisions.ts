@@ -174,10 +174,12 @@ export const relaysToLane = (d: Pick<OwnerDecision, "source" | "lane" | "relayTo
   !!d.lane && (d.source === "lane" || d.relayTo === d.lane);
 
 export const decisionCloseText = (d: OwnerDecision, options: CloseOptions, home: string, keepsThread = d.inLaneThread === true): string => {
-  const from = options.from ? /^(\d+)\/(\d+)$/.exec(options.from) : null;
+  const from = options.from !== undefined && isAnswerRef(options.from);
+  const discord = options.from ? /^(\d+)\/(\d+)$/.exec(options.from) : null;
   const picked = options.choice !== undefined ? ` ${options.choice}번(${cut(d.options[options.choice - 1] ?? "", 60)})` : "";
-  const by = d.answeredAt === undefined && !d.revisions?.length && !from && !options.cancel ? " (리드가 정함)" : "";
-  const where = from ? ` (<#${from[1]}>에서 받은 답: https://discord.com/channels/@me/${from[1]}/${from[2]})` : "";
+  // An owner message the close covered (`--from`, kept as coveredAnswers for the Toodo close line) is the owner's answer.
+  const by = d.answeredAt === undefined && !d.revisions?.length && !from && !d.coveredAnswers?.length && !options.cancel ? " (리드가 정함)" : "";
+  const where = discord ? ` (<#${discord[1]}>에서 받은 답: https://discord.com/channels/@me/${discord[1]}/${discord[2]})` : "";
   const note = (options.ownerText ?? (relaysToLane(d) ? `레인 ${d.lane}에 전달합니다` : options.text)).replace(/\s+/g, " ").trim();
   const outcome = options.cancel ? "취소" : d.kind === "request" ? "요청 처리" : `결정 반영:${picked}`;
   return scrubForThread(`[System] ${d.id} ${outcome}${d.kind === "request" ? "" : by}${where}. ${note}${/[.!?。]$/.test(note) ? "" : "."}${keepsThread ? "" : " 스레드를 닫습니다."}`, home);
@@ -419,6 +421,8 @@ export type AnswerOutcome = {
 };
 
 const refKey = (a: AnswerRef): string => `${a.channel}/${a.message}`;
+/** Whether `from` names one owner message: a Discord `<channel>/<message>` or a Toodo `toodo:<channel|thread>/<id>/<message>`. */
+export const isAnswerRef = (from: string): boolean => /^\d+\/\d+$/.test(from) || /^toodo:(channel|thread)\/\d+\/\d+$/.test(from);
 /** The ref of a `<channel>/<message>` key; a Toodo channel ref (`toodo:thread/<id>`) holds a slash itself. */
 const refOf = (key: string): AnswerRef => {
   const cut = key.lastIndexOf("/");
@@ -432,7 +436,7 @@ const refOf = (key: string): AnswerRef => {
 const answerTargets = (d: OwnerDecision, from: string | undefined): { readonly covered: string[]; readonly left: string[] } => {
   // A button press handed to the lead is no Discord message: nothing to ack or record handled.
   const recorded = (d.answers ?? []).filter((a) => a.choice === undefined).map(refKey);
-  const fromKey = from && /^\d+\/\d+$/.test(from) ? [from] : [];
+  const fromKey = from && isAnswerRef(from) ? [from] : [];
   const covered = [...new Set([...(d.inLaneThread ? recorded.slice(0, 1) : recorded), ...fromKey])];
   return { covered, left: [...new Set(recorded)].filter((key) => !covered.includes(key)) };
 };
