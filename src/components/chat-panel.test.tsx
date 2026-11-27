@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { Chat, receipt, totalUnread } from "@/components/chat-panel";
 import { commands, events, type ChatChannel, type ChatMessage, type ChatThread, type Task } from "@/lib/bindings";
 import { flushChatOutbox } from "@/lib/chat-outbox";
@@ -17,6 +17,7 @@ vi.mock("@/lib/bindings", () => ({
     listChatThreads: vi.fn(),
     createChatChannel: vi.fn(),
     updateChatChannel: vi.fn(),
+    deleteChatChannel: vi.fn(),
     createChatThread: vi.fn(),
     updateChatThread: vi.fn(),
     listTasks: vi.fn(),
@@ -106,6 +107,16 @@ function renderChat() {
   );
   return queryClient;
 }
+
+beforeAll(() => {
+  // jsdom has no modal dialogs; Astryx Dialog opens its <dialog> with showModal.
+  HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
+    this.setAttribute("open", "");
+  };
+  HTMLDialogElement.prototype.close ??= function (this: HTMLDialogElement) {
+    this.removeAttribute("open");
+  };
+});
 
 beforeEach(() => {
   localStorage.clear();
@@ -426,6 +437,68 @@ describe("Chat", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Turn off notifications for #general" }));
 
     await waitFor(() => expect(mocked.updateChatChannel).toHaveBeenCalledWith(1, { push: false }));
+  });
+
+  it("renames a channel and deletes it after asking, but never offers to delete the default room", async () => {
+    serve([], [channel(1, "general"), channel(2, "work")]);
+    mocked.updateChatChannel.mockResolvedValue({ status: "ok", data: channel(2, "ops") });
+    mocked.deleteChatChannel.mockResolvedValue({ status: "ok", data: null });
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+
+    expect(await screen.findByRole("button", { name: "Rename #general" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete #general" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New thread" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(screen.getByRole("list", { name: "Channels" })).getByRole("button", { name: /work/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Rename #work" }));
+    const name = screen.getByRole("textbox", { name: "Channel name" });
+    expect(name).toHaveValue("work");
+    fireEvent.change(name, { target: { value: "ops" } });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    await waitFor(() => expect(mocked.updateChatChannel).toHaveBeenCalledWith(2, { name: "ops" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete #work" }));
+    expect(await screen.findByText(/Its threads move to #general/)).toBeInTheDocument();
+    expect(mocked.deleteChatChannel).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Delete channel" }));
+    await waitFor(() => expect(mocked.deleteChatChannel).toHaveBeenCalledWith(2));
+  });
+
+  it("lists the channels first and names a task's thread by its task, not its lane", async () => {
+    localStorage.setItem("toodo-chat-place", JSON.stringify({ channel: 1, thread: 5 }));
+    serve([], undefined, [thread(5, "ap-7-1 lane title", { taskId: 7 })]);
+    serveTasks([task(7, "in_progress", ["lane:ap-7-1"])]);
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+
+    const working = await screen.findByRole("list", { name: "In progress" });
+    const channels = screen.getByRole("list", { name: "Channels" });
+    expect(channels.compareDocumentPosition(working) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "#7 Task 7" })).toBeInTheDocument();
+    expect(screen.queryByText(/ap-7-1/)).not.toBeInTheDocument();
+  });
+
+  it("lists past chats beside In progress and opens the one picked", async () => {
+    serve([], undefined, [
+      thread(5, "ap-7-1 lane title", { taskId: 7, lastMessage: "Merged", lastMessageAt: 20 }),
+      thread(6, "Old talk", { status: "closed", closedAt: 10 }),
+      thread(8, "Open talk"),
+    ]);
+    serveTasks([]);
+    mocked.listTasks.mockImplementation(async (filter) => ({
+      status: "ok",
+      data: filter?.ids?.includes(7) ? [{ ...task(7, "done"), title: "Ship" }] : [],
+    }));
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Past chats" }));
+    const past = await screen.findByRole("list", { name: "Past chats" });
+    await waitFor(() => expect(within(past).getAllByRole("button").map((b) => b.textContent)).toEqual(["#7 ShipMerged", "Old talkClosed"]));
+
+    fireEvent.click(within(past).getByRole("button", { name: /Old talk/ }));
+    await waitFor(() => expect(mocked.listChat).toHaveBeenCalledWith({ thread: 6 }, null));
   });
 
   it("closes the shown thread and keeps a closed one from taking messages", async () => {

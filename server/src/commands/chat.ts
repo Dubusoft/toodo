@@ -168,6 +168,13 @@ export const createChatChannel: Command<"createChatChannel"> = command((storage,
 export const updateChatChannel: Command<"updateChatChannel"> = command((storage, id, edit) =>
   channel(channels.updateChatChannel(storage.db, chatChannelId(id), channelEdit(edit))));
 
+/** Deletes a channel other than the default room; its threads and messages move to the
+ * default room. */
+export const deleteChatChannel: Command<"deleteChatChannel"> = command((storage, id) => {
+  channels.deleteChatChannel(storage.db, chatChannelId(id), storage.now());
+  return null;
+});
+
 /** The threads `filter` selects, the latest active first. */
 export const listChatThreads: Command<"listChatThreads"> = command((storage, filter) =>
   threads.listChatThreads(storage.db, threadFilter(filter)).map(thread));

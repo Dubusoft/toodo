@@ -156,6 +156,15 @@ export function useUpdateChatChannel() {
   });
 }
 
+/** Deletes a channel; its threads and messages move to the default room. */
+export function useDeleteChatChannel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: ChatChannelId) => unwrap(commands.deleteChatChannel(id)),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chat }),
+  });
+}
+
 export function useCreateChatThread() {
   const queryClient = useQueryClient();
   return useMutation({

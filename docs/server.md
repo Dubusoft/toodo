@@ -576,18 +576,26 @@ messages and answers them.
 
 **Channels and threads.** The chat has channels, starting with `#general` (channel 1,
 which holds the messages of versions before channels), and threads under each channel.
-People and the agent add channels and threads; a thread may follow a task, and the task's
+People add, rename, and delete channels in the web app, and the agent adds them too. The
+default room can be renamed but not deleted; deleting another channel moves its threads to
+the default room and keeps its own messages there in an archived thread named after it.
+Threads are opened by the agent (Dori opens one per task it works on) and, for a listed
+task without one, by opening the task in the chat; the web app has no form to start one.
+A thread may follow a task, and the task's
 details show its thread and its conversation. A task has one thread: opening a second one
-for it, or linking it to another thread, is refused. The chat's list shows channel 1 (the
-default room) first, then the tasks that need an answer (`in_review`, or a question in
-their thread nobody answered) and the `in_progress` tasks a lane works on (a `lane:` ref),
-each with the latest message of its thread on one line; other tasks' threads open from
-the task's details. Each channel and thread keeps how far
+for it, or linking it to another thread, is refused. The chat's list shows the channels,
+channel 1 (the default room) first, then the tasks that need an answer (`in_review`, or a
+question in their thread nobody answered) and the `in_progress` tasks a lane works on (a
+`lane:` ref), each named by its task and with the latest message of its thread on one
+line; other tasks' threads open from the task's details, and the past chats button beside In
+progress lists the closed and archived threads and those of finished tasks, latest first,
+opening each one's conversation. Each channel and thread keeps how far
 people read it, so the app shows unread counts per channel and per thread; an archived
 thread no longer counts. A channel counts its own messages and those of its threads that
 follow no task, which opening it reaches; a task's thread counts on its own, so the
 threads of tasks the list leaves out (finished ones, for example) do not keep the count up.
-A channel's bell turns its notifications on or off for every device. A thread is `open`, `closed` when its conversation is over, or `archived`, which
+A channel's bell turns its notifications on or off for every device. A thread is `open`,
+`closed` when its conversation is over, or `archived`, which
 also leaves it out of its channel's list unless asked for; closed and archived threads
 take no messages until reopened.
 

@@ -244,6 +244,11 @@ export function makeCommands(invoke: Invoke) {
 		createChatChannel: (name: string) => typedError<ChatChannel, CommandError>(invoke("create_chat_channel", { name })),
 		/**  Renames a channel or turns its notifications on or off. */
 		updateChatChannel: (id: ChatChannelId, edit: ChatChannelEdit) => typedError<ChatChannel, CommandError>(invoke("update_chat_channel", { id, edit })),
+		/**
+		 *  Deletes a channel other than the default room (channel 1): its threads move to the
+		 *  default room, and its own messages into an archived thread there named after it.
+		 */
+		deleteChatChannel: (id: ChatChannelId) => typedError<null, CommandError>(invoke("delete_chat_channel", { id })),
 		/**  The threads `filter` selects, the latest active first. */
 		listChatThreads: (filter: ChatThreadFilter) => typedError<ChatThread[], CommandError>(invoke("list_chat_threads", { filter })),
 		/**  Opens a thread under a channel, following a task if one is given. */

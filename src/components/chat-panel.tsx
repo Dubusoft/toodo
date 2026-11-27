@@ -19,14 +19,17 @@ import {
   Lock,
   MessageCircle,
   Paperclip,
+  Pencil,
   Plus,
   RotateCcw,
   Search,
   SendHorizontal,
+  Trash2,
   X,
 } from "lucide-react";
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
+import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Thumbnail } from "@astryxdesign/core/Thumbnail";
 import { Token } from "@astryxdesign/core/Token";
 import {
@@ -55,6 +58,7 @@ import {
   type ChatThread,
   type ChatThreadId,
   type ChatThreadStatus,
+  type Task,
   type TaskId,
   type Timestamp,
 } from "@/lib/bindings";
@@ -78,13 +82,14 @@ import {
   useChooseChatAction,
   useCreateChatChannel,
   useCreateChatThread,
+  useDeleteChatChannel,
   useMarkChatRead,
   useSearchChat,
   useTasks,
   useUpdateChatChannel,
   useUpdateChatThread,
 } from "@/lib/queries";
-import { laneOf, taskChats, type TaskChat, type TaskChats } from "@/lib/task-chats";
+import { taskChats, type TaskChat, type TaskChats } from "@/lib/task-chats";
 import { formatFull } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import { useVoiceInput } from "@/lib/voice";
@@ -113,6 +118,20 @@ function storedSelection(): Selection {
 
 function placeOf(selection: Selection): ChatPlace {
   return selection.thread === null ? { channel: selection.channel } : { thread: selection.thread };
+}
+
+/** How a task is named in the chat: its number and title. */
+export function taskName(task: Pick<Task, "id" | "title">): string {
+  return `#${task.id} ${task.title}`;
+}
+
+/**
+ * How the chat names a thread: a task's thread by its task, whatever title the agent gave it
+ * (which may carry the agent's own names, such as a lane key), and any other by its title.
+ */
+export function threadName(thread: Pick<ChatThread, "title" | "taskId">, tasks: readonly Task[]): string {
+  const task = thread.taskId === null ? undefined : tasks.find((candidate) => candidate.id === thread.taskId);
+  return task === undefined ? thread.title : taskName(task);
 }
 
 /** The unread messages of a thread; an archived thread has none. */
@@ -615,18 +634,20 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
   );
 }
 
-/** A one-line form that adds something by name, such as a channel or a thread. */
-function AddForm({
+/** A one-line form that names something: a new channel, or a new name for one. */
+function NameForm({
   label,
+  submitLabel,
   initial = "",
-  onAdd,
+  onSubmit,
   onCancel,
   pending,
   error,
 }: {
   label: string;
+  submitLabel: string;
   initial?: string;
-  onAdd: (name: string) => void;
+  onSubmit: (name: string) => void;
   onCancel: () => void;
   pending: boolean;
   error: string | null;
@@ -634,7 +655,7 @@ function AddForm({
   const [name, setName] = useState(initial);
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (name.trim() !== "") onAdd(name.trim());
+    if (name.trim() !== "") onSubmit(name.trim());
   };
   return (
     <form
@@ -655,7 +676,7 @@ function AddForm({
         </p>
       )}
       <div className="flex gap-1">
-        <Button type="submit" size="sm" label="Add" changesData isDisabled={pending || name.trim() === ""} />
+        <Button type="submit" size="sm" label={submitLabel} changesData isDisabled={pending || name.trim() === ""} />
         <Button variant="ghost" size="sm" label="Cancel" onClick={onCancel} />
       </div>
     </form>
@@ -688,8 +709,7 @@ function placeItem(selected: boolean) {
 /** A listed task: its number and title, and under them the latest message of its thread. */
 function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boolean; onOpen: () => void }) {
   const { task, thread } = chat;
-  const lane = laneOf(task);
-  const status = thread?.lastMessage ?? (task.status === "in_review" ? "In review" : lane !== null ? `lane:${lane}` : "");
+  const status = thread?.lastMessage ?? (task.status === "in_review" ? "In review" : "");
   return (
     <li>
       <button type="button" className={placeItem(selected)} aria-current={selected ? "page" : undefined} onClick={onOpen}>
@@ -706,27 +726,32 @@ function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boole
   );
 }
 
-/** A group of listed tasks under a heading, left out while it is empty. */
+/** A group of listed tasks under a heading, left out while it is empty unless it has an `action`. */
 function TaskGroup({
   label,
   icon,
+  action,
   chats,
   selection,
   onOpenTask,
 }: {
   label: string;
   icon?: ReactNode;
+  action?: ReactNode;
   chats: readonly TaskChat[];
   selection: Selection;
   onOpenTask: (chat: TaskChat) => void;
 }) {
-  if (chats.length === 0) return null;
+  if (chats.length === 0 && action === undefined) return null;
   return (
     <div className="flex flex-col gap-0.5 pt-2">
-      <h3 className="flex items-center gap-1 px-2 pb-1 text-xs font-medium text-muted-foreground">
-        {icon}
-        {label}
-      </h3>
+      <div className="flex items-center justify-between px-2 pb-1">
+        <h3 className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+          {icon}
+          {label}
+        </h3>
+        {action}
+      </div>
       <ul aria-label={label} className="flex flex-col gap-0.5">
         {chats.map((chat) => (
           <TaskPlace
@@ -742,15 +767,17 @@ function TaskGroup({
 }
 
 /**
- * The chat's places: the default room first, then the tasks that need an answer and the
- * in-progress tasks a lane works on, each opening its thread, then the other channels. A
- * channel shows the threads under it that follow no task when it is shown; a task's thread
- * opens from the task.
+ * The chat's places: the channels, the default room first, then the tasks that need an
+ * answer and the in-progress tasks a lane works on, each opening its thread. A channel shows
+ * the threads under it that follow no task when it is shown; a task's thread opens from the
+ * task. Threads are opened by the agent, or by opening a listed task, never by hand.
  */
 function PlaceList({
   channels,
   threads,
   tasks,
+  past,
+  nameOf,
   selection,
   onSelect,
   onOpenTask,
@@ -758,19 +785,24 @@ function PlaceList({
   channels: readonly ChatChannel[];
   threads: readonly ChatThread[];
   tasks: TaskChats;
+  past: readonly ChatThread[];
+  nameOf: (thread: ChatThread) => string;
   selection: Selection;
   onSelect: (selection: Selection) => void;
   onOpenTask: (chat: TaskChat) => void;
 }) {
-  const [adding, setAdding] = useState<"channel" | "thread" | null>(null);
+  const [adding, setAdding] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [showPast, setShowPast] = useState(false);
   const createChannel = useCreateChatChannel();
-  const createThread = useCreateChatThread();
   const loose = threads.filter((thread) => thread.taskId === null);
   const archived = loose.filter((thread) => thread.status === "archived").length;
   const shown = loose.filter((thread) => showArchived || thread.status !== "archived");
-  const defaultRoom = channels.find((channel) => channel.id === firstChannel);
-  const others = channels.filter((channel) => channel !== defaultRoom);
+  // The default room first, then the others in the order they were made.
+  const ordered = [
+    ...channels.filter((channel) => channel.id === firstChannel),
+    ...channels.filter((channel) => channel.id !== firstChannel),
+  ];
 
   const place = (channel: ChatChannel) => {
     const current = channel.id === selection.channel;
@@ -813,29 +845,6 @@ function PlaceList({
                 </li>
               ))}
             </ul>
-            {adding === "thread" ? (
-              <AddForm
-                label="Thread title"
-                pending={createThread.isPending}
-                error={createThread.error?.message ?? null}
-                onCancel={() => setAdding(null)}
-                onAdd={(title) =>
-                  createThread.mutate(
-                    { channelId: channel.id, title },
-                    {
-                      onSuccess: (thread) => {
-                        setAdding(null);
-                        onSelect({ channel: channel.id, thread: thread.id });
-                      },
-                    },
-                  )
-                }
-              />
-            ) : (
-              <div>
-                <Button variant="ghost" size="sm" label="New thread" onClick={() => setAdding("thread")} />
-              </div>
-            )}
             {archived > 0 && (
               <div>
                 <Button
@@ -854,39 +863,21 @@ function PlaceList({
 
   return (
     <div className="flex flex-col gap-0.5 p-2">
-      {defaultRoom !== undefined && (
-        <ul aria-label="Default room" className="flex flex-col gap-0.5">
-          {place(defaultRoom)}
-        </ul>
-      )}
-      <TaskGroup
-        label="Needs answer"
-        icon={<Flag aria-hidden className="size-3 text-warning" />}
-        chats={tasks.needsAnswer}
-        selection={selection}
-        onOpenTask={onOpenTask}
-      />
-      <TaskGroup label="In progress" chats={tasks.inProgress} selection={selection} onOpenTask={onOpenTask} />
-      <div className="flex items-center justify-between px-2 pb-1 pt-2">
+      <div className="flex items-center justify-between px-2 pb-1">
         <h3 className="text-xs font-medium text-muted-foreground">Channels</h3>
-        <IconButton
-          variant="ghost"
-          size="sm"
-          label="New channel"
-          icon={<Plus />}
-          onClick={() => setAdding(adding === "channel" ? null : "channel")}
-        />
+        <IconButton variant="ghost" size="sm" label="New channel" icon={<Plus />} onClick={() => setAdding(!adding)} />
       </div>
-      {adding === "channel" && (
-        <AddForm
+      {adding && (
+        <NameForm
           label="Channel name"
+          submitLabel="Add"
           pending={createChannel.isPending}
           error={createChannel.error?.message ?? null}
-          onCancel={() => setAdding(null)}
-          onAdd={(name) =>
+          onCancel={() => setAdding(false)}
+          onSubmit={(name) =>
             createChannel.mutate(name, {
               onSuccess: (channel) => {
-                setAdding(null);
+                setAdding(false);
                 onSelect({ channel: channel.id, thread: null });
               },
             })
@@ -894,10 +885,89 @@ function PlaceList({
         />
       )}
       <ul aria-label="Channels" className="flex flex-col gap-0.5">
-        {others.map(place)}
+        {ordered.map(place)}
       </ul>
+      <TaskGroup
+        label="Needs answer"
+        icon={<Flag aria-hidden className="size-3 text-warning" />}
+        chats={tasks.needsAnswer}
+        selection={selection}
+        onOpenTask={onOpenTask}
+      />
+      <TaskGroup
+        label="In progress"
+        action={
+          <IconButton
+            variant="ghost"
+            size="sm"
+            label={showPast ? "Hide past chats" : "Past chats"}
+            icon={<Archive />}
+            aria-pressed={showPast}
+            onClick={() => setShowPast(!showPast)}
+          />
+        }
+        chats={tasks.inProgress}
+        selection={selection}
+        onOpenTask={onOpenTask}
+      />
+      {showPast && <PastChats threads={past} nameOf={nameOf} selection={selection} onSelect={onSelect} />}
     </div>
   );
+}
+
+/** The threads whose conversation is over, latest first; picking one shows it. */
+function PastChats({
+  threads,
+  nameOf,
+  selection,
+  onSelect,
+}: {
+  threads: readonly ChatThread[];
+  nameOf: (thread: ChatThread) => string;
+  selection: Selection;
+  onSelect: (selection: Selection) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5 pt-2">
+      <h3 className="px-2 pb-1 text-xs font-medium text-muted-foreground">Past chats</h3>
+      {threads.length === 0 ? (
+        <p className="px-2 text-xs text-muted-foreground">No finished or closed chats yet.</p>
+      ) : (
+        <ul aria-label="Past chats" className="flex flex-col gap-0.5">
+          {threads.map((thread) => (
+            <li key={thread.id}>
+              <button
+                type="button"
+                className={placeItem(selection.thread === thread.id)}
+                aria-current={selection.thread === thread.id ? "page" : undefined}
+                onClick={() => onSelect({ channel: thread.channelId, thread: thread.id })}
+              >
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="min-w-0 truncate">{nameOf(thread)}</span>
+                  {thread.lastMessage !== null && (
+                    <span className="truncate text-xs font-normal text-muted-foreground">{thread.lastMessage}</span>
+                  )}
+                </span>
+                <ThreadStatusBadge status={thread.status} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The threads whose conversation is over: closed or archived ones, and those of finished
+ * tasks, the latest active first.
+ */
+export function pastThreads(threads: readonly ChatThread[], tasks: readonly Task[]): ChatThread[] {
+  const done = new Set(tasks.filter((task) => task.status === "done").map((task) => task.id));
+  const activity = (thread: ChatThread) => thread.lastMessageAt ?? thread.closedAt ?? thread.createdAt;
+  return threads
+    .filter((thread) => thread.status !== "open" || (thread.taskId !== null && done.has(thread.taskId)))
+    .sort((a, b) => activity(b) - activity(a) || b.id - a.id);
 }
 
 /** Closes, archives, or reopens a thread, as its status allows. */
@@ -932,25 +1002,132 @@ export function ThreadActions({ thread }: { thread: ChatThread }) {
   );
 }
 
+/**
+ * Asks before deleting a channel, saying where what was said in it goes: its threads to the
+ * default room, its own messages into an archived thread there named after it.
+ */
+function DeleteChannelDialog({
+  channel,
+  defaultRoom,
+  onClose,
+}: {
+  channel: ChatChannel;
+  defaultRoom: string;
+  onClose: () => void;
+}) {
+  const remove = useDeleteChatChannel();
+  const close = () => {
+    if (!remove.isPending) onClose();
+  };
+  return (
+    <Dialog isOpen onOpenChange={(open) => !open && close()} width={420}>
+      <DialogHeader title={`Delete #${channel.name}?`} onOpenChange={(open) => !open && close()} />
+      <div className="flex flex-col gap-2 py-3 text-sm">
+        <p>
+          {`Its threads move to #${defaultRoom}, and the messages posted in #${channel.name} itself are kept there in an archived thread named #${channel.name}. Nothing is lost, but the channel cannot be brought back.`}
+        </p>
+        {remove.isError && (
+          <p role="alert" className="text-xs break-words text-destructive">
+            {remove.error.message}
+          </p>
+        )}
+      </div>
+      <div className="flex items-center gap-2 border-t pt-3">
+        <Button variant="ghost" label="Cancel" isDisabled={remove.isPending} onClick={close} />
+        <Button
+          variant="destructive"
+          className="ml-auto"
+          label={remove.isPending ? "Deleting..." : "Delete channel"}
+          changesData
+          isDisabled={remove.isPending}
+          onClick={() => remove.mutate(channel.id, { onSuccess: onClose })}
+        />
+      </div>
+    </Dialog>
+  );
+}
+
+/** Renames, deletes, or mutes the shown channel; the default room is never deleted. */
+function ChannelActions({
+  channel,
+  defaultRoom,
+  onRename,
+}: {
+  channel: ChatChannel;
+  defaultRoom: string;
+  onRename: () => void;
+}) {
+  const updateChannel = useUpdateChatChannel();
+  const [deleting, setDeleting] = useState(false);
+  return (
+    <>
+      <IconButton variant="ghost" size="sm" label={`Rename #${channel.name}`} icon={<Pencil />} changesData onClick={onRename} />
+      {channel.id !== firstChannel && (
+        <IconButton
+          variant="ghost"
+          size="sm"
+          label={`Delete #${channel.name}`}
+          icon={<Trash2 />}
+          changesData
+          onClick={() => setDeleting(true)}
+        />
+      )}
+      <IconButton
+        variant="ghost"
+        size="sm"
+        label={channel.push ? `Turn off notifications for #${channel.name}` : `Turn on notifications for #${channel.name}`}
+        icon={channel.push ? <Bell /> : <BellOff />}
+        aria-pressed={channel.push}
+        changesData
+        onClick={() => updateChannel.mutate({ id: channel.id, edit: { push: !channel.push } })}
+      />
+      {deleting && <DeleteChannelDialog channel={channel} defaultRoom={defaultRoom} onClose={() => setDeleting(false)} />}
+    </>
+  );
+}
+
 /** The name of the shown channel or thread, with what can be done to it. */
 function PlaceHeader({
   channel,
   thread,
+  threadLabel,
+  defaultRoom,
   onBack,
   onShowTask,
 }: {
   channel: ChatChannel | undefined;
   thread: ChatThread | undefined;
+  threadLabel: string;
+  defaultRoom: string;
   onBack: () => void;
   onShowTask: (id: TaskId) => void;
 }) {
-  const updateChannel = useUpdateChatChannel();
+  const rename = useUpdateChatChannel();
+  const [renaming, setRenaming] = useState(false);
+  if (renaming && channel !== undefined && thread === undefined) {
+    return (
+      <div className="border-b px-1 py-1">
+        <NameForm
+          key={channel.id}
+          label="Channel name"
+          submitLabel="Rename"
+          initial={channel.name}
+          pending={rename.isPending}
+          error={rename.error?.message ?? null}
+          onCancel={() => setRenaming(false)}
+          onSubmit={(name) =>
+            rename.mutate({ id: channel.id, edit: { name } }, { onSuccess: () => setRenaming(false) })
+          }
+        />
+      </div>
+    );
+  }
   return (
     <div className="flex min-h-11 items-center gap-1 border-b px-2 py-1">
       <IconButton variant="ghost" size="sm" className="md:hidden" label="Channels" icon={<ArrowLeft />} onClick={onBack} />
       <div className="flex min-w-0 flex-1 flex-col">
         <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-semibold">
-          <span className="min-w-0 truncate">{thread !== undefined ? thread.title : `#${channel?.name ?? ""}`}</span>
+          <span className="min-w-0 truncate">{thread !== undefined ? threadLabel : `#${channel?.name ?? ""}`}</span>
           {thread !== undefined && <ThreadStatusBadge status={thread.status} />}
         </h3>
         {thread !== undefined && channel !== undefined && (
@@ -971,14 +1148,13 @@ function PlaceHeader({
         <ThreadActions thread={thread} />
       ) : (
         channel !== undefined && (
-          <IconButton
-            variant="ghost"
-            size="sm"
-            label={channel.push ? `Turn off notifications for #${channel.name}` : `Turn on notifications for #${channel.name}`}
-            icon={channel.push ? <Bell /> : <BellOff />}
-            aria-pressed={channel.push}
-            changesData
-            onClick={() => updateChannel.mutate({ id: channel.id, edit: { push: !channel.push } })}
+          <ChannelActions
+            channel={channel}
+            defaultRoom={defaultRoom}
+            onRename={() => {
+              rename.reset();
+              setRenaming(true);
+            }}
           />
         )
       )}
@@ -991,8 +1167,17 @@ function hitSelection(hit: ChatSearchHit): Selection {
   return { channel: hit.message.channelId, thread: hit.message.threadId };
 }
 
-/** Finds earlier messages of every channel and thread; picking one opens where it is. */
-export function ChatSearch({ onOpen }: { onOpen: (selection: Selection) => void }) {
+/**
+ * Finds earlier messages of every channel and thread; picking one opens where it is.
+ * `threadLabel` names a hit's thread from its id and stored title.
+ */
+export function ChatSearch({
+  onOpen,
+  threadLabel = (_, title) => title,
+}: {
+  onOpen: (selection: Selection) => void;
+  threadLabel?: (id: ChatThreadId, title: string) => string;
+}) {
   const [query, setQuery] = useState("");
   const searched = useDeferredValue(query);
   const results = useSearchChat(searched, null);
@@ -1025,7 +1210,9 @@ export function ChatSearch({ onOpen }: { onOpen: (selection: Selection) => void 
                   <span className="flex items-center gap-1 text-xs text-muted-foreground">
                     <span className="min-w-0 truncate">
                       {`#${hit.channelName}`}
-                      {hit.threadTitle !== null && ` / ${hit.threadTitle}`}
+                      {hit.threadTitle !== null &&
+                        hit.message.threadId !== null &&
+                        ` / ${threadLabel(hit.message.threadId, hit.threadTitle)}`}
                     </span>
                     <span aria-hidden>·</span>
                     <span className="shrink-0">{formatFull(hit.message.at)}</span>
@@ -1065,9 +1252,11 @@ function ChatPanel({
   const [searching, setSearching] = useState(false);
   const threads = useChatThreads({ channelId: selection.channel, archived: true });
   const allThreads = useChatThreads({ archived: true });
-  const tasks = useTasks();
+  // The tasks of every thread are loaded, finished ones too, so past chats are named by their task.
+  const tasks = useTasks((allThreads.data ?? []).map((candidate) => candidate.taskId));
   const createThread = useCreateChatThread();
   const listed = taskChats(tasks.data ?? [], allThreads.data ?? []);
+  const past = pastThreads(allThreads.data ?? [], tasks.data ?? []);
   // On a phone the panel shows either the channels or one conversation.
   const [listShown, setListShown] = useState(false);
   const channelList = channels.data ?? [];
@@ -1118,13 +1307,20 @@ function ChatPanel({
       return;
     }
     createThread.mutate(
-      { channelId: firstChannel, title: `#${task.id} ${task.title}`.slice(0, 200), taskId: task.id },
+      { channelId: firstChannel, title: taskName(task).slice(0, 200), taskId: task.id },
       { onSuccess: (opened) => select({ channel: opened.channelId, thread: opened.id }) },
     );
   };
 
   const place = placeOf(selection);
-  const label = thread !== undefined ? thread.title : `#${channel?.name ?? "general"}`;
+  const taskList = tasks.data ?? [];
+  const threadLabel = thread === undefined ? "" : threadName(thread, taskList);
+  const defaultRoom = channelList.find((candidate) => candidate.id === firstChannel)?.name ?? "general";
+  const label = thread !== undefined ? threadLabel : `#${channel?.name ?? defaultRoom}`;
+  const searchLabel = (id: ChatThreadId, title: string) => {
+    const found = allThreads.data?.find((candidate) => candidate.id === id);
+    return found === undefined ? title : threadName(found, taskList);
+  };
 
   return (
     <section
@@ -1174,6 +1370,8 @@ function ChatPanel({
               channels={channelList}
               threads={threads.data ?? []}
               tasks={listed}
+              past={past}
+              nameOf={(candidate) => threadName(candidate, taskList)}
               selection={selection}
               onSelect={select}
               onOpenTask={openTask}
@@ -1182,10 +1380,18 @@ function ChatPanel({
         </nav>
         <div className={cn("flex min-w-0 flex-1 flex-col", listShown && "max-md:hidden")}>
           {searching ? (
-            <ChatSearch onOpen={select} />
+            <ChatSearch onOpen={select} threadLabel={searchLabel} />
           ) : (
             <>
-              <PlaceHeader channel={channel} thread={thread} onBack={() => setListShown(true)} onShowTask={onShowTask} />
+              <PlaceHeader
+                key={`header ${JSON.stringify(place)}`}
+                channel={channel}
+                thread={thread}
+                threadLabel={threadLabel}
+                defaultRoom={defaultRoom}
+                onBack={() => setListShown(true)}
+                onShowTask={onShowTask}
+              />
               <Conversation
                 key={JSON.stringify(place)}
                 place={place}

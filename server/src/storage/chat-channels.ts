@@ -9,6 +9,7 @@ import {
   type ChatMessageId,
   type ChatPlace,
   type ChatThreadId,
+  FIRST_CHANNEL,
   chatChannelId,
 } from "../domain/chat.ts";
 import { channelExists, locate } from "./chat-places.ts";
@@ -99,6 +100,41 @@ export function updateChatChannel(db: Database, id: ChatChannelId, edit: Channel
       [id, edit.name ?? null, edit.push ?? null],
     );
     return findChannel(db, id);
+  })();
+}
+
+/**
+ * Deletes a channel other than the default room, keeping what was said in it: its threads
+ * move to the default room, and its own messages, if any, into an archived thread there named
+ * after it (`#<name>`), which keeps how far people read them.
+ */
+export function deleteChatChannel(db: Database, id: ChatChannelId, at: number): void {
+  db.transaction(() => {
+    if (id === FIRST_CHANNEL) {
+      throw new StorageError({ kind: "chat_channel_permanent", channel: id });
+    }
+    const row = db
+      .query<{ name: string; read_id: number }, [number]>("SELECT name, read_id FROM chat_channels WHERE id = ?1")
+      .get(id);
+    if (row === null) {
+      throw new StorageError({ kind: "chat_channel_not_found", channel: id });
+    }
+    const own = db
+      .query<{ 1: number }, [number]>("SELECT 1 FROM chat_messages WHERE channel_id = ?1 AND thread_id IS NULL LIMIT 1")
+      .get(id);
+    if (own !== null) {
+      const kept = Number(
+        db.run(
+          `INSERT INTO chat_threads (channel_id, title, status, created_at, closed_at, archived_at, read_id)
+           VALUES (?1, ?2, 'archived', ?3, ?3, ?3, ?4)`,
+          [FIRST_CHANNEL, `#${row.name}`, at, row.read_id],
+        ).lastInsertRowid,
+      );
+      db.run("UPDATE chat_messages SET thread_id = ?2 WHERE channel_id = ?1 AND thread_id IS NULL", [id, kept]);
+    }
+    db.run("UPDATE chat_threads SET channel_id = ?2 WHERE channel_id = ?1", [id, FIRST_CHANNEL]);
+    db.run("UPDATE chat_messages SET channel_id = ?2 WHERE channel_id = ?1", [id, FIRST_CHANNEL]);
+    db.run("DELETE FROM chat_channels WHERE id = ?1", [id]);
   })();
 }
 
