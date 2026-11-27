@@ -512,7 +512,10 @@ Prerequisites:
 
 - Windows 10 1809 or Server 2019 (build 17763) or later, x64. Otherwise the script exits 4. ARM64 isn't supported.
 - OpenSSH server, reachable the same way as for the guard.
-- No hc: hc has no Windows support, so the install never exits 7 and the note says `hc=unknown`.
+- No hc needed up front: the install never exits 7 and the note says `hc=unknown`. The runner installs hc (x64 only)
+  itself with `install.ps1` (`irm https://releases.herdr.dev/core/install.ps1 | iex`, no admin, into
+  `%LOCALAPPDATA%\Programs\herdr-core`) when its first lane opens, or updates an older one, and starts hc's core with
+  `hc server start` (on Windows `hc server status` never starts one).
 - The runner runs as a scheduled task at logon, so the user has to be logged on. An always-on worker needs
   auto-logon.
 
@@ -558,8 +561,9 @@ On Windows the runner:
 - keeps the machine awake with `SetThreadExecutionState`;
 - samples memory, swap, disk, load and processes through `runner-sample.ps1`, and attributes processes to lanes from
   the lane shell pid recorded at launch (adopted lanes aren't attributed);
-- types lane launch lines as `-EncodedCommand` into pwsh or PowerShell 5.1 panes. `cmd.exe` panes are refused. On 5.1,
-  an argv with a double quote is refused with `RUNNER_LANE_ARGV_UNSAFE`;
+- opens each lane in an hc terminal running Windows PowerShell 5.1 and types its launch line there as a nested
+  `powershell -NoLogo -EncodedCommand`. An argv with a double quote is refused with `RUNNER_LANE_ARGV_UNSAFE`, and a
+  review lane (sandbox only) with `RUNNER_LANE_REVIEW_UNSANDBOXED`;
 
 WSL and UNC runner dirs aren't supported. A Windows machine without a runner isn't guarded at all.
 
@@ -589,6 +593,16 @@ without a runner isn't guarded.
 
 Lane records store `hcInstance` (`hc:<core id>`), the hc core that opened the lane, and keep `tab` empty. With no
 known core a new launch or adoption is refused (`RUNNER_HC_INSTANCE_UNKNOWN`).
+
+Each runner follows its host's hc events (`hc events --json`) and reads its lanes (the terminal list, then the
+asking screens of the lanes it owns) as soon as hc reports a terminal created, lost, restarted, finished or removed,
+or a change of an agent's status, turn or foreground process; reads triggered this way start at least 1 s apart. A
+lane whose `dead` waits out the startup or dead grace is read again when that grace ends. While the subscription
+is live the 30 s observe timer reads only when the last read is 120 s old, as the backup for a question drawn on a
+screen whose agent kept its status. A subscription that ends or stays silent for 45 s (three missed hc heartbeats)
+is started again after 2 s, doubling to 60 s while it keeps failing (`HC_EVENTS_LOST`, `HC_EVENTS_SILENT`); until its
+first snapshot arrives the timer reads every 30 s, and that snapshot (like the one hc sends after `missed`) triggers
+a read that catches up on whatever changed meanwhile.
 
 Observe, recover, send, pause, resume, close, asking-screen reads and lane inspection compare the saved identity
 before touching the recorded pane. A mismatch means missing (`RUNNER_LANE_ABSENT` for steering); close forgets
