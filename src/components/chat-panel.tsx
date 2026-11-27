@@ -725,9 +725,6 @@ function PlaceMarks({ thread }: { thread: ChatThread | null }) {
   );
 }
 
-/** The size the chat's width is saved under: alone, or beside a task's details. */
-const chatWidth = () => (document.querySelector(detailsSheet) === null ? "chat-width" : "chat-beside-width");
-const chatHeight = () => "chat-height" as const;
 
 const statusLabels: Record<ChatThreadStatus, string> = { open: "Open", closed: "Closed", archived: "Archived" };
 
@@ -1459,9 +1456,9 @@ function ChatPanel({
         open ? "motion-safe:animate-chat-in" : "motion-safe:animate-chat-out",
       )}
     >
-      <ResizeHandle label="Resize the chat" width={chatWidth} />
-      <ResizeHandle label="Resize the chat's height" height={chatHeight} />
-      <ResizeHandle label="Resize the chat's width and height" width={chatWidth} height={chatHeight} />
+      <ResizeHandle label="Resize the chat" width="chat-width" />
+      <ResizeHandle label="Resize the chat's height" height="chat-height" />
+      <ResizeHandle label="Resize the chat's width and height" width="chat-width" height="chat-height" />
       <header className="flex items-center gap-2 border-b px-3 py-2">
         <h2 className="text-sm font-semibold">Chat</h2>
         <IconButton

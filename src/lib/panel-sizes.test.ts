@@ -36,6 +36,6 @@ describe("panel sizes", () => {
       "toodo-panel-sizes",
       JSON.stringify({ "chat-width": "640px", "chat-height": -1, "details-width": 1e6, other: 5, "chat-beside-width": 420 }),
     );
-    expect(loadPanelSizes()).toEqual({ "chat-beside-width": 420 });
+    expect(loadPanelSizes()).toEqual({});
   });
 });

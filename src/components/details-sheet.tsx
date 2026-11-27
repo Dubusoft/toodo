@@ -9,8 +9,6 @@ import { cn } from "@/lib/utils";
 /** Matches an open task details sheet. */
 export const detailsSheet = "[data-details-sheet]";
 
-const chatOpen = '[data-chat][data-state="open"]';
-
 /**
  * The frame of a task details sheet. From `md` up, a panel floating over the window's right side,
  * `width` wide. Below it, a bottom sheet sized to its content up to 90% of the screen, with a
@@ -102,10 +100,7 @@ export function DetailsSheet({
         } as CSSProperties
       }
     >
-      <ResizeHandle
-        label="Resize the task details"
-        width={() => (document.querySelector(chatOpen) === null ? "details-width" : "details-beside-width")}
-      />
+      <ResizeHandle label="Resize the task details" width="details-width" />
       <div className="flex shrink-0 justify-center pt-2 pb-1 md:hidden touch-none" {...dragHandlers}>
         <span data-grabber aria-hidden className="h-1 w-9 rounded-full bg-muted-foreground/40" />
       </div>

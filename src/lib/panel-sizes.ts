@@ -1,14 +1,14 @@
 /**
  * The sizes the owner gave the chat popup and a task's details sheet by dragging their edges, kept
- * in this browser. Each is saved for the arrangement it was set in: the chat alone or beside the
- * details, the details alone or beside the chat. A saved size is a CSS pixel length on the root
- * (`--<name>-saved`); `src/index.css` applies it only on desktop widths and clamps it to the window
- * there, so a panel without one keeps its default size and tablets and phones never see one.
+ * in this browser. Each panel keeps its size whether it is open alone or beside the other. A saved
+ * size is a CSS pixel length on the root (`--<name>-saved`); `src/index.css` applies it only on
+ * desktop widths and clamps it to the window there, so a panel without one keeps its default size
+ * and tablets and phones never see one.
  */
 
-export type PanelSize = "chat-width" | "chat-beside-width" | "chat-height" | "details-width" | "details-beside-width";
+export type PanelSize = "chat-width" | "chat-height" | "details-width";
 
-const panelSizes: PanelSize[] = ["chat-width", "chat-beside-width", "chat-height", "details-width", "details-beside-width"];
+const panelSizes: PanelSize[] = ["chat-width", "chat-height", "details-width"];
 
 const storageKey = "toodo-panel-sizes";
 
