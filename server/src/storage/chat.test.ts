@@ -218,6 +218,22 @@ describe("chat channels and threads", () => {
     expect(updateChatThread(db, thread.id, { task: null }, 100).taskId).toBeNull();
   });
 
+  test("a thread shows its latest message on one line and an unanswered question", () => {
+    const db = openMemoryDatabase();
+    const thread = createChatThread(db, { channel: FIRST_CHANNEL, title: "Deploy", task: null }, 100);
+    const place: ChatPlace = { kind: "thread", id: thread.id };
+    const shown = () => listChatThreads(db, {})[0];
+    expect([shown()?.lastMessage, shown()?.awaitingChoice]).toEqual([null, false]);
+    reply(db, { place, body: "[progress] lane-1\nTests  pass" });
+    expect(shown()?.lastMessage).toBe("[progress] lane-1 Tests pass");
+    reply(db, { place, body: "x".repeat(300) });
+    expect(shown()?.lastMessage).toBe(`${"x".repeat(197)}...`);
+    const question = reply(db, { place, body: "Ship it?", actions: yesNo() });
+    expect(shown()?.awaitingChoice).toBe(true);
+    chooseChatAction(db, { message: question.id, key: "yes", clientId: "c1" }, 200);
+    expect([shown()?.awaitingChoice, shown()?.lastMessage]).toEqual([false, "Yes"]);
+  });
+
   test("closed and archived threads refuse messages until reopened", () => {
     const db = openMemoryDatabase();
     const thread = createChatThread(db, { channel: FIRST_CHANNEL, title: "Deploy", task: null }, 100);

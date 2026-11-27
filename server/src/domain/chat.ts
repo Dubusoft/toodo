@@ -118,6 +118,11 @@ export type ChatThread = {
   readonly unread: number;
   /** When its latest message was posted. */
   readonly lastMessageAt: number | null;
+  /** Its latest message on one line, cut short; e.g. the latest status a lane reported. */
+  readonly lastMessage: string | null;
+  /** Whether a message of the agent in it offers actions nobody chose yet: a question
+   * that waits for a person's answer. */
+  readonly awaitingChoice: boolean;
 };
 
 /** Who wrote a message: a person in the web app (`user`), the agent connected over MCP

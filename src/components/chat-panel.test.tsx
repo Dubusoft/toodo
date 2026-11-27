@@ -64,6 +64,8 @@ function thread(id: number, title: string, overrides: Partial<ChatThread> = {}):
     archivedAt: null,
     unread: 0,
     lastMessageAt: null,
+    lastMessage: null,
+    awaitingChoice: false,
     ...overrides,
   };
 }
