@@ -16,6 +16,8 @@ export const USAGE = `dori <command> [options]
                 [--mode ulw|mass-ulw]   ulw (default): clear, contained work; mass-ulw: wide changes or vague instructions that need investigation
                 [--task ID]   the Toodo task the lane works on (a positive integer, not looked up), recorded on the lane and shown by status;
                                        an autopilot lane gets its reservation's task without it
+                [--workspace ID]   without --task, on the Toodo chat: the workspace the lane's new task goes to; without it the workspace whose
+                                       repository names a Done repo, else LAUNCH_WORKSPACE_REQUIRED (exit 1, never the first workspace)
                 [--share-thread] [--allow-repo-mismatch]   refused when another open lane has the thread or the git checkout, or cwd's repo is not in Done
                 [--grant NAME]   repeatable: a named path grant from the lane's runner's runner-config.json grants table (write/read paths the sandbox opens
                                        for this lane only; the hide list still wins); an unknown name, an unsandboxed lane or an older runner refuses the launch
