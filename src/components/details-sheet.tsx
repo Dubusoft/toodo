@@ -13,9 +13,9 @@ export const detailsSheet = "[data-details-sheet]";
  * `width` wide. Below it, a bottom sheet sized to its content up to 90% of the screen, with a
  * grabber: dragging the grabber or the header down closes it.
  *
- * With the chat open it keeps clear of the chat (see `src/index.css`): from `md` up it moves to the
- * window's left edge, and the chat popup narrows to the room right of it (`--details-width`). On a
- * phone opening a task closes the chat, so the two never meet there.
+ * With the chat open it keeps clear of the chat (see `src/index.css`): from `md` up the chat popup
+ * narrows to `--chat-beside-details` and the sheet, narrowed to `--details-beside-chat`, floats just
+ * left of it. On a phone opening a task closes the chat, so the two never meet there.
  *
  * Opening it moves the focus to its heading, unless `takeFocus` is false; closing it returns
  * the focus to `returnFocus()`, or to what had it before, when the focus was in the sheet.
@@ -89,7 +89,7 @@ export function DetailsSheet({
       className={cn(
         "fixed z-40 flex flex-col overflow-hidden border bg-card shadow-xl",
         "max-md:inset-x-0 max-md:bottom-0 max-md:max-h-[90dvh] max-md:rounded-t-2xl max-md:border-b-0 max-md:pb-[env(safe-area-inset-bottom)] max-md:transition-transform max-md:data-dragging:transition-none motion-reduce:transition-none",
-        "md:inset-y-4 md:right-4 md:w-(--sheet-width) md:rounded-xl md:chat-open:right-auto md:chat-open:left-4",
+        "md:inset-y-4 md:right-4 md:w-(--sheet-width) md:rounded-xl md:chat-open:right-[calc(var(--chat-beside-details)+2rem)] md:chat-open:w-(--details-beside-chat)",
       )}
       style={
         {
