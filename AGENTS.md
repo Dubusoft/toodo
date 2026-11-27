@@ -40,11 +40,11 @@ things:
    completion note, its references (`refs` such as `lane:<key>` or `pr:<url>`), and its
    status history with the reason recorded for each start, pause, and completion.
 
-Toodo does not execute the work. Whoever does it (a person, or an executor such as Dori
-that creates worktrees, runs agents, and opens pull requests) records the result through
-MCP or the web app: `start_task`, notes, `update_task` with status `in_review`, then
-`complete_task` or `conclude_task`. Toodo runs no git, gh, ssh, herdr, tmux, or agent
-CLI.
+Dori (`dori/`) is Toodo's executor and the agent the chat names by default: it creates
+worktrees, runs coding agents, and opens pull requests, then records the result through
+MCP: `start_task`, notes, `update_task` with status `in_review`, then `complete_task` or
+`conclude_task`. A person or another agent records work the same way, through MCP or the
+web app. The Toodo server itself runs no git, gh, ssh, herdr, tmux, or agent CLI.
 
 Toodo doubles as the record for a year-end performance report: every task status change
 is timestamped and kept as history (planned, started, in review, completed), and the

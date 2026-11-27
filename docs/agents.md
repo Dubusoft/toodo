@@ -2,9 +2,9 @@
 
 Coding agents use Toodo through its MCP server (`/mcp`, see
 [Agents in docs/server.md](server.md#agents) for the client config). Toodo keeps the plan
-and the record of the work; it doesn't run agents, create worktrees, or open pull
-requests. The agent or person doing the work does that elsewhere and writes the results
-back into Toodo.
+and the record of the work; the server doesn't run agents, create worktrees, or open pull
+requests. Dori, Toodo's executor (`dori/`), does that and writes the results back into
+Toodo; a person or any other agent with the token works the same way.
 
 Agents take one of two roles:
 
