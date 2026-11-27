@@ -271,7 +271,8 @@ back the server, web app, unit, and listen setting it replaced, restarts the ser
 lists what it restored, and exits `1`; `journalctl --user -u toodo-server` shows why the
 new version failed.
 
-- `--release latest|vX.Y.Z`: the release to install; `vX.Y.Z` pins a version.
+- `--release latest|vX.Y.Z|vX.Y.Z-dev.N`: the release to install; `latest` is the newest
+  stable release, `vX.Y.Z` pins a version, and `vX.Y.Z-dev.N` installs a dev pre-release.
 - `--listen ADDR`: listen address of the service (default `127.0.0.1:47616`).
 - `--no-service`: install only; leave the service alone.
 

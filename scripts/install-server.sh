@@ -12,10 +12,11 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/install-server.sh [--release latest|vX.Y.Z] [--listen ADDR] [--no-service]
+Usage: scripts/install-server.sh [--release latest|vX.Y.Z[-dev.N]] [--listen ADDR] [--no-service]
        scripts/install-server.sh [--listen ADDR] [--no-service] [--with-web]
 
-  --release VER   download toodo-server from the GitHub release VER (latest or vX.Y.Z),
+  --release VER   download toodo-server from the GitHub release VER (latest, vX.Y.Z, or
+                  a dev pre-release vX.Y.Z-dev.N; latest is the newest stable release),
                   check its sha256, and install it; needs no Rust toolchain
   --listen ADDR   address the service listens on (default 127.0.0.1:47616)
   --no-service    install only; do not write or restart the systemd service
@@ -86,8 +87,8 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 if [ -n "$release" ] && [ -n "$from_file" ]; then
   die "use either --release or --from-file"
 fi
-if [ -n "$release" ] && [ "$release" != latest ] && ! [[ $release =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  die "--release takes latest or vX.Y.Z, got '$release'"
+if [ -n "$release" ] && [ "$release" != latest ] && ! [[ $release =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?$ ]]; then
+  die "--release takes latest, vX.Y.Z, or vX.Y.Z-dev.N, got '$release'"
 fi
 from_release=0
 { [ -n "$release" ] || [ -n "$from_file" ]; } && from_release=1
@@ -155,8 +156,8 @@ fi
 if [ "$from_release" = 1 ]; then
   if [ -n "$from_file" ]; then
     asset=$(basename "$from_file")
-    [[ $asset =~ ^toodo-server-(v[0-9]+\.[0-9]+\.[0-9]+)-linux-x86_64\.tar\.gz$ ]] \
-      || die "--from-file expects toodo-server-vX.Y.Z-linux-x86_64.tar.gz, got $asset"
+    [[ $asset =~ ^toodo-server-(v[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?)-linux-x86_64\.tar\.gz$ ]] \
+      || die "--from-file expects toodo-server-vX.Y.Z[-dev.N]-linux-x86_64.tar.gz, got $asset"
     tag=${BASH_REMATCH[1]}
     log "Using $from_file"
     cp "$from_file" "$from_file.sha256" "$work/" || die "need $from_file and $from_file.sha256"
