@@ -299,11 +299,12 @@ const laneThreadInDecisions = async (ctx: DecisionContext, origin: string | unde
 export const openOwnerDecision = async (ctx: DecisionContext, spec: DecisionSpec): Promise<OpenResult> => {
   const { stateDir } = ctx.config;
   const now = ctx.now();
-  // With Discord off the decision goes to the Toodo chat, into its task's thread (else the default room), like a lane's own thread.
+  // With Discord off the decision goes to the Toodo chat, into its task's thread (else the Toodo thread it was asked from,
+  // else the default room), like a lane's own thread.
   let toodoPlace: string | undefined;
   if (!discordOn(ctx.config)) {
     if (!ctx.toodo) throw new OwnerDecisionError("DECISION_NOT_POSTED", "DECISION_NOT_POSTED Discord is off and no Toodo chat was given to post the decision on");
-    try { toodoPlace = toodoRef(await toodoDecisionPlace(ctx.toodo(), spec.task)); }
+    try { toodoPlace = toodoRef(await toodoDecisionPlace(ctx.toodo(), spec)); }
     catch (e) { throw new OwnerDecisionError("DECISION_NOT_POSTED", `DECISION_NOT_POSTED ${errLine(e)}`); }
   }
   const channel = toodoPlace ? { channel: TOODO_DECISION_CHANNEL } : await decisionChannel(ctx.config, spec.origin, ctx.transport);

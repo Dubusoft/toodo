@@ -8,7 +8,7 @@ import type { FlowDeps } from "./done-flow.ts";
 import { staleOwnerEvents } from "./inbox.ts";
 import { Discord } from "./messenger/discord.ts";
 import { fetchHttp } from "./messenger/http.ts";
-import { toodoChat } from "./messenger/toodo-chat.ts";
+import { TOODO_THREAD_REF, toodoChat } from "./messenger/toodo-chat.ts";
 import { realClock } from "./run.ts";
 import { oneLine } from "./line-text.ts";
 
@@ -95,7 +95,8 @@ export const decisionMain = async (rest: string[], { flow: deps, die, messengerT
     if (laneKey !== undefined && !found) refuse(`unknown ${relayTo ? "--relay-to" : "--lane"} ${laneKey}: no registered lane has this key`);
     task ??= found?.task ?? od.taskOfLane(laneKey);
     const thread = v.thread?.trim();
-    if (thread !== undefined && !od.refIds(thread)) refuse(`--thread ${thread} is not a thread ref such as discord:<channel>/<thread>`);
+    // A Toodo thread origin puts the card in that thread when the decision has no task (decision-toodo.ts toodoDecisionPlace).
+    if (thread !== undefined && !od.refIds(thread) && !TOODO_THREAD_REF.test(thread)) refuse(`--thread ${thread} is not a thread ref such as discord:<channel>/<thread> or toodo:thread/<id>`);
     const laneThread = found?.thread && found.thread !== "none" ? found.thread : undefined;
     const noOrigin = v["no-origin"] === true;
     if (noOrigin && thread !== undefined) refuse("--no-origin cannot go with --thread");

@@ -2,15 +2,14 @@ import type { OwnerDecision } from "./decision-store.ts";
 import { scrubForThread } from "./freshness.ts";
 import { hasDecisionButtons } from "./messenger/decision-buttons.ts";
 import {
-  isToodoRef, parseToodoRef, TOODO_DEFAULT_ROOM, type ToodoAction, type ToodoChat, type ToodoChatMessage, type ToodoPlace,
+  isToodoRef, parseToodoRef, TOODO_DEFAULT_ROOM, TOODO_THREAD_REF, type ToodoAction, type ToodoChat, type ToodoChatMessage, type ToodoPlace,
 } from "./messenger/toodo-chat.ts";
 import type { DecisionTransport } from "./owner-decisions.ts";
 
 /*
  * Owner decisions on the Toodo chat. Every decision gets a card there (decision-toodo-cards.ts posts it beside a
  * Discord thread): its question with one numbered button per option, or a request with none. For a config whose
- * platforms have no discord the card is the decision itself: it is posted into its task's thread, else the default room,
- * and recorded with that place's chat ref as its thread. The Toodo chat has no edits or archive: the lead closes the
+ * platforms have no discord the card is the decision itself: it is posted where toodoDecisionPlace says, and recorded with that place's chat ref as its thread. The Toodo chat has no edits or archive: the lead closes the
  * decision with `dori decision close`, and the close's confirmation is posted in the same place.
  */
 
@@ -67,9 +66,16 @@ export const postToodoCard = (chat: Pick<ToodoChat, "reply">, place: ToodoPlace,
 /** The `channel` a decision on the Toodo chat is recorded with (its thread is the place's chat ref). */
 export const TOODO_DECISION_CHANNEL = "toodo";
 
-/** Where a decision goes on the Toodo chat: task `task`'s thread (opened when it has none), else the default room. */
-export const toodoDecisionPlace = async (chat: Pick<ToodoChat, "taskThread">, task: number | undefined): Promise<ToodoPlace> =>
-  task === undefined ? TOODO_DEFAULT_ROOM : chat.taskThread(task, "");
+/**
+ * Where a decision goes on the Toodo chat, so the owner meets it where the work is: its task's thread (opened with
+ * `title` when it has none), else the Toodo thread it was asked from (its `origin`), else the default room.
+ */
+export const toodoDecisionPlace = async (
+  chat: Pick<ToodoChat, "taskThread">, d: { readonly task?: number; readonly origin?: string }, title = "",
+): Promise<ToodoPlace> => {
+  if (d.task !== undefined) return chat.taskThread(d.task, title);
+  return d.origin !== undefined && TOODO_THREAD_REF.test(d.origin) ? parseToodoRef(d.origin) : TOODO_DEFAULT_ROOM;
+};
 
 /**
  * The decision transport that sends a channel named by a Toodo chat ref to the Toodo chat and any other to `discord`

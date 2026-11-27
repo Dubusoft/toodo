@@ -26,6 +26,9 @@ export const toodoRef = (place: ToodoPlace): string => `toodo:${place.kind}/${pl
 
 export const isToodoRef = (ref: string): boolean => ref === "toodo" || ref.startsWith("toodo:");
 
+/** A ref naming a thread of the chat, `toodo:thread/<id>`. */
+export const TOODO_THREAD_REF = /^toodo:thread\/[1-9]\d*$/;
+
 /** The place a ref names; ToodoChatError for anything else. */
 export const parseToodoRef = (ref: string): ToodoPlace => {
   const value = ref.trim();
