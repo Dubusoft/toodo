@@ -114,8 +114,8 @@ export default function App() {
   };
   // A clicked notification opens its task.
   useEffect(() => listenForOpenTask(showTask), []);
-  // The chat opens from its button, from a clicked chat notification, or at an address with `?chat`;
-  // the notification's channel or thread is shown until the chat takes it.
+  // The chat opens from its button, from a clicked chat notification, from a decision under Needs
+  // attention, or at an address with `?chat`; the place named is shown until the chat takes it.
   const [chatOpen, setChatOpen] = useState(() => new URLSearchParams(location.search).has("chat"));
   const [chatTarget, setChatTarget] = useState<ChatTarget | null>(() => chatTargetAt(location.search));
   useEffect(
@@ -276,7 +276,14 @@ export default function App() {
           />
         </div>
         <ErrorBoundary label="the tasks that need attention">
-          <NeedsAttention onShow={showTask} />
+          <NeedsAttention
+            onShow={showTask}
+            onOpenChat={(target) => {
+              setMenuOpen(false);
+              setChatTarget(target);
+              setChatOpen(true);
+            }}
+          />
         </ErrorBoundary>
         <nav className="flex flex-col gap-0.5">
           <Button

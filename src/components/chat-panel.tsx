@@ -92,7 +92,7 @@ import {
   useUpdateChatChannel,
   useUpdateChatThread,
 } from "@/lib/queries";
-import { taskChats, type TaskChat, type TaskChats } from "@/lib/task-chats";
+import { awaitsAnswer, taskChats, waitingThreads, type TaskChat, type TaskChats } from "@/lib/task-chats";
 import { formatFull } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import { useVoiceInput } from "@/lib/voice";
@@ -695,6 +695,36 @@ function UnreadBadge({ count }: { count: number }) {
   );
 }
 
+/** The fill of everything that marks a decision waiting on the owner, louder than an unread count. */
+export const decisionFill = "bg-amber-400 text-amber-950";
+
+/** A filled flag on its own, for the places too small for `DecisionMark`'s word. */
+export function DecisionFlag({ className }: { className?: string }) {
+  return <Flag aria-hidden className={cn("size-3", className)} fill="currentColor" strokeWidth={2.5} />;
+}
+
+/** The mark of a thread waiting on the owner's answer to a decision or request. */
+export function DecisionMark() {
+  return (
+    <span className={cn("flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-xs font-semibold", decisionFill)}>
+      <DecisionFlag />
+      Decision
+      <span className="sr-only">, waiting on your answer</span>
+    </span>
+  );
+}
+
+/** What a listed thread waits on: the decision mark, then its unread count. */
+function PlaceMarks({ thread }: { thread: ChatThread | null }) {
+  if (thread === null || thread.status === "archived") return null;
+  return (
+    <span className="ml-auto flex shrink-0 items-center gap-1">
+      {awaitsAnswer(thread) && <DecisionMark />}
+      <UnreadBadge count={threadUnread(thread)} />
+    </span>
+  );
+}
+
 const statusLabels: Record<ChatThreadStatus, string> = { open: "Open", closed: "Closed", archived: "Archived" };
 
 export function ThreadStatusBadge({ status }: { status: ChatThreadStatus }) {
@@ -702,9 +732,10 @@ export function ThreadStatusBadge({ status }: { status: ChatThreadStatus }) {
   return <Badge className="shrink-0" variant={status === "closed" ? "neutral" : "warning"} label={statusLabels[status]} />;
 }
 
-function placeItem(selected: boolean) {
+function placeItem(selected: boolean, waiting = false) {
   return cn(
     "flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted",
+    waiting && "bg-amber-50 ring-1 ring-amber-300 ring-inset dark:bg-amber-950/60 dark:ring-amber-700",
     selected && "bg-muted font-semibold",
   );
 }
@@ -715,7 +746,12 @@ function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boole
   const status = thread?.lastMessage ?? (task.status === "in_review" ? "In review" : "");
   return (
     <li>
-      <button type="button" className={placeItem(selected)} aria-current={selected ? "page" : undefined} onClick={onOpen}>
+      <button
+        type="button"
+        className={placeItem(selected, thread !== null && awaitsAnswer(thread))}
+        aria-current={selected ? "page" : undefined}
+        onClick={onOpen}
+      >
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="shrink-0 text-muted-foreground">{`#${task.id}`}</span>
@@ -723,7 +759,7 @@ function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boole
           </span>
           {status !== "" && <span className="truncate text-xs font-normal text-muted-foreground">{status}</span>}
         </span>
-        <UnreadBadge count={threadUnread(thread)} />
+        <PlaceMarks thread={thread} />
       </button>
     </li>
   );
@@ -829,7 +865,7 @@ function PlaceList({
                 <li key={thread.id}>
                   <button
                     type="button"
-                    className={placeItem(selection.thread === thread.id)}
+                    className={placeItem(selection.thread === thread.id, awaitsAnswer(thread))}
                     aria-current={selection.thread === thread.id ? "page" : undefined}
                     onClick={() => onSelect({ channel: channel.id, thread: thread.id })}
                   >
@@ -843,7 +879,7 @@ function PlaceList({
                     {thread.status === "archived" && (
                       <Archive aria-hidden className="size-3 shrink-0 text-muted-foreground" />
                     )}
-                    <UnreadBadge count={threadUnread(thread)} />
+                    <PlaceMarks thread={thread} />
                   </button>
                 </li>
               ))}
@@ -1441,6 +1477,8 @@ function ChatPanel({
 /**
  * The floating chat button, with the count of unread messages in every channel, and the chat
  * it opens. The button is hidden while the chat is open, which has its own close button.
+ * While threads wait on the owner's decision it rings in amber and carries a flag with their
+ * count, which stays until they are answered; the chat never opens by itself.
  * The chat opens and closes with an animation. `open` is kept by the app so a clicked notification can open it too, at the channel
  * or thread in `target`, which `onTargetShown` reports the chat took.
  */
@@ -1461,6 +1499,7 @@ export function Chat({
   const threads = useChatThreads({ archived: true });
   const tasks = useTasks();
   const unread = open ? 0 : totalUnread(channels.data ?? [], taskChats(tasks.data ?? [], threads.data ?? []));
+  const decisions = open ? 0 : waitingThreads(threads.data ?? []).length;
   const button = useRef<HTMLButtonElement>(null);
   // The button is hidden while the chat is open, so closing the chat focuses it once it shows again.
   const refocus = useRef(false);
@@ -1493,12 +1532,19 @@ export function Chat({
         <button
           ref={button}
           type="button"
-          aria-label={unread > 0 ? `Open chat, ${unread} unread` : "Open chat"}
+          aria-label={[
+            "Open chat",
+            ...(decisions > 0 ? [`${decisions} waiting on your decision`] : []),
+            ...(unread > 0 ? [`${unread} unread`] : []),
+          ].join(", ")}
           aria-expanded={open}
           className="relative block size-12 cursor-pointer rounded-full shadow-lg ring-2 ring-background transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
           onClick={() => onOpenChange(true)}
         >
-          <img src={doriAvatar} alt="" className="size-full rounded-full object-cover" />
+          {decisions > 0 && (
+            <span aria-hidden className="absolute -inset-1.5 rounded-full border-4 border-amber-400 motion-safe:animate-pulse" />
+          )}
+          <img src={doriAvatar} alt="" className="relative size-full rounded-full object-cover" />
           <span
             aria-hidden
             className="absolute -bottom-1 -right-1 grid size-5 place-items-center rounded-full border-2 border-background bg-primary text-primary-foreground"
@@ -1506,6 +1552,18 @@ export function Chat({
             <MessageCircle className="size-2.5" fill="currentColor" strokeWidth={2} />
           </span>
         </button>
+        {decisions > 0 && (
+          <span
+            aria-hidden
+            className={cn(
+              "pointer-events-none absolute -left-2 -top-2 flex h-5 items-center gap-0.5 rounded-full border-2 border-background px-1 text-xs font-bold shadow",
+              decisionFill,
+            )}
+          >
+            <DecisionFlag />
+            {decisions > 9 ? "9+" : decisions}
+          </span>
+        )}
         {unread > 0 && (
           <span
             aria-hidden
