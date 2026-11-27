@@ -17,6 +17,7 @@ import {
   BellOff,
   Flag,
   Lock,
+  MessageCircle,
   Paperclip,
   Plus,
   RotateCcw,
@@ -262,7 +263,7 @@ function Actions({ message }: { message: ChatMessage }) {
 const defaultAgent: ChatAgent = { name: "Dori", avatarUrl: null };
 
 function AgentAvatar({ agent }: { agent: ChatAgent }) {
-  return <Avatar size="sm" name={agent.name} src={agent.avatarUrl ?? doriAvatar} tooltip={false} />;
+  return <Avatar size="md" name={agent.name} src={agent.avatarUrl ?? doriAvatar} tooltip={false} />;
 }
 
 /**
@@ -1034,13 +1035,21 @@ export function ChatSearch({ onOpen }: { onOpen: (selection: Selection) => void 
   );
 }
 
+/**
+ * The chat window. It stays drawn while it closes (`open` false) until its closing animation
+ * ends, then reports `onClosed`; with no animation (reduced motion) it reports that at once.
+ */
 function ChatPanel({
+  open,
   onClose,
+  onClosed,
   onShowTask,
   target,
   onTargetShown,
 }: {
+  open: boolean;
   onClose: () => void;
+  onClosed: () => void;
   onShowTask: (id: TaskId) => void;
   target: Selection | null;
   onTargetShown: () => void;
@@ -1082,12 +1091,19 @@ function ChatPanel({
   }, [target]);
 
   useEffect(() => {
+    if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape" && !event.defaultPrevented) onClose();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
+  }, [onClose, open]);
+
+  // jsdom has no Web Animations API, so tests close at once as reduced motion does.
+  const panel = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!open && !panel.current?.getAnimations?.().length) onClosed();
+  }, [open]);
 
   // A listed task without a thread gets one in the default room.
   const openTask = ({ task, thread: taskThread }: TaskChat) => {
@@ -1106,11 +1122,20 @@ function ChatPanel({
 
   return (
     <section
+      ref={panel}
       role="dialog"
       aria-label="Chat"
+      data-state={open ? "open" : "closed"}
+      inert={!open}
+      onAnimationEnd={(event) => {
+        if (!open && event.target === event.currentTarget) onClosed();
+      }}
       className={cn(
         "fixed z-40 flex flex-col overflow-hidden bg-background shadow-xl print:hidden",
         "inset-0 md:inset-auto md:bottom-20 md:right-4 md:h-[min(42rem,calc(100dvh-7rem))] md:w-[46rem] md:max-w-[calc(100vw-2rem)] md:rounded-xl md:border",
+        // It grows from and shrinks into the floating button's center.
+        "origin-[calc(100%-2.5rem)_calc(100%-2.5rem)] md:origin-[calc(100%-1.5rem)_calc(100%+2.5rem)]",
+        open ? "motion-safe:animate-chat-in" : "motion-safe:animate-chat-out",
       )}
     >
       <header className="flex items-center gap-2 border-b px-3 py-2">
@@ -1171,7 +1196,8 @@ function ChatPanel({
 
 /**
  * The floating chat button, with the count of unread messages in every channel, and the chat
- * it opens. `open` is kept by the app so a clicked notification can open it too, at the channel
+ * it opens. A small chat mark on the button turns into a close mark while the chat is open.
+ * The chat opens and closes with an animation. `open` is kept by the app so a clicked notification can open it too, at the channel
  * or thread in `target`, which `onTargetShown` reports the chat took.
  */
 export function Chat({
@@ -1194,20 +1220,42 @@ export function Chat({
     onOpenChange(false);
     button.current?.focus();
   };
+  // The panel stays drawn while its closing animation runs.
+  const [shown, setShown] = useState(open);
+  if (open && !shown) setShown(true);
 
   return (
     <>
-      {open && <ChatPanel onClose={close} onShowTask={onShowTask} target={target} onTargetShown={onTargetShown} />}
+      {shown && (
+        <ChatPanel
+          open={open}
+          onClose={close}
+          onClosed={() => setShown(false)}
+          onShowTask={onShowTask}
+          target={target}
+          onTargetShown={onTargetShown}
+        />
+      )}
       <div className={cn("fixed bottom-4 right-4 z-40 print:hidden", open && "max-md:hidden")}>
         <button
           ref={button}
           type="button"
           aria-label={unread > 0 ? `Open chat, ${unread} unread` : open ? "Close chat" : "Open chat"}
           aria-expanded={open}
-          className="block size-12 cursor-pointer overflow-hidden rounded-full shadow-lg ring-2 ring-background transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+          className="relative block size-12 cursor-pointer rounded-full shadow-lg ring-2 ring-background transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
           onClick={() => (open ? close() : onOpenChange(true))}
         >
-          <img src={doriAvatar} alt="" className="size-full object-cover" />
+          <img src={doriAvatar} alt="" className="size-full rounded-full object-cover" />
+          <span
+            aria-hidden
+            className="absolute -bottom-1 -right-1 grid size-5 place-items-center rounded-full border-2 border-background bg-primary text-primary-foreground"
+          >
+            {open ? (
+              <X key="close" className="size-2.5 motion-safe:animate-chat-icon-turn" strokeWidth={4} />
+            ) : (
+              <MessageCircle key="chat" className="size-2.5" fill="currentColor" strokeWidth={2} />
+            )}
+          </span>
         </button>
         {unread > 0 && (
           <span
