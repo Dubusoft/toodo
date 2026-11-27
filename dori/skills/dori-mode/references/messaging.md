@@ -47,7 +47,7 @@ What the lane gets is the owner's choice for that question and nothing more. It 
 
 Only two forms qualify. The whole message, after trimming whitespace, must be one of them:
 
-- `N`, the option number in ASCII digits, posted in a thread where this is the only open question: its own `[결정]` thread, or the lane's thread when it holds just this one open question. In a thread with several open questions, a bare `N` qualifies only as a Discord reply to that question's message;
+- `N`, the option number in ASCII digits, posted in a thread where this is the only open question: its own `[결정]` thread, or the lane's thread when it holds just this one open question. In a thread with several open questions, a bare `N` qualifies only as a Discord reply to that question's message, or, when no reply names one, for the only question there still waiting on the owner (one whose direct answer is already on its way to the lane is corrected with its button or `d<ID>=<N>` instead);
 - `d<ID>=<N>` (for example `d17=2`, `d` case-insensitive, no spaces), anywhere the supervisor reads the owner: the decision's thread, a shared thread or a watched channel.
 
 `N` must be between 1 and the number of options. No model, keyword match or "newest question" guess decides a target: if the form does not name exactly one open decision, the answer is not direct.
@@ -101,7 +101,7 @@ Each direct answer is stored as an answer revision: decision id, owner message i
 
 ### Delivery and the lane's ack
 
-Under the decision's lock the supervisor records the delivery intent, then queues one lane message with the fixed id `decision-d<ID>-r<n>` (for example `decision-d17-r1`). The two writes are not one transaction: a crash between them is repaired at the next start by comparing intent, queue, ack and close, never by sending again. The message goes through the same guarded delivery as the other lane messages (pre-send check above). Its text names the decision, the question, the chosen number and option text, the revision, and the ack command:
+Under the decision's lock the supervisor records the delivery intent, then queues one lane message with the fixed id `decision-d<ID>-r<n>` (for example `decision-d17-r1`). The two writes are not one transaction: a crash between them is repaired at the next start by comparing intent, queue, ack and close, never by sending again. The message goes through the same guarded delivery as the other lane messages (pre-send check above), sent like a lead steering message: also while the lane is working (a lane that asked and kept working gets it mid-turn as a queued message), never while it shows a question prompt. Its text names the decision, the question, the chosen number and option text, the revision, and the ack command:
 
 ```
 [dori] Owner answered d17 (<question>): 2. <option text>. Revision r1. Confirm with: dori report ack decision-d17-r1
@@ -136,7 +136,7 @@ An answer that goes to the lead gets no notice from the supervisor: the lead's `
 ### Failures
 
 - **Lane closed, replaced or moved**: the undelivered message is superseded, never redirected to another session; the owner gets the "not delivered" notice and the lead is woken once to take the answer over with `dori decision close`.
-- **Pane busy**: the message waits in the queue. The runner never clears an input line, presses Escape or types over other text; it only presses Enter on its own unsubmitted text. The runner serializes its own sends, but the gap between reading the screen and typing is not atomic, so text typed into the pane in that gap can still collide. Strict isolation needs an atomic input condition in hc or a direct session channel.
+- **Pane busy**: a working agent takes the answer as a queued message; a pane showing a question prompt, or an input line holding other text, keeps it waiting in the queue. The runner never clears an input line, presses Escape or types over other text; it only presses Enter on its own unsubmitted text. The runner serializes its own sends, but the gap between reading the screen and typing is not atomic, so text typed into the pane in that gap can still collide. Strict isolation needs an atomic input condition in hc or a direct session channel.
 - **Lane paused**: the message waits; delivery never resumes a paused lane.
 - **Runner offline or unreachable**: a send that surely did not happen waits for the reconnect. A send whose result was lost is retried under the same id, never as a new message, so the lane sees one copy.
 - **No ack**: an unconfirmed message reaches the lead after `ciConfirmMin` as `LANE_MESSAGE_UNCONFIRMED`, once, like any other lane message; until then the owner's notice says it waits.

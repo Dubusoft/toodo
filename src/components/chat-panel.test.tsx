@@ -104,6 +104,7 @@ function renderChat() {
       <OpenableChat />
     </QueryClientProvider>,
   );
+  return queryClient;
 }
 
 beforeEach(() => {
@@ -246,6 +247,26 @@ describe("Chat", () => {
     expect(body).toBe("Thanks");
     expect(clientId).toMatch(/^[0-9a-f-]{36}$/);
     expect(attachments).toEqual([]);
+  });
+
+  it("shows only the server bubble when a message arrives before its send request finishes", async () => {
+    const saved = (clientId: string): ChatMessage => ({ ...message(2, "user", "Thanks"), clientId });
+    serve([message(1, "user", "Thanks")]);
+    mocked.sendChatMessage.mockImplementationOnce(() => new Promise(() => {}));
+    const queryClient = renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+    const input = await screen.findByRole("textbox");
+    fireEvent.input(input, { target: { textContent: "Thanks" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText("Sending")).toBeInTheDocument();
+
+    const [, , clientId] = mocked.sendChatMessage.mock.calls[0];
+    serve([message(1, "user", "Thanks"), saved(clientId)]);
+    await act(() => queryClient.invalidateQueries());
+
+    await waitFor(() => expect(screen.getAllByText("Sent")).toHaveLength(2));
+    expect(screen.queryByText("Sending")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Thanks")).toHaveLength(2);
   });
 
   it("keeps a message sent while the server is unreachable and sends it once, under its client id, when it answers", async () => {

@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { NumberInput } from "@astryxdesign/core/NumberInput";
 import { TextInput } from "@astryxdesign/core/TextInput";
@@ -62,7 +62,6 @@ export function BackupPanel() {
   const downloadBackup = useDownloadBackup();
   const restoreBackup = useRestoreBackup();
   const uploadRestore = useUploadRestore();
-  const upload = useRef<HTMLInputElement>(null);
   const [confirming, setConfirming] = useState<RestoreSource | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -77,7 +76,16 @@ export function BackupPanel() {
 
   function pickBackup() {
     setNotice(null);
-    upload.current?.click();
+    // Keep the picker out of the document so attachment selectors cannot target it.
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".sqlite3,.db,application/vnd.sqlite3";
+    input.setAttribute("aria-label", "Restore backup file");
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      if (file) setConfirming({ kind: "upload", file });
+    }, { once: true });
+    input.click();
   }
 
   function restore(source: RestoreSource) {
@@ -105,20 +113,7 @@ export function BackupPanel() {
           onClick={exportToFile}
           isDisabled={exporting}
         />
-        <Button size="sm" variant="secondary" label="Restore..." onClick={pickBackup} isDisabled={restoring} />
-        {/* Kept native: an invisible picker the Restore... action opens; the confirmation below holds the file. */}
-        <input
-          ref={upload}
-          type="file"
-          accept=".sqlite3,.db"
-          aria-label="Database file to restore"
-          className="hidden"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            event.target.value = "";
-            if (file) setConfirming({ kind: "upload", file });
-          }}
-        />
+        <Button size="sm" variant="secondary" label="Restore from file" onClick={pickBackup} isDisabled={restoring} />
       </div>
       {confirming && (
         <div role="alertdialog" aria-label="Confirm restore" className="flex flex-col gap-1 rounded-md border border-destructive/40 p-2">

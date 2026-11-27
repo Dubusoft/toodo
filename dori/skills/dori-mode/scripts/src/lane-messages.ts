@@ -28,8 +28,9 @@ export type LaneMessage = {
   /** Why the last delivery attempt did not send (busy, paused, missing pane, ...). */
   readonly blocked?: string;
   /**
-   * A lead steering message (a done-claim notice, an objection): sent whatever the pane shows, and the lane's runner
-   * alone decides whether its pane takes it (never over other text or without a prompt). CI messages wait for an idle pane.
+   * A lead steering message (a done-claim notice, an objection) or an owner's direct decision answer: sent whatever the
+   * pane shows, and the lane's runner alone decides whether its pane takes it (never over other text or without a
+   * prompt). CI messages wait for an idle pane.
    */
   readonly whileWorking?: boolean;
   /** Not typed while the lane shows a question prompt: the runner refuses the send (`dori lane send`). */

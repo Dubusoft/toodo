@@ -153,6 +153,7 @@ export function TaskGraph({
   selectedTaskId,
   onSelectedTaskChange: setSelectedTaskId,
   shownTaskId = null,
+  searchMatchId,
   onTaskShown,
   onNearPast,
   renderDetail,
@@ -176,6 +177,8 @@ export function TaskGraph({
   onSelectedTaskChange: (id: TaskId | null) => void;
   /** A task to select and pan to once it is on the timeline; `onTaskShown` is called when it is. */
   shownTaskId?: TaskId | null;
+  /** An exact ID search match to reveal without taking focus from search. */
+  searchMatchId?: TaskId;
   onTaskShown?: () => void;
   /**
    * Called while the user pans or scrolls to within a screen of the earliest bar, to load older
@@ -202,7 +205,8 @@ export function TaskGraph({
   const chain = selectedTask === undefined ? null : relatedTasks(tasks, selectedTask.id);
   const inChain = (id: TaskId) => chain === null || chain.has(id);
   const chart = `${scale}-${year ?? "all"}`;
-  const viewport = useTimelineViewport<BarNode>({ layout, chart, onNearPast });
+  const searchBarId = searchMatchId !== undefined && placed.has(searchMatchId) ? searchMatchId : undefined;
+  const viewport = useTimelineViewport<BarNode>({ layout, chart, onNearPast, searchBarId });
   const hoverCard = useHoverCard();
   const edits = useDependencyEditing(tasks, dependencies);
   const selection = useTimelineSelection({
@@ -254,6 +258,11 @@ export function TaskGraph({
       style: highlighted ? highlightedEdgeStyle : related ? undefined : { opacity: 0.2 },
     };
   });
+
+  // Like opening a task link, an exact ID search reaches beyond the selected year.
+  useEffect(() => {
+    if (searchMatchId !== undefined && searchBarId === undefined) setYear(null);
+  }, [searchMatchId, searchBarId]);
 
   // A shown task hidden by the selected year brings back the whole timeline.
   const shownPlaced = shownTaskId !== null && placed.has(shownTaskId);

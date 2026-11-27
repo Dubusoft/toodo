@@ -1,6 +1,6 @@
 import type { LaneMessageStore } from "./lane-messages.ts";
 import { clickMessageId, queueDecisionAnswer, type QueueOutcome, recordAnswerRevision, viaButton } from "./decision-delivery.ts";
-import { answersIn, type AnswerRevision, decisionTargetOf, type OwnerDecision, readDecisions, sameTarget, type TargetLane } from "./decision-store.ts";
+import { answersIn, type AnswerRevision, decisionTargetOf, directAnswer, type OwnerDecision, readDecisions, sameTarget, type TargetLane } from "./decision-store.ts";
 import { decisionButtonRows, decisionButtonState } from "./messenger/decision-buttons.ts";
 import { answeredEventId, answeredLine, choiceLabel, recordButtonAnswer } from "./owner-decisions.ts";
 
@@ -50,8 +50,9 @@ const waiting = (d: OwnerDecision): boolean => d.state === "open" || d.state ===
 
 /**
  * The one decision a form names: `d<ID>=<N>` names it outright; a bare `N` names the only waiting question in thread
- * `channel` (or the Toodo chat place of its card), or among several the one whose question message it replies to. Never
- * the newest question by guess.
+ * `channel` (or the Toodo chat place of its card), or among several the one whose question message it replies to, else
+ * the only one still waiting on the owner (open, no direct answer on its way to the lane: one already answered there is
+ * corrected by its button or `d<ID>=<N>`). Never the newest question by guess.
  */
 export const answeredDecision = (decisions: readonly OwnerDecision[], channel: string, form: AnswerForm, replyTo?: string): OwnerDecision | undefined => {
   if (form.id !== undefined) {
@@ -60,7 +61,9 @@ export const answeredDecision = (decisions: readonly OwnerDecision[], channel: s
   }
   const here = decisions.filter((d) => answersIn(d, channel) && waiting(d));
   if (here.length === 1) return here[0];
-  return replyTo === undefined ? undefined : here.find((d) => d.message === replyTo);
+  if (replyTo !== undefined) return here.find((d) => d.message === replyTo);
+  const unanswered = here.filter((d) => d.state === "open" && directAnswer(d) === undefined);
+  return unanswered.length === 1 ? unanswered[0] : undefined;
 };
 
 /**

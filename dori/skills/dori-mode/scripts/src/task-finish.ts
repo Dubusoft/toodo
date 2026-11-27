@@ -18,7 +18,8 @@ import { errLine, oneLine } from "./line-text.ts";
  * An autopilot lane's close is told the same way: its AUTOPILOT_LANE_DONE is rewritten `toodo=done` (digest) once the
  * supervisor completed the task (finishedOutcome). A repo-less autopilot lane has no PR, nor has a repo lane that closed
  * on its report (work with no PR to make, its `report.md` installed; done-flow.ts): the report its claim installed stands
- * in for the merge (reportFinish). An autopilot lane that closed not adopted (no PR, its `not-adopted.md`
+ * in for the merge (reportFinish). A lane whose task was opened for it at its launch (Lane.taskCreated) and that closed
+ * with no PR completes that task on its report, or on its close note when it has none (closedFinish). An autopilot lane that closed not adopted (no PR, its `not-adopted.md`
  * installed; done-flow.ts) has its task concluded `not_adopted` with that conclusion as the note (notAdoptedFinish), and
  * its AUTOPILOT_LANE_DONE is rewritten `toodo=not-adopted` (digest). An autopilot task the supervisor did not finish, or whose lane closed
  * cancelled, gets a blocker note (taskBlocker, read back) and its one failure line says so; done-flow.ts marks the
@@ -53,9 +54,12 @@ export type TaskFinisherDeps = {
  * The merges of a closed lane (done-flow.ts laneMerges), or why none was read back; for a repo-less autopilot lane, the
  * lead-host path of the report its claim installed (done-flow.ts laneReport), which stands in for the merge (also for a
  * repo lane closed on its report); for an
- * autopilot lane closed not adopted, the lead-host path of the `not-adopted.md` its claim installed.
+ * autopilot lane closed not adopted, the lead-host path of the `not-adopted.md` its claim installed; for a lane whose task
+ * was opened for it, closed with no PR and no report, its close note. `noPr` marks a `why` that is no PR recorded at all.
  */
-export type LaneMergeRead = { readonly merges: readonly LaneMerge[] } | { readonly report: string } | { readonly notAdopted: string } | { readonly why: string };
+export type LaneMergeRead =
+  | { readonly merges: readonly LaneMerge[] } | { readonly report: string } | { readonly notAdopted: string } | { readonly closed: string }
+  | { readonly why: string; readonly noPr?: true };
 
 /** `task` is undefined for a lane with no Toodo task: only the merge fact line is appended. */
 export type TaskFinisher = (lane: Lane, task: number | undefined, read: LaneMergeRead) => Promise<TaskFinish>;
@@ -159,28 +163,49 @@ const unmergedFinish = async (writer: Pick<ToodoWriter, "read">, lane: Lane, tas
   return { tag: "unmerged", lines: [notCompletedLine(lane, task, `no merge read back: ${why}${unread}`)] };
 };
 
+/** What a close with no PR completes its task on: the criteria's evidence, the completion note, the line's head, and the lead's fallback. */
+type NoPrCompletion = { readonly evidence: string; readonly note: string; readonly head: string; readonly yourself: string };
+
 /**
- * An autopilot lane closed with its report installed and no PR (repo-less, or a repo lane closed on its report): each
- * pending manual criterion is checked with the report as evidence and the task is completed, then its report gets the
- * task-done fact line (no merge part).
+ * A lane closed with no PR on what stands in for the merge (its installed report, or the close of the lane its task was
+ * opened for): each pending manual criterion is checked with that as evidence and the task is completed, then its
+ * report gets the task-done fact line (no merge part).
  */
-const reportFinish = async (deps: TaskFinisherDeps, lane: Lane, task: number, report: string): Promise<TaskFinish> => {
+const noPrFinish = async (deps: TaskFinisherDeps, lane: Lane, task: number, done: NoPrCompletion): Promise<TaskFinish> => {
   try {
     const record = await deps.writer.read(task);
-    const evidence = `report ${report} (lane ${lane.key} closed with its report installed)`;
     for (const criterion of record.criteria) {
-      if (criterion.kind === "manual" && criterion.state !== "met") await deps.writer.checkCriterion(task, criterion.id, evidence);
+      if (criterion.kind === "manual" && criterion.state !== "met") await deps.writer.checkCriterion(task, criterion.id, done.evidence);
     }
-    await deps.writer.completeTask(task, { note: `Report: ${report}. Completed by the dori supervisor when lane ${lane.key} closed.` });
+    await deps.writer.completeTask(task, { note: done.note });
   } catch (e) {
-    return { tag: "failed", lines: [`TOODO_TASK_NOT_COMPLETED ${lane.key} #${task} toodo: ${errLine(e)}; finish it yourself (complete_task with the report ${report})`] };
+    return { tag: "failed", lines: [`TOODO_TASK_NOT_COMPLETED ${lane.key} #${task} toodo: ${errLine(e)}; finish it yourself (${done.yourself})`] };
   }
-  const head = `TOODO_TASK_COMPLETED ${lane.key} #${task} report=${report}`;
+  const head = done.head;
   try {
     return { tag: "done", lines: [`${head}; report ${appendedText(await deps.append(lane, FACT_WORDS[factLanguage(deps.language?.())].done(task)))}`] };
   } catch (e) {
     return { tag: "append-failed", lines: [`${head}; report not appended: ${errLine(e)}; append it with ${appendYourself(lane)}`] };
   }
+};
+
+/** A lane closed with its report installed and no PR (repo-less, a repo lane closed on its report, or one its task was opened for). */
+const reportFinish = (deps: TaskFinisherDeps, lane: Lane, task: number, report: string): Promise<TaskFinish> => noPrFinish(deps, lane, task, {
+  evidence: `report ${report} (lane ${lane.key} closed with its report installed)`,
+  note: `Report: ${report}. Completed by the dori supervisor when lane ${lane.key} closed.`,
+  head: `TOODO_TASK_COMPLETED ${lane.key} #${task} report=${report}`,
+  yourself: `complete_task with the report ${report}`,
+});
+
+/** A lane its task was opened for, closed with no PR and no report: the close itself completes the task. */
+const closedFinish = (deps: TaskFinisherDeps, lane: Lane, task: number, close: string): Promise<TaskFinish> => {
+  const said = oneLine(close, 300);
+  return noPrFinish(deps, lane, task, {
+    evidence: `lane ${lane.key}, which this task was opened for, closed with no PR: ${said}`,
+    note: `Lane ${lane.key} closed with no PR (${said}). Completed by the dori supervisor: the task was opened for that lane.`,
+    head: `TOODO_TASK_COMPLETED ${lane.key} #${task} closed`,
+    yourself: `complete_task with the lane's close: ${said}`,
+  });
 };
 
 /** The conclusion text kept in the task's note, capped so a long file still fits one toodo note. */
@@ -211,6 +236,7 @@ const notAdoptedFinish = async (deps: TaskFinisherDeps, lane: Lane, task: number
 export const taskFinisher = (deps: TaskFinisherDeps): TaskFinisher => async (lane, task, read) => {
   if (task === undefined) return "merges" in read ? { tag: "no-task", lines: [await appendMergeFact(deps, lane, read.merges)] } : { tag: "no-task", lines: [] };
   if ("report" in read) return reportFinish(deps, lane, task, read.report);
+  if ("closed" in read) return closedFinish(deps, lane, task, read.closed);
   if ("notAdopted" in read) return notAdoptedFinish(deps, lane, task, read.notAdopted);
   if ("why" in read) return unmergedFinish(deps.writer, lane, task, read.why);
   const { merges } = read;

@@ -43,6 +43,17 @@ function renderPanel() {
   return { invalidate };
 }
 
+function pickFile(file: File) {
+  const click = vi.spyOn(HTMLInputElement.prototype, "click").mockImplementationOnce(function (this: HTMLInputElement) {
+    fireEvent.change(this, { target: { files: [file] } });
+  });
+  try {
+    fireEvent.click(screen.getByRole("button", { name: "Restore from file" }));
+  } finally {
+    click.mockRestore();
+  }
+}
+
 describe("BackupPanel", () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -61,13 +72,18 @@ describe("BackupPanel", () => {
     expect(await screen.findByText("Downloaded toodo-backup-2026-10-14.sqlite3")).toHaveAttribute("role", "status");
   });
 
+  it("does not expose the restore picker to a page-wide file input selector", () => {
+    renderPanel();
+
+    expect(screen.getByRole("region", { name: "Backups" }).querySelector('input[type="file"]')).toBeNull();
+  });
+
   it("uploads a picked file only after confirmation and refetches everything", async () => {
     vi.mocked(uploadRestore).mockResolvedValue(safety);
     const { invalidate } = renderPanel();
     const file = new File(["SQLite format 3"], "laptop.sqlite3");
 
-    fireEvent.click(screen.getByRole("button", { name: "Restore..." }));
-    fireEvent.change(screen.getByLabelText("Database file to restore"), { target: { files: [file] } });
+    pickFile(file);
     const dialog = await screen.findByRole("alertdialog", { name: "Confirm restore" });
     expect(dialog).toHaveTextContent("laptop.sqlite3");
     expect(uploadRestore).not.toHaveBeenCalled();
@@ -86,9 +102,7 @@ describe("BackupPanel", () => {
     vi.mocked(uploadRestore).mockRejectedValue(new Error("invalid backup: not a Toodo database"));
     renderPanel();
 
-    fireEvent.change(screen.getByLabelText("Database file to restore"), {
-      target: { files: [new File(["x"], "notes.db")] },
-    });
+    pickFile(new File(["x"], "notes.db"));
     fireEvent.click(await screen.findByRole("button", { name: "Replace data" }));
 
     expect(await screen.findByText(/not a Toodo database/)).toHaveAttribute("role", "alert");

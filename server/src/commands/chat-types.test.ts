@@ -54,6 +54,7 @@ describe("chat shapes", () => {
 
   test("messages use camel case keys and snake case authors", () => {
     const stored: ChatMessage = {
+      clientId: null,
       id: chatMessageId(3),
       channelId: FIRST_CHANNEL,
       threadId: chatThreadId(2),

@@ -444,6 +444,12 @@ const receiptPath = (lane: Lane, field: "notAdopted" | "reported", key: "conclus
   return typeof path === "string" ? path : undefined;
 };
 
+/** The note a closed lane's receipt records (`Done: <evidence>`, or the lead's `dori close` note), else undefined. */
+const closeNote = (lane: Lane): string | undefined => {
+  const receipt = lane.receipt;
+  return typeof receipt === "object" && receipt !== null && "note" in receipt && typeof receipt.note === "string" ? receipt.note : undefined;
+};
+
 /** The cancel reason a closed lane's receipt records (`dori close --cancelled`), else undefined. */
 const cancelledReason = (lane: Lane): string | undefined => {
   const receipt = lane.receipt;
@@ -942,7 +948,7 @@ export const laneMerges = async (deps: FlowDeps, lane: Lane): Promise<LaneMergeR
     const m = PR_SUBJECT.exec(op.target);
     if (m?.[1] && m[2]) pulls.set(`${m[1].toLowerCase()}#${m[2]}`, { repo: m[1], number: Number(m[2]) });
   }
-  if (!pulls.size) return { why: "no PR of the lane is recorded (no claimed or supervisor-merged PR)" };
+  if (!pulls.size) return { why: "no PR of the lane is recorded (no claimed or supervisor-merged PR)", noPr: true };
   const merges: LaneMerge[] = [];
   for (const { repo, number } of pulls.values()) {
     type MergeView = { readonly state?: string; readonly url?: string; readonly baseRefName?: string; readonly mergeCommit?: { readonly oid?: string } | null };
@@ -994,11 +1000,18 @@ export const finishClosedTask = async (deps: FlowDeps, lane: Lane): Promise<Task
   try {
     // A lane closed not adopted concludes its task with its conclusion, one closed on its report (or repo-less) completes it
     // on that report; the lane passed in may predate its close receipt.
-    const closed = attempt ? ((await deps.registry.read(lane.key)) ?? lane) : undefined;
-    const notAdopted = closed ? receiptPath(closed, "notAdopted", "conclusion") : undefined;
-    const reported = closed ? receiptPath(closed, "reported", "report") !== undefined : false;
+    const closed = attempt || lane.taskCreated ? ((await deps.registry.read(lane.key)) ?? lane) : undefined;
+    const notAdopted = attempt && closed ? receiptPath(closed, "notAdopted", "conclusion") : undefined;
+    const reported = attempt && closed ? receiptPath(closed, "reported", "report") !== undefined : false;
+    let read = notAdopted ? { notAdopted } : attempt && (reported || !doneRepos(lane.done).length) ? laneReport(deps, lane) : await laneMerges(deps, lane);
+    // A task opened for the lane at its launch stands for that lane alone: a close with no PR at all (not cancelled)
+    // completes it, on the lane's report when one is installed, else on the close note.
+    if (!attempt && closed?.taskCreated && "noPr" in read && cancelledReason(closed) === undefined) {
+      const report = laneReport(deps, lane);
+      read = "report" in report ? report : { closed: closeNote(closed) ?? "closed" };
+    }
     // With no merge (or no report) read back the finisher completes nothing; it only reads whether the task is already done.
-    finish = await deps.finishTask(lane, task, notAdopted ? { notAdopted } : attempt && (reported || !doneRepos(lane.done).length) ? laneReport(deps, lane) : await laneMerges(deps, lane));
+    finish = await deps.finishTask(lane, task, read);
   } catch (e) {
     why = e instanceof Error ? e.message : String(e);
     finish = { tag: "failed", lines: [notCompletedLine(lane, task, why)] };

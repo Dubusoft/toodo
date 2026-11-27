@@ -70,6 +70,11 @@ export type Lane = {
    * gets its reservation's task id here. Absent: no task was named (or the lane predates the field).
    */
   readonly task?: number;
+  /**
+   * The task was opened for this lane at its launch (launched without one, the Toodo chat on: lane-toodo.ts linkLaneTask),
+   * so it stands for the lane alone and the lane's close completes it even with no PR (done-flow.ts finishClosedTask).
+   */
+  readonly taskCreated?: true;
   readonly recoveryPending?: boolean;
   readonly recoveryPreviousPane?: string;
   /**

@@ -36,7 +36,7 @@ const laneWorkspace = async (mcp: ToodoMcp, lane: Lane): Promise<number> => {
 
 /**
  * Links a freshly launched lane to its task: a lane launched without one gets a new task titled like the lane (recorded
- * on the lane), the task is started with the `lane:<key>` ref (nothing is written when it already is), and its thread is
+ * on the lane with `taskCreated`, so its close completes it), the task is started with the `lane:<key>` ref (nothing is written when it already is), and its thread is
  * found or opened. Returns the note line for the launch output, or undefined with the Toodo chat off.
  */
 export const linkLaneTask = async (deps: LaneToodoDeps, lane: Lane): Promise<string | undefined> => {
@@ -51,7 +51,7 @@ export const linkLaneTask = async (deps: LaneToodoDeps, lane: Lane): Promise<str
       });
       if (!isRecord(created) || !Number.isSafeInteger(created.id)) throw new Error("toodo-server create_task returned no task id");
       task = created.id as number;
-      await deps.registry.patch(lane.key, { task });
+      await deps.registry.patch(lane.key, { task, taskCreated: true });
     }
     await new ToodoWriter(deps.tunables.toodoWriter).startTask(task, { reason: `Lane ${lane.key}`, refs: [`lane:${lane.key}`] });
     const place = await toodoChat(deps.tunables.toodoWriter).taskThread(task, lane.title);

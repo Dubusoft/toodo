@@ -45,6 +45,15 @@ describe("chat commands", () => {
     expect(chat.typingUntil(101)).toBeNull();
   });
 
+  test("chat pages return the client id of a stored message", () => {
+    const storage = memoryStorage();
+    sendChatMessage(storage, GENERAL, "Hello", "owner-1", []);
+
+    const page = listChat(storage, state(), GENERAL, null);
+
+    expect(page.messages[0]).toHaveProperty("clientId", "owner-1");
+  });
+
   test("blank messages and bad client ids are refused", () => {
     const storage = memoryStorage();
     expect(failure(() => sendChatMessage(storage, GENERAL, " ", "c1", [])).code).toBe("invalidInput");

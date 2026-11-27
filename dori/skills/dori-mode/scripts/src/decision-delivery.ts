@@ -111,7 +111,9 @@ const withDelivery = (d: OwnerDecision, rev: number, patch: Omit<AnswerDelivery,
  * store takes its own lock inside it; nothing takes them the other way round). Older revisions' messages still queued
  * are superseded first; when one may have reached the lane, the new message is a correction (or a withdrawal) naming
  * it. A withdrawal nothing reached is cancelled with no message. A closed decision supersedes the intent. The lane
- * message id is fixed per revision, so a repeat after a crash finds the queued message instead of adding one.
+ * message id is fixed per revision, so a repeat after a crash finds the queued message instead of adding one. Like a
+ * lead steering message it is sent while the lane works (a lane that asked and kept working gets it mid-turn, so it
+ * never waits for an idle pane and acks it by hand), but never while the lane shows a question prompt.
  */
 export const queueDecisionAnswer = (stateDir: string, store: LaneMessageStore, id: string, now: number): QueueOutcome =>
   updateDecisions(stateDir, (file): { file?: DecisionsFile; result: QueueOutcome } => {
@@ -133,7 +135,9 @@ export const queueDecisionAnswer = (stateDir: string, store: LaneMessageStore, i
       const reason = "withdrawn before anything reached the lane";
       return { file: save(withDelivery(d, r.rev, { state: "cancelled", updatedAt: now, reason })), result: { kind: "cancelled", reason } };
     }
-    const message = queueLaneMessage(store, now, { id: r.delivery.id, lane: r.target.lane, subject: `decision:${d.id}`, text: decisionAnswerText(d, r, replaces) });
+    const message = queueLaneMessage(store, now, {
+      id: r.delivery.id, lane: r.target.lane, subject: `decision:${d.id}`, text: decisionAnswerText(d, r, replaces), whileWorking: true, refuseWhileAsking: true,
+    });
     return { file: save(withDelivery(d, r.rev, { state: "queued", updatedAt: now })), result: { kind: "queued", message, ...(replaces !== undefined ? { replaces } : {}) } };
   });
 

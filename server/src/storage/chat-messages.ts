@@ -23,12 +23,13 @@ import { ATTACHMENT_COLUMNS, type AttachmentRow, storedAttachment } from "./chat
 import { StorageError } from "./errors.ts";
 
 const COLUMNS = `id, author, body, at, delivered_at, acked_at, handled_at,
-  handled_reply_id, handled_task_id, due_at, channel_id, thread_id`;
+  handled_reply_id, handled_task_id, due_at, channel_id, thread_id, client_id`;
 
 /** The most messages one page of the chat holds. */
 export const CHAT_PAGE_LIMIT = 200;
 
 interface MessageRow {
+  readonly client_id: string | null;
   id: number;
   author: string;
   body: string;
@@ -50,6 +51,7 @@ function message(row: MessageRow): ChatMessage {
   }
   return {
     id: chatMessageId(row.id),
+    clientId: row.client_id,
     channelId: chatChannelId(row.channel_id),
     threadId: row.thread_id === null ? null : chatThreadId(row.thread_id),
     author,
