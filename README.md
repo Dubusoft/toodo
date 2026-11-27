@@ -165,7 +165,10 @@ binaries in both channels, and the workflows return around it. Until then:
   (`scripts/package-npm.mjs`, `scripts/smoke-npm.mjs`, `scripts/package-server.sh`) stay
   for the Bun binary to reuse.
 - The owner host runs the server from a checkout as `toodo.service` (see
-  [docs/host.md](docs/host.md)).
+  [docs/host.md](docs/host.md)). There `toodo` is the command for people (`toodo update`,
+  `status`, `quota`, `doctor`, `logs`, `restart`, `review`), and `dori` is the internal
+  command of the Dori lead, its lanes, and runners; `toodo` runs `dori`'s code for the
+  commands both need.
 - `npm run bump <major|minor|patch|X.Y.Z>` sets the same version in `package.json` and
   `package-lock.json`, and `npm run check-version` checks that they agree.
 

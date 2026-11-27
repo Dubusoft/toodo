@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
-// `toodo`: the owner host's command for the one-process host (toodo.service) and the core's database, on the TypeScript
-// storage and commands. `bun link` in the checkout puts it on PATH beside `dori`.
+// `toodo`: the owner's command on the host for the one-process host (toodo.service) and the core's database, on the
+// TypeScript storage and commands. `bun link` in the checkout puts it on PATH beside `dori`, which stays the internal CLI
+// of the lead, lanes, and runners; the commands a person runs that dori implements are handed to dori's CLI here.
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -23,22 +24,44 @@ export const UNIT = "toodo.service";
 /** The units toodo.service replaces: the Rust server and the standalone Dori supervisor. */
 export const LEGACY_UNITS = ["toodo-server.service", "dori-supervisor.service"] as const;
 
-const USAGE = `Usage: toodo review [--period week|month|quarter|year|custom] [--date DAY] [--from DAY] [--to DAY]
+/** dori's CLI in this checkout: the commands toodo hands over run it, so they behave exactly as `dori <command>`. */
+export const DORI_CLI = join(ROOT, "dori", "skills", "dori-mode", "scripts", "src", "cli.ts");
+
+const USAGE = `Usage: toodo update [--dev | --main] [--force]
+       toodo status [--json | --page N]
+       toodo quota [--json]
+       toodo doctor [--data-dir DIR]
+       toodo logs [--follow] [--lines N]
+       toodo restart
+       toodo review [--period week|month|quarter|year|custom] [--date DAY] [--from DAY] [--to DAY]
                     [--format markdown|csv] [--workspace ID] [--label LABEL] [--time-zone ZONE]
                     [--data-dir DIR]
-       toodo doctor [--data-dir DIR]
        toodo service install
        toodo --version | --help
 
 Runs Toodo and Dori on this host as the one systemd user service ${UNIT}, from the
 checkout ${ROOT}.
 
+toodo is the command for people on this host. dori is the internal command of the Dori
+lead, its lanes, and runners; update, status, quota, and doctor run dori's own code.
+
 Commands:
+  update           update this checkout and the host as dori update does: fast-forward to
+                   origin/dev (--dev) or origin/main (--main), install dependencies, build
+                   the web app, restart or reload ${UNIT}, and roll out to the runners;
+                   without either it stays on the checkout's channel (main when the checkout
+                   is on main, else dev); --force restarts even when nothing moved
+  status           Dori's one-screen state: services, lead, lanes, waits, repos, gateway
+  quota            Claude 5h/7d usage of every account with reset times
+  doctor           check ${UNIT}, the units it replaces, the server's answer, the
+                   database, and the healthchecks.io ping file, then run dori doctor;
+                   exits 1 on a problem in either
+  logs             print the journal of ${UNIT}; --follow keeps printing new lines,
+                   --lines N starts N lines back (default 100)
+  restart          restart ${UNIT} (the core and the supervisor)
   review           print the review of a period as Markdown or CSV, read from the
                    database with the TypeScript storage (the running service may keep
                    serving)
-  doctor           check ${UNIT}, the units it replaces, the server's answer, the
-                   database, and the healthchecks.io ping file; exits 1 on a problem
   service install  write ~/.config/systemd/user/${UNIT} for this checkout and reload
                    systemd, carrying the TOODO_* settings of toodo-server.service and
                    DORI_CONFIG of dori-supervisor.service; it enables and starts nothing
@@ -286,6 +309,44 @@ export const review = (config: Config, request: B.ReviewReportRequest): string =
   }
 };
 
+/**
+ * dori's arguments for `toodo update`: the channel is `--dev` or `--main` when given, else the checkout's `branch` (main
+ * stays on main; any other branch follows dev, the branch the owner host's checkout and the supervisor's automatic update
+ * track). `dori update` alone would switch a dev checkout to main.
+ */
+export const updateArgs = (args: readonly string[], branch: string): string[] => {
+  const { values } = parseArgs({ args: [...args], options: { dev: { type: "boolean" }, main: { type: "boolean" }, force: { type: "boolean" } }, strict: true });
+  if (values.dev && values.main) throw new Error("--dev and --main pick opposite channels; give one");
+  const dev = values.dev === true || (values.main !== true && branch !== "main");
+  return ["update", ...(dev ? ["--dev"] : []), ...(values.force ? ["--force"] : [])];
+};
+
+/** `journalctl` arguments for `toodo logs`. */
+export const logsArgs = (args: readonly string[]): string[] => {
+  const { values } = parseArgs({ args: [...args], options: { follow: { type: "boolean", short: "f" }, lines: { type: "string", short: "n" } }, strict: true });
+  const lines = values.lines ?? "100";
+  if (!/^\d+$/.test(lines)) throw new Error(`--lines takes a number of lines, got ${JSON.stringify(lines)}`);
+  return ["journalctl", "--user", "-u", UNIT, "-n", lines, ...(values.follow ? ["-f"] : [])];
+};
+
+/** Runs `argv` on this terminal (stdin, stdout, and stderr passed through) and returns its exit code. */
+const attached = async (argv: readonly string[]): Promise<number> => {
+  try {
+    return await Bun.spawn([...argv], { env: process.env, stdio: ["inherit", "inherit", "inherit"] }).exited;
+  } catch {
+    console.error(`toodo: ${argv[0]} not found`);
+    return 127;
+  }
+};
+
+const dori = (args: readonly string[]): Promise<number> => attached([process.execPath, DORI_CLI, ...args]);
+
+const systemdOnly = (command: string): boolean => {
+  if (process.platform === "linux") return true;
+  console.error(`toodo: ${command} works on ${UNIT}, a systemd user service on a Linux host`);
+  return false;
+};
+
 const realRun: Run = async (argv) => {
   try {
     const child = Bun.spawn([...argv], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
@@ -312,12 +373,27 @@ const main = async (args: string[]): Promise<number> => {
       process.stdout.write(review(hostConfig(process.env, dataDir), request));
       return 0;
     }
+    if (command === "update") {
+      const args = updateArgs(rest, (await realRun(["git", "-C", ROOT, "rev-parse", "--abbrev-ref", "HEAD"])).out);
+      console.log(`toodo: dori ${args.join(" ")} (checkout ${ROOT})`);
+      return await dori(args);
+    }
+    if (command === "status" || command === "quota") return await dori([command, ...rest]);
     if (command === "doctor") {
       const { values } = parseArgs({ args: rest, options: { "data-dir": { type: "string" } }, strict: true });
       console.log(`toodo ${VERSION} (checkout ${ROOT})`);
       const checks = await runDoctor({ env: process.env, run: realRun, fetch: (input, init) => fetch(input, init), config: hostConfig(process.env, values["data-dir"]) });
       console.log(renderChecks(checks));
-      return checks.some((c) => c.level === "FAIL") ? 1 : 0;
+      console.log("\ndori doctor:");
+      const doriCode = await dori(["doctor"]);
+      return checks.some((c) => c.level === "FAIL") || doriCode !== 0 ? 1 : 0;
+    }
+    if (command === "logs") {
+      const argv = logsArgs(rest);
+      return systemdOnly(command) ? await attached(argv) : 1;
+    }
+    if (command === "restart" && rest.length === 0) {
+      return systemdOnly(command) ? await attached(["systemctl", "--user", "restart", UNIT]) : 1;
     }
     if (command === "service" && rest.length === 1 && rest[0] === "install") {
       return await serviceInstall({ env: process.env, run: realRun, platform: process.platform, bun: process.execPath, log: (line) => { console.log(line); } });

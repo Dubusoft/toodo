@@ -67,15 +67,31 @@ checks' grace time, without Discord.
 ## The `toodo` Command
 
 `bun link` in the checkout's root puts `toodo` on `PATH` (in `~/.bun/bin`), next to `dori`.
-It works on the TypeScript storage and commands:
+`toodo` is the one command a person runs on this host. `dori` is the internal command of
+the Dori lead, its lanes, and runners; it keeps every command it has, so nothing that
+calls it changes. Where a person needs something `dori` already does, `toodo` runs `dori`'s
+CLI from the same checkout (`dori/skills/dori-mode/scripts/src/cli.ts`) instead of a copy,
+so the two never drift:
 
+- `toodo update [--dev | --main] [--force]`: `dori update`, which updates the checkout and
+  the host as [Updates](#updates) describes. Without `--dev` or `--main` it stays on the
+  checkout's channel: `dev` unless the checkout is on `main`. This host's checkout is on
+  `dev`, so a plain `toodo update` is `dori update --dev`, the same update the supervisor
+  runs after a merge; plain `dori update` would switch the checkout to `main`.
+- `toodo status [--json | --page N]`: `dori status`, Dori's one-screen state (services,
+  lead, lanes, waits, repos, gateway).
+- `toodo quota [--json]`: `dori quota`, the Claude usage of every account.
+- `toodo logs [--follow] [--lines N]`: the journal of `toodo.service`
+  (`journalctl --user -u toodo.service`, the last 100 lines unless `--lines` says).
+- `toodo restart`: `systemctl --user restart toodo.service`, the core and the supervisor.
+  `systemctl --user reload toodo.service` replaces only the supervisor Worker.
 - `toodo review [--period ...] [--format markdown|csv]`: the review of a period, with the
   options of the Rust command, read from the database directly.
 - `toodo doctor`: `toodo.service` is active and runs this checkout with no secret in its
   environment, `toodo-server.service` and `dori-supervisor.service` no longer run beside
   it, the supervisor runs, the server's version matches the checkout, the database opens
   at the baseline schema and passes `quick_check`, the tokens exist, and both ping URLs are
-  set. Exits 1 on a FAIL.
+  set; then it runs `dori doctor`. Exits 1 on a FAIL in either.
 - `toodo service install`: writes `~/.config/systemd/user/toodo.service` for this checkout
   and runs `systemctl --user daemon-reload`. It carries the `TOODO_*` settings of
   `toodo-server.service` and its drop-ins in `toodo-server.service.d/` (listen address,
@@ -92,8 +108,9 @@ enabled beside it.
 
 ## Updates
 
-`dori update --dev` (and the supervisor's automatic update after a merge, which runs it
-outside the service) fast-forwards `~/.dori/src` and, while `toodo.service` is active:
+`toodo update` (`dori update --dev` on this host, and the supervisor's automatic update
+after a merge, which runs it outside the service) fast-forwards `~/.dori/src` and, while
+`toodo.service` is active:
 
 1. runs `npm ci` when `package.json` or `package-lock.json` changed;
 2. builds the web app (`npx vite build` into `dist-web`) when `src/`, `public/`,
@@ -104,7 +121,7 @@ outside the service) fast-forwards `~/.dori/src` and, while `toodo.service` is a
    supervisor Worker, and leaves it running after a web-only change.
 
 A failed `npm ci` or web build stops the update before the restart, with the checkout
-already moved; fix the cause and run `dori update --dev` again.
+already moved; fix the cause and run `toodo update` again.
 
 ## Switching Over
 
