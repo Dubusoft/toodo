@@ -5,14 +5,15 @@ import { join } from "node:path";
 import { encodedPowerShell, machineKind, sshArgv, type GuardMachine, type KindResult } from "../remote-guard.ts";
 import { LANE_SANDBOX_MACOS_TEMPLATE, LANE_SANDBOX_TEMPLATE, laneSandboxScript } from "../lane-sandbox-install.ts";
 import { RUN_TIMEOUT_CODE, type Ran, type Runner } from "../run.ts";
-import { WIN_KILL_RUNNER, WIN_TASK_NAME, WIN_TASK_PATH } from "./service.ts";
+import { RUNNER_UNIT, WIN_KILL_RUNNER, WIN_TASK_NAME, WIN_TASK_PATH } from "./service.ts";
 import { gitVersion, RUNNER_VERSION_DEFINE } from "./version.ts";
 import type { SupervisorAuth } from "./auth.ts";
 import { writeRunnerEndpoint } from "./endpoints.ts";
 import { decodeFrame, encodeFrame, supervisorControl, type RunnerControlBodies } from "./protocol.ts";
 import { isPrivateListen } from "./ws-transport.ts";
 import { stepper, type Progress } from "./steps.ts";
-import { HC_CORE_UNIT, HC_CORE_UNIT_TEMPLATE, HC_INSTALL_URL, HC_LAUNCHD_LABEL, HC_LAUNCHD_PLIST_TEMPLATE } from "../runtime/hc.ts";
+import { HC_CORE_UNIT, HC_CORE_UNIT_TEMPLATE, HC_INSTALL_URL, HC_LAUNCHD_LABEL, HC_LAUNCHD_PLIST_TEMPLATE, hcMachineNames, hcRuntime } from "../runtime/hc.ts";
+import { HC_PANE_PREFIX } from "../runtime/types.ts";
 
 /**
  * Installs or upgrades the runner on a remote Linux or macOS machine over ssh, as design 3.2 and 5.4 lay out. The ssh
@@ -52,6 +53,15 @@ import { HC_CORE_UNIT, HC_CORE_UNIT_TEMPLATE, HC_INSTALL_URL, HC_LAUNCHD_LABEL, 
  * MSYS, Cygwin), which `installRunner` retries as a Windows install; 9 enrollment response needed; anything else is a generic failure.
  * ssh's own 255 or a timeout is unreachable.
  *
+ * An hc host (`InstallRequest.transport` "hc") is reached through the supervisor host's hc instead of ssh, and its runner
+ * runs in an hc terminal rather than a service unit: the machine is added once with `hc machine add --install --name
+ * <label>` (which copies hc there), the bundle and both lane-sandbox wrappers go up with `hc file write` as `.tmp` files
+ * under `~/.dori/runner/bin`, the same script in its "hc" mode runs on `hc exec -i ... sh -s` (it moves those files into
+ * place instead of carrying them, writes no unit or agent, stops one an earlier ssh install left, and prints `DORI_BUN
+ * <path>` instead of starting a service), enrollment takes the same two passes, and the runner is (re)started as the kept
+ * terminal `<label>/dori-runner` (`hc run --keep`), replacing the previous one. Its first line, `DORI_INSTALL_START`,
+ * tells the script's own exit codes from hc's.
+ *
  * Windows workers (`machineKind` says `windows`) get `windowsInstallScript` instead, with the same exit code meanings
  * (a Windows install never exits 7: the runner installs hc there itself when its first lane opens, runtime/hc.ts ensureHc).
  * Nothing travels on ssh's stdin there (a large script streamed into a PowerShell console host's stdin does not reliably
@@ -81,14 +91,27 @@ export type InstallFailure =
   | "RUNNER_INSTALL_ENROLL_FAILED"
   | "RUNNER_LISTEN_REFUSED"
   | "RUNNER_INSTALL_FAILED";
-/** What the install did with hc: wrote and enabled its core autostart unit (or launchd agent); `DORI_HC enabled`. */
-export type HcInstall = "enabled";
+/**
+ * What the install did with hc: wrote and enabled its core autostart unit (or launchd agent), `DORI_HC enabled`; or, over
+ * the hc transport, started the runner in the kept hc terminal HC_RUNNER_TERMINAL.
+ */
+export type HcInstall = "enabled" | "terminal";
 export type InstallResult =
   | { readonly ok: true; readonly version: string; readonly hc?: HcInstall }
   | { readonly ok: false; readonly code: InstallFailure; readonly detail: string };
 
-/** The hc part of the `RUNNER_INSTALLED` line: `hc=enabled ...` when the script reported it (a POSIX host), else `hc=unknown`. */
-export const hcInstallNote = (hc: HcInstall | undefined): string => (hc === "enabled" ? "hc=enabled (its core starts at boot)" : "hc=unknown");
+/** The hc part of the `RUNNER_INSTALLED` line: `hc=enabled ...` when the script reported it (a POSIX host), `hc=terminal ...` after an hc install, else `hc=unknown`. */
+export const hcInstallNote = (hc: HcInstall | undefined): string =>
+  hc === "enabled" ? "hc=enabled (its core starts at boot)" : hc === "terminal" ? `hc=terminal (the runner runs in the kept hc terminal ${HC_RUNNER_TERMINAL})` : "hc=unknown";
+
+/** How a runner is installed: over ssh as a service unit, or through the supervisor host's hc into a kept hc terminal. */
+export type InstallTransport = "ssh" | "hc";
+/** The hc terminal a runner installed over hc runs in, on its machine: `<label>/dori-runner`. */
+export const HC_RUNNER_TERMINAL = "dori-runner";
+/** The first line the script prints in its "hc" mode: without it, a failed `hc exec` is hc's own failure. */
+const HC_SCRIPT_START = "DORI_INSTALL_START";
+/** Where an hc install uploads the files the script moves into place, relative to the machine's home. */
+const HC_UPLOADS = { bundle: ".dori/runner/bin/dori.js.tmp", linux: ".dori/runner/bin/lane-sandbox.linux.tmp", macos: ".dori/runner/bin/lane-sandbox.macos.tmp" } as const;
 
 /** hc's core unit and launchd plist texts (default: runtime/hc.ts HC_CORE_UNIT_TEMPLATE, HC_LAUNCHD_PLIST_TEMPLATE); their `@NAME@` markers are filled on the remote host. */
 export type HcTemplates = { readonly unit: string; readonly plist: string };
@@ -129,6 +152,8 @@ export type InstallRequest = {
   readonly enroll: SupervisorAuth["enroll"];
   /** The lead's agent command: the `default` profile of the starter runner-config.json the script writes when there is none. */
   readonly agentCommand: readonly string[];
+  /** "hc" installs through the supervisor host's hc (the machine is added to it as `label`); default "ssh". */
+  readonly transport?: InstallTransport;
 };
 
 export const bundleVersion = (bundle: string): string => createHash("sha256").update(bundle).digest("hex").slice(0, 12);
@@ -181,14 +206,18 @@ export const installScript = (
   hc: HcTemplates = hcTemplates(),
   laneSandbox: string = laneSandboxScript(LANE_SANDBOX_TEMPLATE),
   laneSandboxMacos: string = laneSandboxScript(LANE_SANDBOX_MACOS_TEMPLATE),
+  transport: InstallTransport = "ssh",
 ): string => {
-  for (const text of [bundle, unit, plist, hc.unit, hc.plist, laneSandbox, laneSandboxMacos]) {
+  // Over hc the bundle and the wrappers are uploaded beforehand (HC_UPLOADS) and no unit or agent is written.
+  const viaHc = transport === "hc";
+  for (const text of viaHc ? [] : [bundle, unit, plist, hc.unit, hc.plist, laneSandbox, laneSandboxMacos]) {
     if (text.split("\n").some((line) => line.replace(/\r$/, "") === HEREDOC)) throw new Error(`install payload contains the heredoc delimiter ${HEREDOC}`);
   }
   const body = (text: string): string => (text.endsWith("\n") ? text : `${text}\n`);
   return [
     "set -u",
     "umask 077",
+    ...(viaHc ? [`printf '${HC_SCRIPT_START}\\n'`] : []),
     "OS=$(uname -s)",
     `case "$OS" in Linux|Darwin) ;; MINGW*|MSYS*|CYGWIN*) exit ${INSTALL_EXIT.windowsShell} ;; *) exit ${INSTALL_EXIT.notLinux} ;; esac`,
     // The login shell's PATH (an ssh command gets a non-login one, without what the user's profile adds), read past
@@ -231,13 +260,21 @@ export const installScript = (
     // Lanes run sandboxed through the lane-sandbox wrapper, installed beside the runner's own files: bubblewrap on Linux,
     // Seatbelt (sandbox-exec) on macOS. It needs no extra paths here: the runner socket, the lane's brief and token file
     // and its cwd are handled by the wrapper itself, and the lead's verify directory is not on this host.
-    'if [ "$OS" = Linux ]; then',
-    `cat > "$R/bin/lane-sandbox.tmp" <<'${HEREDOC}' || exit 1`,
-    `${body(laneSandbox)}${HEREDOC}`,
-    "else",
-    `cat > "$R/bin/lane-sandbox.tmp" <<'${HEREDOC}' || exit 1`,
-    `${body(laneSandboxMacos)}${HEREDOC}`,
-    "fi",
+    ...(viaHc ? [
+      // Both wrappers were uploaded; this host's one becomes lane-sandbox.tmp and the other goes.
+      'case "$OS" in Linux) W=linux; X=macos ;; *) W=macos; X=linux ;; esac',
+      'mv -f "$R/bin/lane-sandbox.$W.tmp" "$R/bin/lane-sandbox.tmp" || exit 1',
+      'rm -f "$R/bin/lane-sandbox.$X.tmp"',
+      "unset W X",
+    ] : [
+      'if [ "$OS" = Linux ]; then',
+      `cat > "$R/bin/lane-sandbox.tmp" <<'${HEREDOC}' || exit 1`,
+      `${body(laneSandbox)}${HEREDOC}`,
+      "else",
+      `cat > "$R/bin/lane-sandbox.tmp" <<'${HEREDOC}' || exit 1`,
+      `${body(laneSandboxMacos)}${HEREDOC}`,
+      "fi",
+    ]),
     // 0700 like `dori`: the runner refuses to start on a runner directory holding anything wider (fs-safety.ts).
     'chmod 700 "$R/bin/lane-sandbox.tmp" && mv -f "$R/bin/lane-sandbox.tmp" "$R/bin/lane-sandbox" || exit 1',
     // A starter command policy, only when the host has none: without an agent profile and a root every lane.start is
@@ -263,8 +300,7 @@ export const installScript = (
     `  [ -z "$M" ] || printf 'RUNNER_CONFIG_SANDBOX_MISSING %s in %s; add them to sandbox lanes on this runner\\n' "\${M# }" "$R/runner-config.json"`,
     "  unset M",
     "fi",
-    `cat > "$R/bin/dori.js.tmp" <<'${HEREDOC}' || exit 1`,
-    `${body(bundle)}${HEREDOC}`,
+    ...(viaHc ? ['chmod 600 "$R/bin/dori.js.tmp" || exit 1'] : [`cat > "$R/bin/dori.js.tmp" <<'${HEREDOC}' || exit 1`, `${body(bundle)}${HEREDOC}`]),
     'mv -f "$R/bin/dori.js.tmp" "$R/bin/dori.js" || exit 1',
     // The `dori` a runner lane runs (its footer names this path): the bundle in lane mode.
     `printf '#!/bin/sh\\nexec "%s" "$HOME/.dori/runner/bin/dori.js" "$@"\\n' "$BUN" > "$R/bin/dori" || exit 1`,
@@ -273,6 +309,57 @@ export const installScript = (
     // reflection from nesting a sandbox-exec inside the lane's; the profile goes into ~/.omo/omo.jsonc. A failure is
     // printed and does not stop the install: lanes then run as before, with reflection failing.
     `if [ "$OS" = Darwin ]; then "$BUN" "$R/bin/dori.js" runner omo-profile </dev/null || printf 'OMO_LANE_PROFILE_FAILED %s\\n' "$HOME/.omo/omo.jsonc"; fi`,
+    ...(viaHc ? hcModeTail(label, issue) : unitModeTail(unit, label, issue, plist, hc, body)),
+  ].join("\n");
+};
+
+/**
+ * The script's enrollment: once, only while `~/.dori/runner/keys/supervisor.pub` is missing; the code and fingerprint
+ * reach the enrolling process through a pipe from the `printf` builtin, never an argv.
+ */
+const enrollLines = (label: string, issue: EnrollIssue): string[] => [
+  `C=${quote(issue.code)}`,
+  `F=${quote(issue.fingerprint)}`,
+  'if [ ! -f "$R/keys/supervisor.pub" ]; then',
+  `  printf 'code=%s\\nfingerprint=%s\\n${issue.reply ? `reply=${issue.reply}\\n` : ""}' "$C" "$F" | "$BUN" "$R/bin/dori.js" runner serve --enroll-only --label ${quote(label)}`,
+  '  E=$?',
+  `  [ "$E" -ne ${INSTALL_EXIT.enrollPending} ] || exit ${INSTALL_EXIT.enrollPending}`,
+  `  [ "$E" -eq 0 ] || exit ${INSTALL_EXIT.enroll}`,
+  "fi",
+  "unset C F",
+];
+
+/**
+ * The end of an hc install: a runner unit or agent an earlier ssh install left is stopped and removed (the runner now
+ * runs in its hc terminal, and two runners must not serve one label), then enrollment, then `DORI_BUN <path>` for the
+ * terminal's command line. hc's own core autostart is left alone: its core serves the lanes.
+ */
+const hcModeTail = (label: string, issue: EnrollIssue): string[] => [
+  'if [ "$OS" = Linux ]; then',
+  `  if [ -f "$HOME/.config/systemd/user/${RUNNER_UNIT}" ]; then`,
+  `    systemctl --user disable --now ${RUNNER_UNIT} >/dev/null 2>&1 || :`,
+  `    rm -f "$HOME/.config/systemd/user/${RUNNER_UNIT}" || exit 1`,
+  "    systemctl --user daemon-reload >/dev/null 2>&1 || :",
+  `    printf 'RUNNER_UNIT_REMOVED %s\\n' ${RUNNER_UNIT}`,
+  "  fi",
+  "else",
+  `  PL="$HOME/Library/LaunchAgents/${RUNNER_LAUNCHD_LABEL}.plist"`,
+  '  if [ -f "$PL" ]; then',
+  '    D=$(cat "$R/launchd-domain" 2>/dev/null || echo "gui/$(id -u)")',
+  `    launchctl bootout "$D/${RUNNER_LAUNCHD_LABEL}" >/dev/null 2>&1 || :`,
+  '    rm -f "$PL" "$R/launchd-domain" || exit 1',
+  `    printf 'RUNNER_UNIT_REMOVED %s\\n' ${RUNNER_LAUNCHD_LABEL}`,
+  "  fi",
+  "fi",
+  ...enrollLines(label, issue),
+  `printf 'DORI_BUN %s\\n' "$BUN"`,
+  "exit 0",
+  "",
+];
+
+const unitModeTail = (
+  unit: string, label: string, issue: EnrollIssue, plist: string, hc: HcTemplates, body: (text: string) => string,
+): string[] => [
     'if [ "$OS" = Linux ]; then',
     `cat > "$R/dori-runner.service.tmp" <<'${HEREDOC}' || exit 1`,
     `${body(unit)}${HEREDOC}`,
@@ -301,15 +388,7 @@ export const installScript = (
     // launchd appends the agent's output here; created 0600 beforehand so the runner's directory check accepts it.
     ': >> "$R/runner.log" && chmod 600 "$R/runner.log" || exit 1',
     "fi",
-    `C=${quote(issue.code)}`,
-    `F=${quote(issue.fingerprint)}`,
-    'if [ ! -f "$R/keys/supervisor.pub" ]; then',
-    `  printf 'code=%s\\nfingerprint=%s\\n${issue.reply ? `reply=${issue.reply}\\n` : ""}' "$C" "$F" | "$BUN" "$R/bin/dori.js" runner serve --enroll-only --label ${quote(label)}`,
-    '  E=$?',
-    `  [ "$E" -ne ${INSTALL_EXIT.enrollPending} ] || exit ${INSTALL_EXIT.enrollPending}`,
-    `  [ "$E" -eq 0 ] || exit ${INSTALL_EXIT.enroll}`,
-    "fi",
-    "unset C F",
+    ...enrollLines(label, issue),
     'if [ "$OS" = Linux ]; then',
     `loginctl enable-linger "$(id -un)" || exit ${INSTALL_EXIT.systemd}`,
     `systemctl --user daemon-reload || exit ${INSTALL_EXIT.systemd}`,
@@ -350,8 +429,7 @@ export const installScript = (
     "printf 'DORI_HC enabled\\n'",
     "exit 0",
     "",
-  ].join("\n");
-};
+];
 
 /** A pinned Bun build for Windows: the release version, its zip asset and that asset's SHA-256 from the release's SHASUMS256.txt. */
 export type BunPin = { readonly version: string; readonly asset: string; readonly sha256: string };
@@ -629,9 +707,131 @@ const installResult = (kind: InstallKind, r: Ran, bundle: string): InstallResult
   return { ok: false, code: "RUNNER_INSTALL_FAILED", detail: r.code === INSTALL_EXIT.systemd ? `${windows ? "task scheduler" : "service manager"}: ${detail}` : detail };
 };
 
+/**
+ * The supervisor's `enroll.ok` reply (base64) to the `RUNNER_ENROLL_REQUEST` line a first install pass printed on `out`,
+ * accepted with the installer's SupervisorAuth; throws when the request is missing, malformed or refused.
+ */
+const enrollReply = (out: string, req: InstallRequest, where: string): string => {
+  const line = /^RUNNER_ENROLL_REQUEST (.+)$/m.exec(out)?.[1];
+  if (!line) throw new Error(`missing enrollment request on ${where}`);
+  const frame = decodeFrame(line, "runner");
+  if (frame.type !== "enroll" || frame.runner !== req.label) throw new Error("unexpected enrollment request");
+  const body = frame.body as RunnerControlBodies["enroll"];
+  if (body.label !== req.label) throw new Error("enrollment request label differs from install label");
+  const accepted = req.enroll(body);
+  if (!accepted.ok) throw new Error(`${accepted.code} ${accepted.detail}`);
+  return Buffer.from(encodeFrame(supervisorControl({ runner: req.label, gen: 0, epoch: 0 }, "enroll.ok", accepted.reply))).toString("base64");
+};
+
+/** An hc command's failure: hc's JSON error message when it printed one, else its last output line. */
+const hcDetail = (what: string, r: Ran): string => {
+  const last = (r.err.trim() || r.out.trim()).split("\n").at(-1) ?? "";
+  try {
+    const message = (JSON.parse(last) as { error?: { message?: unknown } }).error?.message;
+    if (typeof message === "string") return `hc ${what}: ${message}`;
+  } catch { /* not hc's JSON error: the line itself */ }
+  return `hc ${what}: ${last || `exit ${r.code}`}`;
+};
+
+const unreachableRan = (r: Ran): boolean => r.timedOut === true || r.code === RUN_TIMEOUT_CODE;
+
+/** installRunner over the supervisor host's hc (`req.transport` "hc"); see the module comment. */
+const installOverHc = async (deps: InstallDeps, req: InstallRequest): Promise<InstallResult> => {
+  const { run } = deps;
+  const label = req.label;
+  const step = stepper(deps.progress, label);
+  const hc = (argv: readonly string[], stdin?: string): Promise<Ran> =>
+    run(["hc", ...argv], stdin === undefined ? { timeoutMs: INSTALL_TIMEOUT_MS } : { timeoutMs: INSTALL_TIMEOUT_MS, stdin });
+  const fail = (stage: string, code: InstallFailure, detail: string): InstallResult => {
+    step(stage, "failed", `${code} ${detail}`);
+    return { ok: false, code, detail };
+  };
+  step("connect", "start", `hc machine ${label} (${req.machine.target})`);
+  let known: boolean;
+  try {
+    known = (await hcMachineNames(run)).has(label);
+  } catch (error) {
+    return fail("connect", "RUNNER_INSTALL_UNREACHABLE", error instanceof Error ? error.message : String(error));
+  }
+  if (!known) {
+    // --install copies this host's hc there when it has none or an older one; the machine is named after the runner.
+    const added = await hc(["--json", "machine", "add", "--install", "--name", label, req.machine.target]);
+    if (added.code !== 0) return fail("connect", "RUNNER_INSTALL_UNREACHABLE", hcDetail("machine add", added));
+  }
+  step("connect", "done", known ? "already an hc machine" : "added as an hc machine");
+  step("upload", "start", "bundling the runner");
+  let bundle: string;
+  try {
+    bundle = await deps.bundle();
+  } catch (error) {
+    step("upload", "failed", error instanceof Error ? error.message : String(error));
+    throw error;
+  }
+  step("upload", "done", `bundle ${bundleVersion(bundle)}; each install pass writes it and the lane-sandbox wrappers with hc file write`);
+  const uploads: readonly (readonly [string, string])[] = [
+    [HC_UPLOADS.bundle, bundle],
+    [HC_UPLOADS.linux, deps.laneSandbox ?? laneSandboxScript(LANE_SANDBOX_TEMPLATE)],
+    [HC_UPLOADS.macos, deps.laneSandboxMacos ?? laneSandboxScript(LANE_SANDBOX_MACOS_TEMPLATE)],
+  ];
+  const issue = req.issue();
+  if (!ENROLL_VALUE.test(issue.code) || !ENROLL_VALUE.test(issue.fingerprint)) return { ok: false, code: "RUNNER_INSTALL_FAILED", detail: "bad enrollment code or fingerprint" };
+  // A pass uploads the files it moves into place (a first pass moved them already), then runs the script; the script,
+  // enrollment code included, travels only on hc exec's stdin.
+  const install = async (enrollment: EnrollIssue): Promise<Ran | InstallResult> => {
+    for (const [path, text] of uploads) {
+      const wrote = await hc(["--json", "file", "write", "--on", label, path], text);
+      if (wrote.code !== 0) return fail("install", unreachableRan(wrote) ? "RUNNER_INSTALL_UNREACHABLE" : "RUNNER_INSTALL_FAILED", hcDetail(`file write ${path}`, wrote));
+    }
+    return hc(["exec", "-i", "--on", label, "sh", "-s"], installScript("", "", label, req.listenAddress, enrollment, "", req.agentCommand, { unit: "", plist: "" }, "", "", "hc"));
+  };
+  step("install", "start", "files, bun and enrollment in one hc exec pass");
+  let pass = await install(issue);
+  if ("ok" in pass) return pass;
+  let r = pass;
+  if (r.code === INSTALL_EXIT.enrollPending && r.out.includes(HC_SCRIPT_START)) {
+    step("enroll", "start", "the host sent an enrollment request");
+    try {
+      const reply = enrollReply(r.out, req, "hc exec stdout");
+      step("enroll", "done", "accepted");
+      step("install", "start", "again with the supervisor's enrollment reply");
+      pass = await install({ ...issue, reply });
+      if ("ok" in pass) return pass;
+      r = pass;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      step("enroll", "failed", detail);
+      return { ok: false, code: "RUNNER_INSTALL_ENROLL_FAILED", detail };
+    }
+  }
+  // Without the script's first line the exit code is hc's own (the machine is unreachable, hc failed), not the script's.
+  if (r.code !== 0 && !r.out.includes(HC_SCRIPT_START)) return fail("install", "RUNNER_INSTALL_UNREACHABLE", hcDetail("exec", r));
+  if (r.code === INSTALL_EXIT.windowsShell) return fail("install", "RUNNER_INSTALL_UNSUPPORTED", "unsupported OS: an hc install takes Linux and macOS machines");
+  const result = installResult("posix", r, bundle);
+  if (!result.ok) return fail("install", result.code, result.detail);
+  const bun = /^DORI_BUN (.+)$/m.exec(r.out)?.[1]?.trim();
+  if (!bun) return fail("install", "RUNNER_INSTALL_FAILED", "the install pass did not report its bun");
+  step("install", "done");
+  // The previous runner's terminal goes first: its name is taken while it lives, and one label has one runner.
+  step("service", "start", `hc terminal ${label}/${HC_RUNNER_TERMINAL}`);
+  await hcRuntime(run).close(`${HC_PANE_PREFIX}${label}/${HC_RUNNER_TERMINAL}`);
+  const started = await hc([
+    "--json", "run", "--on", label, "--bg", "--keep", "--no-parent", "--no-notify", "--name", HC_RUNNER_TERMINAL, "--label", `dori.runner=${label}`,
+    // The unit's UMask=0077; the relative path starts at the machine's home, the terminal's cwd.
+    "--", "sh", "-c", 'umask 077 && exec "$@"', "sh", bun, ".dori/runner/bin/dori.js", "runner", "serve", "--label", label, "--listen", req.listenAddress,
+  ]);
+  if (started.code !== 0) return fail("service", "RUNNER_INSTALL_FAILED", hcDetail("run", started));
+  const removed = [...r.out.matchAll(/^RUNNER_UNIT_REMOVED (.+)$/gm)].map((m) => m[1]);
+  step("service", "done", `runner started in the kept hc terminal ${label}/${HC_RUNNER_TERMINAL}${removed.length ? `; removed the earlier ${removed.join(", ")}` : ""}`);
+  step("verify", "start");
+  writeRunnerEndpoint(req.stateDir, label, req.listenAddress);
+  step("verify", "done", `hc exec pass exited 0, version=${result.version}, endpoint ${req.listenAddress} recorded`);
+  return { ok: true, version: result.version, hc: "terminal" };
+};
+
 export const installRunner = async (deps: InstallDeps, req: InstallRequest): Promise<InstallResult> => {
   if (!LABEL.test(req.label)) return { ok: false, code: "RUNNER_INSTALL_FAILED", detail: `bad label ${req.label}` };
   if (!isPrivateListen(req.listenAddress)) return { ok: false, code: "RUNNER_LISTEN_REFUSED", detail: `${req.listenAddress} is not a private host:port` };
+  if (req.transport === "hc") return installOverHc(deps, req);
   const step = stepper(deps.progress, req.label);
   step("connect", "start", req.machine.target);
   const k = await (deps.kind ?? machineKind)(deps.run, req.machine);
@@ -700,15 +900,7 @@ export const installRunner = async (deps: InstallDeps, req: InstallRequest): Pro
   if (r.code === INSTALL_EXIT.enrollPending) {
     step("enroll", "start", "the host sent an enrollment request");
     try {
-      const line = /^RUNNER_ENROLL_REQUEST (.+)$/m.exec(r.out)?.[1];
-      if (!line) throw new Error("missing enrollment request on SSH stdout");
-      const frame = decodeFrame(line, "runner");
-      if (frame.type !== "enroll" || frame.runner !== req.label) throw new Error("unexpected enrollment request");
-      const body = frame.body as RunnerControlBodies["enroll"];
-      if (body.label !== req.label) throw new Error("enrollment request label differs from install label");
-      const accepted = req.enroll(body);
-      if (!accepted.ok) throw new Error(`${accepted.code} ${accepted.detail}`);
-      const reply = Buffer.from(encodeFrame(supervisorControl({ runner: req.label, gen: 0, epoch: 0 }, "enroll.ok", accepted.reply))).toString("base64");
+      const reply = enrollReply(r.out, req, "SSH stdout");
       step("enroll", "done", "accepted");
       step("install", "start", "again with the supervisor's enrollment reply");
       pass = await install({ ...issue, reply });

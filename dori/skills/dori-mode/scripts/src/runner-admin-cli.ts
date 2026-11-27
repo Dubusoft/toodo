@@ -43,8 +43,9 @@ const runnerSetupNow = async (
  * failures are logged and never change the exit code), then each worker runner gets the new bundle through
  * `dori runner install`'s path, one at a time, each confirmed by a hello with a higher gen within 2 minutes. The local
  * runner is the supervisor's child, so the supervisor restart that `dori update` already did restarted it on the
- * updated checkout. A runner that already reports this checkout's version is skipped. Then every runner, upgraded or
- * not (the local one and each worker the hub knows), gets runner setup in "new" mode (asks only keys never shown
+ * updated checkout. A worker this host's hc knows by its label (`hc machine ls`) is installed over hc, into its kept hc
+ * terminal; every other one over ssh, as its service unit. A runner that already reports this checkout's version is
+ * skipped. Then every runner, upgraded or not (the local one and each worker the hub knows), gets runner setup in "new" mode (asks only keys never shown
  * before): a worker without runner-config.json, a missing required key or a failed check is reported.
  * Returns 1 when any runner failed to upgrade or its policy check found a gap (the others still ran), else 0.
  */
@@ -55,7 +56,9 @@ const upgradeRunnersNow = async (cfg: Awaited<ReturnType<typeof loadConfig>>): P
   const { buildBundle, installRunner } = await import("./runner/install.ts");
   const { runnerListenAddress } = await import("./runner/endpoints.ts");
   const { SupervisorAuth } = await import("./runner/auth.ts");
+  const { hcMachineNames } = await import("./runtime/hc.ts");
   const rows = readRunnerRows(cfg.stateDir);
+  let hcMachines: Promise<ReadonlySet<string>> | undefined;
   const genOf = (label: string): number => readRunnerRows(cfg.stateDir).find((r) => r.label === label)?.maxGen ?? 0;
   const machines = listGuardMachines(cfg.guardMachines, cfg.stateDir);
   let bundle: string | undefined;
@@ -68,9 +71,10 @@ const upgradeRunnersNow = async (cfg: Awaited<ReturnType<typeof loadConfig>>): P
         const machine = machines.find((m) => m.label === label);
         if (!machine) return { ok: false, detail: `no machine ${label}` };
         bundle ??= await buildBundle(run, undefined, cfg.stateDir)();
+        const viaHc = (await (hcMachines ??= hcMachineNames(run))).has(label);
         const done = await installRunner({ run, bundle: async () => bundle as string }, {
           machine, label, listenAddress: await runnerListenAddress(machine.target), stateDir: cfg.stateDir,
-          agentCommand: cfg.agentCommand,
+          agentCommand: cfg.agentCommand, transport: viaHc ? "hc" : "ssh",
           issue: () => ({ code: auth.issueCode(label).code, fingerprint: auth.fingerprint }),
           enroll: (body) => auth.enroll(body),
         });
@@ -109,12 +113,13 @@ export type RunnerAdminDeps = { readonly die: (message: string, code?: number) =
  */
 export const runnerAdminMain = async ({ die }: RunnerAdminDeps): Promise<number> => {
   // enroll, install, revoke, rotate, reset-gen and upgrade run on the supervisor host against <stateDir>.
-  const usage = "usage: dori runner serve [--label LABEL] [--enroll | --enroll-only] [--listen HOST:PORT] | probe [--json] | enroll --machine LABEL | install (TARGET [--label LABEL] | --machine LABEL) [--set KEY=VALUE ...] [--unset KEY ...] [--yes] | setup [--machine LABEL] [--set KEY=VALUE ...] [--unset KEY ...] [--yes] [--new] | remove LABEL | revoke LABEL | rotate LABEL | reset-gen LABEL | upgrade";
+  const usage = "usage: dori runner serve [--label LABEL] [--enroll | --enroll-only] [--listen HOST:PORT] | probe [--json] | enroll --machine LABEL | install (TARGET [--label LABEL] | --machine LABEL) [--hc] [--set KEY=VALUE ...] [--unset KEY ...] [--yes] | setup [--machine LABEL] [--set KEY=VALUE ...] [--unset KEY ...] [--yes] [--new] | remove LABEL | revoke LABEL | rotate LABEL | reset-gen LABEL | upgrade";
   const parsed = parseArgs({
     args: process.argv.slice(3), allowPositionals: true,
     options: {
       machine: { type: "string" }, label: { type: "string" }, yes: { type: "boolean" },
       set: { type: "string", multiple: true }, unset: { type: "string", multiple: true }, new: { type: "boolean" },
+      hc: { type: "boolean" },
     },
   });
   const [sub = "", target, ...extra] = parsed.positionals;
@@ -128,6 +133,7 @@ export const runnerAdminMain = async ({ die }: RunnerAdminDeps): Promise<number>
   if (parsed.values.label !== undefined && sub !== "install") die(usage);
   if ((parsed.values.set !== undefined || parsed.values.unset !== undefined) && sub !== "setup" && sub !== "install") die(usage);
   if (parsed.values.new && sub !== "setup") die(usage);
+  if (parsed.values.hc && sub !== "install") die(usage);
   /** --set/--unset against runner-config.json's keys; an unknown key or bad value stops before anything runs. */
   const runnerKeys = async (): Promise<{ patch: Json; unset: readonly string[] }> => {
     const { ConfigKeyError, parseSetArgs, RUNNER_CONFIG_KEYS } = await import("./config-keys.ts");
@@ -201,12 +207,20 @@ export const runnerAdminMain = async ({ die }: RunnerAdminDeps): Promise<number>
     const { SupervisorAuth } = await import("./runner/auth.ts");
     const { buildBundle, hcInstallNote, installRunner } = await import("./runner/install.ts");
     const { runnerListenAddress } = await import("./runner/endpoints.ts");
+    const { hcMachineNames } = await import("./runtime/hc.ts");
+    // --hc adds the machine to this host's hc; one hc already knows by this label is installed over hc too.
+    let viaHc = parsed.values.hc === true;
+    try {
+      viaHc ||= (await hcMachineNames(run)).has(label);
+    } catch (e) {
+      die(`RUNNER_INSTALL_UNREACHABLE runner=${label} ${e instanceof Error ? e.message : String(e)}`);
+    }
     const auth = new SupervisorAuth(cfg.stateDir, { now: realClock.now });
     try {
       // The code is issued in this process and handed to the installer as data; it never enters an argv.
       const result = await installRunner({ run, bundle: buildBundle(run), progress: (line) => { console.log(line); } }, {
         machine, label, listenAddress: await runnerListenAddress(machine.target), stateDir: cfg.stateDir,
-        agentCommand: cfg.agentCommand,
+        agentCommand: cfg.agentCommand, transport: viaHc ? "hc" : "ssh",
         issue: () => ({ code: auth.issueCode(label).code, fingerprint: auth.fingerprint }),
         enroll: (body) => auth.enroll(body),
       });

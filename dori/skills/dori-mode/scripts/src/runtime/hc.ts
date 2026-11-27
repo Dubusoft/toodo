@@ -90,6 +90,19 @@ export const ensureHc = async (run: Runner, platform: NodeJS.Platform = process.
       : `install it with curl -fsSL ${HC_INSTALL_URL} | sh (or hc update) and make sure ~/.local/bin is on the runner's PATH`));
 };
 
+/**
+ * The names of the machines this host's hc has added (`hc machine ls`): `dori runner install` and `dori runner upgrade`
+ * deploy a runner whose label is one of them over hc rather than ssh. No hc on this host (it cannot be spawned) is no
+ * machine; an hc that answers with an error throws, so a known hc host is never mistaken for an ssh one.
+ */
+export const hcMachineNames = async (run: Runner): Promise<ReadonlySet<string>> => {
+  const ran = await run(["hc", "--json", "machine", "ls"]).catch(() => undefined);
+  if (ran === undefined) return new Set();
+  if (ran.code !== 0) throw failure("machine ls", ran);
+  const json = JSON.parse(ran.out.trim() || "{}") as { machines?: readonly { name?: unknown }[] };
+  return new Set((json.machines ?? []).map((m) => m.name).filter((name): name is string => typeof name === "string"));
+};
+
 const hc = async (run: Runner, argv: readonly string[]): Promise<{ readonly ran: Ran; readonly json: Json }> => {
   const ran = await run(["hc", "--json", ...argv]);
   let json: Json = {};
