@@ -631,6 +631,17 @@ word of `query` must appear in a message, ignoring case; `channel_id` keeps to a
 its threads, `thread_id` to a thread. Each hit carries the message, `channelName`, and
 `threadTitle`, the best match first.
 
+**Voice input.** Where the browser offers speech recognition (Chrome on desktop and
+Android), the app's composer shows a microphone: what the person says, recognized in the
+browser's language, joins the draft, which they send like typed text. The browser
+recognizes speech through its own service, so voice input needs a connection; the server
+receives only the text.
+
+**Unsent messages.** A message the app could not get to the server, because the server
+was unreachable, waits in the browser under its client id, also across reloads, and goes
+out when the server answers again. The server stores a message once per client id, so it
+appears once however often it is sent. One the server refused shows why, with a retry.
+
 Each person's message shows its receipts in the app: sent, delivered (received by the
 agent), read (acknowledged), and handled. One not handled within 10 minutes shows that it
 waits for an answer. A message the agent posts reaches the devices that turned on **Agent
