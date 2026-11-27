@@ -64,6 +64,24 @@ describe("service install", () => {
     expect(calls).toEqual(["systemctl --user daemon-reload"]);
   });
 
+  test("carries the settings of toodo-server.service's drop-ins, applied in name order after the unit", async () => {
+    const h = home();
+    const dropIns = join(h.units, "toodo-server.service.d");
+    mkdirSync(dropIns);
+    writeFileSync(join(dropIns, "cf-access.conf"), "[Service]\nEnvironment=TOODO_CF_ACCESS_TEAM_DOMAIN=team.example.com\nEnvironment=TOODO_CF_ACCESS_AUD=aud\n");
+    writeFileSync(join(dropIns, "listen.conf"), "[Service]\nEnvironment=TOODO_LISTEN=127.0.0.1:5000\n");
+    writeFileSync(join(dropIns, "npm.conf"), "[Service]\nExecStart=\nExecStart=/npm/toodo-server\nEnvironment=TOODO_WEB_DIR=/npm/web\n");
+    writeFileSync(join(dropIns, "notes.txt"), "[Service]\nEnvironment=TOODO_PUBLIC_URL=https://ignored.example.com\n");
+    expect(await serviceInstall({ env: h.env, run: async () => ({ code: 0, out: "" }), platform: "linux", bun: "/b", log: () => {} })).toBe(0);
+    const unit = readFileSync(join(h.units, UNIT), "utf8");
+    expect(unit).toContain("Environment=TOODO_CF_ACCESS_TEAM_DOMAIN=team.example.com\n");
+    expect(unit).toContain("Environment=TOODO_CF_ACCESS_AUD=aud\n");
+    expect(unit).toContain("Environment=TOODO_LISTEN=127.0.0.1:5000\n");
+    expect(unit).toContain("Environment=TOODO_PUBLIC_URL=https://toodo.example.com\n");
+    expect(unit).toContain(`Environment=TOODO_WEB_DIR=${ROOT}/dist-web\n`);
+    expect(unit).not.toContain("/npm/");
+  });
+
   test("refuses a host without systemd", async () => {
     const h = home();
     expect(await serviceInstall({ env: h.env, run: async () => ({ code: 0, out: "" }), platform: "darwin", bun: "bun", log: () => {} })).toBe(1);

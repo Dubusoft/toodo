@@ -78,8 +78,8 @@ It works on the TypeScript storage and commands:
   set. Exits 1 on a FAIL.
 - `toodo service install`: writes `~/.config/systemd/user/toodo.service` for this checkout
   and runs `systemctl --user daemon-reload`. It carries the `TOODO_*` settings of
-  `toodo-server.service` (listen address, data directory, public URL, Cloudflare Access,
-  chat agent) and `DORI_CONFIG` and `PATH` of `dori-supervisor.service`, sets
+  `toodo-server.service` and its drop-ins in `toodo-server.service.d/` (listen address,
+  data directory, public URL, Cloudflare Access, chat agent) and `DORI_CONFIG` and `PATH` of `dori-supervisor.service`, sets
   `TOODO_WEB_DIR` to the checkout's `dist-web`, and nothing else. It enables and starts
   nothing.
 
@@ -133,6 +133,9 @@ build, so no Rust toolchain is needed:
    ```sh
    cd ~/.dori/src && scripts/install-server.sh --release vX.Y.Z-dev.N
    ```
+   A drop-in that sets `ExecStart=` (such as `toodo-server.service.d/npm.conf`, which runs
+   the server from the npm package) keeps the service on the old binary: move it out of
+   `toodo-server.service.d/` and run `systemctl --user daemon-reload` first.
 3. `PRAGMA user_version` prints `56`, and the web app works as before.
 
 That build is the last Rust server: use `~/.local/bin/toodo-server` as the reference for
