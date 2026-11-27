@@ -12,6 +12,7 @@ import { type Config, configFromEnv, type Listen } from "./http/config.ts";
 import { EventLog } from "./http/event-log.ts";
 import { peerAddress } from "./http/auth.ts";
 import { createHandler } from "./http/server.ts";
+import type { ScheduleBridge } from "./http/supervisor-schedules.ts";
 import { Services } from "./http/services.ts";
 import { createPrivateDir, loadToken, MCP_TOKEN_FILE, newInstance, WEB_TOKEN_FILE } from "./http/tokens.ts";
 import { programVersion } from "./http/version.ts";
@@ -126,7 +127,10 @@ export async function stopServing(server: Server<undefined>, name: string): Prom
   }
 }
 
-export async function openCore(config: Config): Promise<Core> {
+/** What the host adds to the core it serves: the supervisor's scheduled jobs. */
+export type CoreOptions = { readonly schedules?: ScheduleBridge };
+
+export async function openCore(config: Config, options: CoreOptions = {}): Promise<Core> {
   createPrivateDir(config.dataDir);
   const connections = openConnections(databasePath(config));
   const storage = new Storage(connections.writer);
@@ -175,6 +179,7 @@ export async function openCore(config: Config): Promise<Core> {
     access,
     webDir: config.webDir,
     clientMetadata: httpClientMetadataFetcher(),
+    ...(options.schedules ? { schedules: options.schedules } : {}),
   });
   return {
     fetch: (request, server) =>

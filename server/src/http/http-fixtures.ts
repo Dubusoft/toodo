@@ -17,6 +17,7 @@ import { peerAddress } from "./auth.ts";
 import { EventLog } from "./event-log.ts";
 import { createHandler } from "./server.ts";
 import { Services } from "./services.ts";
+import type { ScheduleBridge } from "./supervisor-schedules.ts";
 
 export const WEB = "web";
 export const AGENT = "agent";
@@ -41,6 +42,8 @@ export type TestServerOptions = {
   /** Public mode's origin, which mounts the OAuth server. */
   publicUrl?: string;
   clientMetadata?: ClientMetadataFetcher;
+  /** The supervisor's scheduled jobs, as the host hands them over. */
+  schedules?: ScheduleBridge;
 };
 
 const noClientMetadata: ClientMetadataFetcher = async (url) => {
@@ -74,6 +77,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     access: options.access ?? null,
     webDir: options.webDir ?? null,
     clientMetadata: options.clientMetadata ?? noClientMetadata,
+    ...(options.schedules ? { schedules: options.schedules } : {}),
   });
   const server = Bun.serve({
     hostname: "127.0.0.1",

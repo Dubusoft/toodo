@@ -8,6 +8,7 @@ import { envFilePath, loadEnvFile } from "./credentials.ts";
 import { runSupervisor } from "./commands/supervise.ts";
 import { loadConfig } from "./config.ts";
 import { Registry } from "./registry.ts";
+import { handleScheduleRequest } from "./schedule-admin.ts";
 import { setDefaultRunTimeout } from "./run.ts";
 import { convertJsonState } from "./store-convert.ts";
 
@@ -16,8 +17,12 @@ declare const self: Worker;
 const post = (message: WorkerToHost): void => { self.postMessage(message); };
 
 const controller = new AbortController();
+const configured = loadConfig();
 self.addEventListener("message", (event: MessageEvent<HostToWorker>) => {
-  if (event.data.type === "stop") controller.abort();
+  const message = event.data;
+  if (message.type === "stop") controller.abort();
+  // The Toodo web app's scheduled-jobs panel, relayed by the host: applied to sources.json, which the next pass reads.
+  else void configured.then((config) => { post({ type: "schedules", id: message.id, reply: handleScheduleRequest(config.stateDir, message.request, Date.now()) }); });
 });
 
 const heartbeat = setInterval(() => { post({ type: "heartbeat" }); }, HEARTBEAT_INTERVAL_MS);
@@ -27,7 +32,7 @@ const heartbeat = setInterval(() => { post({ type: "heartbeat" }); }, HEARTBEAT_
 const envFile = envFilePath(process.env.HOME || homedir());
 console.log(`SUPERVISOR_ENV ${loadEnvFile(process.env, envFile).length} entries from ${envFile}`);
 
-const config = await loadConfig();
+const config = await configured;
 await convertJsonState(config.stateDir);
 setDefaultRunTimeout(config.runTimeoutMs);
 const { deps } = leadContext(config, new Registry(config.stateDir), "supervise", [], { values: {}, positionals: [] });

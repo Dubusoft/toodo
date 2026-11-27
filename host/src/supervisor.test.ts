@@ -75,6 +75,30 @@ describe("SupervisorHost", () => {
     expect(workers.slice(0, -1).every((worker) => worker.terminated)).toBe(true);
   });
 
+  test("hands a scheduled-jobs request to the running Worker and resolves with its answer", async () => {
+    const { host, latest } = setup();
+    await expect(host.schedules({ op: "list" })).rejects.toThrow("the supervisor is idle");
+    host.start();
+    await expect(host.schedules({ op: "list" })).rejects.toThrow("the supervisor is starting");
+    latest().events.message({ type: "ready" });
+    const answer = host.schedules({ op: "pause", name: "gmail-digest" });
+    expect(latest().posted).toEqual([{ type: "schedules", id: 1, request: { op: "pause", name: "gmail-digest" } }]);
+    latest().events.message({ type: "schedules", id: 1, reply: { ok: true, jobs: [] } });
+    expect(await answer).toEqual({ ok: true, jobs: [] });
+  });
+
+  test("a scheduled-jobs request fails when the Worker does not answer in time or dies first", async () => {
+    const { host, timers, latest } = setup({ requestTimeoutMs: 5_000 });
+    host.start();
+    latest().events.message({ type: "ready" });
+    const silent = host.schedules({ op: "list" });
+    timers.advance(5_000);
+    await expect(silent).rejects.toThrow("the supervisor did not answer within 5000 ms");
+    const pending = host.schedules({ op: "list" });
+    latest().events.exit(1);
+    await expect(pending).rejects.toThrow("the supervisor stopped before it answered");
+  });
+
   test("treats a Worker with no heartbeat for the timeout as hung and replaces it", () => {
     const { host, timers, workers, events, latest } = setup();
     host.start();

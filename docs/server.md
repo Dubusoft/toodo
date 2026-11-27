@@ -1091,6 +1091,20 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   MCP token from loopback only, even in public mode, and a push is refused with `400`
   when it is not a snapshot or `413` above 2 MB. Lane screens and the quota are read only
   while a panel is open.
+- `GET /api/supervisor/schedules` and `POST /api/supervisor/schedules`: the scheduled jobs
+  panel (Settings > Scheduled jobs), the supervisor's `dori schedule` jobs. `GET` answers
+  `{ "ok": true, "jobs": [...] }`, each job with its schedule, next and last run, and last
+  result; `POST` takes one change (`list`, `add`, `remove`, `run-now`, `pause`, `resume`,
+  or `edit` of a job's cron expression or interval, typed in
+  `src/lib/supervisor-schedules.ts`) and answers the same way with every job after it. The
+  server keeps none of it: the host hands each request to the supervisor Worker, which
+  edits its own `sources.json` and reads it again on its next pass, so a change takes
+  effect without a restart. Resuming or editing a job counts its slots from that moment, so
+  the ones it passed are not caught up. A change the supervisor refuses (an unknown job, a
+  cron expression that never fires) is `400` with its `error`, a body that is no request
+  `400`, and `503` when no supervisor runs beside the server (`toodo-server`, or the host
+  in safe mode) or it does not answer within 10 seconds. A read-only device may list the
+  jobs but not change them.
 - `GET /api/backups/export`: a consistent snapshot of the database, as an
   `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
 - `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
