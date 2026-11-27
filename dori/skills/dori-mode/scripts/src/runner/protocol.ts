@@ -23,10 +23,10 @@ import type { Check } from "../signals.ts";
 
 /**
  * The protocol version this code speaks. A runner speaks exactly this; a supervisor also accepts `PROTO - 1`. Proto 6
- * adds the secret control frames, proto 7 the `lane.attach` command, proto 9 `lanes.closed`, proto 10 `toodo.read`, so
- * the supervisor must be upgraded before its runners.
+ * adds the secret control frames, proto 7 the `lane.attach` command, proto 9 `lanes.closed`, proto 10 `toodo.read`,
+ * proto 11 the heartbeat's `cmdAck`, so the supervisor must be upgraded before its runners.
  */
-export const PROTO = 10;
+export const PROTO = 11;
 /** The lowest protocol version a supervisor admits (`checkProto`): every admitted connection speaks at least this. */
 export const MIN_PROTO = PROTO - 1;
 /** The first protocol version with `lanes.closed` / `lanes.closed.result` (the cleanup sweep's closed lanes). */
@@ -534,8 +534,11 @@ const RUNNER_CONTROL_SCHEMAS = {
   "auth.proof": { sig: req("string") },
   /** Answer to `runner.rotate`: the new public key, and a signature with the new key binding it to this session. */
   "runner.rotated": { cmdId: req("string"), runnerPubKey: req("string"), sig: req("string") },
-  /** `outbox` lets `dori status` show the runner's backlog without reading its files. */
-  heartbeat: { outbox: opt({ object: { unacked: req("int"), oldestAgeMs: req("int") } }) },
+  /**
+   * `outbox` lets `dori status` show the runner's backlog without reading its files; `cmdAck` (since proto 11) its command
+   * cursor between hellos.
+   */
+  heartbeat: { outbox: opt({ object: { unacked: req("int"), oldestAgeMs: req("int") } }), cmdAck: opt("int") },
   "cmd.status.result": {
     cmdId: req("string"), state: req({ enum: ["intent", "running", "verified", "failed", "ambiguous", "unknown"] }), detail: opt("string"),
   },

@@ -40,18 +40,18 @@ test("without recorded endpoints doctor still checks local runner basics", () =>
 
 test("missing endpoints warn; a healthy runner is OK", () => {
   const s = setup();
-  addRunner(s.stateDir, "worker-a", 10);
-  addRunner(s.stateDir, "worker-b", 9);
+  addRunner(s.stateDir, "worker-a", 11);
+  addRunner(s.stateDir, "worker-b", 10);
   const checks = runnerChecks(s.deps);
   expect(checks.find((c) => c.id === "runner endpoints")?.level).toBe("WARN");
-  expect(checks.find((c) => c.id === "runner worker-a")).toMatchObject({ level: "OK", detail: "proto 10, gen 4, restarts1h 0" });
-  // A runner one proto behind still runs lanes and secrets but its lanes get no dori toodo reads until it is upgraded.
-  expect(checks.find((c) => c.id === "runner worker-b")).toMatchObject({ level: "WARN", detail: "proto 9 gives its lanes no dori toodo reads (they need proto 10)", fix: expect.stringContaining("dori runner install --machine worker-b") });
+  expect(checks.find((c) => c.id === "runner worker-a")).toMatchObject({ level: "OK", detail: "proto 11, gen 4, restarts1h 0" });
+  // A runner one proto behind still runs everything but reports its pending commands only at hello until it is upgraded.
+  expect(checks.find((c) => c.id === "runner worker-b")).toMatchObject({ level: "WARN", detail: "proto 10 reports its pending commands only at hello (a heartbeat cmdAck needs proto 11)", fix: expect.stringContaining("dori runner install --machine worker-b") });
 });
 
 test("a protocol two versions apart and an open restart circuit warn", () => {
   const s = setup("100.101.1.2:7411");
-  addRunner(s.stateDir, "worker-a", 11);
+  addRunner(s.stateDir, "worker-a", 12);
   const ops = openOperations(s.config);
   for (const n of [1, 2, 3]) plan(ops, NOW - n * 60_000, { lane: "runner:worker-a", action: "restart", target: `1-${n}` });
   plan(ops, NOW - 2 * 60 * 60_000, { lane: "runner:worker-a", action: "restart", target: "0-9" });
@@ -60,5 +60,5 @@ test("a protocol two versions apart and an open restart circuit warn", () => {
   expect(checks.find((c) => c.id === "runner endpoints")).toMatchObject({ level: "OK", detail: "worker-a=100.101.1.2:7411" });
   const row = checks.find((c) => c.id === "runner worker-a");
   expect(row?.level).toBe("WARN");
-  expect(row?.detail).toBe("proto 11 is not 10 or 9; restart circuit open (3 restarts in the last hour)");
+  expect(row?.detail).toBe("proto 12 is not 11 or 10; restart circuit open (3 restarts in the last hour)");
 });

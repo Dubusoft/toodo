@@ -30,7 +30,7 @@ const waiter = <T>() => {
   };
 };
 
-test.each([9, 10])("direct and queued file operations pass admitted proto %i and enforce the frame limits", async (proto) => {
+test.each([10, 11])("direct and queued file operations pass admitted proto %i and enforce the frame limits", async (proto) => {
   const tmp = withState(); cleanups.push(tmp.done);
   const hub = new RunnerHub({ stateDir: tmp.dir, now: () => 1000, monotonic: () => 1000, epoch: 1, commit: () => true });
   cleanups.push(() => hub.close());
@@ -184,9 +184,21 @@ test("a local runner over the real unix socket says hello, replays its outbox, h
 
   // dori status reads the persisted row.
   const status = await collectStatus(deps);
-  expect(status.runners?.[0]).toMatchObject({ label: "local", state: "connected", proto: 10, gen: 1, heartbeatAgeSec: 0 });
+  expect(status.runners?.[0]).toMatchObject({ label: "local", state: "connected", proto: 11, gen: 1, heartbeatAgeSec: 0 });
   // The lane count is the registry's open lanes on the machine, not the hello inventory ("demo" is not in the registry).
   expect(renderStatus(status)).toMatch(/^- local: 연결됨 · 레인 0개 · 미전달 이벤트 1개 \(가장 오래된 것 \d+초 전\)$/m);
+
+  // Commands the runner settles after its hello leave the pending count at its next heartbeat, with no new hello.
+  for (const seq of [1, 2]) {
+    expect(hub.hub.nextCmdSeq("local")).toBe(seq);
+    runnerState.recordIntent({ cmdId: `c-${seq}`, cmdSeq: seq, type: "lane.observe", key: "demo", epoch: 1 });
+    runnerState.recordResult(`c-${seq}`, "verified", "");
+  }
+  expect((await collectStatus(deps)).runners?.[0]?.cmds).toBe(2);
+  const beat = heartbeats.when((label) => label === "local");
+  timers.find((t) => t.ms === 15_000)?.tick();
+  await beat;
+  expect((await collectStatus(deps)).runners?.[0]?.cmds).toBe(0);
 
   // The handle's RunnerCalls: a label with no connection fails closed at once; a query pending on the live connection
   // (this client has no query dispatcher, so it stays unanswered) is rejected when the connection closes.
