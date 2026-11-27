@@ -32,6 +32,7 @@ import { Badge } from "@astryxdesign/core/Badge";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { Thumbnail } from "@astryxdesign/core/Thumbnail";
 import { Token } from "@astryxdesign/core/Token";
+import { Tooltip } from "@astryxdesign/core/Tooltip";
 import {
   ChatComposerInput,
   ChatDictationButton,
@@ -738,28 +739,80 @@ function placeItem(selected: boolean, waiting = false) {
   );
 }
 
+/**
+ * A listed place's button. While its `data-place-title` text is cut, a hover or keyboard focus
+ * shows the full `title` in the app's tooltip. The tooltip mounts only then and unmounts as it
+ * closes, so a long list mounts no tooltips up front.
+ */
+function PlaceButton({
+  title,
+  className,
+  current,
+  onClick,
+  children,
+}: {
+  title: string;
+  className: string;
+  current: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const pending = useRef<number | undefined>(undefined);
+  const [tip, setTip] = useState(false);
+  const forget = () => window.clearTimeout(pending.current);
+  // Waits as long as the tooltip's own hover delay, so a pointer passing over the list shows nothing.
+  const want = (delay: number) => {
+    const shown = ref.current?.querySelector("[data-place-title]");
+    if (shown == null || shown.scrollWidth <= shown.clientWidth) return;
+    forget();
+    pending.current = window.setTimeout(() => setTip(true), delay);
+  };
+  useEffect(() => forget, []);
+  return (
+    <>
+      <button
+        ref={ref}
+        type="button"
+        className={className}
+        aria-current={current ? "page" : undefined}
+        onClick={onClick}
+        onPointerEnter={(event) => event.pointerType !== "touch" && want(200)}
+        onPointerLeave={forget}
+        onPointerDown={forget}
+        onFocus={(event) => event.currentTarget.matches(":focus-visible") && want(0)}
+        onBlur={forget}
+      >
+        {children}
+      </button>
+      {tip && <Tooltip anchorRef={ref} content={title} isDefaultOpen onOpenChange={(open) => setTip(open)} />}
+    </>
+  );
+}
+
 /** A listed task: its number and title, and under them the latest message of its thread. */
 function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boolean; onOpen: () => void }) {
   const { task, thread } = chat;
   const status = thread?.lastMessage ?? (task.status === "in_review" ? "In review" : "");
   return (
     <li>
-      <button
-        type="button"
-        className={placeItem(selected, thread !== null && awaitsAnswer(thread))}
-        aria-current={selected ? "page" : undefined}
+      <PlaceButton
         title={`#${task.id} ${task.title}`}
+        className={placeItem(selected, thread !== null && awaitsAnswer(thread))}
+        current={selected}
         onClick={onOpen}
       >
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="shrink-0 text-muted-foreground">{`#${task.id}`}</span>
-            <span className="min-w-0 truncate">{task.title}</span>
+            <span data-place-title className="min-w-0 truncate">
+              {task.title}
+            </span>
           </span>
           {status !== "" && <span className="truncate text-xs font-normal text-muted-foreground">{status}</span>}
         </span>
         <PlaceMarks thread={thread} />
-      </button>
+      </PlaceButton>
     </li>
   );
 }
@@ -846,31 +899,34 @@ function PlaceList({
     const current = channel.id === selection.channel;
     return (
       <li key={channel.id}>
-        <button
-          type="button"
-          className={placeItem(current && selection.thread === null)}
-          aria-current={current && selection.thread === null ? "page" : undefined}
+        <PlaceButton
           title={`#${channel.name}`}
+          className={placeItem(current && selection.thread === null)}
+          current={current && selection.thread === null}
           onClick={() => onSelect({ channel: channel.id, thread: null })}
         >
           <span className="text-muted-foreground">#</span>
-          <span className="min-w-0 truncate">{channel.name}</span>
+          <span data-place-title className="min-w-0 truncate">
+            {channel.name}
+          </span>
           {!channel.push && <BellOff aria-label="Notifications off" className="size-3 shrink-0 text-muted-foreground" />}
           <UnreadBadge count={channel.unread} />
-        </button>
+        </PlaceButton>
         {current && (
           <div className="ml-3 flex flex-col gap-0.5 border-l pl-1">
             <ul aria-label={`Threads in #${channel.name}`} className="flex flex-col gap-0.5">
               {shown.map((thread) => (
                 <li key={thread.id}>
-                  <button
-                    type="button"
-                    className={placeItem(selection.thread === thread.id, awaitsAnswer(thread))}
-                    aria-current={selection.thread === thread.id ? "page" : undefined}
+                  <PlaceButton
                     title={thread.title}
+                    className={placeItem(selection.thread === thread.id, awaitsAnswer(thread))}
+                    current={selection.thread === thread.id}
                     onClick={() => onSelect({ channel: channel.id, thread: thread.id })}
                   >
-                    <span className={cn("min-w-0 truncate", thread.status !== "open" && "text-muted-foreground")}>
+                    <span
+                      data-place-title
+                      className={cn("min-w-0 truncate", thread.status !== "open" && "text-muted-foreground")}
+                    >
                       {thread.title}
                     </span>
                     {thread.status !== "open" && (
@@ -881,7 +937,7 @@ function PlaceList({
                       <Archive aria-hidden className="size-3 shrink-0 text-muted-foreground" />
                     )}
                     <PlaceMarks thread={thread} />
-                  </button>
+                  </PlaceButton>
                 </li>
               ))}
             </ul>
@@ -976,21 +1032,22 @@ function PastChats({
         <ul aria-label="Completed" className="flex flex-col gap-0.5">
           {threads.map((thread) => (
             <li key={thread.id}>
-              <button
-                type="button"
-                className={placeItem(selection.thread === thread.id)}
-                aria-current={selection.thread === thread.id ? "page" : undefined}
+              <PlaceButton
                 title={nameOf(thread)}
+                className={placeItem(selection.thread === thread.id)}
+                current={selection.thread === thread.id}
                 onClick={() => onSelect({ channel: thread.channelId, thread: thread.id })}
               >
                 <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="min-w-0 truncate">{nameOf(thread)}</span>
+                  <span data-place-title className="min-w-0 truncate">
+                    {nameOf(thread)}
+                  </span>
                   {thread.lastMessage !== null && (
                     <span className="truncate text-xs font-normal text-muted-foreground">{thread.lastMessage}</span>
                   )}
                 </span>
                 <ThreadStatusBadge status={thread.status} />
-              </button>
+              </PlaceButton>
             </li>
           ))}
         </ul>
