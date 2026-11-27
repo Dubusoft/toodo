@@ -13,11 +13,10 @@ Dori モードは、コーディングエージェントのセッションひと
 ## インストール
 
 ```sh
-gh auth login   # 非公開リポジトリのため必要です。gh にログイン済みか GH_TOKEN があれば不要
-bash -c "$(gh api -H 'Accept: application/vnd.github.raw' repos/Dubusoft/dori-mode/contents/install.sh)"
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Dubusoft/toodo/main/dori/install.sh)"
 ```
 
-GitHub のログインでリポジトリを `~/.dori/src` に取得し(そのチェックアウトの git は以後も `gh` から認証情報を受け取るので、更新もそのまま動きます)、スキルを `~/.agents/skills/dori-mode` にリンクし、`bun link` で `dori` を PATH に通してから `dori setup` を起動します。エージェントが別の場所からスキルを読む場合は `SKILLS_DIR` を指定してください。
+公開リポジトリ Dubusoft/toodo(Dori はその `dori/` ディレクトリにあります)をログインなしで `~/.dori/src` に取得し、スキルを `~/.agents/skills/dori-mode` にリンクし、`bun link` で `dori` を PATH に通してから `dori setup` を起動します。エージェントが別の場所からスキルを読む場合は `SKILLS_DIR` を指定してください。
 
 `dori setup` は Discord ボットのトークン(`~/.dori/env` に権限 600 で保存し、表示しません)、メインチャンネルの ID(トークンで読めるか確認します)、デフォルトのモデル、作業ディレクトリ、状態ディレクトリを尋ねます。希望すれば、起動時に hc コア、スーパーバイザー、プレゼンスが立ち上がるよう systemd ユーザーユニットも入れます。システムに関わる手順はそれぞれ事前に確認します。何度でも実行し直せます。現在の値がデフォルトとして表示され、Enter でそのまま残ります。パイプで bash に渡すと尋ねる端末がないので案内だけを表示します。その場合は `dori setup` を自分で実行してください。スクリプト向け: `dori setup --yes --token-file FILE --channel ID [--autostart]`。
 
