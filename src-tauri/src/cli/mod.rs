@@ -11,6 +11,7 @@ mod args;
 mod doctor;
 mod launchd;
 mod process;
+mod release;
 mod review;
 mod service;
 mod settings;
@@ -25,7 +26,7 @@ use crate::server;
 use agents::Outcome;
 use args::{USAGE, command_help, parse};
 use settings::{Bundle, DataDir, ListenFlag};
-use update::Channel;
+use update::{Channel, Source};
 
 pub(crate) use process::find_on_path;
 
@@ -82,6 +83,7 @@ struct LogsArgs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UpdateArgs {
     channel: Option<Channel>,
+    source: Option<Source>,
     allow_downgrade: bool,
     /// Only report whether the channel has a newer version.
     check: bool,
@@ -151,10 +153,20 @@ pub fn main() {
         Command::ServiceInstall(flag, dir) => data_dir(dir.as_deref(), &var)
             .and_then(|data| service_install(&data, flag, &var))
             .map(|()| 0),
-        Command::Update(args) if args.check => update::check(args.channel, &var).map(|()| 0),
+        Command::Update(args) if args.check => {
+            update::check(args.channel, args.source, &var).map(|()| 0)
+        }
         Command::Update(args) => data_dir(args.data_dir.as_deref(), &var).and_then(|data| {
             let flag = settings::data_dir_flag(&data, &var);
-            update::update(args.channel, args.allow_downgrade, &data, &flag, &var).map(|()| 0)
+            update::update(
+                args.channel,
+                args.source,
+                args.allow_downgrade,
+                &data,
+                &flag,
+                &var,
+            )
+            .map(|()| 0)
         }),
         Command::Review(args) => data_dir(args.data_dir.as_deref(), &var)
             .and_then(|data| review::review(&args, &data, &var))

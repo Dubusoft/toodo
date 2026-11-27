@@ -140,8 +140,10 @@ The commands of a global install (`toodo COMMAND --help` shows the options of ea
   logged-in user's session (`gui/<uid>`), starts it at login, restarts it after a crash,
   and logs to `~/Library/Logs/toodo-server.log`; it loads the job with
   `launchctl bootstrap` and waits until the server accepts connections.
-- `toodo update [--channel dev|latest] [--allow-downgrade | --check]`: update a global
-  install and restart the server on it, see below. With `--check` it only prints whether
+- `toodo update [--channel dev|latest] [--source npm|github] [--allow-downgrade |
+  --check]`: update a global npm install, or a release install from GitHub releases (see
+  [Update from GitHub Releases](#update-from-github-releases)), and restart the server on
+  it, see below. With `--check` it only prints whether
   the channel has a newer version than the installed one, and changes nothing.
 - `toodo review [--period week|month|quarter|year|custom] [--date DAY] [--from DAY]
   [--to DAY] [--format markdown|csv] [--workspace ID] [--label LABEL] [--time-zone ZONE]`:
@@ -197,6 +199,52 @@ names another registry, and compares the version on its own channel.
 
 Without `toodo update`, run `npm i -g @dubusoft/toodo` again, then `toodo service install`
 or `toodo stop` and `toodo start`.
+
+### Update from GitHub Releases
+
+`toodo update --source github` installs from the GitHub releases of the repository instead
+of npm, so it needs neither Node.js nor the npm registry, and with a token it reads a
+private repository. Every push to `dev` publishes the prerelease `vX.Y.Z-dev.N` (the same
+version the npm `dev` channel gets), and every release `vX.Y.Z` carries the same assets:
+`toodo-server-v<version>-<platform>.tar.gz` and its `.sha256` for `linux-x86_64`,
+`linux-aarch64`, `linux-x86_64-musl`, `linux-aarch64-musl`, `darwin-x86_64`, and
+`darwin-aarch64` (the npm workflow builds and uploads them, `scripts/package-server.sh`
+packages them; only the newest 10 dev prereleases are kept).
+
+- The repository is `$TOODO_RELEASE_REPO` (`owner/name`), else the one the install came
+  from, else `Dubusoft/toodo`.
+- The token is `$GH_TOKEN`, else `$GITHUB_TOKEN`; it needs read access to the contents of
+  the repository, for example `GH_TOKEN=$(gh auth token) toodo update`. Without one only
+  a public repository works.
+- The channel works as for npm: `dev` takes the newest prerelease, `latest` the newest
+  release, and a release without the asset of this platform (still uploading, or a
+  platform it was not built for) is skipped.
+
+It downloads the asset, checks its sha256 and that its `toodo-server` runs and reports the
+version of the release, and installs it as a release install: `~/.local/lib/toodo` holds
+`bin/toodo`, `bin/toodo-server`, the web app in `web/`, and `toodo-release.json` (the
+repository it updates from), and `~/.local/bin/toodo` links to its `toodo`. The install it
+replaces is kept beside it until the server answers on the new version. The server is
+restarted as with npm (steps 3 and 4 above); when it does not answer, the previous files
+are put back and the server is restarted on them.
+
+Once `toodo` is a release install, a plain `toodo update` (and `toodo update --check`)
+uses GitHub releases. To move an npm install over, run it once with the source:
+
+```sh
+GH_TOKEN=$(gh auth token) toodo update --source github
+toodo --version          # from ~/.local/bin/toodo, the release install
+npm rm -g @dubusoft/toodo
+```
+
+This installs the newest version of the channel even when npm has the same one, and
+restarts the server on it. Put `~/.local/bin` before npm's bin directory on `PATH` if
+`toodo` still runs the npm copy. On a machine without `toodo`, download the asset of its
+platform (`gh release download --repo Dubusoft/toodo --pattern
+'toodo-server-*-darwin-aarch64.tar.gz'` for the newest release), unpack it, and run
+`./toodo update --source github` from it, then `toodo init` or `toodo service install`.
+
+The web app still looks for a newer version on the npm registry (Settings > General).
 
 ## Install and Update
 

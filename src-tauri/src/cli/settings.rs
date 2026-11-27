@@ -283,7 +283,8 @@ impl Bundle {
                  npm install -g @dubusoft/toodo"
             )
         })?;
-        Self::beside(&exe)
+        // A release install runs through a link in ~/.local/bin.
+        Self::beside(&std::fs::canonicalize(&exe).unwrap_or(exe))
     }
 
     pub fn beside(exe: &Path) -> Result<Self, String> {
