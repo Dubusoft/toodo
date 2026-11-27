@@ -1,6 +1,6 @@
 // What deserves a push notification: the changes between two snapshots of task statuses.
-// The first snapshot only sets the baseline, so starting the server is silent, and a
-// newly seen task raises nothing. Port of `src-tauri/src/server/push/alerts.rs`.
+// The first snapshot only sets the baseline, so starting the server is silent, and a newly
+// seen task raises nothing.
 
 import type { TaskId } from "../domain/model.ts";
 import type { PushKind } from "../domain/push.ts";

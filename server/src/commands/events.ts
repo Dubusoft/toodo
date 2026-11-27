@@ -1,9 +1,8 @@
-// Task, workspace, and chat changes announced to connected clients
-// (`src-tauri/src/commands/events.rs`): the name each event is sent under, its payload
-// from `src/lib/bindings.ts`, and what the server tells about them.
+// Task, workspace, and chat changes announced to connected clients: the name each event is
+// sent under, its payload from `src/lib/api.ts`, and what the server tells about them.
 
-import type * as B from "../../../src/lib/bindings.ts";
-import type { events } from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
+import type { Events } from "../../../src/lib/api.ts";
 import type { WorkspaceId } from "../domain/model.ts";
 import type { ChatNotice } from "../storage/chat-channels.ts";
 
@@ -16,7 +15,7 @@ export type {
   TaskStatusChanged,
   TasksChanged,
   WorkspacesChanged,
-} from "../../../src/lib/bindings.ts";
+} from "../../../src/lib/api.ts";
 
 /** The name each event of the bindings is sent under on `/api/events`. */
 export const EVENT_NAMES = {
@@ -28,7 +27,7 @@ export const EVENT_NAMES = {
   chatChanged: "chat-changed",
   chatTyping: "chat-typing",
   chatActionChosen: "chat-action-chosen",
-} as const satisfies Record<keyof typeof events, string>;
+} as const satisfies Record<keyof Events, string>;
 
 export interface Notifier {
   tasksChanged(workspace: WorkspaceId): void;

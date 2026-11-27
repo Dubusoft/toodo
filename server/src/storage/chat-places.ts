@@ -1,5 +1,5 @@
 // Where chat messages go: checks that a task, channel, or thread exists, and that a place
-// takes messages. Port of the place helpers in `src-tauri/src/storage/chat.rs`.
+// takes messages.
 
 import type { Database } from "bun:sqlite";
 

@@ -12,9 +12,9 @@ itself runs from. It replaces two services that ran from two places:
 | the `toodo` CLI of the Rust release (npm or GitHub release) | `toodo` from the checkout (`host/src/cli.ts`) |
 
 The core is the TypeScript server: the same `TOODO_*` environment, data directory, and
-database file as `toodo-server` (see [server.md](server.md)). It opens only a database at
-the schema version the Rust server last migrated it to, and neither creates nor migrates
-one.
+database file as `toodo-server` (see [server.md](server.md)). It migrates the database
+forward from the schema the Rust server last migrated it to (version 56), and creates one
+in a new data directory.
 
 ## What Runs
 
@@ -108,14 +108,13 @@ already moved; fix the cause and run `dori update --dev` again.
 
 ## Switching Over
 
-Do this once, when the TypeScript server serves everything the Rust one does (MCP and
-OAuth included) and the parity checks pass.
+Do this once, on a host that still runs the Rust server.
 
 ### Before Switching: the Baseline Schema
 
-The core opens only a database at `BASELINE_SCHEMA_VERSION` (56, where the Rust schema is
-frozen; see `AGENTS.md`). A host still on an older Rust release has an older schema, and
-the core refuses to start on it. Check the live database:
+The core migrates a database from `BASELINE_SCHEMA_VERSION` (56, the last schema of the
+Rust server; see `AGENTS.md`) and refuses an older one. A host still on an older Rust
+release has an older schema, and the core refuses to start on it. Check the live database:
 
 ```sh
 sqlite3 ~/.local/share/toodo-server/toodo.sqlite3 'PRAGMA user_version'
@@ -137,21 +136,6 @@ build, so no Rust toolchain is needed:
    the server from the npm package) keeps the service on the old binary: move it out of
    `toodo-server.service.d/` and run `systemctl --user daemon-reload` first.
 3. `PRAGMA user_version` prints `56`, and the web app works as before.
-
-That build is the last Rust server: use `~/.local/bin/toodo-server` as the reference for
-the shadow reads and the Rust binary of `rust-check` ([parity.md](parity.md)). Then run
-the shadow reads against the live database for three days before switching, from
-`~/.dori/src`:
-
-```sh
-node scripts/parity/parity.ts shadow --live ~/.local/share/toodo-server/toodo.sqlite3 \
-  --reference ~/.local/bin/toodo-server --candidate "bun server/src/main.ts" \
-  --rounds 72 --out ~/toodo-shadow
-```
-
-Switch only when every round in `shadow.jsonl` has no difference left unexplained. The
-shadow reads are the check that comes before the switch; there is no rollback period
-after it.
 
 ### Steps
 
@@ -177,9 +161,10 @@ after it.
 
 ### Rolling Back
 
-Only between step 5 and retiring the old deployment, when a check of step 6 fails: the
-database is still at the Rust server's schema version, so going back takes one step and
-the data stays in the same file:
+Only between step 5 and retiring the old deployment, when a check of step 6 fails, and only
+while the core has applied no migration after version 56 (`PRAGMA user_version` prints
+`56`): the database is then still at the Rust server's schema version, so going back takes
+one step and the data stays in the same file:
 
 ```sh
 systemctl --user disable --now toodo.service

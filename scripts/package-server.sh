@@ -30,7 +30,7 @@ esac
 
 [ -x "$binary" ] || { echo "error: $binary is not an executable" >&2; exit 1; }
 cli=$(dirname "$binary")/toodo
-[ -x "$cli" ] || { echo "error: $cli is not an executable; build it with cargo build --release --bin toodo" >&2; exit 1; }
+[ -x "$cli" ] || { echo "error: $cli is not an executable; the toodo CLI belongs beside the server binary" >&2; exit 1; }
 [ -f "$web_dir/index.html" ] || { echo "error: $web_dir has no index.html; run npm run build" >&2; exit 1; }
 [ -f "$web_dir/sw.js" ] || { echo "error: $web_dir is not a web build (no sw.js); run npm run build" >&2; exit 1; }
 semver='[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?'

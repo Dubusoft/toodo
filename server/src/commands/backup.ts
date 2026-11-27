@@ -1,13 +1,12 @@
-// Commands for database backups (`src-tauri/src/commands/backup.rs`): restore, the automatic
-// backup schedule and the timer that writes automatic backups, and the export and import of
-// a database file. The TypeScript server never migrates a database, so it takes no backup
-// before a migration.
+// Commands for database backups: restore, the automatic backup schedule and the timer that
+// writes automatic backups, and the export and import of a database file. The TypeScript
+// server never migrates a database, so it takes no backup before a migration.
 
 import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type * as B from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
 import {
   type BackupSettings,
   DEFAULT_BACKUP_SETTINGS,

@@ -1,6 +1,5 @@
 // Dynamic client registration metadata and client ID metadata documents: what a client
 // registers or publishes, how it is checked, and how a `client_id` resolves to a client.
-// Port of `src-tauri/src/oauth/clients.rs`.
 
 import { isWebUrl } from "../http/config.ts";
 import { publicTarget } from "../net.ts";

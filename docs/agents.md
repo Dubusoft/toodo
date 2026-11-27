@@ -24,7 +24,7 @@ An agent gets two texts from Toodo:
 
 - The MCP `initialize` reply carries the server instructions: how to use the tools, for
   any role.
-- `read_toodo_skill` returns the skill (`src-tauri/src/mcp/toodo-skill.md`).
+- `read_toodo_skill` returns the skill (`server/src/mcp/toodo-skill.md`).
 
 Both texts tell the agent to read the guidelines of a task's workspace before working on
 it: rules the owner sets, which the agent follows, and memories, durable lessons recorded
@@ -34,7 +34,7 @@ for the workspace. `start_task` and `get_task` include them in `guidelines`, and
 `update_guideline` and `remove_guideline`; it leaves rules to the user.
 
 Rules both texts state, such as the task description format, how completion criteria are
-checked, and how tasks are concluded, live once in `src-tauri/src/mcp/shared/`. A template
+checked, and how tasks are concluded, live once in `server/src/mcp/shared/`. A template
 marks where one goes with `{{name}}`, and the server fills it in from `shared/<name>.md`
 when it builds the texts. Change such a rule in its fragment file only; a test checks
 that every fragment appears in both texts and that no placeholder is left.
@@ -128,10 +128,10 @@ that every fragment appears in both texts and that no placeholder is left.
 Toodo never completes a task by itself: it doesn't watch pull requests or CI. The
 executor confirms the work shipped, then closes the task. The exact rules are in the
 shared fragments the agents read:
-[`completion.md`](../src-tauri/src/mcp/shared/completion.md),
-[`review-timing.md`](../src-tauri/src/mcp/shared/review-timing.md),
-[`other-tasks.md`](../src-tauri/src/mcp/shared/other-tasks.md), and
-[`merge-policy.md`](../src-tauri/src/mcp/shared/merge-policy.md). In short:
+[`completion.md`](../server/src/mcp/shared/completion.md),
+[`review-timing.md`](../server/src/mcp/shared/review-timing.md),
+[`other-tasks.md`](../server/src/mcp/shared/other-tasks.md), and
+[`merge-policy.md`](../server/src/mcp/shared/merge-policy.md). In short:
 
 - Shipped work: check each `manual` criterion with `check_criterion` and evidence, then
   call `complete_task` with a note and refs. Toodo fetches the `url` criteria and

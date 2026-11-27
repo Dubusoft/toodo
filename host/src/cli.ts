@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { parseEnvFile } from "../../dori/skills/dori-mode/scripts/src/credentials.ts";
-import type * as B from "../../src/lib/bindings.ts";
+import type * as B from "../../src/lib/api.ts";
 import { CommandError } from "../../server/src/commands/errors.ts";
 import { reviewReport } from "../../server/src/commands/review.ts";
 import { type Config, configFromEnv } from "../../server/src/http/config.ts";
@@ -218,7 +218,7 @@ const data = (d: DoctorDeps): Check[] => {
   const dir = d.config.dataDir;
   const checks: Check[] = [];
   const path = join(dir, DATABASE_FILE);
-  if (!existsSync(path)) checks.push(fail("database", `missing: ${path}`, "start the Rust toodo-server on this data directory once, or pass --data-dir"));
+  if (!existsSync(path)) checks.push(fail("database", `missing: ${path}`, "start toodo.service once, which creates it, or pass --data-dir"));
   else {
     try {
       const db = openReader(path);

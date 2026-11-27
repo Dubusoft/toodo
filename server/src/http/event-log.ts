@@ -1,5 +1,5 @@
 // The events of `GET /api/events`, with ids so a client that reconnects gets what it
-// missed. Port of `src-tauri/src/server/event_log.rs`.
+// missed.
 //
 // Every event gets an id `<epoch>-<sequence>`: `epoch` is random per server start and
 // `sequence` counts up from 1. The log keeps the most recent `REPLAY` events. A stream

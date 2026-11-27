@@ -1,6 +1,5 @@
 // The time zone reviews are judged in, kept in `settings`, and saved reviews, kept in
-// `review_snapshots` exactly as they were rendered when saved. Port of
-// `src-tauri/src/storage/reviews.rs`.
+// `review_snapshots` exactly as they were rendered when saved.
 
 import type { Database } from "bun:sqlite";
 

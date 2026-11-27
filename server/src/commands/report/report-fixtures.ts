@@ -5,7 +5,7 @@ import type {
   ReviewPeriodKind,
   TaskEvent,
   TaskStatus,
-} from "../../../../src/lib/bindings.ts";
+} from "../../../../src/lib/api.ts";
 import { ReportPeriod } from "./period.ts";
 import { Report } from "./report.ts";
 

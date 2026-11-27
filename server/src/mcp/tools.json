@@ -517,7 +517,7 @@
           "description": "The expected size of a task.",
           "properties": {
             "amount": {
-              "description": "Greater than 0 and at most 10000, e.g. 1.5. Exported as `number`: it is never NaN\nor infinite, which specta's default `number | null` allows for.",
+              "description": "Greater than 0 and at most 10000, e.g. 1.5; never NaN or infinite.",
               "format": "double",
               "type": "number"
             },
@@ -764,7 +764,7 @@
           "description": "The expected size of a task.",
           "properties": {
             "amount": {
-              "description": "Greater than 0 and at most 10000, e.g. 1.5. Exported as `number`: it is never NaN\nor infinite, which specta's default `number | null` allows for.",
+              "description": "Greater than 0 and at most 10000, e.g. 1.5; never NaN or infinite.",
               "format": "double",
               "type": "number"
             },
@@ -2147,7 +2147,7 @@
           "description": "The expected size of a task.",
           "properties": {
             "amount": {
-              "description": "Greater than 0 and at most 10000, e.g. 1.5. Exported as `number`: it is never NaN\nor infinite, which specta's default `number | null` allows for.",
+              "description": "Greater than 0 and at most 10000, e.g. 1.5; never NaN or infinite.",
               "format": "double",
               "type": "number"
             },

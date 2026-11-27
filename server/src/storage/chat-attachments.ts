@@ -1,6 +1,5 @@
 // Files attached to chat messages, whose bytes the server keeps on disk under `file_key`.
-// Port of the attachment parts of `src-tauri/src/storage/chat.rs`. Functions that write
-// take the time they act at (`at`, Unix seconds) from the caller.
+// Functions that write take the time they act at (`at`, Unix seconds) from the caller.
 
 import type { Database } from "bun:sqlite";
 

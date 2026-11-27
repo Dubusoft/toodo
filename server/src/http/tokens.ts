@@ -1,7 +1,5 @@
 // The secrets and files of the data directory the HTTP server starts from: the access
-// tokens (`web-token`, `mcp-token`) and the directory that holds them. Port of the token
-// parts of `src-tauri/src/mcp/mod.rs` and `create_private_dir` of
-// `src-tauri/src/server/mod.rs`.
+// tokens (`web-token`, `mcp-token`) and the directory that holds them.
 
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

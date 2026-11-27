@@ -1,4 +1,4 @@
-// Files attached to chat messages, over HTTP. Port of `src-tauri/src/server/attachments.rs`.
+// Files attached to chat messages, over HTTP.
 //
 // - `POST /api/chat/attachments?name=<file name>` uploads a person's file. The request body
 //   is the file and its `Content-Type` the file's media type. The answer is the attachment

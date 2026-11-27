@@ -1,9 +1,8 @@
-// `POST /api/rpc/<command>`: runs one of the commands of the web app's generated bindings
-// (`src/lib/bindings.ts`, from `src-tauri/src/bindings.rs`), with their JSON arguments
-// (camelCase keys) and JSON result. Port of `src-tauri/src/server/rpc.rs`.
+// `POST /api/rpc/<command>`: runs one of the commands of the shared API (`src/lib/api.ts`),
+// with their JSON arguments (camelCase keys) and JSON result.
 
-import type * as B from "../../../src/lib/bindings.ts";
-import type { commands } from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
+import type { Commands } from "../../../src/lib/api.ts";
 import * as backup from "../commands/backup.ts";
 import * as chat from "../commands/chat.ts";
 import * as completion from "../commands/completion.ts";
@@ -23,7 +22,7 @@ import { failed, json } from "./auth.ts";
 import type { Services } from "./services.ts";
 import { VERSION } from "./version.ts";
 
-type Name = keyof typeof commands;
+type Name = keyof Commands;
 
 /** What a parameter takes, as the Rust command's `Deserialize` reads it: `int` (an i64
  * newtype or number), `bool`, `string`, `ints` and `strings` (sequences), `object:<Type>` (a

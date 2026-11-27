@@ -1,9 +1,9 @@
-// The texts the MCP server gives agents (`src-tauri/src/mcp/mod.rs`): the `initialize`
-// instructions, the skill `read_toodo_skill` returns, and the shorter instructions chat apps
-// connected over OAuth get. Rules they share are kept once in `src-tauri/src/mcp/shared/`
-// and put where a template says `{{name}}`, so the two servers give the same text.
+// The texts the MCP server gives agents: the `initialize` instructions, the skill
+// `read_toodo_skill` returns (`toodo-skill.md`), and the shorter instructions chat apps
+// connected over OAuth get. Rules they share are kept once in `shared/` and put where a
+// template says `{{name}}`.
 
-const MCP_DIR = new URL("../../../src-tauri/src/mcp/", import.meta.url);
+const MCP_DIR = new URL("./", import.meta.url);
 
 const read = (path: string) => Bun.file(new URL(path, MCP_DIR)).text();
 

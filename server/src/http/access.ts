@@ -1,5 +1,5 @@
-// Cloudflare Access sign-in verifies the JWT on a request against the team's cached
-// keys and the application's audience. Port of `src-tauri/src/server/access.rs`.
+// Cloudflare Access sign-in verifies the JWT on a request against the team's cached keys
+// and the application's audience.
 
 import { STATUS_CODES } from "node:http";
 

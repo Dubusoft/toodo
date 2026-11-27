@@ -1,0 +1,1265 @@
+// The Toodo API the web app and the server share: every type that crosses `/api/rpc` and
+// the event stream, each command with the arguments it sends and the reply it gets
+// (`makeCommands`, typed `Commands`), and each event with its payload (`makeEvents`,
+// typed `Events`). The server implements the commands and sends the events against these
+// types, so `npm run typecheck` fails when the two drift apart. It imports nothing: the web
+// app passes in how it invokes commands and listens to events (`bindings.ts`).
+
+/** Runs a command on the server and resolves with its reply, or rejects with its error. */
+export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+
+/** Calls `handler` with each event named `event`; resolves with a function that stops. */
+export type Listen = <T>(
+	event: string,
+	handler: (event: { event: string; id: number; payload: T }) => void,
+) => Promise<() => void>;
+
+/** The commands, run through `invoke`. */
+export function makeCommands(invoke: Invoke) {
+	return {
+		appInfo: () => invoke<AppInfo>("app_info"),
+		/**
+		 *  Asks the npm registry (`TOODO_NPM_REGISTRY`, else the public one) for the newest
+		 *  version on the channel of the running server.
+		 */
+		checkUpdate: () => invoke<UpdateCheck>("check_update"),
+		listWorkspaces: () => typedError<Workspace[], CommandError>(invoke("list_workspaces")),
+		getWorkspace: (id: WorkspaceId) => typedError<Workspace, CommandError>(invoke("get_workspace", { id })),
+		/**  Stores a workspace without inspecting its external location. */
+		createWorkspace: (workspace: NewWorkspace) => typedError<Workspace, CommandError>(invoke("create_workspace", { workspace })),
+		updateWorkspace: (workspace: Workspace) => typedError<Workspace, CommandError>(invoke("update_workspace", { workspace })),
+		/**
+		 *  Removes a workspace from Toodo by archiving it with its tasks: they leave the lists but
+		 *  stay in reviews, and [`restore_workspace`] brings them back. [`purge_workspace`]
+		 *  deletes them for good.
+		 */
+		deleteWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(invoke("delete_workspace", { id })),
+		/**  Brings an archived workspace back with its tasks. */
+		restoreWorkspace: (id: WorkspaceId) => typedError<Workspace, CommandError>(invoke("restore_workspace", { id })),
+		/**
+		 *  Deletes an archived workspace for good with its tasks, their history, and commit
+		 *  records; a workspace that is not archived is rejected.
+		 */
+		purgeWorkspace: (id: WorkspaceId) => typedError<null, CommandError>(invoke("purge_workspace", { id })),
+		/**  The workspaces and tasks deleting archived, to restore or purge. */
+		listArchive: () => typedError<Archive, CommandError>(invoke("list_archive")),
+		/**
+		 *  The guidelines of a workspace: rules first, then memories, each in the order they were
+		 *  added.
+		 */
+		listGuidelines: (workspaceId: WorkspaceId) => typedError<Guideline[], CommandError>(invoke("list_guidelines", { workspaceId })),
+		addGuideline: (guideline: NewGuideline) => typedError<Guideline, CommandError>(invoke("add_guideline", { guideline })),
+		/**  Replaces the kind and body of a guideline. */
+		updateGuideline: (guideline: GuidelineUpdate) => typedError<Guideline, CommandError>(invoke("update_guideline", { guideline })),
+		/**  Deletes a guideline and returns it as it was. */
+		deleteGuideline: (id: GuidelineId) => typedError<Guideline, CommandError>(invoke("delete_guideline", { id })),
+		/**
+		 *  Tasks ordered by ID, each with its dependencies, which may belong to another
+		 *  workspace: every task without a filter, else those the filter selects. With a limit,
+		 *  the matching tasks with the highest IDs; pass the lowest ID of a full page as `before`
+		 *  to read the next.
+		 */
+		listTasks: (filter: {
+		/**  Only tasks of this workspace. */
+		workspaceId?: WorkspaceId | null,
+		/**  Only tasks with one of these statuses; omitted or empty for any status. */
+		statuses?: TaskStatus[] | null,
+		/**  Only these tasks, at most 500. */
+		ids?: TaskId[] | null,
+		/**  Only tasks with a lower ID: the lowest ID of the previous page, to read the next. */
+		before?: TaskId | null,
+		/**
+		 *  At most this many tasks (1 to 500), those with the highest IDs; a full page means
+		 *  older ones may follow.
+		 */
+		limit?: number | null,
+	} | null) => typedError<Task[], CommandError>(invoke("list_tasks", { filter })),
+		/**  Every related link between tasks, which neither block nor wait on each other. */
+		listTaskRelations: () => typedError<TaskRelation[], CommandError>(invoke("list_task_relations")),
+		/**  Links two tasks, from any workspaces, as related; linking twice keeps one link. */
+		addTaskRelation: (taskId: TaskId, relatedId: TaskId) => typedError<null, CommandError>(invoke("add_task_relation", { taskId, relatedId })),
+		/**  Removes the related link between two tasks, given in either order. */
+		removeTaskRelation: (taskId: TaskId, relatedId: TaskId) => typedError<null, CommandError>(invoke("remove_task_relation", { taskId, relatedId })),
+		getTask: (id: TaskId) => typedError<Task, CommandError>(invoke("get_task", { id })),
+		/**  Creates a `planned` task without dependencies, with its completion criteria. */
+		createTask: (task: NewTask) => typedError<Task, CommandError>(invoke("create_task", { task })),
+		updateTask: (task: TaskEdit) => typedError<Task, CommandError>(invoke("update_task", { task })),
+		/**
+		 *  Moves a task, in any status, into another live workspace, keeping its ID, history,
+		 *  notes, criteria, refs, and links.
+		 */
+		moveTask: (id: TaskId, workspaceId: WorkspaceId) => typedError<Task, CommandError>(invoke("move_task", { id, workspaceId })),
+		/**  Pauses an `in_progress` or `in_review` task by returning it to `planned`. */
+		pauseTask: (id: TaskId) => typedError<Task, CommandError>(invoke("pause_task", { id })),
+		/**
+		 *  Makes a `planned`, `in_progress`, or `in_review` task wait until `until`: it is paused
+		 *  (`planned`) until then and returns on its own to the status it had, also after a
+		 *  restart of the server. A task that already waits gets the new time. `reason`, if given,
+		 *  is kept with the progress note the wait records.
+		 */
+		waitTask: (id: TaskId, until: Timestamp, reason: string | null) => typedError<Task, CommandError>(invoke("wait_task", { id, until, reason })),
+		/**
+		 *  Ends the wait of a task now: it returns to the status it had when the wait began, as
+		 *  when the time passes.
+		 */
+		endWait: (id: TaskId) => typedError<Task, CommandError>(invoke("end_wait", { id })),
+		/**
+		 *  Stores what the user wrote about the outcome of a `done` task, for reviews. The note
+		 *  is trimmed; an empty one clears it, except for a task that was not adopted, whose note
+		 *  is its required conclusion.
+		 */
+		setCompletionNote: (id: TaskId, note: string) => typedError<Task, CommandError>(invoke("set_completion_note", { id, note })),
+		/**
+		 *  Reopens a `done` task that was completed or concluded by mistake: it becomes `planned`
+		 *  again, paused if it was started, so Start (or Resume) continues the work on its branch.
+		 *  Its resolution, completion note, and `merged_with` are cleared; `reason`, required, is
+		 *  kept as a progress note with the earlier outcome, and the timeline records the
+		 *  reopening. Rejected while a task that depends on it has started: it built on the
+		 *  outcome, which Set outcome corrects instead.
+		 */
+		reopenTask: (id: TaskId, reason: string) => typedError<Task, CommandError>(invoke("reopen_task", { id, reason })),
+		/**
+		 *  Corrects how a `done` task ended without reopening it: `resolution` replaces its
+		 *  resolution and `note`, required, its completion note; the earlier outcome is kept as
+		 *  a progress note. Merged needs a recorded merge, its own pull request's or the one it
+		 *  shipped with; for work another task or pull request shipped, use
+		 *  `complete_task_merged_with`. Not adopted keeps its dependents waiting.
+		 */
+		setTaskOutcome: (id: TaskId, resolution: TaskResolution, note: string) => typedError<Task, CommandError>(invoke("set_task_outcome", { id, resolution, note })),
+		/**
+		 *  Checks (`met`) or unchecks a manual completion criterion of a task that is not done,
+		 *  with what shows it; blank evidence is none. A task in progress whose criteria are then
+		 *  all met awaits completion until it is completed.
+		 */
+		checkCriterion: (taskId: TaskId, criterionId: CriterionId, met: boolean, evidence: string | null) => typedError<Task, CommandError>(invoke("check_criterion", { taskId, criterionId, met, evidence })),
+		/**  Archives the task while preserving its history. */
+		deleteTask: (id: TaskId) => typedError<null, CommandError>(invoke("delete_task", { id })),
+		/**
+		 *  Archives every `done` (completed or concluded) task of a live workspace in one go, as
+		 *  [`delete_task`] does for one task, keeping their history; returns how many were
+		 *  archived.
+		 */
+		deleteDoneTasks: (workspaceId: WorkspaceId) => typedError<number, CommandError>(invoke("delete_done_tasks", { workspaceId })),
+		/**
+		 *  Brings an archived task of a live workspace back with its dependencies; its worktree,
+		 *  removed when it was deleted, is not recreated.
+		 */
+		restoreTask: (id: TaskId) => typedError<Task, CommandError>(invoke("restore_task", { id })),
+		/**
+		 *  Deletes an archived task for good with its history, commit records, and links; a task
+		 *  that is not archived is rejected.
+		 */
+		purgeTask: (id: TaskId) => typedError<null, CommandError>(invoke("purge_task", { id })),
+		/**  Adds a prerequisite, pausing a blocked active task when confirmed. */
+		addDependency: (taskId: TaskId, dependsOn: TaskId, confirmPause: boolean) => typedError<DependencyOutcome, CommandError>(invoke("add_dependency", { taskId, dependsOn, confirmPause })),
+		removeDependency: (taskId: TaskId, dependsOn: TaskId) => typedError<null, CommandError>(invoke("remove_dependency", { taskId, dependsOn })),
+		/**  Starts a ready task and records the supplied reason and references. */
+		startTask: (id: TaskId, reason: string | null, refs: string[] | null) => typedError<Task, CommandError>(invoke("start_task", { id, reason, refs })),
+		/**  Completes a task after its manual criteria and URL checks succeed. */
+		completeTask: (id: TaskId, note: string | null, refs: string[] | null) => typedError<Task, CommandError>(invoke("complete_task", { id, note, refs })),
+		/**  Records the conclusion of work or identifies the completed task that shipped it. */
+		concludeTask: (id: TaskId, note: string, outcome: "not_adopted" | "shipped_with" | null, shippedWith: number | null) => typedError<Task, CommandError>(invoke("conclude_task", { id, note, outcome, shippedWith })),
+		/**  Appends an issue reference without querying the issue service. */
+		linkIssue: (id: TaskId, reference: string) => typedError<Task, CommandError>(invoke("link_issue", { id, reference })),
+		mcpServerInfo: () => invoke<McpServerInfo>("mcp_server_info"),
+		/**  Lists live OAuth connections and the MCP URL to paste into a chat app. */
+		listConnectedApps: () => typedError<ConnectedApps, CommandError>(invoke("list_connected_apps")),
+		/**  Disconnects an app by revoking its whole token family. */
+		revokeConnectedApp: (grantId: OAuthGrantId) => typedError<null, CommandError>(invoke("revoke_connected_app", { grantId })),
+		/**
+		 *  Tasks of every workspace that reached a milestone or got a commit from midnight of the
+		 *  day `from` to midnight after the day `to` (both `YYYY-MM-DD`) in the review time zone
+		 *  of the server, archived ones included, ordered by outcome, then by time. The caller
+		 *  picks the days, such as those of a week, a month, or a year.
+		 */
+		reviewPeriod: (from: string, to: string) => typedError<ReviewPeriodEntries, CommandError>(invoke("review_period", { from, to })),
+		/**
+		 *  The review of a period rendered as Markdown or CSV, as the web app, the MCP tool
+		 *  `review_report`, and `toodo review` show it; see [`ReviewReportRequest`].
+		 */
+		reviewReport: (request: ReviewReportRequest) => typedError<ReviewReport, CommandError>(invoke("review_report", { request })),
+		/**  The time zone reviewed periods are judged in. */
+		getReviewTimeZone: () => typedError<ReviewTimeZone, CommandError>(invoke("get_review_time_zone")),
+		/**
+		 *  Sets the IANA time zone (e.g. `Europe/Berlin`) reviewed periods are judged in, on
+		 *  every device and for MCP and `toodo review`; `null` or blank goes back to the
+		 *  server's own.
+		 */
+		setReviewTimeZone: (timeZone: string | null) => typedError<ReviewTimeZone, CommandError>(invoke("set_review_time_zone", { timeZone })),
+		/**
+		 *  Saves the review of a period as it is now: its tasks, the names of their workspaces,
+		 *  and its report as Markdown and CSV, judged in the review time zone. Reopening it
+		 *  later shows the same, however the tasks change afterwards.
+		 */
+		saveReviewSnapshot: (request: SaveReviewSnapshotRequest) => typedError<ReviewSnapshotSummary, CommandError>(invoke("save_review_snapshot", { request })),
+		/**  The saved reviews, the most recently saved first. */
+		listReviewSnapshots: () => typedError<ReviewSnapshotSummary[], CommandError>(invoke("list_review_snapshots")),
+		/**  The saved review `id` exactly as it was saved. */
+		getReviewSnapshot: (id: ReviewSnapshotId) => typedError<ReviewSnapshot, CommandError>(invoke("get_review_snapshot", { id })),
+		/**  Deletes the saved review `id`. */
+		deleteReviewSnapshot: (id: ReviewSnapshotId) => typedError<null, CommandError>(invoke("delete_review_snapshot", { id })),
+		getBackupSettings: () => invoke<BackupSettings>("get_backup_settings"),
+		/**  Whether the latest automatic backup failed, and why. */
+		getBackupStatus: () => invoke<BackupStatus>("get_backup_status"),
+		/**
+		 *  Saves the automatic backup settings, then writes an automatic backup if one is now
+		 *  due. A backup directory in the settings is created if needed and must be writable.
+		 */
+		saveBackupSettings: (settings: BackupSettings) => typedError<BackupSettings, CommandError>(invoke("save_backup_settings", { settings })),
+		/**  Backups in Toodo's backup directory, newest first. */
+		listBackups: () => typedError<BackupEntry[], CommandError>(invoke("list_backups")),
+		/**
+		 *  Replaces all data with the backup named `name` in Toodo's backup directory (see
+		 *  [`list_backups`]). The current data is first saved as a pre-restore backup, which is
+		 *  returned.
+		 */
+		restoreBackup: (name: string) => typedError<BackupEntry, CommandError>(invoke("restore_backup", { name })),
+		/**
+		 *  The latest messages of `place` before `before` (the latest of all without it), and what
+		 *  the agent is doing.
+		 */
+		listChat: (place: ChatPlace, before: number | null) => typedError<ChatView, CommandError>(invoke("list_chat", { place, before })),
+		/**
+		 *  Sends a person's message to the agent in `place`, a channel or an open thread, with the
+		 *  files uploaded for it (`POST /api/chat/attachments`); `body` may be blank when there are
+		 *  files. `client_id` names it, so sending it again after a lost answer stores it once.
+		 */
+		sendChatMessage: (place: ChatPlace, body: string, clientId: string, attachments: ChatAttachmentId[]) => typedError<ChatMessage, CommandError>(invoke("send_chat_message", { place, body, clientId, attachments })),
+		/**
+		 *  Chooses the action `key` on the agent's message `message_id`: the agent gets the choice
+		 *  as a person's message with the action's label. A message takes one choice. `client_id`
+		 *  names the click, so sending it again stores it once. Returns the person's message.
+		 */
+		chooseChatAction: (messageId: ChatMessageId, key: string, clientId: string) => typedError<ChatMessage, CommandError>(invoke("choose_chat_action", { messageId, key, clientId })),
+		/**
+		 *  The messages matching `query` (every word, as a case-insensitive substring), best match
+		 *  first; `place` keeps to a channel with its threads, or one thread.
+		 */
+		searchChat: (query: string, place: ({ channel: ChatChannelId }) & { thread?: never } | ({ thread: ChatThreadId }) & { channel?: never } | null) => typedError<ChatSearchHit[], CommandError>(invoke("search_chat", { query, place })),
+		/**  Records that people read `place` up to message `up_to`, which clears its unread count. */
+		markChatRead: (place: ChatPlace, upTo: ChatMessageId) => typedError<null, CommandError>(invoke("mark_chat_read", { place, upTo })),
+		/**  Every channel, in the order they were made, with its unread count. */
+		listChatChannels: () => typedError<ChatChannel[], CommandError>(invoke("list_chat_channels")),
+		/**  Makes a channel; its name is shown after `#`, which it may start with. */
+		createChatChannel: (name: string) => typedError<ChatChannel, CommandError>(invoke("create_chat_channel", { name })),
+		/**  Renames a channel or turns its notifications on or off. */
+		updateChatChannel: (id: ChatChannelId, edit: ChatChannelEdit) => typedError<ChatChannel, CommandError>(invoke("update_chat_channel", { id, edit })),
+		/**  The threads `filter` selects, the latest active first. */
+		listChatThreads: (filter: ChatThreadFilter) => typedError<ChatThread[], CommandError>(invoke("list_chat_threads", { filter })),
+		/**  Opens a thread under a channel, following a task if one is given. */
+		createChatThread: (thread: NewChatThread) => typedError<ChatThread, CommandError>(invoke("create_chat_thread", { thread })),
+		/**  Retitles a thread, links or unlinks its task, or opens, closes, or archives it. */
+		updateChatThread: (id: ChatThreadId, edit: ChatThreadEdit) => typedError<ChatThread, CommandError>(invoke("update_chat_thread", { id, edit })),
+	};
+}
+
+export type Commands = ReturnType<typeof makeCommands>;
+
+/** The events, received through `listen`. */
+export function makeEvents(listen: Listen) {
+	function makeEvent<T>(name: string) {
+		return {
+			listen: (cb: (event: { event: string; id: number; payload: T }) => void) => listen<T>(name, cb),
+		};
+	}
+	return {
+		tasksChanged: makeEvent<TasksChanged>("tasks-changed"),
+		workspacesChanged: makeEvent<WorkspacesChanged>("workspaces-changed"),
+		guidelinesChanged: makeEvent<GuidelinesChanged>("guidelines-changed"),
+		taskStatusChanged: makeEvent<TaskStatusChanged>("task-status-changed"),
+		taskReady: makeEvent<TaskReady>("task-ready"),
+		chatChanged: makeEvent<ChatChanged>("chat-changed"),
+		chatTyping: makeEvent<ChatTyping>("chat-typing"),
+		chatActionChosen: makeEvent<ChatActionChosen>("chat-action-chosen"),
+	};
+}
+
+export type Events = ReturnType<typeof makeEvents>;
+
+/* Types */
+export type AppInfo = {
+	name: string,
+	version: string,
+};
+
+/**
+ *  What deleting moved to the archive: workspaces, archived with their tasks, and tasks of
+ *  live workspaces, each ordered by ID.
+ */
+export type Archive = {
+	workspaces: Workspace[],
+	tasks: Task[],
+};
+
+/**  A backup in Toodo's backup directory. */
+export type BackupEntry = {
+	path: string,
+	kind: BackupKind,
+	createdAt: Timestamp,
+	sizeBytes: number,
+};
+
+/**  An automatic backup that failed, and why. */
+export type BackupFailure = {
+	at: Timestamp,
+	message: string,
+};
+
+export type BackupKind = "automatic" | "preRestore" | "preMigration";
+
+export type BackupSettings = {
+	enabled: boolean,
+	intervalHours: number,
+	/**  Number of automatic backups kept; older ones are deleted. */
+	keep: number,
+	/**
+	 *  Absolute path of the directory backups are written to, e.g. on another disk;
+	 *  `null` (or empty) keeps them in the data directory.
+	 */
+	directory?: string | null,
+};
+
+/**  How automatic backups have gone since the server started. */
+export type BackupStatus = {
+	/**  The latest automatic backup failed; cleared once one succeeds again. */
+	lastFailure: BackupFailure | null,
+};
+
+/**
+ *  A choice offered on the agent's message, shown as a button. A person's click comes back
+ *  to the agent with `key`.
+ */
+export type ChatAction = {
+	/**  What the agent gets back when this is chosen, e.g. `approve`; unique in the message. */
+	key: string,
+	/**  What the button says. */
+	label: string,
+	style?: ChatActionStyle,
+};
+
+/**
+ *  A person chose an action on the agent's message `messageId`: the action's `key` and
+ *  `label`, and `choiceId`, the person's message that records it, which `take_pending` hands
+ *  the agent too.
+ */
+export type ChatActionChosen = {
+	messageId: ChatMessageId,
+	key: string,
+	label: string,
+	choiceId: ChatMessageId,
+	channelId: ChatChannelId,
+	threadId: ChatThreadId | null,
+	at: Timestamp,
+};
+
+/**
+ *  How an action's button looks: plain (`default`), the suggested choice (`primary`), or a
+ *  destructive one (`danger`).
+ */
+export type ChatActionStyle = "default" | "primary" | "danger";
+
+/**  How the app shows the agent: the name and avatar the server is configured with. */
+export type ChatAgent = {
+	name: string,
+	/**  An `https` URL or a path on the server. */
+	avatarUrl: string | null,
+};
+
+/**
+ *  A file uploaded to the chat. People's apps read it at
+ *  `/api/chat/attachments/<id>`, the agent at `/mcp/attachments/<id>`.
+ */
+export type ChatAttachment = {
+	id: ChatAttachmentId,
+	name: string,
+	contentType: string,
+	/**  Bytes. */
+	size: number,
+};
+
+export type ChatAttachmentId = number;
+
+/**  Who wrote a chat message: a person in the app, the agent connected over MCP, or Toodo. */
+export type ChatAuthor = "user" | "agent" | "system";
+
+/**
+ *  The chat got a message, a channel or thread changed, people read some of it, or the
+ *  agent's receipts on a message changed.
+ */
+export type ChatChanged = null;
+
+/**  A channel of the chat. */
+export type ChatChannel = {
+	id: ChatChannelId,
+	name: string,
+	/**  Whether the agent's messages in it and its threads notify devices. */
+	push: boolean,
+	createdAt: Timestamp,
+	/**
+	 *  Messages of the agent and Toodo not read yet, in it and its threads that are not
+	 *  archived.
+	 */
+	unread: number,
+};
+
+/**  What changes on a channel; an omitted or `null` field stays. */
+export type ChatChannelEdit = {
+	name?: string | null,
+	/**  Whether the agent's messages in the channel notify devices. */
+	push?: boolean | null,
+};
+
+export type ChatChannelId = number;
+
+/**  The action a person chose on the agent's message, and the person's message recording it. */
+export type ChatChoice = {
+	key: string,
+	at: Timestamp,
+	choiceId: ChatMessageId,
+};
+
+/**  The agent's message and the key of the action a person's message chose. */
+export type ChatChoiceOf = {
+	messageId: ChatMessageId,
+	key: string,
+};
+
+/**
+ *  A chat message. The receipts are set only on a person's messages: when the agent
+ *  received it, acknowledged it, and handled it with a reply or a task.
+ */
+export type ChatMessage = {
+	id: ChatMessageId,
+	channelId: ChatChannelId,
+	/**  The thread it is in; unset for a message in the channel itself. */
+	threadId: ChatThreadId | null,
+	author: ChatAuthor,
+	body: string,
+	at: Timestamp,
+	deliveredAt: Timestamp | null,
+	ackedAt: Timestamp | null,
+	handledAt: Timestamp | null,
+	handledReplyId: ChatMessageId | null,
+	handledTaskId: TaskId | null,
+	/**  A person's message the agent neither handled nor answered in time. */
+	overdue: boolean,
+	/**  The choices the agent offers on its message, shown as buttons. */
+	actions: ChatAction[],
+	/**  The action a person chose on the agent's message; the message takes no other. */
+	chosen: ChatChoice | null,
+	/**  On a person's message that records a choice: the agent's message and the action. */
+	choiceOf: ChatChoiceOf | null,
+	attachments: ChatAttachment[],
+};
+
+export type ChatMessageId = number;
+
+/**
+ *  Where a message is: a channel itself (`{ "channel": 1 }`) or one of its threads
+ *  (`{ "thread": 3 }`).
+ */
+export type ChatPlace = ({ channel: ChatChannelId }) & { thread?: never } | ({ thread: ChatThreadId }) & { channel?: never };
+
+/**  A message a search found, with the name of its channel and the title of its thread. */
+export type ChatSearchHit = {
+	message: ChatMessage,
+	channelName: string,
+	threadTitle: string | null,
+};
+
+/**  A thread under a channel, which may follow a task. */
+export type ChatThread = {
+	id: ChatThreadId,
+	channelId: ChatChannelId,
+	title: string,
+	taskId: TaskId | null,
+	status: ChatThreadStatus,
+	createdAt: Timestamp,
+	/**  Set while it is closed or archived. */
+	closedAt: Timestamp | null,
+	/**  Set while it is archived. */
+	archivedAt: Timestamp | null,
+	/**  Messages of the agent and Toodo in it not read yet. */
+	unread: number,
+	lastMessageAt: Timestamp | null,
+};
+
+/**
+ *  What changes on a thread; an omitted or `null` field stays. `unlinkTask` drops its task
+ *  and cannot go with `taskId`.
+ */
+export type ChatThreadEdit = {
+	title?: string | null,
+	status?: ChatThreadStatus | null,
+	taskId?: TaskId | null,
+	unlinkTask?: boolean,
+};
+
+/**
+ *  Which threads to list: of a channel, of a task, or all; archived ones only when
+ *  `archived` is set.
+ */
+export type ChatThreadFilter = {
+	channelId?: ChatChannelId | null,
+	taskId?: TaskId | null,
+	archived?: boolean,
+};
+
+export type ChatThreadId = number;
+
+/**
+ *  Whether a thread takes messages: open, closed, or archived (closed and left out of its
+ *  channel's thread list unless asked for).
+ */
+export type ChatThreadStatus = "open" | "closed" | "archived";
+
+/**
+ *  The agent started or stopped writing a message: `until` is when it counts as stopped
+ *  unless it says so again, unset once it stopped or posted.
+ */
+export type ChatTyping = {
+	until: Timestamp | null,
+};
+
+/**  The latest messages of the chat and what the agent is doing. */
+export type ChatView = {
+	agent: ChatAgent,
+	/**  Oldest first. */
+	messages: ChatMessage[],
+	/**  Whether messages before the first one remain. */
+	hasEarlier: boolean,
+	/**  Until when the agent said it is writing; unset when it posted since or never said. */
+	typingUntil: Timestamp | null,
+};
+
+/**  How a completion criterion is checked: by hand (`manual`) or by Toodo. */
+export type CheckKind = 
+/**  Checked by the user or an agent, with evidence. */
+"manual" | 
+/**  A GET of `target`, an http(s) URL, succeeds. */
+"url";
+
+/**  Who checked a criterion last. */
+export type CheckedBy = "user" | "agent" | "toodo";
+
+export type CommandError = {
+	kind: CommandErrorKind,
+	code: CommandErrorCode,
+	message: string,
+};
+
+/**
+ *  What went wrong, as a stable machine-readable code. The RPC endpoint and the MCP tools
+ *  return the same codes, so the web app and agents can react to a code instead of the
+ *  message text. Each code belongs to one [`CommandErrorKind`]; the generic codes named
+ *  after a kind cover failures without a more specific code.
+ */
+export type CommandErrorCode = 
+/**  An argument is malformed. */
+"invalidInput" | 
+/**
+ *  The request body does not match the command's parameters, e.g. after the server
+ *  was updated and the web app was not reloaded.
+ */
+"invalidArguments" | 
+/**  A referenced object does not exist. */
+"notFound" | 
+/**  No command or tool has this name. */
+"unknownCommand" | "workspaceNotFound" | "taskNotFound" | "criterionNotFound" | "dependencyNotFound" | "relationNotFound" | "runNotFound" | "guidelineNotFound" | "chatMessageNotFound" | "chatChannelNotFound" | "chatThreadNotFound" | 
+/**  The request breaks a rule. */
+"rejected" | 
+/**  The dependency would make the task DAG cyclic or make a task depend on itself. */
+"dependencyCycle" | 
+/**  The task cannot move to the requested status from its current one. */
+"invalidTransition" | 
+/**  A prerequisite of the task is not done yet. */
+"dependenciesNotDone" | 
+/**  The caller may not use this tool, e.g. a chat app connected over OAuth. */
+"notPermitted" | 
+/**  An external tool failed. */
+"external" | 
+/**  The server failed. */
+"internal" | 
+/**  The database failed or holds data the server cannot read. */
+"storageFailed" | 
+/**  The command stopped unexpectedly on the server; the details are in the server log. */
+"commandPanicked";
+
+export type CommandErrorKind = 
+/**  An argument is malformed, e.g. a relative path or an empty title. */
+"invalidInput" | 
+/**  A referenced workspace or task does not exist. */
+"notFound" | 
+/**
+ *  An external tool reported an error, e.g. git could not clone a repository or the
+ *  path is not inside a git repository.
+ */
+"external" | 
+/**
+ *  The request is well-formed but breaks a rule, e.g. a dependency cycle or a
+ *  forbidden status transition.
+ */
+"rejected" | 
+/**  The database failed or holds data the app cannot read. */
+"internal";
+
+export type CommitRecord = {
+	taskId: TaskId,
+	sha: string,
+	message: string,
+	author: string,
+	/**  Commit timestamp in seconds since the Unix epoch. */
+	committedAt: number,
+};
+
+/**  How work ends without completing its own criteria. */
+export type ConcludeOutcome = "not_adopted" | "shipped_with";
+
+/**  A live app connection shown in Settings. */
+export type ConnectedApp = {
+	grantId: OAuthGrantId,
+	clientName: string | null,
+	clientId: string,
+	scopes: string,
+	createdAt: Timestamp,
+	lastUsedAt: Timestamp | null,
+};
+
+export type ConnectedApps = {
+	publicMcpUrl: string | null,
+	apps: ConnectedApp[],
+};
+
+/**  A completion criterion of a task. */
+export type Criterion = {
+	id: CriterionId,
+	text: string,
+	kind: CheckKind,
+	/**  The HTTP URL to check; absent for manual criteria. */
+	target: string | null,
+	state: CriterionState,
+	/**  What showed the last check's result, or why it failed. */
+	evidence: string | null,
+	checkedBy: CheckedBy | null,
+	checkedAt: Timestamp | null,
+};
+
+export type CriterionId = number;
+
+/**
+ *  A completion criterion given when creating or editing a task: an existing one by `id`
+ *  (only when editing), or a new one.
+ */
+export type CriterionInput = {
+	/**
+	 *  An existing criterion of the task, which keeps its state unless its kind or
+	 *  target changes; omit it for a new criterion. `{"id": N}` alone keeps criterion N
+	 *  as it is.
+	 */
+	id?: CriterionId | null,
+	/**
+	 *  What has to hold, in words, e.g. `The server answers /health`. Required for a new
+	 *  criterion; the stored text when omitted with `id`.
+	 */
+	text?: string | null,
+	/**  Required for a new criterion; the stored kind when omitted with `id`. */
+	kind?: CheckKind | null,
+	/**
+	 *  The http(s) URL of a `url` criterion or the shell command of a `command`
+	 *  criterion; omit it for other kinds. With `id`, the stored target when omitted and
+	 *  the kind stays the same.
+	 */
+	target?: string | null,
+};
+
+export type CriterionState = "pending" | "met" | 
+/**  The last HTTP check failed; completion checks it again. */
+"failed";
+
+/**  What adding a prerequisite in the app did. */
+export type DependencyOutcome = 
+/**
+ *  The dependency was added, pausing the task if it blocks it and the pause was
+ *  confirmed.
+ */
+"added" | 
+/**
+ *  The prerequisite would pause the task, which is in progress; nothing was added.
+ *  Ask the user, then add it again with the pause confirmed.
+ */
+"confirm_pause";
+
+/**  The expected size of a task. */
+export type Estimate = {
+	unit: EstimateUnit,
+	/**
+	 *  Greater than 0 and at most 10000, e.g. 1.5; never NaN or infinite.
+	 */
+	amount: number,
+};
+
+/**
+ *  The unit of time an estimate counts, compared with the time the task spends in
+ *  progress or in review. A day is 24 hours, a week 7 days, and a month 30 days.
+ */
+export type EstimateUnit = "hours" | "days" | "weeks" | "months";
+
+/**  A guideline of a workspace, read before working on one of its tasks. */
+export type Guideline = {
+	id: GuidelineId,
+	workspaceId: WorkspaceId,
+	kind: GuidelineKind,
+	/**  Markdown. */
+	body: string,
+	createdAt: Timestamp,
+	updatedAt: Timestamp,
+};
+
+export type GuidelineId = number;
+
+/**
+ *  What a workspace guideline records: a `rule` the owner sets for agents to follow, or
+ *  a `memory`, a durable lesson or fact recorded for the workspace.
+ */
+export type GuidelineKind = "rule" | "memory";
+
+/**  The new kind and body of a stored guideline. */
+export type GuidelineUpdate = {
+	id: GuidelineId,
+	kind: GuidelineKind,
+	/**  Markdown, at most 4000 characters after trimming. */
+	body: string,
+};
+
+/**  The guidelines of a workspace were added, changed, or deleted. */
+export type GuidelinesChanged = {
+	workspaceId: WorkspaceId,
+};
+
+/**  A GitHub issue of the workspace repository linked to a task. */
+export type LinkedIssue = {
+	number: number,
+	url: string,
+};
+
+export type McpRejection = {
+	reason: McpRejectionReason,
+	at: Timestamp,
+	/**  How many requests `/mcp` turned away since the server started. */
+	count: number,
+};
+
+/**  Why `/mcp` turned a request away. */
+export type McpRejectionReason = 
+/**  No `Authorization` header. */
+"no_header" | 
+/**  The header is not `Bearer <token>`. */
+"not_bearer" | 
+/**  A token this server does not accept, e.g. an old or another server's one. */
+"wrong_token" | 
+/**  The web sign-in token instead of the MCP token. */
+"web_token";
+
+export type McpServerInfo = {
+	url: string,
+	/**  Bearer token agents send in the `Authorization` header. */
+	token: string | null,
+	/**  Why the server is not running, e.g. its port is taken. */
+	error: string | null,
+	/**
+	 *  Tells this server apart from other Toodo servers; `401` answers from `/mcp` and
+	 *  the MCP `serverInfo` name it too.
+	 */
+	instance: string,
+	/**  The last request `/mcp` turned away, from agents here or on SSH machines. */
+	lastRejection: McpRejection | null,
+};
+
+/**  A thread to open under a channel, following a task if `taskId` is given. */
+export type NewChatThread = {
+	channelId: ChatChannelId,
+	title: string,
+	taskId?: TaskId | null,
+};
+
+export type NewGuideline = {
+	workspaceId: WorkspaceId,
+	kind: GuidelineKind,
+	/**  Markdown, at most 4000 characters after trimming. */
+	body: string,
+};
+
+export type NewTask = {
+	workspaceId: WorkspaceId,
+	taskType: TaskType,
+	title: string,
+	description: string,
+	estimate: Estimate | null,
+	/**  `YYYY-MM-DD`; blank or `null` for none. */
+	dueDate: string | null,
+	/**  Labels such as a project or goal; none when omitted. */
+	labels?: string[],
+	/**  Whether to mark the task for autopilot; not marked when omitted. */
+	autopilot?: boolean,
+	/**  Completion criteria in order; an `id` is not allowed here. */
+	criteria: CriterionInput[],
+};
+
+export type NewWorkspace = {
+	name: string,
+	description: string | null,
+	repository: string | null,
+};
+
+/**  What a note left on a task records. */
+export type NoteKind = 
+/**  Progress made. */
+"progress" | 
+/**  Something that stops the work until someone acts on it. */
+"blocker" | 
+/**  A decision taken, and why. */
+"decision";
+
+/**  An OAuth app with an unrevoked grant and a live token. */
+export type OAuthGrantId = number;
+
+/**  A merged pull request as GitHub reported it when it completed its task. */
+export type PullRequestSnapshot = {
+	number: number,
+	title: string,
+	additions: number,
+	deletions: number,
+	changedFiles: number,
+	/**  The commit the merge put on the base branch. */
+	mergeCommitSha: string | null,
+	/**  Submitted reviews by anyone but the author of the pull request. */
+	reviewCount: number,
+	/**  Distinct reviewers other than the author of the pull request. */
+	reviewerCount: number,
+	firstReviewedAt: Timestamp | null,
+};
+
+/**  The file format of a review report. */
+export type ReportFormat = 
+/**  Markdown, for pasting into a status update or a year-end report. */
+"markdown" | 
+/**
+ *  One row per reviewed task (RFC 4180, CRLF line ends, led by a UTF-8 byte order
+ *  mark), for spreadsheets.
+ */
+"csv";
+
+/**  A task with activity in a reviewed period. */
+export type ReviewEntry = {
+	pullRequest: PullRequestSnapshot | null,
+	task: Task,
+	outcome: ReviewOutcome,
+	/**  Time of the outcome: the milestone, or the latest commit for `worked_on`. */
+	at: Timestamp,
+	/**  Commits of the task made in the period, oldest first. */
+	commits: CommitRecord[],
+	/**
+	 *  Whether the task or its workspace was deleted, which archives it; its work still
+	 *  counts.
+	 */
+	archived: boolean,
+};
+
+/**
+ *  What happened to a task during a reviewed period: the most advanced milestone it
+ *  reached in the period, or `worked_on` when it only got commits.
+ */
+export type ReviewOutcome = "completed" | "opened_for_review" | "started" | "worked_on" | "planned";
+
+/**
+ *  The reviewed tasks of the days `from` to `to`, with the period the server judged
+ *  them by.
+ */
+export type ReviewPeriodEntries = {
+	/**  The first and last day, as `YYYY-MM-DD` in `timeZone`. */
+	from: string,
+	to: string,
+	/**
+	 *  The period as `[start, end)`: midnight of `from` to midnight after `to` in
+	 *  `timeZone`.
+	 */
+	start: Timestamp,
+	end: Timestamp,
+	timeZone: string,
+	entries: ReviewEntry[],
+};
+
+/**  The kind of a reviewed period. */
+export type ReviewPeriodKind = 
+/**  Seven days, from a Monday unless `from` names another first day. */
+"week" | 
+/**  A calendar month. */
+"month" | 
+/**  A calendar quarter. */
+"quarter" | 
+/**  A calendar year. */
+"year" | 
+/**  The days `from` to `to`, both included. */
+"custom";
+
+/**  A rendered review report. */
+export type ReviewReport = {
+	/**  A file name for the report, e.g. `toodo-review-2026-Q4.md`. */
+	fileName: string,
+	/**  `text/markdown` or `text/csv`. */
+	mediaType: string,
+	/**  The first and last day of the reviewed period, as `YYYY-MM-DD`. */
+	from: string,
+	to: string,
+	contents: string,
+};
+
+/**  Which review report to render. Days are `YYYY-MM-DD` in `timeZone`. */
+export type ReviewReportRequest = {
+	period: ReviewPeriodKind,
+	/**
+	 *  A day inside the period, for any kind but `custom`; today when neither `date` nor
+	 *  `from` is given.
+	 */
+	date?: string | null,
+	/**
+	 *  The first day of the period: required for `custom`, any first day of a `week`, and
+	 *  a day inside a month, quarter, or year.
+	 */
+	from?: string | null,
+	/**  The last day of a `custom` period, included. */
+	to?: string | null,
+	format: ReportFormat,
+	/**
+	 *  An IANA time zone such as `Europe/Berlin` that the days, the period, and the times
+	 *  in the report are in; the review time zone of the server when omitted (see
+	 *  [`ReviewTimeZone`]).
+	 */
+	timeZone?: string | null,
+	/**  Only tasks of this workspace. */
+	workspaceId?: WorkspaceId | null,
+	/**  Only tasks with this label. */
+	label?: string | null,
+};
+
+/**
+ *  A saved review as it was when saved: its reviewed tasks, the names of their
+ *  workspaces, and its report as Markdown and CSV.
+ */
+export type ReviewSnapshot = {
+	summary: ReviewSnapshotSummary,
+	/**  Kept as the JSON it was saved as, so later changes to tasks do not touch it. */
+	entries: ReviewEntry[],
+	workspaces: ReviewWorkspaceName[],
+	/**  The report as `review_report` rendered it when saved. */
+	markdown: ReviewReport,
+	csv: ReviewReport,
+};
+
+/**  The ID of a saved review. */
+export type ReviewSnapshotId = number;
+
+/**  A saved review, without its contents. */
+export type ReviewSnapshotSummary = {
+	id: ReviewSnapshotId,
+	title: string,
+	period: ReviewPeriodKind,
+	/**  The first and last day, as `YYYY-MM-DD` in `timeZone`. */
+	from: string,
+	to: string,
+	timeZone: string,
+	workspaceId: WorkspaceId | null,
+	label: string | null,
+	/**  The period as `[start, end)`. */
+	start: Timestamp,
+	end: Timestamp,
+	/**  When it was saved; durations and due dates in it are judged at this time. */
+	savedAt: Timestamp,
+	entryCount: number,
+};
+
+/**
+ *  The time zone the server judges reviewed periods in, so a period covers the same
+ *  time on every device.
+ */
+export type ReviewTimeZone = {
+	/**
+	 *  The IANA time zone in use: the one set, else the server's own (`UTC` when the
+	 *  server's has no IANA name).
+	 */
+	timeZone: string,
+	/**  The time zone set for reviews; `null` while the server's own is used. */
+	configured: string | null,
+};
+
+/**  The name of a workspace as a saved review shows it. */
+export type ReviewWorkspaceName = {
+	id: WorkspaceId,
+	name: string,
+};
+
+/**
+ *  Which review to save as a snapshot: a period as for [`ReviewReportRequest`] (judged in
+ *  the review time zone of the server) and the tasks to keep.
+ */
+export type SaveReviewSnapshotRequest = {
+	period: ReviewPeriodKind,
+	/**
+	 *  The first day of a week or custom period, or a day inside a month, quarter, or
+	 *  year, as `YYYY-MM-DD`.
+	 */
+	from: string,
+	/**  The last day of a `custom` period, included. */
+	to?: string | null,
+	/**  Only tasks of this workspace. */
+	workspaceId?: WorkspaceId | null,
+	/**  Only tasks with this label. */
+	label?: string | null,
+	/**  A name for the snapshot; the period's, e.g. `Year review 2026`, when omitted. */
+	title?: string | null,
+};
+
+export type Task = {
+	id: TaskId,
+	workspaceId: WorkspaceId,
+	taskType: TaskType,
+	title: string,
+	description: string,
+	status: TaskStatus,
+	/**  How the task ended; set exactly when it is `done`. */
+	resolution: TaskResolution | null,
+	/**  Tasks this task depends on, in ascending ID order. */
+	dependsOn: TaskId[],
+	/**  The GitHub issue this task works on; its pull request closes it on merge. */
+	issue: LinkedIssue | null,
+	/**  The expected size of the task, if estimated. */
+	estimate: Estimate | null,
+	/**  The day the task should be done by, as `YYYY-MM-DD` in local time. */
+	dueDate: string | null,
+	/**  Labels such as a project or goal, sorted. */
+	labels: string[],
+	/**
+	 *  References to where the work is tracked or discussed, in the order they were added,
+	 *  e.g. `lane:search-api`, `discord:<thread>`, `pr:<number>`, or a URL. Toodo does not
+	 *  interpret them.
+	 */
+	refs: string[],
+	/**
+	 *  What the user wrote about the outcome of a `done` task; for a `not_adopted` one,
+	 *  why it was not adopted.
+	 */
+	completionNote: string | null,
+	/**
+	 *  Status history, oldest event first. Empty for tasks created before Toodo
+	 *  recorded it.
+	 */
+	timeline: TaskEvent[],
+	milestones: TaskMilestones,
+	/**  Notes agents left on the task through the MCP server, oldest first. */
+	notes: TaskNote[],
+	/**  What has to hold for the task to be done, in order. */
+	criteria: Criterion[],
+	/**
+	 *  The wait the task is paused for: it is `planned` until `until`, then returns to
+	 *  the status it had when the wait began. `None` when it does not wait.
+	 */
+	wait: TaskWait | null,
+	/**
+	 *  Whether the task is marked for autopilot: an executor may take it up on its own
+	 *  once it is ready.
+	 */
+	autopilot: boolean,
+	/**  Since when the task is marked for autopilot; `None` when it is not. */
+	autopilotAt: Timestamp | null,
+};
+
+/**  The editable task fields. Lifecycle commands handle status changes other than review. */
+export type TaskEdit = {
+	/**  Only in_review is set here; other transitions use lifecycle commands. */
+	status: TaskStatus | null,
+	id: TaskId,
+	taskType: TaskType,
+	title: string,
+	description: string,
+	/**  `null` clears the estimate. */
+	estimate: Estimate | null,
+	/**  `YYYY-MM-DD`; blank or `null` clears the due date. */
+	dueDate: string | null,
+	/**  The new labels, which replace the current ones; `null` or omitted keeps them. */
+	labels?: string[] | null,
+	/**
+	 *  Marks the task for autopilot (`true`) or clears the mark (`false`); `null` or
+	 *  omitted keeps it. Marking a marked task keeps the time it was marked.
+	 */
+	autopilot?: boolean | null,
+	/**
+	 *  The new completion criteria in order, which replace the current ones; `null`
+	 *  keeps them. The criteria of a done task cannot change.
+	 */
+	criteria: CriterionInput[] | null,
+};
+
+export type TaskEvent = {
+	status: TaskStatus,
+	at: Timestamp,
+	/**  The change reopened the task: it follows a move to `done`. */
+	reopened: boolean,
+	/**
+	 *  Why the change happened: on a move back to `planned`, the reason of a pause, the
+	 *  prerequisites the task waits on, or why it was reopened; on a start or completion,
+	 *  the reason or note given with it; `null` when none was recorded.
+	 */
+	reason: string | null,
+};
+
+export type TaskId = number;
+
+/**
+ *  Which tasks `list_tasks` returns; every condition given must hold. Without a limit,
+ *  every matching task.
+ */
+export type TaskListFilter = {
+	/**  Only tasks of this workspace. */
+	workspaceId?: WorkspaceId | null,
+	/**  Only tasks with one of these statuses; omitted or empty for any status. */
+	statuses?: TaskStatus[] | null,
+	/**  Only these tasks, at most 500. */
+	ids?: TaskId[] | null,
+	/**  Only tasks with a lower ID: the lowest ID of the previous page, to read the next. */
+	before?: TaskId | null,
+	/**
+	 *  At most this many tasks (1 to 500), those with the highest IDs; a full page means
+	 *  older ones may follow.
+	 */
+	limit?: number | null,
+};
+
+/**
+ *  Milestones derived from a task's status history (see `docs/architecture.md`, Task
+ *  Timeline); `null` when not reached or not recorded.
+ */
+export type TaskMilestones = {
+	plannedAt: Timestamp | null,
+	startedAt: Timestamp | null,
+	reviewAt: Timestamp | null,
+	/**  The latest completion, unless the task was reopened after it. */
+	completedAt: Timestamp | null,
+	/**  The latest reopening of the task after it was done. */
+	reopenedAt: Timestamp | null,
+	/**  The latest pause, unless the task was started again after it. */
+	pausedAt: Timestamp | null,
+	/**  The latest move to `in_review`. */
+	lastReviewAt: Timestamp | null,
+	/**
+	 *  Seconds spent in progress or in review up to the latest status change, pauses left
+	 *  out; the current period of an active task is not counted yet.
+	 */
+	activeSeconds: number,
+	/**  How often the task was paused after work started. */
+	pauseCount: number,
+};
+
+/**  A note an agent left on a task while working on it. */
+export type TaskNote = {
+	kind: NoteKind,
+	/**  Markdown. */
+	body: string,
+	at: Timestamp,
+};
+
+/**
+ *  A planned task became ready: the last of its unfinished dependencies, `unblockedBy`,
+ *  moved to `done`, or was adopted after it was concluded as not adopted.
+ */
+export type TaskReady = {
+	taskId: TaskId,
+	workspaceId: WorkspaceId,
+	unblockedBy: TaskId,
+	/**  When `unblockedBy` moved to `done` or was adopted. */
+	at: Timestamp,
+};
+
+/**
+ *  A related link between two tasks, which may belong to different workspaces. The link
+ *  goes both ways; `task_id` is the lower ID.
+ */
+export type TaskRelation = {
+	taskId: TaskId,
+	relatedId: TaskId,
+};
+
+/**  How a `done` task ended. */
+export type TaskResolution = 
+/**  Its pull request was merged. */
+"merged" | 
+/**  Its criteria were met without a pull request or a merge. */
+"completed" | 
+/**
+ *  Concluded without merging; the completion note says why. Dependents stay
+ *  waiting.
+ */
+"not_adopted";
+
+export type TaskStatus = "planned" | "in_progress" | "in_review" | "done";
+
+/**  The status of a task changed, through any surface: the web app or MCP. A newly created task reports `from: null` and `to: "planned"`. */
+export type TaskStatusChanged = {
+	taskId: TaskId,
+	workspaceId: WorkspaceId,
+	from: TaskStatus | null,
+	to: TaskStatus,
+	/**  When the change was recorded in the task's status history. */
+	at: Timestamp,
+};
+
+export type TaskType = "feat" | "fix" | "modify" | "refactor" | "docs" | "test" | "chore" | "rnd";
+
+/**  A wait on a task. */
+export type TaskWait = {
+	/**  When the wait ends, in seconds since the Unix epoch. */
+	until: Timestamp,
+	/**  The status the task returns to then: `planned`, `in_progress`, or `in_review`. */
+	status: TaskStatus,
+};
+
+export type TasksChanged = {
+	workspaceId: WorkspaceId,
+};
+
+/**  Seconds since the Unix epoch (UTC). */
+export type Timestamp = number;
+
+/**  The version this server runs and the newest one on the npm channel it follows. */
+export type UpdateCheck = {
+	/**  The version this server runs. */
+	current: string,
+	/**  The npm dist-tag the version follows: `dev` for a prerelease, else `latest`. */
+	channel: string,
+	/**  The version on the channel, when the registry told it. */
+	latest: string | null,
+	/**  Whether `latest` is newer than `current`. */
+	newer: boolean,
+	/**  Why the newest version is unknown, with what to do about it. */
+	error: string | null,
+};
+
+export type Workspace = {
+	id: WorkspaceId,
+	name: string,
+	description: string | null,
+	repository: string | null,
+	archivedAt: Timestamp | null,
+};
+
+export type WorkspaceId = number;
+
+export type WorkspacesChanged = null;
+
+async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
+    try {
+        return { status: "ok", data: await result };
+    } catch (e) {
+        if (e instanceof Error) throw e;
+        return { status: "error", error: e as any };
+    }
+}

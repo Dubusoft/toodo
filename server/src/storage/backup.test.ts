@@ -14,7 +14,7 @@ import {
   restore,
   stageBackup,
 } from "./backup.ts";
-import { BASELINE_SCHEMA_VERSION, BUSY_TIMEOUT_MS, openWriter } from "./database.ts";
+import { BASELINE_SCHEMA_VERSION, BUSY_TIMEOUT_MS, openWriter, SCHEMA_VERSION } from "./database.ts";
 import { StorageError } from "./errors.ts";
 import { createDatabase, insertTask, insertWorkspace, openMemoryDatabase } from "./testing.ts";
 
@@ -118,12 +118,12 @@ test("files that are not Toodo databases of the baseline schema are rejected", (
   };
   const missing = join(dir, "missing.sqlite3");
 
-  for (const file of [garbage, other, versioned(BASELINE_SCHEMA_VERSION + 1), missing]) {
+  for (const file of [garbage, other, versioned(SCHEMA_VERSION + 1), missing]) {
     expect(rejection(file).failure.kind).toBe("invalid_backup");
   }
   expect(rejection(other).message).toContain("not a Toodo database");
   expect(rejection(versioned(BASELINE_SCHEMA_VERSION - 1)).message).toContain(
-    `schema version ${BASELINE_SCHEMA_VERSION - 1}; only version ${BASELINE_SCHEMA_VERSION} can be restored`,
+    `schema version ${BASELINE_SCHEMA_VERSION - 1}; only versions ${BASELINE_SCHEMA_VERSION} to ${SCHEMA_VERSION} can be restored`,
   );
   expect(existsSync(missing)).toBe(false);
 });

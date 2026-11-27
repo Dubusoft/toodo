@@ -58,27 +58,31 @@ See [`docs/architecture.md`](docs/architecture.md) for the domain model and
 - **Target**: `toodo-server` on Linux, used through the web app (PWA) it serves to
   browsers on any device; see `docs/server.md`. There is no native app.
 - **Prerequisite**: none beyond the server itself; it calls no other program.
-- **Backend**: Rust with tokio and axum: commands over HTTP, events over server-sent
-  events, MCP, and Web Push. TypeScript bindings for the commands are generated with
-  specta and specta-typescript.
+- **Backend**: TypeScript on Bun (`server/`): commands over HTTP, events over server-sent
+  events, MCP, and Web Push. The web app and the server share the API's types
+  (`src/lib/api.ts`).
 - **Frontend**: React, Vite, TypeScript, TanStack Query, Tailwind CSS, Astryx
   (`@astryxdesign/core`), built as an installable web app with a service worker.
 - **DAG editor**: React Flow (`@xyflow/react`) laid out on a timeline (see
   `docs/architecture.md`, Timeline View).
-- **Storage**: SQLite via `rusqlite` in the server's data directory.
-- **Tests**: `cargo test` for Rust, Vitest for the frontend, `bun test` for the TypeScript
-  server, Playwright for the web app end to end.
+- **Storage**: SQLite via `bun:sqlite` in the server's data directory.
+- **Tests**: Vitest for the frontend, `bun test` for the server and the host, Playwright
+  for the web app end to end.
 
 ## Repository Status
 
-The React frontend lives in `src/`, the Rust server in `src-tauri/` (the directory keeps
-its old name). Keep the **Commands** section below in sync with `package.json` scripts.
+The React frontend lives in `src/`, the server in `server/`. Keep the **Commands** section
+below in sync with `package.json` scripts.
 
 Layout:
 
 - `src/`: React frontend. `@/` is an alias for `src/`.
-  - `src/lib/bindings.ts`: TypeScript bindings generated from
-    `src-tauri/src/bindings.rs`. Do not edit by hand; `cargo test` rewrites it.
+  - `src/lib/api.ts`: the API the web app and the server share, edited by hand: every
+    type that crosses `/api/rpc` and the event stream, the commands (`makeCommands`,
+    typed `Commands`) with the arguments they send, and the events (`makeEvents`, typed
+    `Events`). It imports nothing, so the server imports it directly.
+  - `src/lib/bindings.ts`: the web app's client of that API (`commands`, `events`, and
+    every type), over `src/web/core.ts` and `src/web/event.ts`.
   - `src/components/button.tsx`: the app's `Button` and `IconButton`, the Astryx ones plus
     `changesData` (disabled while the server is unreachable; on for submit buttons) and
     `autoFocus`. Use them instead of importing the Astryx buttons directly.
@@ -87,71 +91,42 @@ Layout:
   - `src/web/`: browser modules the bindings and the app use to talk to `toodo-server`:
     commands (`core.ts`), events over SSE (`event.ts`), server access and devices,
     connection state, Web Push, and install prompts. PWA artwork is in `src/web/pwa/`.
-- `src-tauri/`: Rust crate `toodo` (library `toodo_lib`, binary `toodo-server`).
-  - `src-tauri/src/lib.rs`: module tree.
-  - `src-tauri/src/bindings.rs`: the command and event list that generates
-    `src/lib/bindings.ts`.
-  - `src-tauri/src/server/`: commands over HTTP (`rpc.rs`), events over SSE, MCP, Web Push
-    notifications (`push/`), and the web build on one port; see `docs/server.md`.
-  - `src-tauri/src/commands/`: commands the frontend calls over HTTP; they take
-    `commands::State`. `types.rs` holds the serializable shapes sent to the frontend and
-    validates inputs at this boundary; the domain model itself stays free of serde and
-    specta.
-  - `src-tauri/src/domain/`: core domain model and rules (task DAG, status transitions,
-    completion criteria, plans, refs, timeline, review, slugs). Pure logic: no I/O or
-    storage.
-  - `src-tauri/src/mcp/`: MCP server for coding agents (rmcp over loopback HTTP with a
-    bearer token); `tools/` holds the tool logic over `Storage`. Rules the `initialize`
-    instructions and the `toodo-skill.md` skill both state live once in `shared/` and are
-    filled in where a template says `{{name}}`; see `docs/agents.md`.
-  - `src-tauri/src/oauth/`: OAuth authorization server for chat apps on `/mcp`, mounted
-    only when `TOODO_PUBLIC_URL` is set (`routes.rs` endpoints, `clients.rs` client
-    metadata documents).
-  - `src-tauri/src/storage/`: SQLite persistence (`rusqlite`, bundled SQLite). The schema
-    is frozen (see **Schema Freeze** below); never edit a released migration.
-    `import.rs` backs `toodo-server import`.
-  - `src-tauri/src/cli/`: the `toodo` CLI (binary `toodo`, `src/bin/toodo.rs`): `init`,
-    `start`, `stop`, `restart`, `status`, `doctor`, `logs`, `service install`, `update`,
-    `uninstall`, `review`, and MCP registration with Claude Code and Codex.
-- `server/`: the TypeScript (Bun) server that is replacing the Rust one, on the same
-  database file and schema.
+- `server/`: the Toodo server on Bun (`toodo-server`). It was ported from a Rust server,
+  now removed, and keeps its database, messages, and answers byte for byte.
   - `server/src/storage/database.ts`: `bun:sqlite` connections: one writer and a
     separate read-only reader, each with WAL, a 5 second busy timeout, and foreign keys
-    on. Both open only a database at `BASELINE_SCHEMA_VERSION` and reject any other
-    version; neither creates nor migrates a database.
-  - `server/src/storage/storage.ts`: `Storage`, the storage operations of
-    `src-tauri/src/storage/` on one connection (workspaces, guidelines, tasks and their
-    dependencies, status history, waits, notes, criteria, search, related links, and commit
-    records), each module beside its ported Rust tests. Failures are a `StorageError` whose
-    message is the Rust one word for word (`errors.ts`).
+    on. A new database gets the baseline schema of `schema.sql`; the writer migrates a
+    database from `BASELINE_SCHEMA_VERSION` up to `SCHEMA_VERSION` with `MIGRATIONS`, and
+    the reader opens only `SCHEMA_VERSION` (see **Schema Changes** below).
+  - `server/src/storage/storage.ts`: `Storage`, the storage operations on one connection
+    (workspaces, guidelines, tasks and their dependencies, status history, waits, notes,
+    criteria, search, related links, and commit records), each module beside its tests.
+    Failures are a `StorageError` (`errors.ts`).
   - `server/src/storage/` chat, device, push, OAuth, review, backup, and import modules:
-    the rest of `src-tauri/src/storage/`, as functions over a connection that take the
-    time they act at where Rust reads its clock. Staging a backup accepts only
-    `BASELINE_SCHEMA_VERSION`, since nothing here migrates.
-  - `server/src/storage/schema.sql`: the frozen schema the Rust migrations create, which
-    `cargo test --lib` regenerates; `server/src/storage/testing.ts` creates the storage
-    tests' databases with it.
-  - `server/src/commands/`: the commands of `src-tauri/src/commands/` over `Storage`, so
-    far workspaces, guidelines, tasks, issues, chat, backups, the update check, completion,
-    and reviews (`review.ts`, saved reviews in `snapshots.ts`, and the Markdown and CSV
-    reports in `report/`, which reads days and time zones through Temporal in
-    `report/calendar.ts`). Each is typed `Command<"<name>">` from `src/lib/bindings.ts`
-    (`AsyncCommand` when it waits on the network, or with `Args` and `Reply` when it
-    takes more state than `Storage`), so it takes the arguments the web app sends and
-    returns the shape it expects, and `npm run typecheck` fails when the two drift apart;
-    `server/src/web-bindings.d.ts` stands in for the two web modules that file imports.
-    Failures are a `CommandError` with the Rust code, kind, and message (`errors.ts`);
+    functions over a connection that take the time they act at. Staging a backup migrates
+    it to `SCHEMA_VERSION` first.
+  - `server/src/storage/schema.sql`: the baseline schema (version 56), never edited;
+    `server/src/storage/testing.ts` creates the storage tests' databases from it.
+  - `server/src/commands/`: the commands over `Storage`: workspaces, guidelines, tasks,
+    issues, chat, backups, the update check, completion, and reviews (`review.ts`, saved
+    reviews in `snapshots.ts`, and the Markdown and CSV reports in `report/`, which reads
+    days and time zones through Temporal in `report/calendar.ts`). Each is typed
+    `Command<"<name>">` from `Commands` in `src/lib/api.ts` (`AsyncCommand` when it waits
+    on the network, or with `Args` and `Reply` when it takes more state than `Storage`),
+    so it takes the arguments the web app sends and returns the shape it expects, and
+    `npm run typecheck` fails when the two drift apart.
+    Failures are a `CommandError` with a code, kind, and message (`errors.ts`);
     `types.ts` converts between those shapes and the domain model and validates inputs,
     and `chat-types.ts` does so for the chat. `events.ts` names the events the server
-    sends, with their payloads from the bindings.
-  - `server/src/push/`: Web Push delivery of `src-tauri/src/server/push/`: `aes128gcm`
-    encryption and the VAPID key (`crypto.ts`, reading the Rust server's `push-key` file
-    as is), what deserves a notification (`alerts.ts`), and sending with retries, the
-    per-device deadline, the change worker, and the test notification (`push.ts`). Its
-    HTTP routes are in `server/src/http/push.ts`.
-  - `server/src/http/`: the HTTP surface of `src-tauri/src/server/` on one `Bun.serve`
-    port (`server.ts`): every command of the bindings over `/api/rpc` (`rpc.ts`, whose
-    table is checked against `src/lib/bindings.ts` by `rpc.test.ts`), events over SSE with
+    sends, with their payloads from `Events`.
+  - `server/src/push/`: Web Push delivery: `aes128gcm` encryption and the VAPID key
+    (`crypto.ts`, the data directory's `push-key` file), what deserves a notification
+    (`alerts.ts`), and sending with retries, the per-device deadline, the change worker,
+    and the test notification (`push.ts`). Its HTTP routes are in
+    `server/src/http/push.ts`.
+  - `server/src/http/`: the HTTP surface on one `Bun.serve` port (`server.ts`): every
+    command of the API over `/api/rpc` (`rpc.ts`, whose table is checked against
+    `src/lib/api.ts` by `rpc.test.ts`), events over SSE with
     replay and resync (`event-log.ts`), the `/api` gate of the shared web token, device
     tokens, read-only devices, the lockout of wrong tokens, and Cloudflare Access JWTs
     (`auth.ts`, `devices.ts`, `access.ts`), backup export, download, and restore
@@ -160,7 +135,7 @@ Layout:
     `config.ts` reads the `TOODO_*` environment. `/mcp` and `/mcp/attachments` are served
     from `server/src/mcp/`, and `/oauth` and `/.well-known` from `server/src/oauth/` in
     public mode.
-  - `server/src/mcp/`: the MCP server of `src-tauri/src/mcp/` on `/mcp` (`McpEndpoint` in
+  - `server/src/mcp/`: the MCP server on `/mcp` (`McpEndpoint` in
     `mcp.ts`): loopback peers that bear the MCP token reach it, with the `401` answers and the
     lockout of `server/src/http/auth.ts`, and the agent's chat attachments are served on
     `/mcp/attachments`. In public mode (`TOODO_PUBLIC_URL`) chat apps also reach it from
@@ -168,27 +143,27 @@ Layout:
     their grant's scopes allow (`oauthRefusal` in `protocol.ts`), and no chat attachments.
     `protocol.ts` answers as the Rust server's `rmcp` stateless JSON transport does, for
     clients that `initialize` and for the 2026-07-28 protocol with per-request `_meta`,
-    `server/discover`, and `subscriptions/listen`. `tools.json` is the Rust server's
-    `tools/list`, the tools' descriptions and input schemas, which the
-    TypeScript server serves as is; `tools/` holds the tool logic module for module, with the
-    arguments read as the Rust `serde` derives read them (`args.ts`, `tools/requests.ts`),
-    and `resources.ts` the task resources and their subscriptions. The instructions and the
-    skill are rendered from `src-tauri/src/mcp/shared/` and `toodo-skill.md`
-    (`instructions.ts`), so both servers give the same text.
-  - `server/src/oauth/`: the OAuth authorization server of `src-tauri/src/oauth/` for chat
+    `server/discover`, and `subscriptions/listen`. `tools.json` is `tools/list`, the tools'
+    descriptions and input schemas, served as is; `tools/` holds the tool logic, with the
+    arguments read as the Rust server's `serde` derives read them (`args.ts`,
+    `tools/requests.ts`), and `resources.ts` the task resources and their subscriptions.
+    The instructions and the skill (`toodo-skill.md`) are rendered by `instructions.ts`;
+    rules both state live once in `shared/` and are filled in where a template says
+    `{{name}}`; see `docs/agents.md`.
+  - `server/src/oauth/`: the OAuth authorization server for chat
     apps, mounted only in public mode: discovery metadata, dynamic registration, the
     consent page, and the token and revocation endpoints with PKCE and refresh rotation
     (`routes.ts`), client registration metadata and client ID metadata documents
     (`clients.ts`, fetched from public addresses only through `server/src/net.ts`), the
     OAuth error answers (`errors.ts`), and the owner and scopes of grants (`scopes.ts`).
     Grants and tokens are stored by `server/src/storage/oauth.ts`.
-  - `server/src/main.ts`: the TypeScript `toodo-server` (`bun server/src/main.ts`, same
-    environment and `import FILE` as the Rust one). It opens only a database the Rust
-    server created, since it neither creates nor migrates one.
-  - `server/src/net.ts`: the public-address checks of `src-tauri/src/net.rs` for outbound
-    requests to URLs from outside the server, and the GET URL criteria are checked with.
-  - `server/src/domain/`: the domain model and rules of `src-tauri/src/domain/`, module for
-    module, with the Rust tests ported beside each one. `rust.ts` holds the Rust standard
+  - `server/src/main.ts`: `toodo-server` (`bun server/src/main.ts`, with `import FILE`),
+    which creates the data directory's database when it is missing.
+  - `server/src/net.ts`: the public-address checks for outbound requests to URLs from
+    outside the server, and the GET URL criteria are checked with.
+  - `server/src/domain/`: the domain model and rules (task DAG, status transitions,
+    completion criteria, plans, refs, timeline, review, slugs), pure logic with its tests
+    beside each module. `rust.ts` holds the Rust standard
     library behavior they depend on (whitespace, `{:?}` quoting, float printing, string
     order), so messages and results match the Rust server byte for byte.
 - `host/`: the one-process host (Bun) that replaces the `toodo-server` and
@@ -212,11 +187,12 @@ Layout:
   `dori/skills/dori-mode/` and the `dori` CLI (Bun) is `dori/skills/dori-mode/scripts/`;
   `dori/install.sh` installs both from a clone of this repository.
 - `npm/toodo/`: the `@dubusoft/toodo` npm package (launcher `bin/toodo.js`, README).
-- `scripts/parity/`: the parity harness, which compares two servers (the Rust server and
-  its TypeScript port) by their replies, events, and databases; see `docs/parity.md`.
 - `scripts/package-npm.mjs`: stages the npm packages (main and per-platform) for
   publishing; `scripts/smoke-npm.mjs` installs the staged packages from a local registry
-  and checks that `toodo init` brings up a working server.
+  and checks that `toodo init` brings up a working server. Like
+  `scripts/package-server.sh` and `scripts/install-server.sh`, they package and install
+  the published releases, which carry the Rust server; releases are paused until a
+  Bun-compiled binary replaces it (see the "Releases" section of `README.md`).
 
 ## Commands
 
@@ -235,52 +211,31 @@ Run from the repository root unless noted. Package manager is npm.
   `dori/skills/dori-mode/scripts/`
 - Astryx docs (the project's pinned version): `npm run astryx -- search '<what>'`,
   `npm run astryx -- component <Name>`, `npm run astryx -- docs <topic>`
-- Test (web app end to end): `npm run test:e2e`, after building the server and `dist-web/`;
-  see the "End-to-End Tests" section of `README.md`
-- Server: `cargo build --bin toodo-server` in `src-tauri/`
-- Server (TypeScript): `bun server/src/main.ts`, on a data directory whose database the
-  Rust server created
-- Test (Rust, also regenerates `src/lib/bindings.ts`): `cargo test --lib` in `src-tauri/`
-- Lint / format (Rust): `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check`
-  in `src-tauri/`
-- Audit (dependencies): `cargo audit` in `src-tauri/` (install with
-  `cargo install cargo-audit --locked`) and `npm audit`, part of the release checklist in
-  `README.md`. The Rust version is pinned in `rust-toolchain.toml`.
-- Release: `npm run bump <major|minor|patch|X.Y.Z>` on `dev`, commit `Release X.Y.Z`,
-  merge `dev` into `main`; see the "Releases" section of `README.md`.
-  `npm run check-version` checks that the version files agree. A release carries
-  `toodo-server` and the web app (packaged by `scripts/package-server.sh`)
-- Package (npm): `node scripts/package-npm.mjs --version X.Y.Z --web dist-web --out dist-npm
-  --binaries linux-x64=<dir with toodo and toodo-server>`; never run `npm publish` by hand,
-  the `npm` workflow publishes
-- Smoke test (npm): `node scripts/smoke-npm.mjs dist-npm` on the staged packages, part of
-  the release checklist in `README.md`
-- Parity (two servers): `node scripts/parity/parity.ts replay --a <server> --b <server>`,
-  after `cargo build --bin toodo-server`; also `shadow`, `rust-check`, and `inventory`, see
-  `docs/parity.md`
+- Test (web app end to end): `npm run test:e2e`, after building `dist-web/`; see the
+  "End-to-End Tests" section of `README.md`
+- Server: `bun server/src/main.ts` (creates the database of `TOODO_DATA_DIR` when it is
+  missing)
+- Audit (dependencies): `npm audit`
 
-After changing a command signature, run `cargo test` in `src-tauri/` and commit the
-updated `src/lib/bindings.ts` together with the Rust change. A test in `server/rpc.rs`
-checks that the server serves every command in the bindings, and
-`server/src/http/rpc.test.ts` does the same for the TypeScript server.
+After changing a command signature, change `src/lib/api.ts` with the server; `npm run
+typecheck` fails while the two disagree, and `server/src/http/rpc.test.ts` checks that the
+server serves every command of the API with the arguments it sends.
 
-CI only typechecks (`cargo check --all-targets` for Rust, `npm run typecheck` for the
-frontend, `server/`, and `host/`, `bun run typecheck` for `dori/`); it runs no tests, lints, or
-format checks. Run the tests,
-clippy, and `cargo fmt --check` locally before opening a pull request.
+CI only typechecks (`npm run typecheck` for the frontend, `server/`, and `host/`,
+`bun run typecheck` for `dori/`); it runs no tests, lints, or format checks. Run the tests
+locally before opening a pull request.
 
-## Schema Freeze
+## Schema Changes
 
-The Rust schema is frozen at version 56, its `LATEST_VERSION` when the TypeScript
-storage work started; `BASELINE_SCHEMA_VERSION` in `server/src/storage/database.ts` is
-the same number, and a test in `migrations/tests.rs` fails when the two differ. Until
-the Rust server is removed:
+The schema starts at version 56 (`BASELINE_SCHEMA_VERSION`), the last one the Rust server
+migrated to, which `server/src/storage/schema.sql` creates. Change it with a migration:
 
-- Add no migration to `src-tauri/src/storage/migrations/`.
-- A bug fix that needs a schema change lands together with the matching change in
-  `server/` and the parity scenarios that cover it, and moves both versions together.
-- The first new migration after the freeze is version 57, written once the Rust server
-  is gone.
+- Append the SQL to `MIGRATIONS` in `server/src/storage/database.ts`; the first one is
+  version 57. The writer applies each pending migration in its own transaction when it
+  opens a database, and refuses to commit one that leaves a row referring to a missing one.
+- Never edit `schema.sql` or a migration that has shipped: databases already carry it.
+- A database below version 56 is refused; the last Rust release migrates it there
+  (`docs/host.md`).
 
 ## Conventions
 

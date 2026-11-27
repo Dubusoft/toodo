@@ -1,9 +1,9 @@
 // Web Push notifications for the devices of `toodo-server`, so a phone or desktop hears
 // about its tasks while Toodo is closed. Each device subscribes its browser with the
-// server's VAPID public key (the `push-key` file the Rust server created, read as is);
-// the server watches the changes it announces to the frontend (see `alerts.ts`) and
-// posts an encrypted message to every subscription that wants it. Port of the delivery
-// half of `src-tauri/src/server/push/mod.rs`; its HTTP routes come with the HTTP surface.
+// server's VAPID public key (the `push-key` file the Rust server created, read as is); the
+// server watches the changes it announces to the frontend (see `alerts.ts`) and posts an
+// encrypted message to every subscription that wants it. Its HTTP routes are in
+// `server/src/http/push.ts`.
 //
 // Messages the push service could not take for a while (no connection, 429, 5xx) are
 // tried again after `RETRY_DELAYS_MS` first. Up to `CONCURRENT_DELIVERIES` devices get

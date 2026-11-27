@@ -1,5 +1,4 @@
-// Completion records and criterion checks, without execution side effects
-// (`src-tauri/src/commands/completion/`).
+// Completion records and criterion checks, without execution side effects.
 
 import type { Criterion } from "../domain/criteria.ts";
 import { isMet } from "../domain/criteria.ts";

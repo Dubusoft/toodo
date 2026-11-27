@@ -1,5 +1,5 @@
 // Commands for the guidelines of a workspace: rules and memories that agents read before
-// working on its tasks (`src-tauri/src/commands/guidelines.rs`).
+// working on its tasks.
 
 import { guidelineId, workspaceId } from "../domain/model.ts";
 import { command } from "./errors.ts";

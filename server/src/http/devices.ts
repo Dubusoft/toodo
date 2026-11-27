@@ -1,5 +1,4 @@
-// Per-device access tokens for `/api`, and the gate every `/api` request passes. Port of
-// `src-tauri/src/server/devices.rs`.
+// Per-device access tokens for `/api`, and the gate every `/api` request passes.
 //
 // Every request bears either the shared web token (`web-token` in the data directory) or
 // the token of a device that is not revoked. The shared token registers devices: a browser

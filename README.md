@@ -131,93 +131,43 @@ temporary data directory, so a run never touches the data of a real server and n
 the default server ports.
 CI does not run it; run it locally before merging changes to the web app.
 
-To run it locally (Node, Rust, and a Linux machine):
+To run it locally (Node and Bun):
 
 ```sh
 npm ci
 npx playwright install chromium                       # once
-(cd src-tauri && cargo build --bin toodo-server)
 npx vite build
 npm run test:e2e
 ```
 
-Rebuild the server after Rust changes and the web app after frontend changes; the tests use
-the last builds. Pass Playwright options after `--`, for example
-`npm run test:e2e -- e2e/timeline.spec.ts --headed`. `TOODO_SERVER_BIN` points the tests at
-another `toodo-server` binary and `TOODO_E2E_WEB_DIR` at another web build. After a failure,
-`npx playwright show-report` opens the report.
+The tests start the server from the checkout (`bun server/src/main.ts`); rebuild the web
+app after frontend changes, since they serve the last build. Pass Playwright options after
+`--`, for example `npm run test:e2e -- e2e/timeline.spec.ts --headed`. `TOODO_SERVER_BIN`
+points the tests at a `toodo-server` binary instead and `TOODO_E2E_WEB_DIR` at another web
+build. After a failure, `npx playwright show-report` opens the report.
 
 ## Tech Stack
 
-Rust (tokio, axum) for `toodo-server`, React + TypeScript + React Flow for the web app,
+TypeScript on Bun for `toodo-server`, React + TypeScript + React Flow for the web app,
 SQLite. See [AGENTS.md](AGENTS.md#platform-and-stack) for details.
 
 ## Releases
 
-A release ships `toodo-server` together with the web app; servers update with
-`toodo update`, or without npm with `scripts/install-server.sh --release latest` (see
-[docs/server.md](docs/server.md)).
+Releases are paused. The versions published so far, on npm (`@dubusoft/toodo`) and as
+GitHub release assets, carry the Rust `toodo-server` this repository no longer contains,
+so the `npm` and `Release` workflows that built and published them are gone. When
+distribution is prepared again, a Bun-compiled binary of `server/` replaces the Rust
+binaries in both channels, and the workflows return around it. Until then:
 
-To publish a release:
-
-1. On `dev`, run `npm run bump <major|minor|patch|X.Y.Z>`. It sets the same version in
-   `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, and
-   `src-tauri/Cargo.lock`. Commit it as `Release X.Y.Z`. `npm run check-version` checks
-   that the four files agree; the workflow runs it first.
-2. Refresh and audit the dependencies; CI does neither. Update the lockfiles within the
-   declared version ranges, check that nothing broke, and look for known advisories
-   (install `cargo-audit` once with `cargo install cargo-audit --locked`):
-
-   ```sh
-   (cd src-tauri && cargo update && cargo check --all-targets && cargo test --lib)
-   npm update && npm run typecheck && npm test
-   (cd src-tauri && cargo audit)
-   npm audit
-   ```
-
-   Commit the updated `src-tauri/Cargo.lock`, `package-lock.json`, and `src/lib/bindings.ts`
-   in one change before the release commit. Fix what the audits report, or name each
-   advisory you leave open and why in the pull request. Exact pins (`specta` in
-   `src-tauri/Cargo.toml`, `@astryxdesign/core` in `package.json`) and major versions move
-   only in their own change. The Rust version is pinned in `rust-toolchain.toml`, which
-   local builds, CI, and the release workflows all use; raise it in its own change after
-   a Rust release, with the same checks.
-3. Check that the npm packages install and start, on Linux x64 with Node.js and npm. Build
-   both binaries with the release version and the web app, stage the packages, and run
-   the smoke script on them:
-
-   ```sh
-   npm ci && npm run build
-   (cd src-tauri && TOODO_VERSION=X.Y.Z cargo build --release --bin toodo --bin toodo-server)
-   node scripts/package-npm.mjs --version X.Y.Z --web dist-web --out dist-npm \
-     --binaries linux-x64=src-tauri/target/release
-   node scripts/smoke-npm.mjs dist-npm
-   ```
-
-   `scripts/smoke-npm.mjs` serves the staged packages from a local registry, installs
-   `@dubusoft/toodo` globally into a temporary prefix with npm, runs `toodo init` on a free
-   loopback port with a temporary home and data directory, and checks that the server
-   answers the API and serves the web app. It stops the server and removes the temporary
-   directory afterwards (`--keep` leaves the directory). Fix what it reports before
-   releasing.
-4. Open a pull request from `dev` to `main` and merge it.
-5. On every push to `main`, the `Release` workflow (`.github/workflows/release.yml`)
-   releases the version in `package.json` unless it is already published: on Ubuntu it
-   builds the web app (`npm run build`) and the x86_64 Linux `toodo-server`, packages
-   them with `scripts/package-server.sh`, creates the release "Toodo vX.Y.Z" as a draft if
-   it is missing, uploads `toodo-server-vX.Y.Z-linux-x86_64.tar.gz` and then its
-   `.sha256`, and publishes the release. Until then it has no tag and is not the latest
-   release, so `install-server.sh --release latest` keeps installing the previous one. A
-   push to `main` without a version bump does nothing.
-
-Releases run from `main` rather than from tags so the Rust build cache of one release is
-reused by the next. If a release fails, run the `Release` workflow by hand on `main`; it
-completes a release whose server assets were not uploaded yet or that is still a draft.
-
-The `Release` workflow also starts the `npm` workflow on `main` with dist-tag `latest` to
-publish the release to npm. If that publish fails or is skipped, run the `npm` workflow by
-hand on `main` with dist-tag `latest`. Every push to `dev` publishes an `X.Y.Z-dev.N`
-prerelease under `dev`; see [npm Packages](docs/server.md#npm-packages).
+- The published versions stay installable as described above and in
+  [docs/server.md](docs/server.md) (`toodo update`, or `scripts/install-server.sh --release
+  latest` without npm), and the packaging scripts they were built with
+  (`scripts/package-npm.mjs`, `scripts/smoke-npm.mjs`, `scripts/package-server.sh`) stay
+  for the Bun binary to reuse.
+- The owner host runs the server from a checkout as `toodo.service` (see
+  [docs/host.md](docs/host.md)).
+- `npm run bump <major|minor|patch|X.Y.Z>` sets the same version in `package.json` and
+  `package-lock.json`, and `npm run check-version` checks that they agree.
 
 ## Language Policy
 

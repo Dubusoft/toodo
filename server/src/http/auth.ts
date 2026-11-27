@@ -1,7 +1,6 @@
 // Who may call `/api`: the shared web token, a device token, or a Cloudflare Access JWT,
 // with read-only devices limited to reading and too many wrong tokens locking an address
-// out. Port of `src-tauri/src/server/devices.rs` (the gate), `src-tauri/src/mcp/attempts.rs`,
-// and the token checks and 401 answers of `src-tauri/src/mcp/mod.rs`.
+// out.
 
 import { createHash } from "node:crypto";
 import type { DeviceId } from "../domain/device.ts";

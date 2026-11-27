@@ -1,10 +1,9 @@
-// The agent's side of the chat (`src-tauri/src/mcp/tools/chat.rs`): it takes people's
-// messages, acknowledges them, replies, and marks them handled, each step a receipt the app
-// shows on the message; it offers actions people choose among and attaches files; it keeps
-// channels and the threads under them, which may follow a task; and it searches earlier
-// messages.
+// The agent's side of the chat: it takes people's messages, acknowledges them, replies, and
+// marks them handled, each step a receipt the app shows on the message; it offers actions
+// people choose among and attaches files; it keeps channels and the threads under them,
+// which may follow a task; and it searches earlier messages.
 
-import type * as B from "../../../../src/lib/bindings.ts";
+import type * as B from "../../../../src/lib/api.ts";
 import { bodyWithFiles } from "../../commands/chat.ts";
 import {
   SEARCH_LIMIT,

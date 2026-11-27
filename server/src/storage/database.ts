@@ -1,8 +1,10 @@
 // Connections to the Toodo SQLite database for the TypeScript server (bun:sqlite).
 //
-// The file and its schema are the ones the Rust server (`src-tauri/`) creates and
-// migrates; this module neither creates a database nor migrates one. It opens only a
-// database whose `PRAGMA user_version` is exactly `BASELINE_SCHEMA_VERSION`.
+// A new database gets the baseline schema of `schema.sql` (version
+// `BASELINE_SCHEMA_VERSION`, the last schema of the Rust server this one replaced), and
+// the writer brings a database from any version between the baseline and
+// `SCHEMA_VERSION` up to date with `MIGRATIONS`. Older databases are refused: the Rust
+// releases migrated them up to the baseline.
 //
 // Every connection gets the same rules: write-ahead logging, a 5 second busy timeout, and
 // foreign key enforcement. Writes go through one writer connection; reads go through a
@@ -10,34 +12,88 @@
 // waiting for a write in progress.
 
 import { Database } from "bun:sqlite";
+import { readFileSync } from "node:fs";
+
+/** The schema `schema.sql` creates: the last version the Rust server migrated to. */
+export const BASELINE_SCHEMA_VERSION = 56;
 
 /**
- * The schema version the TypeScript server reads and writes: the Rust `LATEST_VERSION`
- * (`src-tauri/src/storage/migrations/mod.rs`) when the TypeScript storage work started.
- * The Rust schema is frozen at this version (see `AGENTS.md`); it moves only once the
- * Rust server is gone.
+ * The schema changes after the baseline, in order: entry `i` takes a database from version
+ * `BASELINE_SCHEMA_VERSION + i` to the next. Change the schema by appending one; never
+ * edit or remove one that has shipped, since databases already carry its result.
  */
-export const BASELINE_SCHEMA_VERSION = 56;
+export const MIGRATIONS: readonly string[] = [];
+
+/** The schema version this server reads and writes. */
+export const SCHEMA_VERSION = BASELINE_SCHEMA_VERSION + MIGRATIONS.length;
 
 /** How long a statement waits for a lock held by another connection or process. */
 export const BUSY_TIMEOUT_MS = 5000;
 
-/** The database's schema version is not `BASELINE_SCHEMA_VERSION`. */
+const BASELINE_SCHEMA = readFileSync(new URL("./schema.sql", import.meta.url), "utf8");
+
+/** The rows a new database starts with: the `general` chat channel, created at `now`. */
+const SEED = "INSERT INTO chat_channels (id, name, read_id, created_at) VALUES (1, 'general', 0, ?)";
+
+/** The database's schema version is outside `BASELINE_SCHEMA_VERSION`..`SCHEMA_VERSION`, or
+ * is not `SCHEMA_VERSION` where no migration can run. */
 export class SchemaVersionError extends Error {
   readonly found: number;
   readonly supported: number;
 
-  constructor(path: string, found: number) {
+  constructor(path: string, found: number, oldest = BASELINE_SCHEMA_VERSION) {
     const hint =
       found < BASELINE_SCHEMA_VERSION
-        ? "it was written by an older Toodo; start the current toodo-server on it once to migrate it"
-        : "it was written by a newer Toodo";
-    super(
-      `${path} has schema version ${found}, but only version ${BASELINE_SCHEMA_VERSION} is supported: ${hint}`,
-    );
+        ? "it was written by an older Toodo; migrate it with the last Rust toodo-server release first (docs/host.md)"
+        : found < oldest
+          ? "open the writer first, which migrates it"
+          : "it was written by a newer Toodo";
+    const versions = oldest === SCHEMA_VERSION ? `version ${SCHEMA_VERSION} is` : `versions ${oldest} to ${SCHEMA_VERSION} are`;
+    super(`${path} has schema version ${found}, but only ${versions} supported: ${hint}`);
     this.name = "SchemaVersionError";
     this.found = found;
-    this.supported = BASELINE_SCHEMA_VERSION;
+    this.supported = SCHEMA_VERSION;
+  }
+}
+
+/**
+ * Creates the database file at `path`, which must not exist yet, with the current schema
+ * and no data but the `general` chat channel created at `now` (seconds).
+ */
+export function createDatabase(path: string, now = Math.floor(Date.now() / 1000)): void {
+  const db = new Database(path, { create: true, strict: true });
+  try {
+    initializeSchema(db, now);
+  } finally {
+    db.close();
+  }
+}
+
+/** Gives the empty database `db` the current schema and the rows of a new database. */
+export function initializeSchema(db: Database, now: number, migrations: readonly string[] = MIGRATIONS): void {
+  db.transaction(() => {
+    db.run(BASELINE_SCHEMA);
+    db.run(SEED, [now]);
+  })();
+  migrate(db, migrations);
+}
+
+/**
+ * Brings `db`, at a version from `BASELINE_SCHEMA_VERSION` up, to the version after
+ * `migrations`, one transaction per migration, each committed only when no row is left
+ * referring to a missing one. Foreign keys must be off, so a migration can rebuild a table.
+ */
+export function migrate(db: Database, migrations: readonly string[] = MIGRATIONS): void {
+  const latest = BASELINE_SCHEMA_VERSION + migrations.length;
+  for (let version = schemaVersion(db); version < latest; version++) {
+    db.transaction(() => {
+      db.run(migrations[version - BASELINE_SCHEMA_VERSION]!);
+      const violation = db.query<{ table: string }, []>("PRAGMA foreign_key_check").get();
+      if (violation !== null) {
+        throw new Error(`migration to version ${version + 1} left a row of ${violation.table} referring to a row that does not exist`);
+      }
+      db.run(`PRAGMA user_version = ${version + 1}`);
+    })();
   }
 }
 
@@ -46,15 +102,16 @@ export function schemaVersion(db: Database): number {
 }
 
 /**
- * Opens the writer connection to the existing database at `path` and switches it to
- * write-ahead logging. A database of another schema version is closed unchanged and
- * rejected with `SchemaVersionError`.
+ * Opens the writer connection to the existing database at `path`, migrates it to
+ * `SCHEMA_VERSION`, and switches it to write-ahead logging. A database of a version it
+ * cannot migrate is closed unchanged and rejected with `SchemaVersionError`.
  */
 export function openWriter(path: string): Database {
   const db = new Database(path, { readwrite: true, create: false, strict: true });
   try {
     db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
-    checkSchemaVersion(db, path);
+    checkSchemaVersion(db, path, BASELINE_SCHEMA_VERSION);
+    migrate(db);
     const mode = pragmaValue(db, "journal_mode = WAL");
     if (mode !== "wal") {
       throw new Error(`${path} could not be switched to write-ahead logging (journal mode ${mode})`);
@@ -71,14 +128,15 @@ export function openWriter(path: string): Database {
 }
 
 /**
- * Opens a read-only connection to the database at `path`, which must already use
- * write-ahead logging (the writer switches it). Writes through it fail.
+ * Opens a read-only connection to the database at `path`, which must already be at
+ * `SCHEMA_VERSION` and use write-ahead logging (the writer migrates and switches it).
+ * Writes through it fail.
  */
 export function openReader(path: string): Database {
   const db = new Database(path, { readonly: true, strict: true });
   try {
     db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
-    checkSchemaVersion(db, path);
+    checkSchemaVersion(db, path, SCHEMA_VERSION);
     const mode = pragmaValue(db, "journal_mode");
     if (mode !== "wal") {
       throw new Error(
@@ -126,10 +184,11 @@ export function integrityCheck(db: Database): string[] {
     .map((row) => row.integrity_check);
 }
 
-function checkSchemaVersion(db: Database, path: string): void {
+/** Refuses a database outside `oldest`..`SCHEMA_VERSION`. */
+function checkSchemaVersion(db: Database, path: string, oldest: number): void {
   const found = schemaVersion(db);
-  if (found !== BASELINE_SCHEMA_VERSION) {
-    throw new SchemaVersionError(path, found);
+  if (found < oldest || found > SCHEMA_VERSION) {
+    throw new SchemaVersionError(path, found, oldest);
   }
 }
 

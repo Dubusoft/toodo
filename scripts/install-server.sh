@@ -1,29 +1,23 @@
 #!/usr/bin/env bash
-# Installs toodo-server for the current user, from a GitHub release (--release) or built
-# from this checkout (the default, for development):
+# Installs a released toodo-server for the current user from a GitHub release (--release).
+# Releases carry the Rust server this repository no longer builds; a checkout runs the
+# TypeScript server instead (docs/host.md).
 #   ~/.local/bin/toodo-server                     the headless server (MCP + background work)
 #   ~/.config/systemd/user/toodo-server.service   a systemd user service (unless --no-service),
 #                                                 written by `toodo service install`
-#   ~/.local/share/toodo-server-web               the web app: from the release, or built
-#                                                 from this checkout with --with-web
-# Safe to run again: an update is this script with --release latest (or `git pull` and
-# this script for a checkout build). See docs/server.md.
+#   ~/.local/share/toodo-server-web               the web app the release carries
+# Safe to run again: an update is this script with --release latest. See docs/server.md.
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: scripts/install-server.sh [--release latest|vX.Y.Z[-dev.N]] [--listen ADDR] [--no-service]
-       scripts/install-server.sh [--listen ADDR] [--no-service] [--with-web]
+Usage: scripts/install-server.sh --release latest|vX.Y.Z[-dev.N] [--listen ADDR] [--no-service]
 
   --release VER   download toodo-server from the GitHub release VER (latest, vX.Y.Z, or
                   a dev pre-release vX.Y.Z-dev.N; latest is the newest stable release),
-                  check its sha256, and install it; needs no Rust toolchain
+                  check its sha256, and install it
   --listen ADDR   address the service listens on (default 127.0.0.1:47616)
   --no-service    install only; do not write or restart the systemd service
-  --with-web      build the web app from this checkout too and serve it (needs Node.js
-                  and npm); a release installs and serves the web app it carries
-
-Without --release, toodo-server is built from this checkout (needs cargo).
 EOF
 }
 
@@ -65,10 +59,6 @@ while [ $# -gt 0 ]; do
       service=0
       shift
       ;;
-    --with-web)
-      web=1
-      shift
-      ;;
     -h | --help)
       usage
       exit 0
@@ -90,10 +80,9 @@ fi
 if [ -n "$release" ] && [ "$release" != latest ] && ! [[ $release =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?$ ]]; then
   die "--release takes latest, vX.Y.Z, or vX.Y.Z-dev.N, got '$release'"
 fi
-from_release=0
-{ [ -n "$release" ] || [ -n "$from_file" ]; } && from_release=1
-if [ "$from_release" = 1 ] && [ "$web" = 1 ]; then
-  die "--with-web builds the web app from a checkout; a release installs the one it carries"
+if [ -z "$release" ] && [ -z "$from_file" ]; then
+  usage >&2
+  exit 2
 fi
 
 if ! [[ $listen =~ ^(.+):([0-9]+)$ ]]; then
@@ -109,30 +98,18 @@ case "$listen_host" in
 esac
 base_url="http://$check_host:$listen_port"
 
-repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-if [ "$from_release" = 0 ] && ! [ -f "$repo/src-tauri/Cargo.toml" ]; then
-  die "run this script from a Toodo checkout ($repo is not one), or pass --release latest"
-fi
-
 [ "$(uname -s)" = Linux ] || die "toodo-server is installed on Linux only"
 
 log "Checking prerequisites"
-required=(curl)
-if [ "$from_release" = 1 ]; then
-  [ "$(uname -m)" = x86_64 ] \
-    || die "releases carry an x86_64 toodo-server only; on $(uname -m) install with npm instead ('npm i -g @dubusoft/toodo', see docs/server.md) or build from a checkout"
-  required+=(tar sha256sum)
-else
-  required+=(cargo)
-fi
-[ "$web" = 1 ] && required+=(node npm)
+[ "$(uname -m)" = x86_64 ] \
+  || die "releases carry an x86_64 toodo-server only; on $(uname -m) install with npm instead ('npm i -g @dubusoft/toodo', see docs/server.md)"
+required=(curl tar sha256sum)
 missing=()
 for tool in "${required[@]}"; do
   command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
-  die "missing on PATH: ${missing[*]}
-  cargo: https://rustup.rs   node/npm (--with-web only): https://nodejs.org"
+  die "missing on PATH: ${missing[*]}"
 fi
 if [ "$service" = 1 ]; then
   command -v systemctl >/dev/null 2>&1 || die "systemctl not found; use --no-service to install without a service"
@@ -148,68 +125,54 @@ data_dir=$share_dir/toodo-server
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-if [ "$web" = 1 ]; then
-  log "Building the web app"
-  (cd "$repo" && npm ci && npm run build)
-fi
-
-if [ "$from_release" = 1 ]; then
-  if [ -n "$from_file" ]; then
-    asset=$(basename "$from_file")
-    [[ $asset =~ ^toodo-server-(v[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?)-linux-x86_64\.tar\.gz$ ]] \
-      || die "--from-file expects toodo-server-vX.Y.Z[-dev.N]-linux-x86_64.tar.gz, got $asset"
-    tag=${BASH_REMATCH[1]}
-    log "Using $from_file"
-    cp "$from_file" "$from_file.sha256" "$work/" || die "need $from_file and $from_file.sha256"
-  else
-    tag=$release
-    if [ "$tag" = latest ]; then
-      # GitHub redirects releases/latest to releases/tag/<tag> of the newest release.
-      latest_url=$(curl -fsSL --retry 3 -o /dev/null -w '%{url_effective}' "$release_url/latest") \
-        || die "could not look up the latest release of $release_repo"
-      tag=${latest_url##*/}
-      [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not find the latest release of $release_repo (got $latest_url)"
-    fi
-    asset=toodo-server-$tag-linux-x86_64.tar.gz
-    log "Downloading $asset from $release_repo release $tag"
-    for file in "$asset" "$asset.sha256"; do
-      curl -fsSL --retry 3 -o "$work/$file" "$release_url/download/$tag/$file" \
-        || die "could not download $file from release $tag (releases before the server was published have none)"
-    done
-  fi
-  log "Checking the sha256 of $asset"
-  (cd "$work" && sha256sum --check --strict "$asset.sha256") || die "sha256 mismatch for $asset"
-  mkdir "$work/unpacked"
-  tar -xzf "$work/$asset" -C "$work/unpacked" toodo-server
-  new_bin=$work/unpacked/toodo-server
-  # Releases from before the CLI was packaged carry no toodo to write the service with.
-  # (grep reads the whole listing: grep -q would stop tar early, failing under pipefail.)
-  new_cli=
-  if tar -tzf "$work/$asset" | grep -x 'toodo' >/dev/null; then
-    tar -xzf "$work/$asset" -C "$work/unpacked" toodo
-    new_cli=$work/unpacked/toodo
-  elif [ "$service" = 1 ]; then
-    die "$asset carries no toodo CLI to install the service with; install a newer release, use --no-service, or install the CLI with 'npm install -g @dubusoft/toodo' and run 'toodo service install'"
-  fi
-  # Releases from before the web app was published carry the binary only.
-  if tar -tzf "$work/$asset" | grep -x 'web/index.html' >/dev/null; then
-    tar -xzf "$work/$asset" -C "$work/unpacked" web
-    web=1
-    web_src=$work/unpacked/web
-  else
-    log "$asset carries no web app; serving the API and MCP only"
-  fi
-  version=$("$new_bin" --version) || die "the downloaded toodo-server does not run on this machine"
-  # Builds since 0.12.0 add " (commit <sha>)".
-  [ "${version%% (commit *}" = "toodo-server ${tag#v}" ] || die "$asset contains '$version', expected toodo-server ${tag#v}"
+if [ -n "$from_file" ]; then
+  asset=$(basename "$from_file")
+  [[ $asset =~ ^toodo-server-(v[0-9]+\.[0-9]+\.[0-9]+(-dev\.[0-9]+)?)-linux-x86_64\.tar\.gz$ ]] \
+    || die "--from-file expects toodo-server-vX.Y.Z[-dev.N]-linux-x86_64.tar.gz, got $asset"
+  tag=${BASH_REMATCH[1]}
+  log "Using $from_file"
+  cp "$from_file" "$from_file.sha256" "$work/" || die "need $from_file and $from_file.sha256"
 else
-  log "Building toodo-server"
-  (cd "$repo/src-tauri" && cargo build --release --bin toodo-server --bin toodo)
-  new_bin=$repo/src-tauri/target/release/toodo-server
-  new_cli=$repo/src-tauri/target/release/toodo
-  version=$("$new_bin" --version)
-  web_src=$repo/dist-web
+  tag=$release
+  if [ "$tag" = latest ]; then
+    # GitHub redirects releases/latest to releases/tag/<tag> of the newest release.
+    latest_url=$(curl -fsSL --retry 3 -o /dev/null -w '%{url_effective}' "$release_url/latest") \
+      || die "could not look up the latest release of $release_repo"
+    tag=${latest_url##*/}
+    [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "could not find the latest release of $release_repo (got $latest_url)"
+  fi
+  asset=toodo-server-$tag-linux-x86_64.tar.gz
+  log "Downloading $asset from $release_repo release $tag"
+  for file in "$asset" "$asset.sha256"; do
+    curl -fsSL --retry 3 -o "$work/$file" "$release_url/download/$tag/$file" \
+      || die "could not download $file from release $tag (releases before the server was published have none)"
+  done
 fi
+log "Checking the sha256 of $asset"
+(cd "$work" && sha256sum --check --strict "$asset.sha256") || die "sha256 mismatch for $asset"
+mkdir "$work/unpacked"
+tar -xzf "$work/$asset" -C "$work/unpacked" toodo-server
+new_bin=$work/unpacked/toodo-server
+# Releases from before the CLI was packaged carry no toodo to write the service with.
+# (grep reads the whole listing: grep -q would stop tar early, failing under pipefail.)
+new_cli=
+if tar -tzf "$work/$asset" | grep -x 'toodo' >/dev/null; then
+  tar -xzf "$work/$asset" -C "$work/unpacked" toodo
+  new_cli=$work/unpacked/toodo
+elif [ "$service" = 1 ]; then
+  die "$asset carries no toodo CLI to install the service with; install a newer release, use --no-service, or install the CLI with 'npm install -g @dubusoft/toodo' and run 'toodo service install'"
+fi
+# Releases from before the web app was published carry the binary only.
+if tar -tzf "$work/$asset" | grep -x 'web/index.html' >/dev/null; then
+  tar -xzf "$work/$asset" -C "$work/unpacked" web
+  web=1
+  web_src=$work/unpacked/web
+else
+  log "$asset carries no web app; serving the API and MCP only"
+fi
+version=$("$new_bin" --version) || die "the downloaded toodo-server does not run on this machine"
+# Builds since 0.12.0 add " (commit <sha>)".
+[ "${version%% (commit *}" = "toodo-server ${tag#v}" ] || die "$asset contains '$version', expected toodo-server ${tag#v}"
 
 if [ "$service" = 0 ]; then
   log "Installing $bin_dir/toodo-server: $version"

@@ -401,7 +401,7 @@ or guessed by an agent.
 
 ```
 +-----------------+      +-------------------+      +------------------+
-| Toodo UI (PWA)  | ---> | Toodo Core (Rust) | ---> | Storage (SQLite) |
+| Toodo UI (PWA)  | ---> | Toodo Core (Bun)  | ---> | Storage (SQLite) |
 | React + React   | HTTP | (tasks, DAG rules,|      | (workspaces,     |
 | Flow, browser   | SSE  |  lifecycle)       |      |  tasks, history) |
 +-----------------+      +-------------------+      +------------------+
@@ -417,14 +417,14 @@ or guessed by an agent.
   server-sent events, MCP on `/mcp`, Web Push, and the web app, all on one port. It also
   handles backups, `toodo-server import`, and device access. It needs no other program
   on `PATH`. See [server.md](server.md).
-- **Toodo Core**: the domain rules in `src-tauri/src/domain/`: DAG validation, readiness,
+- **Toodo Core**: the domain rules in `server/src/domain/`: DAG validation, readiness,
   and the task state machine. Pure logic with no I/O.
 - **Web app**: React, TanStack Query, and React Flow, installable as a PWA. It shows the
   task lists, the timeline, the plan view, task details with notes and history, and the
   review.
-- **MCP server** (`src-tauri/src/mcp/`): how coding agents and other executors read and
+- **MCP server** (`server/src/mcp/`): how coding agents and other executors read and
   record work while the server runs.
-  - Served by `toodo-server` itself (rmcp, Streamable HTTP, stateless JSON responses) on
+  - Served by `toodo-server` itself (Streamable HTTP, stateless JSON responses) on
     `/mcp` of its port (`http://127.0.0.1:47616/mcp` by default), loopback only. It shares
     the database lock with the commands and emits `TasksChanged`, so the UI refreshes like
     after any command.
@@ -460,24 +460,24 @@ or guessed by an agent.
     structured content `{ "error": { "kind", "code", "message" } }`; unknown arguments
     are rejected, naming the ones the tool accepts.
   - The `initialize` instructions and the `toodo` skill (`toodo-skill.md`) share rules
-    kept once in `src-tauri/src/mcp/shared/` and filled in where a template says
+    kept once in `server/src/mcp/shared/` and filled in where a template says
     `{{name}}`; see [agents.md](agents.md). They tell agents to search before planning,
     record decisions and blockers as they work, and use `add_dependency` only for real
     prerequisites. Toodo never prompts agents itself.
   - Agent access in Settings copies an MCP client config with the URL and token
     (`mcp_server_info`), tests that the server accepts that token, and shows the last
     request `/mcp` turned away with its reason.
-- **OAuth server** (`src-tauri/src/oauth/`): the single-owner authorization server that
+- **OAuth server** (`server/src/oauth/`): the single-owner authorization server that
   lets chat apps reach `/mcp` when `TOODO_PUBLIC_URL` is set. It serves discovery
   metadata, dynamic client registration and client ID metadata documents, the consent
   page (the owner approves with `web-token`), and the token and revocation endpoints.
   Grants carry an owner key and the scopes `toodo.read` and `toodo.write`; tokens and
-  secrets are stored as SHA-256 hashes in `storage/oauth.rs`, while codes and pending
+  secrets are stored as SHA-256 hashes in `storage/oauth.ts`, while codes and pending
   consents stay in memory. Off by default, when its routes aren't mounted.
-- **Web Push** (`src-tauri/src/server/push/`): notifications to subscribed browsers.
+- **Web Push** (`server/src/push/`): notifications to subscribed browsers.
 - **Storage**: SQLite database `toodo.sqlite3` in the server's data directory
   (`TOODO_DATA_DIR`) for workspaces, tasks, dependencies, related links, notes,
-  criteria, status history, reviews, and the historic records (`src-tauri/src/storage/`).
+  criteria, status history, reviews, and the historic records (`server/src/storage/`).
   - The schema is versioned with `PRAGMA user_version` and migrated forward on startup;
     a database from a newer Toodo version is refused rather than modified. Migrations
     are only appended, never edited once released.
@@ -496,8 +496,8 @@ or guessed by an agent.
   merges stay with the executor, which records the outcome through MCP. This keeps the
   server free of external tools and lets any kind of executor use it.
 - Target: `toodo-server` on Linux, used through the web app (PWA) in a browser.
-- Backend in Rust (tokio); frontend in React + TypeScript with React Flow for the DAG.
-- Storage uses SQLite through `rusqlite` (single-user server; no async pool needed).
+- Backend in TypeScript on Bun; frontend in React + TypeScript with React Flow for the DAG.
+- Storage uses SQLite through `bun:sqlite` (single-user server; no async pool needed).
 - Task types are a fixed set (see [Task Types](#task-types)).
 - Completion criteria are `manual` or `url` only; Toodo doesn't read pull request or CI
   state.

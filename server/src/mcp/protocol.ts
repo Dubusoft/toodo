@@ -1,12 +1,12 @@
-// The MCP endpoint behind the token guard, as the Rust server's `rmcp` streamable HTTP service
-// answers it (`StreamableHttpService` in stateless mode with JSON responses, which
-// `src-tauri/src/mcp/mod.rs` configures): one JSON-RPC message per POST, answered with one
-// JSON response, or a server-sent event stream for `subscriptions/listen`. Clients either
-// `initialize` (protocol versions up to 2025-11-25) or name the 2026-07-28 protocol in each
-// request's `_meta` with matching `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name`
-// headers. Status codes, messages, and the order of the checks are those of `rmcp` 3.11.
+// The MCP endpoint behind the token guard, as the Rust server's `rmcp` streamable HTTP
+// service answers it (`StreamableHttpService` in stateless mode with JSON responses): one
+// JSON-RPC message per POST, answered with one JSON response, or a server-sent event stream
+// for `subscriptions/listen`. Clients either `initialize` (protocol versions up to
+// 2025-11-25) or name the 2026-07-28 protocol in each request's `_meta` with matching
+// `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` headers. Status codes, messages, and
+// the order of the checks are those of `rmcp` 3.11.
 
-import type * as B from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
 import { CommandError, commandError, panicked } from "../commands/errors.ts";
 import type { Notifier } from "../commands/events.ts";
 import { VERSION } from "../http/version.ts";

@@ -1,4 +1,4 @@
-// Commands for workspace records (`src-tauri/src/commands/workspaces.rs`).
+// Commands for workspace records.
 
 import { workspaceId } from "../domain/model.ts";
 import { StorageError } from "../storage/errors.ts";

@@ -1,6 +1,5 @@
 // How a report writes numbers, durations, and labels, and the stretches of work and waiting
-// it reads from a task's history. Port of the helpers of
-// `src-tauri/src/commands/report/mod.rs`, with Rust's float rounding and printing.
+// it reads from a task's history, with Rust's float rounding and printing.
 
 import { compareStrings, displayFloat, trimEnd, trimStart } from "../../domain/rust.ts";
 import type {
@@ -10,7 +9,7 @@ import type {
   TaskEvent,
   TaskResolution,
   TaskType,
-} from "../../../../src/lib/bindings.ts";
+} from "../../../../src/lib/api.ts";
 
 export const OUTCOMES: readonly ReviewOutcome[] = ["completed", "opened_for_review", "started", "worked_on", "planned"];
 

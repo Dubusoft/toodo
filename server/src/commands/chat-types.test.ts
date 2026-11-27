@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type * as B from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
 import { FIRST_CHANNEL, type ChatMessage, chatAttachmentId, chatMessageId, chatThreadId } from "../domain/chat.ts";
 import {
   ACTION_LIMIT,

@@ -1,10 +1,9 @@
 // The shapes commands exchange with their callers, which are the types of
-// `src/lib/bindings.ts`, and their conversion from and to the domain model, as
-// `src-tauri/src/commands/types/` does. Inputs are validated when they are converted into
-// domain types, with the Rust messages.
+// `src/lib/api.ts`, and their conversion from and to the domain model. Inputs are validated
+// when they are converted into domain types.
 
-import type * as B from "../../../src/lib/bindings.ts";
-import type { commands } from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
+import type { Commands } from "../../../src/lib/api.ts";
 import {
   InvalidCriterion,
   parseNewCriterion,
@@ -31,7 +30,7 @@ import type { TaskQuery } from "../storage/task-query.ts";
 import type { NewTask } from "../storage/tasks.ts";
 import { invalidInput } from "./errors.ts";
 
-type Bindings = typeof commands;
+type Bindings = Commands;
 
 type Data<Reply> = Reply extends { status: "ok"; data: infer T }
   ? T

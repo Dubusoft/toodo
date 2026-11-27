@@ -1,8 +1,8 @@
-// Commands for the chat with the agent connected over MCP (`src-tauri/src/commands/chat.rs`):
-// the app keeps its channels and threads, reads the latest messages of one, marks them read,
-// and sends a person's messages.
+// Commands for the chat with the agent connected over MCP: the app keeps its channels and
+// threads, reads the latest messages of one, marks them read, and sends a person's
+// messages.
 
-import type * as B from "../../../src/lib/bindings.ts";
+import type * as B from "../../../src/lib/api.ts";
 import { type ChatAttachmentId, chatChannelId, chatMessageId, chatThreadId } from "../domain/chat.ts";
 import { taskId } from "../domain/model.ts";
 import { trim } from "../domain/rust.ts";

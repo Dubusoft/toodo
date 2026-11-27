@@ -7,11 +7,16 @@ import { join } from "node:path";
 import {
   BASELINE_SCHEMA_VERSION,
   BUSY_TIMEOUT_MS,
+  SCHEMA_VERSION,
   SchemaVersionError,
+  createDatabase as createNewDatabase,
+  initializeSchema,
   integrityCheck,
+  migrate,
   openConnections,
   openReader,
   openWriter,
+  schemaVersion,
 } from "./database.ts";
 
 let dir: string;
@@ -102,7 +107,7 @@ describe("connection rules", () => {
 });
 
 describe("schema version guard", () => {
-  for (const version of [0, BASELINE_SCHEMA_VERSION - 1, BASELINE_SCHEMA_VERSION + 1]) {
+  for (const version of [0, BASELINE_SCHEMA_VERSION - 1, SCHEMA_VERSION + 1]) {
     test(`version ${version} is rejected and the file is left unchanged`, () => {
       createDatabase(version);
       for (const open of [openWriter, openReader]) {
@@ -114,7 +119,7 @@ describe("schema version guard", () => {
         }
         expect(error).toBeInstanceOf(SchemaVersionError);
         expect((error as SchemaVersionError).found).toBe(version);
-        expect((error as SchemaVersionError).supported).toBe(BASELINE_SCHEMA_VERSION);
+        expect((error as SchemaVersionError).supported).toBe(SCHEMA_VERSION);
       }
       expect(journalModeOnDisk()).toBe("delete");
     });
@@ -128,5 +133,50 @@ describe("schema version guard", () => {
     } finally {
       close();
     }
+  });
+});
+
+describe("schema creation and migrations", () => {
+  /** An in-memory database at the baseline schema, before any migration. */
+  function baseline(): Database {
+    const db = new Database(":memory:", { strict: true });
+    initializeSchema(db, 0, []);
+    return db;
+  }
+
+  test("a new database has the current schema and the general channel created at the given time", () => {
+    createNewDatabase(path, 1234);
+    const { writer, close } = openConnections(path);
+    try {
+      expect(schemaVersion(writer)).toBe(SCHEMA_VERSION);
+      expect(writer.query("SELECT id, name, created_at FROM chat_channels").all()).toEqual([
+        { id: 1, name: "general", created_at: 1234 },
+      ]);
+      expect(integrityCheck(writer)).toEqual(["ok"]);
+    } finally {
+      close();
+    }
+  });
+
+  test("the migration after the baseline brings it to the next version, once", () => {
+    const db = baseline();
+    const migrations = ["CREATE TABLE read_marks (id INTEGER PRIMARY KEY)"];
+    expect(schemaVersion(db)).toBe(BASELINE_SCHEMA_VERSION);
+    migrate(db, migrations);
+    expect(schemaVersion(db)).toBe(BASELINE_SCHEMA_VERSION + 1);
+    migrate(db, migrations);
+    expect(schemaVersion(db)).toBe(BASELINE_SCHEMA_VERSION + 1);
+    expect(db.query("SELECT name FROM sqlite_master WHERE name = 'read_marks'").all()).toEqual([{ name: "read_marks" }]);
+    db.close();
+  });
+
+  test("a migration that leaves a dangling reference is rolled back", () => {
+    const db = baseline();
+    expect(() =>
+      migrate(db, ["INSERT INTO tasks (workspace_id, type, title, status) VALUES (999, 'feat', 'orphan', 'planned')"]),
+    ).toThrow(`migration to version ${BASELINE_SCHEMA_VERSION + 1} left a row of tasks referring to a row that does not exist`);
+    expect(schemaVersion(db)).toBe(BASELINE_SCHEMA_VERSION);
+    expect(db.query("SELECT count(*) AS n FROM tasks").get()).toEqual({ n: 0 });
+    db.close();
   });
 });

@@ -1,5 +1,4 @@
-// The Web Push routes of a signed-in device. Port of the routes of
-// `src-tauri/src/server/push/mod.rs`.
+// The Web Push routes of a signed-in device.
 //
 // - `GET /api/push`: the server's public key and the asking device's subscription.
 // - `PUT /api/push/subscription` with a browser's `PushSubscription` subscribes the device;

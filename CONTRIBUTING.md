@@ -31,6 +31,5 @@ I have read the Toodo Individual Contributor License Agreement (CLA.md, version 
 - Keep each pull request to one concern, and write commit messages in the imperative
   mood, in English.
 - Follow the language policy and conventions in [`AGENTS.md`](AGENTS.md).
-- CI only typechecks. Run the tests, `cargo clippy --all-targets -- -D warnings`, and
-  `cargo fmt --check` locally before opening a pull request; see the Commands section of
-  [`AGENTS.md`](AGENTS.md).
+- CI only typechecks. Run the tests locally before opening a pull request; see the
+  Commands section of [`AGENTS.md`](AGENTS.md).

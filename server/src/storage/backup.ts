@@ -1,7 +1,6 @@
-// Backups of the database: consistent snapshots written with `VACUUM INTO` and checked
-// with `PRAGMA integrity_check`, restores that check a backup before it replaces the live
-// data, and the backup directory Toodo keeps automatic and pre-restore backups in. Port
-// of `src-tauri/src/storage/backup.rs`.
+// Backups of the database: consistent snapshots written with `VACUUM INTO` and checked with
+// `PRAGMA integrity_check`, restores that check a backup before it replaces the live data,
+// and the backup directory Toodo keeps automatic and pre-restore backups in.
 //
 // Unlike the Rust server, which migrates an older backup while staging it, the TypeScript
 // server neither migrates nor writes another schema, so it restores only backups at
@@ -22,7 +21,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { type BackupKind, fileName, parseFileName } from "../domain/backup.ts";
-import { BASELINE_SCHEMA_VERSION, BUSY_TIMEOUT_MS, integrityCheck, schemaVersion } from "./database.ts";
+import { BASELINE_SCHEMA_VERSION, BUSY_TIMEOUT_MS, integrityCheck, migrate, SCHEMA_VERSION, schemaVersion } from "./database.ts";
 import { StorageError } from "./errors.ts";
 import { liveCycle, replaceWithAttached } from "./restore.ts";
 
@@ -145,8 +144,8 @@ export function checkIntegrity(path: string): void {
 }
 
 /**
- * Reads the backup at `path` into memory and checks it: a Toodo database at
- * `BASELINE_SCHEMA_VERSION`, intact, with valid foreign keys, no task waiting with only
+ * Reads the backup at `path` into memory, migrates it to `SCHEMA_VERSION`, and checks it: a
+ * Toodo database from `BASELINE_SCHEMA_VERSION` up, intact, with valid foreign keys, no task waiting with only
  * one of `wait_until` and `wait_status`, and no loop among the dependencies of its live
  * tasks. Fails with `invalid_backup` otherwise, so the live data stays untouched.
  */
@@ -161,9 +160,9 @@ export function stageBackup(path: string): StagedBackup {
       if (version === 0) {
         throw invalid("not a Toodo database");
       }
-      if (version !== BASELINE_SCHEMA_VERSION) {
+      if (version < BASELINE_SCHEMA_VERSION || version > SCHEMA_VERSION) {
         throw invalid(
-          `schema version ${version}; only version ${BASELINE_SCHEMA_VERSION} can be restored`,
+          `schema version ${version}; only versions ${BASELINE_SCHEMA_VERSION} to ${SCHEMA_VERSION} can be restored`,
         );
       }
       bytes = source.serialize();
@@ -186,6 +185,11 @@ export function stageBackup(path: string): StagedBackup {
     if (integrity !== "ok") {
       throw invalid(`integrity check failed: ${integrity}`);
     }
+    try {
+      migrate(staged);
+    } catch (error) {
+      throw invalid(error instanceof Error ? error.message : error);
+    }
     const violation = staged.query<{ table: string }, []>("PRAGMA foreign_key_check").get();
     if (violation !== null) {
       throw invalid(`a row of ${violation.table} refers to a row that does not exist`);
@@ -203,6 +207,7 @@ export function stageBackup(path: string): StagedBackup {
     if (cycle !== null) {
       throw invalid(`task dependencies loop: ${cycle.join(" -> ")}`);
     }
+    bytes = staged.serialize();
   } finally {
     staged.close();
   }

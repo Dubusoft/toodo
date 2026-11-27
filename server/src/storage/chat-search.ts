@@ -1,5 +1,5 @@
 // Finding earlier chat messages: full-text search over the `chat_search` index, matched as
-// `search_tasks` matches tasks. Port of `src-tauri/src/storage/chat_search.rs`.
+// `search_tasks` matches tasks.
 
 import type { Database, SQLQueryBindings } from "bun:sqlite";
 
