@@ -3,7 +3,7 @@
  * keeps the subscription under this device's token and pushes alerts to it even while Toodo
  * is closed, and the service worker (see `vite-pwa.ts`) shows them and opens their task.
  */
-import type { TaskId } from "@/lib/bindings";
+import type { ChatChannelId, ChatThreadId, TaskId } from "@/lib/bindings";
 import { isAppleMobile, runsInstalled } from "@/web/install";
 import { apiRequest } from "@/web/session";
 
@@ -275,19 +275,46 @@ const openTaskMessage = "toodo-open-task";
 /** The message the service worker sends an open page when a chat notification is clicked. */
 const openChatMessage = "toodo-open-chat";
 
+/** The channel, or the thread under it, a clicked chat notification shows. */
+export interface ChatTarget {
+  readonly channel: ChatChannelId;
+  readonly thread: ChatThreadId | null;
+}
+
+function isId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function chatTarget(channel: unknown, thread: unknown): ChatTarget | null {
+  return isId(channel) ? { channel, thread: isId(thread) ? thread : null } : null;
+}
+
 /**
- * Calls `open` each time a clicked chat notification asks an open page to show the chat. A page
- * the service worker opens gets `?chat` in its address instead. Returns the function that stops
- * listening.
+ * The place in the chat that the address of a page the service worker opened names, as
+ * `?chat=<channel>&thread=<thread>`; null for a bare `?chat` or no chat at all.
  */
-export function listenForOpenChat(open: () => void): () => void {
+export function chatTargetAt(search: string): ChatTarget | null {
+  const params = new URLSearchParams(search);
+  const number = (name: string) => {
+    const text = params.get(name);
+    return text === null || !/^\d+$/.test(text) ? null : Number(text);
+  };
+  return chatTarget(number("chat"), number("thread"));
+}
+
+/**
+ * Calls `open` each time a clicked chat notification asks an open page to show the chat, with
+ * the place it names (null when it names none). A page the service worker opens gets the place
+ * in its address instead (see `chatTargetAt`). Returns the function that stops listening.
+ */
+export function listenForOpenChat(open: (target: ChatTarget | null) => void): () => void {
   if (!("serviceWorker" in navigator)) {
     return () => {};
   }
   const container = navigator.serviceWorker;
   const onMessage = ({ data }: MessageEvent<unknown>) => {
-    if (typeof data === "object" && data !== null && "type" in data && data.type === openChatMessage) {
-      open();
+    if (isRecord(data) && data.type === openChatMessage) {
+      open(chatTarget(data.channelId, data.threadId));
     }
   };
   container.addEventListener("message", onMessage);

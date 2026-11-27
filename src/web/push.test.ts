@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { decodeBase64Url, listenForOpenTask, pushSupport } from "@/web/push";
+import { chatTargetAt, decodeBase64Url, listenForOpenChat, listenForOpenTask, pushSupport } from "@/web/push";
 
 const TOKEN_KEY = "toodo-server-token";
 
@@ -353,5 +353,38 @@ describe("listenForOpenTask", () => {
     container.dispatchEvent(new MessageEvent("message", { data: { type: "toodo-open-task", taskId: 9 } }));
 
     expect(open).not.toHaveBeenCalled();
+  });
+});
+
+describe("listenForOpenChat", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, "serviceWorker");
+  });
+
+  it("opens the channel or thread the service worker asks for", () => {
+    const container = new EventTarget();
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: container });
+    const open = vi.fn();
+    const stop = listenForOpenChat(open);
+
+    container.dispatchEvent(new MessageEvent("message", { data: { type: "toodo-open-chat", channelId: 2, threadId: 5 } }));
+    container.dispatchEvent(new MessageEvent("message", { data: { type: "toodo-open-chat", channelId: 3, threadId: null } }));
+    container.dispatchEvent(new MessageEvent("message", { data: { type: "toodo-open-chat" } }));
+    container.dispatchEvent(new MessageEvent("message", { data: { type: "other", channelId: 4 } }));
+
+    expect(open.mock.calls).toEqual([[{ channel: 2, thread: 5 }], [{ channel: 3, thread: null }], [null]]);
+    stop();
+  });
+});
+
+describe("chatTargetAt", () => {
+  it.each([
+    { search: "?chat=2&thread=5", target: { channel: 2, thread: 5 } },
+    { search: "?chat=3", target: { channel: 3, thread: null } },
+    { search: "?chat", target: null },
+    { search: "?chat=x&thread=5", target: null },
+    { search: "", target: null },
+  ])("reads $search", ({ search, target }) => {
+    expect(chatTargetAt(search)).toEqual(target);
   });
 });

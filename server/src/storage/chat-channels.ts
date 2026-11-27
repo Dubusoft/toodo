@@ -116,9 +116,12 @@ export function markChatRead(db: Database, place: ChatPlace, upTo: ChatMessageId
   })();
 }
 
-/** How a notification names where the agent posted, when the channel lets it notify. */
+/** Where the agent posted, for a notification that names it and opens it, when the
+ * channel lets it notify. */
 export interface ChatNotice {
+  channelId: ChatChannelId;
   channel: string;
+  threadId: ChatThreadId | null;
   thread: string | null;
 }
 
@@ -137,7 +140,7 @@ export function chatNotice(db: Database, channelId: ChatChannelId, threadId: Cha
     return null;
   }
   if (threadId === null) {
-    return { channel: row.name, thread: null };
+    return { channelId, channel: row.name, threadId: null, thread: null };
   }
   const thread = db
     .query<{ title: string }, [number]>("SELECT title FROM chat_threads WHERE id = ?1")
@@ -145,5 +148,5 @@ export function chatNotice(db: Database, channelId: ChatChannelId, threadId: Cha
   if (thread === null) {
     throw new StorageError({ kind: "chat_thread_not_found", thread: threadId });
   }
-  return { channel: row.name, thread: thread.title };
+  return { channelId, channel: row.name, threadId, thread: thread.title };
 }

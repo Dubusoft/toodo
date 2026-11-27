@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
+import { chatChannelId } from "../domain/chat.ts";
 import { deviceId } from "../domain/device.ts";
 import { taskId } from "../domain/model.ts";
 import type { TaskStatus } from "../domain/status.ts";
@@ -273,7 +274,9 @@ describe("push worker", () => {
     worker.tasksSeen();
     set("in_review");
     worker.tasksChanged();
-    worker.alert(agentMessageAlert("Helper", { channel: "work", thread: null }, 9, "Done"));
+    worker.alert(
+      agentMessageAlert("Helper", { channelId: chatChannelId(1), channel: "work", threadId: null, thread: null }, 9, "Done"),
+    );
     await worker.idle();
     expect(transport.requests.length).toBe(2);
     const tags = [];
