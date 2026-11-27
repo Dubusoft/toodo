@@ -21,11 +21,17 @@
 
 /*
  * From `md` up the chat popup (`chat-panel.tsx`) and a task's details sheet (`details-sheet.tsx`)
- * share the window: while the chat is open the details float at the left edge instead of the right,
- * and the popup keeps to the room right of them (`--details-width`, set by the open sheet).
+ * share the window: while both are open the popup narrows to `--chat-beside-details` at the right
+ * edge and the details, narrowed to `--details-beside-chat`, float just left of it, so the two read
+ * as one and the list stays in view on the left. `--details-width` is set by the open sheet.
  */
 @custom-variant chat-open (&:where(body:has([data-chat][data-state="open"]) *));
 @custom-variant details-open (&:where(body:has([data-details-sheet]) *));
+
+:root {
+    --details-beside-chat: min(var(--details-width, 0px), max(22.5rem, 30vw));
+    --chat-beside-details: min(24rem, calc(100vw - var(--details-beside-chat) - 3rem));
+}
 
 @theme inline {
     --font-heading: var(--font-sans);

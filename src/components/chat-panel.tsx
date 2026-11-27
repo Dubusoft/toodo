@@ -1270,7 +1270,7 @@ export function ChatSearch({
  * ends, then reports `onClosed`; with no animation (reduced motion) it reports that at once.
  *
  * From `md` up it is a popup above the floating button, and it stays open beside a task's details,
- * which then move to the window's left edge while the popup narrows to the room right of them (see
+ * which then float just left of the popup while it narrows to `--chat-beside-details` (see
  * `src/index.css`). On a phone it fills the screen. Narrower than `@2xl` it shows either the
  * channels or one conversation.
  */
@@ -1385,8 +1385,8 @@ function ChatPanel({
       className={cn(
         "fixed z-40 flex flex-col overflow-hidden bg-background shadow-xl print:hidden",
         "inset-0 md:inset-auto md:bottom-20 md:right-4 md:h-[min(42rem,calc(100dvh-7rem))] md:w-[46rem] md:max-w-[calc(100vw-2rem)] md:rounded-xl md:border",
-        // Beside a task's details at the left edge it keeps to the room right of them.
-        "md:details-open:max-w-[calc(100vw-var(--details-width)-3rem)]",
+        // Beside a task's details, which float just left of it, it narrows to leave the list in view.
+        "md:details-open:w-(--chat-beside-details)",
         // It grows from and shrinks into the floating button's center.
         "origin-[calc(100%-2.5rem)_calc(100%-2.5rem)] md:origin-[calc(100%-1.5rem)_calc(100%+2.5rem)]",
         open ? "motion-safe:animate-chat-in" : "motion-safe:animate-chat-out",
