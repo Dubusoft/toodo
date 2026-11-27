@@ -97,6 +97,9 @@ or the process. `normalize.ts` replaces exactly those before comparing:
   name stamps that fall within the run (times from the copied database stay).
 - The server instance id (`instance`, `server instance <id>`) and the epoch of event ids
   (`<epoch>-<sequence>`).
+- The server's build version where the server names itself (`{ "name": "toodo", "version" }`
+  in `app_info` and in the MCP `serverInfo`), since `shadow` compares a release build with
+  the checkout's TypeScript server.
 - Each server's data directory, URL, listen address, and tokens.
 - 32-character hex names, the random names of stored chat attachments.
 

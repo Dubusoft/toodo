@@ -14,6 +14,10 @@ export type Normalizer = {
 /** Fields that name the server process rather than the data. */
 const processKeys = new Set(["instance"]);
 
+/** `{ name: "toodo", version }` names the server's build (`app_info`, MCP `serverInfo`), which differs between a release and a checkout. */
+const namesBuild = (value: object): boolean =>
+  "name" in value && value.name === "toodo" && "version" in value && typeof value.version === "string";
+
 const isoTime = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?/g;
 
 export function inWindow(n: Normalizer, value: number): "s" | "ms" | null {
@@ -53,8 +57,12 @@ export function normalizeValue(n: Normalizer, value: unknown): unknown {
   if (typeof value === "string") return normalizeText(n, value);
   if (Array.isArray(value)) return value.map((item) => normalizeValue(n, item));
   if (value !== null && typeof value === "object") {
+    const build = namesBuild(value);
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, processKeys.has(key) && typeof item === "string" ? "<instance>" : normalizeValue(n, item)]),
+      Object.entries(value).map(([key, item]) => [
+        key,
+        build && key === "version" ? "<version>" : processKeys.has(key) && typeof item === "string" ? "<instance>" : normalizeValue(n, item),
+      ]),
     );
   }
   return value;
