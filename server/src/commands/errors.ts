@@ -200,6 +200,20 @@ export function commandError(error: unknown): CommandError {
   throw error;
 }
 
+/** `run` as a command that waits, such as on a URL check: whatever it throws or rejects
+ * with reaches the caller as a `CommandError`. */
+export function asyncCommand<Args extends unknown[], Result>(
+  run: (...args: Args) => Promise<Result>,
+): (...args: Args) => Promise<Result> {
+  return async (...args) => {
+    try {
+      return await run(...args);
+    } catch (error) {
+      throw commandError(error);
+    }
+  };
+}
+
 /** `run` as a command: whatever it throws reaches the caller as a `CommandError`. */
 export function command<Args extends unknown[], Result>(
   run: (...args: Args) => Result,

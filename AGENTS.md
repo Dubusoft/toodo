@@ -126,9 +126,12 @@ Layout:
     `cargo test --lib` regenerates; `server/src/storage/testing.ts` creates the storage
     tests' databases with it.
   - `server/src/commands/`: the commands of `src-tauri/src/commands/` over `Storage`, so
-    far workspaces, guidelines, tasks, issues, chat, backups, and the update check. Each is
-    typed `Command<"<name>">` from `src/lib/bindings.ts` (or with `Args` and `Reply` when
-    it takes more state than `Storage`), so it takes the arguments the web app sends and
+    far workspaces, guidelines, tasks, issues, chat, backups, the update check, completion,
+    and reviews (`review.ts`, saved reviews in `snapshots.ts`, and the Markdown and CSV
+    reports in `report/`, which reads days and time zones through Temporal in
+    `report/calendar.ts`). Each is typed `Command<"<name>">` from `src/lib/bindings.ts`
+    (`AsyncCommand` when it waits on the network, or with `Args` and `Reply` when it
+    takes more state than `Storage`), so it takes the arguments the web app sends and
     returns the shape it expects, and `npm run typecheck` fails when the two drift apart;
     `server/src/web-bindings.d.ts` stands in for the two web modules that file imports.
     Failures are a `CommandError` with the Rust code, kind, and message (`errors.ts`);
@@ -141,7 +144,7 @@ Layout:
     per-device deadline, the change worker, and the test notification (`push.ts`). Its
     HTTP routes come with the HTTP surface.
   - `server/src/net.ts`: the public-address checks of `src-tauri/src/net.rs` for outbound
-    requests to URLs from outside the server.
+    requests to URLs from outside the server, and the GET URL criteria are checked with.
   - `server/src/domain/`: the domain model and rules of `src-tauri/src/domain/`, module for
     module, with the Rust tests ported beside each one. `rust.ts` holds the Rust standard
     library behavior they depend on (whitespace, `{:?}` quoting, float printing, string

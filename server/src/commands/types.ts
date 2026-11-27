@@ -50,6 +50,9 @@ export type Reply<Name extends keyof Bindings> = Data<Awaited<ReturnType<Binding
  * state than the storage take it before the arguments, typed with `Args` and `Reply`. */
 export type Command<Name extends keyof Bindings> = (storage: Storage, ...args: Args<Name>) => Reply<Name>;
 
+/** A [`Command`] that waits, such as on a URL check. */
+export type AsyncCommand<Name extends keyof Bindings> = (storage: Storage, ...args: Args<Name>) => Promise<Reply<Name>>;
+
 export function workspace(w: Workspace): B.Workspace {
   return {
     id: w.id,
