@@ -39,12 +39,16 @@ type Data<Reply> = Reply extends { status: "ok"; data: infer T }
     ? never
     : Reply;
 
+/** The arguments the web app passes to the command `Name`. */
+export type Args<Name extends keyof Bindings> = Parameters<Bindings[Name]>;
+
+/** The data of the command `Name`'s reply. */
+export type Reply<Name extends keyof Bindings> = Data<Awaited<ReturnType<Bindings[Name]>>>;
+
 /** The command `Name` of the bindings as the server runs it: on `storage`, with the
- * arguments the web app passes, returning the data of its reply. */
-export type Command<Name extends keyof Bindings> = (
-  storage: Storage,
-  ...args: Parameters<Bindings[Name]>
-) => Data<Awaited<ReturnType<Bindings[Name]>>>;
+ * arguments the web app passes, returning the data of its reply. Commands that need more
+ * state than the storage take it before the arguments, typed with `Args` and `Reply`. */
+export type Command<Name extends keyof Bindings> = (storage: Storage, ...args: Args<Name>) => Reply<Name>;
 
 export function workspace(w: Workspace): B.Workspace {
   return {

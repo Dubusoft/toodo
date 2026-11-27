@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DependencyError } from "../domain/dag.ts";
 import { guidelineId, taskId } from "../domain/model.ts";
 import { TransitionError } from "../domain/status.ts";
@@ -17,6 +21,38 @@ test("Storage errors map to error codes", () => {
   for (const [failure, kind, code] of cases) {
     const error = new StorageError(failure);
     expect(commandError(error).toJSON()).toEqual({ kind, code, message: error.message });
+  }
+});
+
+test("File errors read as Rust prints them and database errors stay storage failures", () => {
+  const dir = mkdtempSync(join(tmpdir(), "toodo-command-errors-"));
+  try {
+    const file = join(dir, "a-file");
+    writeFileSync(file, "");
+    let fileError: unknown;
+    try {
+      writeFileSync(join(file, "below"), "");
+    } catch (error) {
+      fileError = error;
+    }
+    expect(commandError(fileError).toJSON()).toEqual({
+      kind: "external",
+      code: "external",
+      message: expect.stringMatching(/^file error: Not a directory \(os error \d+\)$/),
+    });
+    let databaseError: unknown;
+    try {
+      new Database(":memory:").run("SELECT * FROM missing");
+    } catch (error) {
+      databaseError = error;
+    }
+    expect(commandError(databaseError).toJSON()).toEqual({
+      kind: "internal",
+      code: "storageFailed",
+      message: "database error: no such table: missing",
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
