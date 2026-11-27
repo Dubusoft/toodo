@@ -10,9 +10,11 @@ import type * as B from "../../../src/lib/bindings.ts";
 import { CommandError, commandError, panicked } from "../commands/errors.ts";
 import type { Notifier } from "../commands/events.ts";
 import { VERSION } from "../http/version.ts";
+import type { Grant } from "../storage/oauth.ts";
 import type { Storage } from "../storage/storage.ts";
+import { canWrite, type Scopes } from "../oauth/scopes.ts";
 import { ArgumentError, numbersFromStrings } from "./args.ts";
-import { INSTRUCTIONS } from "./instructions.ts";
+import { CHAT_INSTRUCTIONS, INSTRUCTIONS } from "./instructions.ts";
 import { rustJsonPretty } from "../commands/review.ts";
 import { sortedKeys } from "./json.ts";
 import * as resources from "./resources.ts";
@@ -27,9 +29,55 @@ export interface Backend extends Notifier {
   readonly reader: Storage;
   /** How agents reach the server; its `instance` tells this server apart from others. */
   readonly mcp: B.McpServerInfo;
+  /** The public origin of public mode, where chat apps connect over OAuth. */
+  readonly publicUrl?: string | null;
   /** Calls `listener` on every change announced to clients, until the returned function is
    * called. */
   onChange(listener: () => void): () => void;
+}
+
+/** How a request reached `/mcp`: with the MCP token, or as a chat app over OAuth. */
+export type Access = { readonly kind: "static" } | { readonly kind: "oauth"; readonly grant: Grant };
+
+const READ_TOOLS = new Set([
+  "read_toodo_skill",
+  "list_workspaces",
+  "list_tasks",
+  "search_tasks",
+  "get_task",
+  "get_guidelines",
+  "review_report",
+]);
+const WRITE_TOOLS = new Set([
+  "create_workspace",
+  "create_task",
+  "create_plan",
+  "update_task",
+  "move_task",
+  "add_dependency",
+  "remove_dependency",
+  "add_related",
+  "remove_related",
+  "add_criterion",
+  "remove_criterion",
+  "check_criterion",
+  "add_progress_note",
+  "report_blocker",
+  "pause_task",
+  "wait_task",
+  "add_guideline",
+  "update_guideline",
+  "remove_guideline",
+]);
+
+/** Why a chat app whose grant has `scopes` may not call tool `name`, or `null` when it may.
+ * The tools that start, finish, or delete work stay with local agents. */
+export function oauthRefusal(name: string, scopes: Scopes): string | null {
+  if (READ_TOOLS.has(name)) return null;
+  if (!WRITE_TOOLS.has(name)) {
+    return `${name} is local-only; use the Toodo app or a local agent with the MCP token.`;
+  }
+  return canWrite(scopes) ? null : `${name} requires toodo.write; reconnect from the app and approve that scope.`;
 }
 
 /** The protocol versions this server knows, oldest first. */
@@ -490,20 +538,20 @@ export class McpService {
     this.#allowedHosts = allowedHosts;
   }
 
-  async handle(request: Request): Promise<Response> {
+  async handle(request: Request, access: Access): Promise<Response> {
     try {
       checkHost(request, this.#allowedHosts);
       if (request.method !== "POST") {
         return text(405, "Method Not Allowed", { allow: "POST" });
       }
-      return await this.#post(request);
+      return await this.#post(request, access);
     } catch (error) {
       if (error instanceof Rejected) return error.response;
       throw error;
     }
   }
 
-  async #post(request: Request): Promise<Response> {
+  async #post(request: Request, access: Access): Promise<Response> {
     const types = acceptedTypes(request.headers).map((type) => type.toLowerCase());
     if (!types.includes(JSON_TYPE) || !types.includes(EVENT_STREAM)) {
       return text(406, "Not Acceptable: Client must accept both application/json and text/event-stream");
@@ -542,7 +590,7 @@ export class McpService {
       });
     }
     const negotiated = perRequest || (message.method === "server/discover" && typed);
-    const answer = await this.#answer(message, headers, request.signal);
+    const answer = await this.#answer(message, headers, request.signal, access);
     if ("stream" in answer) return this.#stream(message.id, answer.stream, request.signal);
     if ("result" in answer) return json(200, { jsonrpc: "2.0", id: message.id, result: answer.result });
     let status = 200;
@@ -556,11 +604,14 @@ export class McpService {
     return errorResponse(status, message.id, answer.error);
   }
 
-  /** Answers a request as the Rust server's handler does. */
+  /** Answers a request as the Rust server's handler does. Chat apps connected over OAuth get
+   * their own instructions and only the tools their grant allows. Every grant may read
+   * (its scopes are never empty), so the resources need no check. */
   async #answer(
     message: Extract<Message, { kind: "request" }>,
     headers: Headers,
     signal: AbortSignal,
+    access: Access,
   ): Promise<Answer> {
     const { method, params } = message;
     if (!readsAs(method, params)) return { error: methodNotFound(method) };
@@ -603,7 +654,7 @@ export class McpService {
               protocolVersion: agreed,
               capabilities: { resources: {}, tools: {} },
               serverInfo: this.#serverInfo(),
-              instructions: INSTRUCTIONS,
+              instructions: access.kind === "oauth" ? CHAT_INSTRUCTIONS : INSTRUCTIONS,
             },
           };
         }
@@ -621,8 +672,13 @@ export class McpService {
           };
         case "ping":
           return legacy ? { result: {} } : { error: methodNotFound(method) };
-        case "tools/list":
-          return { result: shaped({ tools: TOOL_LIST }, true) };
+        case "tools/list": {
+          const tools =
+            access.kind === "oauth"
+              ? TOOL_LIST.filter((tool) => oauthRefusal(tool.name, access.grant.scopes) === null)
+              : TOOL_LIST;
+          return { result: shaped({ tools }, true) };
+        }
         case "resources/list":
           return { result: shaped({ resources: resources.list(this.#backend.reader) }, true) };
         case "resources/templates/list":
@@ -646,6 +702,12 @@ export class McpService {
           return { result: shaped({ contents: [{ uri, mimeType: JSON_TYPE, text: content }] }, true) };
         }
         case "tools/call": {
+          const name = body.name as string;
+          if (access.kind === "oauth") {
+            const refused = oauthRefusal(name, access.grant.scopes);
+            if (refused !== null) return { result: shaped(toolError(new CommandError("notPermitted", refused)), false) };
+            if (name === "read_toodo_skill") return { result: shaped(toolSuccess(new Text(CHAT_INSTRUCTIONS)), false) };
+          }
           const args = body.arguments;
           const called = await this.#call(body.name as string, isObject(args) ? args : null);
           if (called === null) return { error: { code: ErrorCode.invalidParams, message: "tool not found" } };

@@ -1,15 +1,19 @@
 // The routes of the HTTP server on its one port: the API behind the web token (or a device
 // token, or Cloudflare Access), and the web app. Port of `router` and `event_stream` in
 // `src-tauri/src/server/mod.rs`. MCP (`/mcp`, with the agent's chat attachments) is served
-// by `server/src/mcp/`; OAuth (`/oauth`, `/.well-known`) is not mounted yet.
+// by `server/src/mcp/`, and in public mode the OAuth server of `server/src/oauth/` answers
+// `/oauth` and `/.well-known`.
 
 import { statSync } from "node:fs";
 import { join, normalize, sep } from "node:path";
 import { deviceId } from "../domain/device.ts";
 import { chatAttachmentId } from "../domain/chat.ts";
+import { CommandError } from "../commands/errors.ts";
 import { McpEndpoint } from "../mcp/mcp.ts";
+import type { ClientMetadataFetcher } from "../oauth/clients.ts";
+import { OAuthServer } from "../oauth/routes.ts";
 import * as attachments from "./attachments.ts";
-import { type Caller, FailedAttempts, text } from "./auth.ts";
+import { type Caller, FailedAttempts, failed, text } from "./auth.ts";
 import type { AccessVerifier } from "./access.ts";
 import * as devices from "./devices.ts";
 import * as files from "./files.ts";
@@ -24,6 +28,8 @@ export type RouterOptions = {
   readonly access: AccessVerifier | null;
   /** The web build of the frontend; without it only the API is served. */
   readonly webDir: string | null;
+  /** Fetches the metadata documents of OAuth clients that name one as their `client_id`. */
+  readonly clientMetadata: ClientMetadataFetcher;
 };
 
 /** What the server tells a request about itself: its address, and that an event stream
@@ -149,28 +155,49 @@ export function createHandler(options: RouterOptions): Handler {
   }
 
   const mcp = new McpEndpoint(services, { mcp: options.mcpToken, web: options.webToken });
+  const oauth =
+    services.publicUrl === null
+      ? null
+      : new OAuthServer({
+          issuer: services.publicUrl,
+          webToken: options.webToken,
+          storage: services.storage,
+          fetcher: options.clientMetadata,
+        });
+
+  /** Chat apps signed in over OAuth may not use the chat, like its MCP tools: it is for the
+   * agent with the MCP token. */
+  const localOnly = () =>
+    failed(new CommandError("notPermitted", "chat attachments are local-only; use the MCP token of the server"));
 
   /** `/mcp` and the agent's chat attachments under it, behind the MCP token. */
   function agent(request: Request, pathname: string, connection: Connection): Response | Promise<Response> {
-    const refused = mcp.refusal(request, connection.peer);
-    if (refused !== null) return refused;
+    const access = mcp.admit(request, connection.peer);
+    if (access instanceof Response) return access;
     if (pathname === "/mcp/attachments") {
       if (request.method !== "POST") return methodNotAllowed(["POST"]);
+      if (access.kind !== "static") return localOnly();
       return attachments.upload(services, "agent", new URL(request.url).searchParams.get("name") ?? "", request);
     }
     const file = /^\/mcp\/attachments\/([^/]+)$/.exec(pathname);
     if (file !== null) {
       if (request.method !== "GET" && request.method !== "HEAD") return methodNotAllowed(["GET", "HEAD"]);
+      if (access.kind !== "static") return localOnly();
       return int(file[1]!, (value) => attachments.send(services, chatAttachmentId(value)));
     }
-    return mcp.serve(request);
+    return mcp.serve(request, access);
   }
 
   return async (request, connection) => {
     const { pathname } = new URL(request.url);
     if (pathname.startsWith("/api/")) return api(request, pathname, connection);
     if (pathname === "/mcp" || pathname.startsWith("/mcp/")) return agent(request, pathname, connection);
-    if (pathname.startsWith("/oauth/") || pathname.startsWith("/.well-known/")) return NOT_FOUND();
+    if (oauth === null) {
+      if (pathname.startsWith("/oauth/") || pathname.startsWith("/.well-known/")) return NOT_FOUND();
+    } else {
+      const answer = oauth.route(request, pathname, connection.peer);
+      if (answer !== null) return answer;
+    }
     return options.webDir === null ? NOT_FOUND() : staticFile(options.webDir, pathname, request.method);
   };
 }

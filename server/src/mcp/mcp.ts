@@ -1,14 +1,16 @@
 // `/mcp`, the MCP endpoint for agents (`src-tauri/src/mcp/mod.rs`, `router` and
 // `require_token`): requests from this machine that bear the MCP token reach the endpoint of
-// `protocol.ts`; the others are turned away with why and how to get through, which the app's
-// status shows too. The HTTP surface mounts it at `/mcp`, with the agent's chat attachments
-// on `/mcp/attachments` behind the same guard.
+// `protocol.ts`, and so, in public mode, do chat apps from anywhere that bear an OAuth access
+// token; the others are turned away with why and how to get through, which the app's status
+// shows too. The HTTP surface mounts it at `/mcp`, with the agent's chat attachments on
+// `/mcp/attachments` behind the same guard.
 
 import type * as B from "../../../src/lib/bindings.ts";
-import { bearer, FailedAttempts, type Rejection, sameSecret, tooMany, unauthorized } from "../http/auth.ts";
-import { McpService, type Backend } from "./protocol.ts";
+import { bearer, FailedAttempts, type Rejection, sameSecret, text, tooMany, unauthorized } from "../http/auth.ts";
+import { resolveAccessToken } from "../oauth/routes.ts";
+import { type Access, McpService, type Backend } from "./protocol.ts";
 
-export type { Backend } from "./protocol.ts";
+export type { Access, Backend } from "./protocol.ts";
 
 /** The tokens `/mcp` tells apart: the MCP token it accepts, and the web token it names when
  * an agent sends that one instead. */
@@ -39,21 +41,22 @@ export class McpEndpoint {
   constructor(backend: Backend, tokens: Tokens) {
     this.#backend = backend;
     this.#tokens = tokens;
-    this.#service = new McpService(backend);
+    const allowedHosts = ["localhost", "127.0.0.1", "::1"];
+    const issuer = backend.publicUrl ?? null;
+    if (issuer !== null) allowedHosts.push(new URL(issuer).hostname, issuer.split("://")[1]!);
+    this.#service = new McpService(backend, allowedHosts);
   }
 
   /**
-   * The answer that turns `request`, which came from `peer`, away, or `null` when it may
-   * reach `/mcp`. Only loopback peers are served; an address that sent too many wrong tokens
-   * gets `429` until it may try again, and every `401` is kept as the last rejection the
-   * app's status shows.
+   * How `request`, which came from `peer`, may reach `/mcp`, or the answer that turns it away.
+   * Without a public URL only loopback peers are served; with one, an OAuth access token works
+   * from anywhere. An address that sent too many wrong tokens gets `429` until it may try
+   * again, and every `401` is kept as the last rejection the app's status shows.
    */
-  refusal(request: Request, peer: string): Response | null {
-    if (!isLoopback(peer)) {
-      return new Response(
-        "Connect through loopback or an SSH tunnel, or set TOODO_PUBLIC_URL to enable remote MCP access.",
-        { status: 403, headers: { "content-type": "text/plain; charset=utf-8" } },
-      );
+  admit(request: Request, peer: string): Access | Response {
+    const issuer = this.#backend.publicUrl ?? null;
+    if (issuer === null && !isLoopback(peer)) {
+      return text(403, "Connect through loopback or an SSH tunnel, or set TOODO_PUBLIC_URL to enable remote MCP access.");
     }
     const wait = this.#attempts.lockedOut(peer);
     if (wait !== null) return tooMany("MCP", wait);
@@ -62,8 +65,19 @@ export class McpEndpoint {
     if (presented === "no_header" || presented === "not_bearer") {
       rejection = presented;
     } else if (sameSecret(presented, this.#tokens.mcp)) {
-      return null;
+      return { kind: "static" };
     } else {
+      if (issuer !== null) {
+        try {
+          const grant = resolveAccessToken(this.#backend.storage, presented);
+          if (grant !== null) return { kind: "oauth", grant };
+        } catch (error) {
+          console.error(
+            `toodo: failed to look up an MCP OAuth access token: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          return text(500, "Reconnect from the app after the server database is available.");
+        }
+      }
       const web = this.#tokens.web;
       rejection = web !== null && sameSecret(presented, web) ? "other_surface_token" : "wrong_token";
     }
@@ -74,16 +88,26 @@ export class McpEndpoint {
       at: Math.floor(Date.now() / 1000),
       count: (status.lastRejection?.count ?? 0) + 1,
     };
-    return unauthorized("mcp", rejection, status.instance);
+    const response = unauthorized("mcp", rejection, status.instance);
+    if (issuer !== null) {
+      // Chat apps find the authorization server from here.
+      const invalid = rejection === "no_header" || rejection === "not_bearer" ? "" : ', error="invalid_token"';
+      response.headers.set(
+        "www-authenticate",
+        `Bearer resource_metadata="${issuer}/.well-known/oauth-protected-resource/mcp"${invalid}`,
+      );
+    }
+    return response;
   }
 
-  /** Answers a request to `/mcp` that `refusal` let through. */
-  serve(request: Request): Promise<Response> {
-    return this.#service.handle(request);
+  /** Answers a request to `/mcp` that `admit` let through with `access`. */
+  serve(request: Request, access: Access): Promise<Response> {
+    return this.#service.handle(request, access);
   }
 
   /** Answers a request to `/mcp` that came from `peer`. */
   async handle(request: Request, peer: string): Promise<Response> {
-    return this.refusal(request, peer) ?? this.serve(request);
+    const access = this.admit(request, peer);
+    return access instanceof Response ? access : this.serve(request, access);
   }
 }

@@ -1,5 +1,5 @@
 // Outbound HTTP to addresses that come from outside the server (push service endpoints,
-// URL criteria, later client metadata documents) reaches only the public internet, never
+// URL criteria, OAuth client metadata documents) reaches only the public internet, never
 // the server itself or its private network. Port of `src-tauri/src/net.rs`.
 
 import { lookup } from "node:dns/promises";
@@ -97,29 +97,45 @@ function statusLine(status: number): string {
   return `${status} ${STATUS_CODES[status] ?? "<unknown status code>"}`;
 }
 
-/** A GET that reaches only public addresses (`anyAddress` also reaches loopback and private
- * ones, for tests against a local server), without following redirects, and gives up after
- * `timeoutMs`. Unlike the Rust client, which connects only to the public addresses a name
+/** `target` as a URL fetch may reach: one whose host is, or resolves only to, public
+ * addresses. Unlike the Rust client, which connects only to the public addresses a name
  * resolves to, it refuses a name that resolves to any address that is not public, since
  * fetch cannot be told which address to connect to. */
+export async function publicTarget(target: string): Promise<URL> {
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch {
+    throw new OutboundError(`builder error for url (${target})`);
+  }
+  const literal = literalIp(url);
+  if (literal !== null) {
+    if (!isPublic(literal)) throw new OutboundError("the URL names an address that is not public");
+    return url;
+  }
+  const addresses = await lookup(url.hostname, { all: true }).catch(() => []);
+  if (addresses.length === 0 || !addresses.every(({ address }) => isPublic(address))) {
+    throw new OutboundError(`error sending request for url (${url.href})`);
+  }
+  return url;
+}
+
+/** A GET that reaches only public addresses (`anyAddress` also reaches loopback and private
+ * ones, for tests against a local server), without following redirects, and gives up after
+ * `timeoutMs`. */
 export function outbound(timeoutMs: number, anyAddress = false): Outbound {
   return async (target) => {
     let url: URL;
-    try {
-      url = new URL(target);
-    } catch {
-      throw new OutboundError(`builder error for url (${target})`);
+    if (anyAddress) {
+      try {
+        url = new URL(target);
+      } catch {
+        throw new OutboundError(`builder error for url (${target})`);
+      }
+    } else {
+      url = await publicTarget(target);
     }
     const unreachable = () => new OutboundError(`error sending request for url (${url.href})`);
-    if (!anyAddress) {
-      const literal = literalIp(url);
-      if (literal !== null) {
-        if (!isPublic(literal)) throw new OutboundError("the URL names an address that is not public");
-      } else {
-        const addresses = await lookup(url.hostname, { all: true }).catch(() => []);
-        if (addresses.length === 0 || !addresses.every(({ address }) => isPublic(address))) throw unreachable();
-      }
-    }
     let response: Response;
     try {
       response = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });

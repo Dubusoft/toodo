@@ -1,5 +1,5 @@
-// The owner and scopes of OAuth grants. Port of the parts of `src-tauri/src/oauth/mod.rs`
-// that storage needs.
+// The owner and scopes of OAuth grants. Port of `OwnerKey` and `Scopes` in
+// `src-tauri/src/oauth/mod.rs`.
 
 /** The single-user identity attached to OAuth grants. */
 export type OwnerKey = string & { readonly __brand: "OwnerKey" };
@@ -8,7 +8,13 @@ export function ownerKey(value: string): OwnerKey {
   return value as OwnerKey;
 }
 
-type Scope = "read" | "write";
+/** The owner who approves consent on this single-user server: the implicit owner the
+ * runtime records use until tenants exist. Grant and token logic carries it unchanged. */
+export function serverOwner(): OwnerKey {
+  return ownerKey("implicit");
+}
+
+export type Scope = "read" | "write";
 
 const SCOPES: readonly Scope[] = ["read", "write"];
 
@@ -62,6 +68,16 @@ export function parseScopes(value: string | null): Scopes {
     throw new ScopesError();
   }
   return scopes as Scopes;
+}
+
+export function hasScope(scopes: Scopes, scope: Scope): boolean {
+  return (scopes & scopeBit(scope)) !== 0;
+}
+
+/** Whether a grant with `scopes` may write; every grant may read, since its scopes are never
+ * empty. */
+export function canWrite(scopes: Scopes): boolean {
+  return hasScope(scopes, "write");
 }
 
 export function isSubsetOf(scopes: Scopes, other: Scopes): boolean {

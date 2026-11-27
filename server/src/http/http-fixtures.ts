@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Backups } from "../commands/backup.ts";
 import { ChatState } from "../commands/chat.ts";
+import type { ClientMetadataFetcher } from "../oauth/clients.ts";
 import { FakeTransport, testPush } from "../push/testing.ts";
 import { openConnections } from "../storage/database.ts";
 import { Storage } from "../storage/storage.ts";
@@ -37,6 +38,13 @@ export type TestServerOptions = {
   webDir?: string;
   restoreLimit?: number;
   attachmentLimit?: number;
+  /** Public mode's origin, which mounts the OAuth server. */
+  publicUrl?: string;
+  clientMetadata?: ClientMetadataFetcher;
+};
+
+const noClientMetadata: ClientMetadataFetcher = async (url) => {
+  throw new Error(`the test server fetches no client metadata, such as ${url}`);
 };
 
 export async function startTestServer(options: TestServerOptions = {}): Promise<TestServer> {
@@ -48,7 +56,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
   const services = new Services({
     storage: new Storage(connections.writer),
     reader: new Storage(connections.reader),
-    publicUrl: null,
+    publicUrl: options.publicUrl ?? null,
     backups: Backups.load(dir),
     events: new EventLog("ab12"),
     mcp: { url: "http://127.0.0.1:0/mcp", token: null, error: null, instance: "0123456789ab", lastRejection: null },
@@ -65,6 +73,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     mcpToken: AGENT,
     access: options.access ?? null,
     webDir: options.webDir ?? null,
+    clientMetadata: options.clientMetadata ?? noClientMetadata,
   });
   const server = Bun.serve({
     hostname: "127.0.0.1",
