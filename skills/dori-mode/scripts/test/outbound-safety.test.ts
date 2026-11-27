@@ -124,10 +124,10 @@ test("Discord edits and non-create endpoints get no nonce", async () => {
 });
 
 const secrets: Record<string, string> = {
-  // Joined at runtime so secret scanners do not take this fake fixture for a real bot token.
+  // Joined at runtime so secret scanners do not take these fake fixtures for real bot tokens.
   discord: ["MTA1NjY3ODkwMTIzNDU2Nzg5MA", "GabcDE", "abcdefghijklmnopqrstuvwxyz0123456789"].join("."),
+  telegram: ["123456789", "AAEhBOweik6ad9r_QXMENQjcrTu-oq3hGsW"].join(":"),
   slack: "xoxb-1234567890-abcdefghijkl",
-  telegram: "123456789:AAEhBOweik6ad9r_QXMENQjcrTu-oq3hGsW",
   ghp: "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
   gho: "gho_abcdefghijklmnopqrstuvwxyz0123456789",
   pat: "github_pat_11ABCDEFG0abcdefghijklmnop_qrstuvwxyz",
