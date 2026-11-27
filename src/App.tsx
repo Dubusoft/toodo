@@ -26,7 +26,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { InstallBanner } from "@/components/install-banner";
 import { NeedsAttention } from "@/components/needs-attention";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
-import { SettingsDialog, type SettingsSection } from "@/components/settings-dialog";
+import { SettingsDialog } from "@/components/settings-dialog";
 import { Button, IconButton } from "@/components/button";
 import { NewWorkspaceDialog, WorkspaceList } from "@/components/workspace-list";
 import type { Task, TaskId, WorkspaceId } from "@/lib/bindings";
@@ -74,13 +74,11 @@ export default function App() {
   const drawer = useRef<HTMLElement>(null);
   // Settings take over the screen and the focus, also when opened from the drawer.
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSection | null>(null);
   const settingsButton = useRef<HTMLButtonElement>(null);
   // Opened from the drawer, which closes, they give the focus back to the menu button.
   const settingsFromDrawer = useRef(false);
-  const showSettings = (section: SettingsSection | null) => {
+  const showSettings = () => {
     if (!settingsOpen) settingsFromDrawer.current = menuOpen;
-    setSettingsSection(section);
     setSettingsOpen(true);
     setMenuOpen(false);
   };
@@ -199,7 +197,7 @@ export default function App() {
         run: () => newTask.focus(),
       },
       search !== null && { id: "search", group: "Actions", label: "Search tasks", hint: "/", icon: <Search />, run: () => search.focus() },
-      { id: "settings", group: "Actions", label: "Open settings", icon: <Settings />, run: () => showSettings(null) },
+      { id: "settings", group: "Actions", label: "Open settings", icon: <Settings />, run: showSettings },
       {
         id: "shortcuts",
         group: "Actions",
@@ -325,7 +323,7 @@ export default function App() {
           aria-haspopup="dialog"
           aria-expanded={settingsOpen}
           ref={settingsButton}
-          onClick={() => showSettings(null)}
+          onClick={showSettings}
         />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col" inert={menuOpen || settingsOpen}>
@@ -398,8 +396,6 @@ export default function App() {
       </div>
       <SettingsDialog
         open={settingsOpen}
-        section={settingsSection}
-        onShow={showSettings}
         onClose={() => setSettingsOpen(false)}
         returnFocus={() => (settingsFromDrawer.current ? openMenuButton.current : settingsButton.current)}
       />

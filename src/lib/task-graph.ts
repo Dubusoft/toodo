@@ -356,34 +356,80 @@ function barBlocks(width: number, pauses: TimelineSpan[]): TimelineSpan[] {
 
 type Placed = { task: Task; interval: Period };
 
+/** A binary min-heap of `T` under `compare`. */
+function minHeap<T>(compare: (a: T, b: T) => number) {
+  const items: T[] = [];
+  const swap = (i: number, j: number) => ([items[i], items[j]] = [items[j], items[i]]);
+  return {
+    get size() {
+      return items.length;
+    },
+    push(item: T) {
+      items.push(item);
+      for (let i = items.length - 1; i > 0; ) {
+        const up = (i - 1) >> 1;
+        if (compare(items[i], items[up]) >= 0) break;
+        swap(i, up);
+        i = up;
+      }
+    },
+    pop(): T | undefined {
+      const top = items[0];
+      const last = items.pop();
+      if (items.length > 0 && last !== undefined) {
+        items[0] = last;
+        for (let i = 0; ; ) {
+          const left = 2 * i + 1;
+          const right = left + 1;
+          let least = i;
+          if (left < items.length && compare(items[left], items[least]) < 0) least = left;
+          if (right < items.length && compare(items[right], items[least]) < 0) least = right;
+          if (least === i) break;
+          swap(i, least);
+          i = least;
+        }
+      }
+      return top;
+    },
+  };
+}
+
 /**
  * Orders tasks so that every task comes after the tasks it depends on; among the tasks
  * whose prerequisites are all placed, the earliest start (then the lowest id) goes first.
+ *
+ * It runs on every render of the timeline and the task list, so it keeps to O(n log n): placing
+ * a task visits only the tasks that depend on it, and the next task comes off a heap.
  */
 function dependencyOrder(placed: Placed[]): Placed[] {
   const ids = new Set(placed.map(({ task }) => task.id));
   const remaining = new Map(placed.map(({ task }) => [task.id, task.dependsOn.filter((id) => ids.has(id)).length]));
+  const dependents = new Map<TaskId, Placed[]>();
+  for (const item of placed) {
+    for (const id of new Set(item.task.dependsOn)) {
+      if (!ids.has(id)) continue;
+      const waiting = dependents.get(id);
+      if (waiting === undefined) dependents.set(id, [item]);
+      else waiting.push(item);
+    }
+  }
   const compare = (a: Placed, b: Placed) => a.interval.start - b.interval.start || a.task.id - b.task.id;
   const done = new Set<TaskId>();
   const ordered: Placed[] = [];
-  let available = placed.filter(({ task }) => remaining.get(task.id) === 0);
+  const available = minHeap(compare);
+  for (const item of placed) {
+    if (remaining.get(item.task.id) === 0) available.push(item);
+  }
   while (ordered.length < placed.length) {
-    if (available.length === 0) {
-      // Only reachable with a cycle, which the backend rejects; fall back to time order.
-      available = [placed.filter(({ task }) => !done.has(task.id)).sort(compare)[0]];
-    }
-    available.sort(compare);
-    const next = available.shift()!;
+    // Nothing available is only reachable with a cycle, which the backend rejects; fall back to time order.
+    const next = available.pop() ?? placed.filter(({ task }) => !done.has(task.id)).sort(compare)[0];
     ordered.push(next);
     done.add(next.task.id);
-    for (const item of placed) {
-      if (!done.has(item.task.id) && item.task.dependsOn.includes(next.task.id)) {
-        const left = remaining.get(item.task.id)! - 1;
-        remaining.set(item.task.id, left);
-        if (left === 0) {
-          available.push(item);
-        }
-      }
+    for (const item of dependents.get(next.task.id) ?? []) {
+      if (done.has(item.task.id)) continue;
+      const left = remaining.get(item.task.id)! - 1;
+      remaining.set(item.task.id, left);
+      if (left === 0) available.push(item);
     }
   }
   return ordered;

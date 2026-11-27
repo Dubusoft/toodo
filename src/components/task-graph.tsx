@@ -827,6 +827,12 @@ function TimelineBarView({
   // bar's edge or under its handle.
   const label = useRef<HTMLDivElement>(null);
   const [labelOutside, setLabelOutside] = useState(false);
+  // A label fits only on the work before a wait, so it does not run along the wait into the box after it.
+  const labelFits = resume === null ? bar.width : (pauses.at(-1)?.x ?? resume.x);
+  // Measuring forces a layout, once per bar. The timeline lays its bars out anew on every render,
+  // so the effect depends on this number rather than on `pauses` and `resume`, which are new
+  // objects each time: a render that moves no label, such as one for opening the settings,
+  // measures nothing.
   useLayoutEffect(() => {
     const element = label.current;
     if (element === null) {
@@ -838,9 +844,8 @@ function TimelineBarView({
     const natural = element.offsetWidth;
     element.style.minWidth = minWidth;
     element.style.maxWidth = maxWidth;
-    // A label fits only on the work before a wait, so it does not run along the wait into the box after it.
-    setLabelOutside(natural > (resume === null ? bar.width : (pauses.at(-1)?.x ?? resume.x)));
-  }, [bar.width, resume, pauses, task.title, workspace, statusLabel]);
+    setLabelOutside(natural > labelFits);
+  }, [labelFits, task.title, workspace, statusLabel]);
   const labelLeft = labelOutside ? drawnWidth + labelGap - 6 : 0;
   // A label that would start off screen is pinned to the panel's left edge, behind a chevron
   // saying that the bar goes on to the left.
