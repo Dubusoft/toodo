@@ -60,8 +60,8 @@ See [`docs/architecture.md`](docs/architecture.md) for the domain model and
 - **DAG editor**: React Flow (`@xyflow/react`) laid out on a timeline (see
   `docs/architecture.md`, Timeline View).
 - **Storage**: SQLite via `rusqlite` in the server's data directory.
-- **Tests**: `cargo test` for Rust, Vitest for the frontend, Playwright for the web app end
-  to end.
+- **Tests**: `cargo test` for Rust, Vitest for the frontend, `bun test` for the TypeScript
+  server, Playwright for the web app end to end.
 
 ## Repository Status
 
@@ -113,6 +113,10 @@ Layout:
     separate read-only reader, each with WAL, a 5 second busy timeout, and foreign keys
     on. Both open only a database at `BASELINE_SCHEMA_VERSION` and reject any other
     version; neither creates nor migrates a database.
+  - `server/src/domain/`: the domain model and rules of `src-tauri/src/domain/`, module for
+    module, with the Rust tests ported beside each one. `rust.ts` holds the Rust standard
+    library behavior they depend on (whitespace, `{:?}` quoting, float printing, string
+    order), so messages and results match the Rust server byte for byte.
 - `npm/toodo/`: the `@dubusoft/toodo` npm package (launcher `bin/toodo.js`, README).
 - `scripts/parity/`: the parity harness, which compares two servers (the Rust server and
   its TypeScript port) by their replies, events, and databases; see `docs/parity.md`.
@@ -130,7 +134,7 @@ Run from the repository root unless noted. Package manager is npm.
 - Build (web app): `npm run build` (typecheck, then build into `dist-web/`)
 - Test (frontend): `npm test`
 - Typecheck (frontend and `server/`): `npm run typecheck`
-- Test (TypeScript server): `bun test ./server`
+- Test (TypeScript server): `npm run test:server`
 - Astryx docs (the project's pinned version): `npm run astryx -- search '<what>'`,
   `npm run astryx -- component <Name>`, `npm run astryx -- docs <topic>`
 - Test (web app end to end): `npm run test:e2e`, after building the server and `dist-web/`;
