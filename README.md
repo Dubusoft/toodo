@@ -242,3 +242,8 @@ you to offer those users the source of your modified version.
 Versions released before this license change, up to and including v1.3.1, were released
 under the MIT License and remain available under it. Releases after v1.3.1 are
 `AGPL-3.0-only`.
+
+The license covers the whole repository, `dori/` included. Dori mode was developed in the
+now archived [Dubusoft/dori-mode](https://github.com/Dubusoft/dori-mode) repository under
+the MIT License, which still applies to the code published there; in this repository it is
+`AGPL-3.0-only` like the rest of Toodo.

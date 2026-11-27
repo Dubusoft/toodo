@@ -166,7 +166,12 @@ bunx tsc --noEmit  # 타입 검사
 
 ## 라이선스
 
-MIT
+Dori 모드는 Toodo의 일부이며 Toodo와 같은
+[GNU Affero General Public License v3.0 only](../LICENSE)(`AGPL-3.0-only`)를 따릅니다. 기여는
+Toodo [기여자 라이선스 동의서](../CLA.md)를 따르며, 자세한 내용은
+[`CONTRIBUTING.md`](../CONTRIBUTING.md)에 있습니다. 보관된
+[Dubusoft/dori-mode](https://github.com/Dubusoft/dori-mode) 레포에 공개된 코드는 계속 MIT
+라이선스입니다.
 
 ## OmOMeow에서 옮겨 오기
 
