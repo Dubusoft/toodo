@@ -1,12 +1,22 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Chat, receipt, unreadCount } from "@/components/chat-panel";
-import { commands, events, type ChatMessage } from "@/lib/bindings";
+import { Chat, receipt, totalUnread } from "@/components/chat-panel";
+import { commands, events, type ChatChannel, type ChatMessage, type ChatThread } from "@/lib/bindings";
 
 vi.mock("@/lib/bindings", () => ({
-  commands: { listChat: vi.fn(), sendChatMessage: vi.fn() },
+  commands: {
+    listChat: vi.fn(),
+    sendChatMessage: vi.fn(),
+    markChatRead: vi.fn(),
+    listChatChannels: vi.fn(),
+    listChatThreads: vi.fn(),
+    createChatChannel: vi.fn(),
+    updateChatChannel: vi.fn(),
+    createChatThread: vi.fn(),
+    updateChatThread: vi.fn(),
+  },
   events: { chatTyping: { listen: vi.fn() } },
 }));
 
@@ -31,16 +41,38 @@ function message(id: number, author: ChatMessage["author"], body: string, overri
   };
 }
 
-function serve(messages: ChatMessage[]) {
+function channel(id: number, name: string, overrides: Partial<ChatChannel> = {}): ChatChannel {
+  return { id, name, push: true, createdAt: 1, unread: 0, ...overrides };
+}
+
+function thread(id: number, title: string, overrides: Partial<ChatThread> = {}): ChatThread {
+  return {
+    id,
+    channelId: 1,
+    title,
+    taskId: null,
+    status: "open",
+    createdAt: 1,
+    closedAt: null,
+    archivedAt: null,
+    unread: 0,
+    lastMessageAt: null,
+    ...overrides,
+  };
+}
+
+function serve(messages: ChatMessage[], channels = [channel(1, "general")], threads: ChatThread[] = []) {
   mocked.listChat.mockResolvedValue({
     status: "ok",
     data: { agent: { name: "Helper", avatarUrl: null }, messages, hasEarlier: false, typingUntil: null },
   });
+  mocked.listChatChannels.mockResolvedValue({ status: "ok", data: channels });
+  mocked.listChatThreads.mockResolvedValue({ status: "ok", data: threads });
 }
 
 function OpenableChat() {
   const [open, setOpen] = useState(false);
-  return <Chat open={open} onOpenChange={setOpen} />;
+  return <Chat open={open} onOpenChange={setOpen} onShowTask={() => {}} />;
 }
 
 function renderChat() {
@@ -55,6 +87,7 @@ function renderChat() {
 beforeEach(() => {
   localStorage.clear();
   mockedEvents.chatTyping.listen.mockResolvedValue(() => {});
+  mocked.markChatRead.mockResolvedValue({ status: "ok", data: null });
 });
 
 describe("receipts", () => {
@@ -71,28 +104,30 @@ describe("receipts", () => {
 });
 
 describe("unread messages", () => {
-  it("count the agent's and Toodo's messages after the last one shown, none before any was", () => {
-    const messages = [message(1, "agent", "a"), message(2, "user", "b"), message(3, "system", "c")];
-    expect(unreadCount(messages, null)).toBe(0);
-    expect(unreadCount(messages, 1)).toBe(1);
-    expect(unreadCount(messages, 0)).toBe(2);
+  it("add up over every channel", () => {
+    expect(totalUnread([channel(1, "general", { unread: 2 }), channel(2, "work", { unread: 3 })])).toBe(5);
+    expect(totalUnread([])).toBe(0);
   });
 });
 
 describe("Chat", () => {
-  it("badges unread replies on the floating button and clears them once opened", async () => {
-    localStorage.setItem("toodo-chat-read", "1");
-    serve([message(1, "agent", "Earlier"), message(2, "agent", "New reply")]);
+  it("badges every channel's unread messages and marks the shown one read", async () => {
+    serve([message(1, "agent", "Earlier"), message(2, "agent", "New reply")], [
+      channel(1, "general", { unread: 1 }),
+      channel(2, "work", { unread: 2 }),
+    ]);
     renderChat();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Open chat, 1 unread" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat, 3 unread" }));
 
-    expect(await screen.findByRole("dialog", { name: "Chat with Helper" })).toBeInTheDocument();
-    expect(await screen.findByText("New reply")).toBeInTheDocument();
-    await waitFor(() => expect(localStorage.getItem("toodo-chat-read")).toBe("2"));
+    // The agent's Markdown loads lazily and replaces its fallback, so the text is looked up again.
+    await waitFor(() => expect(screen.getByText("New reply")).toBeInTheDocument());
+    const channels = await screen.findByRole("list", { name: "Channels" });
+    expect(within(channels).getByRole("button", { name: /work/ })).toHaveTextContent("2");
+    await waitFor(() => expect(mocked.markChatRead).toHaveBeenCalledWith({ channel: 1 }, 2));
   });
 
-  it("sends a message under a client id and shows the receipts of earlier ones", async () => {
+  it("sends a message to the shown channel under a client id", async () => {
     serve([message(1, "user", "Ship it?", { deliveredAt: 2, ackedAt: 3, handledAt: 4 })]);
     mocked.sendChatMessage.mockResolvedValue({ status: "ok", data: message(2, "user", "Thanks") });
     renderChat();
@@ -108,5 +143,36 @@ describe("Chat", () => {
     expect(place).toEqual({ channel: 1 });
     expect(body).toBe("Thanks");
     expect(clientId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("turns a channel's notifications off from its bell", async () => {
+    serve([]);
+    mocked.updateChatChannel.mockResolvedValue({ status: "ok", data: channel(1, "general", { push: false }) });
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn off notifications for #general" }));
+
+    await waitFor(() => expect(mocked.updateChatChannel).toHaveBeenCalledWith(1, { push: false }));
+  });
+
+  it("closes the shown thread and keeps a closed one from taking messages", async () => {
+    localStorage.setItem("toodo-chat-place", JSON.stringify({ channel: 1, thread: 5 }));
+    serve([message(3, "agent", "Deployed", { threadId: 5 })], undefined, [thread(5, "Deploy")]);
+    mocked.updateChatThread.mockResolvedValue({ status: "ok", data: thread(5, "Deploy", { status: "closed", closedAt: 9 }) });
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+
+    // The agent's Markdown loads lazily and replaces its fallback, so the text is looked up again.
+    await waitFor(() => expect(screen.getByText("Deployed")).toBeInTheDocument());
+    await waitFor(() => expect(mocked.listChat).toHaveBeenCalledWith({ thread: 5 }, null));
+    mocked.listChatThreads.mockResolvedValue({
+      status: "ok",
+      data: [thread(5, "Deploy", { status: "closed", closedAt: 9 })],
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Close thread" }));
+    await waitFor(() => expect(mocked.updateChatThread).toHaveBeenCalledWith(5, { status: "closed" }));
+    expect(await screen.findByText("This thread is closed. Reopen it to write in it.")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
 });
