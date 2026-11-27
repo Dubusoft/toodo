@@ -238,7 +238,8 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-dvh bg-background text-foreground print:block print:h-auto">
+    // The open chat, and from xl up the task details beside it, dock at the right edge (see `src/index.css`).
+    <div className="flex h-dvh bg-background pr-[calc(var(--chat-dock)+var(--details-dock))] text-foreground print:block print:h-auto print:pr-0">
       {menuOpen && (
         <div aria-hidden className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={() => setMenuOpen(false)} />
       )}
@@ -413,10 +414,7 @@ export default function App() {
             onOpenChange={setChatOpen}
             target={chatTarget}
             onTargetShown={() => setChatTarget(null)}
-            onShowTask={(id) => {
-              setChatOpen(false);
-              showTask(id);
-            }}
+            onShowTask={showTask}
           />
         </ErrorBoundary>
       )}

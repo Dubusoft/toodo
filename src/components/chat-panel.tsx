@@ -15,6 +15,8 @@ import {
   ArrowLeft,
   Bell,
   BellOff,
+  ChevronDown,
+  ChevronUp,
   Flag,
   Lock,
   MessageCircle,
@@ -44,6 +46,7 @@ import {
 } from "@astryxdesign/core/Chat";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button, IconButton } from "@/components/button";
+import { detailsSheet } from "@/components/details-sheet";
 import { Markdown } from "@/components/task-common";
 import doriAvatar from "@/web/dori-avatar.png";
 import {
@@ -1124,7 +1127,7 @@ function PlaceHeader({
   }
   return (
     <div className="flex min-h-11 items-center gap-1 border-b px-2 py-1">
-      <IconButton variant="ghost" size="sm" className="md:hidden" label="Channels" icon={<ArrowLeft />} onClick={onBack} />
+      <IconButton variant="ghost" size="sm" className="@2xl:hidden" label="Channels" icon={<ArrowLeft />} onClick={onBack} />
       <div className="flex min-w-0 flex-1 flex-col">
         <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-semibold">
           <span className="min-w-0 truncate">{thread !== undefined ? threadLabel : `#${channel?.name ?? ""}`}</span>
@@ -1231,6 +1234,11 @@ export function ChatSearch({
 /**
  * The chat window. It stays drawn while it closes (`open` false) until its closing animation
  * ends, then reports `onClosed`; with no animation (reduced motion) it reports that at once.
+ *
+ * It stays open beside a task's details (see `src/index.css`): from `md` up it is a column at the
+ * window's right edge, and on a phone it fills the screen, or the lower half of it over the
+ * details, which it can expand to the whole screen. Narrower than `@2xl` it shows either the
+ * channels or one conversation.
  */
 function ChatPanel({
   open,
@@ -1257,8 +1265,10 @@ function ChatPanel({
   const createThread = useCreateChatThread();
   const listed = taskChats(tasks.data ?? [], allThreads.data ?? []);
   const past = pastThreads(allThreads.data ?? [], tasks.data ?? []);
-  // On a phone the panel shows either the channels or one conversation.
+  // A narrow panel shows either the channels or one conversation.
   const [listShown, setListShown] = useState(false);
+  // On a phone, over a task's details, the panel takes the lower half of the screen unless expanded.
+  const [expanded, setExpanded] = useState(false);
   const channelList = channels.data ?? [];
   const channel = channelList.find((candidate) => candidate.id === selection.channel);
   const thread =
@@ -1287,8 +1297,9 @@ function ChatPanel({
 
   useEffect(() => {
     if (!open) return;
+    // Beside a task's details, Escape outside the chat is theirs; in the chat it is the chat's.
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !event.defaultPrevented) onClose();
+      if (event.key === "Escape" && !event.defaultPrevented && document.querySelector(detailsSheet) === null) onClose();
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
@@ -1327,17 +1338,29 @@ function ChatPanel({
       ref={panel}
       role="dialog"
       aria-label="Chat"
+      data-chat=""
       data-state={open ? "open" : "closed"}
+      data-expanded={expanded ? "" : undefined}
       inert={!open}
+      onKeyDown={(event) => {
+        if (event.key === "Escape" && !event.defaultPrevented) {
+          event.preventDefault();
+          onClose();
+        }
+      }}
       onAnimationEnd={(event) => {
         if (!open && event.target === event.currentTarget) onClosed();
       }}
       className={cn(
         "fixed z-40 flex flex-col overflow-hidden bg-background shadow-xl print:hidden",
-        "inset-0 md:inset-auto md:bottom-20 md:right-4 md:h-[min(42rem,calc(100dvh-7rem))] md:w-[46rem] md:max-w-[calc(100vw-2rem)] md:rounded-xl md:border",
-        // It grows from and shrinks into the floating button's center.
-        "origin-[calc(100%-2.5rem)_calc(100%-2.5rem)] md:origin-[calc(100%-1.5rem)_calc(100%+2.5rem)]",
-        open ? "motion-safe:animate-chat-in" : "motion-safe:animate-chat-out",
+        "inset-0 max-md:transition-[top] motion-reduce:transition-none",
+        "max-md:details-open:top-1/2 max-md:details-open:rounded-t-2xl max-md:details-open:border-t max-md:details-open:data-expanded:top-0",
+        "md:left-auto md:w-(--chat-dock) md:border-l md:shadow-none",
+        // On a phone it grows from and shrinks into the floating button's center; from md up it slides in from the edge.
+        "origin-[calc(100%-2.5rem)_calc(100%-2.5rem)]",
+        open
+          ? "motion-safe:animate-chat-in md:motion-safe:animate-chat-dock-in"
+          : "motion-safe:animate-chat-out md:motion-safe:animate-chat-dock-out",
       )}
     >
       <header className="flex items-center gap-2 border-b px-3 py-2">
@@ -1345,7 +1368,16 @@ function ChatPanel({
         <IconButton
           variant="ghost"
           size="sm"
-          className="ml-auto"
+          className="ml-auto hidden max-md:details-open:inline-flex"
+          label={expanded ? "Collapse chat" : "Expand chat"}
+          icon={expanded ? <ChevronDown /> : <ChevronUp />}
+          aria-expanded={expanded}
+          onClick={() => setExpanded(!expanded)}
+        />
+        <IconButton
+          variant="ghost"
+          size="sm"
+          className="ml-auto max-md:details-open:ml-0"
           label={searching ? "Close search" : "Search messages"}
           icon={<Search />}
           aria-pressed={searching}
@@ -1356,10 +1388,10 @@ function ChatPanel({
         />
         <IconButton variant="ghost" size="sm" label="Close chat" icon={<X />} onClick={onClose} />
       </header>
-      <div className="flex min-h-0 flex-1">
+      <div className="@container flex min-h-0 flex-1">
         <nav
           aria-label="Chat channels"
-          className={cn("w-full shrink-0 overflow-y-auto md:w-56 md:border-r", !listShown && "max-md:hidden")}
+          className={cn("w-full shrink-0 overflow-y-auto @2xl:w-56 @2xl:border-r", !listShown && "@max-2xl:hidden")}
         >
           {channels.isError ? (
             <p role="alert" className="p-3 text-sm text-destructive">
@@ -1378,7 +1410,7 @@ function ChatPanel({
             />
           )}
         </nav>
-        <div className={cn("flex min-w-0 flex-1 flex-col", listShown && "max-md:hidden")}>
+        <div className={cn("flex min-w-0 flex-1 flex-col", listShown && "@max-2xl:hidden")}>
           {searching ? (
             <ChatSearch onOpen={select} threadLabel={searchLabel} />
           ) : (
@@ -1408,7 +1440,7 @@ function ChatPanel({
 
 /**
  * The floating chat button, with the count of unread messages in every channel, and the chat
- * it opens. A small chat mark on the button turns into a close mark while the chat is open.
+ * it opens. The button is hidden while the chat is open, which has its own close button.
  * The chat opens and closes with an animation. `open` is kept by the app so a clicked notification can open it too, at the channel
  * or thread in `target`, which `onTargetShown` reports the chat took.
  */
@@ -1430,10 +1462,17 @@ export function Chat({
   const tasks = useTasks();
   const unread = open ? 0 : totalUnread(channels.data ?? [], taskChats(tasks.data ?? [], threads.data ?? []));
   const button = useRef<HTMLButtonElement>(null);
+  // The button is hidden while the chat is open, so closing the chat focuses it once it shows again.
+  const refocus = useRef(false);
   const close = () => {
+    refocus.current = true;
     onOpenChange(false);
-    button.current?.focus();
   };
+  useEffect(() => {
+    if (open || !refocus.current) return;
+    refocus.current = false;
+    button.current?.focus();
+  }, [open]);
   // The panel stays drawn while its closing animation runs.
   const [shown, setShown] = useState(open);
   if (open && !shown) setShown(true);
@@ -1450,25 +1489,21 @@ export function Chat({
           onTargetShown={onTargetShown}
         />
       )}
-      <div className={cn("fixed bottom-4 right-4 z-40 print:hidden", open && "max-md:hidden")}>
+      <div className={cn("fixed bottom-4 right-4 z-40 print:hidden", open && "hidden")}>
         <button
           ref={button}
           type="button"
-          aria-label={unread > 0 ? `Open chat, ${unread} unread` : open ? "Close chat" : "Open chat"}
+          aria-label={unread > 0 ? `Open chat, ${unread} unread` : "Open chat"}
           aria-expanded={open}
           className="relative block size-12 cursor-pointer rounded-full shadow-lg ring-2 ring-background transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-          onClick={() => (open ? close() : onOpenChange(true))}
+          onClick={() => onOpenChange(true)}
         >
           <img src={doriAvatar} alt="" className="size-full rounded-full object-cover" />
           <span
             aria-hidden
             className="absolute -bottom-1 -right-1 grid size-5 place-items-center rounded-full border-2 border-background bg-primary text-primary-foreground"
           >
-            {open ? (
-              <X key="close" className="size-2.5 motion-safe:animate-chat-icon-turn" strokeWidth={4} />
-            ) : (
-              <MessageCircle key="chat" className="size-2.5" fill="currentColor" strokeWidth={2} />
-            )}
+            <MessageCircle className="size-2.5" fill="currentColor" strokeWidth={2} />
           </span>
         </button>
         {unread > 0 && (
