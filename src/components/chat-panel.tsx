@@ -726,27 +726,32 @@ function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boole
   );
 }
 
-/** A group of listed tasks under a heading, left out while it is empty. */
+/** A group of listed tasks under a heading, left out while it is empty unless it has an `action`. */
 function TaskGroup({
   label,
   icon,
+  action,
   chats,
   selection,
   onOpenTask,
 }: {
   label: string;
   icon?: ReactNode;
+  action?: ReactNode;
   chats: readonly TaskChat[];
   selection: Selection;
   onOpenTask: (chat: TaskChat) => void;
 }) {
-  if (chats.length === 0) return null;
+  if (chats.length === 0 && action === undefined) return null;
   return (
     <div className="flex flex-col gap-0.5 pt-2">
-      <h3 className="flex items-center gap-1 px-2 pb-1 text-xs font-medium text-muted-foreground">
-        {icon}
-        {label}
-      </h3>
+      <div className="flex items-center justify-between px-2 pb-1">
+        <h3 className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+          {icon}
+          {label}
+        </h3>
+        {action}
+      </div>
       <ul aria-label={label} className="flex flex-col gap-0.5">
         {chats.map((chat) => (
           <TaskPlace
@@ -771,6 +776,8 @@ function PlaceList({
   channels,
   threads,
   tasks,
+  past,
+  nameOf,
   selection,
   onSelect,
   onOpenTask,
@@ -778,12 +785,15 @@ function PlaceList({
   channels: readonly ChatChannel[];
   threads: readonly ChatThread[];
   tasks: TaskChats;
+  past: readonly ChatThread[];
+  nameOf: (thread: ChatThread) => string;
   selection: Selection;
   onSelect: (selection: Selection) => void;
   onOpenTask: (chat: TaskChat) => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [showPast, setShowPast] = useState(false);
   const createChannel = useCreateChatChannel();
   const loose = threads.filter((thread) => thread.taskId === null);
   const archived = loose.filter((thread) => thread.status === "archived").length;
@@ -884,9 +894,80 @@ function PlaceList({
         selection={selection}
         onOpenTask={onOpenTask}
       />
-      <TaskGroup label="In progress" chats={tasks.inProgress} selection={selection} onOpenTask={onOpenTask} />
+      <TaskGroup
+        label="In progress"
+        action={
+          <IconButton
+            variant="ghost"
+            size="sm"
+            label={showPast ? "Hide past chats" : "Past chats"}
+            icon={<Archive />}
+            aria-pressed={showPast}
+            onClick={() => setShowPast(!showPast)}
+          />
+        }
+        chats={tasks.inProgress}
+        selection={selection}
+        onOpenTask={onOpenTask}
+      />
+      {showPast && <PastChats threads={past} nameOf={nameOf} selection={selection} onSelect={onSelect} />}
     </div>
   );
+}
+
+/** The threads whose conversation is over, latest first; picking one shows it. */
+function PastChats({
+  threads,
+  nameOf,
+  selection,
+  onSelect,
+}: {
+  threads: readonly ChatThread[];
+  nameOf: (thread: ChatThread) => string;
+  selection: Selection;
+  onSelect: (selection: Selection) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5 pt-2">
+      <h3 className="px-2 pb-1 text-xs font-medium text-muted-foreground">Past chats</h3>
+      {threads.length === 0 ? (
+        <p className="px-2 text-xs text-muted-foreground">No finished or closed chats yet.</p>
+      ) : (
+        <ul aria-label="Past chats" className="flex flex-col gap-0.5">
+          {threads.map((thread) => (
+            <li key={thread.id}>
+              <button
+                type="button"
+                className={placeItem(selection.thread === thread.id)}
+                aria-current={selection.thread === thread.id ? "page" : undefined}
+                onClick={() => onSelect({ channel: thread.channelId, thread: thread.id })}
+              >
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="min-w-0 truncate">{nameOf(thread)}</span>
+                  {thread.lastMessage !== null && (
+                    <span className="truncate text-xs font-normal text-muted-foreground">{thread.lastMessage}</span>
+                  )}
+                </span>
+                <ThreadStatusBadge status={thread.status} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The threads whose conversation is over: closed or archived ones, and those of finished
+ * tasks, the latest active first.
+ */
+export function pastThreads(threads: readonly ChatThread[], tasks: readonly Task[]): ChatThread[] {
+  const done = new Set(tasks.filter((task) => task.status === "done").map((task) => task.id));
+  const activity = (thread: ChatThread) => thread.lastMessageAt ?? thread.closedAt ?? thread.createdAt;
+  return threads
+    .filter((thread) => thread.status !== "open" || (thread.taskId !== null && done.has(thread.taskId)))
+    .sort((a, b) => activity(b) - activity(a) || b.id - a.id);
 }
 
 /** Closes, archives, or reopens a thread, as its status allows. */
@@ -1171,9 +1252,11 @@ function ChatPanel({
   const [searching, setSearching] = useState(false);
   const threads = useChatThreads({ channelId: selection.channel, archived: true });
   const allThreads = useChatThreads({ archived: true });
-  const tasks = useTasks();
+  // The tasks of every thread are loaded, finished ones too, so past chats are named by their task.
+  const tasks = useTasks((allThreads.data ?? []).map((candidate) => candidate.taskId));
   const createThread = useCreateChatThread();
   const listed = taskChats(tasks.data ?? [], allThreads.data ?? []);
+  const past = pastThreads(allThreads.data ?? [], tasks.data ?? []);
   // On a phone the panel shows either the channels or one conversation.
   const [listShown, setListShown] = useState(false);
   const channelList = channels.data ?? [];
@@ -1287,6 +1370,8 @@ function ChatPanel({
               channels={channelList}
               threads={threads.data ?? []}
               tasks={listed}
+              past={past}
+              nameOf={(candidate) => threadName(candidate, taskList)}
               selection={selection}
               onSelect={select}
               onOpenTask={openTask}

@@ -479,6 +479,28 @@ describe("Chat", () => {
     expect(screen.queryByText(/ap-7-1/)).not.toBeInTheDocument();
   });
 
+  it("lists past chats beside In progress and opens the one picked", async () => {
+    serve([], undefined, [
+      thread(5, "ap-7-1 lane title", { taskId: 7, lastMessage: "Merged", lastMessageAt: 20 }),
+      thread(6, "Old talk", { status: "closed", closedAt: 10 }),
+      thread(8, "Open talk"),
+    ]);
+    serveTasks([]);
+    mocked.listTasks.mockImplementation(async (filter) => ({
+      status: "ok",
+      data: filter?.ids?.includes(7) ? [{ ...task(7, "done"), title: "Ship" }] : [],
+    }));
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Past chats" }));
+    const past = await screen.findByRole("list", { name: "Past chats" });
+    await waitFor(() => expect(within(past).getAllByRole("button").map((b) => b.textContent)).toEqual(["#7 ShipMerged", "Old talkClosed"]));
+
+    fireEvent.click(within(past).getByRole("button", { name: /Old talk/ }));
+    await waitFor(() => expect(mocked.listChat).toHaveBeenCalledWith({ thread: 6 }, null));
+  });
+
   it("closes the shown thread and keeps a closed one from taking messages", async () => {
     localStorage.setItem("toodo-chat-place", JSON.stringify({ channel: 1, thread: 5 }));
     serve([message(3, "agent", "Deployed", { threadId: 5 })], undefined, [thread(5, "Deploy")]);
