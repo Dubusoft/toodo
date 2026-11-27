@@ -361,7 +361,7 @@ test("wait time: a date-epoch signal is the fire time; the deadline field is onl
   expect(text).toContain("\n- m: 조건: merged o/r#7\n");
 });
 
-test("a machine wait shows @machine after its key, marked 오프라인 while that runner is not connected; a local wait is unchanged", () => {
+test("a machine wait shows @machine after its key, marked offline while that runner is not connected; a local wait is unchanged", () => {
   const runner = (label: string, state: "connected" | "offline") => ({ label, state, gen: 1, cmds: 0, restarts1h: 0, lanes: 0 });
   const text = renderStatus({ ...base, runners: [runner("mini", "offline"), runner("box", "connected")], waits: [
     { key: "a", until: "merged o/r#7", machine: "mini" }, { key: "b", until: "merged o/r#8", machine: "box" }, { key: "c", until: "merged o/r#9" },

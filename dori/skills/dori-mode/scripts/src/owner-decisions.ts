@@ -101,7 +101,7 @@ export const DECISION_THREAD_NAME_MAX = 40;
 
 const label = (d: Pick<OwnerDecision, "kind">): string => (d.kind === "request" ? "요청" : "결정");
 
-/** The thread's name: `[결정] d12 · #889 · <question>` (`[요청]` for a request), cut to DECISION_THREAD_NAME_MAX characters. */
+/** The thread's name: `[<decision tag>] d12 · #889 · <question>` (the request tag for a request), cut to DECISION_THREAD_NAME_MAX characters. */
 export const decisionThreadName = (d: Pick<OwnerDecision, "id" | "task" | "question" | "kind">): string => {
   const chars = Array.from(`[${label(d)}] ${d.id}${d.task !== undefined ? ` · #${d.task}` : ""} · ${d.question.replace(/\s+/g, " ").trim()}`);
   return chars.length <= DECISION_THREAD_NAME_MAX ? chars.join("") : `${chars.slice(0, DECISION_THREAD_NAME_MAX - 1).join("").trimEnd()}…`;

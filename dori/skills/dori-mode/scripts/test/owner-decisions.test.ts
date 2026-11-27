@@ -332,7 +332,7 @@ test("request text round-trips, and a long-lived secret is refused unless a file
   expect(inputRequestProblem({ ...code, file: "relative/path" })).toMatch(/^--file must be an absolute/);
 });
 
-test("a lane request opens a [요청] thread saying what, why, where and which lane waits; its answer is relayed and it closes", async () => {
+test("a lane request opens a request thread saying what, why, where and which lane waits; its answer is relayed and it closes", async () => {
   const dir = stateDir();
   const fake = fakeTransport();
   const ctx = context(dir, fake.transport);

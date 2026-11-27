@@ -67,7 +67,7 @@ const WORDS = {
 export const AUTO_REPORT_MAX = 1500;
 
 /**
- * The auto report of `claim`: a `[System]` header like the supervisor's other posts (`[System] <title>(<key>) 완료했습니다.`,
+ * The auto report of `claim`: a `[System]` header like the supervisor's other posts (`[System] <title>(<key>)` and "done" in the owner's language,
  * the key alone when the lane has no title of its own), the lane's done text as written, then its evidence when it says
  * more than the text, in the owner's language; secrets, local paths and pane ids are scrubbed as for any thread post.
  */

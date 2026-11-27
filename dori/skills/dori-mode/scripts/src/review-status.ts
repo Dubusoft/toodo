@@ -42,7 +42,7 @@ const isStatusFile = (v: unknown): v is StatusFile =>
   isRecord(v) && Array.isArray(v.merges) && v.merges.every(isRecord) && isRecord(v.shown) && Object.values(v.shown).every((t) => typeof t === "string");
 
 /**
- * `review-status.json`: the merges the supervisor made (for the `머지 완료` line) and, per lane, the review lines last
+ * `review-status.json`: the merges the supervisor made (for the merged line) and, per lane, the review lines last
  * written to its status message, so an unchanged state is not written again and a failed write is retried next pass.
  */
 export class ReviewStatusStore {
@@ -108,7 +108,7 @@ const FINDINGS_STATE_MAX = 190;
 
 /**
  * The findings of `r` as `<id> <file>:<line> <observation>` items within `budget` characters: the first findings that
- * fit at FINDING_ITEM_MIN or more each share it evenly and the rest are counted (`외 N건`), so the summary never
+ * fit at FINDING_ITEM_MIN or more each share it evenly and the rest are counted ("N more"), so the summary never
  * overflows the line and a dropped finding is never silent. Empty when not even one item fits.
  */
 const findingsText = (r: ReviewJobRecord, budget: number): string => {
@@ -179,7 +179,7 @@ const prLine = (pull: { readonly repo: string; readonly number: number; readonly
   }
 };
 
-/** The line of a PR stopped by its review limit: undecided (결정 필요) or held by the owner (보류). */
+/** The line of a PR stopped by its review limit: undecided (decision needed) or held by the owner (on hold). */
 const capLine = (name: string, cap: ReviewCap, pr: readonly ReviewJobRecord[], r: ReviewJobRecord): string => {
   const at = ` head ${short(r.job.snapshot.headSha)}`;
   if (cap.ownerDecision?.outcome === "hold") return `${name}: 보류 -${at}, 오너 결정 ${cap.ownerDecision.decisionId}로 자동 리뷰를 멈춤 (${cut(oneLine(cap.reason), 100)})`;

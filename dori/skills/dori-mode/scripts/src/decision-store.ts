@@ -17,7 +17,7 @@ import { saveJsonFile } from "./store.ts";
  * lead must act on.
  * A request (`kind: "request"`) is the same record for input only the owner can give (a one-time code, a file or value):
  * no options, its `question` is what is needed, and it says where to send it (a reply in the thread, or `file`). It opens,
- * is answered and closes exactly like a decision; thread names start `[요청]` instead of `[결정]`. The channel is wired
+ * is answered and closes exactly like a decision; thread names carry the request tag instead of the decision tag. The channel is wired
  * by id only, so the owner may rename it.
  *
  * Every decision lives in `<stateDir>/decisions.json`, rewritten whole under DECISIONS_LOCK by the CLI and the supervisor.
