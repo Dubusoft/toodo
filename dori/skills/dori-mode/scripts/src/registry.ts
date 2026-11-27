@@ -1,0 +1,377 @@
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+
+import { normalizeThreadRef } from "./messenger/target.ts";
+import { acquireStateLock } from "./state-lock.ts";
+import { replaceFileDurable } from "./durable-write.ts";
+import type { LaneFileRun } from "./runner/protocol.ts";
+export { LOCK_WAIT_MS, StateLockError as RegistryLockError } from "./state-lock.ts";
+
+export const LANE_KEY = /^[a-z0-9][a-z0-9._-]{1,60}$/;
+
+/** `ulw` for clear, contained work; `mass-ulw` for wide changes or vague instructions that need investigation first. */
+export const LANE_MODES = ["ulw", "mass-ulw"] as const;
+export type LaneMode = (typeof LANE_MODES)[number];
+
+export type LaneStatus = "working" | "paused" | "done-claimed" | "verified-done" | "not-done" | "closed";
+export type Claim = {
+  readonly at: string;
+  readonly evidence: string;
+  readonly emitted?: boolean;
+  /** The journal id its LANE_DONE_CLAIMED was enqueued under, so its delivery can be read back. */
+  readonly event?: string;
+  /** When the watcher first read that event delivered to the lead; the objection window starts here. */
+  readonly deliveredAt?: string;
+  /**
+   * The lane's open same-repo PRs and their head SHA when it claimed (done-flow.ts claimBindings). The supervisor merges
+   * a PR only at exactly this head; a claim without it (an older dori, GitHub unreadable) never auto-merges.
+   */
+  readonly pulls?: readonly ClaimedPull[];
+  /** The lane's own done text (`dori report <key> done --text`): the body of the supervisor's auto report (done-flow.ts). */
+  readonly text?: string;
+  /**
+   * The message id of the supervisor's auto report of this claim: the claim was reported to the owner without the lead.
+   * `quiet` (auto-report.ts QUIET_REPORT): recorded reported with no post, the lane posts its own results.
+   */
+  readonly autoReported?: string;
+};
+export type ClaimedPull = { readonly repo: string; readonly number: number; readonly sha: string };
+export type Objection = { readonly at: string; readonly reasons: readonly string[] };
+export type HistoryEntry = { readonly at: string; readonly status: LaneStatus; readonly note: string };
+
+export type Lane = {
+  /** A review lane (review-lane.ts): it takes a free lane slot like any lane and runs under the review sandbox profile. */
+  readonly review?: true;
+  readonly fileRun?: LaneFileRun;
+  readonly pendingFileRun?: LaneFileRun;
+  readonly key: string;
+  readonly title: string;
+  readonly thread: string;
+  readonly pane?: string;
+  readonly machine?: string;
+  readonly tab?: string;
+  readonly session?: string;
+  readonly sessionVia?: string;
+  readonly brief: string;
+  readonly done: string;
+  /** `machine`: the brief declared its Done signals settle it alone; its claim and close are digest. */
+  readonly autoClose?: "machine";
+  /** Local directory: command Done signals and worktree checks run here. Remote lanes leave it unset (leadCwd). */
+  readonly cwd?: string;
+  /** A remote lane's working directory on its machine; never used as a local path. */
+  readonly remoteCwd?: string;
+  readonly model?: string;
+  /** How the lane was opened (`dori launch --mode`); absent means `ulw`. Recovery relaunches with the same mode. */
+  readonly mode?: LaneMode;
+  /** The GitHub issue the lane works on (`owner/repo#N`, the brief's `issue:` line); closed once its PR merges into ciMergeBase. */
+  readonly ghIssue?: string;
+  /**
+   * The Toodo task the lane works on (`dori launch --task <id>`, a positive integer; Toodo is not asked). An autopilot lane
+   * gets its reservation's task id here. Absent: no task was named (or the lane predates the field).
+   */
+  readonly task?: number;
+  readonly recoveryPending?: boolean;
+  readonly recoveryPreviousPane?: string;
+  /**
+   * The pane the lane's last RUNNER_LANE_DEAD named. Another dead about the same pane raises nothing (nor a dead-panes
+   * alert) until the runner sees the lane alive there again or the lane starts afresh.
+   */
+  readonly deadAlertPane?: string;
+  /** A runner lane's recovery: the runner journal head at the hello that asked for it; a lane.started at or before it is stale. */
+  readonly recoveryAfter?: number;
+  /** An admission reservation is paused until its agent is registered, so recovery never launches it too. */
+  readonly launchReservation?: string;
+  /** The launch stopped waiting for the runner's answer (a timeout); the runner's lane.started confirms the reservation. */
+  readonly launchUnconfirmed?: boolean;
+  readonly worktrees?: readonly string[];
+  readonly status?: LaneStatus;
+  readonly claim?: Claim;
+  readonly objection?: Objection;
+  readonly history?: readonly HistoryEntry[];
+  readonly openedAt: string;
+  readonly closedAt?: string;
+  readonly lastReplyAt?: number;
+  readonly lastNudgeAt?: number;
+  /** IDLE-ESCALATE events sent for the current silence; set to 0 by the idle nudge, unset when no nudge was sent for it. */
+  readonly idleEscalations?: number;
+  /** When the last IDLE-ESCALATE was sent, so the next one for the same silence waits twice as long. */
+  readonly lastIdleEscalateAt?: number;
+  /** When a nudge last could not be typed (input line busy, pane not live); it is retried each tick, reported once per silence. */
+  readonly lastNudgeFailedAt?: number;
+  readonly lastAutoReplyAt?: number;
+  /** @deprecated No longer written (the sweep no longer relays pane todo items); old registries still load with it. */
+  readonly lastProgressPost?: string;
+  /** @deprecated No longer written; kept so old registries load. */
+  readonly lastProgressAt?: number;
+  /** @deprecated No longer written; kept so old registries load. */
+  readonly lastProgressError?: string;
+  /** The id of the one `[System]` status message the supervisor keeps in the lane's thread and edits on each progress or milestone report. */
+  readonly statusMessageId?: string;
+  /** @deprecated No longer written; kept so old registries load. */
+  readonly lastRemoteReport?: string;
+  /** @deprecated No longer written; kept so old registries load. */
+  readonly remoteReportsSeen?: readonly { readonly hash: string; readonly at: string }[];
+  /**
+   * `cli`: every launch and relaunch sets this for the `dori report` footer, so it reports with `dori report` (its runner's, on
+   * another machine) and never types into a pane. Absent: a lane registered by an older dori; its next relaunch moves it onto that footer.
+   */
+  readonly reportVia?: "cli";
+  /** Launched behind `laneSandbox.command` (every local `dori launch` that the sandbox fits, or `--sandbox`); recovery relaunches it the same way. */
+  readonly sandbox?: true;
+  /** The runner-config `grants` names the lane was launched with (`--grant`); recovery relaunches it with the same ones. */
+  readonly grants?: readonly string[];
+  /** @deprecated No longer written; kept so old registries load. */
+  readonly leadPaneSeen?: readonly { readonly hash: string; readonly at: string }[];
+  /** @deprecated No longer written; kept so old registries load. */
+  readonly leadPaneViolations?: number;
+  /** @deprecated No longer written; kept so old registries load. */
+  readonly lastPostedReport?: string;
+  /** @deprecated No longer written; kept so old registries load. */
+  readonly lastSeenReport?: string;
+  /** The last held-back freshness outcome, so a quiet lane logs each state change once, not every tick. */
+  readonly lastFreshnessNote?: string;
+  /** The on-screen question (ask-user prompt) last raised as LANE_ASKING, so one prompt wakes the lead once. */
+  readonly lastAskPrompt?: string;
+  readonly recoveryAttempts?: number;
+  readonly lastRecoveryAt?: number;
+  /** A paused lane whose pane read working on the previous freshness tick (two in a row is reported, never a resume). */
+  readonly pausedSeenWorking?: boolean;
+  /** The status a paused lane had before it was paused; `resume` restores it. */
+  readonly pausedFrom?: LaneStatus;
+  readonly receipt?: unknown;
+  /** The runner (machine label) that owns this lane; every lane gets one at launch or adopt; there is no direct path, so a lane without it is only a record left by an old version. */
+  readonly runner?: string;
+  /** When the lane was bound to its runner (ms since epoch). */
+  readonly runnerAdoptedAt?: number;
+  /** Since when the owning runner has been silent (ms since epoch); unset while it reports. */
+  readonly runnerStaleSince?: number;
+  /** When the owning runner last reported for this lane (ms since epoch). */
+  readonly lastRunnerReportAt?: number;
+  /** Bumped by every registry write; a write carrying an older version than the stored one was made from stale state. */
+  readonly version?: number;
+};
+
+export const statusOf = (lane: Lane): LaneStatus => (lane.closedAt ? "closed" : (lane.status ?? "working"));
+
+export const withStatus = (lane: Lane, status: LaneStatus, note: string, at: string, patch: Partial<Lane> = {}): Lane => ({
+  ...lane,
+  ...patch,
+  status,
+  history: [...(lane.history ?? []), { at, status, note }],
+});
+
+const missing = (e: unknown): boolean => e instanceof Error && "code" in e && e.code === "ENOENT";
+
+/**
+ * The parsed lane file, or null when there is none (a lane moved to the archive meanwhile reads as missing here). A bare
+ * thread id from an older launch reads as `discord:<id>`, and the next write of that lane stores it so.
+ */
+const readLaneFile = (path: string): Lane | null => {
+  try {
+    const lane = JSON.parse(readFileSync(path, "utf8")) as Lane;
+    return typeof lane.thread === "string" ? { ...lane, thread: normalizeThreadRef(lane.thread) } : lane;
+  }
+  catch (e) { if (missing(e)) return null; throw e; }
+};
+
+/**
+ * `lanes/` holds open lanes only, so the sweeps read O(open lanes). A closed lane is saved there and then renamed into
+ * `lanes-archive/` (one atomic step, so a crash leaves it in exactly one place); `read` falls back to the archive, so
+ * a closed key is still found (launch refuses to reuse it, close and status still see it). Hand-moved files from the
+ * old `lanes-closed/` directory are kept verbatim under `lanes-archive/legacy/`.
+ */
+export class Registry {
+  readonly dir: string;
+  readonly archiveDir: string;
+  readonly legacyDir: string;
+  private readonly oldClosedDir: string;
+  private migrated = false;
+  constructor(stateDir: string) {
+    this.dir = join(stateDir, "lanes");
+    this.archiveDir = join(stateDir, "lanes-archive");
+    this.legacyDir = join(this.archiveDir, "legacy");
+    this.oldClosedDir = join(stateDir, "lanes-closed");
+  }
+
+  path(key: string): string {
+    return join(this.dir, `${key}.json`);
+  }
+
+  archivePath(key: string): string {
+    return join(this.archiveDir, `${key}.json`);
+  }
+
+  /** The open file first, then the archive: a lane renamed between the two reads is found in the archive. */
+  async read(key: string): Promise<Lane | null> {
+    return readLaneFile(this.path(key)) ?? readLaneFile(this.archivePath(key));
+  }
+
+  /** SQLite releases this per-lane lock even if the owner is killed; live operations never expire. */
+  private lock(key: string): Promise<() => void> {
+    return acquireStateLock(join(this.dir, `${key}.lock.sqlite`));
+  }
+
+  /** Temp file, fsync, rename, then fsync the directory, so a reader or a crash never sees a half-written lane. */
+  private save(lane: Lane): Lane {
+    mkdirSync(this.dir, { recursive: true });
+    let stored: number | undefined;
+    let archived = false;
+    try {
+      const open = readLaneFile(this.path(lane.key));
+      const old = open ?? readLaneFile(this.archivePath(lane.key));
+      archived = !open && old !== null;
+      stored = old?.version;
+    } catch { stored = undefined; }
+    if (lane.version !== undefined && stored !== undefined && lane.version < stored) {
+      console.error(`REGISTRY_STALE_WRITE ${lane.key} written from v${lane.version} over v${stored}; use registry.update`);
+    }
+    const next: Lane = { ...lane, version: Math.max(stored ?? 0, lane.version ?? 0) + 1 };
+    const closed = statusOf(next) === "closed";
+    // An archived lane that stays closed is rewritten in place; anything else is written to lanes/ first.
+    const dir = closed && archived ? this.archiveDir : this.dir;
+    const target = join(dir, `${lane.key}.json`);
+    replaceFileDurable(target, JSON.stringify(next, null, 1), 0o600);
+    if (closed && !archived) this.moveToArchive(lane.key);
+    else if (!closed && archived) {
+      // Reopened: the archived copy goes, so the key lives in exactly one place.
+      unlinkSync(this.archivePath(lane.key));
+      const archive = openSync(this.archiveDir, "r");
+      try { fsyncSync(archive); } finally { closeSync(archive); }
+    }
+    return next;
+  }
+
+  /** Atomic rename lanes/<key>.json -> lanes-archive/<key>.json; the caller holds the lane lock. */
+  private moveToArchive(key: string): void {
+    mkdirSync(this.archiveDir, { recursive: true });
+    renameSync(this.path(key), this.archivePath(key));
+    const archive = openSync(this.archiveDir, "r");
+    try { fsyncSync(archive); } finally { closeSync(archive); }
+    const lanes = openSync(this.dir, "r");
+    try { fsyncSync(lanes); } finally { closeSync(lanes); }
+  }
+
+  /** Archives a closed lane left in lanes/ (written by older code, or a crash between save and rename). */
+  private async archiveIfClosed(key: string): Promise<void> {
+    const release = await this.lock(key);
+    try {
+      const lane = readLaneFile(this.path(key));
+      if (lane && statusOf(lane) === "closed") this.moveToArchive(key);
+    } finally { release(); }
+  }
+
+  /**
+   * Once per instance: files hand-moved to the old lanes-closed/ go to lanes-archive/legacy/ under their own names
+   * (they are not lane records `read` may return: some are dead or abandoned copies of keys that are open again).
+   * A name already taken in legacy/ stays in lanes-closed/, which closedKeys keeps reading.
+   */
+  private migrateLegacy(): void {
+    if (this.migrated) return;
+    this.migrated = true;
+    if (!existsSync(this.oldClosedDir)) return;
+    mkdirSync(this.legacyDir, { recursive: true });
+    for (const f of readdirSync(this.oldClosedDir)) {
+      const to = join(this.legacyDir, f);
+      if (!existsSync(to)) renameSync(join(this.oldClosedDir, f), to);
+    }
+    const legacy = openSync(this.legacyDir, "r");
+    try { fsyncSync(legacy); } finally { closeSync(legacy); }
+    if (readdirSync(this.oldClosedDir).length === 0) rmdirSync(this.oldClosedDir);
+  }
+
+  /** Last writer wins (stale writes are logged as REGISTRY_STALE_WRITE). Prefer `update` for load-modify-save. */
+  async write(lane: Lane): Promise<void> {
+    const release = await this.lock(lane.key);
+    try { this.save(lane); } finally { release(); }
+  }
+
+  /**
+   * Lock, read the lane fresh, apply `mutate`, save. `mutate` gets null for a missing lane; returning undefined
+   * writes nothing. Returns the lane as stored afterwards.
+   */
+  async update(key: string, mutate: (current: Lane | null) => Lane | undefined | Promise<Lane | undefined>): Promise<Lane | null> {
+    const release = await this.lock(key);
+    try {
+      const current = await this.read(key);
+      const next = await mutate(current);
+      if (next === undefined) return current;
+      if (next.key !== key) throw new Error(`update of lane ${key} returned lane ${next.key}`);
+      return this.save({ ...next, version: current?.version ?? 0 });
+    } finally { release(); }
+  }
+
+  /**
+   * `update` that changes only the given fields of the fresh lane (a function gets the fresh lane and may return
+   * undefined to write nothing). A missing lane is never recreated: returns null and writes nothing.
+   */
+  async patch<T extends Lane = Lane>(key: string, fields: Partial<T> | ((current: T) => Partial<T> | undefined)): Promise<T | null> {
+    let missing = false;
+    const stored = await this.update(key, (current) => {
+      if (!current) { missing = true; return undefined; }
+      const p = typeof fields === "function" ? fields(current as T) : fields;
+      if (p === undefined) return undefined;
+      const next = { ...current, ...p, key };
+      return JSON.stringify(next) === JSON.stringify(current) ? undefined : next;
+    });
+    return missing ? null : (stored as T | null);
+  }
+
+  /** Remove only the caller's failed admission, never a lane that has since been replaced or launched. */
+  async releaseReservation(key: string, token: string): Promise<void> {
+    const release = await this.lock(key);
+    try {
+      if ((await this.read(key))?.launchReservation !== token) return;
+      unlinkSync(this.path(key));
+      const lanes = openSync(this.dir, "r");
+      try { fsyncSync(lanes); } finally { closeSync(lanes); }
+    } finally { release(); }
+  }
+
+  /** Open lanes: reads lanes/ only, never the archive. A closed lane still found there is archived on the way. */
+  async open(): Promise<Lane[]> {
+    mkdirSync(this.dir, { recursive: true });
+    this.migrateLegacy();
+    const lanes: Lane[] = [];
+    for (const f of readdirSync(this.dir)) {
+      if (!f.endsWith(".json")) continue;
+      const lane = readLaneFile(join(this.dir, f));
+      if (!lane) continue;
+      if (statusOf(lane) === "closed") await this.archiveIfClosed(lane.key);
+      else lanes.push(lane);
+    }
+    return lanes;
+  }
+
+  /** Keys of archived lanes, from file names alone (no file is read). */
+  archivedKeys(): string[] {
+    if (!existsSync(this.archiveDir)) return [];
+    return readdirSync(this.archiveDir).filter((f) => f.endsWith(".json")).map((f) => f.slice(0, -".json".length));
+  }
+
+  /** Every archived (closed) lane record. Reads the whole archive: for rare or periodic callers only. */
+  async archived(): Promise<Lane[]> {
+    await this.open();
+    return this.readArchive();
+  }
+
+  private readArchive(): Lane[] {
+    return this.archivedKeys().flatMap((key) => readLaneFile(this.archivePath(key)) ?? []);
+  }
+
+  /** Open and archived lanes. Reads the whole archive: for rare or periodic callers only. */
+  async list(): Promise<Lane[]> {
+    const open = await this.open();
+    const keys = new Set(open.map((l) => l.key));
+    return [...open, ...this.readArchive().filter((l) => !keys.has(l.key))];
+  }
+
+  /** Hand-moved closed files (lanes-archive/legacy/, and lanes-closed/ when anything is left there): [path, name]. */
+  legacyFiles(): [string, string][] {
+    this.migrateLegacy();
+    return [this.legacyDir, this.oldClosedDir].flatMap((dir) => existsSync(dir) ? readdirSync(dir).map((f): [string, string] => [join(dir, f), f]) : []);
+  }
+}
+
+/** Lock, fresh load, mutate, save: a stale copy can never overwrite newer state (objection, pause). */
+export const updateRegistry = (registry: Registry, key: string, mutate: Parameters<Registry["update"]>[1]): Promise<Lane | null> =>
+  registry.update(key, mutate);

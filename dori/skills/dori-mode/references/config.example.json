@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "stateDir": "~/.dori/state",
+  "ignorePanes": [],
+  "leadCwd": "~/code/my-project",
+  "agentCommand": [
+    "omo",
+    "--model",
+    "{model}",
+    "{prompt}"
+  ],
+  "defaultModel": "anthropic-subscription/claude-opus-5-5",
+  "leadArgs": [],
+  "leadStuckRestartMin": 30,
+  "leadChildWaitMaxMin": 60,
+  "threadCloseAfterHours": 24,
+  "discordChannels": [
+    "123456789012345678"
+  ],
+  "githubIssueAuthors": [
+    "your-github-login"
+  ],
+  "discord": {
+    "applicationId": "1100000000000000001",
+    "guildId": "1100000000000000002",
+    "ownerId": "<owner Discord user id>"
+  },
+  "drift": { "enabled": true, "milestoneOverdueMin": 90, "ciFailStreak": 3 },
+  "worktreeRoot": "/data/repos/worktrees",
+  "ownerLanguage": "Korean",
+  "displayTimeZone": "Asia/Seoul",
+  "laneRules": ["Open a PR into the repo's dev branch; once its CI is green, claim done and stop. Do not merge it and do not wait for the merge: the supervisor merges it.", "CI runs the typecheck only; do not add tests to CI."],
+  "heavySlots": 1,
+  "heavyKill": [
+    "qemu-system",
+    "emulator",
+    "expo export"
+  ],
+  "heavyMaxLoad": 80,
+  "guard": {
+    "loadAlert": 150,
+    "loadOk": 80,
+    "memFreeMinPct": 20,
+    "memFreeCritPct": 5,
+    "swapFreeCritPct": 5,
+    "diskFreeMinGb": 50,
+    "panesMax": 20
+  },
+  "runTimeoutMs": 60000,
+  "ciMergeBase": "dev",
+  "autopilot": {
+    "mergeBase": "dev",
+    "tickSec": 300
+  },
+  "autoReport": "all",
+  "guardMachines": {},
+  "hooks": {
+    "threadReply": [
+      "my-messenger",
+      "reply",
+      "--thread",
+      "{thread}",
+      "--text",
+      "{text}"
+    ],
+    "transcribe": [
+      "my-stt",
+      "--file",
+      "{file}"
+    ]
+  }
+}

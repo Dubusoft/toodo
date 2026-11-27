@@ -1,0 +1,218 @@
+import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { statSync } from "node:fs";
+import { join } from "node:path";
+
+import { RunnerAuth } from "../src/runner/auth.ts";
+import { RunnerClient } from "../src/runner/client.ts";
+import { runStartupCheck } from "../src/runner/fs-safety.ts";
+import { HUB_FILE, readRunnerRows, RUNNER_OFFLINE_MS, RUNNER_SILENT_CLOSE_MS, RunnerHub } from "../src/runner/hub.ts";
+import { Outbox } from "../src/runner/outbox.ts";
+import { acceptRunners, drainRunnerAdmin, loadIdentity, type ObservedLane, queueRunnerAdmin, runnerAdminResult, serveRunner, trackedConnector } from "../src/runner/serve.ts";
+import { decodeFrame, encodeFrame, MAX_FRAME_BYTES, runnerControl } from "../src/runner/protocol.ts";
+import type { Timers } from "../src/runner/call.ts";
+import { memoryNetwork } from "./support/memory-transport.ts";
+import { RunnerState } from "../src/runner/state.ts";
+import { connectUnix, controlSocketPath } from "../src/runner/unix-transport.ts";
+import { collectStatus, renderStatus } from "../src/status.ts";
+import { openRunnerHub } from "../src/supervise-hub.ts";
+import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
+
+const cleanups: (() => void)[] = [];
+afterEach(() => { for (const done of cleanups.splice(0).reverse()) done(); });
+
+/** A promise that resolves the first time `match` sees a value. */
+const waiter = <T>() => {
+  const waiting: { match: (value: T) => boolean; resolve: () => void }[] = [];
+  return {
+    see(value: T) { for (const w of waiting.splice(0)) if (w.match(value)) w.resolve(); else waiting.push(w); },
+    when: (match: (value: T) => boolean) => new Promise<void>((resolve) => { waiting.push({ match, resolve }); }),
+  };
+};
+
+test.each([9, 10])("direct and queued file operations pass admitted proto %i and enforce the frame limits", async (proto) => {
+  const tmp = withState(); cleanups.push(tmp.done);
+  const hub = new RunnerHub({ stateDir: tmp.dir, now: () => 1000, monotonic: () => 1000, epoch: 1, commit: () => true });
+  cleanups.push(() => hub.close());
+  const network = memoryNetwork();
+  const accept = acceptRunners(hub, network.listener, { log: () => {} }); cleanups.push(accept);
+  const transport = await network.connect();
+  transport.send(encodeFrame(runnerControl({ runner: "box", gen: 1, epoch: 1 }, "hello", { label: "box", hostId: "host", gen: 1, proto, cmdAck: 0 })));
+  network.pairs[0]!.pump();
+  const start = { cmdId: "s", key: "a", briefText: "", done: "x", thread: "none", cwd: "/repo", agentProfile: "sandboxed", mode: "ulw", model: "m", sandbox: true, expectedLaneGen: 0 } as const;
+  expect(accept.command("box", "lane.start", start)).toBe(1);
+  expect(accept.command("box", "lane.recover", { cmdId: "r", key: "a" })).toBe(2);
+  expect(accept.control("box", "q.lane.files", { qid: "q", key: "a" })).toBe(true);
+  expect(network.pairs[0]!.queued()).toBe(3);
+  expect(() => accept.command("box", "lane.start", { ...start, briefText: "x".repeat(786432) })).toThrow("LANE_FILES_FRAME_TOO_LARGE");
+  expect(hub.runner("box")?.cmdSeq).toBe(2);
+  expect(() => accept.command("box", "job.run", { cmdId: "big", opKey: "o", name: "n", command: ["x".repeat(MAX_FRAME_BYTES)], cwd: "/repo", timeoutSec: 1, heavy: false })).toThrow("frame-too-large");
+});
+
+/** Timers on a manual clock: `advance` fires, in due order, every timer that is due by then. */
+const manualTimers = () => {
+  let at = 0;
+  const due: { at: number; fn: () => void }[] = [];
+  const api: Timers = {
+    set: (fn, ms) => { const t = { at: at + ms, fn }; due.push(t); return t; },
+    clear: (t) => { const i = due.indexOf(t as typeof due[number]); if (i >= 0) due.splice(i, 1); },
+  };
+  const advance = (ms: number): void => {
+    at += ms;
+    for (const t of due.filter((x) => x.at <= at).sort((a, b) => a.at - b.at)) { due.splice(due.indexOf(t), 1); t.fn(); }
+  };
+  return { api, advance, pending: () => due.length };
+};
+
+/** A hub served over a memory network with manual timers; `link()` opens a runner connection that says hello at `gen`. */
+const silenceWorld = () => {
+  const tmp = withState(); cleanups.push(tmp.done);
+  const hub = new RunnerHub({ stateDir: tmp.dir, now: () => 1000, monotonic: () => 1000, epoch: 1, commit: () => true });
+  cleanups.push(() => hub.close());
+  const network = memoryNetwork();
+  const timers = manualTimers();
+  const logs: string[] = [];
+  const accept = acceptRunners(hub, network.listener, { timers: timers.api, log: (line) => { logs.push(line); } }); cleanups.push(accept);
+  const link = async (gen: number) => {
+    const transport = await network.connect();
+    const pair = network.pairs.at(-1)!;
+    const replies: string[] = [];
+    transport.onLine((line) => { replies.push(decodeFrame(line, "supervisor").type); });
+    const head = { runner: "box", gen, epoch: 1 };
+    transport.send(encodeFrame(runnerControl(head, "hello", { label: "box", hostId: "host", gen, proto: 10, cmdAck: 0 })));
+    pair.pump();
+    return { transport, replies, heartbeat: () => { transport.send(encodeFrame(runnerControl(head, "heartbeat", {}))); pair.pump(); } };
+  };
+  return { accept, timers, logs, link };
+};
+
+test("the supervisor closes an admitted connection that sends no frame for RUNNER_SILENT_CLOSE_MS and logs RUNNER_DISCONNECTED", async () => {
+  expect(RUNNER_SILENT_CLOSE_MS).toBeLessThanOrEqual(RUNNER_OFFLINE_MS);
+  const w = silenceWorld();
+  const a = await w.link(1);
+  expect(a.replies).toEqual(["hello.ok"]);
+  // Heartbeats re-arm the watchdog: a link that keeps talking is never closed.
+  w.timers.advance(RUNNER_SILENT_CLOSE_MS - 1000);
+  a.heartbeat();
+  w.timers.advance(RUNNER_SILENT_CLOSE_MS - 1);
+  expect(w.accept.connected("box")).toBe(true);
+  expect(w.logs.some((line) => line.startsWith("RUNNER_SILENT"))).toBe(false);
+  // Then the runner goes quiet (its TCP died without a FIN): the next millisecond closes the link.
+  w.timers.advance(1);
+  expect(a.transport.open).toBe(false);
+  expect(w.accept.connected("box")).toBe(false);
+  expect(w.logs.slice(-2)).toEqual([
+    `RUNNER_SILENT runner=box no frame for ${RUNNER_SILENT_CLOSE_MS / 1000} s: closing the link so the runner reconnects`,
+    "RUNNER_DISCONNECTED runner=box",
+  ]);
+  expect(w.timers.pending()).toBe(0);
+});
+
+test("a same-gen hello while the old link still looks open is a conflict, and admitted once the silence closed that link", async () => {
+  const w = silenceWorld();
+  await w.link(1);
+  const early = await w.link(1);
+  // The memory pair drops lines still queued when a side closes, so the refusal shows in the log and the closed link.
+  expect(early.transport.open).toBe(false);
+  expect(w.logs.at(-1)).toStartWith("RUNNER_CONFLICT runner=box");
+  expect(w.accept.connected("box")).toBe(true);
+  w.timers.advance(RUNNER_SILENT_CLOSE_MS);
+  expect(w.logs.at(-1)).toBe("RUNNER_DISCONNECTED runner=box");
+  const again = await w.link(1);
+  expect(again.replies).toEqual(["hello.ok"]);
+  expect(w.accept.connected("box")).toBe(true);
+  expect(w.logs.at(-1)).toBe("RUNNER_CONNECTED runner=box gen=1 eventAck=0");
+  expect(w.timers.pending()).toBe(1);
+});
+
+test("a local runner over the real unix socket says hello, replays its outbox, heartbeats and shows as RUNNER local connected", async () => {
+  const state = withState();
+  cleanups.push(state.done);
+  const stateDir = join(state.dir, "state");
+  const runnerDir = join(state.dir, "runner");
+  const clock = fakeClock(Date.parse("2026-11-05T00:00:00Z"));
+  const deps = depsFor(newWorld(), clock, stateDir, {});
+
+  // Supervisor side: the hub on <runnerDir>/sock/control, as supervise() opens it; it enrolls the local runner in-process.
+  const logs: string[] = [];
+  const logged = waiter<string>();
+  const heartbeats = waiter<string>();
+  const hub = openRunnerHub(stateDir, runnerDir, clock.now, clock.now, (line) => { logs.push(line); logged.see(line); }, {
+    onHeartbeat: (label) => { heartbeats.see(label); }, hostId: "host-a",
+    // RunnerCalls timeouts never fire here: the test settles every pending query itself.
+    timers: { set: () => 0, clear: () => {} },
+  });
+  cleanups.push(() => hub.close());
+  expect(statSync(join(runnerDir, "sock")).mode & 0o777).toBe(0o700);
+  expect(statSync(controlSocketPath(runnerDir)).isSocket()).toBe(true);
+
+  // Runner side, wired as `dori runner serve` wires it, with a fake clock and a manual timer.
+  const exits: number[] = [];
+  expect(runStartupCheck(runnerDir, { stderr: () => {}, exit: (code) => { exits.push(code); } })).toBe(true);
+  expect(exits).toEqual([]);
+  const identity = loadIdentity(runnerDir, "local", "host-a");
+  const runnerState = new RunnerState(runnerDir, { now: clock.now });
+  expect(runnerState.boot()).toBe(1);
+  const outbox = new Outbox(runnerDir, { now: clock.now });
+  cleanups.push(() => { outbox.close(); runnerState.close(); });
+  const observed: ObservedLane[] = [{ key: "demo", pane: "w1:p2", tab: "w1:t1", status: "working" }];
+  const tracked = trackedConnector(connectUnix(controlSocketPath(runnerDir)));
+  const client = new RunnerClient({ label: identity.label, hostId: identity.hostId }, {
+    connect: tracked.connect, outbox, state: runnerState, clock, auth: new RunnerAuth(runnerDir), inventory: () => observed.map(({ status: _s, ...lane }) => lane),
+    workspaces: () => ({ workspaces: [{ repo: "acme/app", path: "/data/repos/app" }], detected: [{ repo: "acme/lib", path: "/data/repos/lib" }] }),
+  });
+  const timers: { ms: number; tick: () => void }[] = [];
+  const controller = new AbortController();
+  const heartbeat = heartbeats.when((label) => label === "local");
+  const serving = serveRunner({
+    client, latest: tracked.latest, clock, heartbeatMs: 15_000, observe: async () => observed, log: () => {},
+    every: (ms, tick) => { const timer = { ms, tick }; timers.push(timer); return () => { timers.splice(timers.indexOf(timer), 1); }; },
+  }, controller.signal);
+
+  await heartbeat;
+  // The heartbeat timer is separate from the observation timer.
+  expect(timers.map((t) => t.ms).sort((a, b) => a - b)).toEqual([15_000, 30_000]);
+  expect(logs).toContain("RUNNER_CONNECTED runner=local gen=1 eventAck=0");
+
+  // The lane.state observed before the connection was appended to the outbox, replayed and committed to the hub's own journal.
+  expect(hub.hub.runner("local")?.eventAck).toBe(1);
+  // The hello's placement report is stored on the runner's row.
+  expect(hub.hub.runner("local")?.workspaces).toEqual({ declared: [{ repo: "acme/app", path: "/data/repos/app" }], detected: [{ repo: "acme/lib", path: "/data/repos/lib" }] });
+  const db = new Database(join(stateDir, HUB_FILE), { readonly: true });
+  expect((db.query("SELECT id FROM runner_events").all() as { id: string }[]).map((r) => r.id)).toEqual(["runner:local:1"]);
+  db.close();
+
+  // dori status reads the persisted row.
+  const status = await collectStatus(deps);
+  expect(status.runners?.[0]).toMatchObject({ label: "local", state: "connected", proto: 10, gen: 1, heartbeatAgeSec: 0 });
+  // The lane count is the registry's open lanes on the machine, not the hello inventory ("demo" is not in the registry).
+  expect(renderStatus(status)).toMatch(/^- local: 연결됨 · 레인 0개 · 미전달 이벤트 1개 \(가장 오래된 것 \d+초 전\)$/m);
+
+  // The handle's RunnerCalls: a label with no connection fails closed at once; a query pending on the live connection
+  // (this client has no query dispatcher, so it stays unanswered) is rejected when the connection closes.
+  expect(hub.calls.connected("local")).toBe(true);
+  await expect(hub.calls.query("box", "q.panes", {})).rejects.toMatchObject({ code: "RUNNER_UNAVAILABLE", why: "disconnected" });
+  const pendingQuery = hub.calls.query("local", "q.panes", {}).then(() => undefined, (e: unknown) => e);
+  expect(hub.calls.pending()).toBe(1);
+
+  // Past the stale threshold with no heartbeat the line reads stale; the runner stopping reads offline.
+  clock.at += 61_000;
+  expect(renderStatus(await collectStatus(deps))).toMatch(/^- local: 응답 늦음 · 마지막 응답 1분 전 · /m);
+  const gone = logged.when((line) => line === "RUNNER_DISCONNECTED runner=local");
+  controller.abort();
+  await serving;
+  await gone;
+  expect(await pendingQuery).toMatchObject({ code: "RUNNER_UNAVAILABLE", why: "disconnected" });
+  expect(hub.calls.pending()).toBe(0);
+  expect(readRunnerRows(stateDir)[0]?.disconnectedAt).toBe(clock.at);
+  expect(renderStatus(await collectStatus(deps))).toMatch(/^- local: 오프라인 · /m);
+});
+
+test("without a runners section dori status still shows the local runner, offline until it says hello", async () => {
+  const state = withState();
+  cleanups.push(state.done);
+  const clock = fakeClock(Date.parse("2026-11-05T00:00:00Z"));
+  const status = await collectStatus(depsFor(newWorld(), clock, state.dir));
+  expect(status.runners?.map((r) => [r.label, r.state])).toEqual([["local", "offline"]]);
+  expect(renderStatus(status)).toContain("\n■ 머신 (1)\n- local: 오프라인 · 레인 0개\n  머신 샘플 없음\n");
+});

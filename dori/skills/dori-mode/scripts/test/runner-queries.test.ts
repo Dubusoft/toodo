@@ -1,0 +1,213 @@
+import { expect, test } from "bun:test";
+
+import type { Ran, Runner } from "../src/run.ts";
+import type { RunnerControlBodies } from "../src/runner/protocol.ts";
+import { LaneFileError, treeDigest } from "../src/lane-file-contract.ts";
+import {
+  laneInspect, observeMachine, queryDispatcher, type QueryDeps, queryProcess, queryScreen, queryStat, SCREEN_MAX_LINES,
+  answerQuery,
+} from "../src/runner/queries.ts";
+import { fakeClock, fakeRunner, newWorld, WT } from "./fakes.ts";
+import { hcAnswer, newHcWorld } from "./runner-hc-world.ts";
+
+const T0 = 1_800_000_000_000;
+
+test("q.lane.files uses the injected synchronous capture for managed and legacy lanes; unknown or absent readers refuse", async () => {
+  const tree = { directories: [], files: [] }, files = { run: { id: "00000000-0000-4000-8000-000000000001", requiredReport: false }, revision: 1, tree, sha256: treeDigest(tree) };
+  const calls: string[] = [];
+  const deps = depsOf(fakeRunner(newWorld()), { files: (key) => {
+    calls.push(key);
+    if (key === "unknown") throw new Error("RUNNER_LANE_UNKNOWN unknown");
+    return key === "managed" ? files : undefined;
+  } });
+  const query = (key: string) => frame("q.lane.files", { qid: "q1", key }) as Parameters<typeof answerQuery>[1];
+  expect(await answerQuery(deps, query("managed"))).toEqual({ files });
+  expect(await answerQuery(deps, query("legacy"))).toEqual({});
+  await expect(answerQuery(deps, query("unknown"))).rejects.toThrow("RUNNER_LANE_UNKNOWN");
+  await expect(answerQuery({ ...deps, files: undefined }, query("managed"))).rejects.toThrow("RUNNER_QUERY_UNSUPPORTED");
+  expect(calls).toEqual(["managed", "legacy", "unknown"]);
+});
+
+test("q.lane.files preserves complete typed errors and sizes the complete successful q.result", async () => {
+  const detail = "unsafe " + "x".repeat(500);
+  let reply: (body: RunnerControlBodies["q.result"]) => void = () => {};
+  const ask = (files: NonNullable<QueryDeps["files"]>, qid = "q") => new Promise<RunnerControlBodies["q.result"]>((resolve) => {
+    reply = resolve;
+    queryDispatcher({ ...depsOf(fakeRunner(newWorld())), files, policy: { jobs: "allow" }, log: () => {}, reply: (body) => reply(body) })(frame("q.lane.files", { qid, key: "lane-a" }));
+  });
+  expect(await ask(() => { throw new LaneFileError("LANE_REPORT_UNSAFE", "lane-a", detail); })).toEqual({
+    qid: "q", ok: false, detail: `LANE_REPORT_UNSAFE lane-a: ${detail}`,
+  });
+  const tree = { directories: [], files: [] }, files = { run: { id: "00000000-0000-4000-8000-000000000001", requiredReport: false }, revision: 1, tree, sha256: treeDigest(tree) };
+  expect((await ask(() => files, "x".repeat(786432))).detail).toStartWith("LANE_FILES_FRAME_TOO_LARGE lane-a:");
+});
+
+const inspectWorld = () => {
+  const w = newWorld();
+  w.panes = [{ pane_id: "hc:t1", workspace_id: "", agent: "omo", agent_status: "working", cwd: "/repo" }];
+  w.dirty = " M src/a.ts\n";
+  w.aheadCount = "3";
+  return w;
+};
+
+const depsOf = (run: Runner, over: Partial<QueryDeps> = {}): QueryDeps => ({
+  run, clock: fakeClock(T0), lane: (key) => (key === "demo-lane" ? { pane: "hc:t1", cwd: "/repo" } : undefined), exists: () => true, ...over,
+});
+
+test("laneInspect uses the lane identity guard before reading processes or resolving sessions", async () => {
+  const w = inspectWorld();
+  const got = await laneInspect(depsOf(fakeRunner(w), { currentPane: async () => undefined }), { key: "demo-lane", session: true });
+  expect(got.status).toBe("missing");
+  expect(got.pane).toBeUndefined();
+  expect(got.process).toBeUndefined();
+  expect(got.session).toEqual({ id: "", via: "none" });
+  expect(w.calls.some((a) => a[0] === "ps")).toBe(false);
+});
+
+test("laneInspect({git:true, done}) returns the worktrees with dirty/ahead and the Done checks", async () => {
+  const w = inspectWorld();
+  const got = await laneInspect(depsOf(fakeRunner(w)), { key: "demo-lane", git: true, roots: ["/repo"], done: "merged o/r#1; closed o/r#2" });
+  expect(got.status).toBe("working");
+  expect(got.pane?.pane_id).toBe("hc:t1");
+  expect(got.cwd).toBe("/repo");
+  expect(got.cwdExists).toBe(true);
+  expect(got.git?.worktrees).toEqual([{ path: WT, branch: "demo-lane", exists: true, dirty: true, ahead: 3 }]);
+  expect(got.done).toEqual({
+    cwd: "/repo", fallback: false,
+    checks: [{ signal: "merged o/r#1", ok: true, detail: "MERGED abc1234567" }, { signal: "closed o/r#2", ok: true, detail: "CLOSED" }],
+  });
+  // git and gh ran on this host, in the lane's directories
+  expect(w.calls.some((c) => c.join(" ") === `git -C ${WT} status --porcelain --untracked-files=normal`)).toBe(true);
+  expect(w.calls.some((c) => c[0] === "gh" && c[1] === "pr")).toBe(true);
+});
+
+test("laneInspect runs Done checks in doneCwd when the lane cwd is gone (fallback), and with no record reads missing", async () => {
+  const w = inspectWorld();
+  const cwds: (string | undefined)[] = [];
+  const run: Runner = async (argv, opts) => { cwds.push(opts?.cwd); return fakeRunner(w)(argv, opts); };
+  const got = await laneInspect(depsOf(run, { exists: (p) => p !== "/repo" }), { key: "demo-lane", done: 'command ["true"]', doneCwd: "/lead" });
+  expect(got.cwdExists).toBe(false);
+  expect(got.done?.cwd).toBe("/lead");
+  expect(got.done?.fallback).toBe(true);
+  expect(cwds).toContain("/lead");
+  const none = await laneInspect(depsOf(fakeRunner(w)), { key: "unknown", cwd: "/repo", done: "closed o/r#2", doneCwd: "/lead" });
+  expect(none.status).toBe("missing");
+  expect(none.pane).toBeUndefined();
+  expect(none.done?.cwd).toBe("/repo");
+  expect(none.done?.fallback).toBe(false);
+  expect(none.git).toBeUndefined();
+});
+
+test("laneInspect session: resolveSession on this host from the pane's shell", async () => {
+  const world = newHcWorld();
+  world.panes = [{ pane_id: "hc:t1", agent: "omo", agent_status: "idle", shellPid: 10 }];
+  const run: Runner = async (argv): Promise<Ran> => {
+    if (argv.join(" ") === "ps -A -o pid=,ppid=,command=") return { code: 0, out: "10 1 bash\n11 10 node senpi/dist/bundle/cli.js --session 11111111-2222-3333-4444-555555555555\n", err: "" };
+    return hcAnswer(world, argv) ?? { code: 1, out: "", err: `unexpected ${argv.join(" ")}` };
+  };
+  const got = await laneInspect(depsOf(run), { key: "demo-lane", session: true, sessionsDir: "/s" });
+  expect(got.status).toBe("idle");
+  expect(got.process).toEqual({ shell_pid: 10, foreground_processes: [] });
+  expect(got.session).toEqual({ id: "11111111-2222-3333-4444-555555555555", via: "argv" });
+});
+
+test("q.screen caps lines and picks the source; q.process and q.stat", async () => {
+  const world = newHcWorld();
+  world.screen = "hello";
+  const calls: string[][] = [];
+  const run: Runner = async (argv) => { calls.push([...argv]); return hcAnswer(world, argv) ?? { code: 1, out: "", err: "unexpected" }; };
+  expect(await queryScreen({ run }, { pane: "hc:t1", lines: 5000, source: "recent" })).toEqual({ text: "hello" });
+  expect(calls.at(-1)).toEqual(["hc", "--json", "read", "t1", "--lines", String(SCREEN_MAX_LINES)]);
+  await queryScreen({ run }, { pane: "hc:t1", lines: 10, source: "visible" });
+  expect(calls.at(-1)).toEqual(["hc", "--json", "read", "t1"]);
+  const failing: Runner = async () => ({ code: 1, out: "", err: "no such pane" });
+  expect(await queryProcess({ run: failing }, { pane: "hc:t1" })).toEqual({ error: "no such pane" });
+  expect(queryStat({ exists: (p) => p === "/a" }, { paths: ["/a", "/b"] })).toEqual({ exists: [true, false] });
+});
+
+test("observeMachine fills the pane count from the pane list, -1 when it is unreadable", async () => {
+  const world = newHcWorld();
+  world.panes = [{ pane_id: "hc:t1" }, { pane_id: "hc:t2" }];
+  const run: Runner = async (argv) => (argv[0] === "df" ? { code: 0, out: "Filesystem 1K-blocks Used Available\n/dev/x 100 50 10485760", err: "" } : hcAnswer(world, argv) ?? { code: 1, out: "", err: "unexpected" });
+  const mem = async () => "MemTotal: 1000 kB\nMemAvailable: 250 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n";
+  const got = await observeMachine(depsOf(run, { os: "linux", readMemInfo: mem }));
+  expect(got.os).toBe("linux");
+  expect(got.sampledAt).toBe(T0);
+  expect(got.panes.map((p) => p.pane_id)).toEqual(["hc:t1", "hc:t2"]);
+  expect(got.sample.panes).toBe(2);
+  expect(got.sample.diskFreeGb).toBe(10);
+  if (process.platform === "linux") expect(got.sample.memFreePct).toBe(25);
+  const down: Runner = async (argv, opts) => (argv[0] === "hc" ? { code: 1, out: "", err: "hc down" } : run(argv, opts));
+  const blind = await observeMachine(depsOf(down, { os: "linux", readMemInfo: mem }));
+  expect(blind.panes).toEqual([]);
+  expect(blind.sample.panes).toBe(-1);
+  expect("guard" in got).toBe(false);
+});
+
+test("q.machine.observe reports the guard thresholds runner-config.json sets (policy.guard), none when it sets none, and the agent profiles", async () => {
+  const w = newWorld();
+  const run: Runner = async (argv, opts) => (argv[0] === "df" ? { code: 0, out: "Filesystem 1K-blocks Used Available\n/dev/x 100 50 10485760", err: "" } : fakeRunner(w)(argv, opts));
+  const mem = async () => "MemTotal: 1000 kB\nMemAvailable: 250 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n";
+  const ask = async (guard?: { readonly panesMax: number }, agents?: Record<string, readonly string[]>) => {
+    const replies: RunnerControlBodies["q.result"][] = [];
+    let settle: () => void = () => {};
+    const answered = new Promise<void>((r) => { settle = r; });
+    queryDispatcher({
+      ...depsOf(run, { os: "linux", readMemInfo: mem }), policy: { jobs: "allow", ...(guard ? { guard } : {}), ...(agents ? { agents } : {}) },
+      reply: (body) => { replies.push(body); settle(); }, log: () => {},
+    })(frame("q.machine.observe", { qid: "m1" }));
+    await answered;
+    return replies[0]?.result as { guard?: object; profiles?: string[] };
+  };
+  expect((await ask({ panesMax: 6 })).guard).toEqual({ panesMax: 6 });
+  expect("guard" in (await ask())).toBe(false);
+  // The policy's agent profile names, which review placement reads; absent without a policy `agents`.
+  expect((await ask(undefined, { default: ["pi"], sandboxed: ["lane-sandbox", "pi"] })).profiles).toEqual(["default", "sandboxed"]);
+  expect("profiles" in (await ask())).toBe(false);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+
+const frame = (type: string, body: object) => ({ v: 1, runner: "local", gen: 1, epoch: 1, type, body });
+
+const dispatch = (run: Runner, jobs: "allow" | "deny" = "allow") => {
+  const replies: RunnerControlBodies["q.result"][] = [];
+  const logs: string[] = [];
+  let settle: () => void = () => {};
+  let next = new Promise<void>((r) => { settle = r; });
+  const d = queryDispatcher({
+    ...depsOf(run), policy: { jobs },
+    reply: (body) => { replies.push(body); settle(); next = new Promise<void>((r) => { settle = r; }); },
+    log: (line) => { logs.push(line); },
+  });
+  return { d, replies, logs, answered: () => next };
+};
+
+test("queryDispatcher answers each query with one q.result carrying its qid", async () => {
+  const w = inspectWorld();
+  const t = dispatch(fakeRunner(w));
+  const answered = t.answered();
+  t.d(frame("q.panes", { qid: "q1" }));
+  await answered;
+  expect(t.replies).toHaveLength(1);
+  expect(t.replies[0]?.qid).toBe("q1");
+  expect(t.replies[0]?.ok).toBe(true);
+  expect((t.replies[0]?.result as { panes: { pane_id: string }[] }).panes[0]?.pane_id).toBe("hc:t1");
+});
+
+test("queryDispatcher: a failed read is ok:false with its error; jobs deny refuses an inspect with done; no qid is dropped", async () => {
+  const down: Runner = async () => ({ code: 1, out: "", err: "hc down" });
+  const t = dispatch(down, "deny");
+  const failed = t.answered();
+  t.d(frame("q.panes", { qid: "q2" }));
+  await failed;
+  expect(t.replies[0]).toEqual({ qid: "q2", ok: false, detail: "RUNNER_QUERY_FAILED q.panes hc ls failed: hc down" });
+  t.d(frame("q.lane.inspect", { qid: "q3", key: "demo-lane", done: "closed o/r#1" }));
+  expect(t.replies[1]).toEqual({ qid: "q3", ok: false, detail: "RUNNER_CMD_REJECTED jobs-denied" });
+  t.d(frame("q.screen", { qid: "q4", pane: "p1", lines: 5, source: "sideways" }));
+  expect(t.replies[2]).toEqual({ qid: "q4", ok: false, detail: "RUNNER_CMD_REJECTED field-type" });
+  t.d(frame("q.panes", {}));
+  t.d(frame("hello.ok", { proto: 3, epoch: 1, eventAck: 0 }));
+  expect(t.replies).toHaveLength(3);
+  expect(t.logs.some((l) => l.startsWith("RUNNER_QUERY_DROPPED type=q.panes"))).toBe(true);
+});

@@ -1,0 +1,38 @@
+# Removes the dori runner from this Windows user: unregisters the \dori\dori-runner task, ends the runner tree, and
+# deletes bin, bun, logs and the pid files. -Purge also deletes keys, state, outbox and everything else in the
+# runner directory. Run dori runner evacuate from the supervisor first, so unacknowledged events are exported. ASCII only.
+param([switch]$Purge)
+
+$ErrorActionPreference = 'Continue'
+$R = Split-Path -Parent $PSScriptRoot
+$TaskPath = '\dori\'
+$TaskName = 'dori-runner'
+
+function Stop-Tree($File, $Pattern) {
+  $PidFile = Join-Path $R $File
+  if (Test-Path -LiteralPath $PidFile) {
+    $Id = ([IO.File]::ReadAllText($PidFile)).Trim()
+    if ($Id -match '^\d+$') {
+      $Proc = Get-CimInstance Win32_Process -Filter ('ProcessId=' + $Id) -ErrorAction SilentlyContinue
+      if ($Proc -and $Proc.CommandLine -like $Pattern) { & taskkill.exe /PID $Id /T /F | Out-Null }
+    }
+  }
+}
+
+if (Get-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue) {
+  Stop-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -Confirm:$false
+}
+
+# The task runs the wrapper under conhost --headless, so stopping it leaves the wrapper; it goes before the runner tree.
+Stop-Tree 'runner-task-wrapper.pid' '*runner-task.ps1*'
+Stop-Tree 'runner-task.pid' '*dori.js*'
+
+if ($Purge) {
+  Remove-Item -LiteralPath $R -Recurse -Force
+} else {
+  foreach ($Name in 'bin', 'bun', 'logs', 'runner-task.pid', 'runner-task-wrapper.pid') {
+    $Path = Join-Path $R $Name
+    if (Test-Path -LiteralPath $Path) { Remove-Item -LiteralPath $Path -Recurse -Force }
+  }
+}

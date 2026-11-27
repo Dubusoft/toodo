@@ -1,0 +1,352 @@
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { DEFAULT_MEMORY_LIMITS, type MemoryLimits } from "../src/config.ts";
+import type { FlowDeps } from "../src/done-flow.ts";
+import { eventClass } from "../src/event-policy.ts";
+import { checkMemory, itemRefs, MEMORY_CHECK_EVERY_MS, MEMORY_CHECK_GROWTH_BYTES, memorySizeTrigger, memorySweep, needsAction, openItems, renderMemoryReport } from "../src/memory-check.ts";
+import type { Lane } from "../src/registry.ts";
+import { type Ran, run, type RunOptions } from "../src/run.ts";
+import { runSweeps, supervisorSweeps } from "../src/supervise-loop.ts";
+import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
+
+const T0 = Date.parse("2026-10-22T00:00:00.000Z");
+const MIN = 60_000;
+let state: ReturnType<typeof withState>;
+beforeEach(() => { state = withState(); });
+afterEach(() => state.done());
+
+const HUMAN = `---
+description: Person - Human
+---
+## Standing rules
+- keep me: lane-old and acme/app#1 here are rules, not Open items
+
+## Open
+- DORI ACK: lane dori-ack merged (acme/app#7). task #82
+  continues on an indented line naming lane hsj-dead
+- PIPELINE: PR #9 in acme/app. task #183 still running
+- QUIET: nothing finished here, lane live-lane works on it
+
+## Facts
+- facts are not Open items: dori-ack
+`;
+
+const lane = (key: string, patch: Partial<Lane> = {}): Lane => ({
+  key, title: key, thread: "discord:1", brief: "/b.md", done: `command ["gh","pr","list","-R","acme/app","--state","merged"] stdout~"number"`,
+  openedAt: new Date(T0).toISOString(), ...patch,
+});
+
+/** gh pr view N -R repo: PRs 7 and 9 merged, the rest open. git runs for real, on the fixture repo. */
+const prRunner = (calls: string[][]) => async (argv: readonly string[], opts?: RunOptions): Promise<Ran> => {
+  if (argv[0] === "git") return run(argv, opts);
+  calls.push([...argv]);
+  if (argv[0] === "gh" && argv[1] === "pr" && argv[2] === "view") return { code: 0, out: JSON.stringify({ state: ["7", "9"].includes(argv[3] ?? "") ? "MERGED" : "OPEN" }), err: "" };
+  return { code: 1, out: "", err: `unexpected ${argv.join(" ")}` };
+};
+
+const git = async (repo: string, ...args: string[]): Promise<void> => {
+  const r = await run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...args]);
+  if (r.code !== 0) throw new Error(`git ${args.join(" ")}: ${r.err}`);
+};
+
+/** Writes `files` (paths under the memory repo) and commits them, as omo's memory tool does. */
+const commit = async (memory: string, files: Readonly<Record<string, string>>): Promise<void> => {
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(join(memory, path, ".."), { recursive: true });
+    writeFileSync(join(memory, path), text);
+  }
+  await git(memory, "add", "-A");
+  await git(memory, "commit", "-q", "--allow-empty", "-m", "memory");
+};
+
+const setup = async (human = HUMAN, maxKb = 15, limits: Partial<MemoryLimits> = {}): Promise<{ deps: FlowDeps; calls: string[][]; memory: string }> => {
+  const memory = join(state.dir, "memory");
+  mkdirSync(memory, { recursive: true });
+  await git(memory, "init", "-q");
+  await commit(memory, { "system/human.md": human });
+  const calls: string[][] = [];
+  const base = depsFor(newWorld(), fakeClock(T0), join(state.dir, "state"), {
+    memoryCheck: { repo: memory }, memoryLimits: { ...DEFAULT_MEMORY_LIMITS, humanMaxKb: maxKb, ...limits },
+  });
+  const deps: FlowDeps = { ...base, run: prRunner(calls) };
+  await deps.registry.write(lane("dori-ack", { closedAt: new Date(T0).toISOString(), status: "closed" }));
+  await deps.registry.write(lane("live-lane"));
+  mkdirSync(join(deps.config.stateDir, "lanes-closed"), { recursive: true });
+  writeFileSync(join(deps.config.stateDir, "lanes-closed", "hsj-dead.json.dead-20261022"), JSON.stringify(lane("hsj-dead")));
+  writeFileSync(join(deps.config.stateDir, "lanes-closed", "live-lane.json.old"), JSON.stringify(lane("live-lane")));
+  return { deps, calls, memory };
+};
+
+test("Open items are the top-level bullets under ## Open, with their indented lines", () => {
+  const items = openItems(HUMAN);
+  expect(items.map((i) => i.index)).toEqual([1, 2, 3]);
+  expect(items[0]?.text).toContain("indented line naming lane hsj-dead");
+  expect(items.map((i) => i.text).join("\n")).not.toContain("keep me");
+  expect(items.map((i) => i.text).join("\n")).not.toContain("facts are not");
+});
+
+test("references: whole-word lane keys, owner/repo#N, PR #N only when one repo is named as owner/repo", () => {
+  const refs = itemRefs("lane dori-ack-2 and dori-ack; see acme/app#7 and https://github.com/acme/web/pull/3; PR #9 for app; task #5", ["dori-ack", "ack"], ["acme/app", "acme/web"]);
+  expect(refs).toEqual({ lanes: ["dori-ack"], prs: ["acme/app#7", "acme/web#3"], unresolved: ["PR #9"] });
+  expect(itemRefs("PR #9 in acme/app", [], ["acme/app", "acme/web"]).prs).toEqual(["acme/app#9"]);
+  expect(itemRefs("repo acme/other (new): PR #2", [], ["acme/app"]).prs).toEqual(["acme/other#2"]);
+  expect(itemRefs("fix lane (web #188), PR #66 merged; app is fine", [], ["acme/web", "acme/app"])).toMatchObject({ prs: [], unresolved: ["PR #66"] });
+  expect(itemRefs("see /data/repos/x#1 and notes/facts.md", [], []).prs).toEqual([]);
+});
+
+test("the report names stale Open items by closed lane and merged PR, reads only, and asks for action", async () => {
+  const { deps, calls, memory } = await setup();
+  const file = join(memory, "system", "human.md");
+  const before = { text: readFileSync(file, "utf8"), mtime: statSync(file).mtimeMs, files: readdirSync(memory, { recursive: true }) };
+  const report = await checkMemory(deps, "/home/test");
+  expect(report.stale.map((s) => [s.item.index, s.refs])).toEqual([
+    [1, ["closed lane dori-ack", "closed lane hsj-dead", "merged PR acme/app#7"]],
+    [2, ["merged PR acme/app#9"]],
+  ]);
+  expect(report.unchecked).toEqual([]);
+  expect(needsAction(report)).toBe(true);
+  const text = renderMemoryReport(report);
+  expect(text).toContain("SIZE ");
+  expect(text).toContain(": ok");
+  expect(text).toContain(`SYSTEM ~${Math.floor(Buffer.byteLength(HUMAN) / 4)} tokens`);
+  expect(text).toContain("STALE #1");
+  expect(text.split("\n").at(-1)).toStartWith("MEMORY_CHECK action needed");
+  expect(calls.every((c) => c[0] === "gh" && c[1] === "pr" && c[2] === "view")).toBe(true);
+  expect({ text: readFileSync(file, "utf8"), mtime: statSync(file).mtimeMs, files: readdirSync(memory, { recursive: true }) }).toEqual(before);
+});
+
+test("an oversized file alone needs action; a clean small file does not; failures are UNCHECKED, never stale", async () => {
+  const big = await setup(`## Open\n- ${"x".repeat(2048)}\n`, 1);
+  const over = await checkMemory(big.deps, "/home/test");
+  expect(over.stale).toEqual([]);
+  expect(needsAction(over)).toBe(true);
+  expect(renderMemoryReport(over)).toContain("OVER by");
+  state.done(); state = withState();
+  const clean = await setup("## Open\n- QUIET: lane live-lane, task #183, acme/app#12, PR #4\n");
+  const report = await checkMemory(clean.deps, "/home/test");
+  expect(needsAction(report)).toBe(false);
+  expect(report.unchecked).toEqual(["item 1: PR #4 (repo unclear; write owner/repo#N)"]);
+  expect(renderMemoryReport(report).split("\n").at(-1)).toBe("MEMORY_CHECK clean");
+});
+
+test("without memoryCheck.repo the repo is omo's for leadCwd; nothing found is a MemoryCheckError", async () => {
+  const { deps } = await setup();
+  const blank = { ...deps, config: { ...deps.config, memoryCheck: { ...deps.config.memoryCheck, repo: "" } } };
+  await expect(checkMemory(blank, state.dir)).rejects.toThrow("lead memory repo not found");
+  const hash = new Bun.CryptoHasher("sha256").update(deps.config.leadCwd).digest("hex").slice(0, 8);
+  const found = join(state.dir, ".omo", "memory", "agents", `repo-${hash}`, "repo");
+  mkdirSync(join(found, "system"), { recursive: true });
+  writeFileSync(join(found, "system", "human.md"), "## Open\n");
+  expect((await checkMemory(blank, state.dir)).file).toBe(join(found, "system", "human.md"));
+});
+
+test("the sweep checks once a day; a lane closing in between waits for the next daily check", async () => {
+  const { deps } = await setup();
+  const at = (ms: number): FlowDeps => ({ ...deps, clock: fakeClock(ms) });
+  const first = await memorySweep(at(T0), "/home/test");
+  expect(first).toHaveLength(1);
+  expect(first[0]).toStartWith("MEMORY_CHECK 2 Open item(s) reference finished work: #1 closed lane dori-ack");
+  expect(await memorySweep(at(T0 + MIN), "/home/test")).toEqual([]);
+  // live-lane closes: no check until a day after the last one, then one line with the new finding.
+  await deps.registry.write(lane("live-lane", { closedAt: new Date(T0 + MIN).toISOString(), status: "closed" }));
+  expect(await memorySweep(at(T0 + 16 * MIN), "/home/test")).toEqual([]);
+  expect(await memorySweep(at(T0 + MEMORY_CHECK_EVERY_MS - 1), "/home/test")).toEqual([]);
+  const after = await memorySweep(at(T0 + MEMORY_CHECK_EVERY_MS), "/home/test");
+  expect(after).toHaveLength(1);
+  expect(after[0]).toContain("#3 closed lane live-lane");
+  // The next day finds the same items: quiet.
+  expect(await memorySweep(at(T0 + 2 * MEMORY_CHECK_EVERY_MS), "/home/test")).toEqual([]);
+});
+
+test("the same findings are sent again only when human.md grew 1 KB since the last MEMORY_CHECK or a new STALE item appears", async () => {
+  const { deps, memory } = await setup();
+  const file = join(memory, "system", "human.md");
+  const day = (n: number): FlowDeps => ({ ...deps, clock: fakeClock(T0 + n * MEMORY_CHECK_EVERY_MS) });
+  expect(await memorySweep(day(0), "/home/test")).toHaveLength(1);
+  // Growth under 1 KB, counted from the last line sent, never adds up to a line on its own.
+  writeFileSync(file, `${HUMAN}\n${"y".repeat(MEMORY_CHECK_GROWTH_BYTES / 2)}\n`);
+  expect(await memorySweep(day(1), "/home/test")).toEqual([]);
+  // Two newlines plus the y run: one byte short of 1 KB, then exactly 1 KB.
+  writeFileSync(file, `${HUMAN}\n${"y".repeat(MEMORY_CHECK_GROWTH_BYTES - 3)}\n`);
+  expect(await memorySweep(day(2), "/home/test")).toEqual([]);
+  writeFileSync(file, `${HUMAN}\n${"y".repeat(MEMORY_CHECK_GROWTH_BYTES - 2)}\n`);
+  expect(await memorySweep(day(3), "/home/test")).toHaveLength(1);
+  expect(await memorySweep(day(4), "/home/test")).toEqual([]);
+  // One more finished reference is a new STALE item: sent though the file barely changed.
+  writeFileSync(file, `${HUMAN.replace("- QUIET:", "- NEW: acme/app#9 shipped\n- QUIET:")}\n${"y".repeat(MEMORY_CHECK_GROWTH_BYTES)}\n`);
+  expect(await memorySweep(day(5), "/home/test")).toEqual([]);
+  await deps.registry.write(lane("live-lane", { closedAt: new Date(T0).toISOString(), status: "closed" }));
+  const fresh = await memorySweep(day(6), "/home/test");
+  expect(fresh).toHaveLength(1);
+  expect(fresh[0]).toContain("closed lane live-lane");
+});
+
+test("an oversized human.md is said once, then again only after 1 KB more", async () => {
+  const { deps, memory } = await setup(`## Open\n- ${"x".repeat(2048)}\n`, 1);
+  const file = join(memory, "system", "human.md");
+  const daily = (n: number): Promise<string[]> => memorySweep({ ...deps, clock: fakeClock(T0 + n * MEMORY_CHECK_EVERY_MS) }, "/home/test");
+  const first = await daily(0);
+  expect(first[0]).toContain("over the 1.0KB limit");
+  expect(await daily(1)).toEqual([]);
+  // Condensed but still over: the lower size is the new baseline.
+  writeFileSync(file, `## Open\n- ${"x".repeat(1500)}\n`);
+  expect(await daily(2)).toEqual([]);
+  writeFileSync(file, `## Open\n- ${"x".repeat(1500 + MEMORY_CHECK_GROWTH_BYTES)}\n`);
+  expect(await daily(3)).toHaveLength(1);
+});
+
+test("system memory is sized as omo sizes it: committed system/**/*.md at HEAD, bytes / 4", async () => {
+  const { deps, memory } = await setup("## Open\n");
+  await commit(memory, { "system/persona.md": "p".repeat(401), "system/nested/block.md": "\u00e9".repeat(100), "system/notes.txt": "t".repeat(999), "reference/x.md": "r".repeat(999) });
+  // Not committed yet: omo does not count it, and neither does the check.
+  writeFileSync(join(memory, "system", "draft.md"), "d".repeat(4000));
+  const bytes = Buffer.byteLength("## Open\n") + 401 + 200;
+  const report = await checkMemory(deps, "/home/test");
+  expect(report.system).toEqual({ bytes, tokens: Math.floor(bytes / 4), files: 3 });
+  expect(needsAction(report)).toBe(false);
+  const tight = await checkMemory({ ...deps, config: { ...deps.config, memoryLimits: { ...deps.config.memoryLimits, systemMaxTokens: 100 } } }, "/home/test");
+  expect(needsAction(tight)).toBe(true);
+  expect(renderMemoryReport(tight)).toContain(`advisory 100: OVER by ${Math.floor(bytes / 4) - 100}`);
+});
+
+test("a memory repo git cannot read leaves system memory UNCHECKED, not zero", async () => {
+  const { deps, memory } = await setup("## Open\n");
+  rmSync(join(memory, ".git"), { recursive: true, force: true });
+  const report = await checkMemory(deps, "/home/test");
+  expect(report.system).toBeUndefined();
+  expect(report.unchecked).toHaveLength(1);
+  expect(report.unchecked[0]).toStartWith("system memory: git ls-tree HEAD in ");
+  expect(renderMemoryReport(report)).toContain("SYSTEM unknown (see UNCHECKED)");
+});
+
+test("the daily check names system memory over omo's advisory once, then again only after 1 KB more", async () => {
+  const { deps, memory } = await setup("## Open\n", 15, { systemMaxTokens: 1_000, triggerPct: 100 });
+  const daily = (n: number): Promise<string[]> => memorySweep({ ...deps, clock: fakeClock(T0 + n * MEMORY_CHECK_EVERY_MS) }, "/home/test");
+  expect(await daily(0)).toEqual([]);
+  await commit(memory, { "system/big.md": "b".repeat(4_200) });
+  const first = await daily(1);
+  expect(first).toHaveLength(1);
+  expect(first[0]).toContain("system memory is ~1052 tokens, over omo's 1000 advisory");
+  expect(await daily(2)).toEqual([]);
+  await commit(memory, { "system/big.md": "b".repeat(4_200 + MEMORY_CHECK_GROWTH_BYTES - 1) });
+  expect(await daily(3)).toEqual([]);
+  await commit(memory, { "system/big.md": "b".repeat(4_200 + MEMORY_CHECK_GROWTH_BYTES) });
+  expect(await daily(4)).toHaveLength(1);
+  // A day git cannot size system/ is not a clean day: once git reads it again, the unchanged size stays quiet.
+  renameSync(join(memory, ".git"), join(memory, ".git-off"));
+  expect(await daily(5)).toEqual([]);
+  renameSync(join(memory, ".git-off"), join(memory, ".git"));
+  expect(await daily(6)).toEqual([]);
+  // The same holds when another finding is said on the unmeasured day.
+  writeFileSync(join(memory, "system", "human.md"), "## Open\n- acme/app#9 shipped\n");
+  renameSync(join(memory, ".git"), join(memory, ".git-off"));
+  const other = await daily(7);
+  expect(other).toHaveLength(1);
+  expect(other[0]).not.toContain("system memory");
+  renameSync(join(memory, ".git-off"), join(memory, ".git"));
+  expect(await daily(8)).toEqual([]);
+});
+
+test("the size trigger wakes the lead at once past triggerPct, and names the same size only after 1 KB more", async () => {
+  // systemMaxTokens 1000 at 80%: over 800 tokens, i.e. more than 3203 bytes.
+  const { deps, memory } = await setup("## Open\n", 15, { systemMaxTokens: 1_000, triggerPct: 80 });
+  const head = Buffer.byteLength("## Open\n");
+  const big = (bytes: number) => commit(memory, { "system/big.md": "b".repeat(bytes - head) });
+  const round = () => memorySizeTrigger(deps, "/home/test");
+  expect(await round()).toEqual([]);
+  await big(3_200);
+  expect(await round()).toEqual([]);
+  await big(3_208);
+  const first = await round();
+  expect(first).toEqual(["MEMORY_SIZE system memory ~802 tokens, over 800 (80% of omo's 1000 advisory) (run dori memory check, then condense now)"]);
+  expect(eventClass(first[0] ?? "")).toBe("lead-urgent");
+  // No daily wait: every round looks, but the same size is not said again, nor growth short of 1 KB.
+  expect(await round()).toEqual([]);
+  await big(3_208 + MEMORY_CHECK_GROWTH_BYTES - 1);
+  expect(await round()).toEqual([]);
+  await big(3_208 + MEMORY_CHECK_GROWTH_BYTES);
+  expect(await round()).toHaveLength(1);
+  // Condensed under the trigger, then over it again: said again.
+  await big(2_000);
+  expect(await round()).toEqual([]);
+  await big(3_208);
+  expect(await round()).toHaveLength(1);
+  // human.md past 80% of 15 KB (12 KB) is its own measure, read from the working tree.
+  writeFileSync(join(memory, "system", "human.md"), `## Open\n${"h".repeat(12 * 1024)}\n`);
+  const human = await round();
+  expect(human).toHaveLength(1);
+  expect(human[0]).toContain("human.md 12.0KB, over 12.0KB (80% of the 15.0KB limit)");
+  expect(human[0]).toContain("system memory ~802 tokens");
+  expect(await round()).toEqual([]);
+  expect(JSON.parse(readFileSync(join(deps.config.stateDir, "memory-size.json"), "utf8"))).toEqual({ human: 12 * 1024 + head + 1, system: 3_208 });
+});
+
+test("the size trigger is its own supervisor sweep: a failing daily check does not cost its line", async () => {
+  const { deps, memory } = await setup("## Open\n", 15, { systemMaxTokens: 1_000 });
+  await commit(memory, { "system/big.md": "b".repeat(4_000) });
+  // The daily check is due and its registry read fails in the round the threshold is crossed.
+  const broken: FlowDeps = { ...deps, registry: Object.assign(Object.create(deps.registry) as typeof deps.registry, { open: async () => { throw new Error("registry unreadable"); } }) };
+  const round = async (d: FlowDeps): Promise<string[]> => {
+    const queue: string[] = [];
+    await runSweeps(supervisorSweeps(d, "/home/test").filter(([name]) => name.startsWith("memory")), async (line) => { queue.push(line); }, d.clock.now, new Map(), () => {});
+    return queue;
+  };
+  const crossed = await round(broken);
+  expect(crossed.filter((line) => line.startsWith("MEMORY_SIZE system memory ~"))).toHaveLength(1);
+  expect(crossed).toContain("SWEEP_WARN memory registry unreadable");
+  // The next healthy round: the size line was delivered, so it is not repeated.
+  expect((await round({ ...deps, clock: fakeClock(T0 + MIN) })).filter((line) => line.startsWith("MEMORY_SIZE"))).toEqual([]);
+});
+
+test("a state written before the daily-only sweep does not repeat the line it already sent", async () => {
+  const { deps } = await setup();
+  mkdirSync(deps.config.stateDir, { recursive: true });
+  writeFileSync(join(deps.config.stateDir, "memory-check.json"), JSON.stringify({ at: T0 - MEMORY_CHECK_EVERY_MS, closed: ["dori-ack"], pendingSince: T0 - MIN, sent: "0123456789abcdef" }));
+  expect(await memorySweep({ ...deps, clock: fakeClock(T0 - MIN) }, "/home/test")).toEqual([]);
+  expect(await memorySweep({ ...deps, clock: fakeClock(T0) }, "/home/test")).toEqual([]);
+  expect(JSON.parse(readFileSync(join(deps.config.stateDir, "memory-check.json"), "utf8"))).toEqual({ at: T0, bytes: expect.any(Number), over: false, stale: ["closed lane dori-ack", "closed lane hsj-dead", "merged PR acme/app#7", "merged PR acme/app#9"] });
+});
+
+test.each([["{"], [""], ['{"at":"soon"}']])("corrupt memory-check.json and memory-size.json (%p) are moved aside and the checks run from empty", async (text) => {
+  const errors: string[] = [];
+  const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.join(" ")); });
+  try {
+    const { deps } = await setup();
+    mkdirSync(deps.config.stateDir, { recursive: true });
+    for (const f of ["memory-check.json", "memory-size.json"]) writeFileSync(join(deps.config.stateDir, f), text === '{"at":"soon"}' && f === "memory-size.json" ? '{"human":"big"}' : text);
+    expect(await memorySweep(deps, "/home/test")).toHaveLength(1);
+    expect(await memorySizeTrigger(deps, "/home/test")).toEqual([]);
+    expect(errors.map((e) => e.split(" ")[0])).toEqual(["MEMORY_CHECK_CORRUPT", "MEMORY_SIZE_CORRUPT"]);
+    expect(readdirSync(deps.config.stateDir).filter((f) => f.includes(".corrupt-"))).toHaveLength(2);
+  } finally { spy.mockRestore(); }
+});
+
+test("a finding that comes back after a clean check is sent again", async () => {
+  const { deps, memory } = await setup();
+  const at = (ms: number): FlowDeps => ({ ...deps, clock: fakeClock(ms) });
+  expect(await memorySweep(at(T0), "/home/test")).toHaveLength(1);
+  writeFileSync(join(memory, "system", "human.md"), "## Open\n");
+  expect(await memorySweep(at(T0 + MEMORY_CHECK_EVERY_MS), "/home/test")).toEqual([]);
+  writeFileSync(join(memory, "system", "human.md"), HUMAN);
+  expect(await memorySweep(at(T0 + 2 * MEMORY_CHECK_EVERY_MS), "/home/test")).toHaveLength(1);
+});
+
+test("a missing memory file is one MEMORY_CHECK_WARN, retried only on the next daily turn", async () => {
+  const { deps } = await setup();
+  const gone = { ...deps, config: { ...deps.config, memoryCheck: { ...deps.config.memoryCheck, repo: join(state.dir, "nowhere") } } };
+  const warn = await memorySweep(gone, "/home/test");
+  expect(warn).toHaveLength(1);
+  expect(warn[0]).toStartWith("MEMORY_CHECK_WARN ");
+  expect(await memorySweep({ ...gone, clock: fakeClock(T0 + MIN) }, "/home/test")).toEqual([]);
+});
+
+test("the supervisor's sweeps include the memory sweep, so its line reaches the lead's queue", async () => {
+  const { deps } = await setup();
+  const queue: string[] = [];
+  const sweeps = supervisorSweeps(deps, "/home/test");
+  expect(sweeps.map(([name]) => name)).toContain("memory");
+  await runSweeps(sweeps, async (line) => { queue.push(line); }, deps.clock.now, new Map(), () => {});
+  expect(queue.filter((line) => line.startsWith("MEMORY_CHECK "))).toHaveLength(1);
+});

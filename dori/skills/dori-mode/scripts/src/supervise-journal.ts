@@ -1,0 +1,430 @@
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, truncateSync } from "node:fs";
+import { join } from "node:path";
+
+import type { FlowDeps } from "./done-flow.ts";
+import type { LeadRestartRequest } from "./lead-restart.ts";
+import { appendFileDurable } from "./durable-write.ts";
+import { eventClass, forLead } from "./event-policy.ts";
+import { WakeMeter } from "./lead-wakes.ts";
+import { dropTake, pendingTakes, writeCursorFile } from "./inbox.ts";
+import { redactMeta, redactSecrets } from "./redact.ts";
+import { type Durability, type JournalStore, openStore, RETENTION, StoreError } from "./store.ts";
+
+/**
+ * The supervisor journal: its types, the durable store behind it, the delivery log (lead-events.log) and the in-memory
+ * indexes over both (delivered ids, journaled ids, closed owner tombstones). Owner tracking, the lead lifecycle and
+ * delivery (supervise-*.ts) all read and write the journal through one JournalCore.
+ */
+
+/** Structured context of an event: the lane it concerns, that lane's thread and checkout. */
+export type EventMeta = { readonly lane?: string; readonly thread?: string; readonly cwd?: string };
+/** `at` is the enqueue time (absent on events journaled by older versions); `meta` is absent on events without one. */
+export type Event = { readonly id: string; readonly line: string; readonly at?: number; readonly meta?: EventMeta };
+export type JournalEvent = Event;
+export type Restart = {
+  readonly session: string;
+  readonly events: readonly Event[];
+  readonly offset: number;
+  /** Soft phases carry the old session, then the prompt-file session, in the existing durable phase column. */
+  readonly phase: "stopping" | "starting" | "submitted" | "soft-failed" | `soft:${string}` | `soft-ready:${string}`;
+  /** Launches that never showed startup evidence; the first one is relaunched at once, later ones wait for backoff. */
+  readonly strikes?: number;
+  /** Failed confirmations of this submitted session; at UNCONFIRMED_LIMIT the session is abandoned for a fresh one. */
+  readonly unconfirmed?: number;
+  /** Why the lead restarts, told to the new lead. */
+  readonly reason?: string;
+  readonly request?: LeadRestartRequest;
+  /** Stop the lead even while it is working/blocked (a stuck lead). */
+  readonly force?: true;
+};
+/**
+ * An owner message retained until explicit coverage handles all declared tasks. `since` is when the lead could
+ * read it, reset at LEAD_RESTARTED so a cold start's boot never counts against the new lead.
+ */
+export type AwaitingAck = {
+  readonly id: string;
+  /** Absent while journaled for a busy lead, or while its cold start is unconfirmed. */
+  readonly since?: number;
+  readonly reminded?: true;
+  readonly noticed?: true;
+  readonly ackedAt?: number;
+  readonly tasks?: number;
+  readonly lanes?: readonly string[];
+  readonly reply?: boolean;
+  readonly handledAt?: number;
+  readonly handlingSince?: number;
+  readonly unhandledRemindedAt?: number;
+  /**
+   * `dori handled --awaiting`: the lead answered and now waits on the owner (a go-ahead, a choice), so nothing is owed
+   * until the owner answers. A later `--lane`, `--reply` or `--all` closes the message.
+   */
+  readonly awaitingOwnerAt?: number;
+  readonly awaitingNote?: string;
+  /** The event id of the owner's latest edit (INBOUND_EDIT); reminders and cold handoffs carry its text. */
+  readonly revision?: string;
+  /** Every edit/delete event id already applied, so a replay at startup changes nothing. */
+  readonly revisions?: readonly string[];
+  /** The owner deleted the message: it counts as handled and is never handed to a new lead. */
+  readonly deleted?: true;
+  /**
+   * Found at startup in the event history with neither a tracking row nor a tombstone (tracking was reset, or the
+   * journal predates tracking). Listed once to the lead in one OWNER_QUARANTINED digest; never reminded, never noticed
+   * to the owner and never handed to a new lead. An ack, a live edit or a delete makes it an ordinary message again.
+   */
+  readonly quarantined?: true;
+};
+/**
+ * Whether the lead still owes work on an owner message: neither handled nor parked waiting on the owner. Every reminder,
+ * escalation and cold-start handoff of owner work asks this one question.
+ */
+export const leadOwes = (entry: Pick<AwaitingAck, "handledAt" | "awaitingOwnerAt">): boolean =>
+  entry.handledAt === undefined && entry.awaitingOwnerAt === undefined;
+/**
+ * One report obligation per claimed or finished lane (lane-outcomes.ts): opened by its first LANE_DONE_CLAIMED,
+ * LANE_CLOSED or CI_MERGED, joined by later ones, closed by `dori reported <key>`. `since` is the first outcome's enqueue
+ * time.
+ */
+export type LaneOutcome = {
+  readonly lane: string;
+  readonly since: number;
+  /** The first outcome line, cut; reminders and the cold handoff carry it. Absent when reported before any outcome. */
+  readonly line?: string;
+  readonly events?: readonly string[];
+  readonly reportedAt?: number;
+  readonly note?: string;
+  /** When an outcome first reached the lead's delivery log (after a cold restart, only once confirmed). */
+  readonly deliveredAt?: number;
+  /** A working pane observation made after delivery; idle/done can now end that turn. */
+  readonly deliveredWorking?: true;
+  /** UNREPORTED events enqueued so far, and when the last one was. */
+  readonly reminders?: number;
+  readonly remindedAt?: number;
+  /** The first push pointer that carried it: its push escalation clock starts there at the earliest. */
+  readonly pushedAt?: number;
+  /** Opened by a done claim and no LANE_CLOSED/CI_MERGED joined yet: a rejected claim drops the row. */
+  readonly claim?: true;
+  /** A done claim joined the row (kept when a real outcome joins it, unlike `claim`). */
+  readonly claimed?: true;
+  /** The PR heads its CI_MERGED events named. */
+  readonly heads?: readonly string[];
+  /** An event of the row woke the lead (urgent, not quiet): later finish events with nothing new stay quiet (lane-outcomes.ts). */
+  readonly woke?: true;
+  /** Events that joined with nothing new for the lead: they wake no one (lane-outcomes.ts). */
+  readonly quiet?: readonly string[];
+  /** The lane's thread id and its latest report there, from `dori reported` receipts: the automatic thread close reads them. */
+  readonly thread?: string;
+  readonly lastReportAt?: number;
+};
+/**
+ * One decision obligation per decision event (decision-obligations.ts), keyed by its event id: opened by that event,
+ * closed by `dori resolved <id>`. `line` is absent when resolved before the event arrived.
+ */
+export type Obligation = {
+  readonly id: string;
+  readonly since: number;
+  readonly line?: string;
+  readonly resolvedAt?: number;
+  readonly note?: string;
+  /** UNRESOLVED events enqueued so far, and when the last one was. */
+  readonly reminders?: number;
+  readonly remindedAt?: number;
+  /** The first push pointer that carried it: its push escalation clock starts there at the earliest. */
+  readonly pushedAt?: number;
+};
+export type OwnerNoticeKind = "delay" | "ack" | "unhandled";
+export type Notice = { readonly attempts: number; readonly sent?: true };
+export type Journal = {
+  readonly events: readonly Event[];
+  readonly awaitingAck?: readonly AwaitingAck[];
+  readonly notifications?: Readonly<Record<string, Notice>>;
+  readonly restart?: Restart;
+  /** Owner messages that already got the "not taken yet" notice. */
+  readonly noticed?: readonly string[];
+  readonly models?: LeadRestartRequest["models"];
+  /** When the lead was first seen busy while owner messages handed to it were unread (leadStuckRestartMin). */
+  readonly leadBusySince?: number;
+  /** The working lead's screen (hash) and when it last changed: a working lead counts as stuck only while it is frozen. */
+  readonly leadScreen?: { readonly hash: string; readonly since: number };
+  /** Owner tracking compacted away once handled for ACK_KEEP_MS: never tracked again from the replayed inbox. */
+  readonly closedOwners?: readonly string[];
+  /** Owner announcements not yet confirmed posted; retried until they are, so a crash or a failed post loses none. */
+  readonly outbox?: readonly OutboxItem[];
+  /** The lead's take cursor and the outstanding push (supervise-push.ts). */
+  readonly inbox?: Inbox;
+  /** Forced restarts of the last hour: the restart cap (delivery.restartMaxPerHour). */
+  readonly forcedRestarts?: readonly ForcedRestart[];
+  /** Finished lanes and whether the lead has reported them to the owner (lane-outcomes.ts). */
+  readonly outcomes?: readonly LaneOutcome[];
+  /** Decision events and whether the lead has resolved them (decision-obligations.ts). */
+  readonly pending?: readonly Obligation[];
+};
+/**
+ * `takenOffset`: lead-events.log is taken (`dori inbox take` receipts) up to this byte, always a line end. `mode` is the
+ * delivery mode the cursor was kept under, `sessionSince` the last LEAD_RESTARTED, `capNotice` the hour of the last
+ * restart-cap notice.
+ */
+export type Inbox = {
+  readonly takenOffset: number;
+  readonly mode?: string;
+  readonly sessionSince?: number;
+  readonly capNotice?: number;
+  readonly push?: InboxPush;
+};
+/**
+ * The outstanding push: when it was last sent, the log size it covered, pushes since the cursor last moved, its batch id,
+ * and the first push attempt for this untaken range (the escalation clock starts there at the earliest).
+ */
+export type InboxPush = { readonly at: number; readonly upto: number; readonly attempts: number; readonly batch: string; readonly first: number; readonly untakenLogged?: true };
+export type ForcedRestart = { readonly at: number; readonly cause: string };
+export type OutboxItem = { readonly id: string; readonly text: string; readonly attempts?: number; readonly retryAt?: number };
+
+export class SuperviseError extends Error {}
+
+/**
+ * A lead state that can clear by itself (pane missing, old lead still exiting, startup not yet
+ * confirmed). Delivery retries these with backoff; any other SuperviseError is fatal and exits.
+ */
+export class TransientSuperviseError extends SuperviseError {}
+
+/** The window of the restart cap (delivery.restartMaxPerHour). */
+export const RESTART_CAP_WINDOW_MS = 60 * 60_000;
+
+/** How often retention runs (from ackTick, once per loop pass at most). */
+export const RETAIN_EVERY_MS = 60 * 60_000;
+
+/** The bytes of `path` from `from` to `to`. */
+const readRange = (path: string, from: number, to: number): Buffer => {
+  const data = Buffer.alloc(Math.max(0, to - from));
+  const fd = openSync(path, "r");
+  try {
+    let at = 0;
+    while (at < data.length) {
+      const read = readSync(fd, data, at, data.length - at, from + at);
+      if (read === 0) break;
+      at += read;
+    }
+    return data.subarray(0, at);
+  } finally { closeSync(fd); }
+};
+
+/** The event ids and session a take receipt names (nothing when unreadable; `?` marks a line take could not parse). */
+const takeIds = (path: string): { readonly ids: readonly string[]; readonly session: string } => {
+  try {
+    const { ids, session } = JSON.parse(readFileSync(path, "utf8")) as { ids?: unknown; session?: unknown };
+    return {
+      ids: Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string" && id !== "?") : [],
+      session: typeof session === "string" ? session : "",
+    };
+  } catch { return { ids: [], session: "" }; }
+};
+
+/** The journal state shared by the supervisor's parts. `deps` is replaced when the lead pane is recreated. */
+export class JournalCore {
+  readonly eventLog: string;
+  readonly store: JournalStore;
+  journal: Journal;
+  readonly delivered = new Set<string>();
+  /** Every journaled event id: enqueue dedupes in O(1) instead of scanning the history. */
+  readonly eventIds = new Set<string>();
+  readonly wakes: WakeMeter;
+  private nextRetain = 0;
+  private closed?: { readonly list: readonly string[]; readonly set: ReadonlySet<string> };
+
+  constructor(public deps: FlowDeps) {
+    mkdirSync(deps.config.stateDir, { recursive: true });
+    this.eventLog = join(deps.config.stateDir, "lead-events.log");
+    try { this.store = openStore(deps.config.stateDir, deps.clock.now); } catch (e) {
+      throw e instanceof StoreError ? new SuperviseError(e.message) : e;
+    }
+    this.wakes = new WakeMeter(this.store, () => this.deps, () => this.deps.clock.now());
+    const loaded: Journal = this.store.load() ?? { events: [] };
+    // Events journaled before enqueue times existed start their queue clock now.
+    this.journal = {
+      ...loaded,
+      events: loaded.events.map((event) => ({ ...event, line: redactSecrets(event.line), at: event.at ?? deps.clock.now() })),
+      ...(loaded.restart ? { restart: { ...loaded.restart, events: loaded.restart.events.map((event) => ({ ...event, line: redactSecrets(event.line) })) } } : {}),
+    };
+  }
+
+  /**
+   * Reads the delivery log past the store's cursor into the delivered set, and journals any legacy append that reached
+   * disk without a matching inbox entry. Returns the ids read and the log offset they end at.
+   */
+  recoverLog(): { readonly tail: readonly string[]; readonly cursor: number } {
+    const { deps } = this;
+    if (!existsSync(this.eventLog)) appendFileDurable(this.eventLog, "", 0o600);
+    // The store's deliveries cover the log up to its cursor (json: none, so the whole log is read).
+    for (const id of this.store.deliveredIds() ?? []) this.delivered.add(id);
+    const size = statSync(this.eventLog).size;
+    let from = this.store.logCursor();
+    if (from > size) {
+      console.error(`STORE_LOG_SHORTER ${this.eventLog} is ${size} bytes, the store read ${from}; rereading it whole`);
+      from = 0;
+    }
+    // A killed append can leave a partial final line. It was never a delivery.
+    const log = readRange(this.eventLog, from, size);
+    const end = log.lastIndexOf(10) + 1;
+    if (end < log.length) truncateSync(this.eventLog, from + end);
+    const known = this.eventIds;
+    for (const event of this.journal.events) known.add(event.id);
+    const recovered: Event[] = [];
+    const tail: string[] = [];
+    for (const line of log.subarray(0, end).toString().split("\n")) {
+      if (line) {
+        const event: Event = JSON.parse(line);
+        this.delivered.add(event.id);
+        tail.push(event.id);
+        // Recover a legacy append that reached disk without a matching durable inbox entry.
+        if (!known.has(event.id) && !this.store.tombstoned(event.id)) {
+          known.add(event.id);
+          recovered.push({ ...event, line: redactSecrets(event.line), at: deps.clock.now() });
+        }
+      }
+    }
+    if (recovered.length) this.journal = { ...this.journal, events: [...this.journal.events, ...recovered] };
+    return { tail, cursor: from + end };
+  }
+
+  /**
+   * Writes the journal through the store. `normal` (frequent bookkeeping, digest events) survives a crash; the default
+   * `full` also survives power loss, and a later full write makes every earlier normal one durable too.
+   */
+  persist(durability: Durability = "full"): void {
+    this.store.save(this.journal, durability);
+  }
+
+  /** Releases the store (tests and shutdown); the supervisor must not be used afterwards. */
+  close(): void { this.store.close(); }
+
+  logSize(): number { return statSync(this.eventLog).size; }
+
+  /**
+   * At start: consume waiting take receipts, then place the take cursor. A first start puts it at the log's end (no
+   * replay flood). Entering push from a journal written under the old tail mode, or turning the tail monitor off, advances it to the end too: the
+   * tail monitor delivered everything before (N6). A cursor past the log's end is reset to it. The cursor file is
+   * published every time, so `dori inbox take` works at any time.
+   */
+  initInbox(): void {
+    this.consumeTakes();
+    const { tailMonitor } = this.deps.tunables.delivery;
+    const key = `push${tailMonitor ? "+tail" : ""}`;
+    const size = this.logSize();
+    const inbox = this.journal.inbox;
+    const [was = "", wasTail = true] = inbox?.mode ? [inbox.mode.split("+")[0], inbox.mode.endsWith("+tail")] : [];
+    const advance = inbox !== undefined && (was === "" || was === "tail" || (wasTail && !tailMonitor));
+    let takenOffset = inbox?.takenOffset ?? size;
+    if (advance && takenOffset !== size) console.log(`INBOX_CURSOR_ADVANCED ${takenOffset} -> ${size} (${inbox?.mode ?? "none"} -> ${key})`);
+    if (advance) takenOffset = size;
+    if (takenOffset > size) {
+      console.log(`INBOX_CURSOR_RESET ${takenOffset} -> ${size}: ${this.eventLog} is shorter than the take cursor`);
+      takenOffset = size;
+    }
+    const moved = takenOffset !== inbox?.takenOffset;
+    this.journal = { ...this.journal, inbox: { ...inbox, takenOffset, mode: key, ...(moved ? { push: undefined } : {}) } };
+    this.persist();
+    writeCursorFile(this.deps.config.stateDir, takenOffset);
+  }
+
+  /**
+   * Take receipts move the cursor forward only, in a crash-safe order: the store is persisted, then the cursor file is
+   * written, and only then are the receipts dropped. A crash at any point leaves `max(cursor file, receipts)` at or past
+   * the new cursor, so a take never reprints. A moved cursor clears the push only when no owner work remains.
+   * Before a receipt is dropped, its ids are recorded taken with its time and session (event-trace.ts).
+   */
+  consumeTakes(): void {
+    const inbox = this.journal.inbox;
+    if (!inbox) return;
+    const receipts = pendingTakes(this.deps.config.stateDir);
+    if (!receipts.length) return;
+    const size = this.logSize();
+    let takenOffset = Math.max(inbox.takenOffset, ...receipts.map((receipt) => receipt.offset));
+    if (takenOffset > size) {
+      console.log(`INBOX_CURSOR_RESET ${takenOffset} -> ${size}: a take receipt is past the end of ${this.eventLog}`);
+      takenOffset = size;
+    }
+    if (takenOffset !== inbox.takenOffset) {
+      const ownerOpen = this.journal.awaitingAck?.some((entry) => !entry.quarantined && leadOwes(entry));
+      this.journal = { ...this.journal, inbox: { ...inbox, takenOffset, push: ownerOpen ? inbox.push : undefined } };
+      this.persist();
+    }
+    writeCursorFile(this.deps.config.stateDir, takenOffset);
+    for (const receipt of receipts) {
+      const { ids, session } = takeIds(receipt.path);
+      this.store.recordTakes(ids, receipt.at, session);
+      dropTake(receipt.path);
+    }
+  }
+
+  /** Forced restarts within the cap window. */
+  forcedRestartsSince(now: number): number {
+    return (this.journal.forcedRestarts ?? []).filter((restart) => now - restart.at < RESTART_CAP_WINDOW_MS).length;
+  }
+
+  /** Records a forced restart that really stopped the lead; the list keeps only the cap window. */
+  noteForcedRestart(cause: string): void {
+    const now = this.deps.clock.now();
+    const kept = (this.journal.forcedRestarts ?? []).filter((restart) => now - restart.at < RESTART_CAP_WINDOW_MS);
+    this.journal = { ...this.journal, forcedRestarts: [...kept, { at: now, cause }] };
+    this.persist();
+  }
+
+  /** closedOwners as a set, rebuilt only when the list changes: it holds up to 90 days of tombstones. */
+  closedSet(): ReadonlySet<string> {
+    const list = this.journal.closedOwners ?? [];
+    if (this.closed?.list !== list) this.closed = { list, set: new Set(list) };
+    return this.closed.set;
+  }
+
+  /** Journaled now, or pruned with its dedupe tombstone still kept. */
+  known(id: string): boolean {
+    return this.eventIds.has(id) || this.store.tombstoned(id);
+  }
+
+  /**
+   * Retention (RETENTION, sqlite store only), at most once per RETAIN_EVERY_MS: delivered events older than
+   * eventBodyMs leave the journal for dedupe tombstones, unless a tracked owner message, a pending restart or an open
+   * decision obligation still needs them; undelivered events are never pruned. Tombstones expire after tombstoneMs.
+   */
+  retain(now: number): void {
+    if (!this.store.retains || now < this.nextRetain) return;
+    this.nextRetain = now + RETAIN_EVERY_MS;
+    const needed = new Set(this.journal.restart?.events.map((event) => event.id) ?? []);
+    for (const entry of this.journal.awaitingAck ?? []) for (const id of [entry.id, ...(entry.revisions ?? [])]) needed.add(id);
+    for (const item of this.journal.pending ?? []) if (item.resolvedAt === undefined) needed.add(item.id);
+    const cutoff = now - RETENTION.eventBodyMs;
+    // Events are appended in time order: only the prefix up to the first newer one is looked at (one that came out of
+    // order waits for the next pass), so a pass costs the pruned events, not the whole journal.
+    const all = this.journal.events;
+    const kept: Event[] = [];
+    let i = 0;
+    for (; i < all.length && ((all[i] as Event).at ?? now) <= cutoff; i++) {
+      const event = all[i] as Event;
+      // An engine-only event is never delivered to the lead: it ages out like a delivered one.
+      const waiting = !this.delivered.has(event.id) && forLead(eventClass(event.line, this.deps.tunables.eventPolicy));
+      if (waiting || needed.has(event.id)) { kept.push(event); continue; }
+      this.eventIds.delete(event.id);
+      this.delivered.delete(event.id);
+    }
+    this.store.pruneWakes(now - RETENTION.statusHistoryMs);
+    const expired = new Set(this.store.expireTombstones(now - RETENTION.tombstoneMs));
+    if (kept.length === i && !expired.size) return;
+    const events = kept.length === i ? all : [...kept, ...all.slice(i)];
+    this.journal = {
+      ...this.journal, events,
+      ...(expired.size ? { closedOwners: (this.journal.closedOwners ?? []).filter((id) => !expired.has(id)) } : {}),
+    };
+  }
+
+  /** Appends the events not yet delivered to the delivery log (fsynced) and records them as delivered in the store. */
+  appendDelivered(events: readonly Event[]): void {
+    const appended: string[] = [];
+    for (const event of events) {
+      if (this.delivered.has(event.id)) continue;
+      // `meta` is an extra field: `dori inbox take` (parseLogLine) reads only id and line.
+      appendFileDurable(this.eventLog, `${JSON.stringify({ id: event.id, line: redactSecrets(event.line), ...(event.meta ? { meta: redactMeta(event.meta) } : {}) })}\n`, 0o600);
+      this.delivered.add(event.id);
+      appended.push(event.id);
+    }
+    if (appended.length) this.store.recordDeliveries(appended, statSync(this.eventLog).size, this.deps.clock.now());
+  }
+}

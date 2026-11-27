@@ -1,0 +1,100 @@
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+
+import type { Runner } from "./run.ts";
+import type { Lane } from "./registry.ts";
+import { infoOf, sessionRuntime } from "./runtime/index.ts";
+
+export type Proc = { readonly pid: number; readonly ppid: number; readonly cmd: string };
+export type SessionHit = { readonly id: string; readonly via: "argv" | "child-env" | "start-time" | "none"; readonly pid?: number };
+
+const AGENT = /senpi\/dist\/bundle\/cli\.js|(^|\/)omo(\s|$)/;
+const ENV_ID = /(?:^|\s)PI_SESSION_ID=([0-9a-f-]{36})(?:\s|$)/;
+const SESSION_FILE = /^(\d{4}-\d\d-\d\dT\d\d)-(\d\d)-(\d\d)-(\d{3})Z_([0-9a-f-]{36})\.jsonl$/;
+const START_WINDOW_MS = 180_000;
+
+export const procTable = async (run: Runner): Promise<Proc[]> =>
+  (await run(["ps", "-A", "-o", "pid=,ppid=,command="])).out.split("\n").flatMap((line) => {
+    const m = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    return m ? [{ pid: Number(m[1]), ppid: Number(m[2]), cmd: m[3] ?? "" }] : [];
+  });
+
+// procTable results are never mutated, so one parent index per table serves every walk.
+const parentMaps = new WeakMap<readonly Proc[], Map<number, Proc[]>>();
+
+const byParentOf = (table: readonly Proc[]): Map<number, Proc[]> => {
+  const cached = parentMaps.get(table);
+  if (cached) return cached;
+  const byParent = new Map<number, Proc[]>();
+  for (const p of table) {
+    const siblings = byParent.get(p.ppid);
+    if (siblings) siblings.push(p);
+    else byParent.set(p.ppid, [p]);
+  }
+  parentMaps.set(table, byParent);
+  return byParent;
+};
+
+const descendants = (table: readonly Proc[], root: number): Proc[] => {
+  const byParent = byParentOf(table);
+  const out: Proc[] = [];
+  const queue = [...(byParent.get(root) ?? [])];
+  for (let p = queue.shift(); p; p = queue.shift()) {
+    out.push(p);
+    queue.push(...(byParent.get(p.pid) ?? []));
+  }
+  return out;
+};
+
+const sessionFlag = (argv: readonly string[]): string | undefined => {
+  const at = argv.indexOf("--session") >= 0 ? argv.indexOf("--session") : argv.indexOf("--session-id");
+  return at >= 0 ? argv[at + 1] : undefined;
+};
+
+export const sessionDirFor = (sessionsDir: string, cwd: string): string => join(sessionsDir, `--${cwd.replace(/^\//, "").replace(/\//g, "-")}--`);
+
+export type SessionDeps = { readonly run: Runner; readonly sessionsDir: string; readonly listDir?: (dir: string) => readonly string[] };
+
+export const resolveSession = async (pane: string, cwd: string, table: readonly Proc[], deps: SessionDeps, lane: Pick<Lane, "machine"> = {}): Promise<SessionHit> => {
+  const info = infoOf(await sessionRuntime(deps.run).processInfo(pane));
+  if (lane.machine) {
+    // Remote PIDs and session files must never be resolved against the lead host.
+    for (const process of info?.foreground_processes ?? []) {
+      const argv = process.argv ?? [];
+      if (!argv.some((arg) => AGENT.test(arg))) continue;
+      const id = sessionFlag(argv);
+      if (id) return { id, via: "argv", ...(process.pid ? { pid: process.pid } : {}) };
+    }
+    return { id: "", via: "none" };
+  }
+  const shellPid = info?.shell_pid ?? 0;
+  const agent = shellPid ? descendants(table, shellPid).find((p) => AGENT.test(p.cmd) && !/\bmcp\b/.test(p.cmd)) : undefined;
+  if (!agent) return { id: "", via: "none" };
+  const argv = agent.cmd.split(/\s+/);
+  const fromFlag = sessionFlag(argv);
+  if (fromFlag) return { id: fromFlag, via: "argv", pid: agent.pid };
+  const children = descendants(table, agent.pid).slice(0, 40);
+  if (children.length > 0) {
+    // One ps for every child; exited pids make ps exit nonzero but the rest still print.
+    const env = await deps.run(["ps", "eww", "-o", "pid=,command=", "-p", children.map((c) => c.pid).join(",")]);
+    const idByPid = new Map<number, string>();
+    for (const line of env.out.split("\n")) {
+      const m = /^\s*(\d+)\s+(.*)$/.exec(line);
+      const id = m ? ENV_ID.exec(m[2] ?? "")?.[1] : undefined;
+      if (m && id) idByPid.set(Number(m[1]), id);
+    }
+    for (const child of children) {
+      const id = idByPid.get(child.pid);
+      if (id) return { id, via: "child-env", pid: agent.pid };
+    }
+  }
+  const started = Date.parse((await deps.run(["ps", "-o", "lstart=", "-p", String(agent.pid)])).out);
+  if (Number.isNaN(started)) return { id: "", via: "none", pid: agent.pid };
+  const list = deps.listDir ?? ((d: string) => { try { return readdirSync(d); } catch { return []; } });
+  const near = list(sessionDirFor(deps.sessionsDir, cwd)).flatMap((name) => {
+    const m = SESSION_FILE.exec(name);
+    const at = m ? Date.parse(`${m[1]}:${m[2]}:${m[3]}.${m[4]}Z`) : Number.NaN;
+    return m?.[5] && at >= started - 5_000 && at <= started + START_WINDOW_MS ? [{ id: m[5], at }] : [];
+  }).sort((a, b) => a.at - b.at);
+  return near[0] ? { id: near[0].id, via: "start-time", pid: agent.pid } : { id: "", via: "none", pid: agent.pid };
+};
