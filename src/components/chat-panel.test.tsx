@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { Chat, receipt, totalUnread } from "@/components/chat-panel";
 import { commands, events, type ChatChannel, type ChatMessage, type ChatThread, type Task } from "@/lib/bindings";
 import { flushChatOutbox } from "@/lib/chat-outbox";
@@ -153,22 +153,43 @@ describe("voice input", () => {
     expect(screen.queryByRole("button", { name: "Voice input" })).not.toBeInTheDocument();
   });
 
-  it("writes what the person says after the draft, in the browser's language", async () => {
+  it("writes each phrase the person says after the draft, in the browser's language", async () => {
     vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
     serve([]);
     renderChat();
     fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
     const input = await screen.findByRole("textbox");
-    fireEvent.input(input, { target: { textContent: "Note:" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
     const recognition = FakeRecognition.started[0];
     expect(recognition.lang).toBe(navigator.language);
     act(() => recognition.say("call the bank", false));
     expect(await screen.findByText("call the bank")).toBeInTheDocument();
-    act(() => recognition.say("call the bank tomorrow", true));
+    act(() => recognition.say("call the bank", true));
+    await waitFor(() => expect(input).toHaveTextContent("call the bank"));
 
-    await waitFor(() => expect(input).toHaveTextContent("Note: call the bank tomorrow"));
+    // The microphone stays while it listens, so the draft does not turn it into the send button.
+    expect(screen.getByRole("button", { name: "Voice input" })).toBeInTheDocument();
+    act(() => recognition.say("tomorrow", true));
+    await waitFor(() => expect(input).toHaveTextContent("call the bank tomorrow"));
+  });
+
+  it("puts the send button in the microphone's place while there is a draft", async () => {
+    vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+    serve([]);
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+    const input = await screen.findByRole("textbox");
+    expect(screen.getByRole("button", { name: "Voice input" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+
+    fireEvent.input(input, { target: { textContent: "Hi" } });
+    expect(await screen.findByRole("button", { name: "Send" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Voice input" })).not.toBeInTheDocument();
+
+    fireEvent.input(input, { target: { textContent: "" } });
+    expect(await screen.findByRole("button", { name: "Voice input" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
   });
 
   it("leaves the microphone to speech recognition while it listens", async () => {
@@ -264,6 +285,36 @@ describe("Chat", () => {
     expect(body).toBe("Thanks");
     expect(clientId).toMatch(/^[0-9a-f-]{36}$/);
     expect(attachments).toEqual([]);
+  });
+
+  it("starts a new line on Enter from a touch keyboard and leaves sending to the send button", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === "(pointer: coarse)",
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+      Reflect.deleteProperty(document, "execCommand");
+    });
+    serve([]);
+    mocked.sendChatMessage.mockResolvedValue({ status: "ok", data: message(1, "user", "Line one") });
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+    const input = await screen.findByRole("textbox");
+    expect(input).toHaveAttribute("enterkeyhint", "enter");
+
+    fireEvent.input(input, { target: { textContent: "Line one" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(execCommand).toHaveBeenCalledWith("insertLineBreak");
+    expect(mocked.sendChatMessage).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(mocked.sendChatMessage).toHaveBeenCalledOnce());
+    expect(mocked.sendChatMessage.mock.calls[0][1]).toBe("Line one");
   });
 
   it("shows only the server bubble when a message arrives before its send request finishes", async () => {

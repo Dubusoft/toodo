@@ -29,8 +29,7 @@ import { Badge } from "@astryxdesign/core/Badge";
 import { Thumbnail } from "@astryxdesign/core/Thumbnail";
 import { Token } from "@astryxdesign/core/Token";
 import {
-  ChatComposer,
-  ChatComposerDrawer,
+  ChatComposerInput,
   ChatDictationButton,
   ChatMessage as Message,
   ChatMessageBubble,
@@ -337,6 +336,11 @@ function Messages({ agent, messages }: { agent: ChatAgent; messages: readonly Ch
   });
 }
 
+/** Whether typing goes through a touch keyboard, where Enter starts a new line and only the send button sends. */
+function hasTouchKeyboard(): boolean {
+  return window.matchMedia?.("(pointer: coarse)").matches ?? false;
+}
+
 /** A file picked for the next message: uploading, uploaded, or failed. */
 type Upload = { key: string; file: File; preview: string | null; attachment: ChatAttachment | null; error: string | null };
 
@@ -417,6 +421,9 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
     });
   const uploading = uploads.some((upload) => upload.attachment === null && upload.error === null);
   const failedUpload = uploads.find((upload) => upload.error !== null);
+  // As in other messengers, the microphone holds the send button's place until there is something to send,
+  // and keeps it while it listens, so dictation can be stopped once its first phrase lands in the draft.
+  const showsMicrophone = voice.speech.isSupported && (voice.speech.isListening || (draft.trim() === "" && uploads.length === 0));
   const sendDraft = (value: string) => {
     const body = value.trim();
     const attachments = uploads.flatMap((upload) => (upload.attachment === null ? [] : [upload.attachment]));
@@ -510,32 +517,64 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
                 event.currentTarget.value = "";
               }}
             />
-            <ChatComposer
-              density="compact"
-              elevation="none"
-              placeholder={`Message ${label}`}
-              value={draft}
-              onChange={setDraft}
-              onSubmit={sendDraft}
-              headerActions={
-                <IconButton
-                  variant="ghost"
-                  size="sm"
-                  label="Attach files"
-                  icon={<Paperclip />}
-                  changesData
-                  onClick={() => picker.current?.click()}
-                />
-              }
-              headerContext={
-                voice.speech.isListening ? (
-                  <span className="truncate text-xs text-muted-foreground">
-                    {voice.speech.interimTranscript || "Listening..."}
-                  </span>
-                ) : undefined
-              }
-              sendActions={<ChatDictationButton dictation={voice.speech} size="sm" label="Voice input" />}
-              sendButton={
+            {uploads.length > 0 && (
+              <ul aria-label="Files to send" className="flex flex-wrap items-center gap-1.5 px-1 pb-2">
+                {uploads.map((upload) => (
+                  <li key={upload.key}>
+                    {upload.preview !== null ? (
+                      <Thumbnail
+                        src={upload.preview}
+                        alt={upload.file.name}
+                        label={upload.file.name}
+                        isLoading={upload.attachment === null && upload.error === null}
+                        onRemove={() => unpick(upload.key)}
+                      />
+                    ) : (
+                      <Token
+                        size="sm"
+                        color={upload.error !== null ? "red" : "default"}
+                        label={upload.attachment === null && upload.error === null ? `${upload.file.name} (uploading)` : upload.file.name}
+                        onRemove={() => unpick(upload.key)}
+                      />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {voice.speech.isListening && (
+              <p className="truncate px-1 pb-1 text-xs text-muted-foreground">
+                {voice.speech.interimTranscript || "Listening..."}
+              </p>
+            )}
+            <div className="flex items-end gap-1 rounded-2xl border border-input bg-background p-1 focus-within:border-ring">
+              <IconButton
+                variant="ghost"
+                size="sm"
+                label="Attach files"
+                icon={<Plus />}
+                changesData
+                onClick={() => picker.current?.click()}
+              />
+              <ChatComposerInput
+                className="min-w-0 flex-1 self-center"
+                placeholder={
+                  navigator.language.toLowerCase().startsWith("ko") ? `${agent.name}에게 메시지 보내기` : `Message ${agent.name}`
+                }
+                maxRows={6}
+                value={draft}
+                onChange={setDraft}
+                onSubmit={sendDraft}
+                enterKeyHint={hasTouchKeyboard() ? "enter" : "send"}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" || event.nativeEvent.isComposing || !hasTouchKeyboard()) return;
+                  event.preventDefault();
+                  // The input's own Enter sends, so the line break is inserted here instead.
+                  document.execCommand("insertLineBreak");
+                }}
+              />
+              {showsMicrophone ? (
+                <ChatDictationButton dictation={voice.speech} size="sm" label="Voice input" />
+              ) : (
                 // Not paused while the server is unreachable: the outbox keeps the message until it answers.
                 <IconButton
                   variant="primary"
@@ -545,43 +584,19 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
                   isDisabled={uploading || (draft.trim() === "" && uploads.every((upload) => upload.attachment === null))}
                   onClick={() => sendDraft(draft)}
                 />
-              }
-              drawer={
-                uploads.length > 0 ? (
-                  <ChatComposerDrawer>
-                    <ul aria-label="Files to send" className="flex flex-wrap items-center gap-1.5">
-                      {uploads.map((upload) => (
-                        <li key={upload.key}>
-                          {upload.preview !== null ? (
-                            <Thumbnail
-                              src={upload.preview}
-                              alt={upload.file.name}
-                              label={upload.file.name}
-                              isLoading={upload.attachment === null && upload.error === null}
-                              onRemove={() => unpick(upload.key)}
-                            />
-                          ) : (
-                            <Token
-                              size="sm"
-                              color={upload.error !== null ? "red" : "default"}
-                              label={upload.attachment === null && upload.error === null ? `${upload.file.name} (uploading)` : upload.file.name}
-                              onRemove={() => unpick(upload.key)}
-                            />
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  </ChatComposerDrawer>
-                ) : undefined
-              }
-              status={
-                failedUpload !== undefined
-                  ? { type: "error", message: `${failedUpload.file.name} could not be uploaded: ${failedUpload.error}` }
-                  : voice.error !== null
-                    ? { type: "warning", message: voice.error }
-                    : undefined
-              }
-            />
+              )}
+            </div>
+            {failedUpload !== undefined ? (
+              <p role="alert" className="px-1 pt-1 text-xs text-destructive">
+                {failedUpload.file.name} could not be uploaded: {failedUpload.error}
+              </p>
+            ) : (
+              voice.error !== null && (
+                <p role="status" className="px-1 pt-1 text-xs text-warning">
+                  {voice.error}
+                </p>
+              )
+            )}
           </>
         ) : (
           <p className="px-1 py-2 text-center text-xs text-muted-foreground">
