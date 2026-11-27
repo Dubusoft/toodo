@@ -17,7 +17,6 @@ import {
   BellOff,
   Flag,
   Lock,
-  MessageCircle,
   Paperclip,
   Plus,
   RotateCcw,
@@ -43,6 +42,7 @@ import {
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button, IconButton } from "@/components/button";
 import { Markdown } from "@/components/task-common";
+import doriAvatar from "@/web/dori-avatar.png";
 import {
   events,
   type ChatAgent,
@@ -263,7 +263,7 @@ function Actions({ message }: { message: ChatMessage }) {
 const defaultAgent: ChatAgent = { name: "Dori", avatarUrl: null };
 
 function AgentAvatar({ agent }: { agent: ChatAgent }) {
-  return <Avatar size="sm" name={agent.name} src={agent.avatarUrl ?? undefined} tooltip={false} />;
+  return <Avatar size="sm" name={agent.name} src={agent.avatarUrl ?? doriAvatar} tooltip={false} />;
 }
 
 function Messages({ agent, messages }: { agent: ChatAgent; messages: readonly ChatMessage[] }) {
@@ -1160,15 +1160,16 @@ export function Chat({
     <>
       {open && <ChatPanel onClose={close} onShowTask={onShowTask} target={target} onTargetShown={onTargetShown} />}
       <div className={cn("fixed bottom-4 right-4 z-40 print:hidden", open && "max-md:hidden")}>
-        <IconButton
+        <button
           ref={button}
-          variant="primary"
-          label={unread > 0 ? `Open chat, ${unread} unread` : open ? "Close chat" : "Open chat"}
-          icon={<MessageCircle />}
+          type="button"
+          aria-label={unread > 0 ? `Open chat, ${unread} unread` : open ? "Close chat" : "Open chat"}
           aria-expanded={open}
-          className="size-12 rounded-full shadow-lg"
+          className="block size-12 cursor-pointer overflow-hidden rounded-full shadow-lg ring-2 ring-background transition-transform hover:scale-105 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
           onClick={() => (open ? close() : onOpenChange(true))}
-        />
+        >
+          <img src={doriAvatar} alt="" className="size-full object-cover" />
+        </button>
         {unread > 0 && (
           <span
             aria-hidden
