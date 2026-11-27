@@ -113,6 +113,14 @@ Layout:
     separate read-only reader, each with WAL, a 5 second busy timeout, and foreign keys
     on. Both open only a database at `BASELINE_SCHEMA_VERSION` and reject any other
     version; neither creates nor migrates a database.
+  - `server/src/storage/storage.ts`: `Storage`, the storage operations of
+    `src-tauri/src/storage/` on one connection (workspaces, guidelines, tasks and their
+    dependencies, status history, waits, notes, criteria, search, related links, and commit
+    records), each module beside its ported Rust tests. Failures are a `StorageError` whose
+    message is the Rust one word for word (`errors.ts`).
+  - `server/src/storage/schema.sql`: the frozen schema the Rust migrations create, which
+    `cargo test --lib` regenerates; `server/src/storage/testing.ts` creates the storage
+    tests' databases with it.
   - `server/src/domain/`: the domain model and rules of `src-tauri/src/domain/`, module for
     module, with the Rust tests ported beside each one. `rust.ts` holds the Rust standard
     library behavior they depend on (whitespace, `{:?}` quoting, float printing, string
