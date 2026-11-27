@@ -125,6 +125,13 @@ Layout:
   - `server/src/storage/schema.sql`: the frozen schema the Rust migrations create, which
     `cargo test --lib` regenerates; `server/src/storage/testing.ts` creates the storage
     tests' databases with it.
+  - `server/src/commands/`: the commands of `src-tauri/src/commands/` over `Storage`, so
+    far workspaces, guidelines, tasks, and issues. Each is typed `Command<"<name>">` from
+    `src/lib/bindings.ts`, so it takes the arguments the web app sends and returns the
+    shape it expects, and `npm run typecheck` fails when the two drift apart;
+    `server/src/web-bindings.d.ts` stands in for the two web modules that file imports.
+    Failures are a `CommandError` with the Rust code, kind, and message (`errors.ts`);
+    `types.ts` converts between those shapes and the domain model and validates inputs.
   - `server/src/domain/`: the domain model and rules of `src-tauri/src/domain/`, module for
     module, with the Rust tests ported beside each one. `rust.ts` holds the Rust standard
     library behavior they depend on (whitespace, `{:?}` quoting, float printing, string
