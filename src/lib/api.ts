@@ -484,8 +484,11 @@ export type ChatThread = {
 	lastMessageAt: Timestamp | null,
 	/**  Its latest message on one line, cut short; e.g. the latest status a lane reported. */
 	lastMessage: string | null,
-	/**  Whether a message of the agent in it offers actions nobody chose yet. */
-	awaitingChoice: boolean,
+	/**
+	 *  Set while the agent waits on the people's answer in it, such as a decision or a request;
+	 *  it is listed first then, and its task needs an answer.
+	 */
+	awaitingAt: Timestamp | null,
 };
 
 /**

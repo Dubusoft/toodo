@@ -305,4 +305,5 @@ export const updateThread = struct("UpdateThread", {
   status: optional(threadStatus),
   task_id: optional(i64),
   unlink_task: flag,
+  awaiting: defaulted<boolean | undefined>(bool, () => undefined),
 });

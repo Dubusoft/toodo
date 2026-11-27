@@ -44,6 +44,8 @@ export const MIGRATIONS: readonly string[] = [
      AND id <> (SELECT min(k.id) FROM chat_threads AS k WHERE k.task_id = chat_threads.task_id);
   DROP INDEX chat_threads_task;
   CREATE UNIQUE INDEX chat_threads_task ON chat_threads (task_id) WHERE task_id IS NOT NULL;`,
+  // 58: when the agent started waiting on the people's answer in a thread, unset otherwise.
+  "ALTER TABLE chat_threads ADD COLUMN awaiting_at INTEGER",
 ];
 
 /** The schema version this server reads and writes. */

@@ -17,17 +17,12 @@ import { channelExists, taskExists, threadPlace, threadStatus } from "./chat-pla
 import { StorageError } from "./errors.ts";
 
 const THREAD_SELECT = `SELECT t.id, t.channel_id, t.title, t.task_id, t.status,
-         t.created_at, t.closed_at, t.archived_at,
+         t.created_at, t.closed_at, t.archived_at, t.awaiting_at,
          (SELECT count(*) FROM chat_messages m
           WHERE m.thread_id = t.id AND m.author <> 'user' AND m.id > t.read_id) AS unread,
          (SELECT max(m.at) FROM chat_messages m WHERE m.thread_id = t.id) AS last_at,
          (SELECT m.body FROM chat_messages m WHERE m.thread_id = t.id
-          ORDER BY m.id DESC LIMIT 1) AS last_body,
-         EXISTS (SELECT 1 FROM chat_messages m
-                 WHERE m.thread_id = t.id
-                   AND EXISTS (SELECT 1 FROM chat_actions a WHERE a.message_id = m.id)
-                   AND NOT EXISTS (SELECT 1 FROM chat_choices c WHERE c.message_id = m.id))
-           AS awaiting_choice
+          ORDER BY m.id DESC LIMIT 1) AS last_body
      FROM chat_threads t`;
 
 /** How much of its latest message a thread carries, in characters, on one line. */
@@ -48,10 +43,10 @@ interface ThreadRow {
   created_at: number;
   closed_at: number | null;
   archived_at: number | null;
+  awaiting_at: number | null;
   unread: number;
   last_at: number | null;
   last_body: string | null;
-  awaiting_choice: number;
 }
 
 function thread(row: ThreadRow): ChatThread {
@@ -64,10 +59,10 @@ function thread(row: ThreadRow): ChatThread {
     createdAt: row.created_at,
     closedAt: row.closed_at,
     archivedAt: row.archived_at,
+    awaitingAt: row.awaiting_at,
     unread: row.unread,
     lastMessageAt: row.last_at,
     lastMessage: row.last_body === null ? null : oneLine(row.last_body),
-    awaitingChoice: row.awaiting_choice === 1,
   };
 }
 
@@ -91,6 +86,7 @@ export interface ThreadEdit {
   title?: string;
   status?: ThreadStatus;
   task?: TaskId | null;
+  awaiting?: boolean;
 }
 
 /** A thread to open. */
@@ -111,14 +107,14 @@ function taskThreadFree(db: Database, task: TaskId, except: ChatThreadId | null)
   }
 }
 
-/** The threads `filter` selects, the latest active first. */
+/** The threads `filter` selects, newest waiting first, then latest active. */
 export function listChatThreads(db: Database, filter: ThreadFilter): ChatThread[] {
   return db
     .query<ThreadRow, [number | null, number | null, boolean]>(
       `SELECT * FROM (${THREAD_SELECT}
            WHERE (?1 IS NULL OR t.channel_id = ?1) AND (?2 IS NULL OR t.task_id = ?2)
              AND (?3 OR t.status <> 'archived'))
-       ORDER BY coalesce(last_at, created_at) DESC, id DESC`,
+       ORDER BY awaiting_at IS NOT NULL DESC, awaiting_at DESC, coalesce(last_at, created_at) DESC, id DESC`,
     )
     .all(filter.channel ?? null, filter.task ?? null, filter.archived ?? false)
     .map(thread);
@@ -145,9 +141,9 @@ export function createChatThread(db: Database, created: NewChatThread, at: numbe
 }
 
 /**
- * Retitles a thread, links or unlinks its task, or opens, closes, or archives it. A task it
- * links must have no other thread. Closing keeps the time it was first closed, and
- * reopening clears both times.
+ * Edits a thread's title, linked task, status, or waiting state. A task it links must have
+ * no other thread. Closing keeps the first closed time, and reopening clears both status
+ * times. Marking a thread as waiting keeps its first waiting time until the mark is cleared.
  */
 export function updateChatThread(db: Database, id: ChatThreadId, edit: ThreadEdit, at: number): ChatThread {
   return db.transaction(() => {
@@ -169,6 +165,12 @@ export function updateChatThread(db: Database, id: ChatThreadId, edit: ThreadEdi
              archived_at = CASE WHEN ?4 THEN coalesce(archived_at, ?5) ELSE NULL END
          WHERE id = ?1`,
         [id, edit.status, edit.status === "open", edit.status === "archived", at],
+      );
+    }
+    if (edit.awaiting !== undefined) {
+      db.run(
+        "UPDATE chat_threads SET awaiting_at = CASE WHEN ?2 THEN coalesce(awaiting_at, ?3) END WHERE id = ?1",
+        [id, edit.awaiting, at],
       );
     }
     return findThread(db, id);

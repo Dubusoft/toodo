@@ -63,10 +63,10 @@ function thread(id: number, title: string, overrides: Partial<ChatThread> = {}):
     createdAt: 1,
     closedAt: null,
     archivedAt: null,
+    awaitingAt: null,
     unread: 0,
     lastMessageAt: null,
     lastMessage: null,
-    awaitingChoice: false,
     ...overrides,
   };
 }

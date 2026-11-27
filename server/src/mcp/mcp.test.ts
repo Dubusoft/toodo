@@ -269,6 +269,21 @@ test("Thread tools open, close, and archive a thread", async () => {
   expect(chat).toEqual(["changed", "changed", "posted Starting in work", "changed", "changed"]);
 });
 
+test("Thread tools set, list, and clear the waiting mark and announce both changes", async () => {
+  const storage = memoryStorage();
+  const { served, chat } = endpoint(storage);
+  const created = await value(served, "create_thread", { title: "Deploy" });
+  expect(created.awaitingAt).toBeNull();
+
+  const marked = await value(served, "update_thread", { id: created.id, awaiting: true });
+  expect(marked.awaitingAt).toBe(storage.now());
+  expect(await value(served, "list_threads")).toEqual([marked]);
+
+  const cleared = await value(served, "update_thread", { id: created.id, title: "Deploy approved", awaiting: false });
+  expect(cleared).toMatchObject({ title: "Deploy approved", awaitingAt: null });
+  expect(chat).toEqual(["changed", "changed", "changed"]);
+});
+
 test("A task id sent as a string reaches the tool", async () => {
   const [storage, task] = storageWithTask();
   const { served } = endpoint(storage);

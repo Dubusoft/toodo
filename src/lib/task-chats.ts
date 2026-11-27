@@ -5,7 +5,7 @@ export type TaskChat = { task: Task; thread: ChatThread | null };
 
 /** The tasks the chat lists under its default room. */
 export type TaskChats = {
-  /** Tasks waiting for a person: in review, or with a question in their thread nobody answered. */
+  /** Tasks waiting for a person: in review, or with their thread waiting on an answer (a decision or request). */
   needsAnswer: TaskChat[];
   /** In-progress tasks a lane works on, that wait for nobody. */
   inProgress: TaskChat[];
@@ -36,7 +36,7 @@ export function taskChats(tasks: readonly Task[], threads: readonly ChatThread[]
   for (const task of tasks) {
     if (task.status === "done") continue;
     const chat = { task, thread: threadOf.get(task.id) ?? null };
-    if (task.status === "in_review" || chat.thread?.awaitingChoice === true) {
+    if (task.status === "in_review" || (chat.thread !== null && chat.thread.awaitingAt !== null)) {
       chats.needsAnswer.push(chat);
     } else if (task.status === "in_progress" && laneOf(task) !== null) {
       chats.inProgress.push(chat);

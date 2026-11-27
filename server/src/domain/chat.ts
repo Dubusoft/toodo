@@ -114,15 +114,15 @@ export type ChatThread = {
   readonly closedAt: number | null;
   /** Set while it is archived. */
   readonly archivedAt: number | null;
+  /** Set while the agent waits on the people's answer in it, such as a decision or a
+   * request; it is listed first then, and its task needs an answer. */
+  readonly awaitingAt: number | null;
   /** Messages of the agent and Toodo in it not read yet. */
   readonly unread: number;
   /** When its latest message was posted. */
   readonly lastMessageAt: number | null;
   /** Its latest message on one line, cut short; e.g. the latest status a lane reported. */
   readonly lastMessage: string | null;
-  /** Whether a message of the agent in it offers actions nobody chose yet: a question
-   * that waits for a person's answer. */
-  readonly awaitingChoice: boolean;
 };
 
 /** Who wrote a message: a person in the web app (`user`), the agent connected over MCP
