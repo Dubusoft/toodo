@@ -11,7 +11,7 @@ import { type AccessConfig, parseAccessConfig } from "./access.ts";
 export const DEFAULT_PORT = 47616;
 
 /** The name the chat shows for the agent unless `TOODO_CHAT_AGENT_NAME` sets one. */
-const DEFAULT_AGENT_NAME = "Agent";
+const DEFAULT_AGENT_NAME = "Dori";
 
 export type Listen = { readonly hostname: string; readonly port: number };
 

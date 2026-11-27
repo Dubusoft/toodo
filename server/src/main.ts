@@ -55,7 +55,7 @@ Environment:
                   request's Access JWT instead of a token (unset by default)
   TOODO_CHAT_AGENT_NAME
                   name the chat shows for the agent connected over MCP
-                  (default Agent)
+                  (default Dori)
   TOODO_CHAT_AGENT_AVATAR
                   avatar of that agent, an https: URL or a path on this
                   server such as /avatar.png (unset by default)

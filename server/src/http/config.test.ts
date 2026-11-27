@@ -24,7 +24,7 @@ describe("config", () => {
     expect(defaults.publicUrl).toBeNull();
     expect(defaults.pushSubject).toBe("https://github.com/Dubusoft/toodo");
     expect(defaults.access).toBeNull();
-    expect(defaults.chatAgent).toEqual({ name: "Agent", avatarUrl: null });
+    expect(defaults.chatAgent).toEqual({ name: "Dori", avatarUrl: null });
     expect(config({ XDG_DATA_HOME: "/data" }).dataDir).toBe("/data/toodo-server");
     expect(config({ TOODO_LISTEN: "[::1]:8080" }).listen).toEqual({ hostname: "::1", port: 8080 });
     expect(failure({ TOODO_LISTEN: "localhost:8080" })).toBe(
