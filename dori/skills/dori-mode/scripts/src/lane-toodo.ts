@@ -19,34 +19,42 @@ const toodoOn = (deps: Pick<FlowDeps, "config">): boolean => deps.config.platfor
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/** No workspace to open a lane's task in: `--workspace` names no unarchived one, or none's repository names a Done repo. */
+export class LaneWorkspaceRefused extends Error {}
+
 /**
- * The workspace a lane without a task gets its task in: the unarchived one whose repository names a repo of the lane's
- * Done line, else the first unarchived one.
+ * The workspace a lane without a task gets its task in: `workspace` (`dori launch --workspace`) when it is an unarchived
+ * one, else the unarchived one whose repository names a repo of the lane's Done line. Never a fallback: with neither,
+ * LaneWorkspaceRefused, so no task is created in a workspace it does not belong to.
  */
-const laneWorkspace = async (mcp: ToodoMcp, lane: Lane): Promise<number> => {
-  const raw = await mcp.call("list_workspaces", {});
+export const laneWorkspace = async (deps: Pick<FlowDeps, "tunables">, done: string, workspace?: number): Promise<number> => {
+  const raw = await new ToodoMcp(deps.tunables.toodoWriter).call("list_workspaces", {});
   const open = (Array.isArray(raw) ? raw : []).filter((w): w is Record<string, unknown> & { id: number } =>
     isRecord(w) && Number.isSafeInteger(w.id) && (w.archivedAt ?? null) === null).sort((a, b) => a.id - b.id);
-  const repos = doneRepos(lane.done).map((r) => r.toLowerCase());
+  if (workspace !== undefined) {
+    if (open.some((w) => w.id === workspace)) return workspace;
+    throw new LaneWorkspaceRefused(`--workspace ${workspace} is not an unarchived Toodo workspace (open: ${open.map((w) => w.id).join(", ") || "none"})`);
+  }
+  const repos = doneRepos(done).map((r) => r.toLowerCase());
   const named = open.find((w) => typeof w.repository === "string" && repos.some((r) => (w.repository as string).toLowerCase().includes(r)));
-  const chosen = named ?? open[0];
-  if (!chosen) throw new Error("toodo-server has no unarchived workspace to put the lane's task in");
-  return chosen.id;
+  if (named) return named.id;
+  throw new LaneWorkspaceRefused(`no unarchived Toodo workspace's repository names a repo of the Done line (${repos.join(", ") || "none"}), so no task was created; launch with --task ID or --workspace ID`);
 };
 
 /**
  * Links a freshly launched lane to its task: a lane launched without one gets a new task titled like the lane (recorded
  * on the lane with `taskCreated`, so its close completes it), the task is started with the `lane:<key>` ref (nothing is written when it already is), and its thread is
- * found or opened. Returns the note line for the launch output, or undefined with the Toodo chat off.
+ * found or opened. The task is created in laneWorkspace (`workspace` is `--workspace`); when it refuses, no task is made.
+ * Returns the note line for the launch output, or undefined with the Toodo chat off.
  */
-export const linkLaneTask = async (deps: LaneToodoDeps, lane: Lane): Promise<string | undefined> => {
+export const linkLaneTask = async (deps: LaneToodoDeps, lane: Lane, workspace?: number): Promise<string | undefined> => {
   if (!toodoOn(deps)) return undefined;
   try {
     let task = lane.task;
     if (task === undefined) {
-      const mcp = new ToodoMcp(deps.tunables.toodoWriter);
-      const created = await mcp.call("create_task", {
-        workspace_id: await laneWorkspace(mcp, lane), task_type: "rnd", title: lane.title,
+      const workspaceId = await laneWorkspace(deps, lane.done, workspace);
+      const created = await new ToodoMcp(deps.tunables.toodoWriter).call("create_task", {
+        workspace_id: workspaceId, task_type: "rnd", title: lane.title,
         description: `Opened for lane \`${lane.key}\`, launched without a task.`, refs: [`lane:${lane.key}`],
       });
       if (!isRecord(created) || !Number.isSafeInteger(created.id)) throw new Error("toodo-server create_task returned no task id");

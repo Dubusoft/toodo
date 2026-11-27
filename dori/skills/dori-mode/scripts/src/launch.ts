@@ -56,6 +56,8 @@ export type LaunchInput = {
   readonly session?: string;
   /** The Toodo task id (`--task`), recorded on the lane as `task`. */
   readonly task?: number;
+  /** The Toodo workspace (`--workspace`) a lane without a task gets its task in (lane-toodo.ts laneWorkspace); not recorded on the lane. */
+  readonly workspace?: number;
   /** `--grant NAME` (repeatable): names in the lane's runner's runner-config `grants`, recorded on the lane as `grants`. */
   readonly grants?: readonly string[];
 };
@@ -82,6 +84,8 @@ export class SandboxRefusal extends LaunchError {
 export const validateLaunch = async (deps: FlowDeps, input: LaunchInput): Promise<void> => {
   if (!LANE_KEY.test(input.key)) throw new LaunchError(`key must match ${LANE_KEY}`);
   if (input.task !== undefined && !(Number.isSafeInteger(input.task) && input.task > 0)) throw new LaunchError(`--task must be a positive integer (a Toodo task id), got ${input.task}`);
+  if (input.workspace !== undefined && !(Number.isSafeInteger(input.workspace) && input.workspace > 0)) throw new LaunchError(`--workspace must be a positive integer (a Toodo workspace id), got ${input.workspace}`);
+  if (input.workspace !== undefined && input.task !== undefined) throw new LaunchError("--workspace places the task a lane without one gets; a lane with --task (or an autopilot task) takes no --workspace");
   if (await deps.registry.read(input.key)) throw new LaunchError(`lane ${input.key} is already registered`);
   const errors = doneSyntaxErrors(input.done);
   if (errors.length) throw new LaunchError(`Done line is not checkable: ${errors.join("; ")}`);
@@ -458,7 +462,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, existing?: 
     const lane: Lane = { ...draft, ...(result.model ? { model: result.model } : {}), ...(input.machine && !dir && result.cwd ? { remoteCwd: result.cwd } : {}), fileRun: prepared.files.run, pendingFileRun: undefined, pane: result.pane, ...(result.tab ? { tab: result.tab } : {}) };
     const committed = await commitLaunched(deps, lane, existing, token, prepared);
     // A fresh lane on the Toodo chat is linked to its task (made when it has none); a relaunch keeps its link.
-    const linked = existing ? undefined : await linkLaneTask(deps, committed);
+    const linked = existing ? undefined : await linkLaneTask(deps, committed, input.workspace);
     return {
       lane: linked ? (await deps.registry.read(committed.key)) ?? committed : committed,
       notes: linked ? [...notes, linked] : notes, startup: startupLine(input.key, result.pane, result.startup),

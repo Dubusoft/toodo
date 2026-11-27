@@ -21,6 +21,7 @@ export const launchCommand: CliCommand = {
     model: { type: "string" },
     mode: { type: "string" },
     task: { type: "string" },
+    workspace: { type: "string" },
     cwd: { type: "string" },
     machine: { type: "string" },
     note: { type: "string" },
@@ -54,6 +55,18 @@ export const launchCommand: CliCommand = {
     })();
     if (flagTask !== undefined && reservedTask !== undefined && flagTask !== reservedTask) die(`LAUNCH_TASK_MISMATCH lane ${key} is reserved by autopilot for task #${reservedTask}, not --task ${flagTask}`);
     const task = flagTask ?? reservedTask;
+    const workspaceArg = opt("workspace");
+    const flagWorkspace = workspaceArg === undefined ? undefined : (parseLaneTask(workspaceArg) ?? die(`--workspace must be a positive integer (a Toodo workspace id), got ${JSON.stringify(workspaceArg)}`));
+    if (flagWorkspace !== undefined && task !== undefined) die("--workspace places the task a lane without one gets; a lane with --task (or an autopilot task) takes no --workspace");
+    // On the Toodo chat a lane without a task gets one: refuse before anything starts when it has nowhere to go.
+    const workspace = task === undefined && config.platforms.includes("toodo") ? await (async () => {
+      const { laneWorkspace, LaneWorkspaceRefused } = await import("../lane-toodo.ts");
+      try { return await laneWorkspace(deps, need("done"), flagWorkspace); } catch (e) {
+        if (e instanceof LaneWorkspaceRefused) return die(`LAUNCH_WORKSPACE_REQUIRED ${key}: ${e.message}`);
+        // Toodo unreachable never fails a launch: the link after the start reports it (LANE_TASK_LINK_FAILED).
+        return flagWorkspace;
+      }
+    })() : flagWorkspace;
     const grantArgs = (flags.values.grant as string[] | undefined ?? []).map((g) => g.trim());
     const { GRANT_NAME } = await import("../runner/policy.ts");
     for (const g of grantArgs) if (!GRANT_NAME.test(g)) die(`--grant ${JSON.stringify(g)} is not a grant name (${GRANT_NAME.source})`);
@@ -64,7 +77,7 @@ export const launchCommand: CliCommand = {
         return { path: generatedBriefPath(config.stateDir, key ?? ""), text: assembleBrief(title, fromArgs.refs.map((ref) => ownerMessageText(config.stateDir, ref)), fromArgs.notes) };
       } catch (e) { return die(e instanceof Error ? e.message : String(e)); }
     })() : undefined;
-    const input: LaunchInput = { key: key ?? "", title, brief: generated ? generated.path : need("brief"), done: need("done"), thread: await laneThreadRef(opt("thread"), config.discordChannels), model: opt("model"), ...(mode ? { mode: mode as LaneMode } : {}), ...(task !== undefined ? { task } : {}), cwd: opt("cwd"), machine: opt("machine"), shareThread: Boolean(flags.values["share-thread"]), allowRepoMismatch: Boolean(flags.values["allow-repo-mismatch"]), ...(sandbox === undefined ? {} : { sandbox }), ...(grants.length ? { grants } : {}) };
+    const input: LaunchInput = { key: key ?? "", title, brief: generated ? generated.path : need("brief"), done: need("done"), thread: await laneThreadRef(opt("thread"), config.discordChannels), model: opt("model"), ...(mode ? { mode: mode as LaneMode } : {}), ...(task !== undefined ? { task } : {}), ...(workspace !== undefined ? { workspace } : {}), cwd: opt("cwd"), machine: opt("machine"), shareThread: Boolean(flags.values["share-thread"]), allowRepoMismatch: Boolean(flags.values["allow-repo-mismatch"]), ...(sandbox === undefined ? {} : { sandbox }), ...(grants.length ? { grants } : {}) };
     const worktree = opt("worktree");
     if (worktree === undefined && opt("base") !== undefined) die("--base goes with --worktree");
     if (worktree !== undefined && input.cwd) die("--worktree creates the lane's directory; drop --cwd");
