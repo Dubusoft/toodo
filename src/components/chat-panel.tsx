@@ -131,14 +131,11 @@ export function totalUnread(channels: readonly ChatChannel[], tasks: TaskChats):
 
 /**
  * The receipt a person's message shows: sent until the agent acknowledges it (read), and a note
- * once it is handled, or while it waits too long. Received by the agent but not yet read stays
- * sent, as in other messengers.
+ * while it waits too long. Received by the agent but not yet read stays sent, as in other
+ * messengers.
  */
 export function receipt(message: ChatMessage): { status: ChatMessageStatus; note: string | null } {
   const status: ChatMessageStatus = message.ackedAt !== null ? "read" : "sent";
-  if (message.handledAt !== null) {
-    return { status, note: message.handledTaskId !== null ? `Handled in task #${message.handledTaskId}` : "Handled" };
-  }
   return { status, note: message.overdue ? "Waiting for an answer" : null };
 }
 

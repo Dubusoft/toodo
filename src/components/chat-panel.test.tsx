@@ -210,14 +210,14 @@ describe("voice input", () => {
 });
 
 describe("receipts", () => {
-  it("go from sent to read, staying sent once delivered, with a note once handled or overdue", () => {
+  it("go from sent to read, staying sent once delivered, with a note only while overdue", () => {
     expect(receipt(message(1, "user", "Hi"))).toEqual({ status: "sent", note: null });
     expect(receipt(message(1, "user", "Hi", { deliveredAt: 2 })).status).toBe("sent");
     expect(receipt(message(1, "user", "Hi", { deliveredAt: 2, ackedAt: 3 })).status).toBe("read");
     expect(receipt(message(1, "user", "Hi", { overdue: true })).note).toBe("Waiting for an answer");
     expect(receipt(message(1, "user", "Hi", { deliveredAt: 2, ackedAt: 3, handledAt: 4, handledTaskId: 9 }))).toEqual({
       status: "read",
-      note: "Handled in task #9",
+      note: null,
     });
   });
 });
@@ -282,7 +282,8 @@ describe("Chat", () => {
     renderChat();
     fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
 
-    expect(await screen.findByText("Handled")).toBeInTheDocument();
+    expect(await screen.findByText("Ship it?")).toBeInTheDocument();
+    expect(screen.queryByText("Handled")).not.toBeInTheDocument();
     const input = await screen.findByRole("textbox");
     fireEvent.input(input, { target: { textContent: "Thanks" } });
     fireEvent.keyDown(input, { key: "Enter" });

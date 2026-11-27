@@ -656,9 +656,8 @@ was unreachable, waits in the browser under its client id, also across reloads, 
 out when the server answers again. The server stores a message once per client id, so it
 appears once however often it is sent. One the server refused shows why, with a retry.
 
-Each person's message shows its receipts in the app: sent, delivered (received by the
-agent), read (acknowledged), and handled. One not handled within 10 minutes shows that it
-waits for an answer. A message the agent posts reaches the devices that turned on **Agent
+Each person's message shows its receipt in the app: sent, then read once the agent
+acknowledges it. One not handled within 10 minutes shows that it waits for an answer. A message the agent posts reaches the devices that turned on **Agent
 messages in the chat** under [Notifications](#notifications). Chat apps connected over
 OAuth do not get the chat tools.
 
