@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { CHAT_INSTRUCTIONS, INSTRUCTIONS, SKILL } from "./instructions.ts";
 
-const SHARED = new URL("../../../src-tauri/src/mcp/shared/", import.meta.url);
+const SHARED = new URL("./shared/", import.meta.url);
 const fragment = async (name: string) => (await Bun.file(new URL(`${name}.md`, SHARED)).text()).trimEnd();
 
 test("The instructions and the skill share each fragment", async () => {
