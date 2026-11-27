@@ -83,8 +83,8 @@ describe("SupervisorHost", () => {
     latest().events.message({ type: "ready" });
     const answer = host.schedules({ op: "pause", name: "gmail-digest" });
     expect(latest().posted).toEqual([{ type: "schedules", id: 1, request: { op: "pause", name: "gmail-digest" } }]);
-    latest().events.message({ type: "schedules", id: 1, reply: { ok: true, jobs: [] } });
-    expect(await answer).toEqual({ ok: true, jobs: [] });
+    latest().events.message({ type: "schedules", id: 1, reply: { ok: true, jobs: [], timeZone: { name: "Asia/Seoul", label: "KST" } } });
+    expect(await answer).toEqual({ ok: true, jobs: [], timeZone: { name: "Asia/Seoul", label: "KST" } });
   });
 
   test("a scheduled-jobs request fails when the Worker does not answer in time or dies first", async () => {

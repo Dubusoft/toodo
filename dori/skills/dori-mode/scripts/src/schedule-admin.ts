@@ -2,6 +2,7 @@
 // host, supervise-worker.ts). Each one edits sources.json, which the supervisor reads on every pass, so it applies
 // without a restart.
 import type { ScheduledJob, ScheduleReply, ScheduleRequest, ScheduleTiming } from "../../../../../src/lib/supervisor-schedules.ts";
+import { displayZone, zoneLabel } from "./display-time.ts";
 import { readSourceStatus, SourceSpecs } from "./event-sources.ts";
 import { queueRunNow, scheduleRow, type ScheduleSpec } from "./schedule.ts";
 import { SourceError } from "./source-types.ts";
@@ -77,11 +78,15 @@ const apply = (stateDir: string, request: ScheduleRequest, now: number): void =>
   }
 };
 
-/** Applies one request from the web app and answers with every job; a refused one answers why and changes nothing. */
-export const handleScheduleRequest = (stateDir: string, request: ScheduleRequest, now: number): ScheduleReply => {
+/**
+ * Applies one request from the web app and answers with every job and the config's `displayTimeZone`, which the panel
+ * shows and picks times in; a refused one answers why and changes nothing.
+ */
+export const handleScheduleRequest = (stateDir: string, displayTimeZone: string, request: ScheduleRequest, now: number): ScheduleReply => {
   try {
     apply(stateDir, request, now);
-    return { ok: true, jobs: scheduledJobs(stateDir, now) };
+    const zone = displayZone(displayTimeZone);
+    return { ok: true, jobs: scheduledJobs(stateDir, now), timeZone: { name: zone, label: zoneLabel(zone, now) } };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

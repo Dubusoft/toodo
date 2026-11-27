@@ -22,7 +22,7 @@ self.addEventListener("message", (event: MessageEvent<HostToWorker>) => {
   const message = event.data;
   if (message.type === "stop") controller.abort();
   // The Toodo web app's scheduled-jobs panel, relayed by the host: applied to sources.json, which the next pass reads.
-  else void configured.then((config) => { post({ type: "schedules", id: message.id, reply: handleScheduleRequest(config.stateDir, message.request, Date.now()) }); });
+  else void configured.then((config) => { post({ type: "schedules", id: message.id, reply: handleScheduleRequest(config.stateDir, config.displayTimeZone, message.request, Date.now()) }); });
 });
 
 const heartbeat = setInterval(() => { post({ type: "heartbeat" }); }, HEARTBEAT_INTERVAL_MS);

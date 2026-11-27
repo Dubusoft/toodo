@@ -1,9 +1,10 @@
 /**
  * The scheduled jobs panel's calls: `GET /api/supervisor/schedules` lists the Dori supervisor's
- * jobs and `POST` changes one; both answer with every job, which replaces the cached list.
+ * jobs and `POST` changes one; both answer with every job and Dori's display time zone, which
+ * replace the cached list.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ScheduledJob, ScheduleRequest } from "@/lib/supervisor-schedules";
+import type { ScheduledJob, ScheduleRequest, ScheduleTimeZone } from "@/lib/supervisor-schedules";
 import { serverFetch } from "@/web/connection";
 import { credentials, forgetToken, rejectedByServer } from "@/web/session";
 
@@ -12,7 +13,9 @@ const queryKey = ["supervisor-schedules"] as const;
 /** Next and last runs move on their own while the panel is open. */
 const REFRESH_MS = 30_000;
 
-async function call(request?: ScheduleRequest): Promise<readonly ScheduledJob[]> {
+export type ScheduledJobs = { readonly jobs: readonly ScheduledJob[]; readonly timeZone: ScheduleTimeZone };
+
+async function call(request?: ScheduleRequest): Promise<ScheduledJobs> {
   const signedIn = credentials();
   if (signedIn === null) throw new Error("No access token for the Toodo server.");
   const response = await serverFetch(
@@ -24,7 +27,9 @@ async function call(request?: ScheduleRequest): Promise<readonly ScheduledJob[]>
   if (await rejectedByServer(response)) forgetToken();
   const body: unknown = await response.json().catch(() => null);
   if (typeof body === "object" && body !== null && "ok" in body) {
-    if (body.ok === true && "jobs" in body) return body.jobs as readonly ScheduledJob[];
+    if (body.ok === true && "jobs" in body && "timeZone" in body) {
+      return { jobs: body.jobs as readonly ScheduledJob[], timeZone: body.timeZone as ScheduleTimeZone };
+    }
     if ("error" in body && typeof body.error === "string") throw new Error(body.error);
   }
   const message = typeof body === "object" && body !== null && "message" in body && typeof body.message === "string" ? `: ${body.message}` : "";
@@ -41,6 +46,6 @@ export function useChangeSchedule() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (request: ScheduleRequest) => call(request),
-    onSuccess: (jobs) => queryClient.setQueryData(queryKey, jobs),
+    onSuccess: (reply) => queryClient.setQueryData(queryKey, reply),
   });
 }
