@@ -1,0 +1,322 @@
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { adoptLane, launchLane, remoteRepo, type SharedThreadLane } from "../src/launch.ts";
+import { readLaneAttachmentPin, writeLaneAttachmentPin } from "../src/lane-files.ts";
+import { type LaneOps, LaneOpsError, laneOps } from "../src/lane-ops.ts";
+import { type RunnerCall, RunnerCalls, RunnerUnavailable } from "../src/runner/call.ts";
+import type { Lane } from "../src/registry.ts";
+import {
+  clearLaunchHold, dequeueLaunch, enqueueLaunch, launchHeld, launchQueue, launchQueueText,
+  type QueuedLaunch, recordLaunchVerdict,
+} from "../src/routing.ts";
+import { depsFor, fakeClock, newWorld, withState, type World } from "./fakes.ts";
+
+const T0 = Date.parse("2026-01-01T12:00:00.000Z");
+let state: ReturnType<typeof withState>;
+let world: World;
+beforeEach(() => { state = withState(); world = newWorld(); });
+afterEach(() => state.done());
+
+const queued = (key: string, patch: Partial<QueuedLaunch> = {}): QueuedLaunch => ({
+  key, title: key, done: "merged acme/app#1", brief: `/briefs/${key}.md`, cwd: `/repos/${key}`, repos: ["acme/app"], thread: `thr-${key}`,
+  queuedAt: "2026-01-01T12:00:00.000Z", reasons: ["panes 20 >= 20"], ...patch,
+});
+
+// Item 1: the HOLD queue
+test("held launches persist in launch-hold.json and survive LAUNCH_READY clearing the hold", () => {
+  recordLaunchVerdict(state.dir, { ok: false, reasons: ["panes 20 >= 20"] }, T0);
+  enqueueLaunch(state.dir, queued("lane-a"));
+  enqueueLaunch(state.dir, queued("lane-b", { queuedAt: "2026-01-01T12:05:00.000Z" }));
+  expect(launchHeld(state.dir)).toBe(true);
+  clearLaunchHold(state.dir);
+  expect(launchHeld(state.dir)).toBe(false);
+  expect(launchQueue(state.dir).map((q) => q.key)).toEqual(["lane-a", "lane-b"]);
+  // A new HOLD raises the flag again and keeps the queue.
+  recordLaunchVerdict(state.dir, { ok: false, reasons: ["memory free 5% < 20%"] }, T0 + 1);
+  expect(launchHeld(state.dir)).toBe(true);
+  expect(launchQueue(state.dir)).toHaveLength(2);
+  recordLaunchVerdict(state.dir, { ok: true, reasons: [] }, T0 + 2);
+  expect(launchQueue(state.dir)).toHaveLength(2);
+});
+
+test("re-queueing a key keeps its first queued-at time; items leave only when dropped or launched", () => {
+  enqueueLaunch(state.dir, queued("lane-a"));
+  const q = enqueueLaunch(state.dir, queued("lane-a", { queuedAt: "2026-01-02T00:00:00.000Z", reasons: ["disk"] }));
+  expect(q).toHaveLength(1);
+  expect(q[0]).toMatchObject({ queuedAt: "2026-01-01T12:00:00.000Z", reasons: ["disk"] });
+  expect(dequeueLaunch(state.dir, "missing")).toBe(false);
+  expect(dequeueLaunch(state.dir, "lane-a")).toBe(true);
+  expect(launchQueue(state.dir)).toEqual([]);
+});
+
+test("an older launch-hold.json without a blocked flag still counts as held", () => {
+  writeFileSync(join(state.dir, "launch-hold.json"), JSON.stringify({ at: T0, reasons: ["panes 20 >= 20"] }));
+  expect(launchHeld(state.dir)).toBe(true);
+  expect(launchQueue(state.dir)).toEqual([]);
+});
+
+test("the LAUNCH_READY text lists every queued launch with key, cwd, repo, thread, Done, brief and queued-at", () => {
+  expect(launchQueueText([])).toBe("");
+  const text = launchQueueText([queued("lane-a"), queued("lane-b", { thread: "none", cwd: undefined })]);
+  expect(text).toStartWith("; queued launches (2): lane-a cwd=/repos/lane-a repo=acme/app thread=thr-lane-a ");
+  expect(text).toContain('done="merged acme/app#1" brief=/briefs/lane-a.md queued 2026-01-01T12:00:00.000Z');
+  expect(text).toContain("; lane-b repo=acme/app done=");
+  expect(text).not.toContain("thread=none");
+});
+
+// Items 3 and 4: placement and threads
+/** deps whose local runner knows git checkouts: dir -> [toplevel, origin url]; every start opens a new pane. */
+const deps = (repos: Record<string, readonly [string, string]> = {}) => {
+  const base = depsFor(world, fakeClock(T0), state.dir);
+  const ops: LaneOps = {
+    ...base.ops,
+    inspect: async (lane, want) => {
+      world.ops.push({ op: "inspect", key: lane.key, args: { lane, want } });
+      const dir = want.cwd ?? lane.cwd ?? "";
+      const repo = repos[dir] ?? Object.values(repos).find(([top]) => top === dir);
+      return { status: "missing", cwd: dir, cwdExists: true, ...(want.git ? { git: { worktrees: [], ...(repo ? { toplevel: repo[0], origin: repo[1] } : {}) } } : {}) };
+    },
+  };
+  return { ...base, ops };
+};
+const brief = () => { const b = join(state.dir, `brief-${Math.random()}.md`); writeFileSync(b, "goal\n"); return b; };
+const input = (key: string, extra: Record<string, unknown> = {}) => ({ key, title: key, brief: brief(), done: "merged acme/app#1", ...extra });
+const tabs = () => world.ops.filter((e) => e.op === "start");
+
+test("attachment preparation refuses before reservation, start or lead brief rewrite", async () => {
+  const base = deps();
+  const entry = input("bad-files", { cwd: "/scratch" });
+  writeFileSync(entry.brief, "x".repeat(70_000));
+  await expect(launchLane(base, entry)).rejects.toThrow("LANE_FILES_LIMIT bad-files:");
+  expect(readFileSync(entry.brief, "utf8")).toBe("x".repeat(70_000));
+  expect(await base.registry.open()).toEqual([]);
+  expect(tabs()).toEqual([]);
+  expect(world.calls.filter((c) => c[0] === "hc")).toEqual([]);
+});
+
+test("real RunnerCalls unknown-proto refusal releases the launch reservation with no attempt or send", async () => {
+  const base = deps(), entry = input("old-runner", { cwd: "/scratch" });
+  let sends = 0, attempts = 0, timers = 0;
+  const calls = new RunnerCalls({ proto: () => undefined, now: () => T0, log: () => {},
+    timers: { set: () => { timers++; }, clear: () => {} }, attempts: { record: () => { attempts++; }, settle: () => {} },
+    accept: { connected: () => true, command: () => { sends++; return 1; }, control: () => { sends++; return true; } },
+  });
+  const facade = laneOps(calls, { now: () => T0 });
+  const d = { ...base, ops: { ...base.ops, start: facade.start } };
+  const detail = "lane files need the runner's proto (unknown); wait for its hello and retry";
+  await expect(launchLane(d, entry)).rejects.toThrow(`old-runner: RUNNER_OUTDATED runner=local outdated: ${detail}`);
+  expect([sends, attempts, timers, calls.pending()]).toEqual([0, 0, 0, 0]);
+  expect(await base.registry.read(entry.key)).toBeNull();
+});
+
+test.each(["LANE_FILES_INPUT_REQUIRED", "LANE_REPORT_STORE_FAILED"])("runner wrapper chain surfaces exact %s leaf and releases its reservation", async (code) => {
+  const base = deps(), entry = input("leaf", { cwd: "/scratch" });
+  const leaf = `${code} leaf: ${"complete detail ".repeat(30)}retry`;
+  const start = async (): Promise<never> => { throw new LaneOpsError("LANE_OP_FAILED", "local", `lane.start RUNNER_CMD_FAILED ${leaf}`); };
+  const error = await launchLane({ ...base, ops: { ...base.ops, start } }, entry).catch((e) => e);
+  expect(error.message).toBe(leaf);
+  expect(await base.registry.read(entry.key)).toBeNull();
+});
+
+test("local and remote launch carry the same binary attachment tree and retain lead paths", async () => {
+  const base = deps(); mkdirSync(join(state.dir, "briefs"));
+  const source = join(state.dir, "briefs", "data");
+  writeFileSync(source, Buffer.from([0, 255]));
+  const entries = [input("payload-local", { cwd: "/scratch" }), input("payload-remote", { cwd: "/srv", machine: "box" })];
+  for (const entry of entries) { writeFileSync(entry.brief, `deliverable: report\nupdate ${source}:12`); await launchLane(base, entry); }
+  const starts = tabs().map((e) => e.args as Parameters<LaneOps["start"]>[0]);
+  expect(starts[0]!.files!.tree).toEqual(starts[1]!.files!.tree);
+  expect(starts[0]!.files!.references).toEqual(starts[1]!.files!.references);
+  // A fresh launch pins what it shipped where no lane can write; recovery ships only that set.
+  for (const entry of entries) {
+    expect(readLaneAttachmentPin(state.dir, entry.key)).toEqual([realpathSync(source)]);
+    writeLaneAttachmentPin(state.dir, entry.key, []);
+  }
+  for (const entry of entries) {
+    expect(readFileSync(entry.brief, "utf8")).toContain(`update ${source}:12`);
+    expect((await base.registry.read(entry.key))?.fileRun?.requiredReport).toBe(true);
+  }
+});
+
+test("git remote URLs of every common form name their owner/repo", () => {
+  expect(remoteRepo("git@github.com:Acme/App.git")).toBe("acme/app");
+  expect(remoteRepo("https://github.com/acme/app.git")).toBe("acme/app");
+  expect(remoteRepo("https://github.com/acme/app")).toBe("acme/app");
+  expect(remoteRepo("ssh://git@github.com/acme/my.app.git")).toBe("acme/my.app");
+});
+
+test("a second open lane in the same git checkout is refused before anything is created", async () => {
+  const d = deps({ "/repos/app": ["/repos/app", "git@github.com:acme/app.git"], "/repos/app/sub": ["/repos/app", "git@github.com:acme/app.git"] });
+  await launchLane(d, input("first-lane", { cwd: "/repos/app" }));
+  expect(tabs()).toHaveLength(1);
+  await expect(launchLane(d, input("second-lane", { cwd: "/repos/app/sub" }))).rejects.toThrow("is the checkout open lane first-lane works in");
+  await expect(adoptLane(d, { ...input("adopted-lane", { cwd: "/repos/app" }), pane: "w:p77" })).rejects.toThrow("first-lane");
+  expect(tabs()).toHaveLength(1);
+  expect(await d.registry.read("second-lane")).toBeNull();
+  // Closed lanes free their checkout; directories outside git are never refused.
+  const first = await d.registry.read("first-lane");
+  if (first) await d.registry.write({ ...first, closedAt: new Date(T0).toISOString() });
+  await launchLane(d, input("third-lane", { cwd: "/repos/app" }));
+  await launchLane(d, input("plain-a", { cwd: "/scratch" }));
+  await launchLane(d, input("plain-b", { cwd: "/scratch" }));
+  expect(tabs()).toHaveLength(4);
+});
+
+test("a cwd whose git remotes name none of the Done line's repos is refused unless --allow-repo-mismatch", async () => {
+  const d = deps({ "/repos/other": ["/repos/other", "https://github.com/acme/other.git"] });
+  await expect(launchLane(d, input("wrong-repo", { cwd: "/repos/other" }))).rejects.toThrow("is a checkout of acme/other, but the Done line names acme/app");
+  expect(tabs()).toHaveLength(0);
+  const r = await launchLane(d, input("wrong-repo", { cwd: "/repos/other", allowRepoMismatch: true }));
+  expect(r.lane.cwd).toBe("/repos/other");
+  // A Done line that also names the cwd's repo matches.
+  const d2 = deps({ "/repos/other2": ["/repos/other2", "https://github.com/acme/other.git"] });
+  await launchLane(d2, input("two-repos", { cwd: "/repos/other2", done: "merged acme/app#1; closed acme/other#2" }));
+});
+
+test("a second open lane on the same thread is refused unless --share-thread, which records the sharing", async () => {
+  const d = deps();
+  await launchLane(d, input("thread-a", { cwd: "/scratch", thread: "discord:123" }));
+  await expect(launchLane(d, input("thread-b", { cwd: "/scratch", thread: "discord:123" }))).rejects.toThrow("thread discord:123 already has open lane thread-a; one thread per lane, or pass --share-thread");
+  await expect(adoptLane(d, { ...input("thread-c", { thread: "discord:123" }), pane: "w:p70" })).rejects.toThrow("--share-thread");
+  const b = await launchLane(d, input("thread-b", { cwd: "/scratch", thread: "discord:123", shareThread: true }));
+  expect(((await d.registry.read("thread-b")) as SharedThreadLane | null)?.threadSharedWith).toEqual(["thread-a"]);
+  expect((b.lane as SharedThreadLane).threadSharedWith).toEqual(["thread-a"]);
+  const c = await adoptLane(d, { ...input("thread-c", { thread: "discord:123", shareThread: true }), pane: "w:p70" }) as SharedThreadLane;
+  expect([...(c.threadSharedWith ?? [])].sort()).toEqual(["thread-a", "thread-b"]);
+  // "none" is never a shared thread.
+  await launchLane(d, input("no-thread-1", { cwd: "/scratch" }));
+  await launchLane(d, input("no-thread-2", { cwd: "/scratch" }));
+});
+
+for (const conflict of ["key", "thread", "checkout"] as const) {
+  test(`launch reservation refuses a concurrent ${conflict} conflict before a second tab is created`, async () => {
+    // Given the first launch paused at its first external write, after admission.
+    const base = deps(conflict === "checkout" ? { "/repos/app": ["/repos/app", "git@github.com:acme/app.git"] } : {});
+    const entered = Promise.withResolvers<void>();
+    const proceed = Promise.withResolvers<void>();
+    let creates = 0;
+    const d = { ...base, ops: { ...base.ops, start: async (start: Parameters<LaneOps["start"]>[0]) => {
+      if (++creates === 1) {
+        entered.resolve();
+        await proceed.promise;
+      }
+      return base.ops.start(start);
+    } } };
+    const placement = conflict === "checkout" ? { cwd: "/repos/app" } : { cwd: "/scratch" };
+    const first = launchLane(d, input("first-lane", { ...placement, thread: "discord:one" }));
+    let error: unknown;
+    try {
+      await entered.promise;
+      // When a second launch races while the first has not yet registered its agent.
+      await launchLane(d, input(conflict === "key" ? "first-lane" : "second-lane", {
+        ...placement, thread: conflict === "thread" ? "discord:one" : "discord:two",
+      })).catch((caught: unknown) => { error = caught; });
+    } finally { proceed.resolve(); await first; }
+    // Then only one agent creation was admitted.
+    expect(error).toBeInstanceOf(Error);
+    expect(creates).toBe(1);
+    expect((await d.registry.read("first-lane"))?.launchReservation).toBeUndefined();
+  });
+}
+
+test("a failed launch releases only its reservation and allows retrying the key", async () => {
+  const base = deps();
+  const entry = input("retry-lane", { cwd: "/scratch" });
+  const d = { ...base, ops: { ...base.ops, start: async () => { throw new LaneOpsError("LANE_OP_FAILED", "local", "lane.start hc run failed: create failed"); } } };
+  await expect(launchLane(d, entry)).rejects.toThrow("create failed");
+  expect(await d.registry.read(entry.key)).toBeNull();
+  await expect(launchLane(base, entry)).resolves.toMatchObject({ lane: { key: entry.key } });
+});
+
+test("a registration failure after the runner started the agent keeps its paused reservation visible", async () => {
+  const base = deps();
+  let admitted = false;
+  const update = base.registry.update.bind(base.registry);
+  const spy = spyOn(base.registry, "update").mockImplementation((key, mutate) => {
+    if (admitted) return Promise.reject(new Error("registration disk error"));
+    return update(key, mutate);
+  });
+  const d = { ...base, ops: { ...base.ops, start: async (start: Parameters<LaneOps["start"]>[0]) => {
+    const started = await base.ops.start(start);
+    admitted = true;
+    return started;
+  } } };
+  try {
+    await expect(launchLane(d, input("visible-lane", { cwd: "/scratch" }))).rejects.toThrow("registration disk error");
+    // The reservation is not released: the runner owns a live agent for this key, and its lane.started fills the pane in.
+    expect(await d.registry.read("visible-lane")).toMatchObject({ status: "paused", runner: "local", launchReservation: expect.any(String) });
+  } finally { spy.mockRestore(); }
+});
+
+test("a lane.start whose relay closed after sending keeps its reservation, marked unconfirmed", async () => {
+  const base = deps();
+  const lost: RunnerCall = {
+    connected: () => true,
+    call: async () => { throw new RunnerUnavailable("local", "lost", "relay connection closed after call was sent; it may have reached the runner"); },
+    query: async () => { throw new Error("no query expected"); },
+  };
+  const d = { ...base, ops: { ...base.ops, start: laneOps(lost, { now: () => T0 }).start } };
+  await expect(launchLane(d, input("lost-lane", { cwd: "/scratch" }))).rejects.toThrow("the start may have happened");
+  expect(await d.registry.read("lost-lane")).toMatchObject({ status: "paused", launchReservation: expect.any(String), launchUnconfirmed: true });
+});
+
+// The CLI paths that need no host or network
+const cli = async (args: string[], held = false) => {
+  const proc = Bun.spawn(["bun", ...(held ? ["--preload", join(import.meta.dir, "fixtures/held-cli-preload.ts")] : []), join(import.meta.dir, "..", "src", "cli.ts"), ...args], {
+    env: { ...process.env, DORI_CONFIG: join(state.dir, "no-config.json"), DORI_STATE_DIR: state.dir, HOME: state.dir },
+    stdout: "pipe", stderr: "pipe",
+  });
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  return { out, err, code };
+};
+
+test("dori hold list prints the queue and dori hold drop removes one item", async () => {
+  enqueueLaunch(state.dir, queued("lane-a"));
+  enqueueLaunch(state.dir, queued("lane-b"));
+  const list = await cli(["hold", "list"]);
+  expect(list.code).toBe(0);
+  expect((JSON.parse(list.out) as QueuedLaunch[]).map((q) => q.key)).toEqual(["lane-a", "lane-b"]);
+  expect(await cli(["hold", "drop", "lane-a"])).toMatchObject({ code: 0, out: "HOLD_DROPPED lane-a\n" });
+  expect(launchQueue(state.dir).map((q) => q.key)).toEqual(["lane-b"]);
+  expect((await cli(["hold", "drop", "lane-a"])).code).toBe(1);
+  expect((await cli(["hold"])).code).toBe(1);
+});
+
+test("dori launch validates Done before a host HOLD can enqueue it", async () => {
+  const r = await cli(["launch", "bad-done", "--title", "t", "--brief", "/b.md", "--done", "just do it"], true);
+  expect(r.code).toBe(1);
+  expect(r.err).toContain("Done line is not checkable");
+  expect(launchQueue(state.dir)).toEqual([]);
+  expect(launchHeld(state.dir)).toBe(false);
+});
+
+test("dori launch refuses an existing key before a host HOLD can enqueue it", async () => {
+  await adoptLane(deps(), { ...input("existing-lane", { cwd: "/scratch" }), pane: "w:p1" });
+  const r = await cli(["launch", "existing-lane", "--title", "t", "--brief", "/b.md", "--done", "merged acme/app#1"], true);
+  expect(r.code).toBe(1);
+  expect(r.err).toContain("already registered");
+  expect(launchQueue(state.dir)).toEqual([]);
+  expect(launchHeld(state.dir)).toBe(false);
+});
+
+test("dori launch atomically queues a valid launch with its host HOLD", async () => {
+  const r = await cli(["launch", "held-lane", "--title", "t", "--brief", "/b.md", "--done", "merged acme/app#1"], true);
+  expect(r.code).toBe(4);
+  expect(launchQueue(state.dir).map((q) => q.key)).toEqual(["held-lane"]);
+  expect(launchHeld(state.dir)).toBe(true);
+});
+
+test("a brief declaring autoClose: machine is recorded on the lane and in its footer; an unknown value is refused", async () => {
+  const declared = (text: string) => { const b = join(state.dir, `brief-${Math.random()}.md`); writeFileSync(b, text); return b; };
+  const machine = declared("goal\n\n- autoClose: machine\n");
+  const launched = await launchLane(deps(), { ...input("auto-lane"), brief: machine });
+  expect(launched.lane.autoClose).toBe("machine");
+  expect(readFileSync(machine, "utf8")).toContain("- autoClose: machine. When the Done signals read back live the lane closes on its own");
+  const adopted = await adoptLane(deps(), { ...input("auto-adopted", { cwd: "/scratch" }), brief: declared("autoClose: machine\n"), pane: "w:p5" });
+  expect(adopted.autoClose).toBe("machine");
+  expect((await launchLane(deps(), { ...input("lead-lane", { cwd: "/scratch2" }), brief: declared("autoClose: lead\n") })).lane.autoClose).toBeUndefined();
+  await expect(launchLane(deps(), { ...input("odd-lane", { cwd: "/scratch3" }), brief: declared("autoClose: sometimes\n") })).rejects.toThrow("autoClose: sometimes");
+  expect(await deps().registry.read("odd-lane")).toBeNull();
+});

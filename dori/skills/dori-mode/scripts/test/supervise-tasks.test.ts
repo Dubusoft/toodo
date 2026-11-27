@@ -1,0 +1,289 @@
+import { afterEach, expect, mock, spyOn, test } from "bun:test";
+import { chmodSync, existsSync, mkdirSync, readFileSync, watch } from "node:fs";
+import { join } from "node:path";
+
+import * as quota from "../src/claude-quota.ts";
+import * as memoryCheck from "../src/memory-check.ts";
+import { gatewayStatusPath } from "../src/gateway-status.ts";
+import type { Http } from "../src/messenger/http.ts";
+import { Repos } from "../src/repos.ts";
+import type { Ran } from "../src/run.ts";
+import { defaultRunnerDir } from "../src/runner/fs-safety.ts";
+import { SqliteOperations } from "../src/operations.ts";
+import { SqliteLaneReports } from "../src/lane-report-store.ts";
+import { RUNNER_HUB_RETRY_MS, supervise, SUPERVISOR_TASKS, type SupervisorTask, TASK_ALERT_MS, WATCHDOG_STALL_MS } from "../src/supervise-loop.ts";
+import { Supervisor } from "../src/supervise.ts";
+import { Waits } from "../src/waits.ts";
+import { depsFor, fakeClock, manualPause, newWorld, withState } from "./fakes.ts";
+
+/** The local runner child supervise() starts: here one that runs nothing and exits when killed. */
+const idleRunner = () => {
+  let exit = (_code: number) => {};
+  const exited = new Promise<number>((resolve) => { exit = resolve; });
+  return { pid: 4242, exited, kill: () => { exit(0); } };
+};
+
+
+const cleanups: (() => void)[] = [];
+afterEach(() => {
+  mock.restore();
+  for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+});
+
+const T0 = 1_800_000_000_000;
+const OWNER = "123456789012345";
+const MESSAGE = "1900000000000000001";
+const REPORT = "LANE_REPORT demo-lane journaled before the supervisor started";
+
+/** Resolves once `check` holds, re-checked on each `subscribe` signal; rejects after `ms`. */
+const until = (subscribe: (signal: () => void) => () => void, check: () => boolean, ms: number, what: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    let stop = () => {};
+    const timer = setTimeout(() => { stop(); reject(new Error(`timed out after ${ms} ms waiting for ${what}`)); }, ms);
+    const signal = () => { if (check()) { clearTimeout(timer); stop(); resolve(); } };
+    stop = subscribe(signal);
+    signal();
+  });
+
+/**
+ * The real supervise(), where the work of `stalled` hangs until the test ends: the inbound Discord
+ * catch-up, the delivery task's lead delivery pass, every Discord post (the notices task hangs on its owner delay notice), the memory sweep (the host guard reads the
+ * local runner's sample and runs nothing), or the GitHub poll's gh api call (a wait check
+ * has its own 10 s budget, so it cannot hold the polling task).
+ */
+const setup = (stalled: SupervisorTask, before?: (home: string) => void) => {
+  const state = withState();
+  cleanups.push(state.done);
+  before?.(state.dir);
+  const home = process.env.HOME;
+  const socket = process.env.NOTIFY_SOCKET;
+  process.env.HOME = state.dir;
+  delete process.env.NOTIFY_SOCKET;
+  cleanups.push(() => {
+    if (home === undefined) delete process.env.HOME; else process.env.HOME = home;
+    if (socket === undefined) delete process.env.NOTIFY_SOCKET; else process.env.NOTIFY_SOCKET = socket;
+  });
+  const listeners = new Set<() => void>();
+  const changed = () => { for (const listener of listeners) listener(); };
+  const errors: string[] = [];
+  const error = console.error;
+  console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); changed(); };
+  cleanups.push(() => { console.error = error; });
+  // Every hung call resolves at the end of the test, and nothing hangs from then on, so shutdown can finish.
+  const hung: (() => void)[] = [];
+  let stopping = false;
+  const hang = <T>(value: T): Promise<T> => stopping ? Promise.resolve(value) : new Promise<T>((resolve) => {
+    hung.push(() => { resolve(value); });
+    changed();
+  });
+  const release = () => {
+    stopping = true;
+    for (const resolve of hung.splice(0)) resolve();
+  };
+  cleanups.push(release);
+  spyOn(quota, "lookupQuotaResults").mockReturnValue(async () => ({ results: [], text: "" }));
+  const clock = fakeClock(T0);
+  const world = newWorld();
+  world.panes.push({ pane_id: "hc:t1", workspace_id: "test", agent: "omo", agent_status: "working" });
+  const base = depsFor(world, clock, state.dir, {
+    discord: { applicationId: "100", guildId: "200", ownerId: OWNER }, discordChannels: ["11"], defaultModel: "test/model",
+  });
+  // Outbound Discord posts are accepted, except that with the notices task stalled Discord never answers a post.
+  const posts: string[] = [];
+  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (_url: unknown, init?: RequestInit) => {
+    const body = typeof init?.body === "string" ? init.body : "";
+    posts.push(body);
+    changed();
+    const ok = new Response(JSON.stringify({ id: "33" }), { status: 200 });
+    return stalled === "notices" ? hang(ok) : ok;
+  }, { preconnect: fetch.preconnect }));
+  const flush = Supervisor.prototype.flush;
+  spyOn(Supervisor.prototype, "flush").mockImplementation(function (this: Supervisor) { return stalled === "delivery" ? hang(undefined) : flush.call(this); });
+  // The notices task ends each pass with the report check.
+  let reportTicks = 0;
+  const reportTick = Supervisor.prototype.reportTick;
+  spyOn(Supervisor.prototype, "reportTick").mockImplementation(async function (this: Supervisor) {
+    await reportTick.call(this);
+    reportTicks++;
+    changed();
+  });
+  // Each reports pass reads the pending lane reports once.
+  let reportPasses = 0;
+  const pending = SqliteLaneReports.prototype.pending;
+  spyOn(SqliteLaneReports.prototype, "pending").mockImplementation(function (this: SqliteLaneReports) {
+    reportPasses++;
+    changed();
+    return pending.call(this);
+  });
+  const done = { sweeps: 0, gh: 0 };
+  // The memory sweep runs in the sweeps task only: it hangs there when that task is stalled.
+  const memorySweep = memoryCheck.memorySweep;
+  spyOn(memoryCheck, "memorySweep").mockImplementation(async (sweepDeps, sweepHome) => {
+    if (stalled === "sweeps") return hang([]);
+    const lines = await memorySweep(sweepDeps, sweepHome);
+    done.sweeps++;
+    changed();
+    return lines;
+  });
+  const deps = {
+    ...base,
+    run: async (argv: readonly string[]): Promise<Ran> => {
+      if (argv[0] === "gh" && argv[1] === "api") return hang({ code: 1, out: "", err: "released at the end of the test" });
+      if (argv[0] === "gh" && argv[1] === "pr" && argv[2] === "view") {
+        const ran = await base.run(argv);
+        done.gh++;
+        changed();
+        return ran;
+      }
+      return base.run(argv);
+    },
+  };
+  // Journaled before the start: an urgent lane report for delivery, an owner message (overdue once the clock moves, so
+  // the notices task owes its delay notice), and a wait the polling task checks with gh.
+  const seed = new Supervisor(base);
+  seed.enqueue("seed:report", REPORT);
+  if (stalled === "notices") seed.enqueue(`discord:11:${MESSAGE}`, `INBOUND 11 ${MESSAGE} owner: status?`);
+  seed.close();
+  new Waits(state.dir).register({ key: "pr-1", until: "merged acme/app#1", note: "watch the PR", cwd: state.dir }, T0);
+  // Only the stalled polling task has a repository to poll on GitHub.
+  if (stalled === "polling") new Repos(state.dir).add("acme/app");
+  clock.at += 120_000;
+  const http: Http = async (request) => {
+    const reply = request.url.endsWith("/threads/active")
+      ? { status: 200, headers: {}, body: JSON.stringify({ threads: [] }) }
+      : { status: 200, headers: {}, body: "[]" };
+    return stalled === "inbound" ? hang(reply) : reply;
+  };
+  // Each loop's next pass waits for the test, not for real time.
+  const pauses = manualPause();
+  const pause = (ms: number, signal: AbortSignal) => { const parked = pauses.pause(ms, signal); changed(); return parked; };
+  const controller = new AbortController();
+  const running = supervise(deps, controller.signal, {
+    token: `supervise-tasks-test-${state.dir}`, spawnRunner: idleRunner, gatewayLockDir: join(state.dir, "gateway-locks"), http, lookup: async () => "", statusLookup: async () => "",
+    open: () => {
+      let closed = (_code: number) => {};
+      return {
+        send: () => {}, close: () => { closed(1000); },
+        onMessage: () => {}, onError: () => {}, onClose: (callback) => { closed = callback; },
+      };
+    },
+    timers: { setInterval: () => 0, clearInterval: () => {} },
+  }, async () => true, undefined, pause);
+  const log = join(state.dir, "lead-events.log");
+  const working: Record<SupervisorTask, () => boolean> = {
+    // The inbound pass ends with the gateway heartbeat.
+    inbound: () => existsSync(gatewayStatusPath(state.dir)),
+    delivery: () => existsSync(log) && readFileSync(log, "utf8").includes(REPORT),
+    notices: () => reportTicks > 0,
+    sweeps: () => done.sweeps > 0,
+    polling: () => done.gh > 0,
+    reports: () => reportPasses > 0,
+  };
+  const subscribe = (signal: () => void) => {
+    listeners.add(signal);
+    const watcher = watch(state.dir, signal);
+    return () => { listeners.delete(signal); watcher.close(); };
+  };
+  const stop = async () => { controller.abort(); release(); await running; };
+  // Once the five working tasks, the runners and autopilot tasks (the hub always opens) and the stall check are parked, each takes its next pass.
+  const next = async () => {
+    await until(subscribe, () => pauses.parked() === 8, 10_000, "the five working tasks, the runners and autopilot tasks and the stall check parked");
+    pauses.tick();
+  };
+  return { clock, errors, posts, hung, working, subscribe, stop, next, reportPasses: () => reportPasses };
+};
+
+const others = (stalled: SupervisorTask): SupervisorTask[] => SUPERVISOR_TASKS.filter((task) => task !== stalled);
+
+test("the report polling path prunes operation and report history at startup and once per hour", async () => {
+  const operations = spyOn(SqliteOperations.prototype, "prune");
+  const reports = spyOn(SqliteLaneReports.prototype, "prune");
+  const s = setup("inbound");
+  try {
+    await until(s.subscribe, () => operations.mock.calls.length === 1 && reports.mock.calls.length === 1, 10_000, "initial history pruning");
+    await s.next();
+    expect(operations).toHaveBeenCalledTimes(1);
+    expect(reports).toHaveBeenCalledTimes(1);
+    s.clock.at += 60 * 60_000;
+    await s.next();
+    await until(s.subscribe, () => operations.mock.calls.length === 2 && reports.mock.calls.length === 2, 10_000, "hourly history pruning");
+  } finally { await s.stop(); }
+}, 30_000);
+
+const stallTest = (stalled: SupervisorTask, then?: (s: ReturnType<typeof setup>) => Promise<void>) =>
+  test(`a stalled ${stalled} task leaves the others working and is reported by name, then withholds the watchdog`, async () => {
+    // Given the real supervise() in task mode with the work of one task hung.
+    const s = setup(stalled);
+    try {
+      await until(s.subscribe, () => s.hung.length > 0, 10_000, `the ${stalled} stall`);
+      // When the others run beside it, each finishes its work.
+      for (const task of others(stalled)) await until(s.subscribe, s.working[task], 10_000, `the ${task} task working while ${stalled} is stalled`);
+      // The wait check runs beside the hung GitHub poll in the same polling pass, so only the others show no work.
+      if (stalled !== "polling") expect(s.working[stalled]()).toBe(false);
+      // Then the stalled task is reported by name once its pass has run past the alert budget.
+      s.clock.at += TASK_ALERT_MS;
+      await s.next();
+      await until(s.subscribe, () => s.errors.some((line) => line.startsWith(`TASK_STALLED ${stalled} `)), 10_000, `TASK_STALLED ${stalled}`);
+      await then?.(s);
+      // And once it is stuck past the stall budget, the watchdog is withheld in its name, so systemd restarts the supervisor.
+      s.clock.at += WATCHDOG_STALL_MS;
+      await s.next();
+      await until(s.subscribe, () => s.errors.some((line) => line.startsWith(`WATCHDOG_WITHHELD task:${stalled} `)), 10_000, `WATCHDOG_WITHHELD task:${stalled}`);
+    } finally {
+      await s.stop();
+    }
+  }, 60_000);
+
+test("a runner hub that cannot open at startup wakes the lead, and the runners task opens it once the cause is gone", async () => {
+  // Given a runner directory the hub refuses (not 0700), as a busy socket or a bad directory would at a restart.
+  let runnerDir = "";
+  const s = setup("polling", (home) => {
+    runnerDir = defaultRunnerDir(home);
+    mkdirSync(runnerDir, { recursive: true });
+    chmodSync(runnerDir, 0o755);
+  });
+  const logs: string[] = [];
+  const log = console.log;
+  console.log = (...args: unknown[]) => { logs.push(args.map(String).join(" ")); };
+  cleanups.push(() => { console.log = log; });
+  try {
+    // When the supervisor starts, the failure is not swallowed: it reaches the lead's events, not only stderr.
+    const leadLog = join(process.env.HOME ?? "", "lead-events.log");
+    const leadSaw = (text: string) => existsSync(leadLog) && readFileSync(leadLog, "utf8").includes(text);
+    await until(s.subscribe, () => leadSaw("RUNNER_HUB_DISABLED "), 10_000, "RUNNER_HUB_DISABLED delivered to the lead");
+    expect(s.errors.some((line) => line.startsWith("RUNNER_HUB_DISABLED "))).toBe(true);
+    // Then once the directory is fixed and the retry interval has passed, the next runners pass opens the hub.
+    chmodSync(runnerDir, 0o700);
+    s.clock.at += RUNNER_HUB_RETRY_MS;
+    await s.next();
+    await until(s.subscribe, () => logs.includes("RUNNER_HUB_OPENED"), 10_000, "RUNNER_HUB_OPENED");
+    expect(existsSync(join(runnerDir, "sock"))).toBe(true);
+  } finally {
+    await s.stop();
+  }
+}, 60_000);
+
+stallTest("inbound");
+// A stalled delivery task cannot hand TASK_STALLED to the lead, so the owner is told in the main channel.
+// The notice is posted without being awaited, so the test waits for the post itself.
+stallTest("delivery", (s) => until(s.subscribe, () => s.posts.some((body) => body.includes("TASK_STALLED delivery")), 10_000, "the TASK_STALLED delivery notice"));
+// Discord never answers a post: the owner delay notice hangs, yet the queued report reaches the lead in the delivery
+// task's first pass (the stall test above waits for it before any second pass).
+stallTest("notices");
+stallTest("sweeps");
+stallTest("polling");
+
+test("lane reports are routed again in the next pass while a GitHub poll hangs", async () => {
+  // Given the real supervise() whose GitHub poll never answers.
+  const s = setup("polling");
+  try {
+    await until(s.subscribe, () => s.hung.length > 0, 10_000, "the hung GitHub poll");
+    await until(s.subscribe, s.working.reports, 10_000, "the first reports pass");
+    const first = s.reportPasses();
+    // When the next 5 s pass is due, the hung poll still holds its polling pass.
+    await s.next();
+    // Then the reports task routes again without waiting for it.
+    await until(s.subscribe, () => s.reportPasses() > first, 10_000, "a second reports pass beside the hung poll");
+    expect(s.hung.length).toBeGreaterThan(0);
+  } finally { await s.stop(); }
+}, 30_000);

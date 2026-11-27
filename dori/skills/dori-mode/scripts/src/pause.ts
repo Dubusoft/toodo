@@ -1,0 +1,227 @@
+import { randomUUID } from "node:crypto";
+
+import type { FlowDeps } from "./done-flow.ts";
+import { type CommandResults, type GoalOutcome } from "./runner/protocol.ts";
+import { LaneOpsError, type LaneOps } from "./lane-ops.ts";
+import { type Lane, type LaneStatus, statusOf, withStatus } from "./registry.ts";
+import { laneAgentGone, recoverLanes, type RecoveryLane } from "./recover.ts";
+import { passthroughView, type SweepView } from "./sweep-view.ts";
+
+/**
+ * One state for "wait": a paused lane is skipped by the freshness sweep and its agent's goal is paused,
+ * so neither a nudge nor goal continuation wakes it until it is resumed (issue #11). The lane is marked
+ * paused only once the pane shows the goal paused: a silenced lane whose goal still runs is the bug itself.
+ */
+export type PauseResult = { readonly lane: Lane; readonly lines: readonly string[]; readonly code: 0 | 2 | 3 };
+/**
+ * `resuming`: the claim of a resume whose goal command is in flight; a pause in the meantime removes it. `resumingAt`:
+ * when it was claimed, so the paused-lane sweep leaves the turn the resume starts alone while the claim is fresh.
+ */
+type ResumingLane = Lane & { readonly resuming?: string; readonly resumingAt?: number };
+/** How long a resume claim keeps the paused-lane sweep off the lane; a resumer that died leaves it stale. */
+const RESUME_CLAIM_MS = 2 * 60_000;
+
+const PAUSABLE: ReadonlySet<LaneStatus> = new Set(["working", "not-done"]);
+/** The pause/resume steps run on the lane's runner (`ops.pause` / `ops.resume`); a runner that cannot be reached confirms nothing. */
+type Ops = { readonly ops: LaneOps };
+
+const goalPause = async (ops: LaneOps, lane: Lane): Promise<GoalOutcome> => {
+  try { return (await ops.pause(lane, "goal")).goal ?? "unconfirmed"; }
+  catch (e) { if (e instanceof LaneOpsError) return "failed"; throw e; }
+};
+const goalResume = async (ops: LaneOps, lane: Lane): Promise<CommandResults["lane.resume"]> => {
+  try { return await ops.resume(lane); }
+  catch (e) { if (e instanceof LaneOpsError) return { goal: "failed" }; throw e; }
+};
+/** Escape, read back by the runner until the turn has stopped; an unreachable runner stops nothing. */
+const stopTurn = async (ops: LaneOps, lane: Lane): Promise<boolean> => {
+  try { return (await ops.pause(lane, "stop")).stopped === true; }
+  catch (e) { if (e instanceof LaneOpsError) return false; throw e; }
+};
+const isWorking = async (ops: LaneOps, lane: Lane): Promise<boolean> => (await ops.status(lane)).status === "working";
+
+/** Tells the lane's runner the lane's status (for `dori lane status` inside the lane); never throws. */
+const notifyStatus = (ops: LaneOps, lane: Lane): Promise<void> => ops.notify(lane, { status: statusOf(lane) });
+
+/** The status a paused lane had before its pause. */
+const beforePause = (lane: Lane): LaneStatus => (lane.pausedFrom && PAUSABLE.has(lane.pausedFrom) ? lane.pausedFrom : "working");
+
+export const pauseLane = async (deps: FlowDeps & Ops, lane: Lane, note: string): Promise<PauseResult> => {
+  const status = statusOf(lane);
+  if (status === "paused") {
+    const fields: Pick<ResumingLane, "resuming" | "resumingAt"> = { resuming: undefined, resumingAt: undefined };
+    let interrupted = false;
+    lane = await deps.registry.update(lane.key, (current) => {
+      if (!current || statusOf(current) !== "paused") return undefined;
+      interrupted = (current as ResumingLane).resuming !== undefined;
+      return withStatus({ ...current, ...fields }, "paused", note, new Date(deps.clock.now()).toISOString());
+    }) ?? lane;
+    if (lane.pane && !interrupted && (await isWorking(deps.ops, lane))) {
+      // Paused but woken since: a repeat pause stops the turn again.
+      return (await stopTurn(deps.ops, lane))
+        ? { lane, lines: [`PAUSED ${lane.key} already; its running turn was interrupted again`], code: 0 }
+        : { lane, lines: [`PAUSE_UNVERIFIED ${lane.key} paused, but its running turn did not stop after Escape`], code: 3 };
+    }
+    if (!interrupted || !lane.pane) return { lane, lines: [`PAUSED ${lane.key} already`], code: 0 };
+    // A resume was in flight: its `/goal resume` may already have run, and the resumer may die before its commit
+    // pauses the goal again. Pause it here too (outside the lock; a second `/goal pause` is harmless).
+    const goal = await goalPause(deps.ops, lane);
+    return goal === "confirmed"
+      ? { lane, lines: [`PAUSED ${lane.key} already; a resume in flight was stopped, goal paused`], code: 0 }
+      : { lane, lines: [`PAUSE_UNVERIFIED ${lane.key} a resume was in flight; /goal pause ${goal}; lane left paused`], code: 3 };
+  }
+  if (!PAUSABLE.has(status)) return { lane, lines: [`NOT_PAUSED ${lane.key} is ${status}, not working`], code: 2 };
+  if (!lane.pane) return { lane, lines: [`PAUSE_UNVERIFIED ${lane.key} has no pane, so its goal cannot be paused`], code: 3 };
+  // The goal first: stopping the running turn must not hand off to a goal continuation.
+  const goal = await goalPause(deps.ops, lane);
+  if (goal !== "confirmed") return { lane, lines: [`PAUSE_UNVERIFIED ${lane.key} /goal pause ${goal}; lane left ${status}`], code: 3 };
+  const at = new Date(deps.clock.now()).toISOString();
+  let paused: Lane = lane;
+  let closed: Lane | undefined;
+  await deps.registry.update(lane.key, (current) => {
+    // Closed while its goal was being paused: the archived record stays as the close left it.
+    if (current?.closedAt) { closed = current; return undefined; }
+    return (paused = withStatus(current ?? lane, "paused", note, at, { pausedFrom: status, pausedSeenWorking: undefined, lastFreshnessNote: undefined }));
+  });
+  if (closed) return { lane: closed, lines: [`NOT_PAUSED ${lane.key} is closed, not working`], code: 2 };
+  const running = await isWorking(deps.ops, lane);
+  if (running && !(await stopTurn(deps.ops, lane))) {
+    // The goal is paused, so the lane stays paused and the freshness sweep keeps interrupting it.
+    return { lane: paused, lines: [`PAUSE_UNVERIFIED ${lane.key} goal paused, but its running turn did not stop after Escape; lane left paused`], code: 3 };
+  }
+  await notifyStatus(deps.ops, paused);
+  return { lane: paused, lines: [`PAUSED ${lane.key} goal paused${running ? ", running turn interrupted" : ""}`], code: 0 };
+};
+
+/**
+ * Resume in three steps so the lane lock is never held across pane I/O (a goal command can take many seconds, longer
+ * than another writer waits for the lock): claim the paused lane under the lock, send `/goal resume` outside it, then
+ * commit under the lock only if the claim still stands. A pause (or a change of `owns`) in the meantime wins: the
+ * lane stays paused and its goal is paused again. A newer resume's claim makes this one step aside.
+ */
+export const resumeLane = async (deps: FlowDeps & Ops, lane: Lane, note: string, owns?: (current: Lane) => boolean): Promise<PauseResult> => {
+  const token = randomUUID();
+  let result: PauseResult = { lane, lines: [`NOT_RESUMED ${lane.key} ownership changed`], code: 2 };
+  const claimed: ResumingLane | null = await deps.registry.update(lane.key, (current) => {
+    const fresh = current ?? lane;
+    if (owns && (!current || !owns(current))) return undefined;
+    if (statusOf(fresh) !== "paused") {
+      result = { lane: fresh, lines: [`NOT_RESUMED ${lane.key} is ${statusOf(fresh)}, not paused`], code: 2 };
+      return undefined;
+    }
+    if (!fresh.pane) {
+      result = { lane: fresh, lines: [`RESUME_UNVERIFIED ${lane.key} has no pane, so its goal cannot be resumed`], code: 3 };
+      return undefined;
+    }
+    const claim: ResumingLane = { ...fresh, resuming: token, resumingAt: deps.clock.now() };
+    return claim;
+  });
+  if (!claimed?.pane || claimed.resuming !== token) return result;
+  const ours = (current: Lane | null): current is ResumingLane => !!current && (current as ResumingLane).resuming === token;
+  const unclaim = (): Promise<unknown> =>
+    deps.registry.update(lane.key, (current) => (ours(current) ? { ...current, resuming: undefined, resumingAt: undefined } as ResumingLane : undefined));
+  const { goal, execution } = await goalResume(deps.ops, claimed);
+  if (goal !== "confirmed") {
+    // No goal command reaches an agent that is gone (its pane missing, or left with only its shell): a lane paused from
+    // working is relaunched instead, as the same attempt. A launch reservation is paused only to keep recovery off it.
+    if (beforePause(claimed) === "working" && !claimed.launchReservation && (await laneAgentGone(deps, claimed))) {
+      return relaunchResumed(deps, claimed, note, owns);
+    }
+    await unclaim();
+    return { lane: claimed, lines: [`RESUME_UNVERIFIED ${lane.key} /goal resume ${goal}; lane left paused`], code: 3 };
+  }
+  // An active goal is not a running lane: a held session stays idle after it. A runner that does not read the turn
+  // back (older than `execution`) is read here once.
+  if ((execution ?? ((await isWorking(deps.ops, claimed)) ? "running" : "held")) !== "running") {
+    await unclaim();
+    const again = await goalPause(deps.ops, claimed);
+    return { lane: (await deps.registry.read(lane.key)) ?? claimed, lines: [`RESUME_UNVERIFIED ${lane.key} goal resumed, but no turn ran after it (session held); /goal pause ${again}; lane left paused`], code: 3 };
+  }
+  let repause = false;
+  await deps.registry.update(lane.key, (current) => {
+    if (!current || statusOf(current) !== "paused") {
+      result = { lane: current ?? claimed, lines: [`NOT_RESUMED ${lane.key} is ${current ? statusOf(current) : "gone"}, not paused`], code: 2 };
+      return undefined;
+    }
+    const other = (current as ResumingLane).resuming;
+    if (!ours(current) || (owns && !owns(current))) {
+      // Paused again meanwhile (the claim is gone or ownership moved): that pause stands. A newer resume owns the goal.
+      repause = other === undefined || other === token;
+      return other === token ? { ...current, resuming: undefined, resumingAt: undefined } as ResumingLane : undefined;
+    }
+    const now = deps.clock.now();
+    // Quiet time starts again at the resume: a long pause must not turn into an instant nudge.
+    const resumed = withStatus({ ...current, resuming: undefined, resumingAt: undefined } as ResumingLane, beforePause(current), note, new Date(now).toISOString(), { lastReplyAt: now, pausedFrom: undefined, pausedSeenWorking: undefined, lastFreshnessNote: undefined });
+    result = { lane: resumed, lines: [`RESUMED ${lane.key} as ${statusOf(resumed)}, goal resumed, turn running`], code: 0 };
+    return resumed;
+  });
+  if (result.code === 0) await notifyStatus(deps.ops, result.lane);
+  if (repause) {
+    const again = await goalPause(deps.ops, claimed);
+    result = { lane: (await deps.registry.read(lane.key)) ?? claimed, lines: [`NOT_RESUMED ${lane.key} was paused again during the resume; /goal pause ${again}`], code: 2 };
+  }
+  return result;
+};
+
+/**
+ * The resume of a paused lane whose agent is gone: under the claim the lane goes back to working (its recovery count
+ * starts over, since the owner asked for it), then recovery relaunches it at once through its runner: same key, worktree
+ * and brief, continuing its own session when it has one. The relaunched session may still hold the goal the pause
+ * stopped, so `/goal resume` follows. Without a confirmed relaunch the lane stays working and the recovery sweep retries.
+ */
+const relaunchResumed = async (deps: FlowDeps & Ops, claimed: ResumingLane, note: string, owns?: (current: Lane) => boolean): Promise<PauseResult> => {
+  const { key } = claimed;
+  const committed = await deps.registry.update(key, (current) => {
+    if (!current || statusOf(current) !== "paused" || (current as ResumingLane).resuming !== claimed.resuming || (owns && !owns(current))) return undefined;
+    const now = deps.clock.now();
+    const fresh: ResumingLane & RecoveryLane = { ...current, resuming: undefined, resumingAt: undefined, recoveryExhausted: undefined };
+    return withStatus(fresh, "working", note, new Date(now).toISOString(), {
+      lastReplyAt: now, pausedFrom: undefined, pausedSeenWorking: undefined, lastFreshnessNote: undefined, recoveryAttempts: undefined, recoveryPending: undefined,
+    });
+  });
+  if (!committed) {
+    await deps.registry.update(key, (current) => (current && (current as ResumingLane).resuming === claimed.resuming ? { ...current, resuming: undefined, resumingAt: undefined } as ResumingLane : undefined));
+    const current = await deps.registry.read(key);
+    return { lane: current ?? claimed, lines: [`NOT_RESUMED ${key} is ${current ? statusOf(current) : "gone"}, changed during the resume; its agent is gone, nothing relaunched`], code: 2 };
+  }
+  const events = await recoverLanes(deps, key);
+  const recovered = events.find((line) => line.startsWith(`LANE_RECOVERED ${key} `));
+  const lane = (await deps.registry.read(key)) ?? committed;
+  if (!recovered) {
+    return { lane, lines: [`RESUME_UNVERIFIED ${key} its agent was gone; lane set working, but its relaunch is not confirmed (the recovery sweep retries it)`, ...events], code: 3 };
+  }
+  const { goal } = await goalResume(deps.ops, lane);
+  await notifyStatus(deps.ops, lane);
+  return { lane, lines: [`RESUMED ${key} as working, its agent was gone and was relaunched in ${lane.pane ?? "-"}; /goal resume ${goal}`, ...events], code: 0 };
+};
+
+export type PausedCheck = { readonly lane: Lane; readonly outcome: "working-while-paused"; readonly stopped: boolean } | null;
+
+/**
+ * Resume is explicit only: `dori resume`, on the owner's word. Activity never ends a pause, because a paused
+ * lane can still be woken (a background result, a monitor event, a queued message) and its owner said wait.
+ * Every tick that finds a paused lane working interrupts it again (Escape, read back). It is reported when it
+ * was working on two ticks in a row, or at once when Escape did not stop it; it stays paused.
+ */
+export const checkPausedLane = async (deps: FlowDeps & Ops, lane: Lane, view: SweepView = passthroughView(deps.ops)): Promise<PausedCheck> => {
+  // A launch reservation is paused only so recovery never starts it too: the runner records the pane before the launch
+  // commits the lane as working, and that starting turn is not the owner's pause to enforce.
+  if (statusOf(lane) !== "paused" || !lane.pane || lane.launchReservation) return null;
+  // A resume in flight starts this turn on purpose; interrupting it would make the resume read the lane held.
+  const { resuming, resumingAt } = lane as ResumingLane;
+  if (resuming && resumingAt !== undefined && deps.clock.now() - resumingAt < RESUME_CLAIM_MS) return null;
+  const working = (await view.status(lane)).status === "working";
+  if (!working) {
+    // Idle again: the next working stretch is new information and is reported again.
+    if (lane.pausedSeenWorking || lane.lastFreshnessNote) {
+      await deps.registry.patch(lane.key, (current) => (statusOf(current) === "paused" ? { pausedSeenWorking: undefined, lastFreshnessNote: undefined } : undefined));
+    }
+    return null;
+  }
+  const stopped = await stopTurn(deps.ops, lane);
+  if (!lane.pausedSeenWorking && stopped) {
+    await deps.registry.patch(lane.key, (current) => (statusOf(current) === "paused" ? { pausedSeenWorking: true } : undefined));
+    return null;
+  }
+  return { lane, outcome: "working-while-paused", stopped };
+};

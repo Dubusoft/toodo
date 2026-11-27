@@ -1,0 +1,989 @@
+import { afterEach, expect, test } from "bun:test";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { eventPriority, Supervisor } from "../src/supervise.ts";
+import { outcomeLane, pendingReported, recordReported, REPORTED_DIR, takeReminders, type ThreadCloseTransport } from "../src/lane-outcomes.ts";
+import { readCloseTimers, readFinishedThreads, touchCloseTimer } from "../src/thread-finality.ts";
+import { readLastReports, readOwnerClosed, recordLastReport, recordOwnerClosed } from "../src/thread-followup.ts";
+import { Waits } from "../src/waits.ts";
+import type { Lane } from "../src/registry.ts";
+import { renderStatus, type Status } from "../src/status.ts";
+import { depsFor, fakeClock, newWorld, readJournal, withState, writeJournal } from "./fakes.ts";
+
+const cleanups: (() => void)[] = [];
+afterEach(() => { for (const done of cleanups.splice(0)) done(); });
+
+const MIN = 60_000;
+const T0 = 1_800_000_000_000;
+
+const fixture = () => {
+  const state = withState();
+  cleanups.push(state.done);
+  const clock = fakeClock(T0);
+  const world = newWorld();
+  const deps = depsFor(world, clock, state.dir);
+  const unreported = () => (readJournal(state.dir).events as { id: string; line: string }[]).filter((event) => event.line.startsWith("UNREPORTED "));
+  return { state, clock, deps, world, unreported };
+};
+
+const lane = (key: string, extra: Partial<Lane> = {}): Lane => ({
+  key, title: key, thread: "none", pane: undefined, brief: "/tmp/brief.md", done: "merged acme/app#1", openedAt: new Date(T0).toISOString(), ...extra,
+} as Lane);
+
+const deliveredOutcome = async () => {
+  const f = fixture();
+  const pane = { pane_id: "hc:t1", workspace_id: "test", agent: "omo", agent_status: "working" };
+  f.world.panes.push(pane);
+  // Keep the push step away from the input: only supervisor observations advance these tests.
+  f.world.screen = "❯ owner draft";
+  const session = join(f.state.dir, "lead.jsonl");
+  writeFileSync(session, "{}\n");
+  utimesSync(session, T0 / 1000, T0 / 1000);
+  const supervisor = new Supervisor({ ...f.deps, tunables: { ...f.deps.tunables, cacheTtlMin: 60 }, run: async (argv, opts) => {
+    if (argv[0] === "ps" && argv[1] === "-A") return { code: 0, out: `101 10 /usr/bin/omo --session-id ${session}`, err: "" };
+    return f.deps.run(argv, opts);
+  } });
+  supervisor.enqueue("closed:alpha", "LANE_CLOSED alpha x");
+  await supervisor.flush();
+  expect(readJournal(f.state.dir).outcomes[0]).toMatchObject({ deliveredAt: T0 });
+  expect(readJournal(f.state.dir).outcomes[0].deliveredWorking).toBeUndefined();
+  return { ...f, pane, supervisor };
+};
+
+for (const ended of ["idle", "done"]) {
+  test(`a delivered outcome gets its first UNREPORTED on working -> ${ended}, then keeps normal backoff`, async () => {
+    const f = await deliveredOutcome();
+    f.clock.at += 1_000;
+    await f.supervisor.flush();
+    expect(readJournal(f.state.dir).outcomes[0].deliveredWorking).toBe(true);
+    expect(f.unreported()).toEqual([]);
+    f.pane.agent_status = ended;
+    f.clock.at += 1_000;
+    const before = f.world.calls.filter((call) => call[0] === "hc" && call[2] === "ls").length;
+    await f.supervisor.flush();
+    expect(f.world.calls.filter((call) => call[0] === "hc" && call[2] === "ls").length - before).toBe(1);
+    expect(f.unreported()).toHaveLength(1);
+    expect(f.unreported()[0]).toMatchObject({ id: `unreported:alpha:${T0}:1`, at: T0 + 2_000 });
+    expect(f.unreported()[0]?.line).toStartWith("UNREPORTED alpha ");
+    f.clock.at += 5 * MIN - 1;
+    await f.supervisor.reportTick();
+    expect(f.unreported()).toHaveLength(1);
+    f.clock.at += 1;
+    await f.supervisor.reportTick();
+    expect(f.unreported()[1]?.id).toBe(`unreported:alpha:${T0}:2`);
+  });
+}
+
+test("delivery followed only by idle observations waits for reportTimeoutMin", async () => {
+  const f = await deliveredOutcome();
+  f.pane.agent_status = "idle";
+  f.clock.at += 1_000;
+  await f.supervisor.flush();
+  expect(f.unreported()).toEqual([]);
+  expect(readJournal(f.state.dir).outcomes[0].deliveredWorking).toBeUndefined();
+  f.clock.at = T0 + 5 * MIN;
+  await f.supervisor.flush();
+  expect(f.unreported()[0]?.id).toBe(`unreported:alpha:${T0}:1`);
+});
+
+test("a report receipt on the turn-end tick wins over the idle observation", async () => {
+  const f = await deliveredOutcome();
+  f.clock.at += 1_000;
+  await f.supervisor.flush();
+  f.pane.agent_status = "idle";
+  f.clock.at += 1_000;
+  recordReported(f.state.dir, "alpha", f.clock.now());
+  await f.supervisor.flush();
+  expect(f.unreported()).toEqual([]);
+  expect(readJournal(f.state.dir).outcomes[0].reportedAt).toBe(f.clock.now());
+});
+
+test("an unobserved lead still gets the timeout reminder", async () => {
+  const f = fixture();
+  const supervisor = new Supervisor(f.deps);
+  supervisor.enqueue("closed:alpha", "LANE_CLOSED alpha x");
+  f.clock.at = T0 + 5 * MIN;
+  await supervisor.reportTick();
+  expect(f.unreported()[0]?.id).toBe(`unreported:alpha:${T0}:1`);
+  expect(readJournal(f.state.dir).outcomes[0].deliveredAt).toBeUndefined();
+  expect(f.world.calls).toEqual([]);
+});
+
+test("a machine lane owes no report when its delivered turn ends early", async () => {
+  const f = await deliveredOutcome();
+  await f.deps.registry.write(lane("alpha", { autoClose: "machine" }));
+  f.clock.at += 1_000;
+  await f.supervisor.flush();
+  f.pane.agent_status = "idle";
+  f.clock.at += 1_000;
+  await f.supervisor.flush();
+  expect(f.unreported()).toEqual([]);
+  expect(readJournal(f.state.dir).outcomes[0]).toMatchObject({ reportedAt: f.clock.now(), note: "autoClose: machine" });
+});
+
+test("outcome lines name their lane; other lines and malformed keys name none", () => {
+  expect(outcomeLane("LANE_CLOSED alpha {\"checks\":[]}")).toBe("alpha");
+  expect(outcomeLane("CI_MERGED acme/app#7 into dev lane=alpha head=abc merge=def https://x")).toBe("alpha");
+  expect(outcomeLane("CI_MERGED acme/app#7 into dev head=abc")).toBeUndefined();
+  expect(outcomeLane("LANE_DONE_CLAIMED alpha w:p1 proof")).toBe("alpha");
+  expect(outcomeLane("LANE_AUTO_CLAIMED alpha w:p1 proof")).toBeUndefined();
+  expect(outcomeLane("LANE_AUTO_CLOSED alpha x")).toBeUndefined();
+  expect(outcomeLane("LANE_CLOSED $(rm) x")).toBeUndefined();
+});
+
+test("CI_MERGED and LANE_CLOSED of one lane are one obligation: UNREPORTED after reportTimeoutMin, re-sent with backoff, stopped by dori reported", async () => {
+  const f = fixture();
+  const supervisor = new Supervisor(f.deps);
+  supervisor.enqueue("ci-merged:acme/app#7", "CI_MERGED acme/app#7 into dev lane=alpha head=abc merge=def https://x");
+  f.clock.at += MIN;
+  supervisor.enqueue("lane-closed:alpha", "LANE_CLOSED alpha {\"checks\":[]}");
+  expect(readJournal(f.state.dir).outcomes).toEqual([
+    { lane: "alpha", since: T0, line: "CI_MERGED acme/app#7 into dev lane=alpha head=abc merge=def https://x", events: ["ci-merged:acme/app#7", "lane-closed:alpha"], heads: ["abc"], woke: true },
+  ]);
+  f.clock.at = T0 + 5 * MIN - 1;
+  await supervisor.reportTick();
+  expect(f.unreported()).toEqual([]);
+  f.clock.at = T0 + 5 * MIN;
+  await supervisor.reportTick();
+  const [first] = f.unreported();
+  expect(first?.line).toStartWith("UNREPORTED alpha finished 5 min ago and the owner has not been told: run dori reported alpha --text TEXT to post the outcome to the owner in its thread. CI_MERGED acme/app#7");
+  expect(eventPriority(first?.line ?? "")).toBe("urgent");
+  // Re-sent one window later, then after twice the previous wait; a restarted supervisor keeps the count.
+  f.clock.at += 5 * MIN;
+  await new Supervisor(f.deps).reportTick();
+  expect(f.unreported()).toHaveLength(2);
+  const restarted = new Supervisor(f.deps);
+  f.clock.at += 10 * MIN - 1;
+  await restarted.reportTick();
+  expect(f.unreported()).toHaveLength(2);
+  f.clock.at += 1;
+  await restarted.reportTick();
+  expect(f.unreported()).toHaveLength(3);
+  // The lead reports; nothing more is sent, and a later outcome event of the lane opens nothing.
+  recordReported(f.state.dir, "alpha", f.clock.now(), "told in its thread");
+  await restarted.reportTick();
+  expect(readdirSync(join(f.state.dir, REPORTED_DIR))).toEqual([]);
+  expect(readJournal(f.state.dir).outcomes[0]).toMatchObject({ lane: "alpha", reportedAt: f.clock.now(), note: "told in its thread" });
+  restarted.enqueue("lane-closed:alpha:again", "LANE_CLOSED alpha again");
+  f.clock.at += 120 * MIN;
+  await restarted.reportTick();
+  expect(f.unreported()).toHaveLength(3);
+  expect(readJournal(f.state.dir).outcomes).toHaveLength(1);
+});
+
+test("a report recorded before the outcome event arrives settles it, and two lanes are two obligations", async () => {
+  const f = fixture();
+  const supervisor = new Supervisor(f.deps);
+  recordReported(f.state.dir, "beta", f.clock.now());
+  await supervisor.reportTick();
+  supervisor.enqueue("lane-closed:beta", "LANE_CLOSED beta x");
+  supervisor.enqueue("lane-closed:gamma", "LANE_CLOSED gamma x");
+  f.clock.at += 5 * MIN;
+  await supervisor.reportTick();
+  expect(f.unreported().map((event) => event.line.split(" ")[1])).toEqual(["gamma"]);
+});
+
+test("outcomes in the history at startup open nothing, and an engine-only outcome is not owed", async () => {
+  const f = fixture();
+  writeJournal(f.state.dir, { events: [{ id: "lane-closed:old", line: "LANE_CLOSED old x", at: T0 - 60 * MIN }] });
+  const supervisor = new Supervisor({ ...f.deps, tunables: { ...f.deps.tunables, eventPolicy: { default: "lead-digest", kinds: { ...f.deps.tunables.eventPolicy.kinds, LANE_CLOSED: "engine-only" } } } });
+  supervisor.enqueue("lane-closed:quiet", "LANE_CLOSED quiet x");
+  f.clock.at += 10 * MIN;
+  await supervisor.reportTick();
+  expect(readJournal(f.state.dir).outcomes ?? []).toEqual([]);
+  expect(f.unreported()).toEqual([]);
+});
+
+test("a lane with autoClose: machine owes no report", async () => {
+  const f = fixture();
+  await f.deps.registry.write(lane("robot", { autoClose: "machine" }));
+  const supervisor = new Supervisor(f.deps);
+  supervisor.enqueue("lane-closed:robot", "LANE_CLOSED robot x");
+  f.clock.at += 5 * MIN;
+  await supervisor.reportTick();
+  expect(f.unreported()).toEqual([]);
+  expect(readJournal(f.state.dir).outcomes[0]).toMatchObject({ lane: "robot", reportedAt: f.clock.now(), note: "autoClose: machine" });
+});
+
+const CLAIM = "LANE_DONE_CLAIMED alpha w:p1 merged acme/app#1";
+const AUTO = "LANE_DONE_AUTO_REPORTED alpha w:p1 merged acme/app#1 | verified: pr=#1 head=abc1234 checks=green conflict=no sig=ok report=m-1";
+
+test("an auto-reported claim is owed nothing: its receipt closes the row whichever comes first, and the merge of its head is quiet", async () => {
+  for (const receiptFirst of [true, false]) {
+    const f = fixture();
+    const supervisor = new Supervisor(f.deps);
+    if (receiptFirst) recordReported(f.state.dir, "alpha", f.clock.now(), "auto-reported by the supervisor");
+    supervisor.enqueue("done-claim:alpha:1", AUTO);
+    if (!receiptFirst) recordReported(f.state.dir, "alpha", f.clock.now(), "auto-reported by the supervisor");
+    f.clock.at += 10 * MIN;
+    await supervisor.reportTick();
+    expect(f.unreported()).toEqual([]);
+    expect(readJournal(f.state.dir).outcomes).toMatchObject([{ lane: "alpha", reportedAt: T0, line: AUTO, claim: true, claimed: true }]);
+    supervisor.enqueue("ci-merged:acme/app#1", "CI_MERGED acme/app#1 into dev lane=alpha head=abc1234 merge=def https://x");
+    expect(readJournal(f.state.dir).outcomes[0]).toMatchObject({ reportedAt: T0, quiet: ["ci-merged:acme/app#1"] });
+  }
+});
+
+test("a done claim opens the lane's obligation: listed for inbox take, UNREPORTED after reportTimeoutMin", async () => {
+  const f = fixture();
+  const supervisor = new Supervisor(f.deps);
+  supervisor.enqueue("done-claim:alpha:1", CLAIM);
+  expect(readJournal(f.state.dir).outcomes).toEqual([{ lane: "alpha", since: T0, line: CLAIM, events: ["done-claim:alpha:1"], claim: true, claimed: true, woke: true }]);
+  await supervisor.reportTick();
+  expect(takeReminders(f.state.dir)).toEqual([
+    `unreported:alpha\tUNREPORTED alpha since ${new Date(T0).toISOString()}: run dori reported alpha --text TEXT to post the outcome to the owner in its thread`,
+  ]);
+  f.clock.at += 5 * MIN;
+  await supervisor.reportTick();
+  const [first] = f.unreported();
+  expect(first?.line).toBe(`UNREPORTED alpha claimed done 5 min ago and the owner has not been told: run dori reported alpha --text TEXT to post the outcome to the owner in its thread. ${CLAIM}`);
+});
+
+test("report checks tick one at a time: a receipt taken by a later tick survives an earlier tick still reading the registry", async () => {
+  // Given a claim past reportTimeoutMin whose first tick hangs in its registry read (lead delivery and the report check
+  // tick from separate supervisor tasks).
+  const f = fixture();
+  const supervisor = new Supervisor(f.deps);
+  supervisor.enqueue("done-claim:alpha:1", CLAIM);
+  f.clock.at += 5 * MIN;
+  const read = f.deps.registry.read.bind(f.deps.registry);
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let entered = () => {};
+  const reading = new Promise<void>((resolve) => { entered = resolve; });
+  let reads = 0;
+  f.deps.registry.read = async (key) => { if (reads++ === 0) { entered(); await held; } return read(key); };
+  const first = supervisor.reportTick();
+  await reading;
+  // When the lead reports while it hangs and the next tick starts.
+  recordReported(f.state.dir, "alpha", f.clock.now());
+  const second = supervisor.reportTick();
+  release();
+  await Promise.all([first, second]);
+  // Then the first tick's reminder stands, and the second tick's receipt is not overwritten by the first tick's stale list.
+  expect(f.unreported()).toHaveLength(1);
+  expect(readJournal(f.state.dir).outcomes[0]).toMatchObject({ lane: "alpha", reportedAt: f.clock.now(), reminders: 1 });
+});
+
+test("the seen-claim close joins the claim's obligation: a reported claim is not owed again", async () => {
+  const f = fixture();
+  const supervisor = new Supervisor(f.deps);
+  supervisor.enqueue("done-claim:alpha:1", CLAIM);
+  recordReported(f.state.dir, "alpha", f.clock.now());
+  await supervisor.reportTick();
+  f.clock.at += 10 * MIN;
+  supervisor.enqueue("lane-closed:alpha", "LANE_CLOSED alpha closed seen-claim {}");
+  f.clock.at += 10 * MIN;
+  await supervisor.reportTick();
+  expect(f.unreported()).toEqual([]);
+  expect(readJournal(f.state.dir).outcomes).toEqual([
+    { lane: "alpha", since: T0, line: CLAIM, events: ["done-claim:alpha:1", "lane-closed:alpha"], reportedAt: T0, claimed: true, woke: true },
+  ]);
+  // Joined by a real outcome, the row is no longer the claim's: a later rejection leaves it.
+  supervisor.enqueue("not-done:alpha", "LANE_NOT_DONE alpha dirty tree");
+  expect(readJournal(f.state.dir).outcomes).toHaveLength(1);
+});
+
+test("a machine lane's LANE_AUTO_CLAIMED opens nothing", async () => {
+  const f = fixture();
+  const supervisor = new Supervisor(f.deps);
+  supervisor.enqueue("auto-claim:robot", "LANE_AUTO_CLAIMED robot w:p1 proof");
+  f.clock.at += 10 * MIN;
+  await supervisor.reportTick();
+  expect(readJournal(f.state.dir).outcomes ?? []).toEqual([]);
+  expect(f.unreported()).toEqual([]);
+});
+
+test("LANE_NOT_DONE drops an unreported claim's obligation", async () => {
+  const f = fixture();
+  const supervisor = new Supervisor(f.deps);
+  supervisor.enqueue("done-claim:alpha:1", CLAIM);
+  await supervisor.reportTick();
+  f.clock.at += MIN;
+  supervisor.enqueue("not-done:alpha", "LANE_NOT_DONE alpha dirty tree");
+  expect(readJournal(f.state.dir).outcomes).toEqual([]);
+  f.clock.at += 10 * MIN;
+  await supervisor.reportTick();
+  expect(f.unreported()).toEqual([]);
+  expect(takeReminders(f.state.dir)).toEqual([]);
+});
+
+test("LANE_NOT_DONE drops a reported claim's row, so the next claim is owed afresh", async () => {
+  const f = fixture();
+  const supervisor = new Supervisor(f.deps);
+  supervisor.enqueue("done-claim:alpha:1", CLAIM);
+  recordReported(f.state.dir, "alpha", f.clock.now());
+  await supervisor.reportTick();
+  f.clock.at += MIN;
+  supervisor.enqueue("not-done:alpha", "LANE_NOT_DONE alpha dirty tree");
+  expect(readJournal(f.state.dir).outcomes).toEqual([]);
+  f.clock.at += 30 * MIN;
+  const again = f.clock.now();
+  supervisor.enqueue("done-claim:alpha:2", `${CLAIM} fixed`);
+  expect(readJournal(f.state.dir).outcomes).toEqual([{ lane: "alpha", since: again, line: `${CLAIM} fixed`, events: ["done-claim:alpha:2"], claim: true, claimed: true, woke: true }]);
+  f.clock.at += 5 * MIN;
+  await supervisor.reportTick();
+  expect(f.unreported().map((event) => event.line.split(" ").slice(0, 3).join(" "))).toEqual(["UNREPORTED alpha claimed"]);
+});
+
+test("dori object-done (a registry objection, no event) drops the claim's obligation at the next tick; an older objection does not", async () => {
+  const f = fixture();
+  const objection = (at: number) => lane("alpha", { status: "not-done", objection: { at: new Date(at).toISOString(), reasons: ["dirty tree"] } });
+  await f.deps.registry.write(objection(T0 - MIN));
+  const supervisor = new Supervisor(f.deps);
+  supervisor.enqueue("done-claim:alpha:1", CLAIM);
+  await supervisor.reportTick();
+  expect(readJournal(f.state.dir).outcomes).toHaveLength(1);
+  f.clock.at += MIN;
+  await f.deps.registry.write(objection(f.clock.now()));
+  await supervisor.reportTick();
+  expect(readJournal(f.state.dir).outcomes).toEqual([]);
+  expect(takeReminders(f.state.dir)).toEqual([]);
+  f.clock.at += 10 * MIN;
+  await supervisor.reportTick();
+  expect(f.unreported()).toEqual([]);
+});
+
+test("a claim joined by CI_MERGED or LANE_CLOSED is a real outcome: LANE_NOT_DONE and objections leave it", async () => {
+  for (const [id, line] of [["ci-merged:acme/app#1", "CI_MERGED acme/app#1 into dev lane=alpha head=abc merge=def https://x"], ["lane-closed:alpha", "LANE_CLOSED alpha closed {}"]] as const) {
+    const f = fixture();
+    const supervisor = new Supervisor(f.deps);
+    supervisor.enqueue("done-claim:alpha:1", CLAIM);
+    supervisor.enqueue(id, line);
+    f.clock.at += MIN;
+    await f.deps.registry.write(lane("alpha", { status: "not-done", objection: { at: new Date(f.clock.now()).toISOString(), reasons: ["x"] } }));
+    supervisor.enqueue("not-done:alpha", "LANE_NOT_DONE alpha dirty tree");
+    f.clock.at += 4 * MIN;
+    await supervisor.reportTick();
+    expect(readJournal(f.state.dir).outcomes).toEqual([expect.objectContaining({ lane: "alpha", events: ["done-claim:alpha:1", id] })]);
+    expect(readJournal(f.state.dir).outcomes[0].claim).toBeUndefined();
+    expect(f.unreported().map((event) => event.line.split(" ").slice(0, 3).join(" "))).toEqual(["UNREPORTED alpha finished"]);
+  }
+});
+
+test("open obligations are listed for inbox take until reported", async () => {
+  const f = fixture();
+  const supervisor = new Supervisor(f.deps);
+  expect(takeReminders(f.state.dir)).toEqual([]);
+  supervisor.enqueue("lane-closed:alpha", "LANE_CLOSED alpha done");
+  await supervisor.reportTick();
+  expect(takeReminders(f.state.dir)).toEqual([
+    `unreported:alpha\tUNREPORTED alpha since ${new Date(T0).toISOString()}: run dori reported alpha --text TEXT to post the outcome to the owner in its thread`,
+  ]);
+  recordReported(f.state.dir, "alpha", f.clock.now());
+  await supervisor.reportTick();
+  expect(takeReminders(f.state.dir)).toEqual([]);
+});
+
+test("dori status names unreported lanes as a problem", () => {
+  const base = {
+    at: new Date(T0).toISOString(), services: [], lanes: [], waits: [], unacked: 0,
+    lead: { pane: "hc:t1", state: "warm", cacheTtlMin: 60, capTokens: 100_000 },
+    github: { repos: [], failures: [], issueAuthors: ["owner"], issueRepos: [] },
+    gateway: { state: "live", text: "" },
+    events: { hours: 24, wakes: 0, measured: 0, calls: 0, kinds: [] },
+  } as unknown as Status;
+  expect(renderStatus(base)).not.toContain("미보고");
+  const text = renderStatus({ ...base, unreported: [{ lane: "alpha", since: new Date(T0 - 12 * MIN).toISOString() }] });
+  expect(text.split("\n")[1]).toContain("미보고 레인 1");
+  expect(text).toContain("- 끝났지만 오너에게 아직 보고 안 한 레인 (dori reported <key> --text TEXT): alpha 12분 전");
+});
+
+// A preload replacing fetch: each request is appended to $FAKE_LOG as JSON; $FAKE_STATUS (default 200) is the reply status.
+// A reply also carries $FAKE_CONTENT as a message's content, $FAKE_ARCHIVED ("true") as a thread's archived flag and
+// $FAKE_PARENT as a thread's parent channel.
+const fakeFetch = (dir: string): string => {
+  const preload = join(dir, "fake-fetch.js");
+  writeFileSync(preload, [
+    'const { appendFileSync } = require("node:fs");',
+    'globalThis.fetch = async (url, init) => {',
+    '  appendFileSync(process.env.FAKE_LOG, JSON.stringify({ url: String(url), method: init.method, body: init.body ? JSON.parse(init.body) : undefined }) + "\\n");',
+    '  const status = Number(process.env.FAKE_STATUS ?? 200);',
+    '  const ok = { id: "m-42", content: process.env.FAKE_CONTENT ?? "", thread_metadata: { archived: process.env.FAKE_ARCHIVED === "true" }, parent_id: process.env.FAKE_PARENT };',
+    '  return new Response(status < 300 ? JSON.stringify(ok) : "{\\"message\\":\\"Missing Access\\"}", { status });',
+    '};',
+  ].join("\n"));
+  return preload;
+};
+
+const cli = async (dir: string, args: string[], env: Record<string, string> = {}) => {
+  const log = join(dir, "fetch.log");
+  rmSync(log, { force: true });
+  const p = Bun.spawn(["bun", "--preload", fakeFetch(dir), join(import.meta.dir, "..", "src", "cli.ts"), ...args], {
+    env: { PATH: process.env.PATH ?? "", HOME: dir, TMPDIR: process.env.TMPDIR ?? dir, DORI_CONFIG: join(dir, "no-config.json"), DORI_STATE_DIR: dir, DORI_DISCORD_TOKEN: "test-token", FAKE_LOG: log, ...env },
+    stdout: "pipe", stderr: "pipe",
+  });
+  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+  const requests = existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as { url: string; method: string; body?: { content?: string; nonce?: string } }) : [];
+  return { out, err, code, requests };
+};
+
+// Each case spawns `bun src/cli.ts`; a loaded full run on a small host needs more than bun's default 5 s per test.
+const CLI_TIMEOUT = 30_000;
+
+test("dori reported is lead-only, needs a registered lane, and needs --text", async () => {
+  const f = fixture();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200" }));
+  const denied = await cli(f.state.dir, ["reported", "alpha", "--text", "merged"], { DORI_LANE_KEY: "alpha" });
+  expect(denied.code).toBe(2);
+  expect(denied.err).toStartWith("DORI_CLI_LANE_ONLY reported:");
+  const unknown = await cli(f.state.dir, ["reported", "nope", "--text", "merged"]);
+  expect(unknown.code).toBe(1);
+  expect(unknown.err).toContain('no registered lane "nope"');
+  const bare = await cli(f.state.dir, ["reported", "alpha", "--note", "told"]);
+  expect(bare.code).toBe(1);
+  expect(bare.err).toContain("usage: dori reported <key> --text TEXT [--to TARGET] [--thread ID] [--note TEXT]");
+  expect([...denied.requests, ...unknown.requests, ...bare.requests]).toEqual([]);
+  expect(existsSync(join(f.state.dir, REPORTED_DIR))).toBe(false);
+}, CLI_TIMEOUT);
+
+test("dori reported posts to the lane's bound thread, then records the receipt with the message id and target", async () => {
+  const f = fixture();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200" }));
+  const ok = await cli(f.state.dir, ["reported", "alpha", "--text", "alpha merged: acme/app#7", "--note", "told in its thread"]);
+  expect(ok.err).toBe("");
+  expect(ok.code).toBe(0);
+  expect(ok.out.trim()).toBe("REPORTED_RECORDED alpha m-42");
+  expect(ok.requests).toHaveLength(1);
+  expect(ok.requests[0]).toMatchObject({ method: "POST", url: "https://discord.com/api/v10/channels/200/messages", body: { content: "alpha merged: acme/app#7" } });
+  expect(ok.requests[0]?.body?.nonce).toBeString();
+  expect(pendingReported(f.state.dir).map(({ lane: key, note, message, target }) => ({ key, note, message, target })))
+    .toEqual([{ key: "alpha", note: "told in its thread", message: "m-42", target: "discord:200" }]);
+  // --to overrides the bound thread; a bare id posts on the lane's platform.
+  const override = await cli(f.state.dir, ["reported", "alpha", "--text", "again", "--to", "300"]);
+  expect(override.code).toBe(0);
+  expect(override.requests.map((r) => r.url)).toEqual(["https://discord.com/api/v10/channels/300/messages"]);
+  expect(pendingReported(f.state.dir).map((r) => r.target).sort()).toEqual(["discord:200", "discord:300"]);
+}, CLI_TIMEOUT);
+
+test("a failed post records no receipt and exits non-zero", async () => {
+  const f = fixture();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200" }));
+  const failed = await cli(f.state.dir, ["reported", "alpha", "--text", "alpha merged"], { FAKE_STATUS: "403" });
+  expect(failed.code).toBe(1);
+  expect(failed.err).toContain("discord POST /channels/200/messages: 403");
+  expect(failed.out).not.toContain("REPORTED_RECORDED");
+  expect(failed.requests).toHaveLength(1);
+  expect(pendingReported(f.state.dir)).toEqual([]);
+}, CLI_TIMEOUT);
+
+test("a lane with no bound thread and no --to dies without posting or recording", async () => {
+  const f = fixture();
+  await f.deps.registry.write(lane("alpha"));
+  const none = await cli(f.state.dir, ["reported", "alpha", "--text", "alpha merged"]);
+  expect(none.code).toBe(1);
+  expect(none.err).toContain("lane alpha has no bound thread; name where to post with --to TARGET");
+  expect(none.requests).toEqual([]);
+  expect(existsSync(join(f.state.dir, REPORTED_DIR))).toBe(false);
+}, CLI_TIMEOUT);
+
+test("pendingReported reads receipts written before reports carried a message id", () => {
+  const f = fixture();
+  mkdirSync(join(f.state.dir, REPORTED_DIR), { recursive: true });
+  writeFileSync(join(f.state.dir, REPORTED_DIR, `${T0}-old.json`), JSON.stringify({ lane: "alpha", at: T0, note: "told" }));
+  expect(pendingReported(f.state.dir).map(({ path: _path, ...rest }) => rest)).toEqual([{ lane: "alpha", at: T0, note: "told" }]);
+});
+
+const autoClose = () => {
+  const f = fixture();
+  const supervisor = new Supervisor(f.deps);
+  // Each archive the supervisor asked for, in order.
+  const posts: string[] = [];
+  // Each button change (`<state> <thread>/<message>`), and the messages whose button is live now.
+  const buttons: string[] = [];
+  const live = new Set<string>();
+  const transport: ThreadCloseTransport = {
+    archive: async (thread) => { posts.push(thread); },
+    button: async (thread, message, state) => {
+      buttons.push(`${state} ${thread}/${message}`);
+      if (state === "live") live.add(message); else live.delete(message);
+      // The owner never sees two close buttons in a thread.
+      expect(live.size).toBeLessThanOrEqual(1);
+    },
+  };
+  const tick = async () => { await supervisor.reportTick(); await supervisor.autoCloseTick(transport); };
+  const close = (key: string) => f.deps.registry.patch(key, { closedAt: new Date(f.clock.now()).toISOString() });
+  // `button` marks a receipt of an older `dori reported --final`, which posted a close button. `message` posts the
+  // report into the thread as that message (last-reports.json), so it can carry the close button.
+  const report = (key: string, extra: { button?: boolean; message?: string } = {}) => {
+    const { message, ...rest } = extra;
+    if (message) recordLastReport(f.state.dir, key, { channel: "200", message, at: f.clock.now() });
+    recordReported(f.state.dir, key, f.clock.now(), undefined, { message: message ?? "m", target: "discord:200", thread: "200", ...rest });
+  };
+  return { ...f, supervisor, posts, buttons, live, transport, tick, close, report };
+};
+
+const HOUR = 60 * MIN;
+
+test("a quiet lane's claim (reportQuietLanes) is owed nothing and leaves the thread's close button to the thread's real reports", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("blog-draft-1", { thread: "discord:100/200" }));
+  // done-flow.ts writes the quiet receipt (no message, no thread) before announcing the claim.
+  recordReported(f.state.dir, "blog-draft-1", f.clock.now(), "reportQuietLanes: the lane posts its own results");
+  f.supervisor.enqueue("done-claim:blog-draft-1:1", "LANE_DONE_AUTO_REPORTED blog-draft-1 w:p1 merged acme/app#1 | verified: pr=none sig=ok report=quiet");
+  f.clock.at += 10 * MIN;
+  await f.tick();
+  await f.close("blog-draft-1");
+  f.supervisor.enqueue("closed:blog-draft-1", "LANE_CLOSED blog-draft-1 closed seen-claim toodo=no-task");
+  f.clock.at += 10 * MIN;
+  await f.tick();
+  expect(f.unreported()).toEqual([]);
+  expect(readJournal(f.state.dir).outcomes).toMatchObject([{ lane: "blog-draft-1", reportedAt: T0, quiet: ["closed:blog-draft-1"] }]);
+  expect(readJournal(f.state.dir).outcomes[0].thread).toBeUndefined();
+  expect(f.posts).toEqual([]);
+  expect(f.buttons).toEqual([]);
+  // A real report into the thread still gets the close button as before.
+  await f.deps.registry.write(lane("beta", { thread: "discord:100/200", closedAt: new Date(f.clock.now()).toISOString() }));
+  f.report("beta", { message: "r1" });
+  await f.tick();
+  expect(f.buttons).toEqual(["live 200/r1"]);
+  f.supervisor.close();
+});
+
+test("a finished thread gets the close button on its last report instead of closing, and closes threadCloseAfterHours later", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  f.report("alpha", { message: "r1" });
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  expect(f.buttons).toEqual(["live 200/r1"]);
+  expect(readCloseTimers(f.state.dir)).toEqual({ "200": { message: "r1", reportAt: T0, since: T0 } });
+  expect(readOwnerClosed(f.state.dir)).toEqual({});
+  f.clock.at += 24 * HOUR - 1;
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  f.clock.at += 1;
+  await f.tick();
+  expect(f.buttons).toEqual(["live 200/r1", "closed 200/r1"]);
+  expect(f.posts).toEqual(["200"]);
+  expect(readCloseTimers(f.state.dir)).toEqual({});
+  expect(readOwnerClosed(f.state.dir)).toEqual({ "200": T0 + 24 * HOUR });
+  await f.tick();
+  expect(f.posts).toHaveLength(1);
+  f.supervisor.close();
+});
+
+test("the close wait survives a restart; the owner writing and a newer report restart it, and the one button moves to the newest report", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  f.report("alpha", { message: "r1" });
+  await f.tick();
+  f.supervisor.close();
+  const restarted = new Supervisor(f.deps);
+  const tick = async () => { await restarted.reportTick(); await restarted.autoCloseTick(f.transport); };
+  f.clock.at += 23 * HOUR;
+  expect(touchCloseTimer(f.state.dir, "200", f.clock.now())).toBe(true);
+  f.clock.at += 23 * HOUR;
+  await tick();
+  expect(f.posts).toEqual([]);
+  // A repeat report of the same lane: the button moves to it, off the old one first.
+  f.report("alpha", { message: "r2" });
+  await tick();
+  expect(f.buttons).toEqual(["live 200/r1", "none 200/r1", "live 200/r2"]);
+  // Another lane reported into the thread: the button moves again.
+  await f.deps.registry.write(lane("beta", { thread: "discord:100/200", closedAt: new Date(f.clock.now()).toISOString() }));
+  f.clock.at += HOUR;
+  f.report("beta", { message: "r3" });
+  await tick();
+  expect(f.buttons.slice(3)).toEqual(["none 200/r2", "live 200/r3"]);
+  expect([...f.live]).toEqual(["r3"]);
+  f.clock.at += 24 * HOUR - 1;
+  await tick();
+  expect(f.posts).toEqual([]);
+  f.clock.at += 1;
+  await tick();
+  expect(f.posts).toEqual(["200"]);
+  restarted.close();
+});
+
+test("new work on a waiting thread takes its button off; a failed step is retried and never leaves two buttons", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  f.report("alpha", { message: "r1" });
+  await f.tick();
+  await f.deps.registry.write(lane("beta", { thread: "discord:100/200" }));
+  await f.tick();
+  expect(f.buttons).toEqual(["live 200/r1", "none 200/r1"]);
+  expect(readCloseTimers(f.state.dir)).toEqual({});
+  f.clock.at += 48 * HOUR;
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  // beta finishes; its report gets the button. The first try to take it off fails, so nothing moves until it works.
+  f.clock.at += 1_000;
+  await f.close("beta");
+  f.report("beta", { message: "r2" });
+  await f.tick();
+  f.clock.at += 1_000;
+  f.report("beta", { message: "r3" });
+  let fail = true;
+  await f.supervisor.reportTick();
+  await f.supervisor.autoCloseTick({ ...f.transport, button: async (thread, message, state) => {
+    if (fail && state === "none") { fail = false; throw new Error("discord PATCH: 500"); }
+    await f.transport.button(thread, message, state);
+  } });
+  expect([...f.live]).toEqual(["r2"]);
+  expect(readCloseTimers(f.state.dir)["200"]?.message).toBe("r2");
+  await f.tick();
+  expect([...f.live]).toEqual(["r3"]);
+  expect(readCloseTimers(f.state.dir)["200"]?.message).toBe("r3");
+  f.supervisor.close();
+});
+
+test("the supervisor closes a thread once its last lane is closed and reported, records it closed, once per report", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200" }));
+  f.supervisor.enqueue("claim:alpha", "LANE_DONE_CLAIMED alpha w:p1 proof");
+  f.clock.at += 1_000;
+  f.report("alpha");
+  // Reported at the claim: the lane is still open, so the close waits for the lane's.
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  f.clock.at += 1_000;
+  await f.close("alpha");
+  await f.tick();
+  expect(f.posts).toEqual(["200"]);
+  expect(readFinishedThreads(f.state.dir)).toEqual({ "200": T0 + 2_000 });
+  // Recorded like the owner's close, so later posts addressed to the thread are redirected.
+  expect(readOwnerClosed(f.state.dir)).toEqual({ "200": T0 + 2_000 });
+  await f.tick();
+  expect(f.posts).toHaveLength(1);
+  // The owner wrote in the thread and it opened again (the close record went): it is not closed again without new work.
+  writeFileSync(join(f.state.dir, "owner-closed-threads.json"), "{}");
+  await f.tick();
+  expect(f.posts).toHaveLength(1);
+  // New work on the thread, finished and reported later, closes it again.
+  await f.deps.registry.write(lane("beta", { thread: "discord:100/200" }));
+  f.clock.at += 1_000;
+  await f.close("beta");
+  f.report("beta");
+  await f.tick();
+  expect(f.posts).toEqual(["200", "200"]);
+  f.supervisor.close();
+});
+
+test("a failed archive records nothing and is retried on the next pass", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  f.report("alpha");
+  await f.supervisor.reportTick();
+  await f.supervisor.autoCloseTick({ ...f.transport, archive: async () => { throw new Error("discord PATCH /channels/200: 500"); } });
+  expect(readFinishedThreads(f.state.dir)).toEqual({});
+  expect(readOwnerClosed(f.state.dir)).toEqual({});
+  await f.tick();
+  expect(f.posts).toEqual(["200"]);
+  f.supervisor.close();
+});
+
+test("a reported done-claimed lane still open holds the close back across a supervisor restart, until it closes", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", claim: { at: new Date(T0).toISOString(), evidence: "PR o/r#1" } }));
+  f.supervisor.enqueue("claim:alpha", "LANE_DONE_CLAIMED alpha w:p1 PR o/r#1");
+  f.clock.at += 1_000;
+  f.report("alpha");
+  await f.tick();
+  f.supervisor.close();
+  // A new process on the same state: its first passes see the claim reported and the lane still open.
+  const restarted = new Supervisor(f.deps);
+  const tick = async () => { await restarted.reportTick(); await restarted.autoCloseTick(f.transport); };
+  await tick();
+  await tick();
+  expect(f.posts).toEqual([]);
+  expect(readFinishedThreads(f.state.dir)).toEqual({});
+  f.clock.at += 1_000;
+  await f.close("alpha");
+  await tick();
+  expect(f.posts).toEqual(["200"]);
+  restarted.close();
+});
+
+test("an older --final report's button stands for the thread's close: the supervisor does not close it", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  f.report("alpha", { button: true });
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  expect(readFinishedThreads(f.state.dir)).toEqual({ "200": T0 });
+  f.supervisor.close();
+});
+
+test("an open lane, an unreported lane, a wait or an open decision on the thread holds the close back", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  await f.deps.registry.write(lane("beta", { thread: "discord:100/200" }));
+  await f.deps.registry.write(lane("gamma", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  f.supervisor.enqueue("closed:gamma", "LANE_CLOSED gamma x");
+  f.report("alpha");
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  await f.close("beta");
+  f.report("gamma");
+  const waits = new Waits(f.state.dir);
+  waits.register({ key: "release", until: "file ready", note: "n", cwd: f.state.dir, thread: "discord:100/200" }, f.clock.now());
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  waits.cancel("release");
+  f.supervisor.enqueue("q:alpha", "LANE_REPORT alpha question which one?");
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  // Resolved: nothing is left on the thread.
+  mkdirSync(join(f.state.dir, "resolved"), { recursive: true });
+  writeFileSync(join(f.state.dir, "resolved", `${T0}-q.json`), JSON.stringify({ id: "q:alpha", at: T0 }));
+  f.supervisor.resolveTick();
+  await f.tick();
+  expect(f.posts).toEqual(["200"]);
+  f.supervisor.close();
+});
+
+test("receipts without a thread (written before this check) never close one", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  recordReported(f.state.dir, "alpha", T0, undefined, { message: "m", target: "discord:200" });
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  f.supervisor.close();
+});
+
+test("a report of a lane that closed before the supervisor's close re-arms nothing; a lane closed after it does", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  await f.deps.registry.write(lane("beta", { thread: "discord:100/200" }));
+  f.report("alpha");
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  // beta closes; its report has not arrived yet, so nothing is left on the thread and it is closed.
+  f.clock.at += 1_000;
+  await f.close("beta");
+  f.clock.at += 1_000;
+  await f.tick();
+  expect(f.posts).toEqual(["200"]);
+  // beta's report arrives after the close (the owner reopened the thread meanwhile): that close already covers it.
+  writeFileSync(join(f.state.dir, "owner-closed-threads.json"), "{}");
+  f.clock.at += 5_000;
+  f.report("beta");
+  await f.tick();
+  await f.tick();
+  expect(f.posts).toHaveLength(1);
+  // gamma starts after the close, closes and is reported: new work closes the thread again.
+  await f.deps.registry.write(lane("gamma", { thread: "discord:100/200" }));
+  f.clock.at += 1_000;
+  await f.close("gamma");
+  f.report("gamma");
+  await f.tick();
+  expect(f.posts).toEqual(["200", "200"]);
+  f.supervisor.close();
+});
+
+test("a repeat report of a lane after an older --final button does not close the thread", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  f.report("alpha", { button: true });
+  await f.tick();
+  f.clock.at += MIN;
+  f.report("alpha");
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  expect(readFinishedThreads(f.state.dir)).toEqual({ "200": T0 });
+  f.supervisor.close();
+});
+
+test("repeat reports of a lane into the same thread close it once", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  f.report("alpha");
+  await f.tick();
+  for (let i = 0; i < 2; i++) {
+    f.clock.at += 1_000;
+    f.report("alpha");
+    await f.tick();
+  }
+  expect(f.posts).toEqual(["200"]);
+  expect(readJournal(f.state.dir).outcomes[0]).toMatchObject({ lane: "alpha", thread: "200", lastReportAt: T0, reportedAt: T0 });
+  f.supervisor.close();
+});
+
+test("receipts are taken in time order, and a replayed receipt re-arms nothing", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  const posted = { message: "m", target: "discord:200", thread: "200" };
+  // Both pending in one pass, the later plain report written first.
+  recordReported(f.state.dir, "alpha", T0 + 1_000, undefined, posted);
+  recordReported(f.state.dir, "alpha", T0, undefined, { ...posted, button: true });
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  recordReported(f.state.dir, "alpha", T0 + 1_000, undefined, posted);
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  expect(readJournal(f.state.dir).outcomes[0]).toMatchObject({ lastReportAt: T0 });
+  f.supervisor.close();
+});
+
+test("the first explicit report after a machine lane closed itself closes the thread", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("robot", { thread: "discord:100/200", autoClose: "machine", closedAt: new Date(T0).toISOString() }));
+  f.supervisor.enqueue("lane-closed:robot", "LANE_CLOSED robot x");
+  f.clock.at += 5 * MIN;
+  await f.tick();
+  expect(readJournal(f.state.dir).outcomes[0]).toMatchObject({ lane: "robot", note: "autoClose: machine" });
+  expect(f.posts).toEqual([]);
+  f.report("robot");
+  await f.tick();
+  expect(f.posts).toEqual(["200"]);
+  f.supervisor.close();
+});
+
+test("another lane reported into a thread after an older --final button closes it", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  f.report("alpha", { button: true });
+  await f.tick();
+  await f.deps.registry.write(lane("beta", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  f.clock.at += 1_000;
+  f.report("beta");
+  await f.tick();
+  expect(f.posts).toEqual(["200"]);
+  f.supervisor.close();
+});
+
+test("a repeat report while the lane is open keeps the thread's close waiting for the lane's", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200" }));
+  f.report("alpha");
+  await f.tick();
+  f.clock.at += 1_000;
+  f.report("alpha");
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  f.clock.at += 1_000;
+  await f.close("alpha");
+  await f.tick();
+  await f.tick();
+  expect(f.posts).toEqual(["200"]);
+  f.supervisor.close();
+});
+
+test("dori reported --final (older leads) is accepted and posts no close button; its receipt names the thread", async () => {
+  const f = fixture();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  const final = await cli(f.state.dir, ["reported", "alpha", "--text", "done", "--final"]);
+  expect(final.code).toBe(0);
+  expect(final.out.trim()).toBe("REPORTED_RECORDED alpha m-42");
+  expect(final.requests).toHaveLength(1);
+  expect(JSON.stringify(final.requests[0]?.body)).not.toContain("dori:close-thread");
+  expect(pendingReported(f.state.dir).map(({ thread, button }) => ({ thread, button }))).toEqual([{ thread: "200", button: undefined }]);
+}, CLI_TIMEOUT);
+
+test("a lane stored with a bare thread id (older launches) gets the close button on the report dori reported posted into its thread", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("beta", { thread: "300", closedAt: new Date(T0).toISOString() }));
+  expect((await f.deps.registry.read("beta"))?.thread).toBe("discord:300");
+  const plain = await cli(f.state.dir, ["reported", "beta", "--text", "done"]);
+  expect(plain.code).toBe(0);
+  // The CLI stamps its receipts with the real clock; an old supervisor clock would prune them as long reported.
+  f.clock.at = Date.now();
+  await f.tick();
+  expect(f.buttons).toEqual(["live 300/m-42"]);
+  expect(f.posts).toEqual([]);
+  f.supervisor.close();
+}, CLI_TIMEOUT);
+
+const API = "https://discord.com/api/v10";
+const calls = (requests: { method: string; url: string }[]): string[] => requests.map((r) => `${r.method} ${r.url.replace(API, "")}`);
+
+test("dori reported --append edits the lane's last report and posts nothing new; with nothing to edit it dies", async () => {
+  const f = fixture();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200" }));
+  const none = await cli(f.state.dir, ["reported", "alpha", "--append", "merged"]);
+  expect(none.code).toBe(1);
+  expect(none.err).toContain("REPORT_APPEND_NO_MESSAGE alpha");
+  expect(none.requests).toEqual([]);
+  const bad = await cli(f.state.dir, ["reported", "alpha", "--append", "merged", "--final"]);
+  expect(bad.code).toBe(1);
+  expect(bad.err).toContain("dori reported <key> --append TEXT [--note TEXT]");
+  const report = await cli(f.state.dir, ["reported", "alpha", "--text", "alpha done: PR green"]);
+  expect(report.code).toBe(0);
+  expect(readLastReports(f.state.dir).alpha).toMatchObject({ channel: "200", message: "m-42" });
+  const append = await cli(f.state.dir, ["reported", "alpha", "--append", "merged into dev at abc123"], { FAKE_CONTENT: "alpha done: PR green" });
+  expect(append.err).toBe("");
+  expect(append.code).toBe(0);
+  expect(append.out.trim()).toBe("REPORT_APPENDED alpha m-42");
+  expect(calls(append.requests)).toEqual(["GET /channels/200", "GET /channels/200/messages/m-42", "PATCH /channels/200/messages/m-42"]);
+  expect(append.requests[2]?.body?.content).toBe("alpha done: PR green\nmerged into dev at abc123");
+  expect(pendingReported(f.state.dir).filter((r) => r.followUp).map((r) => r.message)).toEqual(["m-42"]);
+}, CLI_TIMEOUT);
+
+test("a report, an append or a send into a thread the owner closed goes to its parent channel as one line, else the owner channel; a reopened thread is posted into again", async () => {
+  const f = fixture();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  const config = join(f.state.dir, "config.json");
+  writeFileSync(config, JSON.stringify({ discordChannels: ["900"] }));
+  recordOwnerClosed(f.state.dir, "200", T0);
+  const env = { DORI_CONFIG: config, FAKE_ARCHIVED: "true", FAKE_PARENT: "100" };
+  const report = await cli(f.state.dir, ["reported", "alpha", "--text", "alpha merged:\nacme/app#7", "--final"], env);
+  expect(report.code).toBe(0);
+  expect(report.out).toContain("REPORT_REDIRECTED alpha m-42: thread 200 was closed by the owner, so one line linking it went to its parent channel 100");
+  expect(calls(report.requests)).toEqual(["GET /channels/200", "POST /channels/100/messages"]);
+  expect(report.requests[1]?.body?.content).toBe("<#200> alpha merged: acme/app#7");
+  expect(pendingReported(f.state.dir).map((r) => ({ target: r.target, followUp: r.followUp, thread: r.thread, button: r.button })))
+    .toEqual([{ target: "discord:100", followUp: true, thread: undefined, button: undefined }]);
+  writeFileSync(join(f.state.dir, "last-reports.json"), JSON.stringify({ alpha: { channel: "200", message: "m-1", at: T0 } }));
+  const append = await cli(f.state.dir, ["reported", "alpha", "--append", "Toodo done"], env);
+  expect(append.code).toBe(0);
+  expect(calls(append.requests)).toEqual(["GET /channels/200", "POST /channels/100/messages"]);
+  const send = await cli(f.state.dir, ["send", "--to", "discord:100/200", "--text", "follow-up"], env);
+  expect(send.code).toBe(0);
+  expect(send.out).toContain("SENT_REDIRECTED m-42: thread 200 was closed by the owner, so one line linking it went to its parent channel 100");
+  expect(calls(send.requests)).toEqual(["GET /channels/200", "POST /channels/100/messages"]);
+  expect(send.requests[1]?.body?.content).toBe("<#200> follow-up");
+  // Discord names no parent: the line goes to the owner channel discordChannels[0].
+  const orphan = await cli(f.state.dir, ["send", "--to", "discord:100/200", "--text", "follow-up"], { ...env, FAKE_PARENT: "" });
+  expect(orphan.code).toBe(0);
+  expect(orphan.out).toContain("SENT_REDIRECTED m-42: thread 200 was closed by the owner, so one line linking it went to the owner channel 900");
+  expect(calls(orphan.requests)).toEqual(["GET /channels/200", "POST /channels/900/messages"]);
+  // The owner wrote in the thread and Discord unarchived it: the record goes and the post lands in the thread.
+  const reopened = await cli(f.state.dir, ["send", "--to", "discord:100/200", "--text", "answer"], { ...env, FAKE_ARCHIVED: "false" });
+  expect(reopened.code).toBe(0);
+  expect(calls(reopened.requests)).toEqual(["GET /channels/200", "POST /channels/200/messages"]);
+  expect(readOwnerClosed(f.state.dir)).toEqual({});
+}, CLI_TIMEOUT);
+
+test("dori reported --append --no-redirect leaves a closed thread alone: nothing is posted anywhere and the text stays in the receipt", async () => {
+  const f = fixture();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  const config = join(f.state.dir, "config.json");
+  writeFileSync(config, JSON.stringify({ discordChannels: ["900"] }));
+  recordOwnerClosed(f.state.dir, "200", T0);
+  writeFileSync(join(f.state.dir, "last-reports.json"), JSON.stringify({ alpha: { channel: "200", message: "m-1", at: T0 } }));
+  const env = { DORI_CONFIG: config, FAKE_ARCHIVED: "true", FAKE_PARENT: "100" };
+  const append = await cli(f.state.dir, ["reported", "alpha", "--append", "머지 acme/app#7 (abc1234)", "--no-redirect"], env);
+  expect(append.code).toBe(0);
+  expect(append.out).toContain("REPORT_NOT_REDIRECTED alpha m-1: thread 200 was closed by the owner and --no-redirect is set, so nothing was posted");
+  expect(calls(append.requests)).toEqual(["GET /channels/200"]);
+  expect(pendingReported(f.state.dir).map((r) => ({ note: r.note, followUp: r.followUp, message: r.message })))
+    .toEqual([{ note: "머지 acme/app#7 (abc1234)", followUp: true, message: "m-1" }]);
+  // --no-redirect belongs to --append only.
+  const misuse = await cli(f.state.dir, ["reported", "alpha", "--text", "done", "--no-redirect"], env);
+  expect(misuse.code).toBe(1);
+  expect(misuse.requests).toEqual([]);
+}, CLI_TIMEOUT);
+
+test("a follow-up receipt never re-arms the close, and a thread the owner closed after its last report is left alone", async () => {
+  const f = autoClose();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", closedAt: new Date(T0).toISOString() }));
+  f.report("alpha", { button: true });
+  await f.tick();
+  f.clock.at += 1_000;
+  recordReported(f.state.dir, "alpha", f.clock.now(), undefined, { message: "m", target: "discord:200", thread: "200", followUp: true });
+  recordReported(f.state.dir, "alpha", f.clock.now(), undefined, { message: "m2", target: "discord:900", followUp: true });
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  // beta reported into the thread, then the owner closed it with an earlier button: it is not archived again.
+  await f.deps.registry.write(lane("beta", { thread: "discord:100/200", closedAt: new Date(f.clock.now()).toISOString() }));
+  f.clock.at += 1_000;
+  f.report("beta");
+  f.clock.at += 1_000;
+  recordOwnerClosed(f.state.dir, "200", f.clock.now());
+  await f.tick();
+  expect(f.posts).toEqual([]);
+  f.supervisor.close();
+});

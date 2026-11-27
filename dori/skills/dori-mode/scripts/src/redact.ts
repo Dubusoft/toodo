@@ -1,0 +1,123 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { envFilePath, parseEnvFile } from "./credentials.ts";
+
+const MASK = "[REDACTED]";
+
+/** Env names whose values are credentials: a name ending in one of these words, or containing WEBHOOK/CREDENTIAL. */
+const SECRET_NAME = /(?:TOKEN|SECRET|KEY|COOKIE|PASSWORD|PASSWD)$|WEBHOOK|CREDENTIAL/i;
+// Decision: store values keep this floor too (a PIN would mask every match in ordinary text); `dori secret add/update` warn SECRET_NOT_MASKED instead.
+export const MIN_KNOWN_SECRET = 8;
+/**
+ * Shortest line of a multiline secret (a JSON service account key, a PEM body) masked when it shows up on its own: a log
+ * printed line by line leaks the value one line at a time. Shorter lines (`{`, `},`, `"type": "x",`) say nothing secret.
+ */
+const MIN_SECRET_LINE = 16;
+
+let storeSecrets = new Set<string>();
+
+/** Register secret-store values read by the supervisor or local runner for masking. */
+export const addKnownSecrets = (values: Iterable<string>): void => {
+  for (const value of values) if (value.length >= MIN_KNOWN_SECRET) storeSecrets.add(value);
+};
+
+/** Replace registered secret-store values read by the supervisor or local runner. */
+export const replaceKnownSecrets = (values: Iterable<string>): void => {
+  storeSecrets = new Set([...values].filter((value) => value.length >= MIN_KNOWN_SECRET));
+};
+
+let envCache: { readonly key: string; readonly values: readonly string[] } | undefined;
+
+/** Secret values of the dori env file (`~/.dori/env`), re-read when the file changes; none when it is absent or unreadable. */
+const envFileSecrets = (): readonly string[] => {
+  let path: string;
+  try { path = envFilePath(process.env.HOME || undefined); } catch { return []; }
+  if (!existsSync(path)) return [];
+  try {
+    const st = statSync(path);
+    const key = `${path}:${st.mtimeMs}:${st.size}`;
+    if (envCache?.key === key) return envCache.values;
+    const values = parseEnvFile(readFileSync(path, "utf8"))
+      .filter(([name, value]) => SECRET_NAME.test(name) && value.length >= MIN_KNOWN_SECRET)
+      .map(([, value]) => value);
+    envCache = { key, values };
+    return values;
+  } catch { return []; }
+};
+
+/** `value` as a pattern whose whitespace runs match any whitespace run, so text flattened to one line still matches it. */
+const loosePattern = (value: string): RegExp =>
+  new RegExp(value.trim().split(/\s+/).map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "g");
+
+/**
+ * Masking of the secret values the env file, the secret store and the process environment carry, longest first. A value
+ * holding whitespace also matches with its whitespace changed (newlines flattened to spaces before redaction), and each
+ * line of a multiline value of MIN_SECRET_LINE+ characters is masked on its own.
+ */
+const maskKnownSecrets = (text: string): string => {
+  const known = new Set([...envFileSecrets(), ...storeSecrets]);
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value && value.length >= MIN_KNOWN_SECRET && SECRET_NAME.test(name)) known.add(value);
+  }
+  for (const value of [...known]) {
+    if (!/[\r\n]/.test(value)) continue;
+    for (const line of value.split(/\r?\n/)) if (line.trim().length >= MIN_SECRET_LINE) known.add(line.trim());
+  }
+  let out = text;
+  for (const value of [...known].sort((a, b) => b.length - a.length)) {
+    // A value that is mostly whitespace keeps exact matching: its loose pattern would match (almost) anything.
+    if (/\s/.test(value) && value.trim().length >= MIN_KNOWN_SECRET) out = out.replace(loosePattern(value), MASK);
+    else if (out.includes(value)) out = out.split(value).join(MASK);
+  }
+  return out;
+};
+
+/**
+ * A `key=value` / `"key": "value"` assignment. A count or an ordinary word stays. Masked: any value of 16+ characters, a
+ * password made of 4+ digits (a PIN), and anything of 5+ characters mixing letters and nonletters. A quoted JSON key keeps
+ * the value's quotes so the surrounding JSON stays well formed.
+ */
+const assignment = (match: string, prefix: string, raw: string): string => {
+  const value = /^["']/.test(raw) ? raw.slice(1, -1) : raw;
+  const long = value.length >= 16;
+  const pin = /^(?:password|passwd|pwd)/i.test(prefix) && /^\d{4,}$/.test(value);
+  const mixed = value.length >= 5 && /\p{L}/u.test(value) && /[^\p{L}]/u.test(value);
+  if (value === MASK || !(long || pin || mixed)) return match;
+  return `${prefix}${/["']\s*[=:]\s*$/.test(prefix) && /^["']/.test(raw) ? `${raw[0]}${MASK}${raw[0]}` : MASK}`;
+};
+
+// Order matters: block/prefixed forms first, generic assignments last.
+const RULES: readonly (readonly [RegExp, string | ((...m: string[]) => string)])[] = [
+  [/-----BEGIN ((?:[A-Z0-9]+ )*PRIVATE KEY)-----[\s\S]*?(?:-----END \1-----|$)/g, `[REDACTED PRIVATE KEY]`],
+  [/\b((?:enroll-code|enrollment-code|code)\s*[:=]\s*)[A-Za-z0-9_-]{8,}/gi, (_m, prefix) => `${prefix}${MASK}`],
+  [/(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])/g, MASK],
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, MASK],
+  [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, MASK],
+  [/\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}/g, MASK],
+  [/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g, MASK],
+  // Slack `d` cookie: the value is URL-encoded, so it runs past the characters other xox tokens use.
+  [/\bxoxd-[^\s"';,]{10,}/g, MASK],
+  [/\bxox[abposr]-[A-Za-z0-9-]{10,}/g, MASK],
+  [/\bxapp-[A-Za-z0-9-]{10,}/g, MASK],
+  // Telegram bot token: <bot id>:<35 chars>, also inside /bot<token>/ URLs.
+  [/(?<!\d)\d{6,12}:[A-Za-z0-9_-]{30,}/g, MASK],
+  // Discord bot token: three base64url segments, first starts with a snowflake encoding (M/N/O).
+  [/\b[MNO][A-Za-z0-9_-]{23,27}\.[A-Za-z0-9_-]{6,7}\.[A-Za-z0-9_-]{27,}/g, MASK],
+  // Discord webhook URL: its last segment is the token that lets anyone post.
+  [/(\bdiscord(?:app)?\.com\/api\/(?:v\d+\/)?webhooks\/\d+\/)[\w-]{20,}/g, (_m, p) => `${p}${MASK}`],
+  [/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, (_m, p) => `${p}${MASK}`],
+  // Prefixed names (EXPO_TOKEN, DORI_SLACK_COOKIE, client_secret): `\b` cannot start inside `_`.
+  [/(?<![A-Za-z0-9])((?:[A-Za-z0-9]+_)+(?:token|secret|key|cookie|password|passwd)["']?\s*[=:]\s*)("[^"\n]*"|'[^'\n]*'|[^\s"',;&}]+)/gi, assignment],
+  // The key may be a quoted JSON key ("token": "...").
+  [/\b((?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)["']?\s*[=:]\s*)("[^"\n]*"|'[^'\n]*'|[^\s"',;&}]+)/gi, assignment],
+];
+
+/** Mask common credential shapes in outbound text. Ordinary text is returned unchanged. */
+export const redactSecrets = (text: string): string => {
+  let out = maskKnownSecrets(text);
+  for (const [re, to] of RULES) out = out.replace(re, to as never);
+  return out;
+};
+
+/** `redactSecrets` over every string value of an event's structured context. */
+export const redactMeta = <T extends Readonly<Record<string, string | undefined>>>(meta: T): T =>
+  Object.fromEntries(Object.entries(meta).map(([key, value]) => [key, typeof value === "string" ? redactSecrets(value) : value])) as T;

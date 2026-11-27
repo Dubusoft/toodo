@@ -1,0 +1,41 @@
+name: Dori
+
+on:
+  push:
+    branches:
+      - dev
+      - main
+    paths:
+      - "dori/**"
+      - ".github/workflows/dori.yml"
+  pull_request:
+    paths:
+      - "dori/**"
+      - ".github/workflows/dori.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dori-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: dori/skills/dori-mode/scripts
+
+# CI only typechecks; the test suite (including the retention load test) runs locally:
+# `bun test` in dori/skills/dori-mode/scripts (see AGENTS.md).
+jobs:
+  typecheck:
+    name: Dori typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck

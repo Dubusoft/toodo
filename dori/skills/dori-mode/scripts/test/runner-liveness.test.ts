@@ -1,0 +1,312 @@
+import { afterEach, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { openOperations, plan, type OperationStore } from "../src/operations.ts";
+import { fileOutageStore, LivenessMonitor, livenessIo, OUTAGES_FILE, type ProbeOutcome } from "../src/runner/liveness.ts";
+import type { Runner } from "../src/run.ts";
+import { withSqliteStore } from "./fakes.ts";
+
+const dirs: string[] = [];
+afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+
+type RigOptions = {
+  /** Runs inside the restart command, before it returns (a hello can arrive while systemctl is still running). */
+  readonly duringRestart?: (monitor: LivenessMonitor) => Promise<void>;
+  /** Rows already in the operations store when the monitor starts (a supervisor restart). */
+  readonly seed?: (operations: OperationStore, wallNow: number) => void;
+  /** The state directory (shared by two rigs to stand for one supervisor and the next); outages are kept in it. */
+  readonly stateDir?: string;
+};
+
+const rig = (probe: (monitor: LivenessMonitor) => ProbeOutcome | Promise<ProbeOutcome>, lanes: readonly string[] = [], options: RigOptions = {}) => {
+  const dir = options.stateDir ?? mkdtempSync(join(tmpdir(), "runner-liveness-"));
+  if (!options.stateDir) dirs.push(dir);
+  withSqliteStore(dir);
+  let at = 0;
+  const lines: string[] = [];
+  const alerts: string[] = [];
+  const restarts: number[] = [];
+  let owned = lanes;
+  const operations = openOperations({ stateDir: dir });
+  options.seed?.(operations, 1_800_000_000_000);
+  const monitor: LivenessMonitor = new LivenessMonitor({
+    monotonic: () => at, now: () => 1_800_000_000_000 + at, epoch: 7,
+    probe: async () => probe(monitor),
+    restart: async () => { restarts.push(at); await options.duringRestart?.(monitor); return { ok: true, detail: "restarted" }; },
+    ownedLanes: async () => owned, operations, emit: (line) => { lines.push(line); }, alert: (text) => { alerts.push(text); },
+    ...(options.stateDir ? { outages: fileOutageStore(options.stateDir) } : {}),
+  });
+  monitor.track("worker-a", 1);
+  /** Ticks every 5 s (the runners task period) until `untilMs`. */
+  const runTo = async (untilMs: number): Promise<void> => { while (at < untilMs) { at = Math.min(untilMs, at + 5_000); await monitor.tick(); } };
+  return { monitor, lines, alerts, restarts, operations, runTo, at: () => at, own: (next: readonly string[]) => { owned = next; } };
+};
+const kinds = (lines: readonly string[]): string[] => lines.map((l) => l.split(" ").slice(0, l.startsWith("HOST_GUARD") ? 2 : 1).join(" "));
+
+const urgent = (lines: readonly string[]): string[] => lines.filter((l) => l.startsWith("HOST_GUARD OFFLINE") || l.startsWith("LANE_RUNNER_LOST"));
+
+test("heartbeats stop: RUNNER_STALE at 60 s, digest RUNNER_OFFLINE at 180 s, HOST_GUARD OFFLINE only once 10 min offline", async () => {
+  const r = rig(() => ({ kind: "unreachable", detail: "ssh: no route" }));
+  await r.runTo(55_000);
+  expect(r.lines).toEqual([]);
+  await r.runTo(60_000);
+  expect(r.lines).toEqual(["RUNNER_STALE machine=worker-a no heartbeat for 60 s"]);
+  await r.runTo(175_000);
+  expect(r.lines).toHaveLength(1);
+  await r.runTo(180_000);
+  expect(r.lines.at(-1)).toBe("RUNNER_OFFLINE machine=worker-a runner heartbeat missing for 180 s");
+  await r.runTo(775_000);
+  expect(urgent(r.lines)).toEqual([]);
+  await r.runTo(780_000);
+  expect(r.lines.at(-1)).toBe("HOST_GUARD OFFLINE machine=worker-a runner heartbeat missing for 780 s");
+  await r.runTo(1_500_000);
+  expect(kinds(r.lines)).toEqual(["RUNNER_STALE", "RUNNER_OFFLINE", "HOST_GUARD OFFLINE"]);
+  expect(r.restarts).toEqual([]);
+});
+
+test("an untracked runner emits nothing on later ticks, however long it stays silent", async () => {
+  const r = rig(() => ({ kind: "unreachable", detail: "ssh: no route" }));
+  await r.runTo(30_000);
+  r.monitor.untrack("worker-a");
+  await r.runTo(1_500_000);
+  expect(r.lines).toEqual([]);
+  expect(r.restarts).toEqual([]);
+});
+
+test("alive but unreachable: a short disconnect stays digest and its reconnect wakes nobody", async () => {
+  const r = rig(() => ({ kind: "alive" }));
+  await r.runTo(180_000 + 5 * 60_000);
+  expect(kinds(r.lines)).toEqual(["RUNNER_STALE", "RUNNER_OFFLINE", "RUNNER_UNREACHABLE"]);
+  await r.monitor.heartbeat("worker-a");
+  expect(urgent(r.lines)).toEqual([]);
+  expect(r.lines.some((l) => l.startsWith("HOST_GUARD ONLINE"))).toBe(false);
+  expect(r.restarts).toEqual([]);
+});
+
+test("a dead host escalates at once, before its restart", async () => {
+  const r = rig(() => ({ kind: "dead", detail: "no process" }));
+  await r.runTo(180_000);
+  expect(kinds(r.lines)).toEqual(["RUNNER_STALE", "RUNNER_OFFLINE", "HOST_GUARD OFFLINE"]);
+  expect(r.lines.at(-1)).toBe("HOST_GUARD OFFLINE machine=worker-a runner dead on its host: no process");
+  expect(r.restarts).toEqual([180_000]);
+});
+
+test("a runner that owns open lanes escalates on its first disconnect, and the alerts channel hears it and its end", async () => {
+  const r = rig(() => ({ kind: "unreachable", detail: "ssh: no route" }), ["lane-a"]);
+  await r.monitor.heartbeat("worker-a");
+  await r.runTo(180_000);
+  expect(r.lines.at(-1)).toBe("HOST_GUARD OFFLINE machine=worker-a runner heartbeat missing for 180 s; it owns open lanes lane-a");
+  expect(r.alerts).toHaveLength(1);
+  expect(r.alerts[0]).toContain("(HOST_GUARD OFFLINE machine=worker-a runner heartbeat missing for 180 s; it owns open lanes lane-a)");
+  await r.monitor.heartbeat("worker-a");
+  expect(r.lines.at(-1)).toBe("HOST_GUARD ONLINE machine=worker-a");
+  expect(r.alerts).toHaveLength(2);
+  expect(r.alerts[1]).toContain("(HOST_GUARD ONLINE machine=worker-a)");
+});
+
+test("after a supervisor start, a runner owning lanes that has not reconnected yet wakes nobody until 10 min or a dead probe", async () => {
+  const r = rig(() => ({ kind: "unreachable", detail: "ssh: no route" }), ["lane-a"]);
+  await r.runTo(5 * 60_000);
+  expect(kinds(r.lines)).toEqual(["RUNNER_STALE", "RUNNER_OFFLINE"]);
+  expect(urgent(r.lines)).toEqual([]);
+  expect(r.alerts).toEqual([]);
+  // A late reconnect ends it quietly.
+  await r.monitor.heartbeat("worker-a");
+  expect(urgent(r.lines)).toEqual([]);
+  expect(r.lines.some((l) => l.startsWith("HOST_GUARD ONLINE"))).toBe(false);
+
+  const down = rig(() => ({ kind: "unreachable", detail: "ssh: no route" }), ["lane-a"]);
+  await down.runTo(775_000);
+  expect(urgent(down.lines)).toEqual([]);
+  await down.runTo(780_000);
+  expect(urgent(down.lines)).toEqual(["HOST_GUARD OFFLINE machine=worker-a runner heartbeat missing for 780 s"]);
+  expect(down.alerts).toHaveLength(1);
+
+  const dead = rig(() => ({ kind: "dead", detail: "no process" }), ["lane-a"]);
+  await dead.runTo(180_000);
+  expect(urgent(dead.lines)).toEqual(["HOST_GUARD OFFLINE machine=worker-a runner dead on its host: no process"]);
+});
+
+test("reconnects within the hysteresis fold into one outage per machine: one RUNNER_OFFLINE, one RUNNER_ONLINE, no wake", async () => {
+  const r = rig(() => ({ kind: "unreachable", detail: "ssh: no route" }));
+  // Four flaps: 3.5 min down, 2 min up, each well inside the 10 min hold.
+  for (let i = 0; i < 4; i++) {
+    await r.runTo(r.at() + 210_000);
+    await r.monitor.heartbeat("worker-a");
+    await r.runTo(r.at() + 120_000);
+    await r.monitor.heartbeat("worker-a");
+  }
+  expect(kinds(r.lines)).toEqual(["RUNNER_STALE", "RUNNER_OFFLINE"]);
+  // Steady from here: the outage ends 10 min after the last reconnect, said once with the folded count.
+  const steadyUntil = r.at() + 11 * 60_000;
+  while (r.at() < steadyUntil) { await r.runTo(r.at() + 30_000); await r.monitor.heartbeat("worker-a"); }
+  expect(kinds(r.lines)).toEqual(["RUNNER_STALE", "RUNNER_OFFLINE", "RUNNER_ONLINE"]);
+  expect(r.lines.at(-1)).toEndWith("; 4 disconnects folded into this outage");
+  expect(urgent(r.lines)).toEqual([]);
+  // A disconnect after the outage ended is a new first disconnect.
+  await r.runTo(r.at() + 180_000);
+  expect(kinds(r.lines).slice(-2)).toEqual(["RUNNER_STALE", "RUNNER_OFFLINE"]);
+});
+
+test("a folded disconnect that stays down 10 min still wakes the lead; owned lanes wake it once per outage", async () => {
+  const r = rig(() => ({ kind: "unreachable", detail: "ssh: no route" }), ["lane-a"]);
+  await r.monitor.heartbeat("worker-a");
+  await r.runTo(180_000);
+  await r.monitor.heartbeat("worker-a");
+  await r.runTo(r.at() + 180_000);
+  expect(urgent(r.lines)).toHaveLength(1);
+  r.own([]);
+  await r.runTo(r.at() + 10 * 60_000);
+  expect(urgent(r.lines)).toHaveLength(2);
+  expect(urgent(r.lines)[1]).toStartWith("HOST_GUARD OFFLINE machine=worker-a runner heartbeat missing for 780 s");
+});
+
+test("a partition that flaps inside the hysteresis says RUNNER_UNREACHABLE once per outage, and again after it ends", async () => {
+  const r = rig(() => ({ kind: "alive" }));
+  for (let i = 0; i < 4; i++) {
+    await r.runTo(r.at() + 210_000);
+    await r.monitor.heartbeat("worker-a");
+    await r.runTo(r.at() + 120_000);
+    await r.monitor.heartbeat("worker-a");
+  }
+  expect(kinds(r.lines)).toEqual(["RUNNER_STALE", "RUNNER_OFFLINE", "RUNNER_UNREACHABLE"]);
+  const steadyUntil = r.at() + 11 * 60_000;
+  while (r.at() < steadyUntil) { await r.runTo(r.at() + 30_000); await r.monitor.heartbeat("worker-a"); }
+  await r.runTo(r.at() + 180_000);
+  expect(kinds(r.lines).slice(3)).toEqual(["RUNNER_ONLINE", "RUNNER_STALE", "RUNNER_OFFLINE", "RUNNER_UNREACHABLE"]);
+});
+
+test("a partition (process alive, health fresh) for 10 min restarts nothing and says RUNNER_UNREACHABLE once", async () => {
+  const r = rig(() => ({ kind: "alive" }));
+  await r.runTo(180_000 + 10 * 60_000);
+  expect(urgent(r.lines)).toHaveLength(1);
+  expect(r.restarts).toEqual([]);
+  expect(r.lines.filter((l) => l.startsWith("RUNNER_UNREACHABLE"))).toHaveLength(1);
+  await r.monitor.heartbeat("worker-a");
+  expect(r.lines.at(-1)).toBe("HOST_GUARD ONLINE machine=worker-a");
+});
+
+test("a dead runner is restarted once and a hello with a higher gen confirms it", async () => {
+  const r = rig(() => ({ kind: "dead", detail: "no process" }));
+  await r.runTo(180_000);
+  expect(r.restarts).toEqual([180_000]);
+  await r.runTo(240_000);
+  expect(r.restarts).toHaveLength(1);
+  await r.monitor.hello("worker-a", 2);
+  expect(r.lines.slice(-2)).toEqual(["RUNNER_RESTARTED machine=worker-a gen=2", "HOST_GUARD ONLINE machine=worker-a"]);
+  const op = r.operations.get("runner:worker-a/restart/7-1");
+  expect(op?.state).toBe("verified");
+  expect(r.monitor.restartsLastHour("worker-a")).toBe(1);
+});
+
+test("a runner that keeps dying is restarted 3 times in the hour, then each open lane it owns gets LANE_RUNNER_LOST once", async () => {
+  const r = rig(() => ({ kind: "dead", detail: "no process" }), ["lane-a", "lane-b"]);
+  await r.runTo(60 * 60_000);
+  expect(r.restarts).toHaveLength(3);
+  expect(r.lines.filter((l) => l.startsWith("RUNNER_RESTART_FAILED"))).toHaveLength(3);
+  const lost = r.lines.filter((l) => l.startsWith("LANE_RUNNER_LOST"));
+  expect(lost).toHaveLength(2);
+  expect(lost[0]).toStartWith("LANE_RUNNER_LOST lane-a runner=worker-a restart circuit open");
+  expect(lost[1]).toStartWith("LANE_RUNNER_LOST lane-b runner=worker-a");
+  expect(["runner:worker-a/restart/7-1", "runner:worker-a/restart/7-2", "runner:worker-a/restart/7-3"].map((id) => r.operations.get(id)?.state)).toEqual(["failed", "failed", "failed"]);
+});
+
+test("a runner that reconnects while it is being probed is not restarted", async () => {
+  const r = rig(async (monitor) => { await monitor.heartbeat("worker-a"); return { kind: "dead", detail: "health read before the reconnect" }; });
+  await r.runTo(180_000);
+  expect(r.restarts).toEqual([]);
+  expect(r.lines.at(-1)).toBe("RUNNER_OFFLINE machine=worker-a runner heartbeat missing for 180 s");
+  expect(urgent(r.lines)).toEqual([]);
+});
+
+test("a hello that arrives while the restart command is still running verifies the restart", async () => {
+  const r = rig(() => ({ kind: "dead", detail: "no process" }), [], { duringRestart: (monitor) => monitor.hello("worker-a", 2) });
+  await r.runTo(180_000);
+  expect(r.restarts).toEqual([180_000]);
+  expect(r.lines).toContain("RUNNER_RESTARTED machine=worker-a gen=2");
+  expect(r.operations.get("runner:worker-a/restart/7-1")?.state).toBe("verified");
+});
+
+test("the local runner is restarted through the supervisor's child, never a systemd unit; a worker over ssh", async () => {
+  const argv: string[][] = [];
+  const run: Runner = async (a) => { argv.push([...a]); return { code: 0, out: "", err: "" }; };
+  let childRestarts = 0;
+  const io = livenessIo(run, "local", async () => [{ label: "worker-a", target: "u@a" } as never], async () => { childRestarts += 1; }, async () => ({ ok: true, kind: "posix" }));
+  expect(await io.restart("local")).toEqual({ ok: true, detail: "child restart" });
+  expect(childRestarts).toBe(1);
+  expect(argv).toEqual([]);
+  expect((await io.restart("worker-a")).ok).toBe(true);
+  expect(argv).toHaveLength(1);
+  expect(argv[0]?.[0]).toBe("ssh");
+  // Without the child hook a local restart fails instead of touching systemd.
+  expect((await livenessIo(run, "local", async () => []).restart("local")).ok).toBe(false);
+  expect(argv).toHaveLength(1);
+});
+
+test("an escalated outage outlives a supervisor restart: no second HOST_GUARD OFFLINE, and the reconnect says ONLINE", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "runner-liveness-"));
+  dirs.push(stateDir);
+  const unreachable = (): ProbeOutcome => ({ kind: "unreachable", detail: "ssh: no route" });
+  const before = rig(unreachable, [], { stateDir });
+  await before.runTo(780_000);
+  expect(urgent(before.lines)).toEqual(["HOST_GUARD OFFLINE machine=worker-a runner heartbeat missing for 780 s"]);
+  expect(Object.keys(JSON.parse(readFileSync(join(stateDir, OUTAGES_FILE), "utf8")) as object)).toEqual(["worker-a"]);
+
+  // The next supervisor, the machine still down: nothing new for the lead, however long it stays down.
+  const after = rig(unreachable, ["lane-a"], { stateDir });
+  await after.runTo(20 * 60_000);
+  expect(urgent(after.lines)).toEqual([]);
+  expect(after.lines.filter((l) => l.startsWith("RUNNER_OFFLINE") || l.startsWith("RUNNER_STALE"))).toEqual([]);
+  expect(after.alerts).toEqual([]);
+  await after.monitor.heartbeat("worker-a");
+  expect(after.lines.at(-1)).toBe("HOST_GUARD ONLINE machine=worker-a");
+  expect(after.alerts).toHaveLength(1);
+  expect(after.alerts[0]).toContain("(HOST_GUARD ONLINE machine=worker-a)");
+  expect(readFileSync(join(stateDir, OUTAGES_FILE), "utf8").trim()).toBe("{}");
+
+  // Closed once: a third supervisor starts clean, and its runner reconnecting says nothing.
+  const third = rig(unreachable, [], { stateDir });
+  await third.monitor.heartbeat("worker-a");
+  expect(third.lines).toEqual([]);
+});
+
+test("a carried-over outage whose runner reconnects before going offline again still closes with ONLINE, then ends steady", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "runner-liveness-"));
+  dirs.push(stateDir);
+  const before = rig(() => ({ kind: "dead", detail: "no process" }), [], { stateDir });
+  await before.runTo(180_000);
+  expect(urgent(before.lines)).toHaveLength(1);
+  const after = rig(() => ({ kind: "alive" }), [], { stateDir });
+  await after.runTo(30_000);
+  await after.monitor.hello("worker-a", 2);
+  expect(after.lines).toEqual(["HOST_GUARD ONLINE machine=worker-a"]);
+  const steadyUntil = after.at() + 11 * 60_000;
+  while (after.at() < steadyUntil) { await after.runTo(after.at() + 30_000); await after.monitor.heartbeat("worker-a"); }
+  expect(kinds(after.lines)).toEqual(["HOST_GUARD ONLINE", "RUNNER_ONLINE"]);
+});
+
+test("an untracked runner's carried outage is dropped; a missing or broken outage file reads as none", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "runner-liveness-"));
+  dirs.push(stateDir);
+  const store = fileOutageStore(stateDir, () => {});
+  expect(store.escalated().size).toBe(0);
+  store.set("worker-a", 5);
+  const r = rig(() => ({ kind: "alive" }), [], { stateDir });
+  r.monitor.untrack("worker-a");
+  expect(store.escalated().size).toBe(0);
+  writeFileSync(join(stateDir, OUTAGES_FILE), "{not json");
+  const logged: string[] = [];
+  expect(fileOutageStore(stateDir, (l) => { logged.push(l); }).escalated().size).toBe(0);
+  expect(logged[0]).toStartWith("RUNNER_OUTAGE_STATE_UNREADABLE");
+  expect(existsSync(join(stateDir, `${OUTAGES_FILE}.${process.pid}.tmp`))).toBe(false);
+});
+
+test("restarts from before a supervisor restart still count toward the circuit", async () => {
+  const r = rig(() => ({ kind: "dead", detail: "no process" }), ["lane-a"], {
+    seed: (ops, wallNow) => { for (const n of [1, 2, 3]) plan(ops, wallNow - n * 10 * 60_000, { lane: "runner:worker-a", action: "restart", target: `6-${n}` }); },
+  });
+  await r.runTo(180_000);
+  expect(r.restarts).toEqual([]);
+  expect(r.lines.at(-1)).toStartWith("LANE_RUNNER_LOST lane-a runner=worker-a restart circuit open");
+});

@@ -1,0 +1,254 @@
+/**
+ * The event policy table (design 1.7): every event kind is delivered by class. `lead-urgent` wakes the lead,
+ * `lead-digest` waits for the next urgent delivery (or `digestMaxDelayMin`), `engine-only` is journaled for the engine and
+ * the counts only. The supervisor never posts an event to the owner itself: everything the owner hears goes through the lead,
+ * except failed-delivery notices, the close-thread button on a finished thread's last report, and owner decision threads
+ * (a lane question with choices becomes a decision thread).
+ * The removed `owner-only` class still loads from an old config, as `lead-digest`, with one warning per process.
+ *
+ * A kind is the event line's first word, optionally followed by more words that must match the line's next words in
+ * order; `*` matches any one word. `HOST_GUARD ALERT` matches `HOST_GUARD ALERT load 40`, `GH_PR * merged` matches
+ * `GH_PR acme/app#7 merged ...`. The most specific matching kind wins (more words, then fewer `*`); a line no kind
+ * matches gets `default`. Kinds are open-ended: a new event source needs only a config entry, or none at all.
+ */
+export const EVENT_CLASSES = ["lead-urgent", "lead-digest", "engine-only"] as const;
+export type EventClass = (typeof EVENT_CLASSES)[number];
+
+export type EventPolicy = {
+  /** The class of a line no kind matches. */
+  readonly default: EventClass;
+  readonly kinds: Readonly<Record<string, EventClass>>;
+};
+
+const URGENT_KINDS = [
+  "INBOUND", "INBOUND_EDIT", "INBOUND_DELETE", "VISITOR", "LANE_NOT_DONE", "LANE_REPORT",
+  // A lane waiting on its agent's on-screen question instead of dori report (ask-user.ts).
+  "LANE_ASKING",
+  "DEAD_PANE", "UNRECOGNISED_PANE", "NO-PROGRESS",
+  // An idle lane still silent idleEscalateMin after its freshness nudge (freshness.ts); the lane itself gets no more input.
+  "IDLE-ESCALATE",
+  // A working lane that drifted: milestones overdue or its PR failing CI again and again (drift.ts). No periodic summaries.
+  "LANE_DRIFT",
+  "HOST_GUARD ALERT", "HOST_GUARD CLEAR", "HOST_GUARD OFFLINE", "LAUNCH_READY", "WORKING-WHILE-PAUSED",
+  // The supervisor killed or paused something because memory ran critically low; the lead relays it to the owner.
+  "HOST_GUARD CRITICAL",
+  "WAIT_DONE", "WAIT_TIMEOUT", "SUPERVISOR_STUCK", "UNHANDLED", "UNREPORTED", "UNRESOLVED",
+  "LANE_RECOVERY_EXHAUSTED",
+  // Sandbox (launch.ts SandboxRefusal): a lane its sandbox refused to relaunch stays down until someone fixes the sandbox,
+  // a lane allowed to run unsandboxed (runners.<label>.allowUnsandboxed, or a relaunch recorded without one) runs
+  // without isolation, and a sandbox notice that reached no Discord channel (sandbox-notice.ts) carries the owner's warning.
+  // Other LANE_RECOVERY_ERROR lines stay digest (the default); SANDBOX_NOTICE_FALLBACK did reach the owner and stays digest.
+  "LANE_RECOVERY_ERROR * sandbox-missing:", "LANE_RECOVERY_ERROR * sandbox-broken:", "LANE_RECOVERY_ERROR * sandbox-unavailable:",
+  "SANDBOX_MISSING", "SANDBOX_BROKEN", "SANDBOX_UNAVAILABLE", "SANDBOX_SKIPPED", "SANDBOX_NOTICE_ERROR",
+  // Runners: a lane whose runner is gone or unknown, a forged or unauthenticated frame, a backed-up outbox, and a
+  // failed runner upgrade need the lead. RUNNER_STALE, RUNNER_UNREACHABLE, RUNNER_RESTARTED, RUNNER_RESTART_FAILED,
+  // RUNNER_PROTO_MISMATCH and RUNNER_CONFLICT stay digest (the default).
+  "LANE_RUNNER_LOST", "LANE_ORPHAN", "RUNNER_LAUNCH_FAILED", "RUNNER_RECOVER_FAILED", "RUNNER_LANE_DEAD", "RUNNER_FORGED_EVENT", "RUNNER_AUTH_FAILED", "RUNNER_OUTBOX_LARGE", "RUNNER_UPGRADE_FAILED",
+  // The supervisor could not open its runner hub: every lane operation fails until a retry opens it. RUNNER_HUB_OPENED
+  // stays digest (the default).
+  "RUNNER_HUB_DISABLED",
+  // The supervisor's Discord gateway hit a close code it must not reconnect after (messenger/discord.ts DISCORD_FATAL_CLOSE).
+  "DISCORD_GATEWAY_FATAL",
+  // The restart cap refused to restart a lead that does not take its events (supervise-lead-lifecycle.ts capRefuses).
+  "LEAD_UNRESPONSIVE",
+  "WAIT_FAILED", "WAITS_CORRUPT",
+  // The lead's memory is close to omo's advisory or human.md to its limit (memory-check.ts memorySizeTrigger): condense
+  // now, before every prompt pays for it. The daily MEMORY_CHECK digest stays digest (the default).
+  "MEMORY_SIZE",
+  "TASK_STALLED", "OPERATION_AMBIGUOUS", "OPERATION_FAILED",
+  // CI follow-up: a lane that did not confirm its message in time, and a conflict no merge lane could take.
+  "LANE_MESSAGE_UNCONFIRMED", "CI_CONFLICT",
+  // A merged lane PR whose merge the supervisor could not read back, an open one it has been unable to merge, and an open
+  // one whose follow-up keeps throwing (gh login, GitHub, the state store).
+  "MERGE_UNVERIFIED", "MERGE_STALLED", "CI_FOLLOW_STUCK",
+  // A lane's done claim wakes the lead when the lane finishes; its window then starts at that delivery (done-flow.ts).
+  // A clean claim the supervisor reports to the owner itself is digest LANE_DONE_AUTO_REPORTED (below); a failed auto
+  // report wakes the lead, with the claim, so it reports the lane itself.
+  "LANE_DONE_CLAIMED", "LANE_AUTO_REPORT_FAILED",
+  // A lane that ended is news the lead acts on: report to the owner, free the slot, finish its Toodo task. That holds for
+  // a close after a claim the lead already received (`LANE_CLOSED <key> closed seen-claim`) too: the lead's task cleanup
+  // waits on the close itself, so it must not sit in the digest. Only a seen-claim close with no task left to finish
+  // (`toodo=done`, `toodo=not-adopted` or `toodo=no-task`, below) is digest; a task it could not finish is TOODO_TASK_NOT_COMPLETED.
+  "LANE_CLOSED", "LANE_AUTO_CLOSED", "CI_MERGED", "TOODO_TASK_NOT_COMPLETED",
+  // The automatic `dori update --dev` after a merge of dori's own repo failed (update.ts AutoUpdate); its success is digest.
+  "AUTO_UPDATE_FAILED",
+  // A lane that has held the automatic update back for updateBlockerStaleMin and could not be closed safely (update-blocker.ts).
+  "AUTO_UPDATE_BLOCKER_STALE",
+  // An autopilot lane's close settled its launch attempt: a failed one goes to the owner (never relaunched; the supervisor
+  // records the task's blocker), a done one whose task the supervisor could not complete is completed by the lead.
+  "AUTOPILOT_LANE_FAILED", "AUTOPILOT_LANE_DONE",
+  // Owner decision answers, stuck posts, and missing threads require the lead to act or check state.
+  "OWNER_DECISION_ANSWERED", "OWNER_DECISION_STUCK", "OWNER_DECISION_THREAD_GONE",
+  // A direct decision answer whose lane session is gone: the lead takes the answer over (owner-decisions.ts).
+  "DECISION_ANSWER_UNDELIVERED",
+  // A direct answer changed or withdrawn after an older revision may have reached the lane, or a different answer button
+  // pressed on a question whose answer the lead holds (decision-inbound.ts).
+  "DECISION_ANSWER_CORRECTED",
+  // A `dori decision close` whose text could not be typed into the lane that asked (decision-relay.ts): the lead hands it over.
+  "DECISION_RELAY_FAILED",
+  // A report from a closed or unregistered lane: question, blocked and done still need the lead; the rest is digest.
+  "LANE_REPORT_LATE * question", "LANE_REPORT_LATE * blocked", "LANE_REPORT_LATE * done",
+  "GH_PR * closed", "GH_PR * review", "GH_PR * comment",
+  "GH_ISSUE * opened", "GH_ISSUE * reopened",
+  // A Toodo task whose last unfinished dependency was just done: the lead may launch it. Plain status changes stay digest,
+  // so the lead's own MCP calls never wake it.
+  "TOODO_TASK_READY",
+  // The supervisor's autopilot tick found a new set of tasks it may launch, or the same set still waiting after 30 min.
+  "AUTOPILOT_READY",
+  // Review gate (review-gate.ts): review runs that failed until the lead decides, a merge that landed on another base than
+  // the one the review approved, and an owner decision for a reached review limit that could not be opened (review-status.ts).
+  "REVIEW_ESCALATED", "REVIEW_BASE_RACE", "REVIEW_DECISION_FAILED",
+  // The first failure of a PR head's review (timeout queued or running, lost runner, unusable inputs, refused launch,
+  // invalid output): once per head (id review-stalled:<repo>#<n>@<head>), so a failing or stalled review never waits
+  // silently in the digest; later failures of that head stay digest REVIEW_FAILED until REVIEW_ESCALATED.
+  "REVIEW_STALLED",
+] as const;
+
+/**
+ * Kinds that stay digest whatever `default` says. The lane hears about its PR first (CI follow-up messages it and merges
+ * or opens a merge lane), and a lane's milestone and progress reports wait for the next urgent delivery. The supervisor
+ * settles the rest itself: a done claim (urgent LANE_DONE_CLAIMED) is re-checked live (then closed, or objected to,
+ * LANE_NOT_DONE, which is urgent).
+ */
+const DIGEST_KINDS = [
+  "GH_PR * checks_failing", "GH_PR * conflicting", "LANE_REPORT * milestone", "LANE_REPORT * progress",
+  "LANE_REPORT_LATE * milestone", "LANE_REPORT_LATE * progress",
+  // A nudge that could not be typed is the one nudge outcome the lead hears about (the lane may be stuck).
+  "NUDGED * * min silent, delivery failed;",
+  "TOODO_TASK_STATUS", "TOODO_TASK_RESYNC",
+  // OWNER_DECISION_OPENED is digest: opening a thread needs no immediate lead action.
+  "OWNER_DECISION_OPENED",
+  // A lane's nonblocking input request (lane-reports.ts): the lane went ahead, so it is news for the lead, not the owner.
+  "LANE_REQUEST_NONBLOCKING",
+  // An owner answer routed straight to the lane that asked (decision-inbound.ts): no INBOUND reaches the lead for it.
+  "DECISION_ANSWER_DIRECT",
+  // The lane confirmed a direct answer and the supervisor closes its decision (owner-decisions.ts decisionDeliveryTick).
+  "DECISION_ANSWER_ACKED",
+  // A pane no registered lane owns (dead-panes.ts) is told once and never wakes the lead; a lane's own pane stays urgent.
+  "UNRECOGNISED_PANE * unregistered",
+  // A met wait registered with --on-success digest (waits.ts): news for the next wake, not a decision.
+  "WAIT_DONE_DIGEST",
+  // The automatic `dori update --dev` finished (update.ts AutoUpdate).
+  "AUTO_UPDATE_DONE",
+  // A close after a claim the lead already took, whose Toodo task the supervisor completed and whose report it appended
+  // the merge to (task-finish.ts), or whose lane has no Toodo task: nothing is left for the lead. The report the claim
+  // opened is still owed and comes back as urgent UNREPORTED (lane-outcomes.ts).
+  "LANE_CLOSED * closed seen-claim toodo=done", "LANE_CLOSED * closed seen-claim toodo=no-task", "TOODO_TASK_COMPLETED",
+  // The same for an autopilot lane that found nothing to change: its task concluded not adopted and read back.
+  "LANE_CLOSED * closed seen-claim toodo=not-adopted", "TOODO_TASK_NOT_ADOPTED",
+  // A clean done claim the supervisor posted to the owner as the lane's report (config autoReport, auto-report.ts): the
+  // lead checks it at its next wake and corrects it with dori reported --append or dori object-done if it must.
+  "LANE_DONE_AUTO_REPORTED",
+  // An autopilot lane's done outcome whose task the supervisor completed and read back (task-finish.ts finishedOutcome).
+  "AUTOPILOT_LANE_DONE * * * toodo=done:", "AUTOPILOT_LANE_DONE * * * toodo=not-adopted:",
+  // Review gate progress the supervisor settles itself (review-gate.ts): a review started, held, passed or went stale,
+  // findings went back to the author lane, one failed run is retried, and a reached limit is asked of the owner (its
+  // decision is opened by review-status.ts; the answer wakes the lead as OWNER_DECISION_ANSWERED).
+  "REVIEW_STARTED", "REVIEW_QUEUED", "REVIEW_PASSED", "REVIEW_STALE", "REVIEW_FINDINGS", "REVIEW_FAILED", "REVIEW_CAP_REACHED",
+] as const;
+
+/**
+ * Kinds the supervisor settles or that need no lead action: journaled and counted, never delivered. A lane PR's routine
+ * states (the lane and CI follow-up act on them; a merged one is read back as MERGE_VERIFIED, or urgent MERGE_UNVERIFIED),
+ * runner link states (a runner owning open lanes wakes the lead as urgent HOST_GUARD OFFLINE or LANE_RUNNER_LOST), a
+ * nudge that reached the lane, the owner's own thread close, and the Toodo moves that only queue or start a task (the
+ * lead makes most of them itself). LANE_FINISH_NOTICE is kept only for old journals of the removed lane-finish line.
+ */
+const ENGINE_KINDS = [
+  "GH_PR * opened", "GH_PR * updated", "GH_PR * checks_green", "GH_PR * merged", "MERGE_VERIFIED",
+  "RUNNER_STALE", "RUNNER_UNREACHABLE", "RUNNER_UNAVAILABLE", "RUNNER_OFFLINE",
+  "NUDGED", "THREAD_CLOSED_BY_OWNER", "GOAL_RESUMED",
+  "TOODO_TASK_STATUS * new->planned", "TOODO_TASK_STATUS * planned->in_progress",
+  "LANE_FINISH_NOTICE",
+  // A met wait registered with --on-success silent (waits.ts).
+  "WAIT_DONE_SILENT",
+] as const;
+
+/** The actionable kinds wake the lead, every other line is digest. */
+export const DEFAULT_EVENT_POLICY: EventPolicy = {
+  default: "lead-digest",
+  kinds: Object.fromEntries([
+    ...URGENT_KINDS.map((kind) => [kind, "lead-urgent"]), ...DIGEST_KINDS.map((kind) => [kind, "lead-digest"]),
+    ...ENGINE_KINDS.map((kind) => [kind, "engine-only"]),
+  ]),
+};
+
+/** Owner tracking reads these from the lead's journal: they may only be lead classes. */
+const LEAD_ONLY_KINDS = ["INBOUND", "INBOUND_EDIT", "INBOUND_DELETE"];
+
+export class EventPolicyError extends Error {}
+
+const isClass = (value: unknown): value is EventClass => typeof value === "string" && (EVENT_CLASSES as readonly string[]).includes(value);
+
+/** The removed class an old config may still name; it now means `lead-digest`. */
+const REMOVED_OWNER_ONLY = "owner-only";
+let warnedOwnerOnly = false;
+
+/**
+ * The policy from a config's `eventPolicy` (absent: the default). Its `kinds` are laid over the default table, so a
+ * config names only the kinds it changes. Throws EventPolicyError on a value that is not a class or a malformed kind.
+ */
+export const resolveEventPolicy = (raw: unknown): EventPolicy => {
+  if (raw === undefined) return DEFAULT_EVENT_POLICY;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new EventPolicyError("eventPolicy must be an object");
+  const { default: rawFallback, kinds } = raw as { default?: unknown; kinds?: unknown };
+  const ownerOnly: string[] = [];
+  const compat = (name: string, value: unknown): unknown => {
+    if (value !== REMOVED_OWNER_ONLY) return value;
+    ownerOnly.push(name);
+    return "lead-digest";
+  };
+  const fallback = compat("default", rawFallback);
+  if (fallback !== undefined && !isClass(fallback)) throw new EventPolicyError(`eventPolicy.default must be one of ${EVENT_CLASSES.join(", ")}`);
+  if (kinds !== undefined && (typeof kinds !== "object" || kinds === null || Array.isArray(kinds))) throw new EventPolicyError("eventPolicy.kinds must be an object");
+  const merged: Record<string, EventClass> = { ...DEFAULT_EVENT_POLICY.kinds };
+  for (const [kind, rawValue] of Object.entries(kinds ?? {})) {
+    const value = compat(kind, rawValue);
+    if (!isClass(value)) throw new EventPolicyError(`eventPolicy.kinds["${kind}"] must be one of ${EVENT_CLASSES.join(", ")}`);
+    const words = kind.split(" ");
+    if (!kind || words.some((word) => !word) || words[0] === "*") throw new EventPolicyError(`eventPolicy.kinds["${kind}"]: a kind is words separated by single spaces, starting with the event name`);
+    if (LEAD_ONLY_KINDS.includes(words[0] as string) && !value.startsWith("lead-")) {
+      throw new EventPolicyError(`eventPolicy.kinds["${kind}"]: owner messages must reach the lead (lead-urgent or lead-digest)`);
+    }
+    merged[kind] = value;
+  }
+  if (ownerOnly.length && !warnedOwnerOnly) {
+    warnedOwnerOnly = true;
+    console.error(`EVENT_POLICY_OWNER_ONLY_REMOVED ${ownerOnly.join(", ")}: the owner-only class was removed (the supervisor no longer posts events to the owner); treated as lead-digest`);
+  }
+  return { default: fallback ?? DEFAULT_EVENT_POLICY.default, kinds: merged };
+};
+
+type Entry = { readonly kind: string; readonly words: readonly string[]; readonly cls: EventClass };
+const compiled = new WeakMap<EventPolicy, Map<string, readonly Entry[]>>();
+
+/** Kinds by first word, most specific first. */
+const index = (policy: EventPolicy): Map<string, readonly Entry[]> => {
+  const hit = compiled.get(policy);
+  if (hit) return hit;
+  const map = new Map<string, Entry[]>();
+  for (const [kind, cls] of Object.entries(policy.kinds)) {
+    const words = kind.split(" ");
+    const list = map.get(words[0] as string) ?? [];
+    list.push({ kind, words, cls });
+    map.set(words[0] as string, list);
+  }
+  const wild = (e: Entry) => e.words.filter((w) => w === "*").length;
+  for (const list of map.values()) list.sort((a, b) => b.words.length - a.words.length || wild(a) - wild(b) || a.kind.localeCompare(b.kind));
+  compiled.set(policy, map);
+  return map;
+};
+
+const match = (line: string, policy: EventPolicy): Entry | undefined => {
+  const words = line.split(" ");
+  return index(policy).get(words[0] as string)?.find((e) => e.words.every((w, i) => i < words.length && (w === "*" || w === words[i])));
+};
+
+/** The kind a line counts under: the matching table entry, else its first word. */
+export const eventKind = (line: string, policy: EventPolicy = DEFAULT_EVENT_POLICY): string =>
+  match(line, policy)?.kind ?? (line.split(" ", 1)[0] || "(empty)");
+
+export const eventClass = (line: string, policy: EventPolicy = DEFAULT_EVENT_POLICY): EventClass => match(line, policy)?.cls ?? policy.default;
+
+/** Lead classes are journaled for the lead; engine-only never reaches it. */
+export const forLead = (cls: EventClass): boolean => cls === "lead-urgent" || cls === "lead-digest";

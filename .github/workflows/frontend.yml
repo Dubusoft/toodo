@@ -7,11 +7,13 @@ on:
       - main
     paths-ignore:
       - "src-tauri/**"
+      - "dori/**"
       - "docs/**"
       - "**.md"
   pull_request:
     paths-ignore:
       - "src-tauri/**"
+      - "dori/**"
       - "docs/**"
       - "**.md"
   workflow_dispatch:

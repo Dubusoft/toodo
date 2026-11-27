@@ -1,0 +1,427 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { freshnessTick } from "../src/freshness.ts";
+import { CONFIRM_BACKOFF_MS, sendGuarded, sendVerified } from "../src/panes.ts";
+import { passthroughView } from "../src/sweep-view.ts";
+import { pauseLane, resumeLane } from "../src/pause.ts";
+import type { LaneRef } from "../src/lane-ops.ts";
+import { type Lane, Registry, statusOf, withStatus } from "../src/registry.ts";
+import type { Runner } from "../src/run.ts";
+import { recoverLanes } from "../src/recover.ts";
+import { depsFor, fakeClock, fakeRunner, newWorld, sent, withSqliteStore, withState, type World } from "./fakes.ts";
+
+// Issue #11: telling Dori to wait must stick. One paused state silences the freshness sweep and pauses the goal,
+// and the lane is marked paused only once the pane shows the goal paused.
+const T0 = Date.parse("2026-01-01T12:00:00.000Z");
+const MIN = 60_000;
+let state: ReturnType<typeof withState>;
+let world: World;
+beforeEach(() => {
+  state = withState();
+  world = newWorld();
+  world.panes = [{ pane_id: "hc:t7", workspace_id: "w", agent: "pi", agent_status: "idle" }];
+  // Escape stops a running turn, unless a test says otherwise.
+  world.onEscapeStatus = "idle";
+});
+afterEach(() => state.done());
+
+const working: Lane = { key: "waiting-lane", title: "wait", thread: "chat:team/9", pane: "hc:t7", brief: "/b.md", done: "merged acme/app#1", openedAt: new Date(T0).toISOString(), lastReplyAt: T0 };
+const deps = (ms: number) => depsFor(world, fakeClock(ms), state.dir, { hooks: { threadReply: ["notify", "{thread}", "{text}"] } });
+const stored = async (): Promise<Lane | null> => deps(T0).registry.read(working.key);
+const paneStatus = (status: string) => {
+  for (const pane of world.panes) pane.agent_status = status;
+};
+/** The runner steps pause/resume asked for, in order (the goal command and the Escape read-back run runner-side). */
+const pauseSteps = () => world.ops.filter((e) => e.op === "pause").map((e) => (e.args as { step?: string }).step);
+const escapes = () => pauseSteps().filter((s) => s === "stop");
+const goalOps = () => world.ops.filter((e) => e.op === "pause" || e.op === "resume").map((e) => (e.op === "resume" ? "resume" : `pause:${(e.args as { step?: string }).step}`));
+/** One freshness sweep at `ms`, over the World's runner. */
+const tick = (ms: number) => { const d = deps(ms); return freshnessTick(d, passthroughView(d.ops)); };
+/** A sweep tick that finds the paused lane woken (a monitor event, a background result) and working. */
+const wokenTick = async (at: number) => {
+  paneStatus("working");
+  return tick(T0 + at * MIN);
+};
+
+test("a paused lane silent past the nudge and post times is neither nudged nor posted", async () => {
+  await deps(T0).registry.write({ ...working, status: "paused" });
+  world.screen = "[REPORT] waiting-lane | milestone | halfway\n❯ ";
+  for (const at of [16, 21, 26, 120]) expect(await tick(T0 + at * MIN)).toEqual([]);
+  expect(sent(world)).toEqual([]);
+  expect(world.calls.find((c) => c[0] === "notify")).toBeUndefined();
+});
+
+test("pause marks the lane paused only once the pane shows the goal paused, then stops the running turn", async () => {
+  paneStatus("working");
+  await deps(T0).registry.write(working);
+
+  const r = await pauseLane(deps(T0 + MIN), working, "owner said wait");
+
+  expect(r.code).toBe(0);
+  expect(r.lines[0]).toBe("PAUSED waiting-lane goal paused, running turn interrupted");
+  const lane = await stored();
+  expect(lane && statusOf(lane)).toBe("paused");
+  expect(lane?.history?.at(-1)).toMatchObject({ status: "paused", note: "owner said wait" });
+  // The goal is paused before the turn is stopped, and the runner is told the new status once it is committed.
+  expect(world.ops.map((e) => e.op)).toEqual(["pause", "status", "pause", "notify"]);
+  expect(goalOps()).toEqual(["pause:goal", "pause:stop"]);
+  expect(world.ops.at(-1)).toMatchObject({ op: "notify", key: "waiting-lane", args: { status: "paused" } });
+  expect((await pauseLane(deps(T0 + 2 * MIN), lane as Lane, "again")).lines[0]).toBe("PAUSED waiting-lane already");
+  expect(goalOps()).toEqual(["pause:goal", "pause:stop"]);
+});
+
+test("an unconfirmed goal pause leaves the lane working, interrupts nothing, and exits 3", async () => {
+  paneStatus("working");
+  await deps(T0).registry.write(working);
+  world.pauseResult = { goal: "unconfirmed" };
+
+  const r = await pauseLane(deps(T0 + MIN), working, "owner said wait");
+
+  expect(r.code).toBe(3);
+  expect(r.lines[0]).toBe("PAUSE_UNVERIFIED waiting-lane /goal pause unconfirmed; lane left working");
+  expect(statusOf((await stored()) as Lane)).toBe("working");
+  expect(escapes()).toEqual([]);
+});
+
+test("a lane with no goal pauses: nothing can auto-continue, and an idle pane gets no Escape", async () => {
+  await deps(T0).registry.write(working);
+
+  const r = await pauseLane(deps(T0 + MIN), working, "owner said wait");
+
+  expect(r).toMatchObject({ code: 0, lines: ["PAUSED waiting-lane goal paused"] });
+  expect(escapes()).toEqual([]);
+});
+
+test("a resume the runner cannot confirm leaves the lane paused, and an unreachable runner confirms neither pause nor resume (issue #23)", async () => {
+  await deps(T0).registry.write(working);
+  const paused = await pauseLane(deps(T0 + MIN), working, "owner said wait");
+  expect(paused).toMatchObject({ code: 0, lines: ["PAUSED waiting-lane goal paused"] });
+
+  const d = deps(T0 + 2 * MIN);
+  const refusing = { ...d, ops: { ...d.ops, resume: async () => ({ goal: "unconfirmed" as const }) } };
+  expect(await resumeLane(refusing, paused.lane, "go")).toMatchObject({ code: 3, lines: ["RESUME_UNVERIFIED waiting-lane /goal resume unconfirmed; lane left paused"] });
+  expect(statusOf((await stored()) as Lane)).toBe("paused");
+  expect((await stored() as Lane & { resuming?: string }).resuming).toBeUndefined();
+
+  world.runnerDown = true;
+  expect(await resumeLane(deps(T0 + 3 * MIN), (await stored()) as Lane, "go")).toMatchObject({ code: 3, lines: ["RESUME_UNVERIFIED waiting-lane /goal resume failed; lane left paused"] });
+  world.pauseResult = undefined;
+  const fresh: Lane = { ...working, key: "other-lane" };
+  await deps(T0).registry.write(fresh);
+  expect(await pauseLane(deps(T0 + 4 * MIN), fresh, "wait")).toMatchObject({ code: 3, lines: ["PAUSE_UNVERIFIED other-lane /goal pause failed; lane left working"] });
+});
+
+test("resume relaunches a paused lane whose agent is gone (its pane left with only a shell) in its own session and returns RESUMED", async () => {
+  withSqliteStore(state.dir);
+  world.prState = "OPEN";
+  const brief = join(state.dir, "brief.md");
+  await Bun.write(brief, "Execute the task.");
+  // Paused from working; the agent exited since, so the pane runs only its shell. Old recoveries do not count against it.
+  await deps(T0).registry.write({ ...working, brief, cwd: state.dir, session: "sess-1", status: "paused", pausedFrom: "working", recoveryAttempts: 3 });
+  world.panes = [{ pane_id: "hc:t7", tab_id: "w:t7", workspace_id: "w" }];
+  world.inspection = { process: { foreground_processes: [{ pid: 42, argv: ["zsh"] }] } };
+  const d = deps(T0 + 90 * MIN);
+  // The shell refuses the typed `/goal resume`; the relaunched agent confirms it.
+  const resumes: string[] = [];
+  const ops = {
+    ...d.ops,
+    resume: async (lane: LaneRef) => { resumes.push(lane.pane ?? "-"); return lane.pane === "hc:t7" ? { goal: "failed" as const } : { goal: "confirmed" as const, execution: "running" as const }; },
+    recover: async (lane: LaneRef, opts?: { readonly session?: string }) => {
+      world.ops.push({ op: "recover", key: lane.key, args: { ...(opts ? { opts } : {}) } });
+      world.panes = [{ pane_id: "w:p8", tab_id: "w:t8", workspace_id: "w", agent: "omo", agent_status: "working" }];
+      return { pane: "w:p8", tab: "w:t8", relaunched: true, resumed: opts?.session !== undefined, startup: { verdict: "ok" as const, detail: "ready" } };
+    },
+  };
+
+  // Recovery by key leaves a paused lane to dori resume and says so.
+  expect(await recoverLanes({ ...d, ops }, working.key)).toEqual(["LANE_PAUSED_NOT_RECOVERED waiting-lane is paused; dori resume waiting-lane resumes it and relaunches its agent if it is gone"]);
+  expect(world.ops.some((e) => e.op === "recover")).toBe(false);
+
+  const r = await resumeLane({ ...d, ops }, (await stored()) as Lane, "owner said go");
+
+  expect(r.code).toBe(0);
+  expect(r.lines).toEqual([
+    "RESUMED waiting-lane as working, its agent was gone and was relaunched in w:p8; /goal resume confirmed",
+    "LANE_RECOVERED waiting-lane w:p8 agent-gone session-resumed",
+    "STARTUP_OK waiting-lane w:p8",
+  ]);
+  expect(world.ops.find((e) => e.op === "recover")?.args).toMatchObject({ opts: { session: "sess-1" } });
+  expect(resumes).toEqual(["hc:t7", "w:p8"]);
+  const lane = (await stored()) as Lane & { resuming?: string };
+  expect(statusOf(lane)).toBe("working");
+  expect(lane).toMatchObject({ key: "waiting-lane", pane: "w:p8", brief, cwd: state.dir, recoveryAttempts: 1 });
+  expect(lane.pausedFrom).toBeUndefined();
+  expect(lane.resuming).toBeUndefined();
+  expect(world.ops.at(-1)).toMatchObject({ op: "notify", key: "waiting-lane", args: { status: "working" } });
+});
+
+test("a goal resumed while the session stays held is RESUME_UNVERIFIED: the lane stays paused and its goal is paused again", async () => {
+  await deps(T0).registry.write(working);
+  const paused = (await pauseLane(deps(T0 + MIN), working, "wait")).lane;
+  world.resumeResult = { goal: "confirmed", execution: "held" };
+
+  const r = await resumeLane(deps(T0 + 2 * MIN), paused, "go");
+
+  expect(r).toMatchObject({ code: 3, lines: ["RESUME_UNVERIFIED waiting-lane goal resumed, but no turn ran after it (session held); /goal pause confirmed; lane left paused"] });
+  const lane = (await stored()) as Lane & { resuming?: string };
+  expect(statusOf(lane)).toBe("paused");
+  expect(lane.resuming).toBeUndefined();
+  expect(goalOps()).toEqual(["pause:goal", "resume", "pause:goal"]);
+  expect(world.ops.filter((e) => e.op === "notify").map((e) => (e.args as { status: string }).status)).toEqual(["paused"]);
+});
+
+test("a runner that does not read the turn back is checked once from the supervisor: an idle lane stays paused", async () => {
+  await deps(T0).registry.write(working);
+  const paused = (await pauseLane(deps(T0 + MIN), working, "wait")).lane;
+  world.resumeResult = { goal: "confirmed" };
+  expect((await resumeLane(deps(T0 + 2 * MIN), paused, "go")).code).toBe(3);
+  expect(statusOf((await stored()) as Lane)).toBe("paused");
+
+  paneStatus("working");
+  expect(await resumeLane(deps(T0 + 3 * MIN), (await stored()) as Lane, "go")).toMatchObject({ code: 0, lines: ["RESUMED waiting-lane as working, goal resumed, turn running"] });
+});
+
+test("the paused-lane sweep leaves the turn of a resume in flight alone, but not a stale claim", async () => {
+  await deps(T0).registry.write({ ...working, status: "paused", resuming: "in-flight", resumingAt: T0 } as Lane);
+  paneStatus("working");
+  expect(await tick(T0 + MIN)).toEqual([]);
+  expect(escapes()).toEqual([]);
+  await tick(T0 + 5 * MIN);
+  expect(escapes()).toEqual(["stop"]);
+});
+
+test("a not-done lane can be paused, and resume restores not-done and restarts the quiet clock", async () => {
+  const notDone: Lane = { ...working, status: "not-done" };
+  await deps(T0).registry.write(notDone);
+  const paused = (await pauseLane(deps(T0 + MIN), notDone, "wait")).lane;
+  expect(statusOf(paused)).toBe("paused");
+
+  const r = await resumeLane(deps(T0 + 90 * MIN), paused, "owner said go");
+
+  expect(r).toMatchObject({ code: 0, lines: ["RESUMED waiting-lane as not-done, goal resumed, turn running"] });
+  const lane = await stored();
+  expect(lane && statusOf(lane)).toBe("not-done");
+  expect(lane?.lastReplyAt).toBe(T0 + 90 * MIN);
+  expect(goalOps()).toEqual(["pause:goal", "resume"]);
+  expect(world.ops.filter((e) => e.op === "notify").map((e) => (e.args as { status: string }).status)).toEqual(["paused", "not-done"]);
+});
+
+test("an owner pause during a resume's goal command is not blocked by the lane lock: it wins and the goal is paused again", async () => {
+  await deps(T0).registry.write({ ...working, status: "paused", history: [{ at: new Date(T0).toISOString(), status: "paused", note: "wait" }] });
+  const d = deps(T0 + MIN);
+  let owner: Awaited<ReturnType<typeof pauseLane>> | undefined;
+  // The owner's pause lands while the resume's goal command is in flight on the runner.
+  const racing = { ...d, ops: { ...d.ops, resume: async (l: LaneRef) => {
+    const result = await d.ops.resume(l);
+    owner = await pauseLane(d, (await stored()) as Lane, "owner said wait");
+    return result;
+  } } };
+  const r = await resumeLane(racing, (await stored()) as Lane, "go");
+  expect(owner?.code).toBe(0);
+  expect(r.code).toBe(2);
+  const lane = await stored();
+  expect(lane && statusOf(lane)).toBe("paused");
+  expect(lane?.history?.at(-1)?.note).toBe("owner said wait");
+  // The owner's pause stops the goal itself, and the resumer pauses it again on its commit.
+  expect(owner?.lines).toEqual(["PAUSED waiting-lane already; a resume in flight was stopped, goal paused"]);
+  expect(goalOps()).toEqual(["resume", "pause:goal", "pause:goal"]);
+});
+
+test("an owner pause after a resumer died between /goal resume and its commit pauses the goal itself", async () => {
+  // The crashed resume left its claim; its /goal resume already ran, so the goal is active while the lane reads paused.
+  await deps(T0).registry.write({ ...working, status: "paused", resuming: "crashed-resume", history: [{ at: new Date(T0).toISOString(), status: "paused", note: "wait" }] } as Lane);
+  const r = await pauseLane(deps(T0 + MIN), (await stored()) as Lane, "owner said wait");
+  expect(r).toMatchObject({ code: 0, lines: ["PAUSED waiting-lane already; a resume in flight was stopped, goal paused"] });
+  expect(goalOps()).toEqual(["pause:goal"]);
+  const lane = await stored();
+  expect(lane && statusOf(lane)).toBe("paused");
+  expect((lane as Lane & { resuming?: string }).resuming).toBeUndefined();
+  // A plain repeat pause with no resume in flight stays a no-op on the pane.
+  expect((await pauseLane(deps(T0 + 2 * MIN), lane as Lane, "again")).lines).toEqual(["PAUSED waiting-lane already"]);
+  expect(goalOps()).toEqual(["pause:goal"]);
+});
+
+test("resume of a working lane restarts the quiet clock: no nudge until nudgeAfterMin after the resume", async () => {
+  const paused: Lane = { ...working, status: "paused", history: [{ at: new Date(T0).toISOString(), status: "paused", note: "wait" }] };
+  await deps(T0).registry.write(paused);
+  await resumeLane(deps(T0 + 90 * MIN), paused, "go");
+  expect(statusOf((await stored()) as Lane)).toBe("working");
+  expect(await tick(T0 + 95 * MIN)).toEqual([]);
+  expect((await tick(T0 + 106 * MIN)).map((a) => a.kind)).toEqual(["nudged"]);
+});
+
+test("a lane paused mid-turn (Escape) and then woken stays paused: resume is dori resume only, whatever the screen shows", async () => {
+  paneStatus("working");
+  await deps(T0).registry.write(working);
+  await pauseLane(deps(T0 + MIN), working, "owner said wait");
+  expect(escapes()).toHaveLength(1);
+  // Woken afterwards (a background result), still running on two ticks, even with a screen that reads active.
+  world.screen = "Goal active\nworking on the background result\n";
+  expect(await wokenTick(5)).toEqual([]);
+  const second = await wokenTick(10);
+  expect(second.map((a) => a.kind)).toEqual(["working-while-paused"]);
+  expect(await tick(T0 + 15 * MIN)).toEqual([]);
+  expect(await tick(T0 + 60 * MIN)).toEqual([]);
+  const lane = await stored();
+  expect(lane && statusOf(lane)).toBe("paused");
+  expect(sent(world).filter((text) => text.startsWith("[LEAD]"))).toEqual([]);
+});
+
+test("one working tick between idle ones does not count as a resume", async () => {
+  await deps(T0).registry.write({ ...working, status: "paused" });
+  paneStatus("working");
+  await tick(T0 + 5 * MIN);
+  paneStatus("idle");
+  await tick(T0 + 10 * MIN);
+  paneStatus("working");
+  expect(await tick(T0 + 15 * MIN)).toEqual([]);
+  expect(statusOf((await stored()) as Lane)).toBe("paused");
+});
+
+test("pause and resume refuse lanes in other states with exit 2, and a lane with no pane is unverified", async () => {
+  const claimed: Lane = { ...working, status: "done-claimed" };
+  expect(await pauseLane(deps(T0), claimed, "wait")).toMatchObject({ code: 2, lines: ["NOT_PAUSED waiting-lane is done-claimed, not working"] });
+  expect(await resumeLane(deps(T0), working, "go")).toMatchObject({ code: 2, lines: ["NOT_RESUMED waiting-lane is working, not paused"] });
+  const paneless: Lane = { ...working, pane: undefined };
+  expect((await pauseLane(deps(T0), paneless, "wait")).code).toBe(3);
+  expect(sent(world)).toEqual([]);
+});
+
+test("a lane closed while its goal is being paused is reported closed, and its archived record is left as it was", async () => {
+  await deps(T0).registry.write(working);
+  const closedAt = new Date(T0).toISOString();
+  // The close lands between the pause's goal command and its registry update.
+  const registry = new (class extends Registry {
+    override async update(...args: Parameters<Registry["update"]>) {
+      if (!(await this.read(working.key))?.closedAt) await this.write(withStatus(working, "closed", "Done", closedAt, { closedAt }));
+      return super.update(...args);
+    }
+  })(state.dir);
+  const r = await pauseLane({ ...deps(T0 + MIN), registry }, working, "owner said wait");
+  const archived = readFileSync(registry.archivePath(working.key), "utf8");
+  expect(r).toMatchObject({ code: 2, lines: ["NOT_PAUSED waiting-lane is closed, not working"] });
+  expect(JSON.parse(archived)).toMatchObject({ status: "closed", version: 2 });
+  expect((await stored())?.history?.map((h) => h.status)).toEqual(["closed"]);
+  expect(world.ops.filter((e) => e.op === "notify")).toEqual([]);
+});
+
+test("every wake of a paused lane is reported, across a resume and a second pause", async () => {
+  await deps(T0).registry.write(working);
+  let lane = (await pauseLane(deps(T0 + MIN), working, "wait")).lane;
+  await wokenTick(5);
+  expect((await wokenTick(10)).map((a) => a.kind)).toEqual(["working-while-paused"]);
+  paneStatus("idle");
+  lane = (await resumeLane(deps(T0 + 11 * MIN), (await stored()) as Lane, "go")).lane;
+  await pauseLane(deps(T0 + 12 * MIN), lane, "wait again");
+  await wokenTick(15);
+  expect((await wokenTick(20)).map((a) => a.kind)).toEqual(["working-while-paused"]);
+});
+
+test("a paused lane that goes idle and is woken again is reported again", async () => {
+  await deps(T0).registry.write({ ...working, status: "paused" });
+  // Escape does not stop it here, so it reads working on every tick: reported once per working stretch.
+  world.onEscapeStatus = undefined;
+  world.pauseResult = { goal: "confirmed", stopped: false };
+  paneStatus("working");
+  expect((await tick(T0 + 5 * MIN)).map((a) => a.kind)).toEqual(["working-while-paused"]);
+  expect(await tick(T0 + 10 * MIN)).toEqual([]);
+  paneStatus("idle");
+  await tick(T0 + 20 * MIN);
+  paneStatus("working");
+  expect((await tick(T0 + 25 * MIN)).map((a) => a.kind)).toEqual(["working-while-paused"]);
+  expect(statusOf((await stored()) as Lane)).toBe("paused");
+});
+
+
+// Issue #232: a paused lane woken by a monitor it armed before the pause merged a PR while the sweep only reported it.
+test("a paused lane woken by a background event is interrupted on every sweep and stays idle until resume", async () => {
+  paneStatus("working");
+  await deps(T0).registry.write(working);
+  expect((await pauseLane(deps(T0 + MIN), working, "owner said wait")).lines).toEqual(["PAUSED waiting-lane goal paused, running turn interrupted"]);
+  // A monitor event wakes the idle session: the next sweep stops the turn at once, without waiting for a second tick.
+  expect(await wokenTick(3)).toEqual([]);
+  expect(escapes()).toHaveLength(2);
+  for (const at of [4, 5, 6]) {
+    expect(await tick(T0 + at * MIN)).toEqual([]);
+    expect(world.panes[0]?.agent_status).toBe("idle");
+  }
+  // Woken again on the next tick as well: interrupted again and escalated to the lead.
+  await wokenTick(7);
+  const again = await wokenTick(8);
+  expect(again).toEqual([{ kind: "working-while-paused", lane: "waiting-lane", detail: "paused lane was woken and is working; re-interrupted, its turn stopped; left paused (resume is dori resume only)" }]);
+  expect(escapes()).toHaveLength(4);
+  expect(world.panes[0]?.agent_status).toBe("idle");
+  expect(statusOf((await stored()) as Lane)).toBe("paused");
+  expect(goalOps().filter((o) => o === "pause:goal")).toEqual(["pause:goal"]);
+});
+
+test("a paused lane whose turn Escape cannot stop is escalated on the first tick as PAUSE_UNVERIFIED", async () => {
+  await deps(T0).registry.write({ ...working, status: "paused" });
+  world.onEscapeStatus = undefined;
+  world.pauseResult = { goal: "confirmed", stopped: false };
+  paneStatus("working");
+  expect(await tick(T0 + 5 * MIN)).toEqual([{ kind: "working-while-paused", lane: "waiting-lane", detail: "paused lane was woken and is working; PAUSE_UNVERIFIED: Escape did not stop its turn; left paused (resume is dori resume only)" }]);
+  expect(statusOf((await stored()) as Lane)).toBe("paused");
+});
+
+test("pause is unverified (exit 3) when Escape does not stop the running turn; the paused goal keeps the lane paused", async () => {
+  world.onEscapeStatus = undefined;
+  world.pauseResult = { goal: "confirmed", stopped: false };
+  paneStatus("working");
+  await deps(T0).registry.write(working);
+  const r = await pauseLane(deps(T0 + MIN), working, "owner said wait");
+  expect(r).toMatchObject({ code: 3, lines: ["PAUSE_UNVERIFIED waiting-lane goal paused, but its running turn did not stop after Escape; lane left paused"] });
+  expect(statusOf((await stored()) as Lane)).toBe("paused");
+  // A retry stops the turn once Escape takes.
+  world.onEscapeStatus = "idle";
+  world.pauseResult = { goal: "confirmed", stopped: true };
+  expect(await pauseLane(deps(T0 + 2 * MIN), (await stored()) as Lane, "again")).toMatchObject({ code: 0, lines: ["PAUSED waiting-lane already; its running turn was interrupted again"] });
+  expect(world.panes[0]?.agent_status).toBe("idle");
+  expect(goalOps().filter((o) => o === "pause:goal")).toEqual(["pause:goal"]);
+});
+
+/** A runner whose pane turns "working" on the n-th status lookup after Enter (never, when n is undefined). */
+const workingOnLookup = (n: number | undefined): Runner => {
+  const base = fakeRunner(world);
+  let entered = false;
+  let lookups = 0;
+  return async (argv) => {
+    // hc presses Enter with each send (and with keys); a status lookup lists the terminals.
+    if (argv[0] === "hc" && (argv[2] === "send" || argv[2] === "keys")) entered = true;
+    if (entered && argv[0] === "hc" && argv[2] === "ls" && ++lookups === n) paneStatus("working");
+    return base(argv);
+  };
+};
+const sleepLog = () => {
+  const sleeps: number[] = [];
+  return { sleeps, clock: { ...fakeClock(T0), sleep: async (ms: number) => void sleeps.push(ms) } };
+};
+
+test("sendVerified confirms with escalating backoff, and the first lookup after Enter has no wait", async () => {
+  const { sleeps, clock } = sleepLog();
+  expect(await sendVerified(workingOnLookup(1), clock, "hc:t7", "hello")).toBe("delivered");
+  expect(sleeps).toEqual([]);
+  paneStatus("idle");
+  const third = sleepLog();
+  expect(await sendVerified(workingOnLookup(3), third.clock, "hc:t7", "hello")).toBe("delivered");
+  expect(third.sleeps).toEqual([150, 300]);
+});
+
+test("sendVerified backs off 150ms growing to 1000ms and reports unconfirmed when the pane never works", async () => {
+  const { sleeps, clock } = sleepLog();
+  expect(await sendVerified(workingOnLookup(undefined), clock, "hc:t7", "hello")).toBe("unconfirmed");
+  expect(sleeps).toEqual([150, 300, 600, 900, 1000, 1000, 1000]);
+  expect(sleeps).toEqual([...CONFIRM_BACKOFF_MS]);
+  expect(sent(world)).toEqual(["hello"]);
+});
+
+test("sendGuarded types without waiting, and refuses a pane with no running agent", async () => {
+  expect(await sendGuarded(fakeRunner(world), "hc:t7", "hi")).toBe("sent");
+  expect(sent(world)).toEqual(["hi"]);
+  world.panes = [{ pane_id: "hc:t7", workspace_id: "w" }];
+  expect(await sendGuarded(fakeRunner(world), "hc:t7", "rm -rf x")).toBe("failed");
+  expect(await sendGuarded(fakeRunner(world), "hc:missing", "hi")).toBe("failed");
+  expect(sent(world)).toEqual(["hi"]);
+});

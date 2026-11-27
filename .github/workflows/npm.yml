@@ -37,6 +37,7 @@ on:
     branches:
       - dev
     paths-ignore:
+      - "dori/**"
       - "docs/**"
       - "**.md"
   workflow_dispatch:

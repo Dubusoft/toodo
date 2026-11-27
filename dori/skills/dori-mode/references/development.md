@@ -1,0 +1,55 @@
+# Development
+
+For working on the `dori` package itself. Using the CLI needs none of this; see [scripts.md](scripts.md).
+
+## Install and test
+
+```sh
+cd skills/dori-mode/scripts
+bun install          # runtime dependencies plus types and tsc
+bun link             # puts `dori` on your PATH
+bun test             # behavior tests with fake hc/git/gh; nothing real is touched
+bunx tsc --noEmit    # typecheck
+```
+
+Needs: bun 1.3+, hc, git, and the GitHub CLI (`gh`) for `merged`/`closed` signals (npm for `published`). The `command`, `file` and `url` signals need nothing extra. The full list of signal kinds is in [sessions.md](sessions.md). The host guard reads `sysctl`, `memory_pressure` and `df` on macOS; on Linux it reads the load average, `/proc/meminfo` (memory and swap) and `df`. Each worker's runner reads the same sources on its own host: `sysctl`, `memory_pressure` and `df` on macOS, `/proc/loadavg`, `/proc/meminfo` and `df` on Linux. On a Windows worker the runner's `runner-sample.ps1` reads CIM: `Win32_Processor`, `Win32_OperatingSystem`, `Win32_PageFileUsage`, plus `DriveInfo` for disk.
+
+## Library modules
+
+The CLI is a thin layer over typed modules you can import in your own scripts:
+
+| Module | What it gives you |
+|---|---|
+| `src/messenger/discord.ts` | `Discord`: send without pings, edit, typing, threads (start, rename, archive); gateway presence |
+| `src/messenger/discord-commands.ts` | `DiscordCommands`: register guild `/quota` and `/status`, defer private replies, enforce owner access and format bounded results |
+| `src/messenger/discord-inbound.ts` | Discord inbound polling over REST |
+| `src/messenger/discord-supervisor.ts` | the supervisor's Discord gateway connection |
+| `src/messenger/discord-lock.ts` | the token-scoped lock that keeps one gateway per user and machine |
+| `src/messenger/typing.ts` | `Timers`: the interval timers seam (`realTimers` in production) |
+| `src/messenger/voice.ts` | `transcribe`: voice note to text through your hook |
+| `src/doctor.ts` | `runDoctor`: read-only checks (units, hc, paths, config, Discord, gateway, tools, disk) as OK/WARN/FAIL with the fix; `doctorMain` prints it and returns the exit code |
+| `src/status.ts` | `collectStatus` / `renderStatus`: the no-LLM one-screen summary behind `dori status` and `/status` |
+| `src/gateway-status.ts` | the supervisor's `gateway-status.json` heartbeat in stateDir (written every loop, about 5 s); doctor and status read it |
+| `src/quota-cache.ts` | `sharedQuotaLookup(config)`: the quota read every caller shares; `cachedQuotaLookup` keeps it in `<stateDir>/quota-cache.json` for `autopilot.quotaCacheSec`, refreshes it once under a state lock, backs an account off after a 429 (Retry-After) and serves its last good read for up to 30 minutes; `cacheNoteLines` says so in `dori quota` and `/quota` |
+| `src/claude-quota.ts` | `lookupQuotaResults(agentDir?)`: pi-quota through senpi's native auth storage (defaults to `~/.omo/agent`); `classifyClaude` and the usage report behind `dori quota` and `/quota`: Claude 5h/7d usage and reset times for every account |
+| `src/routing.ts` | `canLaunch`, `idleLaneFor`: the routing checks |
+| `src/placement.ts` | `resolvePlacement`, `checkMachine`, `planLaunch`, `placementTable`: which machine a launch runs on (the runner declaring its repo, else the default), its per-machine launch verdict, and the fallback |
+| `src/runner/workspaces.ts` | `discoverRepos`, `workspaceReport`: the repos found under `reposRoot` plus `workspaces` overrides (declared), the detected checkouts and the worktree root a runner sends in its hello |
+| `src/repos.ts` | `Repos(stateDir)`: synchronous `list`, `add`, `remove`, `replace`; atomic machine-local GitHub watched list |
+| `src/registry.ts`, `src/store.ts` | the lane registry and its store |
+| `src/launch.ts`, `src/done-flow.ts` | launching lanes and the done flow |
+| `src/lane-finish.ts` | `postOwnerLine`, which posts the supervisor's lead-status announcements |
+| `src/freshness.ts`, `src/host-guard.ts`, `src/dead-panes.ts` | the sweeps behind `freshness`, `guard` and `dead-panes` |
+| `src/remote-guard.ts` | the machine list, ssh and shell-kind helpers, machine guard state and events, and the guard agent cleanup on `update` |
+| `src/pause.ts` | `pause` and `resume` |
+| `src/inbox.ts` | the lead's event inbox (`dori inbox take`) |
+| `src/supervise.ts` and `src/supervise-*.ts` | `dori supervise` and its loop, delivery and lead lifecycle |
+| `src/runner/` | the runner protocol, outbox, state, hub, lane socket, CLI relay and transports behind `dori runner serve` (the local runner is a child of `dori supervise`); see [runner-protocol.md](runner-protocol.md) |
+| `src/cli.ts` | the `dori` command's routing: the lane-mode gate, `--help`, the early commands (setup, doctor, status, runner) and dispatch through `src/commands/index.ts` |
+| `src/commands/` | one module per lead command; each declares the flags it takes (`options`); a flag no command declares is refused before it runs unless it reads its own (`ownFlags`) |
+
+Every module takes its HTTP, clock and timers as arguments. That's how the tests run without the network.
+
+## SKILL.md is a release artifact
+
+Every Dori loads SKILL.md, so treat each change to it as a release. Batch wording edits into one commit rather than a trickle of small ones. Keep deployment-specific values (hostnames, pane ids, tokens, owner names) out of it; they belong in `~/.dori/config.json` or memory.

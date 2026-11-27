@@ -1,0 +1,581 @@
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+import { configureKeys, DORI_CONFIG_KEYS, doriConfigDefault, formatValue, KEY_INPUT_HINT, keyLabel, pruneDoriConfig, readSeenKeys, writeSeenKeys } from "./config-keys.ts";
+import { CONFIG_SCHEMA_KEY, CONFIG_SCHEMA_VERSION, ConfigSchemaError, migrateConfigSchema, removalReason } from "./config-schema.ts";
+import { defaultConfig, expandHome, type DiscordConfig } from "./config.ts";
+import { envFileValue } from "./credentials.ts";
+import type { Http } from "./messenger/http.ts";
+import { hostServices, pruneLocalRunnerConfig } from "./host-runtimes.ts";
+import { LEGACY_PANE_KEYS, resolveManagedPanes } from "./managed-panes.ts";
+import { Repos } from "./repos.ts";
+import { HC_CORE_UNIT, HC_INSTALL_URL } from "./runtime/hc.ts";
+import type { Runner } from "./run.ts";
+
+export class SetupError extends Error {}
+
+export const TOKEN_KEY = "DORI_DISCORD_TOKEN";
+/** The script the supervisor unit runs first (ExecStartPre), rendered from templates/dori-boot-prep.sh. */
+export const BOOT_PREP = "dori-boot-prep.sh";
+/** Started by OnFailure= of the host's units (hostServices); never enabled itself. */
+export const NOTIFY_UNIT = "dori-failure-notify@.service";
+export const FAILURE_NOTIFY = "dori-failure-notify.sh";
+
+/** How setup asks. The non-interactive prompter answers every question with its default. */
+export type Prompter = {
+  readonly ask: (question: string, current: string) => Promise<string>;
+  /** Reads a secret without echo. An empty answer keeps the stored one. */
+  readonly secret: (question: string, isSet: boolean) => Promise<string>;
+  readonly confirm: (question: string, fallback: boolean) => Promise<boolean>;
+};
+
+export type SetupDeps = {
+  readonly run: Runner;
+  readonly http: Http;
+  readonly prompt: Prompter;
+  readonly log: (line: string) => void;
+  readonly interactive: boolean;
+  readonly home: string;
+  readonly user: string;
+  readonly configPath: string;
+  readonly envPath: string;
+  readonly unitDir: string;
+  readonly templatesDir: string;
+  readonly bins: { readonly dori: string; readonly hc?: string; readonly shell: string };
+};
+
+export type SetupInput = {
+  readonly token?: string;
+  readonly channels?: readonly string[];
+  readonly model?: string;
+  readonly cwd?: string;
+  readonly stateDir?: string;
+  /** GitHub logins whose new issues start work (githubIssueAuthors). */
+  readonly issueAuthors?: readonly string[];
+  /** Install and enable the systemd user units (default no). */
+  readonly autostart?: boolean;
+  /** `--set key=value` values: applied as given, never asked. */
+  readonly patch?: Json;
+  /** `--unset key` keys: deleted, never asked. */
+  readonly unset?: readonly string[];
+  /**
+   * Prune obsolete keys (config.json, and the local runner's runner-config.json) and ask only keys never shown before;
+   * no token, Discord or autostart steps.
+   */
+  readonly migrate?: boolean;
+  /**
+   * Also ask what the default flow takes from flags, stored values or defaults: models, directories, every other config
+   * key, each autostart step and keeping a channel that failed its check. The default flow asks five
+   * questions: bot token, channels, owner id, issue auto-start and autostart.
+   */
+  readonly advanced?: boolean;
+};
+
+type Json = Record<string, unknown>;
+
+/** In `<stateDir>`: the config keys setup has already shown, so a later run asks only new ones. */
+export const SETUP_KEYS_FILE = "setup-keys.json";
+/** The config keys the core setup questions own; the generic key pass skips them. */
+export const SETUP_CORE_KEYS = ["discord", "discordChannels", "defaultModel", "leadModel", "leadCwd", "stateDir", "githubIssueAuthors", "ignorePanes"] as const;
+
+const labelOf = (key: string): string => {
+  const spec = DORI_CONFIG_KEYS.find((s) => s.key === key);
+  return spec ? keyLabel(spec) : "[optional]";
+};
+
+/** In `<stateDir>`: the obsolete config keys already warned about; the next run that still finds one removes it. */
+export const CONFIG_REMOVALS_FILE = "config-removals.json";
+
+const isRecord = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** `pruned` with the `pending` keys (top-level or `<key>.<sub>`) put back as `source` has them, in `source`'s order. */
+const keepPending = (source: Json, pruned: Json, pending: readonly string[]): Json => {
+  if (!pending.length) return pruned;
+  const out: Json = {};
+  for (const [key, value] of Object.entries(source)) {
+    const kept = pruned[key];
+    if (pending.includes(key)) out[key] = value;
+    else if (!(key in pruned)) continue;
+    else if (isRecord(value) && isRecord(kept)) out[key] = Object.fromEntries(Object.entries(value).filter(([sub]) => sub in kept || pending.includes(`${key}.${sub}`)));
+    else out[key] = kept;
+  }
+  return out;
+};
+
+/**
+ * `config` stamped with the current schema version after the CONFIG_MIGRATIONS steps it has not had, without the keys
+ * config.json no longer reads. Legacy pane keys are migrated into `stateDir` and dropped at once. Any other key is first
+ * kept and warned about (`SETUP_KEY_REMOVAL_PENDING`, recorded in `<stateDir>/config-removals.json`); a later run that
+ * still finds it removes it (`SETUP_KEY_REMOVED`). A config written by a newer dori throws SetupError before anything is
+ * written. saveConfig keeps a timestamped copy of the file it replaces.
+ */
+export const pruneObsolete = (d: Pick<SetupDeps, "log">, stateDir: string, config: Json): Json => {
+  let migrated: ReturnType<typeof migrateConfigSchema>;
+  try {
+    migrated = migrateConfigSchema(config);
+  } catch (e) {
+    throw e instanceof ConfigSchemaError ? new SetupError(e.message) : e;
+  }
+  resolveManagedPanes(stateDir, config);
+  for (const [from, to] of migrated.renamed) d.log(`SETUP_KEY_RENAMED ${from} -> ${to}`);
+  for (const key of migrated.filled) d.log(`SETUP_KEY_SET ${key} (kept the built-in default it ran with; that default changed)`);
+  for (const [key, why] of migrated.dropped) d.log(`SETUP_KEY_REMOVED ${key} (${why})`);
+  const { next, removed } = pruneDoriConfig(migrated.next);
+  const removalsPath = join(stateDir, CONFIG_REMOVALS_FILE);
+  const warned = readSeenKeys(removalsPath);
+  const pending = removed.filter((key) => !(LEGACY_PANE_KEYS as readonly string[]).includes(key) && !warned.has(key));
+  for (const key of removed) {
+    d.log(pending.includes(key)
+      ? `SETUP_KEY_REMOVAL_PENDING ${key} (${removalReason(key)}): kept this time; the next dori setup removes it`
+      : `SETUP_KEY_REMOVED ${key} (${removalReason(key)})`);
+  }
+  if (pending.length !== warned.size || pending.some((key) => !warned.has(key))) writeSeenKeys(removalsPath, pending);
+  return { [CONFIG_SCHEMA_KEY]: CONFIG_SCHEMA_VERSION, ...keepPending(migrated.next, next, pending) };
+};
+
+/** Seams for `renameWithRetry`: the platform (default `process.platform`), the rename itself, and the pause between tries. */
+export type RenameDeps = {
+  readonly platform?: NodeJS.Platform;
+  readonly rename?: (from: string, to: string) => void;
+  readonly sleep?: (ms: number) => void;
+};
+
+/** Retries after the first failed rename on Windows, where antivirus and the indexer briefly hold files open. */
+export const RENAME_RETRIES = 5;
+export const RENAME_RETRY_MS = 50;
+const RENAME_BUSY: ReadonlySet<string> = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+/**
+ * `renameSync(from, to)`. On win32 an `EPERM`, `EACCES` or `EBUSY` failure is retried up to `RENAME_RETRIES` times,
+ * `RENAME_RETRY_MS` apart; any other error, or the last one, is thrown. Elsewhere it is a plain rename.
+ */
+export const renameWithRetry = (from: string, to: string, deps: RenameDeps = {}): void => {
+  const rename = deps.rename ?? renameSync;
+  if ((deps.platform ?? process.platform) !== "win32") {
+    rename(from, to);
+    return;
+  }
+  const sleep = deps.sleep ?? Bun.sleepSync;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rename(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (attempt >= RENAME_RETRIES || !code || !RENAME_BUSY.has(code)) throw error;
+      sleep(RENAME_RETRY_MS);
+    }
+  }
+};
+
+export const writeFileAtomic = (path: string, content: string, mode: number, deps: RenameDeps = {}): void => {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`;
+  const fd = openSync(tmp, "w", mode);
+  try { writeFileSync(fd, content); fsyncSync(fd); } finally { closeSync(fd); }
+  chmodSync(tmp, mode);
+  renameWithRetry(tmp, path, deps);
+};
+
+export const readConfigObject = (path: string): Json => {
+  if (!existsSync(path)) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (e) {
+    throw new SetupError(`${path} is not valid JSON (${e instanceof Error ? e.message : String(e)}); fix it or move it away, then run setup again`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new SetupError(`${path} must hold a JSON object`);
+  return parsed as Json;
+};
+
+export const mergeConfig = (existing: Json, patch: Json): Json => {
+  const out: Json = { ...existing };
+  for (const [k, v] of Object.entries(patch)) if (v !== undefined) out[k] = v;
+  return out;
+};
+
+/** `<path>.<UTC time>.bak`, or `<path>.<UTC time>-<n>.bak` when a backup from the same second exists. */
+export const configBackupPath = (path: string, now = new Date()): string => {
+  const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+  let candidate = `${path}.${stamp}.bak`;
+  for (let n = 1; existsSync(candidate); n++) candidate = `${path}.${stamp}-${n}.bak`;
+  return candidate;
+};
+
+/** Writes `next` unless the file holds `existing` unchanged; the file it replaces is first copied to configBackupPath. */
+export const saveConfig = (path: string, existing: Json, next: Json, log?: (line: string) => void): boolean => {
+  const hasFile = existsSync(path);
+  if (hasFile && JSON.stringify(existing) === JSON.stringify(next)) return false;
+  if (hasFile) {
+    const backup = configBackupPath(path);
+    writeFileAtomic(backup, readFileSync(path, "utf8"), 0o600);
+    log?.(`SETUP_CONFIG_BACKUP ${backup}`);
+  }
+  writeFileAtomic(path, `${JSON.stringify(next, null, 2)}\n`, 0o600);
+  return true;
+};
+
+const envLine = (key: string) => new RegExp(`^\\s*(?:export\\s+)?${key}=(.*)$`);
+
+export const envSet = (text: string, key: string, value: string): string => {
+  const lines = text ? text.split(/\r?\n/) : [];
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  const at = lines.findIndex((l) => envLine(key).test(l));
+  const entry = `${key}=${value}`;
+  if (at >= 0) lines[at] = entry;
+  else lines.push(entry);
+  return `${lines.join("\n")}\n`;
+};
+
+const modeOf = (path: string): number => statSync(path).mode & 0o777;
+
+export type ChannelCheck = { readonly id: string; readonly ok: boolean; readonly detail: string };
+
+export const verifyChannel = async (http: Http, token: string, id: string): Promise<ChannelCheck> => {
+  if (!/^\d{15,22}$/.test(id)) return { id, ok: false, detail: "not a channel id (Discord ids are 17-20 digits; right-click the channel, Copy Channel ID)" };
+  try {
+    const r = await http({ method: "GET", url: `https://discord.com/api/v10/channels/${id}`, headers: { Authorization: `Bot ${token}` } });
+    if (r.status === 200) {
+      const name = (JSON.parse(r.body) as { name?: string }).name;
+      return { id, ok: true, detail: name ? `#${name}` : "readable" };
+    }
+    const why: Record<number, string> = {
+      401: "the bot token was rejected (401); check the token in the Developer Portal",
+      403: "the bot cannot see this channel (403 Missing Access); invite it to the server and allow View Channel and Read Message History",
+      404: "no such channel (404), or it is in a server the bot is not in",
+    };
+    return { id, ok: false, detail: why[r.status] ?? `Discord answered HTTP ${r.status}` };
+  } catch (e) {
+    return { id, ok: false, detail: `request failed: ${e instanceof Error ? e.message : String(e)}` };
+  }
+};
+
+export const parseChannels = (text: string): string[] => [...new Set(text.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean))];
+
+export const renderTemplate = (text: string, values: Readonly<Record<string, string>>): string =>
+  text.replace(/\{\{(\w+)\}\}/g, (_, name: string) => {
+    const v = values[name];
+    if (v === undefined) throw new SetupError(`template value {{${name}}} is missing`);
+    if (/[\n\r]/.test(v)) throw new SetupError(`template value {{${name}}} spans lines`);
+    return v;
+  });
+
+/** Fills a template's `@NAME@` markers (the format templates/hc-core.service shares with `dori runner install`). */
+export const fillMarkers = (text: string, values: Readonly<Record<string, string>>): string =>
+  text.replace(/@(\w+)@/g, (_, name: string) => {
+    const v = values[name];
+    if (v === undefined) throw new SetupError(`template value @${name}@ is missing`);
+    if (/[\n\r]/.test(v)) throw new SetupError(`template value @${name}@ spans lines`);
+    return v;
+  });
+
+/** The values the unit templates take; hc must be on PATH (hc-core.service runs it). */
+export const templateValues = (d: SetupDeps, workDir: string): Record<string, string> => {
+  if (!d.bins.hc) throw new SetupError(`hc is not on PATH; install it (curl -fsSL ${HC_INSTALL_URL} | sh) before turning on autostart`);
+  const bins = [dirname(d.bins.dori), dirname(d.bins.hc), join(d.home, ".bun", "bin"), join(d.home, ".local", "bin"), "/usr/local/bin", "/usr/bin", "/bin"];
+  return {
+    HC_BIN: d.bins.hc,
+    HOME: d.home,
+    PATH: [...new Set(bins)].join(":"),
+    SHELL: d.bins.shell,
+    DORI_BIN: d.bins.dori,
+    ENV_FILE: d.envPath,
+    CONFIG: d.configPath,
+    WORK_DIR: workDir,
+    BOOT_PREP: join(dirname(d.envPath), BOOT_PREP),
+    FAILURE_NOTIFY: join(dirname(d.envPath), FAILURE_NOTIFY),
+  };
+};
+
+/**
+ * The autostart files for this host's units (hostServices): hc-core.service (its `@HC_BIN@` and `@PATH@` filled), the
+ * supervisor, the failure notifier and the boot prep script.
+ */
+export const renderAutostart = (d: SetupDeps, workDir: string): Map<string, { content: string; mode: number }> => {
+  const values = templateValues(d, workDir);
+  const out = new Map<string, { content: string; mode: number }>();
+  for (const unit of [...hostServices(), NOTIFY_UNIT]) {
+    const text = readFileSync(join(d.templatesDir, unit), "utf8");
+    out.set(join(d.unitDir, unit), { content: unit === HC_CORE_UNIT ? fillMarkers(text, values) : renderTemplate(text, values), mode: 0o644 });
+  }
+  out.set(values.BOOT_PREP as string, { content: renderTemplate(readFileSync(join(d.templatesDir, BOOT_PREP), "utf8"), values), mode: 0o755 });
+  out.set(values.FAILURE_NOTIFY as string, { content: renderTemplate(readFileSync(join(d.templatesDir, FAILURE_NOTIFY), "utf8"), values), mode: 0o755 });
+  return out;
+};
+
+const str = (v: unknown): string => (typeof v === "string" && !v.startsWith("<") ? v : "");
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !x.startsWith("<")) : []);
+
+const askToken = async (d: SetupDeps, stored: string | undefined, given: string | undefined): Promise<string | undefined> => {
+  const typed = (await d.prompt.secret("Discord bot token [required]", Boolean(given ?? stored))).trim();
+  const token = typed || given || stored;
+  if (token && !/^[\w.-]+$/.test(token)) throw new SetupError("the bot token has characters a Discord token never has (spaces, quotes or newlines); paste it again");
+  return token;
+};
+
+/** `given` channels (from a flag or --set) are verified but never asked. */
+const askChannels = async (d: SetupDeps, token: string | undefined, initial: readonly string[], given: boolean, advanced: boolean): Promise<string[]> => {
+  let current = [...initial];
+  for (;;) {
+    const channels = given ? current : parseChannels(await d.prompt.ask(`Main Discord channel id(s), comma separated ${labelOf("discordChannels")}`, current.join(",")));
+    if (!channels.length || !token) {
+      if (channels.length) d.log("SETUP channels not verified: no bot token yet");
+      return channels;
+    }
+    const checks = await Promise.all(channels.map((id) => verifyChannel(d.http, token, id)));
+    for (const c of checks) d.log(`SETUP channel ${c.id} ${c.ok ? "ok" : "FAILED"}: ${c.detail}`);
+    if (checks.every((c) => c.ok)) return channels;
+    if (d.interactive && advanced && (await d.prompt.confirm("Keep these channels anyway?", false))) return channels;
+    if (!d.interactive || given) throw new SetupError(`the bot cannot read channel(s) ${checks.filter((c) => !c.ok).map((c) => c.id).join(", ")}; nothing was written`);
+    current = channels;
+  }
+};
+
+const askDiscord = async (d: SetupDeps, token: string, channel: string, existing: unknown): Promise<DiscordConfig> => {
+  const metadata = async (path: string): Promise<Json> => {
+    let result;
+    try {
+      result = await d.http({ method: "GET", url: `https://discord.com/api/v10${path}`, headers: { Authorization: `Bot ${token}` } });
+    } catch (e) {
+      if (!(e instanceof Error)) throw e;
+      throw new SetupError(`cannot read Discord ${path}; nothing was written`);
+    }
+    if (result.status !== 200) throw new SetupError(`Discord ${path} answered HTTP ${result.status}; nothing was written`);
+    const value: unknown = JSON.parse(result.body);
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new SetupError(`Discord ${path} returned invalid metadata`);
+    return value as Json;
+  };
+  const app = await metadata("/oauth2/applications/@me");
+  const room = await metadata(`/channels/${channel}`);
+  const prior = existing && typeof existing === "object" && !Array.isArray(existing) ? existing as Json : {};
+  const owner = app.owner && typeof app.owner === "object" && "id" in app.owner ? str(app.owner.id) : "";
+  const applicationId = str(prior.applicationId) || str(app.id);
+  const guildId = str(prior.guildId) || str(room.guild_id);
+  const ownerId = (await d.prompt.ask(`Discord owner user id for slash commands ${labelOf("discord")}`, str(prior.ownerId) || owner)).trim();
+  if (![applicationId, guildId, ownerId].every((id) => /^\d{15,22}$/.test(id))) {
+    throw new SetupError("Discord application, guild and owner ids must be snowflakes; use a server channel and a Discord owner user id");
+  }
+  return { applicationId, guildId, ownerId };
+};
+
+/** Logs each required key with no value; true when any is missing. */
+const reportMissing = (d: SetupDeps, missing: readonly string[]): boolean => {
+  for (const key of missing) d.log(`SETUP_KEY_MISSING ${key} [required]`);
+  return missing.length > 0;
+};
+
+/**
+ * `dori setup --migrate`: prune obsolete keys (config.json, then the local runner's runner-config.json, e.g. a retired
+ * `laneRuntime`) and ask only keys never shown before.
+ */
+const runMigrate = async (d: SetupDeps, input: SetupInput): Promise<number> => {
+  if (!existsSync(d.configPath)) {
+    d.log(`SETUP_MIGRATE_SKIPPED no config at ${d.configPath}; run dori setup`);
+    return 0;
+  }
+  const raw = readConfigObject(d.configPath);
+  const stateDir = expandHome(str(raw.stateDir) || "~/.dori/state", d.home);
+  const seenPath = join(stateDir, SETUP_KEYS_FILE);
+  const seen = readSeenKeys(seenPath);
+  const configured = await configureKeys({
+    specs: DORI_CONFIG_KEYS, current: pruneObsolete(d, stateDir, raw), patch: input.patch ?? {}, unset: input.unset ?? [],
+    prompt: d.prompt, interactive: d.interactive, seen, mode: "new", defaults: doriConfigDefault(d.home), log: d.log,
+  });
+  d.log(`SETUP config ${saveConfig(d.configPath, raw, configured.next, d.log) ? "written" : "unchanged"}: ${d.configPath}`);
+  await pruneLocalRunnerConfig(d.home, d.log);
+  if (d.interactive) writeSeenKeys(seenPath, [...seen, ...configured.shown]);
+  if (reportMissing(d, configured.missingRequired)) {
+    d.log("SETUP_MIGRATE_DONE with problems: config");
+    return 2;
+  }
+  d.log("SETUP_MIGRATE_DONE");
+  return 0;
+};
+
+export const runSetup = async (d: SetupDeps, input: SetupInput = {}): Promise<number> => {
+  if (input.migrate) return runMigrate(d, input);
+  const advanced = input.advanced ?? false;
+  const problems: string[] = [];
+  const raw = readConfigObject(d.configPath);
+  const envText = existsSync(d.envPath) ? readFileSync(d.envPath, "utf8") : "";
+  const base = defaultConfig(d.home);
+  const patch = input.patch ?? {};
+  const unset = input.unset ?? [];
+  // Core keys whose question was shown (recorded as seen) and core keys taken from --set (not passed on to configureKeys).
+  const asked: string[] = [];
+  const consumed: string[] = [];
+  const given = (key: string): string | undefined => {
+    if (!(key in patch)) return undefined;
+    consumed.push(key);
+    const spec = DORI_CONFIG_KEYS.find((s) => s.key === key);
+    return spec ? formatValue(spec, patch[key]) : String(patch[key]);
+  };
+  const givenList = (key: string): string[] | undefined => {
+    if (!(key in patch)) return undefined;
+    consumed.push(key);
+    return strings(patch[key]);
+  };
+  /** `-` clears an optional key; a required one is asked again. */
+  const ask = async (key: string, question: string, current: string, fallback?: string): Promise<string> => {
+    if (unset.includes(key)) return "";
+    asked.push(key);
+    for (;;) {
+      const answer = (await d.prompt.ask(`${question} ${labelOf(key)}${fallback && !current ? ` (default: ${fallback})` : ""}`, current)).trim();
+      if (answer !== "-") return answer;
+      if (labelOf(key) === "[optional]") return "";
+      d.log(`SETUP_KEY_REQUIRED ${key}: it cannot be cleared`);
+    }
+  };
+  if (d.interactive) d.log(`SETUP ${KEY_INPUT_HINT}`);
+
+  const storedToken = envFileValue(envText, TOKEN_KEY);
+  const token = await askToken(d, storedToken, input.token);
+  const givenChannels = input.channels ?? givenList("discordChannels");
+  if (!givenChannels && !unset.includes("discordChannels")) asked.push("discordChannels");
+  const channels = unset.includes("discordChannels") ? [] : await askChannels(d, token, givenChannels ?? strings(raw.discordChannels), Boolean(givenChannels), advanced);
+  let discord: unknown;
+  if ("discord" in patch) {
+    consumed.push("discord");
+    discord = patch.discord;
+  } else if (token && channels[0] && !unset.includes("discord")) {
+    asked.push("discord");
+    discord = await askDiscord(d, token, channels[0], raw.discord);
+  }
+  /** Advanced only: the default flow keeps `current` (the stored value or the default) without asking. */
+  const askAdvanced = async (key: string, question: string, current: string, fallback?: string): Promise<string> =>
+    advanced ? ask(key, question, current, fallback) : unset.includes(key) ? "" : current;
+  const defaultModel = (input.model ?? given("defaultModel") ?? await askAdvanced("defaultModel", "Default model for lanes (and the lead unless a lead model is set)", str(raw.defaultModel) || base.defaultModel)).trim();
+  // A legacy leadModel array (or object) is kept as written; the config loader uses its first entry and warns.
+  const leadStored = "leadModel" in patch ? patch.leadModel : raw.leadModel;
+  const chain = typeof leadStored === "object" && leadStored !== null ? leadStored : undefined;
+  if (chain && "leadModel" in patch) consumed.push("leadModel");
+  const leadModel = chain ? "" : given("leadModel") ?? await askAdvanced("leadModel", "Lead model", str(raw.leadModel), defaultModel);
+  // A file not yet migrated keeps its lead directory under the old defaultCwd name; pruneObsolete then drops that key.
+  // An existing file written before schema step 4 with neither key ran the lead in the home directory and keeps it.
+  const leadFallback = existsSync(d.configPath) && !(typeof raw[CONFIG_SCHEMA_KEY] === "number" && raw[CONFIG_SCHEMA_KEY] >= 4) ? "~" : "~/.dori/lead";
+  const leadCwd = (input.cwd ?? given("leadCwd") ?? await askAdvanced("leadCwd", "Working directory of the lead session (local lanes started without --cwd start here too)", str(raw.leadCwd) || str(raw.defaultCwd) || leadFallback)).trim() || leadFallback;
+  const stateDir = (input.stateDir ?? given("stateDir") ?? await askAdvanced("stateDir", "State directory", str(raw.stateDir) || "~/.dori/state")).trim() || "~/.dori/state";
+  const repos = new Repos(expandHome(stateDir, d.home));
+  const givenAuthors = input.issueAuthors ?? givenList("githubIssueAuthors");
+  const storedAuthors = strings(raw.githubIssueAuthors);
+  // One yes/no gates the logins and the repo list; flags, --set and --unset answer it without asking. No turns it off.
+  const issuesOn = givenAuthors || unset.includes("githubIssueAuthors") ? undefined
+    : await d.prompt.confirm("Start work automatically when a watched GitHub repo gets a new issue?", storedAuthors.length > 0);
+  const watchedRepos = advanced || issuesOn
+    ? (await d.prompt.ask("GitHub repos to watch (owner/repo, comma separated) [optional]", repos.list().join(","))).split(/[\s,]+/).filter(Boolean)
+    : repos.list();
+  if (issuesOn === false) asked.push("githubIssueAuthors");
+  const issueAuthors = parseChannels((givenAuthors ? givenAuthors.join(",") : issuesOn ? await ask(
+    "githubIssueAuthors",
+    "GitHub accounts whose new issues start work automatically (comma separated)",
+    storedAuthors.join(","),
+  ) : "").toLowerCase());
+  const badAuthor = issueAuthors.find((a) => !/^[a-z0-9](?:[a-z0-9-]{0,38})$/.test(a));
+  if (badAuthor) throw new SetupError(`${badAuthor} is not a GitHub login; nothing was written`);
+  const workDir = expandHome(leadCwd, d.home);
+  for (const dir of [workDir, expandHome(stateDir, d.home)]) ensureDir(d, dir);
+  repos.replace(watchedRepos);
+
+  if (token) {
+    const next = envSet(envText, TOKEN_KEY, token);
+    const changed = next !== envText || !existsSync(d.envPath) || modeOf(d.envPath) !== 0o600;
+    if (changed) writeFileAtomic(d.envPath, next, 0o600);
+    d.log(`SETUP env ${TOKEN_KEY} ${token === storedToken ? "kept" : "saved"} in ${d.envPath} (mode 600)${changed ? "" : ", unchanged"}`);
+  } else d.log(`SETUP env no bot token; set ${TOKEN_KEY} later by running dori setup again`);
+
+  const merged = mergeConfig(raw, {
+    discordChannels: channels, defaultModel, leadModel: chain ?? (leadModel || undefined), leadCwd, stateDir, discord,
+    // Keep configs that never set it byte-identical.
+    githubIssueAuthors: issueAuthors.length || Array.isArray(raw.githubIssueAuthors) ? issueAuthors : undefined,
+  });
+  for (const key of new Set(consumed)) if (JSON.stringify(raw[key]) !== JSON.stringify(merged[key])) d.log(`SETUP_KEY_SET ${key}`);
+  const stateAbs = expandHome(stateDir, d.home);
+  const seenPath = join(stateAbs, SETUP_KEYS_FILE);
+  const seen = readSeenKeys(seenPath);
+  const configured = await configureKeys({
+    // A new file is written at the current version: no migration step, so no old default is filled in.
+    specs: DORI_CONFIG_KEYS, current: pruneObsolete(d, stateAbs, existsSync(d.configPath) ? merged : { [CONFIG_SCHEMA_KEY]: CONFIG_SCHEMA_VERSION, ...merged }),
+    patch: Object.fromEntries(Object.entries(patch).filter(([key]) => !consumed.includes(key))), unset,
+    prompt: d.prompt, interactive: d.interactive && advanced, seen, mode: "full", skip: SETUP_CORE_KEYS, defaults: doriConfigDefault(d.home), hinted: true, log: d.log,
+  });
+  let config = configured.next;
+  d.log(`SETUP config ${saveConfig(d.configPath, raw, config, d.log) ? "written" : "unchanged"}: ${d.configPath}`);
+  // The default flow settles every key it does not ask with its value or default, so a later --migrate asks only keys added after it.
+  const settled = advanced ? [] : DORI_CONFIG_KEYS.map((s) => s.key);
+  if (d.interactive) writeSeenKeys(seenPath, [...seen, ...configured.shown, ...asked, ...settled, ...Object.keys(patch), ...unset]);
+  if (reportMissing(d, configured.missingRequired)) problems.push("config");
+  const alertsChannel = str(config.alertsChannel).trim();
+  d.log(alertsChannel
+    ? `SETUP alertsChannel ${alertsChannel}: system notices go there`
+    : `SETUP alertsChannel unset: system notices go to the first discordChannels entry; optional, add "alertsChannel": "<channel id>" to ${d.configPath} to send them elsewhere`);
+  const decisionsChannel = str(config.decisionsChannel).trim();
+  d.log(decisionsChannel
+    ? `SETUP decisionsChannel ${decisionsChannel}: owner decisions open one thread each there`
+    : `SETUP decisionsChannel unset: owner decisions go to the requesting channel; optional, add "decisionsChannel": "<channel id>" to ${d.configPath} to open them in one channel`);
+
+  if (await d.prompt.confirm("Start hc and the supervisor automatically at boot (systemd user units)?", input.autostart ?? false)) {
+    problems.push(...(await autostart(d, workDir, advanced)));
+  } else d.log("SETUP autostart skipped");
+
+  d.log(problems.length ? `SETUP_DONE with problems: ${[...new Set(problems)].join(", ")}` : "SETUP_DONE");
+  return problems.length ? 2 : 0;
+};
+
+const ensureDir = (d: SetupDeps, dir: string): void => {
+  if (existsSync(dir)) return;
+  mkdirSync(dir, { recursive: true });
+  d.log(`SETUP created ${dir}`);
+};
+
+/**
+ * `advanced` asks before each step; otherwise the one autostart answer accepts them all. Writes and enables this host's
+ * units (hostServices) and starts hc-core.service at once (`hc server start` is safe while a core runs). Units it
+ * does not write are never touched.
+ */
+const autostart = async (d: SetupDeps, workDir: string, advanced: boolean): Promise<string[]> => {
+  const problems: string[] = [];
+  const units = hostServices();
+  const files = renderAutostart(d, workDir);
+  const confirm = advanced ? d.prompt.confirm : async () => true;
+  if (!(await confirm(`Write ${units.join(", ")} to ${d.unitDir} and the boot prep script?`, true))) {
+    d.log("SETUP autostart units not written; stopping autostart here");
+    return problems;
+  }
+  ensureDir(d, d.unitDir);
+  for (const [path, f] of files) {
+    const same = existsSync(path) && readFileSync(path, "utf8") === f.content && modeOf(path) === f.mode;
+    if (!same) writeFileAtomic(path, f.content, f.mode);
+    d.log(`SETUP wrote ${path}${same ? " (unchanged)" : ""}`);
+  }
+  const step = async (question: string, argv: string[]): Promise<void> => {
+    if (!(await confirm(`${question}\n  runs: ${argv.join(" ")}`, true))) {
+      d.log(`SETUP skipped: ${argv.join(" ")}`);
+      return;
+    }
+    const r = await d.run(argv);
+    if (r.code === 0) d.log(`SETUP ran: ${argv.join(" ")}`);
+    else {
+      problems.push(argv[0] ?? "step");
+      d.log(`SETUP FAILED (${r.code}): ${argv.join(" ")}: ${(r.err || r.out).slice(0, 300)}`);
+    }
+  };
+  const linger = await d.run(["loginctl", "show-user", d.user, "--property=Linger"]);
+  if (linger.code === 0 && linger.out.includes("Linger=yes")) d.log(`SETUP linger already on for ${d.user}`);
+  else await step("Turn on linger so your user units run after boot without a login?", ["loginctl", "enable-linger", d.user]);
+  await step("Reload systemd user units?", ["systemctl", "--user", "daemon-reload"]);
+  const legacy = "dori-presence.service";
+  const probe = ["systemctl", "--user", "list-unit-files", legacy, "--no-legend", "--no-pager"];
+  const installed = await d.run(probe);
+  if (installed.code !== 0) {
+    d.log(`SETUP FAILED (${installed.code}): ${probe.join(" ")}: ${(installed.err || installed.out).slice(0, 300)}`);
+    return [...problems, "systemctl"];
+  }
+  if (installed.out.split(/\s+/).includes(legacy)) {
+    await step("Disable and stop the legacy presence unit? The supervisor now owns Discord presence and slash commands.", ["systemctl", "--user", "disable", "--now", legacy]);
+  }
+  await step("Enable the units so they start at boot?", ["systemctl", "--user", "enable", ...units]);
+  await step("Start the hc core now?", ["systemctl", "--user", "start", HC_CORE_UNIT]);
+  d.log(`SETUP start them now with: systemctl --user start ${units.filter((u) => u !== HC_CORE_UNIT).join(" ")}`);
+  return problems;
+};

@@ -17,6 +17,12 @@ Rules:
 
 - Everything written into the repository is English. No Korean text in tracked files,
   except for user-facing localization resources if the product later adds a Korean locale.
+- Exception for `dori/`: text Dori writes for its owner stays in that owner's language and
+  counts as a localization resource. This covers the Korean report and message templates
+  and the strings Dori sends to the owner, plus the translated READMEs
+  (`dori/README.ko.md`, `dori/README.ja.md`, `dori/README.zh-CN.md`). Everything else in
+  `dori/` (comments, identifiers, test names, log and error messages) follows the rules
+  above; Korean that predates the move into this repository is being translated.
 - Only conversational responses to the user are written in Korean. When quoting code,
   paths, commands, or identifiers in a Korean reply, keep them verbatim in English.
 - If the user writes a requirement in Korean, translate it into English before recording
@@ -149,6 +155,10 @@ Layout:
     module, with the Rust tests ported beside each one. `rust.ts` holds the Rust standard
     library behavior they depend on (whitespace, `{:?}` quoting, float printing, string
     order), so messages and results match the Rust server byte for byte.
+- `dori/`: Dori, the executor that runs coding agents in lanes and reports to Toodo, moved
+  here from `Dubusoft/dori-mode` with its history (`git subtree`). The skill is
+  `dori/skills/dori-mode/` and the `dori` CLI (Bun) is `dori/skills/dori-mode/scripts/`;
+  `dori/install.sh` installs both from a clone of this repository.
 - `npm/toodo/`: the `@dubusoft/toodo` npm package (launcher `bin/toodo.js`, README).
 - `scripts/parity/`: the parity harness, which compares two servers (the Rust server and
   its TypeScript port) by their replies, events, and databases; see `docs/parity.md`.
@@ -167,6 +177,8 @@ Run from the repository root unless noted. Package manager is npm.
 - Test (frontend): `npm test`
 - Typecheck (frontend and `server/`): `npm run typecheck`
 - Test (TypeScript server): `npm run test:server`
+- Typecheck and test (`dori`): `bun install`, then `bun run typecheck` and `bun test` in
+  `dori/skills/dori-mode/scripts/`
 - Astryx docs (the project's pinned version): `npm run astryx -- search '<what>'`,
   `npm run astryx -- component <Name>`, `npm run astryx -- docs <topic>`
 - Test (web app end to end): `npm run test:e2e`, after building the server and `dist-web/`;
@@ -196,7 +208,8 @@ updated `src/lib/bindings.ts` together with the Rust change. A test in `server/r
 checks that the server serves every command in the bindings.
 
 CI only typechecks (`cargo check --all-targets` for Rust, `npm run typecheck` for the
-frontend and `server/`); it runs no tests, lints, or format checks. Run the tests,
+frontend and `server/`, `bun run typecheck` for `dori/`); it runs no tests, lints, or
+format checks. Run the tests,
 clippy, and `cargo fmt --check` locally before opening a pull request.
 
 ## Schema Freeze

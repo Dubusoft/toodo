@@ -1,0 +1,128 @@
+import { redactSecrets } from "./redact.ts";
+
+/**
+ * A lane should ask with `dori report <key> question`, which wakes the lead. A lane that asks only through its agent's
+ * on-screen question UI (omo's ask-user) wakes nobody and sits there until someone looks at its pane. The lane's runner
+ * reads each lane's pane for such a prompt with `screenQuestion` and publishes one `lane.asking` per question
+ * (runner/lanes.ts), which the supervisor raises as urgent `LANE_ASKING` (`askingLine`); the supervisor never reads
+ * the screen itself (design D21). This module is the shared parser. Besides the question UI it reads omo's selection list,
+ * which carries every other prompt that stops a lane: a permission prompt ("Permission required: <permission>") and an
+ * extension's select or confirm, its own or one a subagent raised.
+ */
+
+/** A question prompt on screen: the current question's header, text and options, and how many questions it holds. */
+export type ScreenQuestion = { readonly header?: string; readonly question: string; readonly options: readonly string[]; readonly pending: number; readonly tabs?: readonly string[] };
+
+/** How many bottom lines of a pane are read: the prompt is part of the live UI at the bottom, never scrollback. */
+export const ASK_SCREEN_LINES = 60;
+/** At most this many non-empty lines (hints, editor, rules, status bar) may follow a prompt's last line. */
+const BELOW_MAX = 10;
+
+const OPTION = /^\s*(?:→\s*)?(?:\[[ x✓✔]\]\s*)?\d+\.\s+(.+?)\s*$/;
+const OWN_ANSWER = /^\s*(?:→\s*)?Type your own answer/;
+/** The blocking dialog's key-hint line, its last line ("↑↓ move  1-9 select ... esc cancel"). */
+const DIALOG_HINT = /\b1-9 select\b.*\besc cancel\b/;
+const DIALOG_HEAD = /^\s*Ask user\b/;
+/**
+ * The collapsed widget an async question (waitForAnswer false) leaves above the editor. It starts at column 0, where the
+ * transcript is indented, so a line of output that only quotes it never matches.
+ */
+const WIDGET_HEAD = /^\? (?:Question pending \((\d+) unanswered\)|(\d+) questions pending)/;
+/** The widget's option chips: "[ seoul ]  [ tokyo ]  [ own answer… ]". */
+const CHIP = /\[ (.+?) \]/g;
+const CHIP_LINE = /\[ .+? \]/;
+/** omo's selection list (ctx.ui.select, confirm, permission prompts) ends on this key-hint line. */
+const SELECT_HINT = /^\s*↑↓ navigate\s+\S+ select\s+\S+ cancel\s*$/;
+const SELECTED_ROW = /^\s*→\s+/;
+const SCROLL_ROW = /^\s*… \d+ more (?:above|below)\s*$/;
+/** The rules framing the list (and omo's editor). */
+const RULE = /^\s*─{8,}\s*$/;
+
+const clean = (s: string): string => s.replace(/\s+/g, " ").trim();
+const nonEmptyAfter = (lines: readonly string[], i: number): number => lines.slice(i + 1).filter((l) => l.trim()).length;
+
+/** Options listed from `from` on, up to the own-answer row (or the first line that is no option once some were seen). */
+const optionsFrom = (lines: readonly string[], from: number, to: number): string[] => {
+  const options: string[] = [];
+  for (let i = from; i < to; i++) {
+    const line = lines[i] ?? "";
+    if (OWN_ANSWER.test(line)) break;
+    const hit = OPTION.exec(line);
+    if (hit?.[1]) options.push(clean(hit[1]));
+    else if (options.length && line.trim()) break;
+  }
+  return options;
+};
+
+/** The blocking question dialog (waitForAnswer true): "Ask user", a tab row "→ <header>  ...  Submit", the question, its options. */
+const dialog = (lines: readonly string[]): ScreenQuestion | null => {
+  const hint = lines.findLastIndex((l) => DIALOG_HINT.test(l));
+  if (hint < 0 || nonEmptyAfter(lines, hint) > BELOW_MAX) return null;
+  const head = lines.slice(0, hint).findLastIndex((l) => DIALOG_HEAD.test(l));
+  if (head < 0) return null;
+  const tabs = lines.findIndex((l, i) => i > head && i < hint && /^\s*\S.*\bSubmit\s*$/.test(l));
+  const firstOption = lines.findIndex((l, i) => i > Math.max(head, tabs) && i < hint && (OPTION.test(l) || OWN_ANSWER.test(l)));
+  if (tabs < 0 || firstOption < 0) return null;
+  const tabNames = lines[tabs]?.replace(/\bSubmit\s*$/, "").split(/\s{2,}/).map(clean).filter(Boolean) ?? [];
+  const header = tabNames.find((t) => t.startsWith("→"))?.replace(/^→\s*/, "");
+  const question = clean(lines.slice(tabs + 1, firstOption).join(" "));
+  if (!question) return null;
+  return { ...(header ? { header } : {}), question, options: optionsFrom(lines, firstOption, hint), pending: Math.max(tabNames.length, 1), ...(tabNames.length > 1 ? { tabs: tabNames.map((t) => t.replace(/^→\s*/, "")) } : {}) };
+};
+
+/** The collapsed widget: "? Question pending (N unanswered) · 30m", "  <header> - <question>", then its option chips. */
+const widget = (lines: readonly string[]): ScreenQuestion | null => {
+  const head = lines.findLastIndex((l) => WIDGET_HEAD.test(l));
+  if (head < 0 || nonEmptyAfter(lines, head) > BELOW_MAX + 3) return null;
+  const counted = WIDGET_HEAD.exec(lines[head] ?? "");
+  const pending = Number(counted?.[1] ?? counted?.[2] ?? 1);
+  const at = lines.findIndex((l, i) => i > head && l.trim() !== "");
+  if (at < 0) return null;
+  let chipAt = -1;
+  const questionLines: string[] = [];
+  for (let i = at; i < lines.length && questionLines.length < 4; i++) {
+    const line = lines[i] ?? "";
+    if (!line.trim() || CHIP_LINE.test(line) || OPTION.test(line) || OWN_ANSWER.test(line)) { chipAt = i; break; }
+    questionLines.push(clean(line));
+  }
+  const first = questionLines[0] ?? "";
+  if (!first) return null;
+  const chipLine = chipAt < 0 ? -1 : lines.slice(chipAt, chipAt + 3).findIndex((line) => CHIP_LINE.test(line));
+  const chips = chipLine < 0 ? [] : [...(lines[chipAt + chipLine] ?? "").matchAll(CHIP)].map((m) => clean(m[1] ?? "")).filter((c) => !/^own answer/.test(c));
+  const options = chips.length ? chips : optionsFrom(lines, chipAt >= 0 ? chipAt : at + questionLines.length, lines.length);
+  const split = /^(.+?) - (.+)$/.exec(first);
+  const question = [split?.[2] ?? first, ...questionLines.slice(1)].join(" ");
+  return { ...(split?.[1] ? { header: split[1] } : {}), question: clean(question), options, pending };
+};
+
+/**
+ * The selection list: a rule, its title (a permission prompt adds its path or tool and patterns), the options with "→" on
+ * the selected one, then the key hints. Its whole title is the question.
+ */
+const selection = (lines: readonly string[]): ScreenQuestion | null => {
+  const hint = lines.findLastIndex((l) => SELECT_HINT.test(l));
+  if (hint < 0 || nonEmptyAfter(lines, hint) > BELOW_MAX) return null;
+  let i = hint - 1;
+  while (i >= 0 && !lines[i]?.trim()) i--;
+  const rows: string[] = [];
+  for (; i >= 0 && lines[i]?.trim() && !RULE.test(lines[i] ?? ""); i--) rows.unshift(lines[i] ?? "");
+  const top = lines.slice(0, i + 1).findLastIndex((l) => RULE.test(l));
+  if (!rows.some((r) => SELECTED_ROW.test(r)) || top < 0) return null;
+  const question = clean(lines.slice(top + 1, i + 1).join(" "));
+  if (!question) return null;
+  return { question, options: rows.filter((r) => !SCROLL_ROW.test(r)).map((r) => clean(r.replace(SELECTED_ROW, ""))), pending: 1 };
+};
+
+/** The prompt waiting at the bottom of `screen` (a question or a selection list), or null when there is none. */
+export const screenQuestion = (screen: string): ScreenQuestion | null => {
+  const lines = screen.split("\n").slice(-ASK_SCREEN_LINES).map((l) => l.trimEnd());
+  return dialog(lines) ?? widget(lines) ?? selection(lines);
+};
+
+/** The urgent event line for `key`'s on-screen question, one line, secrets redacted. */
+export const askingLine = (key: string, q: ScreenQuestion): string => {
+  const options = q.options.length ? ` | options: ${q.options.join(" / ")}` : "";
+  const more = q.pending > 1 ? ` | ${q.pending} questions pending` : "";
+  const body = redactSecrets(clean(`${q.header ? `[${q.header}] ` : ""}${q.question}${options}${more}`)).slice(0, 400);
+  return `LANE_ASKING ${key} waits on an on-screen question, not dori report: ${body}`;
+};
