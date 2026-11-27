@@ -2,6 +2,7 @@
 // of the Rust server. Port of `main` and `run` in `src-tauri/src/server/mod.rs`.
 
 import { existsSync } from "node:fs";
+import type { Server } from "bun";
 import { join } from "node:path";
 import { Backups, importFile, startAutomaticBackups } from "./commands/backup.ts";
 import { ChatState } from "./commands/chat.ts";
@@ -93,7 +94,40 @@ function runImport(config: Config, source: string): void {
   }
 }
 
-async function run(config: Config): Promise<void> {
+/** Options of the `Bun.serve` that serves the core, here or in the host (`host/src/main.ts`). */
+export const SERVE_OPTIONS = {
+  idleTimeout: IDLE_TIMEOUT_SECONDS,
+  // Uploads are streamed to disk and checked against their own limits.
+  maxRequestBodySize: Number.MAX_SAFE_INTEGER,
+} as const;
+
+/** The Toodo core on the database of a data directory, ready to be served by a `Bun.serve`
+ * with {@link SERVE_OPTIONS}. */
+export type Core = {
+  readonly fetch: (request: Request, server: Server<undefined>) => Promise<Response>;
+  /** Records the port the core is served on and prints where it serves what. */
+  readonly listening: (port: number) => void;
+  /** Stops the background work and closes the database; the server has stopped serving. */
+  readonly close: () => Promise<void>;
+};
+
+/** Stops `server`, letting open requests finish for {@link SHUTDOWN_DEADLINE_MS}. */
+export async function stopServing(server: Server<undefined>, name: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const finished = await Promise.race([
+    server.stop(false).then(() => true),
+    new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), SHUTDOWN_DEADLINE_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+  if (!finished) {
+    console.error(`${name}: stopping with connections still open after ${SHUTDOWN_DEADLINE_MS / 1000}s`);
+    await server.stop(true);
+  }
+}
+
+export async function openCore(config: Config): Promise<Core> {
   createPrivateDir(config.dataDir);
   const connections = openConnections(databasePath(config));
   const storage = new Storage(connections.writer);
@@ -136,47 +170,40 @@ async function run(config: Config): Promise<void> {
     access = new AccessVerifier(config.access, httpKeySource());
   }
   const handle = createHandler({ services, webToken, mcpToken, access, webDir: config.webDir });
-  const server = Bun.serve({
-    hostname: config.listen.hostname,
-    port: config.listen.port,
-    idleTimeout: IDLE_TIMEOUT_SECONDS,
-    // Uploads are streamed to disk and checked against their own limits.
-    maxRequestBodySize: Number.MAX_SAFE_INTEGER,
-    fetch(request, server) {
-      return handle(request, {
+  return {
+    fetch: (request, server) =>
+      handle(request, {
         peer: peerAddress(server.requestIP(request)?.address ?? null),
         keepOpen: () => server.timeout(request, 0),
-      });
+      }),
+    listening: (port) => {
+      services.mcp.url = `http://127.0.0.1:${port}/mcp`;
+      console.log(
+        `${programVersion()}: listening on http://${address(config.listen)} (data in ${config.dataDir}, web access token in ${webTokenPath}, MCP token for agents in ${mcpTokenPath}, instance ${instance})`,
+      );
+      console.log(
+        config.webDir === null
+          ? "toodo-server: TOODO_WEB_DIR is not set; serving the API only"
+          : `toodo-server: serving the web app from ${config.webDir}`,
+      );
     },
-  });
-  services.mcp.url = `http://127.0.0.1:${server.port}/mcp`;
-  console.log(
-    `${programVersion()}: listening on http://${address(config.listen)} (data in ${config.dataDir}, web access token in ${webTokenPath}, MCP token for agents in ${mcpTokenPath}, instance ${instance})`,
-  );
-  console.log(
-    config.webDir === null
-      ? "toodo-server: TOODO_WEB_DIR is not set; serving the API only"
-      : `toodo-server: serving the web app from ${config.webDir}`,
-  );
+    close: async () => {
+      clearInterval(waitChecks);
+      stopBackups();
+      await pushWorker.idle();
+      connections.close();
+    },
+  };
+}
 
+async function run(config: Config): Promise<void> {
+  const core = await openCore(config);
+  const server = Bun.serve({ hostname: config.listen.hostname, port: config.listen.port, ...SERVE_OPTIONS, fetch: core.fetch });
+  core.listening(server.port ?? config.listen.port);
   const stop = async () => {
     console.log("toodo-server: stopping");
-    clearInterval(waitChecks);
-    stopBackups();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const finished = await Promise.race([
-      server.stop(false).then(() => true),
-      new Promise<false>((resolve) => {
-        timer = setTimeout(() => resolve(false), SHUTDOWN_DEADLINE_MS);
-      }),
-    ]);
-    clearTimeout(timer);
-    if (!finished) {
-      console.error(`toodo-server: stopping with connections still open after ${SHUTDOWN_DEADLINE_MS / 1000}s`);
-      await server.stop(true);
-    }
-    await pushWorker.idle();
-    connections.close();
+    await stopServing(server, "toodo-server");
+    await core.close();
     process.exit(0);
   };
   process.once("SIGINT", stop);

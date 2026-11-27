@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { type Host, type HostOptions, type HostStatus, parseListen, parseSupervisorSwitch, startHost } from "./main.ts";
+import { type Host, type HostOptions, type HostStatus, parseSupervisorSwitch, startHost } from "./main.ts";
 
 const fixture = (name: string) => new URL(`./fixtures/${name}.ts`, import.meta.url);
 
@@ -104,13 +104,6 @@ describe("startHost", () => {
 });
 
 describe("environment", () => {
-  test("TOODO_LISTEN takes HOST:PORT with IPv6 hosts in brackets", () => {
-    expect(parseListen("127.0.0.1:47616")).toEqual({ hostname: "127.0.0.1", port: 47616 });
-    expect(parseListen("[::1]:8080")).toEqual({ hostname: "::1", port: 8080 });
-    expect(() => parseListen("47616")).toThrow("TOODO_LISTEN must be HOST:PORT");
-    expect(() => parseListen("localhost:70000")).toThrow("TOODO_LISTEN must be HOST:PORT");
-  });
-
   test("TOODO_SUPERVISOR is on unless set to off", () => {
     expect(parseSupervisorSwitch(undefined)).toBe("on");
     expect(parseSupervisorSwitch("on")).toBe("on");
