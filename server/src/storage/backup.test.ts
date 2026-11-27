@@ -78,6 +78,16 @@ test("restoring an export brings back the exported data", () => {
   expect(insertWorkspace(db, "next")).toBe(2);
 });
 
+test("a database file in WAL mode is staged with its committed data", () => {
+  addWorkspace(db, "toodo");
+  expect(db.query<{ journal_mode: string }, []>("PRAGMA journal_mode").get()?.journal_mode).toBe("wal");
+
+  const restored = openMemoryDatabase();
+  restore(restored, stageBackup(path));
+
+  expect(snapshot(restored)).toEqual(snapshot(db));
+});
+
 test("exporting replaces an existing file", () => {
   const exportPath = join(dir, "export.sqlite3");
   writeFileSync(exportPath, "old");
