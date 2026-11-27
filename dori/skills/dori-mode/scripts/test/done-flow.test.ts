@@ -672,6 +672,19 @@ test("a pane that was already working cannot show a change, so the send is uncon
   expect(world.calls.filter((c) => c[0] === "hc" && (c[2] === "send" || c[2] === "keys"))).toHaveLength(1);
 });
 
+test("a working agent that lists the text as queued above its input box confirms it; the same line already there does not", async () => {
+  world.panes = [{ pane_id: "hc:t1", workspace_id: "w", agent: "omo", agent_status: "working" }];
+  const text = "[LEAD] keep going with the current step and do not open a pull request yet. Confirm with: dori report demo-lane ack lane-send-demo-lane-1";
+  const box = "── • Working (2s • esc to interrupt) ────\n❯ \n────────\n/work/demo • claude-opus";
+  const queued = " Steering: [LEAD] keep going with the current step and do not open a pull re...\n ↳ Option+Up to edit all queued messages\n";
+  world.screens = [` $ sleep 40\n${box}`, ` $ sleep 40\n${box}`, ` $ sleep 40\n${queued}${box}`];
+  expect(await sendVerified(at(T0).run, at(T0).clock, "hc:t1", text)).toBe("delivered");
+  world.screens = [];
+  world.screen = ` $ sleep 40\n${queued}${box}`;
+  expect(await sendVerified(at(T0).run, at(T0).clock, "hc:t1", text)).toBe("unconfirmed");
+  expect(sent(world)).toEqual([text, text]);
+});
+
 test("text with a backtick never reaches a pane", async () => {
   await expect(sendVerified(at(T0).run, at(T0).clock, "hc:t1", "run `rm -rf`")).rejects.toBeInstanceOf(UnsafeTextError);
   expect(world.calls).toHaveLength(0);

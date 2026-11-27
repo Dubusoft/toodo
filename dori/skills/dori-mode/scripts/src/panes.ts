@@ -112,6 +112,25 @@ export const leftInInput = async (run: Runner, clock: Clock, pane: string, text:
 /** Sleeps between successive status lookups after Enter; the first lookup is immediate. */
 export const CONFIRM_BACKOFF_MS: readonly number[] = [150, 300, 600, 900, 1000, 1000, 1000];
 
+/**
+ * How much of a sent text, whitespace squashed, identifies it on the screen. omo lists a message typed while it works
+ * above its input box cut to one line (`Steering: <start of the text>...`) and later shows it whole in its transcript;
+ * both keep at least this much of its start.
+ */
+const SHOWN_MARK_CHARS = 40;
+
+/** Sleeps between screen reads looking for a text sent to a working agent; the first read is immediate. */
+export const SHOWN_BACKOFF_MS: readonly number[] = [1000, 2000];
+
+/** How many times the screen above omo's input box shows the start of `text` (whitespace squashed). */
+export const shownAbove = (screen: string, text: string): number => {
+  const lines = screen.split("\n");
+  const at = lines.findLastIndex((line) => line.trimStart().startsWith("\u276f"));
+  const above = squash((at < 0 ? lines : lines.slice(0, at)).join("\n"));
+  const mark = squash(text).slice(0, SHOWN_MARK_CHARS);
+  return mark ? above.split(mark).length - 1 : 0;
+};
+
 /** Raw send: types the text and presses Enter once. Not exported, so no caller outside this file can skip the guard below. */
 const typeAndEnter = async (run: Runner, pane: string, text: string): Promise<"sent" | "failed"> => {
   if (/`|\$\(/.test(text)) throw new UnsafeTextError("refusing to send text containing a backtick or $(");
@@ -123,7 +142,9 @@ const typeAndEnter = async (run: Runner, pane: string, text: string): Promise<"s
  * as a command, and only into an empty input box, since text there may be the owner's and ours would be appended to it
  * and submitted with it. The same text already sitting there unsubmitted (an earlier send) only gets Enter.
  */
-const guardedSend = async (run: Runner, pane: string, text: string): Promise<{ readonly sent: "sent" | "failed"; readonly status?: string; readonly refusal?: string }> => {
+const guardedSend = async (
+  run: Runner, pane: string, text: string,
+): Promise<{ readonly sent: "sent" | "failed"; readonly status?: string; readonly refusal?: string; readonly screen?: string }> => {
   if (/`|\$\(/.test(text)) throw new UnsafeTextError("refusing to send text containing a backtick or $(");
   let refusal: string | undefined;
   let status: string | undefined;
@@ -134,16 +155,18 @@ const guardedSend = async (run: Runner, pane: string, text: string): Promise<{ r
   } catch (e) {
     refusal = `pane list unreadable: ${(e instanceof Error ? e.message : String(e)).slice(0, 120)}`;
   }
+  let screen: string | undefined;
   if (!refusal) {
-    const input = inputState(await readScreen(run, pane), holds(text));
-    if (input === "ours") return { sent: (await sessionRuntime(run).key(pane, "enter")) ? "sent" : "failed", status };
+    screen = await readScreen(run, pane);
+    const input = inputState(screen, holds(text));
+    if (input === "ours") return { sent: (await sessionRuntime(run).key(pane, "enter")) ? "sent" : "failed", status, screen };
     if (input === "busy") refusal = `pane ${pane} input line holds other text (or shows no prompt)`;
   }
   if (refusal) {
     console.error(`sendVerified ${pane}: not typed: ${refusal}`);
     return { sent: "failed", status, refusal };
   }
-  return { sent: await typeAndEnter(run, pane, text), status };
+  return { sent: await typeAndEnter(run, pane, text), status, screen };
 };
 
 /** Guarded send without waiting for a status change; the caller confirms delivery some other way (e.g. from the screen). */
@@ -152,16 +175,18 @@ export const sendGuarded = async (run: Runner, pane: string, text: string): Prom
 /**
  * Types the text and presses Enter exactly once, and only into a pane whose agent is running: a pane left with a bare
  * shell (or unreadable) gets nothing, since typed text plus Enter would run there as a command. Delivery is confirmed
- * only by a state change: the pane's agent_status moving to "working" from something else. A pane that was already
- * working cannot show that change. Short of it, the input box is read back (leftInInput): text still there after a
- * second Enter is "failed" (not submitted), otherwise the send is "unconfirmed" and the caller decides. A caller that
- * reads the input box back itself passes `inputCheck` false. `refused` hears why a "failed" send was not typed or not
- * submitted.
+ * by a state change: the pane's agent_status moving to "working" from something else. A pane that was already working
+ * cannot show that change. Short of it, the input box is read back (leftInInput): text still there after a second Enter
+ * is "failed" (not submitted). Text that left the input box is "delivered" once the screen above the box shows its
+ * start more often than before the send (omo lists a message typed while it works as queued, then in its transcript;
+ * a working agent's screen is read again over SHOWN_BACKOFF_MS); otherwise the send is "unconfirmed" and the caller
+ * decides. A caller that reads the input box back itself passes `inputCheck` false. `refused` hears why a "failed"
+ * send was not typed or not submitted.
  */
 export const sendVerified = async (
   run: Runner, clock: Clock, pane: string, text: string, inputCheck = true, refused: (why: string) => void = () => {},
 ): Promise<Delivery> => {
-  const { sent, status, refusal } = await guardedSend(run, pane, text);
+  const { sent, status, refusal, screen } = await guardedSend(run, pane, text);
   if (sent === "failed") {
     refused(refusal ?? `send-text to pane ${pane} failed`);
     return "failed";
@@ -180,6 +205,12 @@ export const sendVerified = async (
     return "failed";
   }
   if (status !== "working" && (await statusLookup(run, pane)).status === "working") return "delivered";
+  const before = shownAbove(screen ?? "", text);
+  const waits = status === "working" ? SHOWN_BACKOFF_MS : [];
+  for (let attempt = 0; attempt <= waits.length; attempt++) {
+    if (attempt > 0) await clock.sleep(waits[attempt - 1] ?? 1000);
+    if (shownAbove(await readScreen(run, pane), text) > before) return "delivered";
+  }
   return "unconfirmed";
 };
 
