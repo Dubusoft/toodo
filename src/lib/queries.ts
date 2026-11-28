@@ -13,6 +13,7 @@ import {
   type BackupSettings,
   type ChatAttachment,
   type ChatAttachmentId,
+  type ChatChannel,
   type ChatChannelEdit,
   type ChatChannelId,
   type ChatMessage,
@@ -154,6 +155,29 @@ export function useUpdateChatChannel() {
     mutationFn: ({ id, edit }: { id: ChatChannelId; edit: ChatChannelEdit }) =>
       unwrap(commands.updateChatChannel(id, edit)),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.chatChannels }),
+  });
+}
+
+/**
+ * Saves a new order of the channels, given as the channels in that order. The list shows it at
+ * once; the server's answer replaces it only when no later move is on its way, and a refused
+ * move loads the order the server keeps.
+ */
+export function useReorderChatChannels() {
+  const queryClient = useQueryClient();
+  const mutationKey = ["reorderChatChannels"];
+  return useMutation({
+    mutationKey,
+    mutationFn: (ordered: readonly ChatChannel[]) =>
+      unwrap(commands.reorderChatChannels(ordered.map((channel) => channel.id))),
+    onMutate: async (ordered) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.chatChannels });
+      queryClient.setQueryData(queryKeys.chatChannels, ordered);
+    },
+    onSuccess: (channels) => {
+      if (queryClient.isMutating({ mutationKey }) === 1) queryClient.setQueryData(queryKeys.chatChannels, channels);
+    },
+    onError: () => queryClient.invalidateQueries({ queryKey: queryKeys.chatChannels }),
   });
 }
 

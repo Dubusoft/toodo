@@ -48,6 +48,8 @@ export const chat: Partial<Messages["chat"]> = {
   chatChannels: "채팅 채널",
   channelsFailed: (error) => `채널을 불러오지 못했습니다: ${error}`,
   newChannel: "새 채널",
+  reorderChannelsHint: "끌어서 순서를 바꿉니다. 터치 화면에서는 길게 누른 뒤 끌고, 키보드로는 Alt와 위·아래 화살표를 누릅니다.",
+  channelMoved: (channel, place, count) => `#${channel} 채널을 ${count}개 중 ${place}번째로 옮겼습니다`,
   channelName: "채널 이름",
   add: "추가",
   needsAnswer: "답변 필요",

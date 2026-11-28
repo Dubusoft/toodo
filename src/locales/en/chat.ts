@@ -47,6 +47,8 @@ export const chat = {
   chatChannels: "Chat channels",
   channelsFailed: (error: string) => `The channels could not be loaded: ${error}`,
   newChannel: "New channel",
+  reorderChannelsHint: "Drag to reorder, hold on a touch screen, or press Alt with the up or down arrow.",
+  channelMoved: (channel: string, place: number, count: number) => `Moved #${channel} to place ${place} of ${count}`,
   channelName: "Channel name",
   add: "Add",
   needsAnswer: "Needs answer",
