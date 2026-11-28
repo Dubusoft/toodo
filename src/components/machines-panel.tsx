@@ -226,7 +226,7 @@ function JobCard({ job, t }: { job: MachineJob; t: Texts }) {
       <pre
         ref={log}
         aria-label={t.jobLog(title)}
-        className="max-h-64 overflow-auto rounded-md bg-muted px-2 py-1.5 font-mono text-xs whitespace-pre-wrap wrap-anywhere"
+        className="max-h-64 overflow-auto rounded-md bg-muted px-2 py-1.5 font-mono text-xs whitespace-pre-wrap wrap-anywhere dark:bg-card"
       >
         {job.log}
       </pre>
@@ -249,7 +249,7 @@ export function MachinesPanel({ setup = false, active = false }: { setup?: boole
   const jobs = useMachineJobs(active && !setup, machines.data?.jobs ?? []);
   const rows = machines.data?.machines ?? [];
   return (
-    <section aria-label={m.settings.sections[setup ? "dori-setup" : "machines"]} className="flex flex-col gap-4 text-sm">
+    <section aria-label={m.settings.sections[setup ? "dori-setup" : "machines"]} className="flex flex-col gap-4 text-sm break-words-keep">
       <p className="text-muted-foreground">{setup ? t.setupIntro : t.intro}</p>
       {!setup && (
         <>

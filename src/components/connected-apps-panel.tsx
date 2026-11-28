@@ -75,7 +75,7 @@ function AppRow({ app }: { app: ConnectedApp }) {
 
   return (
     <li aria-label={t.app(name)} className="flex flex-col gap-0.5">
-      <span className="truncate font-medium">{name}</span>
+      <span className="break-words font-medium">{name}</span>
       <span className="text-muted-foreground">{app.scopes.split(" ").includes("toodo.write") ? t.readWrite : t.read}</span>
       <span className="text-muted-foreground">
         <time dateTime={new Date(app.createdAt * 1000).toISOString()} title={formatFull(app.createdAt, locale)}>{t.connected(formatWhen(app.createdAt, undefined, locale, m))}</time>
