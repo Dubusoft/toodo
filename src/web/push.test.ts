@@ -7,7 +7,7 @@ const TOKEN_KEY = "toodo-server-token";
 const publicKey = "BP8A-_w";
 const keyBytes = [4, 255, 0, 251, 252];
 
-const settings = { completion: true, messages: true };
+const settings = { important: true, messages: true, started: false, completion: true, finished: false };
 
 /** A fresh copy of the module, since it remembers whether push is on. */
 async function freshPush() {
@@ -232,7 +232,7 @@ describe("push on this device", () => {
   it("leaves to the server only the alerts it pushes for this device's settings", async () => {
     const browser = browserSubscription("https://push.example/a");
     installServiceWorker(browser);
-    const off = { ...settings, completion: false };
+    const off = { ...settings, completion: false, finished: true };
     serve({
       "GET /api/push": () => json({ publicKey, subscription: { endpoint: browser.endpoint, settings, lastFailure: null } }),
       "PUT /api/push/settings": () => json({ endpoint: browser.endpoint, settings: off, lastFailure: null }),
@@ -246,7 +246,7 @@ describe("push on this device", () => {
     await push.getPushState();
     expect(covered(...titles)).toEqual([false, false, true, false, false]);
     await push.saveSettings(off);
-    expect(covered(...titles)).toEqual([false, false, false, false, false]);
+    expect(covered(...titles)).toEqual([false, false, false, false, true]);
     await push.disablePush();
     expect(covered(...titles)).toEqual([false, false, false, false, false]);
   });
