@@ -125,9 +125,9 @@ export function createHandler(options: RouterOptions): Handler {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       });
     }],
-    ["GET", /^\/api\/supervisor\/status$/, (_request, _caller, _params, connection) => {
+    ["GET", /^\/api\/supervisor\/status$/, (request, _caller, _params, connection) => {
       connection.keepOpen();
-      return supervisorStatus.stream();
+      return supervisorStatus.stream(new URL(request.url).searchParams.get("watch") !== "0");
     }],
     ["GET", /^\/api\/supervisor\/schedules$/, () => schedules.list(scheduleBridge)],
     ["POST", /^\/api\/supervisor\/schedules$/, (request) => schedules.change(scheduleBridge, request)],

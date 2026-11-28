@@ -7,9 +7,9 @@
 // endpoints once the shared cache is older than quotaCacheSec) are taken only while a panel is open: the core answers
 // every push with how many panels follow it, and between pushes the pass asks it (`GET`), so a panel that opens gets
 // a full snapshot within one pass.
-import type { SupervisorLane, SupervisorStatusSnapshot, SupervisorStatusWatchers } from "../../../../../src/lib/supervisor-status.ts";
+import type { SupervisorLane, SupervisorMachine, SupervisorStatusSnapshot, SupervisorStatusWatchers } from "../../../../../src/lib/supervisor-status.ts";
 import { quotaReportText, type UsageLookup } from "./claude-quota.ts";
-import type { Status } from "./status.ts";
+import type { RunnerView, Status } from "./status.ts";
 import { statusPages } from "./status.ts";
 import { readToken, TOODO_TIMEOUT_MS, type ToodoClientConfig, type ToodoFetch } from "./toodo-client.ts";
 
@@ -39,7 +39,29 @@ export type StatusPanelDeps = {
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-/** The snapshot of now: the `/status` pages always, the quota and lane screens only when `watched`. */
+/** A runner as the panel shows it: its state, version and last machine sample. */
+const panelMachine = (runner: RunnerView): SupervisorMachine => {
+  const m = runner.machine;
+  const known = (n: number | undefined): n is number => n !== undefined && n >= 0;
+  return {
+    label: runner.label,
+    state: runner.state,
+    version: runner.version ?? null,
+    sample: !m ? null : {
+      level: m.level,
+      ...(m.os ? { os: m.os } : {}),
+      ...(known(m.load1) ? { load1: m.load1 } : {}),
+      ...(known(m.memFreePct) ? { memFreePct: m.memFreePct } : {}),
+      ...(known(m.diskFreeGb) ? { diskFreeGb: m.diskFreeGb } : {}),
+      ageSec: m.ageSec,
+    },
+  };
+};
+
+/**
+ * The snapshot of now: the `/status` pages, every open lane with its status, and the runner machines always; the quota
+ * and the working lanes' screens only when `watched`.
+ */
 export const collectPanel = async (deps: StatusPanelDeps, watched: boolean): Promise<SupervisorStatusSnapshot> => {
   const status = await deps.status();
   const at = Date.parse(status.at);
@@ -47,16 +69,18 @@ export const collectPanel = async (deps: StatusPanelDeps, watched: boolean): Pro
     (read) => ({ text: quotaReportText(read, at, deps.timeZone), fetchedAt: read.cache?.fetchedAt ?? null }),
     (e: unknown) => ({ error: message(e) }),
   );
-  const lanes = await Promise.all(status.lanes.map(async (lane): Promise<SupervisorLane> => ({
+  const open = [...status.lanes.map((lane) => ({ ...lane, status: "working" as const })), ...(status.otherLanes ?? [])];
+  const lanes = await Promise.all(open.map(async (lane): Promise<SupervisorLane> => ({
     key: lane.key,
+    status: lane.status,
     task: lane.task ?? null,
     machine: lane.machine ?? "local",
     model: lane.model ?? null,
     ageMin: lane.ageMin,
     progress: lane.progress ?? null,
-    screen: !watched ? null : await deps.screen(lane.key).then((text) => ({ text }), (e: unknown) => ({ error: message(e) })),
+    screen: !watched || lane.status !== "working" ? null : await deps.screen(lane.key).then((text) => ({ text }), (e: unknown) => ({ error: message(e) })),
   })));
-  return { at, status: statusPages(status), quota, lanes };
+  return { at, status: statusPages(status), quota, lanes, machines: (status.runners ?? []).map(panelMachine) };
 };
 
 /** One status panel pass for the supervisor's task loop (supervise-loop.ts). */

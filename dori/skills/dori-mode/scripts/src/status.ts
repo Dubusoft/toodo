@@ -16,7 +16,7 @@ import { paneRow } from "./panes.ts";
 import { HC_CORE_UNIT } from "./runtime/hc.ts";
 import { hostServices, supervisorUnit } from "./host-runtimes.ts";
 import type { RecoveryLane } from "./recover.ts";
-import { type Lane, type Registry, statusOf } from "./registry.ts";
+import { type Lane, type LaneStatus, type Registry, statusOf } from "./registry.ts";
 import { Repos } from "./repos.ts";
 import type { Clock, Runner } from "./run.ts";
 import { procTable, resolveSession, sessionDirFor } from "./session-id.ts";
@@ -59,17 +59,9 @@ export type Status = {
   readonly lead: LeadState & { readonly cacheTtlMin: number; readonly capTokens: number; readonly pendingRestart?: LeadRestartRequest };
   /** Autopilot is always on; `paused` while `dori autopilot pause` is in force. Absent in an older status. */
   readonly autopilot?: { readonly paused: false } | { readonly paused: true; readonly since: string; readonly reason: string | null };
-  readonly lanes: readonly {
-    readonly key: string; readonly model?: string; readonly ageMin: number; readonly progress?: string; readonly repo?: string; readonly pr?: number;
-    /** The Toodo task the lane works on (Lane.task); absent when none was named. */
-    readonly task?: number;
-    /** The runner the lane runs on (its owning runner, else its machine, else "local"); absent in an older status reads as "local". */
-    readonly machine?: string;
-    /** recoveryPending: "exhausted" after every recovery attempt failed (LANE_RECOVERY_EXHAUSTED), else "pending". */
-    readonly recovery?: "pending" | "exhausted";
-    /** The lane's latest `dori report` row (highest seq), routed or not. */
-    readonly report?: LaneReport;
-  }[];
+  readonly lanes: readonly StatusLane[];
+  /** The open lanes that are not working (paused, claimed done, closed and not yet archived, ...): the Toodo panel lists them, the pages do not. */
+  readonly otherLanes?: readonly (StatusLane & { readonly status: LaneStatus })[];
   readonly waits: readonly { readonly key: string; readonly until: string; readonly deadline?: string; readonly note?: string; readonly machine?: string }[];
   readonly github: {
     readonly repos: readonly string[];
@@ -95,6 +87,18 @@ export type Status = {
   readonly runners?: readonly RunnerView[];
   /** The working lanes grouped by runner (see laneGroups): every runner, even one with no lanes, local first. */
   readonly laneGroups?: readonly LaneGroup[];
+};
+
+export type StatusLane = {
+  readonly key: string; readonly model?: string; readonly ageMin: number; readonly progress?: string; readonly repo?: string; readonly pr?: number;
+  /** The Toodo task the lane works on (Lane.task); absent when none was named. */
+  readonly task?: number;
+  /** The runner the lane runs on (its owning runner, else its machine, else "local"); absent in an older status reads as "local". */
+  readonly machine?: string;
+  /** recoveryPending: "exhausted" after every recovery attempt failed (LANE_RECOVERY_EXHAUSTED), else "pending". */
+  readonly recovery?: "pending" | "exhausted";
+  /** The lane's latest `dori report` row (highest seq), routed or not. */
+  readonly report?: LaneReport;
 };
 
 /** One runner's working lanes as `dori status` groups them. `state` is absent for a machine no runner row names. */
@@ -384,7 +388,7 @@ export const collectStatus = async (d: StatusDeps): Promise<Status> => {
   try { repos = new Repos(d.config.stateDir).list(); } catch { /* unreadable list: show none */ }
   const reports = latestLaneReports(d.config);
   const decisions = openOwnerDecisions(d.config.stateDir);
-  const lanes = open.filter((l) => statusOf(l) === "working").map((l) => ({
+  const statusLane = (l: Lane): StatusLane => ({
     key: l.key, ...(l.model ? { model: l.model } : {}), ...laneRepoPr(l), ...(l.task !== undefined ? { task: l.task } : {}),
     ageMin: Math.max(0, Math.floor((now - Date.parse(l.openedAt)) / 60_000)),
     ...(l.lastProgressPost ? { progress: l.lastProgressPost } : {}),
@@ -392,7 +396,9 @@ export const collectStatus = async (d: StatusDeps): Promise<Status> => {
     ...(reports.has(l.key) ? { report: reports.get(l.key) } : {}),
     // The same owner rule as runnerLaneCount: the owning runner, else the unowned lane's machine, else local.
     machine: l.runner ?? (l.machine || LOCAL_RUNNER),
-  }));
+  });
+  const lanes = open.filter((l) => statusOf(l) === "working").map(statusLane);
+  const otherLanes = open.filter((l) => statusOf(l) !== "working").map((l) => ({ ...statusLane(l), status: statusOf(l) }));
   const ops = openOperations(d.config);
   let runners: RunnerView[];
   try {
@@ -411,6 +417,7 @@ export const collectStatus = async (d: StatusDeps): Promise<Status> => {
     lead: { ...lead, cacheTtlMin: d.tunables.cacheTtlMin, capTokens: d.tunables.leadContextCapTokens, ...(pendingRestart ? { pendingRestart } : {}) },
     autopilot: pause ? { paused: true, ...pause } : { paused: false },
     lanes,
+    otherLanes,
     waits: readWaits(d.config.stateDir),
     github: {
       repos,

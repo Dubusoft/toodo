@@ -6,7 +6,7 @@ import type { DoriConfigEntry } from "@/lib/dori-config";
 import { fill, useMessages } from "@/lib/i18n";
 import type { SupervisorStatusSnapshot } from "@/lib/supervisor-status";
 import { supervisorDown, useHostSupervisor } from "@/web/host-status";
-import { useSupervisorStatus } from "@/web/supervisor-status";
+import { useSupervisorStatus, workingLanes } from "@/web/supervisor-status";
 
 /** How long the summary says it is checking before it says Dori has not reported. */
 const FIRST_REPORT_WAIT_MS = 30_000;
@@ -55,7 +55,7 @@ function StatusSummary({ active }: { active: boolean }) {
   }
   const stale = now - snapshot.at > STALE_AFTER_MS;
   const usage = highestUsage(snapshot.quota);
-  const lanes = snapshot.lanes;
+  const lanes = workingLanes(snapshot);
   return (
     <div className="flex flex-col gap-1.5">
       <p role="status" className="flex flex-wrap gap-x-2">
