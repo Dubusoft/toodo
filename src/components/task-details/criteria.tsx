@@ -32,7 +32,7 @@ function CriterionMarker({ state }: { state: CriterionState }) {
     <span
       role="img"
       aria-label={m.details.criterionState[state]}
-      className={cn("flex size-4 shrink-0 items-center justify-center", criterionStateStyles[state])}
+      className={cn("flex size-5 shrink-0 items-center justify-center", criterionStateStyles[state])}
     >
       <Icon aria-hidden className="size-3.5" />
     </span>
@@ -138,21 +138,21 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
           <span className="min-w-0 flex-1 truncate text-muted-foreground">{criterion.evidence}</span>
         )}
       </div>
-      {detailed && target && <code className="ml-5.5 break-all text-muted-foreground">{target}</code>}
+      {detailed && target && <code className="ml-6.5 break-all text-muted-foreground">{target}</code>}
       {detailed && (criterion.evidence || checkedBy) && (
-        <p className="ml-5.5 whitespace-pre-line break-words-keep text-muted-foreground">
+        <p className="ml-6.5 whitespace-pre-line break-words-keep text-muted-foreground">
           {criterion.evidence}
           {criterion.evidence && checkedBy && " \u00b7 "}
           {who !== null && fill(m.details.criteria.checkedBy, {
             who,
-            when: criterion.checkedAt === null ? null : <> <When at={criterion.checkedAt} /></>,
+            when: criterion.checkedAt === null ? null : <> <When className="whitespace-nowrap" at={criterion.checkedAt} /></>,
           })}
         </p>
       )}
       {writing && (
         <form
           onSubmit={save}
-          className="ml-5.5 flex flex-wrap items-center gap-1"
+          className="ml-6.5 flex flex-wrap items-center gap-1"
           onKeyDown={guard.onKeyDown}
         >
           <TextInput
@@ -187,7 +187,7 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
         </form>
       )}
       {checkCriterion.isError && (
-        <p role="alert" className="ml-5.5 text-destructive">
+        <p role="alert" className="ml-6.5 text-destructive">
           {checkCriterion.error.message}
         </p>
       )}
