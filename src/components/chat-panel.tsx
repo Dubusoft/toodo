@@ -55,6 +55,7 @@ import { detailsSheet } from "@/components/details-sheet";
 import { ResizeHandle } from "@/components/resize-handle";
 import { useReorderDrag } from "@/components/use-reorder-drag";
 import { Markdown, StatusBadge } from "@/components/task-common";
+import { TypingDots } from "@/components/typing-dots";
 import doriAvatar from "@/web/dori-avatar.png";
 import {
   events,
@@ -337,14 +338,7 @@ function TypingMessage({ agent }: { agent: ChatAgent }) {
     <Message sender="assistant" avatar={<AgentAvatar agent={agent} />}>
       <ChatMessageBubble metadata={<ChatMessageMetadata footer={m.chat.typing} />}>
         <span role="status" aria-label={m.chat.agentWriting(agent.name)} className="flex h-5 items-center gap-1">
-          {[0, 150, 300].map((delay) => (
-            <span
-              key={delay}
-              aria-hidden
-              className="size-1.5 rounded-full bg-current opacity-60 animate-typing-dot motion-reduce:animate-none"
-              style={{ animationDelay: `${delay}ms` }}
-            />
-          ))}
+          <TypingDots className="size-1.5" />
         </span>
       </ChatMessageBubble>
     </Message>
