@@ -83,6 +83,7 @@ describe("LanguageSettingField", () => {
     renderLanguageField();
     chooseOption(await screen.findByRole("combobox", { name: /Language/ }), "Korean");
     expect(await screen.findByRole("heading", { name: ko.settings?.title })).toBeInTheDocument();
+    expect(await screen.findByText(ko.settings?.savedNow ?? "")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: new RegExp(ko.settings?.language ?? "") })).toBeInTheDocument();
     expect(document.documentElement.lang).toBe("ko");
     chooseOption(screen.getByRole("combobox"), ko.settings?.languageNames?.English ?? "");

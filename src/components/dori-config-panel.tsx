@@ -37,8 +37,9 @@ function useSave(onSaved: (saved: DoriConfigSaved) => void) {
 
 function LanguageSetting({ entry }: { entry: DoriConfigEntry }) {
   const m = useMessages();
-  const [notice, setNotice] = useState<string | null>(null);
-  const save = useSave((saved) => setNotice(savedNotice(saved, m)));
+  // The save itself is kept, not its text: saving the language changes the language of the text.
+  const [notice, setNotice] = useState<DoriConfigSaved | null>(null);
+  const save = useSave(setNotice);
   const known: readonly string[] = LANGUAGES;
   const options = [
     { value: UNSET, label: m.settings.languageUnset },
@@ -58,7 +59,7 @@ function LanguageSetting({ entry }: { entry: DoriConfigEntry }) {
           save.mutate({ key: DORI_LANGUAGE_KEY, value: value ?? UNSET });
         }}
       />
-      {notice && <p role="status" className="text-muted-foreground">{notice}</p>}
+      {notice && <p role="status" className="text-muted-foreground">{savedNotice(notice, m)}</p>}
       {save.error && <p role="alert" className="break-words text-destructive">{save.error.message}</p>}
     </div>
   );
@@ -86,13 +87,13 @@ function EntryRow({ entry }: { entry: DoriConfigEntry }) {
   const m = useMessages();
   const [draft, setDraft] = useState(entry.value);
   const [base, setBase] = useState(entry.value);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<DoriConfigSaved | null>(null);
   // A saved or refetched value replaces the draft.
   if (entry.value !== base) {
     setBase(entry.value);
     setDraft(entry.value);
   }
-  const save = useSave((saved) => setNotice(savedNotice(saved, m)));
+  const save = useSave(setNotice);
   const editable = entry.access === "edit";
   const changed = draft !== entry.value;
   const describe = /[.)]$/.test(entry.describe) ? entry.describe : `${entry.describe}.`;
@@ -128,7 +129,7 @@ function EntryRow({ entry }: { entry: DoriConfigEntry }) {
           </Button>
         </div>
       )}
-      {notice && !changed && <p role="status" className="text-muted-foreground">{notice}</p>}
+      {notice && !changed && <p role="status" className="text-muted-foreground">{savedNotice(notice, m)}</p>}
       {save.error && <p role="alert" className="break-words text-destructive">{save.error.message}</p>}
     </li>
   );
