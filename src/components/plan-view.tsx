@@ -54,25 +54,28 @@ export function PlanView({ tasks, onShowTask }: { tasks: Task[]; onShowTask: (id
             <ToggleButton key={option} value={option} label={m.tasks.planScales[option]} />
           ))}
         </ToggleButtonGroup>
-        <TextInput
-          label={m.tasks.quarterCapacity}
-          size="sm"
-          width={128}
-          inputMode="decimal"
-          status={Number.isNaN(amount) ? { type: "error" } : undefined}
-          aria-describedby="capacity-hint"
-          placeholder={m.tasks.noCapacity}
-          value={amountText}
-          onChange={(value) => changeCapacity(value, unit)}
-        />
-        <Selector
-          label={m.tasks.capacityUnit}
-          isLabelHidden
-          size="sm"
-          options={(Object.keys(m.tasks.estimateUnits) as EstimateUnit[]).map((option) => ({ value: option, label: m.tasks.estimateUnits[option] }))}
-          value={unit}
-          onChange={(value) => changeCapacity(amountText, value as EstimateUnit)}
-        />
+        {/* The amount and its unit wrap together, and the label sizes the field rather than wrapping in it. */}
+        <div className="flex items-end gap-2">
+          <TextInput
+            label={m.tasks.quarterCapacity}
+            size="sm"
+            controlStyle={{ width: 128 }}
+            inputMode="decimal"
+            status={Number.isNaN(amount) ? { type: "error" } : undefined}
+            aria-describedby="capacity-hint"
+            placeholder={m.tasks.noCapacity}
+            value={amountText}
+            onChange={(value) => changeCapacity(value, unit)}
+          />
+          <Selector
+            label={m.tasks.capacityUnit}
+            isLabelHidden
+            size="sm"
+            options={(Object.keys(m.tasks.estimateUnits) as EstimateUnit[]).map((option) => ({ value: option, label: m.tasks.estimateUnits[option] }))}
+            value={unit}
+            onChange={(value) => changeCapacity(amountText, value as EstimateUnit)}
+          />
+        </div>
       </div>
       <p id="capacity-hint" className={cn("text-xs", Number.isNaN(amount) ? "text-destructive" : "text-muted-foreground")}>
         {Number.isNaN(amount)
@@ -156,7 +159,8 @@ function TaskLines({ tasks, onShowTask }: { tasks: Task[]; onShowTask: (id: Task
   return (
     <ul className="flex flex-col text-sm">
       {tasks.map((task) => (
-        <li key={task.id} className="flex items-baseline gap-2 py-0.5">
+        // A title too long to share its line with the estimate keeps the line, and the estimate moves below it.
+        <li key={task.id} className="flex flex-wrap items-baseline gap-x-2 py-0.5">
           <button
             type="button"
             className={cn(
