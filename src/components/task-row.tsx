@@ -1,6 +1,5 @@
 import { lazy, Suspense, useState } from "react";
 import { AlarmClock, AlarmClockOff, Check, CircleSlash, Flag, GitMerge, PanelRight, Pause, Pencil, Play, RotateCcw, StickyNote, Trash2, X } from "lucide-react";
-import { Badge, type BadgeVariant } from "@astryxdesign/core/Badge";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Button, IconButton } from "@/components/button";
 import { PrerequisiteConfirmation } from "@/components/prerequisite-confirmation";
@@ -31,13 +30,11 @@ import { reachedMilestones } from "@/lib/timeline";
 import type { MissingPlanField } from "@/lib/plan";
 import { When } from "@/components/when";
 import { firstParagraph } from "@/lib/markdown";
-import { toneChip, toneOutline, toneText, type Tone } from "@/lib/status-styles";
-import { shownStatus } from "@/lib/task-filter";
+import { toneChip, toneOutline, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 import {
-  statusLabel,
   completeStyle,
-  statusTones,
+  StatusBadge,
   type TaskContext,
   taskRef,
   DueDate,
@@ -620,25 +617,3 @@ export function TaskRow({
   );
 }
 
-/** The Astryx badge colour of each status tone. */
-const toneBadges: Record<Tone, BadgeVariant> = {
-  neutral: "neutral",
-  info: "info",
-  progress: "blue",
-  review: "purple",
-  success: "success",
-  attention: "warning",
-  danger: "error",
-};
-
-function StatusBadge({ task, byId }: { task: Task; byId: ReadonlyMap<TaskId, Task> }) {
-  const status = shownStatus(task, byId);
-  return (
-    <Badge
-      variant={toneBadges[statusTones[status]]}
-      label={statusLabel(task, byId)}
-      // Not adopted is neutral like planned, outlined to tell the two apart.
-      className={cn("shrink-0", status === "not_adopted" && "ring-1 ring-inset ring-muted-foreground/40")}
-    />
-  );
-}

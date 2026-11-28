@@ -1,5 +1,5 @@
 import { lazy, useSyncExternalStore, type ReactNode } from "react";
-import { Badge } from "@astryxdesign/core/Badge";
+import { Badge, type BadgeVariant } from "@astryxdesign/core/Badge";
 import type { Task, TaskId, TaskType, WorkspaceId } from "@/lib/bindings";
 import { shownStatus, type ShownStatus } from "@/lib/task-filter";
 import { dueState, dueStateLabels, type MissingPlanField, missingPlan, missingPlanLabel } from "@/lib/plan";
@@ -35,6 +35,30 @@ export const statusTones: Record<ShownStatus, Tone> = {
   done: "success",
   not_adopted: "neutral",
 };
+
+/** The Astryx badge colour of each status tone. */
+const toneBadges: Record<Tone, BadgeVariant> = {
+  neutral: "neutral",
+  info: "info",
+  progress: "blue",
+  review: "purple",
+  success: "success",
+  attention: "warning",
+  danger: "error",
+};
+
+/** The status of `task` as a badge, as `statusLabel` names it. */
+export function StatusBadge({ task, byId }: { task: Task; byId: ReadonlyMap<TaskId, Task> }) {
+  const status = shownStatus(task, byId);
+  return (
+    <Badge
+      variant={toneBadges[statusTones[status]]}
+      label={statusLabel(task, byId)}
+      // Not adopted is neutral like planned, outlined to tell the two apart.
+      className={cn("shrink-0", status === "not_adopted" && "ring-1 ring-inset ring-muted-foreground/40")}
+    />
+  );
+}
 
 /** Not adopted is a valid end of research, not a failure: neutral, outlined to tell it from planned. */
 const notAdoptedStyle = cn(toneChip.neutral, "ring-1 ring-inset ring-muted-foreground/40");
