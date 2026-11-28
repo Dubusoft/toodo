@@ -3,9 +3,14 @@
 // the web app (`GET /api/supervisor/status`). The core keeps only the latest one, in memory.
 // Types only: the server, the web app, and the supervisor in `dori/` all import this file.
 
-/** One working lane as the panel shows it. */
+/** Where a lane is in its life, as Dori's lane registry names it. */
+export type SupervisorLaneStatus = "working" | "paused" | "done-claimed" | "verified-done" | "not-done" | "closed";
+
+/** One open lane as the panel shows it. */
 export type SupervisorLane = {
   readonly key: string;
+  /** Absent from an older supervisor, which sends working lanes only. */
+  readonly status?: SupervisorLaneStatus;
   /** The Toodo task the lane works on, when it named one. */
   readonly task: number | null;
   /** The runner the lane runs on (`local` for this host). */
@@ -22,6 +27,24 @@ export type SupervisorLane = {
   readonly screen: { readonly text: string } | { readonly error: string } | null;
 };
 
+/** One runner machine Dori knows, connected or not, `local` (this host) first. */
+export type SupervisorMachine = {
+  readonly label: string;
+  readonly state: "connected" | "stale" | "offline" | "lost" | "revoked";
+  /** The runner's version, when it reported one. */
+  readonly version: string | null;
+  /** The machine's last guard sample, `null` before the first; a reading the runner could not take is absent. */
+  readonly sample: {
+    readonly level: "ok" | "alert" | "critical";
+    readonly os?: string;
+    readonly load1?: number;
+    readonly memFreePct?: number;
+    readonly diskFreeGb?: number;
+    /** Seconds since the sample was taken. */
+    readonly ageSec: number;
+  } | null;
+};
+
 export type SupervisorStatusSnapshot = {
   /** Epoch milliseconds the supervisor collected the snapshot at. */
   readonly at: number;
@@ -34,6 +57,8 @@ export type SupervisorStatusSnapshot = {
    */
   readonly quota: { readonly text: string; readonly fetchedAt: number | null } | { readonly error: string } | null;
   readonly lanes: readonly SupervisorLane[];
+  /** Absent from an older supervisor. */
+  readonly machines?: readonly SupervisorMachine[];
 };
 
 /** The core's answer to a push, and to `GET /mcp/supervisor-status`: how many panels are open. */

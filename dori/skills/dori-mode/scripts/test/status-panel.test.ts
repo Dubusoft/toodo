@@ -57,8 +57,35 @@ test("a watched snapshot holds the /status pages and the /quota text of the same
   expect(snapshot.quota).toEqual({ text: await quotaReport(quota, "Asia/Seoul", () => AT)(AbortSignal.timeout(1000)), fetchedAt: AT - 40_000 });
   expect(snapshot.quota).toMatchObject({ text: expect.stringContaining("QUOTA | cached read from 40s ago") });
   expect(snapshot.lanes).toEqual([
-    { key: "ap-1-1", task: 1, machine: "local", model: "anthropic-subscription/claude-opus-5-5", ageMin: 27, progress: "porting the panel", screen: { text: "screen of ap-1-1" } },
-    { key: "ap-2-1", task: null, machine: "mac-mini", model: null, ageMin: 3, progress: null, screen: { text: "screen of ap-2-1" } },
+    { key: "ap-1-1", status: "working", task: 1, machine: "local", model: "anthropic-subscription/claude-opus-5-5", ageMin: 27, progress: "porting the panel", screen: { text: "screen of ap-1-1" } },
+    { key: "ap-2-1", status: "working", task: null, machine: "mac-mini", model: null, ageMin: 3, progress: null, screen: { text: "screen of ap-2-1" } },
+  ]);
+  expect(snapshot.machines).toEqual([]);
+});
+
+test("every open lane comes with its status, only working lanes' screens are read, and each runner is a machine with its sample", async () => {
+  const screens: string[] = [];
+  const snapshot = await collectPanel(deps({
+    status: async () => ({
+      ...status,
+      otherLanes: [{ key: "ap-3-1", ageMin: 50, task: 3, machine: "local", status: "done-claimed" }],
+      runners: [
+        { label: "local", state: "connected", version: "1.11.0", gen: 1, cmds: 0,
+          machine: { level: "ok", os: "linux", load1: 0.42, memFreePct: 61, diskFreeGb: 120, swapFreeGb: -1, reasons: [], sampledAt: "2026-10-21T00:53:00.000Z", ageSec: 36 } },
+        { label: "mac-mini", state: "offline", gen: 2, cmds: 0 },
+      ],
+    }),
+    screen: async (key) => { screens.push(key); return ""; },
+  }), true);
+  expect(snapshot.lanes.map((lane) => [lane.key, lane.status, lane.screen])).toEqual([
+    ["ap-1-1", "working", { text: "" }],
+    ["ap-2-1", "working", { text: "" }],
+    ["ap-3-1", "done-claimed", null],
+  ]);
+  expect(screens).toEqual(["ap-1-1", "ap-2-1"]);
+  expect(snapshot.machines).toEqual([
+    { label: "local", state: "connected", version: "1.11.0", sample: { level: "ok", os: "linux", load1: 0.42, memFreePct: 61, diskFreeGb: 120, ageSec: 36 } },
+    { label: "mac-mini", state: "offline", version: null, sample: null },
   ]);
 });
 

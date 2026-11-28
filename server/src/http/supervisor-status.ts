@@ -6,6 +6,8 @@
 
 import {
   SUPERVISOR_STATUS_EVENT,
+  type SupervisorLaneStatus,
+  type SupervisorMachine,
   type SupervisorStatusSnapshot,
   type SupervisorStatusWatchers,
 } from "../../../src/lib/supervisor-status.ts";
@@ -30,9 +32,36 @@ const isQuota = (value: unknown): boolean =>
 
 const isScreen = (value: unknown): boolean => value === null || (isObject(value) && (isText(value.text) || isText(value.error)));
 
+const LANE_STATUSES: ReadonlySet<unknown> = new Set<SupervisorLaneStatus>([
+  "working",
+  "paused",
+  "done-claimed",
+  "verified-done",
+  "not-done",
+  "closed",
+]);
+
+const RUNNER_STATES: ReadonlySet<unknown> = new Set<SupervisorMachine["state"]>(["connected", "stale", "offline", "lost", "revoked"]);
+
+const isOptionalNumber = (value: unknown): boolean => value === undefined || Number.isFinite(value);
+
+const isSample = (value: unknown): boolean =>
+  value === null ||
+  (isObject(value) &&
+    ["ok", "alert", "critical"].includes(value.level as string) &&
+    (value.os === undefined || isText(value.os)) &&
+    isOptionalNumber(value.load1) &&
+    isOptionalNumber(value.memFreePct) &&
+    isOptionalNumber(value.diskFreeGb) &&
+    Number.isFinite(value.ageSec));
+
+const isMachine = (value: unknown): boolean =>
+  isObject(value) && isText(value.label) && RUNNER_STATES.has(value.state) && isNullableText(value.version) && isSample(value.sample);
+
 const isLane = (value: unknown): boolean =>
   isObject(value) &&
   isText(value.key) &&
+  (value.status === undefined || LANE_STATUSES.has(value.status)) &&
   (value.task === null || Number.isSafeInteger(value.task)) &&
   isText(value.machine) &&
   isNullableText(value.model) &&
@@ -49,16 +78,20 @@ export function isSnapshot(value: unknown): value is SupervisorStatusSnapshot {
     value.status.every(isText) &&
     isQuota(value.quota) &&
     Array.isArray(value.lanes) &&
-    value.lanes.every(isLane)
+    value.lanes.every(isLane) &&
+    (value.machines === undefined || (Array.isArray(value.machines) && value.machines.every(isMachine)))
   );
 }
 
 /** The latest snapshot and the panels that follow it. */
 export class SupervisorStatusFeed {
-  // One kept event: a stream opens with the latest snapshot, then gets each new one.
+  // One kept event each: a stream opens with the latest snapshot, then gets each new one.
+  // Panels that show lane screens and the quota are counted, so the supervisor reads them;
+  // views that show only lanes and machines (the app's navigation) follow `#quiet`.
   readonly #log = new EventLog(undefined, 1);
+  readonly #quiet = new EventLog(undefined, 1);
 
-  /** How many panels are open now. */
+  /** How many panels that show screens and the quota are open now. */
   get watchers(): number {
     return this.#log.streams;
   }
@@ -77,6 +110,7 @@ export class SupervisorStatusFeed {
     }
     if (!isSnapshot(snapshot)) return text(400, "the snapshot is not a supervisor status snapshot");
     this.#log.send(SUPERVISOR_STATUS_EVENT, body);
+    this.#quiet.send(SUPERVISOR_STATUS_EVENT, body);
     return this.count();
   }
 
@@ -87,10 +121,11 @@ export class SupervisorStatusFeed {
   }
 
   /** `GET /api/supervisor/status`: the latest snapshot, then each new one; `ready` first when
-   * none came yet. */
-  stream(): Response {
-    const last = this.#log.last;
-    const stream = this.#log.stream(last === 0 ? null : this.#log.id(last - 1));
+   * none came yet. A stream that is not `watching` (`?watch=0`) is not counted as a panel. */
+  stream(watching = true): Response {
+    const log = watching ? this.#log : this.#quiet;
+    const last = log.last;
+    const stream = log.stream(last === 0 ? null : log.id(last - 1));
     return new Response(stream.body(), {
       headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
     });

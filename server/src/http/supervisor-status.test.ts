@@ -103,4 +103,31 @@ describe("supervisor status", () => {
     expect(seen.map((event) => event.event)).toEqual(["status", "status"]);
     expect(seen.map((event) => JSON.parse(event.data))).toEqual([snapshot(1), snapshot(2)]);
   });
+
+  test("a snapshot may name each lane's status and the machines, and a status Dori does not have is refused", async () => {
+    const server = await start();
+    const full: SupervisorStatusSnapshot = {
+      ...snapshot(1),
+      lanes: [{ ...snapshot(1).lanes[0]!, status: "paused" }],
+      machines: [
+        { label: "local", state: "connected", version: "1.11.0", sample: { level: "ok", os: "linux", load1: 0.4, ageSec: 12 } },
+        { label: "mac-mini", state: "offline", version: null, sample: null },
+      ],
+    };
+    expect((await server.send("PUT", "/mcp/supervisor-status", AGENT, full)).status).toBe(200);
+    const badStatus = { ...full, lanes: [{ ...full.lanes[0]!, status: "sleeping" }] };
+    expect((await server.send("PUT", "/mcp/supervisor-status", AGENT, badStatus)).status).toBe(400);
+    const badMachine = { ...full, machines: [{ label: "local", state: "up", version: null, sample: null }] };
+    expect((await server.send("PUT", "/mcp/supervisor-status", AGENT, badMachine)).status).toBe(400);
+  });
+
+  test("a stream with watch=0 gets every snapshot but is not counted as a panel", async () => {
+    const server = await start();
+    await server.send("PUT", "/mcp/supervisor-status", AGENT, snapshot(1));
+    const quiet = await server.fetch("GET", "/api/supervisor/status?watch=0", { token: WEB });
+    expect((await server.send("GET", "/mcp/supervisor-status", AGENT, undefined)).body).toEqual({ watchers: 0 });
+    expect((await server.send("PUT", "/mcp/supervisor-status", AGENT, snapshot(2))).body).toEqual({ watchers: 0 });
+    const seen = await events(quiet, 2);
+    expect(seen.map((event) => JSON.parse(event.data))).toEqual([snapshot(1), snapshot(2)]);
+  });
 });

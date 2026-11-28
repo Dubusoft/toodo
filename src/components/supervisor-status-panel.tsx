@@ -3,7 +3,7 @@ import { useMessages } from "@/lib/i18n";
 import type { Messages } from "@/locales/en";
 import type { SupervisorLane, SupervisorStatusSnapshot } from "@/lib/supervisor-status";
 import { useSupervisorNotice } from "@/web/host-status";
-import { useSupervisorStatus } from "@/web/supervisor-status";
+import { useSupervisorStatus, workingLanes } from "@/web/supervisor-status";
 
 /** A snapshot older than this means the supervisor stopped reporting: it pushes every 10 s while a panel is open. */
 export const STALE_AFTER_MS = 2 * 60_000;
@@ -105,6 +105,7 @@ export function SupervisorStatusPanel({ active }: { active: boolean }) {
     );
   }
   const stale = now - snapshot.at > STALE_AFTER_MS;
+  const lanes = workingLanes(snapshot);
   return (
     <section aria-label={m.settings.advanced.supervisor} className="flex flex-col gap-5 text-sm">
       {noticeLine}
@@ -117,12 +118,12 @@ export function SupervisorStatusPanel({ active }: { active: boolean }) {
         <Quota quota={snapshot.quota} />
       </div>
       <div className="flex flex-col gap-2">
-        <h4 className="font-medium">{t.lanes(snapshot.lanes.length)}</h4>
-        {snapshot.lanes.length === 0 ? (
+        <h4 className="font-medium">{t.lanes(lanes.length)}</h4>
+        {lanes.length === 0 ? (
           <p className="text-muted-foreground">{t.empty}</p>
         ) : (
           <ul className="flex flex-col gap-3">
-            {snapshot.lanes.map((lane) => (
+            {lanes.map((lane) => (
               <Lane key={lane.key} lane={lane} />
             ))}
           </ul>
