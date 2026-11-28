@@ -23,6 +23,7 @@ import {
 import { FIRST_CHANNEL, chatChannelId, chatMessageId, chatThreadId } from "../../domain/chat.ts";
 import { taskId } from "../../domain/model.ts";
 import * as channels from "../../storage/chat-channels.ts";
+import type { LatestMessage } from "../../push/alerts.ts";
 import type { ChatNotice } from "../../storage/chat-channels.ts";
 import { CHAT_PAGE_LIMIT, listChatMessages } from "../../storage/chat-messages.ts";
 import { searchChat as findMessages } from "../../storage/chat-search.ts";
@@ -131,7 +132,16 @@ export function createThread(storage: Storage, request: ReturnType<typeof R.crea
   return thread(created);
 }
 
-export function updateThread(storage: Storage, request: ReturnType<typeof R.updateThread>): B.ChatThread {
+/** A thread that started waiting on the people's answer: how its notification names it
+ * and the agent's latest message there. */
+export type Awaiting = { notice: ChatNotice; latest: LatestMessage | null };
+
+/** Edits the thread and returns it with what notifies of its waiting on the people's
+ * answer: set when this edit started the wait and its channel's notifications are on. */
+export function updateThread(
+  storage: Storage,
+  request: ReturnType<typeof R.updateThread>,
+): { thread: B.ChatThread; awaiting: Awaiting | null } {
   const edit = threadEdit({
     title: request.title,
     status: request.status,
@@ -139,10 +149,19 @@ export function updateThread(storage: Storage, request: ReturnType<typeof R.upda
     unlinkTask: request.unlink_task,
   });
   const { awaiting } = request;
-  return thread(threads.updateChatThread(
+  const id = chatThreadId(request.id);
+  const waited = storage.db
+    .query<{ waited: number }, [number]>("SELECT awaiting_at IS NOT NULL AS waited FROM chat_threads WHERE id = ?1")
+    .get(id)?.waited === 1;
+  const updated = threads.updateChatThread(
     storage.db,
-    chatThreadId(request.id),
+    id,
     awaiting === undefined ? edit : { ...edit, awaiting },
     storage.now(),
-  ));
+  );
+  const notice = awaiting === true && !waited ? channels.chatNotice(storage.db, updated.channelId, id) : null;
+  return {
+    thread: thread(updated),
+    awaiting: notice === null ? null : { notice, latest: channels.latestAgentMessage(storage.db, id) },
+  };
 }

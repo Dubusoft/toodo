@@ -8,10 +8,18 @@ import type { ChatChannelId, ChatThreadId, TaskId } from "@/lib/bindings";
 import { isAppleMobile, runsInstalled } from "@/web/install";
 import { apiRequest } from "@/web/session";
 
+/** Which notifications this device gets (see `PushKind` in `server/src/domain/push.ts`). */
 export interface PushSettings {
-  readonly completion: boolean;
-  /** Chat messages of the agent connected over MCP. */
+  /** Chat: the agent's messages that wait on the people, and a thread starting to wait on their answer. */
+  readonly important: boolean;
+  /** Chat: every message of the agent connected over MCP. */
   readonly messages: boolean;
+  /** Tasks: a task started. */
+  readonly started: boolean;
+  /** Tasks: a task is awaiting completion. */
+  readonly completion: boolean;
+  /** Tasks: a task was completed or concluded. */
+  readonly finished: boolean;
 }
 
 /** Why the latest notification did not reach this device; `at` is in Unix seconds. */
@@ -56,24 +64,10 @@ export function pushActive(): boolean {
   return pushed !== null;
 }
 
-/**
- * The titles of the alerts the page also raises, by the setting that has the server push them
- * (see `server/src/push/alerts.ts`). Every other alert only the page shows.
- */
-const pushedTitles: Record<keyof PushSettings, readonly string[]> = {
-  completion: ["Task awaiting completion"],
-  // The page raises no alerts for chat messages; the chat shows them.
-  messages: [],
-};
-
-/** Whether the server pushes the alert titled `title` to this device, so the page need not show it as well. */
-export function pushCovers(title: string): boolean {
-  return (
-    pushed !== null &&
-    (Object.keys(pushedTitles) as (keyof PushSettings)[]).some(
-      (kind) => pushed?.[kind] === true && pushedTitles[kind].includes(title),
-    )
-  );
+/** Whether the server pushes the alerts of setting `kind` to this device (see
+ * `server/src/push/alerts.ts`), so the page need not show them as well. */
+export function pushCovers(kind: keyof PushSettings): boolean {
+  return pushed?.[kind] === true;
 }
 
 export function decodeBase64Url(text: string): Uint8Array<ArrayBuffer> {
@@ -114,7 +108,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isSettings(value: unknown): value is PushSettings {
-  return isRecord(value) && typeof value.completion === "boolean" && typeof value.messages === "boolean";
+  return (
+    isRecord(value) &&
+    ["important", "messages", "started", "completion", "finished"].every((key) => typeof value[key] === "boolean")
+  );
 }
 
 function isFailure(value: unknown): value is PushFailure {

@@ -62,7 +62,7 @@ describe("push subscriptions", () => {
     const { db, phone } = databaseWithDevices();
     const first = savePushSubscription(db, phone, subscribing("https://push.example/a", 1), NOW);
     expect(first.settings).toEqual(DEFAULT_PUSH_SETTINGS);
-    const quiet = { completion: false, messages: false };
+    const quiet = { important: false, messages: false, started: true, completion: false, finished: true };
     setPushSettings(db, phone, quiet);
 
     const second = savePushSubscription(db, phone, subscribing("https://push.example/b", 2), NOW);

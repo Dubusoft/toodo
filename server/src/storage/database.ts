@@ -46,6 +46,14 @@ export const MIGRATIONS: readonly string[] = [
   CREATE UNIQUE INDEX chat_threads_task ON chat_threads (task_id) WHERE task_id IS NOT NULL;`,
   // 58: when the agent started waiting on the people's answer in a thread, unset otherwise.
   "ALTER TABLE chat_threads ADD COLUMN awaiting_at INTEGER",
+  // 59: the chat and task notifications a device chooses one by one. Important chat
+  // messages are on, as every message was before; task starts and finishes are off.
+  `ALTER TABLE push_subscriptions ADD COLUMN important INTEGER NOT NULL DEFAULT 1
+       CHECK (important IN (0, 1));
+   ALTER TABLE push_subscriptions ADD COLUMN started INTEGER NOT NULL DEFAULT 0
+       CHECK (started IN (0, 1));
+   ALTER TABLE push_subscriptions ADD COLUMN finished INTEGER NOT NULL DEFAULT 0
+       CHECK (finished IN (0, 1));`,
 ];
 
 /** The schema version this server reads and writes. */

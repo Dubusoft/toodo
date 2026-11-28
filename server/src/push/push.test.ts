@@ -1,14 +1,15 @@
 import type { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
-import { chatChannelId } from "../domain/chat.ts";
+import { chatChannelId, chatThreadId } from "../domain/chat.ts";
 import { deviceId } from "../domain/device.ts";
+import { DEFAULT_PUSH_SETTINGS } from "../domain/push.ts";
 import { taskId } from "../domain/model.ts";
 import type { TaskStatus } from "../domain/status.ts";
 import { StorageError } from "../storage/errors.ts";
 import { activePushSubscriptions, pushSubscription } from "../storage/push.ts";
 import { openMemoryDatabase } from "../storage/testing.ts";
-import { type WatchedTask, Watch, agentMessageAlert, testAlert } from "./alerts.ts";
+import { type WatchedTask, Watch, agentMessageAlert, awaitingAlert, testAlert } from "./alerts.ts";
 import {
   Http,
   PushInputError,
@@ -83,9 +84,10 @@ describe("push delivery", () => {
     const took = performance.now() - start;
     expect(took).toBeGreaterThanOrEqual(deadline - 1);
     expect(took).toBeLessThan(deadline + 1000);
-    expect(transport.requests.map((request) => request.endpoint)).toEqual([
-      "https://push.example/stalled",
+    // Both devices are tried side by side, so the order their requests start in is not fixed.
+    expect(transport.requests.map((request) => request.endpoint).sort()).toEqual([
       "https://push.example/phone",
+      "https://push.example/stalled",
     ]);
     expect(failures(db)).toEqual(["cannot reach the push service: no answer within 0.2 seconds", null]);
 
@@ -145,10 +147,10 @@ describe("push delivery", () => {
     const push = await testPush(transport);
     const db = openMemoryDatabase();
     const phone = await subscribed(db, "Phone", "https://push.example/phone");
-    await subscribed(db, "Laptop", "https://push.example/laptop", { completion: false, messages: true });
+    await subscribed(db, "Laptop", "https://push.example/laptop", { ...DEFAULT_PUSH_SETTINGS, completion: false });
     const watch = new Watch();
-    watch.tasks([{ id: taskId(4), status: "in_progress", title: "Task" }]);
-    const alerts = watch.tasks([{ id: taskId(4), status: "in_review", title: "Task" }]);
+    watch.tasks([{ id: taskId(4), status: "in_progress", resolution: null, title: "Task" }]);
+    const alerts = watch.tasks([{ id: taskId(4), status: "in_review", resolution: null, title: "Task" }]);
 
     expect(await deliver(db, push, alerts)).toBe(1);
     const request = transport.requests.shift()!;
@@ -167,6 +169,55 @@ describe("push delivery", () => {
     transport.statusesFor.set("https://push.example/laptop", [410]);
     expect(await deliver(db, push, [testAlert()])).toBe(1);
     expect(endpoints(db)).toEqual(["https://push.example/phone"]);
+  });
+
+  test("each chat and task setting decides which alerts a device gets", async () => {
+    const transport = new FakeTransport();
+    const push = await testPush(transport);
+    const db = openMemoryDatabase();
+    const none = { important: false, messages: false, started: false, completion: false, finished: false };
+    const devices = {
+      defaults: await subscribed(db, "Defaults", "https://push.example/defaults"),
+      important: await subscribed(db, "Important", "https://push.example/important", { ...none, important: true }),
+      messages: await subscribed(db, "Messages", "https://push.example/messages", { ...none, messages: true }),
+      started: await subscribed(db, "Started", "https://push.example/started", { ...none, started: true }),
+      completion: await subscribed(db, "Completion", "https://push.example/completion", { ...none, completion: true }),
+      finished: await subscribed(db, "Finished", "https://push.example/finished", { ...none, finished: true }),
+      none: await subscribed(db, "None", "https://push.example/none", none),
+    };
+    const notice = { channelId: chatChannelId(1), channel: "work", threadId: chatThreadId(3), thread: "Deploy", awaiting: false };
+    const watch = new Watch();
+    watch.tasks([
+      { id: taskId(1), status: "planned", resolution: null, title: "A" },
+      { id: taskId(2), status: "in_progress", resolution: null, title: "B" },
+      { id: taskId(3), status: "in_review", resolution: null, title: "C" },
+    ]);
+    const alerts = [
+      ...watch.tasks([
+        { id: taskId(1), status: "in_progress", resolution: null, title: "A" },
+        { id: taskId(2), status: "in_review", resolution: null, title: "B" },
+        { id: taskId(3), status: "done", resolution: "completed", title: "C" },
+      ]),
+      agentMessageAlert("Helper", notice, 10, "Pick a region", true),
+      agentMessageAlert("Helper", notice, 11, "Deployed", false),
+      awaitingAlert("Helper", { ...notice, awaiting: true }, { id: 12, body: "Send the code" }),
+    ];
+
+    await deliver(db, push, alerts);
+    const got: Record<string, string[]> = {};
+    for (const request of transport.requests) {
+      const name = request.endpoint.slice("https://push.example/".length) as keyof typeof devices;
+      const { tag } = (await devices[name].decryptJson(request.body)) as { tag: string };
+      (got[name] ??= []).push(tag);
+    }
+    expect(got).toEqual({
+      defaults: ["task-2-completion", "chat-10", "chat-11", "chat-12"],
+      important: ["chat-10", "chat-12"],
+      messages: ["chat-10", "chat-11"],
+      started: ["task-1-status"],
+      completion: ["task-2-completion"],
+      finished: ["task-3-completion"],
+    });
   });
 });
 
@@ -259,9 +310,9 @@ describe("push worker", () => {
     const push = await testPush(transport);
     const db = openMemoryDatabase();
     const phone = await subscribed(db, "Phone", "https://push.example/phone");
-    let tasks: WatchedTask[] = [{ id: taskId(1), status: "in_progress", title: "Ship" }];
+    let tasks: WatchedTask[] = [{ id: taskId(1), status: "in_progress", resolution: null, title: "Ship" }];
     const set = (status: TaskStatus) => {
-      tasks = [{ id: taskId(1), status, title: "Ship" }];
+      tasks = [{ id: taskId(1), status, resolution: null, title: "Ship" }];
     };
     const worker = new PushWorker(db, push, () => tasks);
 
@@ -275,7 +326,7 @@ describe("push worker", () => {
     set("in_review");
     worker.tasksChanged();
     worker.alert(
-      agentMessageAlert("Helper", { channelId: chatChannelId(1), channel: "work", threadId: null, thread: null }, 9, "Done"),
+      agentMessageAlert("Helper", { channelId: chatChannelId(1), channel: "work", threadId: null, thread: null, awaiting: false }, 9, "Done", false),
     );
     await worker.idle();
     expect(transport.requests.length).toBe(2);

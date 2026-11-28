@@ -19,7 +19,11 @@ import {
 
 const pushKey = ["push"];
 
-const settingOptions = ["completion", "messages"] as const;
+/** The settings in the sections they show in, each one notification the server decides to send. */
+const settingSections = [
+  { section: "chat", keys: ["important", "messages"] },
+  { section: "tasks", keys: ["started", "completion", "finished"] },
+] as const satisfies readonly { section: string; keys: readonly (keyof PushSettings)[] }[];
 
 /** Why notifications stopped reaching this device, and what to try. */
 function LastFailure({ failure }: { failure: PushFailure }) {
@@ -74,18 +78,21 @@ function PushControls({ state }: { state: PushState }) {
         <>
           <p className="font-medium">{t.enabled}</p>
           {subscription.lastFailure && <LastFailure failure={subscription.lastFailure} />}
-          <fieldset className="flex flex-col gap-1">
-            <legend className="mb-1 text-muted-foreground">{t.notifyAbout}</legend>
-            {settingOptions.map((key) => (
-              <CheckboxInput
-                key={key}
-                label={t[key]}
-                value={settings[key]}
-                isDisabled={save.isPending}
-                onChange={(checked) => save.mutate({ ...settings, [key]: checked })}
-              />
-            ))}
-          </fieldset>
+          {settingSections.map(({ section, keys }) => (
+            <fieldset key={section} className="flex flex-col gap-1">
+              <legend className="mb-1 font-medium">{t.sections[section]}</legend>
+              {keys.map((key) => (
+                <CheckboxInput
+                  key={key}
+                  label={t.options[key].label}
+                  description={t.options[key].description}
+                  value={settings[key]}
+                  isDisabled={save.isPending}
+                  onChange={(checked) => save.mutate({ ...settings, [key]: checked })}
+                />
+              ))}
+            </fieldset>
+          ))}
           <div className="flex flex-wrap gap-1">
             <Button
               changesData

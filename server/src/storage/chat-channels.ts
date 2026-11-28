@@ -160,6 +160,8 @@ export interface ChatNotice {
   channel: string;
   threadId: ChatThreadId | null;
   thread: string | null;
+  /** Whether the thread waits on the people's answer; `false` in a channel itself. */
+  awaiting: boolean;
 }
 
 /**
@@ -177,13 +179,24 @@ export function chatNotice(db: Database, channelId: ChatChannelId, threadId: Cha
     return null;
   }
   if (threadId === null) {
-    return { channelId, channel: row.name, threadId: null, thread: null };
+    return { channelId, channel: row.name, threadId: null, thread: null, awaiting: false };
   }
   const thread = db
-    .query<{ title: string }, [number]>("SELECT title FROM chat_threads WHERE id = ?1")
+    .query<{ title: string; awaiting_at: number | null }, [number]>(
+      "SELECT title, awaiting_at FROM chat_threads WHERE id = ?1",
+    )
     .get(threadId);
   if (thread === null) {
     throw new StorageError({ kind: "chat_thread_not_found", thread: threadId });
   }
-  return { channelId, channel: row.name, threadId, thread: thread.title };
+  return { channelId, channel: row.name, threadId, thread: thread.title, awaiting: thread.awaiting_at !== null };
+}
+
+/** The agent's latest message in thread `threadId`, or `null` before its first. */
+export function latestAgentMessage(db: Database, threadId: ChatThreadId): { id: number; body: string } | null {
+  return db
+    .query<{ id: number; body: string }, [number]>(
+      "SELECT id, body FROM chat_messages WHERE thread_id = ?1 AND author = 'lead' ORDER BY id DESC LIMIT 1",
+    )
+    .get(threadId);
 }

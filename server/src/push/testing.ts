@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { DeviceLabel } from "../domain/device.ts";
-import { AUTH_LEN, PushEndpoint, type PushSettings, subscriptionKeys } from "../domain/push.ts";
+import { AUTH_LEN, DEFAULT_PUSH_SETTINGS, PushEndpoint, type PushSettings, subscriptionKeys } from "../domain/push.ts";
 import { createDevice } from "../storage/devices.ts";
 import { savePushSubscription, setPushSettings } from "../storage/push.ts";
 import { VapidKey, base64url, bytes, contentKeys } from "./crypto.ts";
@@ -104,7 +104,7 @@ export async function subscribed(
   db: Database,
   label: string,
   endpoint: string,
-  settings: PushSettings = { completion: true, messages: true },
+  settings: PushSettings = DEFAULT_PUSH_SETTINGS,
 ): Promise<Browser> {
   const browser = await Browser.create();
   const device = createDevice(

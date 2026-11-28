@@ -2,7 +2,7 @@
 // The first snapshot only sets the baseline, so starting the server is silent, and a newly
 // seen task raises nothing.
 
-import type { TaskId } from "../domain/model.ts";
+import type { TaskId, TaskResolution } from "../domain/model.ts";
 import type { PushKind } from "../domain/push.ts";
 import type { TaskStatus } from "../domain/status.ts";
 import type { ChatNotice } from "../storage/chat-channels.ts";
@@ -61,15 +61,25 @@ export function testAlert(): Alert {
   };
 }
 
+/** Where `notice` names, as a notification title: `#channel` or `#channel / thread`. */
+function placeName(notice: ChatNotice): string {
+  return notice.thread === null ? `#${notice.channel}` : `#${notice.channel} / ${notice.thread}`;
+}
+
 /** The agent, named `agent`, posted chat message `id` where `notice` names; each message
- * is its own notification, and clicking it opens that channel or thread. */
-export function agentMessageAlert(agent: string, notice: ChatNotice, id: number, body: string): Alert {
-  const title =
-    notice.thread === null ? `${agent} in #${notice.channel}` : `${agent} in #${notice.channel} / ${notice.thread}`;
+ * is its own notification, and clicking it opens that channel or thread. An `important`
+ * message waits on the people: it offers choices, or its thread waits on their answer. */
+export function agentMessageAlert(
+  agent: string,
+  notice: ChatNotice,
+  id: number,
+  body: string,
+  important: boolean,
+): Alert {
   return {
-    kind: "agent_message",
+    kind: important ? "important_message" : "agent_message",
     urgent: true,
-    title,
+    title: `${agent} in ${placeName(notice)}`,
     body: shorten(body),
     tag: `chat-${id}`,
     taskId: null,
@@ -77,13 +87,33 @@ export function agentMessageAlert(agent: string, notice: ChatNotice, id: number,
   };
 }
 
-function taskAlert(kind: PushKind, urgent: boolean, title: string, task: TaskId, name: string | null): Alert {
-  const tag = kind === "completion" ? "completion" : "message";
+/** The agent's latest message in a thread. */
+export type LatestMessage = { readonly id: number; readonly body: string };
+
+/** The thread `notice` names started waiting on the people's answer. The notification
+ * shows the agent's `latest` message there and replaces that message's own notification,
+ * so a device that got the message is not told twice. */
+export function awaitingAlert(agent: string, notice: ChatNotice, latest: LatestMessage | null): Alert {
+  return {
+    kind: "awaiting_answer",
+    urgent: true,
+    title: `${agent} is waiting for your answer in ${placeName(notice)}`,
+    body: shorten(latest?.body ?? notice.thread ?? notice.channel),
+    tag: latest === null ? `thread-${notice.threadId}-awaiting` : `chat-${latest.id}`,
+    taskId: null,
+    chat: { channelId: notice.channelId, threadId: notice.threadId },
+  };
+}
+
+/** A task's notification. A task's finish replaces its notification of awaiting
+ * completion, since both share the `completion` tag. */
+function taskAlert(kind: PushKind, title: string, task: TaskId, name: string): Alert {
+  const tag = kind === "task_started" ? "status" : "completion";
   return {
     kind,
-    urgent,
+    urgent: false,
     title,
-    body: shorten(name === null ? `#${task}` : `#${task} ${name}`),
+    body: shorten(`#${task} ${name}`),
     tag: `task-${task}-${tag}`,
     taskId: task,
     chat: null,
@@ -99,14 +129,34 @@ function shorten(text: string): string {
 export type WatchedTask = {
   readonly id: TaskId;
   readonly status: TaskStatus;
+  readonly resolution: TaskResolution | null;
   readonly title: string;
 };
+
+/** The alert for a task now in `task`'s status, `was` before; the titles are those the web
+ * app gives the same changes when it raises them itself (`src/lib/task-alerts.ts`). */
+function statusAlert(was: TaskStatus, task: WatchedTask): Alert | null {
+  if (was === task.status) return null;
+  switch (task.status) {
+    case "in_progress":
+      return taskAlert("task_started", "Task started", task.id, task.title);
+    case "in_review":
+      return taskAlert("completion", "Task awaiting completion", task.id, task.title);
+    case "done": {
+      const title = task.resolution === "not_adopted" ? "Task concluded without merging" : "Task done";
+      return taskAlert("task_finished", title, task.id, task.title);
+    }
+    case "planned":
+      return null;
+  }
+}
 
 /** The last statuses seen. */
 export class Watch {
   #tasks: Map<TaskId, WatchedTask> | null = null;
 
-  /** A task that moved to `in_review` is awaiting completion. The first list of tasks
+  /** A task that moved to `in_progress` started, one that moved to `in_review` is
+   * awaiting completion, and one that moved to `done` finished. The first list of tasks
    * only sets the baseline. */
   tasks(tasks: Iterable<WatchedTask>): Alert[] {
     const next = new Map<TaskId, WatchedTask>();
@@ -116,9 +166,8 @@ export class Watch {
     if (before !== null) {
       for (const task of next.values()) {
         const was = before.get(task.id);
-        if (task.status === "in_review" && was !== undefined && was.status !== "in_review") {
-          alerts.push(taskAlert("completion", false, "Task awaiting completion", task.id, task.title));
-        }
+        const alert = was === undefined ? null : statusAlert(was.status, task);
+        if (alert !== null) alerts.push(alert);
       }
     }
     alerts.sort((a, b) => (a.taskId ?? 0) - (b.taskId ?? 0));

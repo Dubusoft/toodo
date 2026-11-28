@@ -442,17 +442,24 @@ authenticating HTTPS front (see [Off the Machine](#off-the-machine-cloudflare-tu
 on the server itself, `http://127.0.0.1` counts as secure.
 
 Under **Notifications** in Settings, a device turns notifications on, picks which
-ones it gets, and sends itself a test notification:
+ones it gets, and sends itself a test notification. The server applies the choices when
+it sends, so a notification turned off is never pushed to that device. The settings
+belong to the device, beside its subscription: devices sign in with the same shared
+token, so a phone and a laptop each choose their own.
 
-| Setting | Notifications |
-| --- | --- |
-| Task awaiting completion | A task moved to `in_review`, so its work awaits review and completion |
-| Agent messages in the chat | The agent posted a message in the [chat](#chat), in a channel whose notifications are on, such as a reply, a question with choices, or a status update; opening it opens the chat at that channel or thread |
+| Section | Setting | Notifications | New devices |
+| --- | --- | --- | --- |
+| Chat | Important messages | The agent posted a message that waits on you: one with choices to pick from, or one in a thread waiting for your answer; or a thread started waiting for your answer, such as a request without choices | On |
+| Chat | All chat messages | The agent posted any message, important ones included | On |
+| Tasks | Task started | A task moved to `in_progress` | Off |
+| Tasks | Task awaiting completion | A task moved to `in_review`, so its work awaits review and completion | On |
+| Tasks | Task finished | A task was completed or concluded (`done`) | Off |
 
-The settings **Agent finished or needs input** and **Pull request checks and reviews** are
-still listed, but the server no longer watches agents or pull requests, so they send
-nothing. Opening a notification opens its task. While notifications are on, the app shows
-no notifications of its own on that device, so nothing arrives twice.
+Chat notifications come only from channels whose notifications are on, and opening one
+opens the [chat](#chat) at that channel or thread; opening a task notification opens its
+task. Task notifications come from changes agents make over MCP, not from your own changes
+in the app. While notifications are on, the app shows no notifications of its own on that
+device for what the server pushes, so nothing arrives twice.
 
 Subscriptions belong to devices: a browser signed in with the shared `web-token` signs
 in again to get a device token first. Revoking a device ends its subscription, a device

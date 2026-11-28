@@ -7,7 +7,7 @@ const TOKEN_KEY = "toodo-server-token";
 const publicKey = "BP8A-_w";
 const keyBytes = [4, 255, 0, 251, 252];
 
-const settings = { completion: true, messages: true };
+const settings = { important: true, messages: true, started: false, completion: true, finished: false };
 
 /** A fresh copy of the module, since it remembers whether push is on. */
 async function freshPush() {
@@ -232,23 +232,23 @@ describe("push on this device", () => {
   it("leaves to the server only the alerts it pushes for this device's settings", async () => {
     const browser = browserSubscription("https://push.example/a");
     installServiceWorker(browser);
-    const off = { ...settings, completion: false };
+    const off = { ...settings, completion: false, finished: true };
     serve({
       "GET /api/push": () => json({ publicKey, subscription: { endpoint: browser.endpoint, settings, lastFailure: null } }),
       "PUT /api/push/settings": () => json({ endpoint: browser.endpoint, settings: off, lastFailure: null }),
       "DELETE /api/push/subscription": () => json(null),
     });
     const push = await freshPush();
-    const covered = (...titles: string[]) => titles.map((title) => push.pushCovers(title));
-    const titles = ["Agent needs input", "CI failed", "Task awaiting completion", "Task paused by a new prerequisite", "Task done"];
+    const kinds = ["important", "messages", "started", "completion", "finished"] as const;
+    const covered = () => kinds.map((kind) => push.pushCovers(kind));
 
-    expect(covered(...titles)).toEqual([false, false, false, false, false]);
+    expect(covered()).toEqual([false, false, false, false, false]);
     await push.getPushState();
-    expect(covered(...titles)).toEqual([false, false, true, false, false]);
+    expect(covered()).toEqual([true, true, false, true, false]);
     await push.saveSettings(off);
-    expect(covered(...titles)).toEqual([false, false, false, false, false]);
+    expect(covered()).toEqual([true, true, false, false, true]);
     await push.disablePush();
-    expect(covered(...titles)).toEqual([false, false, false, false, false]);
+    expect(covered()).toEqual([false, false, false, false, false]);
   });
 
   it("saves the settings of this device", async () => {

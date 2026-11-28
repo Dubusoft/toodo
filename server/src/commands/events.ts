@@ -4,6 +4,7 @@
 import type * as B from "../../../src/lib/api.ts";
 import type { Events } from "../../../src/lib/api.ts";
 import type { WorkspaceId } from "../domain/model.ts";
+import type { LatestMessage } from "../push/alerts.ts";
 import type { ChatNotice } from "../storage/chat-channels.ts";
 
 export type {
@@ -38,6 +39,9 @@ export interface Notifier {
   /** The agent posted `message`, which also ends its writing in that place. `notice` names
    * where it is for a notification; `null` when its channel's notifications are off. */
   agentPosted(message: B.ChatMessage, notice: ChatNotice | null): void;
+  /** A thread started waiting on the people's answer. `notice` names it for a notification
+   * (its channel's notifications are on), and `latest` is the agent's latest message there. */
+  agentAwaiting(notice: ChatNotice, latest: LatestMessage | null): void;
   /** The agent started or stopped writing in `at`. */
   agentTyping(at: B.ChatPlace, typing: boolean): void;
   /** A person chose an action on the agent's message; the chat changed with it. */

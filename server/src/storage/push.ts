@@ -15,7 +15,7 @@ import {
 import { StorageError } from "./errors.ts";
 
 const COLUMNS =
-  "device_id, endpoint, p256dh, auth, completion, created_at, last_failure, last_failure_at, messages";
+  "device_id, endpoint, p256dh, auth, completion, created_at, last_failure, last_failure_at, messages, important, started, finished";
 
 interface SubscriptionRow {
   device_id: number;
@@ -27,6 +27,9 @@ interface SubscriptionRow {
   last_failure: string | null;
   last_failure_at: number | null;
   messages: number;
+  important: number;
+  started: number;
+  finished: number;
 }
 
 function subscription(row: SubscriptionRow): PushSubscription {
@@ -45,7 +48,13 @@ function subscription(row: SubscriptionRow): PushSubscription {
     device: deviceId(row.device_id),
     endpoint,
     keys,
-    settings: { completion: row.completion !== 0, messages: row.messages !== 0 },
+    settings: {
+      important: row.important !== 0,
+      messages: row.messages !== 0,
+      started: row.started !== 0,
+      completion: row.completion !== 0,
+      finished: row.finished !== 0,
+    },
     createdAt: row.created_at,
     lastFailure:
       row.last_failure !== null && row.last_failure_at !== null
@@ -169,11 +178,19 @@ export function setPushSettings(
   settings: PushSettings,
 ): PushSubscription {
   return db.transaction(() => {
-    db.run("UPDATE push_subscriptions SET completion = ?2, messages = ?3 WHERE device_id = ?1", [
-      device,
-      settings.completion ? 1 : 0,
-      settings.messages ? 1 : 0,
-    ]);
+    db.run(
+      `UPDATE push_subscriptions SET completion = ?2, messages = ?3, important = ?4, started = ?5,
+           finished = ?6
+       WHERE device_id = ?1`,
+      [
+        device,
+        settings.completion ? 1 : 0,
+        settings.messages ? 1 : 0,
+        settings.important ? 1 : 0,
+        settings.started ? 1 : 0,
+        settings.finished ? 1 : 0,
+      ],
+    );
     return found(db, device);
   })();
 }
