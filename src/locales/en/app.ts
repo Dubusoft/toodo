@@ -39,6 +39,11 @@ export const app = {
     dark: "Use the dark theme",
     system: "Use the system theme",
     openWorkspace: (name: string) => `Open workspace ${name}`,
+    astryx: {
+      "@astryx.commandPalette.footer.navigate": "Navigate",
+      "@astryx.commandPalette.footer.select": "Select",
+      "@astryx.commandPalette.footer.close": "Close",
+    },
   },
   shortcuts: {
     title: "Keyboard shortcuts",
