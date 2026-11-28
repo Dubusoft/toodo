@@ -35,10 +35,11 @@ export interface Notifier {
   guidelinesChanged(workspace: WorkspaceId): void;
   /** A person's message or a receipt of the agent was stored. */
   chatChanged(): void;
-  /** The agent posted `message`, which also ends its writing. `notice` names where it is for
-   * a notification; `null` when its channel's notifications are off. */
+  /** The agent posted `message`, which also ends its writing in that place. `notice` names
+   * where it is for a notification; `null` when its channel's notifications are off. */
   agentPosted(message: B.ChatMessage, notice: ChatNotice | null): void;
-  agentTyping(typing: boolean): void;
+  /** The agent started or stopped writing in `at`. */
+  agentTyping(at: B.ChatPlace, typing: boolean): void;
   /** A person chose an action on the agent's message; the chat changed with it. */
   actionChosen(chosen: B.ChatActionChosen): void;
 }

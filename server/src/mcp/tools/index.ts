@@ -200,7 +200,7 @@ export const TOOLS: Readonly<Record<string, Tool>> = {
   list_chat: tool(R.listChat, ({ reader }, args) => chat.listChat(reader, args)),
   search_chat: tool(R.searchChat, ({ reader }, args) => chat.searchChat(reader, args)),
   set_typing: tool(R.setTyping, (context, args) => {
-    context.notifier.agentTyping(args.typing);
+    context.notifier.agentTyping(chat.typingPlace(args), args.typing);
     return { typing: args.typing };
   }),
   list_channels: plain(({ reader }) => chat.listChannels(reader)),

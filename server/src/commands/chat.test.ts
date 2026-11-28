@@ -37,12 +37,26 @@ describe("chat commands", () => {
 
   test("typing lasts until it runs out or is turned off", () => {
     const chat = state();
-    expect(chat.setTyping(true, 100)).toBe(100 + TYPING_FOR);
-    expect(chat.typingUntil(100 + TYPING_FOR - 1)).toBe(100 + TYPING_FOR);
-    expect(chat.typingUntil(100 + TYPING_FOR)).toBeNull();
-    chat.setTyping(true, 100);
-    expect(chat.setTyping(false, 101)).toBeNull();
-    expect(chat.typingUntil(101)).toBeNull();
+    expect(chat.setTyping(GENERAL, true, 100)).toBe(100 + TYPING_FOR);
+    expect(chat.typingUntil(GENERAL, 100 + TYPING_FOR - 1)).toBe(100 + TYPING_FOR);
+    expect(chat.typingUntil(GENERAL, 100 + TYPING_FOR)).toBeNull();
+    chat.setTyping(GENERAL, true, 100);
+    expect(chat.setTyping(GENERAL, false, 101)).toBeNull();
+    expect(chat.typingUntil(GENERAL, 101)).toBeNull();
+  });
+
+  test("typing shows only in the place the agent writes in", () => {
+    const storage = memoryStorage();
+    const chat = state();
+    const thread = createChatThread(storage, { channelId: 1, title: "Ship", taskId: null });
+    const now = storage.now();
+    chat.setTyping(GENERAL, true, now);
+
+    expect(listChat(storage, chat, GENERAL, null).typingUntil).toBe(now + TYPING_FOR);
+    expect(listChat(storage, chat, { thread: thread.id }, null).typingUntil).toBeNull();
+    expect(listChat(storage, chat, { channel: 2 }, null).typingUntil).toBeNull();
+    chat.setTyping({ thread: thread.id }, false, now);
+    expect(chat.typingUntil(GENERAL, now)).toBe(now + TYPING_FOR);
   });
 
   test("chat pages return the client id of a stored message", () => {

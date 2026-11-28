@@ -373,12 +373,15 @@ function hasTouchKeyboard(): boolean {
 /** A file picked for the next message: uploading, uploaded, or failed. */
 type Upload = { key: string; file: File; preview: string | null; attachment: ChatAttachment | null; error: string | null };
 
-/** Until when the agent is writing: the chat's answer, then its chat-typing events. */
-function useTypingUntil(initial: Timestamp | null | undefined): boolean {
+/** Whether the agent is writing in `place`: the chat's answer, then its chat-typing events
+ * for that place. */
+function useTyping(place: ChatPlace, initial: Timestamp | null | undefined): boolean {
   const [until, setUntil] = useState<Timestamp | null>(null);
   useEffect(() => setUntil(initial ?? null), [initial]);
   useEffect(() => {
-    const listening = events.chatTyping.listen((event) => setUntil(event.payload.until));
+    const listening = events.chatTyping.listen((event) => {
+      if (samePlace(event.payload.place, place)) setUntil(event.payload.until);
+    });
     return () => void listening.then((unlisten) => unlisten());
   }, []);
   const [now, setNow] = useState(() => Date.now() / 1000);
@@ -411,7 +414,7 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
   const outgoing = outbox.filter((message) => samePlace(message.place, place) && !storedClientIds.has(message.clientId));
   const latest = chat.data?.pages[0];
   const agent = latest?.agent ?? defaultAgent;
-  const typing = useTypingUntil(latest?.typingUntil);
+  const typing = useTyping(place, latest?.typingUntil);
   const scroller = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const marked = useRef<number | null>(null);

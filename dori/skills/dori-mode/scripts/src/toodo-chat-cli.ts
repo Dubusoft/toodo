@@ -22,8 +22,9 @@ const ids = (values: readonly string[], die: (message: string) => never, usage: 
  *                                                        Dori's message at REF with the files attached (up to 10; then
  *                                                        --text may be left out); it marks the listed messages handled
  *   ack REF ID [REF ID ...]                              read receipts on the owner's messages, and the typing dots on
+ *                                                        at each REF
  *   handled REF ID (--reply ID | --task ID)              the owner's message handled by Dori's reply or a task
- *   typing toodo [--off]                                 the typing dots
+ *   typing REF [--off]                                   the typing dots at REF, where the reply goes
  * REF is `toodo:channel/<id>`, `toodo:thread/<id>` or `toodo` (the default room), as INBOUND lines name it.
  */
 export const toodoChatMain = async (
@@ -63,8 +64,15 @@ export const toodoChatMain = async (
         if (!isToodoRef(ref)) die(usage);
         pairs.push({ ref, id: ids([rest[i + 1] ?? ""], die, usage)[0] ?? die(usage) });
       }
+      // The dots show where the acked messages are, once per place.
+      const places = new Map(pairs.map((p) => {
+        const place = parseToodoRef(p.ref);
+        return [toodoRef(place), place] as const;
+      }));
       await chat.ack(pairs.map((p) => p.id));
-      try { await chat.typing(true); } catch { console.error("ACK_TYPING_FAILED toodo: the typing dots could not be set; the messages are acked"); }
+      try {
+        for (const place of places.values()) await chat.typing(place, true);
+      } catch { console.error("ACK_TYPING_FAILED toodo: the typing dots could not be set; the messages are acked"); }
       for (const p of pairs) console.log(`ACKED ${p.ref} ${p.id}`);
       return 0;
     }
@@ -80,10 +88,12 @@ export const toodoChatMain = async (
     }
     case "typing": {
       const parsed = parseArgs({ args: [...rest], allowPositionals: true, options: { off: { type: "boolean" } } });
-      if (parsed.positionals.length !== 1) die("usage: dori typing toodo [--off]");
+      const [ref, ...extra] = parsed.positionals;
+      if (ref === undefined || extra.length) return die("usage: dori typing REF [--off] (REF a Toodo chat ref)");
+      const place = parseToodoRef(ref);
       const on = parsed.values.off !== true;
-      await chat.typing(on);
-      console.log(`TYPING toodo ${on ? "on" : "off"}`);
+      await chat.typing(place, on);
+      console.log(`TYPING ${toodoRef(place)} ${on ? "on" : "off"}`);
       return 0;
     }
   }

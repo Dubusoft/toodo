@@ -139,8 +139,9 @@ export class ToodoChat {
     await this.mcp.call("mark_chat_handled", { id, ...("replyId" in link ? { reply_id: link.replyId } : { task_id: link.taskId }) });
   }
 
-  async typing(on: boolean): Promise<void> {
-    await this.mcp.call("set_typing", { typing: on });
+  /** Shows or stops the typing dots at `place`, where Dori's reply goes; the app shows them only there. */
+  async typing(place: ToodoPlace, on: boolean): Promise<void> {
+    await this.mcp.call("set_typing", { typing: on, ...placeArgs(place) });
   }
 
   /**

@@ -613,7 +613,8 @@ An agent works through the chat tools:
    marked handled by it. It posts in `channel_id` or `thread_id` when given, else where the
    first answered message is, else in channel 1. `mark_chat_handled` marks a message
    handled by an earlier reply (`reply_id`) or by a task made for it (`task_id`).
-4. `set_typing` shows that it is writing, for 30 seconds unless sent again; a reply ends it.
+4. `set_typing` shows that it is writing in `channel_id` or `thread_id` (channel 1 without
+   them), only there, for 30 seconds unless sent again; a reply there ends it.
 
 Each message carries its `channelId` and `threadId`. `list_chat` lists the latest messages
 with their receipts, of every place or only of `channel_id` (the channel itself) or

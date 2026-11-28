@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { Chat, receipt, totalUnread } from "@/components/chat-panel";
-import { commands, events, type ChatChannel, type ChatMessage, type ChatThread, type Task } from "@/lib/bindings";
+import { commands, events, type ChatChannel, type ChatMessage, type ChatThread, type ChatTyping, type Task } from "@/lib/bindings";
 import { flushChatOutbox } from "@/lib/chat-outbox";
 
 vi.mock("@/lib/bindings", () => ({
@@ -322,6 +322,28 @@ describe("Chat", () => {
     expect(body).toBe("Thanks");
     expect(clientId).toMatch(/^[0-9a-f-]{36}$/);
     expect(attachments).toEqual([]);
+  });
+
+  it("shows the agent typing only in the place it is writing in", async () => {
+    let announce: (event: { payload: ChatTyping }) => void = () => {};
+    mockedEvents.chatTyping.listen.mockImplementation(async (handler) => {
+      announce = handler as typeof announce;
+      return () => {};
+    });
+    serve([], [channel(1, "general"), channel(2, "work")]);
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+    fireEvent.click(within(await screen.findByRole("list", { name: "Channels" })).getByRole("button", { name: /work/ }));
+    await waitFor(() => expect(mocked.listChat).toHaveBeenCalledWith({ channel: 2 }, null));
+    const until = Math.floor(Date.now() / 1000) + 30;
+
+    act(() => announce({ payload: { place: { channel: 1 }, until } }));
+    expect(screen.queryByText("Typing")).not.toBeInTheDocument();
+    act(() => announce({ payload: { place: { thread: 9 }, until } }));
+    expect(screen.queryByText("Typing")).not.toBeInTheDocument();
+
+    act(() => announce({ payload: { place: { channel: 2 }, until } }));
+    expect(await screen.findByText("Typing")).toBeInTheDocument();
   });
 
   it("starts a new line on Enter from a touch keyboard and leaves sending to the send button", async () => {
