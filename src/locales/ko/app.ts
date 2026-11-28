@@ -127,6 +127,7 @@ export const app: Partial<Messages["app"]> = {
     invalidTransition: "현재 상태에서는 태스크를 그 상태로 바꿀 수 없습니다. 페이지를 새로고침해 현재 상태를 확인하세요.",
     notPermitted: "이 연결로는 그 변경을 할 수 없습니다.",
   },
+  unexpectedError: "앱에서 문제가 발생했습니다. 페이지를 새로고침하고, 문제가 계속되면 브라우저 콘솔을 확인하세요.",
   serverText: {
     paused: (reason) => `일시 중지: ${reason}`,
     pausedWaitingOn: (tasks) => `일시 중지: ${tasks} 대기 중`,

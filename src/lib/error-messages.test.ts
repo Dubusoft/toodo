@@ -34,3 +34,12 @@ describe("CommandFailure", () => {
     expect(failure.message).toContain("toodo-server log");
   });
 });
+
+describe("errorMessage", () => {
+  it("shows a message of the app's language instead of the text of an error the app ran into", () => {
+    const m = messagesFor("ko");
+
+    expect(errorMessage(new TypeError("r is not iterable"), m)).toBe(m.app.unexpectedError);
+    expect(errorMessage(new Error("the server's own words"), m)).toBe("the server's own words");
+  });
+});

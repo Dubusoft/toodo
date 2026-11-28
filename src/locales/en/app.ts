@@ -126,6 +126,8 @@ export const app = {
     invalidTransition: "The task cannot move to that status from the one it is in now. Reload the page to see its current status.",
     notPermitted: "This connection may not make that change.",
   },
+  /** Shown instead of the text of an error the app itself ran into, such as a reply it could not read. */
+  unexpectedError: "Something went wrong in the app. Reload the page; if it keeps happening, check the browser console.",
   /** Sentences the server writes in English, shown in the app's language (see `src/lib/server-text.ts`). */
   serverText: {
     paused: (reason: string) => `Paused: ${reason}`,
