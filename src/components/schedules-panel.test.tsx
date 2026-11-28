@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/lib/i18n";
-import { SchedulesPanel } from "@/components/schedules-panel";
+import { SchedulesPanel, kindFromName } from "@/components/schedules-panel";
 import type { ScheduledJob, ScheduleRequest } from "@/lib/supervisor-schedules";
 import { chooseOption } from "@/test/app";
 
@@ -121,5 +121,14 @@ describe("SchedulesPanel", () => {
     fireEvent.click(within(form).getByRole("button", { name: "Save" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("never fires");
     expect(posted).toEqual([{ op: "edit", name: "office-poll", timing: { cron: "0 0 31 2 *" }, tz: "Asia/Seoul", description: "Gmail digest posted to #daily-reports" }]);
+  });
+});
+
+describe("kindFromName", () => {
+  it("makes the event kind Dori accepts from a job name", () => {
+    expect(kindFromName("gmail-digest")).toBe("GMAIL_DIGEST");
+    expect(kindFromName(" 1st.weekly_run ")).toBe("JOB_1ST_WEEKLY_RUN");
+    expect(kindFromName("-")).toBe("");
+    expect(kindFromName("a".repeat(60))).toMatch(/^[A-Z][A-Z0-9_]{1,40}$/);
   });
 });
