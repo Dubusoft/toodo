@@ -28,6 +28,7 @@ import { NeedsAttention } from "@/components/needs-attention";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { Button, IconButton } from "@/components/button";
+import { MachineTree } from "@/components/machine-tree";
 import { NewWorkspaceDialog, WorkspaceList } from "@/components/workspace-list";
 import type { Task, TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
@@ -304,6 +305,12 @@ export default function App() {
           <WorkspaceList
             selectedId={reviewing || showingAll ? null : (selected?.id ?? null)}
             onSelect={(id) => openPage({ page: "workspace", workspace: id, task: null })}
+          />
+        </ErrorBoundary>
+        <ErrorBoundary label="the machines">
+          <MachineTree
+            onSelectWorkspace={(id) => openPage({ page: "workspace", workspace: id, task: null })}
+            onShowTask={showTask}
           />
         </ErrorBoundary>
         <Button

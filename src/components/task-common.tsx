@@ -43,7 +43,7 @@ export const statusTones: Record<ShownStatus, Tone> = {
 };
 
 /** The Astryx badge colour of each status tone. */
-const toneBadges: Record<Tone, BadgeVariant> = {
+export const toneBadges: Record<Tone, BadgeVariant> = {
   neutral: "neutral",
   info: "info",
   progress: "blue",
