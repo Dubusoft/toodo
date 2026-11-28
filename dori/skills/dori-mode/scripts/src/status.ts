@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import { autopilotPausePath, readPause } from "./autopilot-cli.ts";
-import type { DoriConfig } from "./config.ts";
+import { discordOn, type DoriConfig } from "./config.ts";
 import { displayTime } from "./display-time.ts";
 import { eventClass, eventKind, type EventClass, type EventPolicy } from "./event-policy.ts";
 import { readSourceStatus, SourceSpecs, type SourceView, sourceViews } from "./event-sources.ts";
@@ -91,6 +91,8 @@ export type Status = {
 
 export type StatusLane = {
   readonly key: string; readonly model?: string; readonly ageMin: number; readonly progress?: string; readonly repo?: string; readonly pr?: number;
+  /** The lane's Discord thread as a link, when the lane has one and the config names the guild. */
+  readonly threadUrl?: string;
   /** The Toodo task the lane works on (Lane.task); absent when none was named. */
   readonly task?: number;
   /** The runner the lane runs on (its owning runner, else its machine, else "local"); absent in an older status reads as "local". */
@@ -362,8 +364,13 @@ const readUnreported = (stateDir: string): NonNullable<Status["unreported"]> => 
   }) ?? [];
 };
 
-/** Cheap, offline guess at a lane's repo (owner/name from a gh -R in its Done signal, else the worktree directory) and PR number. */
+/**
+ * Cheap, offline guess at a lane's repo (owner/name from a gh -R in its Done signal, else the worktree directory) and PR
+ * number; the first PR of its done claim wins, since that is the PR the lane opened.
+ */
 const laneRepoPr = (l: Lane): { repo?: string; pr?: number } => {
+  const claimed = l.claim?.pulls?.[0];
+  if (claimed) return { repo: claimed.repo, pr: claimed.number };
   const text = `${l.done} ${l.title}`;
   const repo = /"-R"\s*,\s*"([\w.-]+\/[\w.-]+)"/.exec(text)?.[1] ?? /(?:^|\s)-R\s+([\w.-]+\/[\w.-]+)/.exec(text)?.[1]
     ?? /\/worktrees\/([^/]+)\//.exec(l.worktrees?.[0] ?? l.cwd ?? "")?.[1];
@@ -371,6 +378,12 @@ const laneRepoPr = (l: Lane): { repo?: string; pr?: number } => {
   const m = /\/pull\/(\d+)|\bpr\s+(?:view|checks|merge)\s+"?(\d+)/i.exec(l.done);
   const pr = m ? Number(m[1] ?? m[2]) : undefined;
   return { ...(repo ? { repo } : {}), ...(pr !== undefined ? { pr } : {}) };
+};
+
+/** The link of a lane's `discord:<thread>` or `discord:<channel>/<thread>` thread in `guildId`; undefined for any other thread. */
+export const discordThreadUrl = (thread: string, guildId: string | undefined): string | undefined => {
+  const id = /^discord:(?:\d+\/)?(\d+)$/.exec(thread)?.[1];
+  return id && guildId ? `https://discord.com/channels/${guildId}/${id}` : undefined;
 };
 
 /** Read-only and no LLM: unit states, files under stateDir, one hc terminal list. */
@@ -388,8 +401,13 @@ export const collectStatus = async (d: StatusDeps): Promise<Status> => {
   try { repos = new Repos(d.config.stateDir).list(); } catch { /* unreadable list: show none */ }
   const reports = latestLaneReports(d.config);
   const decisions = openOwnerDecisions(d.config.stateDir);
+  const threadUrlOf = (thread: string): { threadUrl?: string } => {
+    const threadUrl = discordOn(d.config) ? discordThreadUrl(thread, d.config.discord?.guildId) : undefined;
+    return threadUrl ? { threadUrl } : {};
+  };
   const statusLane = (l: Lane): StatusLane => ({
     key: l.key, ...(l.model ? { model: l.model } : {}), ...laneRepoPr(l), ...(l.task !== undefined ? { task: l.task } : {}),
+    ...threadUrlOf(l.thread),
     ageMin: Math.max(0, Math.floor((now - Date.parse(l.openedAt)) / 60_000)),
     ...(l.lastProgressPost ? { progress: l.lastProgressPost } : {}),
     ...(l.recoveryPending ? { recovery: (l as RecoveryLane).recoveryExhausted ? "exhausted" as const : "pending" as const } : {}),
