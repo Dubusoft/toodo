@@ -73,7 +73,7 @@ function thread(id: number, title: string, overrides: Partial<ChatThread> = {}):
 }
 
 function task(id: number, status: Task["status"], refs: string[] = []): Task {
-  return { id, title: `Task ${id}`, status, refs, dependsOn: [] } as unknown as Task;
+  return { id, title: `Task ${id}`, status, refs, dependsOn: [], timeline: [], notes: [] } as unknown as Task;
 }
 
 /** The open tasks the app loads; it loads no finished ones. */
@@ -302,6 +302,34 @@ describe("Chat", () => {
     expect(within(screen.getByRole("list", { name: "In progress" })).getByRole("button", { name: /#9/ })).not.toHaveTextContent(
       "Decision",
     );
+  });
+
+  it("moves an in-progress chat to the top when a new message arrives in it", async () => {
+    serve([], undefined, [
+      thread(5, "#7 Ship", { taskId: 7, lastMessageAt: 20 }),
+      thread(6, "#9 Docs", { taskId: 9, lastMessageAt: 10 }),
+    ]);
+    serveTasks([task(7, "in_progress", ["lane:ap-7"]), task(9, "in_progress", ["lane:ap-9"])]);
+    const queryClient = renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+
+    const order = () =>
+      within(screen.getByRole("list", { name: "In progress" }))
+        .getAllByRole("button", { name: /^#\d/ })
+        .map((button) => button.textContent?.slice(0, 2));
+    await waitFor(() => expect(order()).toEqual(["#7", "#9"]));
+
+    // A new message in #9's thread; a chat change refetches the threads as the server's chat-changed event does.
+    mocked.listChatThreads.mockResolvedValue({
+      status: "ok",
+      data: [
+        thread(5, "#7 Ship", { taskId: 7, lastMessageAt: 20 }),
+        thread(6, "#9 Docs", { taskId: 9, lastMessageAt: 30, lastMessage: "Done" }),
+      ],
+    });
+    await act(() => queryClient.invalidateQueries({ queryKey: ["chat"] }));
+
+    await waitFor(() => expect(order()).toEqual(["#9", "#7"]));
   });
 
   it("sends a message to the shown channel under a client id", async () => {

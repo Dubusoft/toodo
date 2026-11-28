@@ -27,9 +27,19 @@ export function laneOf(task: Task): string | null {
   return ref === undefined ? null : ref.slice("lane:".length);
 }
 
-/** The latest activity first: the thread's latest message, else the newest task. */
+/** When `task` last changed: its latest status change or note. */
+function lastUpdateOf(task: Task): number {
+  return Math.max(0, ...task.timeline.map((event) => event.at), ...task.notes.map((note) => note.at));
+}
+
+/** When a chat was last active: its thread's latest message, else its task's latest update. */
+function activityOf(chat: TaskChat): number {
+  return chat.thread?.lastMessageAt ?? lastUpdateOf(chat.task);
+}
+
+/** The latest activity first, then the newest task. */
 function byActivity(a: TaskChat, b: TaskChat): number {
-  return (b.thread?.lastMessageAt ?? 0) - (a.thread?.lastMessageAt ?? 0) || b.task.id - a.task.id;
+  return activityOf(b) - activityOf(a) || b.task.id - a.task.id;
 }
 
 /**
