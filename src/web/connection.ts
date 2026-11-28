@@ -10,6 +10,7 @@
  * follows the proxy to its sign-in page, which returns to the app (see `signInAgain`).
  */
 import { activeServer } from "@/web/server";
+import type { Messages } from "@/locales/en";
 
 /**
  * `checking`: a request failed and the probe that tells a blip from an outage runs.
@@ -25,9 +26,6 @@ const PROBE_TIMEOUT_MS = 10_000;
 const HEARTBEAT_MS = 5000;
 /** The heartbeat gives up sooner than a probe, so an outage shows within 10 s. */
 const HEARTBEAT_TIMEOUT_MS = 3000;
-/** The cause when a proxy in front of the server sends the browser to sign in to it again. */
-const SIGN_IN_AGAIN =
-  "The sign-in to the proxy in front of the server (such as Cloudflare Access) ran out. Reload the page to sign in again.";
 /** When the tab last reloaded to sign in again, kept across that reload. */
 const SIGN_IN_RELOAD_KEY = "toodo-sign-in-reload-at";
 /** A reload that brought no sign-in page waits this long before the next, so it cannot loop. */
@@ -37,7 +35,11 @@ let state: Reachability = "reachable";
 let delay = FIRST_RETRY_MS;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let recoveries = 0;
-let cause = "";
+type Failure =
+  | { readonly kind: "gateway"; readonly status: number }
+  | { readonly kind: "signInAgain" | "timedOut" | "disconnected" };
+
+let cause: Failure | null = null;
 const listeners = new Set<() => void>();
 const reachableListeners = new Set<() => void>();
 
@@ -57,13 +59,15 @@ export function subscribeReachability(listener: () => void): () => void {
 }
 
 /** Why the server counts as unreachable, for the person looking at the banner. */
-export function unreachableCause(): string {
-  return cause;
+export function unreachableCause(m: Messages): string {
+  if (cause === null) return "";
+  const copy = m.app.connection;
+  return cause.kind === "gateway" ? copy.gateway(cause.status) : copy[cause.kind];
 }
 
 /** Whether the server counts as unreachable because a proxy in front of it wants a new sign-in. */
 export function signInExpired(): boolean {
-  return cause === SIGN_IN_AGAIN;
+  return cause?.kind === "signInAgain";
 }
 
 /** How often the server answered again after it was unreachable, to tell a recovery that came before a wait. */
@@ -122,7 +126,7 @@ async function probe(running: "checking" | "retrying") {
 }
 
 /** Asks the server for any answer; returns why it did not give one, or null. */
-async function ask(timeoutMs: number): Promise<string | null> {
+async function ask(timeoutMs: number): Promise<Failure | null> {
   try {
     // Any answer will do: without a token the server answers 401. The server never redirects,
     // but a proxy whose sign-in ran out redirects to its sign-in page on another origin, which
@@ -133,12 +137,12 @@ async function ask(timeoutMs: number): Promise<string | null> {
       signal: AbortSignal.timeout(timeoutMs),
     });
     void response.body?.cancel();
-    if (response.type === "opaqueredirect") return SIGN_IN_AGAIN;
-    return isGatewayFailure(response) ? `A gateway in front of the server answered ${response.status}.` : null;
+    if (response.type === "opaqueredirect") return { kind: "signInAgain" };
+    return isGatewayFailure(response) ? { kind: "gateway", status: response.status } : null;
   } catch (error) {
     return error instanceof DOMException && error.name === "TimeoutError"
-      ? "The server did not answer in time."
-      : "No connection to the server.";
+      ? { kind: "timedOut" }
+      : { kind: "disconnected" };
   }
 }
 

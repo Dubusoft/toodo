@@ -1,11 +1,11 @@
 import { useState, type FormEvent } from "react";
+import { fill, useI18n, useMessages } from "@/lib/i18n";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { NumberInput } from "@astryxdesign/core/NumberInput";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button } from "@/components/button";
 import type { BackupEntry, BackupSettings } from "@/lib/bindings";
-import { formatFull } from "@/lib/timeline";
-import { When } from "@/components/when";
+import { formatFull, formatWhen } from "@/lib/timeline";
 import {
   useBackupSettings,
   useBackupStatus,
@@ -25,26 +25,24 @@ function formatSize(bytes: number): string {
   return bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-const kindLabels: Record<BackupEntry["kind"], string> = {
-  automatic: "Automatic",
-  preRestore: "Before restore",
-  preMigration: "Before update",
-};
-
-/** "Backup failed" while the latest automatic backup failed, for the Settings button and tab. */
+/** t.failed while the latest automatic backup failed, for the Settings button and tab. */
 export function BackupStatusLabel() {
+  const m = useMessages();
+  const t = m.settings.backupPanel;
   const status = useBackupStatus();
   if (!status.data?.lastFailure) return null;
-  return <span className="text-destructive">Backup failed</span>;
+  return <span className="text-destructive">{t.failed}</span>;
 }
 
 function BackupFailureAlert() {
+  const { locale, m } = useI18n();
+  const t = m.settings.backupPanel;
   const status = useBackupStatus();
   const failure = status.data?.lastFailure;
   if (!failure) return null;
   return (
-    <p role="alert" aria-label="Automatic backup failed" className="text-xs break-words text-destructive">
-      The automatic backup <When at={failure.at} /> failed: {failure.message}
+    <p role="alert" aria-label={t.autoFailed} className="text-xs break-words text-destructive">
+      {fill(t.failure, { at: <time dateTime={new Date(failure.at * 1000).toISOString()} title={formatFull(failure.at, locale)}>{formatWhen(failure.at, undefined, locale, m)}</time>, message: failure.message })}
     </p>
   );
 }
@@ -57,6 +55,8 @@ function sourceName(source: RestoreSource): string {
 }
 
 export function BackupPanel() {
+  const { locale, m } = useI18n();
+  const t = m.settings.backupPanel;
   const backups = useBackups();
   const downloadExport = useDownloadExport();
   const downloadBackup = useDownloadBackup();
@@ -71,7 +71,7 @@ export function BackupPanel() {
   function exportToFile() {
     setNotice(null);
     // The server sends a snapshot and the browser downloads it.
-    downloadExport.mutate(undefined, { onSuccess: (name) => setNotice(`Downloaded ${name}`) });
+    downloadExport.mutate(undefined, { onSuccess: (name) => setNotice(t.downloaded(name)) });
   }
 
   function pickBackup() {
@@ -80,7 +80,7 @@ export function BackupPanel() {
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".sqlite3,.db,application/vnd.sqlite3";
-    input.setAttribute("aria-label", "Restore backup file");
+    input.setAttribute("aria-label", t.restorePicker);
     input.addEventListener("change", () => {
       const file = input.files?.[0];
       if (file) setConfirming({ kind: "upload", file });
@@ -93,7 +93,7 @@ export function BackupPanel() {
     const options = {
       onSuccess: (safety: BackupEntry) => {
         setConfirming(null);
-        setNotice(`Restored ${sourceName(source)}. The previous data was saved as ${fileName(safety.path)}.`);
+        setNotice(t.restored(sourceName(source), fileName(safety.path)));
       },
     };
     if (source.kind === "upload") uploadRestore.mutate(source.file, options);
@@ -104,32 +104,31 @@ export function BackupPanel() {
     downloadExport.error ?? downloadBackup.error ?? restoreBackup.error ?? uploadRestore.error ?? backups.error;
 
   return (
-    <section aria-label="Backups" className="flex flex-col gap-2">
+    <section aria-label={m.settings.sections.backups} className="flex flex-col gap-2">
       <div className="flex gap-1">
         <Button
           size="sm"
           variant="secondary"
-          label={exporting ? "Exporting..." : "Export..."}
+          label={exporting ? t.exporting : t.export}
           onClick={exportToFile}
           isDisabled={exporting}
         />
-        <Button size="sm" variant="secondary" label="Restore from file" onClick={pickBackup} isDisabled={restoring} />
+        <Button size="sm" variant="secondary" label={t.restoreFile} onClick={pickBackup} isDisabled={restoring} />
       </div>
       {confirming && (
-        <div role="alertdialog" aria-label="Confirm restore" className="flex flex-col gap-1 rounded-md border border-destructive/40 p-2">
+        <div role="alertdialog" aria-label={t.confirm} className="flex flex-col gap-1 rounded-md border border-destructive/40 p-2">
           <p className="text-xs break-words">
-            Replace all workspaces and tasks with <span className="font-medium">{sourceName(confirming)}</span>? The
-            current data is backed up first.
+            {fill(t.replacePrompt, { name: <span className="font-medium">{sourceName(confirming)}</span> })}
           </p>
           <div className="flex gap-1">
             <Button
               size="sm"
               variant="destructive"
-              label={restoring ? "Restoring..." : "Replace data"}
+              label={restoring ? t.restoring : t.replace}
               onClick={() => restore(confirming)}
               isDisabled={restoring}
             />
-            <Button size="sm" variant="ghost" label="Cancel" onClick={() => setConfirming(null)} isDisabled={restoring} />
+            <Button size="sm" variant="ghost" label={m.common.cancel} onClick={() => setConfirming(null)} isDisabled={restoring} />
           </div>
         </div>
       )}
@@ -145,16 +144,16 @@ export function BackupPanel() {
       )}
       <BackupFailureAlert />
       <AutoBackupSettings />
-      <ul aria-label="Saved backups" className="flex flex-col divide-y">
-        {backups.data?.length === 0 && <li className="text-xs text-muted-foreground">No backups yet.</li>}
+      <ul aria-label={t.list} className="flex flex-col divide-y">
+        {backups.data?.length === 0 && <li className="text-xs text-muted-foreground">{t.empty}</li>}
         {backups.data?.map((backup) => (
           <li key={backup.path} className="flex flex-col gap-1 py-1.5 text-xs first:pt-0" title={backup.path}>
             <span className="flex flex-col">
               <time className="font-medium" dateTime={new Date(backup.createdAt * 1000).toISOString()}>
-                {formatFull(backup.createdAt)}
+                {formatFull(backup.createdAt, locale)}
               </time>
               <span className="text-muted-foreground">
-                <When at={backup.createdAt} /> · {kindLabels[backup.kind]} · {formatSize(backup.sizeBytes)}
+                <time dateTime={new Date(backup.createdAt * 1000).toISOString()} title={formatFull(backup.createdAt, locale)}>{formatWhen(backup.createdAt, undefined, locale, m)}</time> · {t.kinds[backup.kind]} · {formatSize(backup.sizeBytes)}
               </span>
             </span>
             <span className="flex flex-wrap gap-1">
@@ -162,25 +161,25 @@ export function BackupPanel() {
                 changesData
                 size="sm"
                 variant="secondary"
-                label={`Download backup from ${formatFull(backup.createdAt)}`}
+                label={t.downloadFrom(formatFull(backup.createdAt, locale))}
                 isDisabled={downloadBackup.isPending}
                 onClick={() => {
                   setNotice(null);
-                  downloadBackup.mutate(fileName(backup.path), { onSuccess: (name) => setNotice(`Downloaded ${name}`) });
+                  downloadBackup.mutate(fileName(backup.path), { onSuccess: (name) => setNotice(t.downloaded(name)) });
                 }}
               >
-                Download
+                {t.download}
               </Button>
               <Button
                 size="sm"
                 variant="secondary"
-                label={`Restore this backup from ${formatFull(backup.createdAt)}`}
+                label={t.restoreFrom(formatFull(backup.createdAt, locale))}
                 onClick={() => {
                   setNotice(null);
                   setConfirming({ kind: "backup", path: backup.path });
                 }}
               >
-                Restore this backup
+                {t.restore}
               </Button>
             </span>
           </li>
@@ -198,6 +197,8 @@ function AutoBackupSettings() {
 }
 
 function AutoBackupForm({ initial }: { initial: BackupSettings }) {
+  const m = useMessages();
+  const t = m.settings.backupPanel;
   const save = useSaveBackupSettings();
   const [enabled, setEnabled] = useState(initial.enabled);
   const [intervalHours, setIntervalHours] = useState(initial.intervalHours);
@@ -210,45 +211,45 @@ function AutoBackupForm({ initial }: { initial: BackupSettings }) {
   }
 
   return (
-    <form onSubmit={submit} aria-label="Automatic backups" className="flex flex-col gap-1 text-xs">
-      <CheckboxInput size="sm" label="Back up automatically" value={enabled} onChange={setEnabled} />
+    <form onSubmit={submit} aria-label={t.auto} className="flex flex-col gap-1 text-xs">
+      <CheckboxInput size="sm" label={t.autoToggle} value={enabled} onChange={setEnabled} />
       <div className="flex items-center gap-2">
-        Every
-        <NumberInput
-          size="sm"
-          width={80}
-          label="Hours between backups"
-          isLabelHidden
-          isIntegerOnly
-          min={1}
-          max={720}
-          value={intervalHours}
-          onChange={setIntervalHours}
-          isDisabled={!enabled}
-        />
-        hours
+        {fill(t.intervalField, { input: (
+          <NumberInput
+            size="sm"
+            width={80}
+            label={t.interval}
+            isLabelHidden
+            isIntegerOnly
+            min={1}
+            max={720}
+            value={intervalHours}
+            onChange={setIntervalHours}
+            isDisabled={!enabled}
+          />
+        ) })}
       </div>
       <div className="flex items-center gap-2">
-        Keep
-        <NumberInput
-          size="sm"
-          width={80}
-          label="Backups to keep"
-          isLabelHidden
-          isIntegerOnly
-          min={1}
-          max={100}
-          value={keep}
-          onChange={setKeep}
-          isDisabled={!enabled}
-        />
-        latest
+        {fill(t.keepField, { input: (
+          <NumberInput
+            size="sm"
+            width={80}
+            label={t.keep}
+            isLabelHidden
+            isIntegerOnly
+            min={1}
+            max={100}
+            value={keep}
+            onChange={setKeep}
+            isDisabled={!enabled}
+          />
+        ) })}
       </div>
       <TextInput
         size="sm"
-        label="Backup directory"
-        description="An absolute path on the server, e.g. on another disk. Every backup goes there, including the one before an update."
-        placeholder="the server's data directory"
+        label={t.directory}
+        description={t.directoryHint}
+        placeholder={t.directoryPlaceholder}
         hasSpellCheck={false}
         value={directory}
         onChange={setDirectory}
@@ -263,7 +264,7 @@ function AutoBackupForm({ initial }: { initial: BackupSettings }) {
         size="sm"
         variant="secondary"
         className="self-start"
-        label={save.isPending ? "Saving..." : "Save backup settings"}
+        label={save.isPending ? t.saving : t.save}
         isDisabled={save.isPending}
       />
     </form>

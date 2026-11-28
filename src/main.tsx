@@ -9,6 +9,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { UpdateBanner } from "@/components/update-banner";
 import { toodoTheme } from "@/lib/astryx-theme";
 import { flushChatOutbox } from "@/lib/chat-outbox";
+import { I18nProvider } from "@/lib/i18n";
 import { queryKeys } from "@/lib/queries";
 import { initPanelSizes } from "@/lib/panel-sizes";
 import { initTheme, useColorMode } from "@/lib/theme";
@@ -39,13 +40,15 @@ function render(app: ReactNode) {
   root.render(
     <React.StrictMode>
       <QueryClientProvider client={queryClient}>
-        <ThemedApp>
-          {/* Outside the boundary: an earlier build that fails against a newer server still offers the reload. */}
-          <UpdateBanner />
-          <ErrorBoundary label="Toodo" className="m-4">
-            {app}
-          </ErrorBoundary>
-        </ThemedApp>
+        <I18nProvider>
+          <ThemedApp>
+            {/* Outside the boundary: an earlier build that fails against a newer server still offers the reload. */}
+            <UpdateBanner />
+            <ErrorBoundary label="Toodo" className="m-4">
+              {app}
+            </ErrorBoundary>
+          </ThemedApp>
+        </I18nProvider>
       </QueryClientProvider>
     </React.StrictMode>,
   );

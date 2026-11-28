@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type FormEvent, type ReactNode } from "react";
+import { fill, useMessages } from "@/lib/i18n";
 import { Selector } from "@astryxdesign/core/Selector";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button } from "@/components/button";
@@ -31,16 +32,13 @@ export function ServerAccess({ children }: { children: ReactNode }) {
   return askedAccess ? <TokenForm /> : null;
 }
 
-const scopeOptions = [
-  { value: "full", label: "Full access" },
-  { value: "read", label: "Read-only" },
-];
-
-const lifetimeOptions = LIFETIMES.map(({ label, days }) => ({ value: days === null ? "never" : String(days), label }));
-
 function TokenForm() {
+  const m = useMessages();
+  const t = m.settings.serverAccess;
+  const scopeOptions = [{ value: "full", label: t.full }, { value: "read", label: m.settings.readOnly }];
+  const lifetimeOptions = LIFETIMES.map(({ label, days }) => ({ value: days === null ? "never" : String(days), label: t.lifetimes[label] }));
   const [token, setDraft] = useState("");
-  const [label, setLabel] = useState(() => guessDeviceLabel(navigator.userAgent));
+  const [label, setLabel] = useState(() => guessDeviceLabel(navigator.userAgent, m));
   const [scope, setScope] = useState<DeviceScope>(DEFAULT_ACCESS.scope);
   const [lifetime, setLifetime] = useState(String(DEFAULT_ACCESS.expiresInDays));
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +63,7 @@ function TokenForm() {
         tokenField.current?.focus();
         tokenField.current?.select();
       } else if (failure instanceof TypeError) {
-        setError(`Could not reach the server: ${String(failure)}`);
+        setError(t.unreachable(String(failure)));
       } else {
         setError(failure instanceof Error ? failure.message : String(failure));
       }
@@ -76,15 +74,15 @@ function TokenForm() {
 
   return (
     <main className="flex min-h-svh flex-col items-center justify-center gap-4 p-6">
-      <form onSubmit={submit} aria-label="Server access" className="flex w-full max-w-sm flex-col gap-3 rounded-lg border p-5">
-        <h1 className="text-lg font-semibold">Toodo server</h1>
+      <form onSubmit={submit} aria-label={t.region} className="flex w-full max-w-sm flex-col gap-3 rounded-lg border p-5">
+        <h1 className="text-lg font-semibold">{t.title}</h1>
         <p className="text-sm text-muted-foreground">
-          Sign in with the server's access token. This browser then gets a token of its own, which you can revoke under Devices.
+          {t.intro}
         </p>
         <div className="flex flex-col gap-1">
           <TextInput
             ref={tokenField}
-            label="Access token"
+            label={t.token}
             type="password"
             autoComplete="current-password"
             value={token}
@@ -97,31 +95,30 @@ function TokenForm() {
           />
           {rejected && (
             <p id={rejectedId} role="alert" className="text-xs text-destructive">
-              The server did not accept this token. Paste the whole contents of{" "}
-              <code className="text-xs">web-token</code> again; a device token stops working once it is revoked.
+              {fill(t.rejected, { token: <code className="text-xs">web-token</code> })}
             </p>
           )}
           <p id={helpId} className="text-xs text-muted-foreground">
-            Copy it from <code className="text-xs">web-token</code> in the server's data directory.
+            {fill(t.copyToken, { token: <code className="text-xs">web-token</code> })}
           </p>
         </div>
         <TextInput
-          label="Device name"
-          description="Signing in again under a device's name replaces that device, so give each browser its own name."
+          label={t.device}
+          description={t.deviceHint}
           value={label}
           onChange={(value) => setLabel(value.slice(0, 80))}
         />
         <div className="grid grid-cols-2 gap-2">
           <Selector
-            label="Access"
+            label={t.access}
             options={scopeOptions}
             value={scope}
             onChange={(value) => setScope(value as DeviceScope)}
           />
-          <Selector label="Token expires after" options={lifetimeOptions} value={lifetime} onChange={setLifetime} />
+          <Selector label={t.expiry} options={lifetimeOptions} value={lifetime} onChange={setLifetime} />
         </div>
         <p className="text-xs text-muted-foreground">
-          Applies when you sign in with <code className="text-xs">web-token</code>. When the token expires, sign in again.
+          {fill(t.expiryHelp, { token: <code className="text-xs">web-token</code> })}
         </p>
         {error && (
           <p role="alert" className="text-xs text-destructive">
@@ -131,7 +128,7 @@ function TokenForm() {
         <Button
           type="submit"
           variant="primary"
-          label={checking ? "Checking..." : "Continue"}
+          label={checking ? t.checking : t.continue}
           isDisabled={checking || !token.trim() || !label.trim()}
         />
       </form>

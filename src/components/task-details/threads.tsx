@@ -1,3 +1,4 @@
+import { useMessages } from "@/lib/i18n";
 import { useState } from "react";
 import { Conversation, ThreadActions, ThreadStatusBadge, taskName } from "@/components/chat-panel";
 import { DetailField } from "@/components/task-common";
@@ -11,6 +12,7 @@ import { cn } from "@/lib/utils";
  * the task has none.
  */
 export function TaskThreads({ task }: { task: Task }) {
+  const m = useMessages();
   const threads = useChatThreads({ taskId: task.id, archived: true });
   const channels = useChatChannels();
   const [shown, setShown] = useState<ChatThreadId | null>(null);
@@ -20,8 +22,8 @@ export function TaskThreads({ task }: { task: Task }) {
   const name = taskName(task);
 
   return (
-    <DetailField label={`Threads (${list.length})`}>
-      <ul aria-label={`Threads of #${task.id}`} className="flex flex-col gap-1">
+    <DetailField label={m.details.threads.count(list.length)}>
+      <ul aria-label={m.details.threads.ofTask(task.id)} className="flex flex-col gap-1">
         {list.map((thread) => {
           const open = shown === thread.id;
           return (
@@ -38,7 +40,7 @@ export function TaskThreads({ task }: { task: Task }) {
                 <span className="shrink-0 text-muted-foreground">{`#${channelName(thread.channelId)}`}</span>
                 <ThreadStatusBadge status={thread.status} />
                 {thread.unread > 0 && thread.status !== "archived" && (
-                  <span className="shrink-0 font-medium text-destructive">{`${thread.unread} unread`}</span>
+                  <span className="shrink-0 font-medium text-destructive">{m.details.threads.unread(thread.unread)}</span>
                 )}
                 {open && (
                   <span className="ml-auto flex shrink-0">

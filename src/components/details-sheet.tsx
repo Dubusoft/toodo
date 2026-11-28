@@ -1,3 +1,4 @@
+import { useMessages } from "@/lib/i18n";
 import { useLayoutEffect, useRef, type CSSProperties, type ReactNode, type Ref } from "react";
 import { XIcon } from "lucide-react";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -40,6 +41,7 @@ export function DetailsSheet({
   banner?: ReactNode;
   children: ReactNode;
 }) {
+  const m = useMessages();
   const sheet = useRef<HTMLElement | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const restore = useRef(returnFocus);
@@ -85,7 +87,7 @@ export function DetailsSheet({
           ref.current = element;
         }
       }}
-      aria-label="Task details"
+      aria-label={m.details.sheet.title}
       data-details-sheet=""
       data-dragging={drag.dragging ? "" : undefined}
       className={cn(
@@ -100,7 +102,7 @@ export function DetailsSheet({
         } as CSSProperties
       }
     >
-      <ResizeHandle label="Resize the task details" width="details-width" />
+      <ResizeHandle label={m.details.sheet.resize} width="details-width" />
       <div className="flex shrink-0 justify-center pt-2 pb-1 md:hidden touch-none" {...dragHandlers}>
         <span data-grabber aria-hidden className="h-1 w-9 rounded-full bg-muted-foreground/40" />
       </div>
@@ -109,13 +111,13 @@ export function DetailsSheet({
         {...dragHandlers}
       >
         <h3 ref={heading} tabIndex={-1} className="text-xs font-medium text-muted-foreground outline-none">
-          Task details
+          {m.details.sheet.title}
         </h3>
         <IconButton
           size="sm"
           variant="ghost"
-          label="Close details"
-          tooltip="Close details (Esc)"
+          label={m.details.sheet.close}
+          tooltip={m.details.sheet.closeTooltip}
           icon={<XIcon />}
           onClick={onClose}
         />

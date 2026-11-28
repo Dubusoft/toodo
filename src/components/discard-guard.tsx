@@ -1,5 +1,6 @@
 import { useRef, useState, type KeyboardEvent } from "react";
 import { Button } from "@/components/button";
+import { useMessages } from "@/lib/i18n";
 
 /** The fields of a form that take typed or picked values, Astryx selectors included. */
 const fields = "input, textarea, select, [role=combobox]";
@@ -59,6 +60,7 @@ export function DiscardConfirm({
   onKeep: (from: EventTarget | null) => void;
   onDiscard: () => void;
 }) {
+  const m = useMessages();
   return (
     <div role="group" aria-label={label} className="flex flex-wrap items-center gap-1 text-xs max-md:gap-2">
       <span className="mr-1">{question}</span>
@@ -66,11 +68,11 @@ export function DiscardConfirm({
         type="button"
         size="sm"
         variant="secondary"
-        label="Keep editing"
+        label={m.app.keepEditing}
         autoFocus
         onClick={(event) => onKeep(event.currentTarget)}
       />
-      <Button type="button" size="sm" variant="destructive" label="Discard changes" onClick={onDiscard} />
+      <Button type="button" size="sm" variant="destructive" label={m.app.discardChanges} onClick={onDiscard} />
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { fill, useI18n } from "@/lib/i18n";
 import { useState } from "react";
 import { Selector } from "@astryxdesign/core/Selector";
 import { TextInput } from "@astryxdesign/core/TextInput";
@@ -12,18 +13,16 @@ import {
   type PeriodLoad,
   type PlanScale,
 } from "@/lib/capacity";
-import { formatEstimate, parseEstimateAmount } from "@/lib/plan";
+import { formatDueDate, formatEstimate, parseEstimateAmount } from "@/lib/plan";
 import { formatDate } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
-
-const scaleNames: Record<PlanScale, string> = { quarter: "Quarter", year: "Year" };
-const unitNames: Record<EstimateUnit, string> = { hours: "hours", days: "days", weeks: "weeks", months: "months" };
 
 /**
  * The estimates of `tasks` summed per quarter or year of their due dates, against a capacity
  * per quarter saved in this browser, so a plan that does not fit shows before it slips.
  */
 export function PlanView({ tasks, onShowTask }: { tasks: Task[]; onShowTask: (id: TaskId) => void }) {
+  const { m, locale } = useI18n();
   const [scale, setScale] = useState<PlanScale>("quarter");
   const [capacity, setCapacity] = useState<Capacity | null>(loadCapacity);
   const [amountText, setAmountText] = useState(capacity === null ? "" : String(capacity.amount));
@@ -39,66 +38,65 @@ export function PlanView({ tasks, onShowTask }: { tasks: Task[]; onShowTask: (id
     setCapacity(next);
   };
   const shownUnit = capacity?.unit ?? unit;
-  const { periods, unscheduled, unscheduledEstimated } = planLoad(tasks, scale, capacity, formatDate(Date.now() / 1000));
+  const { periods, unscheduled, unscheduledEstimated } = planLoad(tasks, scale, capacity, formatDate(Date.now() / 1000), { m, locale });
   const overloaded = periods.filter((period) => period.overloaded).length;
 
   return (
-    <div role="region" aria-label="Plan" className="flex flex-col gap-4">
+    <div role="region" aria-label={m.tasks.plan} className="flex flex-col gap-4">
       <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
         <ToggleButtonGroup
-          label="Plan period"
+          label={m.tasks.planPeriod}
           size="sm"
           value={scale}
           onChange={(next) => typeof next === "string" && setScale(next as PlanScale)}
         >
           {(["quarter", "year"] as const).map((option) => (
-            <ToggleButton key={option} value={option} label={scaleNames[option]} />
+            <ToggleButton key={option} value={option} label={m.tasks.planScales[option]} />
           ))}
         </ToggleButtonGroup>
         <TextInput
-          label="Capacity per quarter"
+          label={m.tasks.quarterCapacity}
           size="sm"
           width={128}
           inputMode="decimal"
           status={Number.isNaN(amount) ? { type: "error" } : undefined}
           aria-describedby="capacity-hint"
-          placeholder="None"
+          placeholder={m.tasks.noCapacity}
           value={amountText}
           onChange={(value) => changeCapacity(value, unit)}
         />
         <Selector
-          label="Capacity unit"
+          label={m.tasks.capacityUnit}
           isLabelHidden
           size="sm"
-          options={(Object.keys(unitNames) as EstimateUnit[]).map((option) => ({ value: option, label: unitNames[option] }))}
+          options={(Object.keys(m.tasks.estimateUnits) as EstimateUnit[]).map((option) => ({ value: option, label: m.tasks.estimateUnits[option] }))}
           value={unit}
           onChange={(value) => changeCapacity(amountText, value as EstimateUnit)}
         />
       </div>
       <p id="capacity-hint" className={cn("text-xs", Number.isNaN(amount) ? "text-destructive" : "text-muted-foreground")}>
         {Number.isNaN(amount)
-          ? "Enter a capacity greater than 0 and at most 10000, such as 12, or clear the field for no capacity."
+          ? m.tasks.invalidCapacity
           : capacity === null
-            ? "Set a capacity per quarter to see which periods are overloaded. A year holds four quarters."
+            ? m.tasks.capacityHint
             : overloaded > 0
-              ? `${overloaded} ${overloaded === 1 ? "period is" : "periods are"} over capacity: move due dates or cut estimates.`
-              : "Every period fits its capacity."}
+              ? m.tasks.overloadedPeriods(overloaded)
+              : m.tasks.capacityFits}
       </p>
-      <ol aria-label="Periods" className="flex flex-col gap-3">
+      <ol aria-label={m.tasks.periods} className="flex flex-col gap-3">
         {periods.map((load) => (
           <PeriodCard key={load.period.from} load={load} unit={shownUnit} onShowTask={onShowTask} />
         ))}
       </ol>
       {unscheduled.length > 0 && (
-        <section aria-label="No due date" className="flex flex-col gap-2 rounded-xl border border-dashed p-3">
+        <section aria-label={m.tasks.missingPlan.dueDate} className="flex flex-col gap-2 rounded-xl border border-dashed p-3">
           <h3 className="flex items-baseline gap-2 text-sm font-medium">
-            No due date
+            {m.tasks.missingPlan.dueDate}
             <span className="text-xs font-normal text-muted-foreground tabular-nums">
-              {unscheduled.length} {unscheduled.length === 1 ? "task" : "tasks"}, {formatWork(unscheduledEstimated, shownUnit)}{" "}
-              estimated
+              {m.tasks.unscheduledEstimate(m.tasks.taskCount(unscheduled.length), formatWork(unscheduledEstimated, shownUnit, m))}
             </span>
           </h3>
-          <p className="text-xs text-muted-foreground">Set a due date on these tasks to count them in a period.</p>
+          <p className="text-xs text-muted-foreground">{m.tasks.unscheduledHint}</p>
           <TaskLines tasks={unscheduled} onShowTask={onShowTask} />
         </section>
       )}
@@ -107,6 +105,7 @@ export function PlanView({ tasks, onShowTask }: { tasks: Task[]; onShowTask: (id
 }
 
 function PeriodCard({ load, unit, onShowTask }: { load: PeriodLoad; unit: EstimateUnit; onShowTask: (id: TaskId) => void }) {
+  const { m } = useI18n();
   const { capacity, estimated, overloaded } = load;
   const share = capacity === null || capacity === 0 ? null : estimated / capacity;
   return (
@@ -121,16 +120,17 @@ function PeriodCard({ load, unit, onShowTask }: { load: PeriodLoad; unit: Estima
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <h3 className="text-sm font-medium">{load.label}</h3>
         <span className="text-sm tabular-nums">
-          {formatWork(estimated, unit)}
-          {capacity !== null && <span className="text-muted-foreground"> of {formatWork(capacity, unit)}</span>}
-          {share !== null && <span className="text-muted-foreground"> ({Math.round(share * 100)}%)</span>}
+          {fill(m.tasks.estimatedOfCapacity, {
+            estimated: formatWork(estimated, unit, m),
+            capacity: capacity !== null && <span className="text-muted-foreground">{m.tasks.capacityOf(formatWork(capacity, unit, m))}</span>,
+            share: share !== null && <span className="text-muted-foreground">{m.tasks.capacityShare(Math.round(share * 100))}</span>,
+          })}
         </span>
         {overloaded && capacity !== null && (
-          <span className="text-xs font-medium text-destructive">Over capacity by {formatWork(estimated - capacity, unit)}</span>
+          <span className="text-xs font-medium text-destructive">{m.tasks.overCapacity(formatWork(estimated - capacity, unit, m))}</span>
         )}
         <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-          {load.tasks.length} {load.tasks.length === 1 ? "task" : "tasks"}
-          {load.done > 0 && `, ${formatWork(load.done, unit)} done`}
+          {m.tasks.periodTaskCount(m.tasks.taskCount(load.tasks.length), load.done > 0 ? formatWork(load.done, unit, m) : undefined)}
         </span>
       </div>
       {share !== null && (
@@ -143,8 +143,7 @@ function PeriodCard({ load, unit, onShowTask }: { load: PeriodLoad; unit: Estima
       )}
       {load.unestimated > 0 && (
         <p className="text-xs text-muted-foreground">
-          {load.unestimated} {load.unestimated === 1 ? "task has" : "tasks have"} no estimate and {load.unestimated === 1 ? "is" : "are"} not
-          counted: estimate {load.unestimated === 1 ? "it" : "them"} to complete the sum.
+          {m.tasks.unestimatedTasks(load.unestimated)}
         </p>
       )}
       {load.tasks.length > 0 && <TaskLines tasks={load.tasks} onShowTask={onShowTask} />}
@@ -153,6 +152,7 @@ function PeriodCard({ load, unit, onShowTask }: { load: PeriodLoad; unit: Estima
 }
 
 function TaskLines({ tasks, onShowTask }: { tasks: Task[]; onShowTask: (id: TaskId) => void }) {
+  const { m, locale } = useI18n();
   return (
     <ul className="flex flex-col text-sm">
       {tasks.map((task) => (
@@ -168,8 +168,8 @@ function TaskLines({ tasks, onShowTask }: { tasks: Task[]; onShowTask: (id: Task
             <span className="tabular-nums text-muted-foreground">#{task.id}</span> {task.title}
           </button>
           <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
-            {task.estimate === null ? "No estimate" : formatEstimate(task.estimate)}
-            {task.dueDate !== null && ` · due ${task.dueDate}`}
+            {task.estimate === null ? m.tasks.missingPlan.estimate : formatEstimate(task.estimate, m)}
+            {task.dueDate !== null && m.tasks.planDueDate(formatDueDate(task.dueDate, locale))}
           </span>
         </li>
       ))}

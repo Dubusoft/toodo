@@ -15,17 +15,10 @@ import {
   estimatedSeconds,
   secondsPastDue,
 } from "@/lib/plan";
-import { statusNames } from "@/lib/status-styles";
+import { en, type Messages } from "@/locales/en";
+import type { Locale } from "@/lib/i18n";
 
-export const outcomeLabels: Record<ReviewOutcome, string> = {
-  completed: "Completed",
-  opened_for_review: statusNames.in_review,
-  started: "Started",
-  worked_on: "Worked on",
-  planned: "Planned",
-};
-
-const outcomeOrder = Object.keys(outcomeLabels) as ReviewOutcome[];
+const outcomeOrder = ["completed", "opened_for_review", "started", "worked_on", "planned"] as const satisfies readonly ReviewOutcome[];
 
 export type PeriodKind = "week" | "month" | "quarter" | "year" | "custom";
 
@@ -38,22 +31,6 @@ export interface ReviewPeriod {
   from: string;
   to: string;
 }
-
-export const periodNouns: Record<PeriodKind, string> = {
-  week: "week",
-  month: "month",
-  quarter: "quarter",
-  year: "year",
-  custom: "period",
-};
-
-export const periodTitles: Record<PeriodKind, string> = {
-  week: "Week review",
-  month: "Month review",
-  quarter: "Quarter review",
-  year: "Year review",
-  custom: "Review",
-};
 
 function parseDay(day: string): [number, number, number] {
   const [year, month, date] = day.split("-").map(Number);
@@ -148,18 +125,26 @@ export function dayIn(at: Timestamp, timeZone: string): string {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
-export function periodLabel(period: ReviewPeriod): string {
+export function formatReviewDay(day: string, locale: Locale): string {
+  return locale === "en" ? day : localMidnight(day).toLocaleDateString(locale, { dateStyle: "medium" });
+}
+
+export function formatReviewMonth(month: string, locale: Locale): string {
+  return locale === "en" ? month : localMidnight(`${month}-01`).toLocaleDateString(locale, { year: "numeric", month: "short" });
+}
+
+export function periodLabel(period: ReviewPeriod, { m, locale }: { readonly m: Messages; readonly locale: Locale } = { m: en, locale: "en" }): string {
   const [year, month] = parseDay(period.from);
   switch (period.kind) {
     case "month":
-      return period.from.slice(0, 7);
+      return formatReviewMonth(period.from.slice(0, 7), locale);
     case "quarter":
-      return `${year} Q${Math.floor(month / 3) + 1}`;
+      return m.review.quarterLabel(year, Math.floor(month / 3) + 1);
     case "year":
-      return String(year);
+      return m.review.yearLabel(year);
     case "week":
     case "custom":
-      return `${period.from} to ${period.to}`;
+      return m.review.dateRange(formatReviewDay(period.from, locale), formatReviewDay(period.to, locale));
   }
 }
 
@@ -175,21 +160,14 @@ export function commitSubject(message: string): string {
   return message.split("\n", 1)[0];
 }
 
-function plural(count: number, noun: string): string {
-  return `${count} ${count === 1 ? noun : `${noun}s`}`;
-}
-
 /** The pull request number of a GitHub pull request URL. */
 export function pullRequestNumber(url: string): string | null {
   return /\/pull\/(\d+)/.exec(url)?.[1] ?? null;
 }
 
 /** The number, size, and reviews of a merged pull request, e.g. `#12, +10/-3 in 2 files, 1 review`. */
-export function pullRequestStats(pullRequest: PullRequestSnapshot): string {
-  return `#${pullRequest.number}, +${pullRequest.additions}/-${pullRequest.deletions} in ${plural(
-    pullRequest.changedFiles,
-    "file",
-  )}, ${plural(pullRequest.reviewCount, "review")}`;
+export function pullRequestStats(pullRequest: PullRequestSnapshot, m: Messages): string {
+  return m.review.pullRequestStats(pullRequest);
 }
 
 /** Size of the merged pull requests of completed tasks, summed. */
@@ -267,6 +245,7 @@ export function summarize(
   entries: ReviewEntry[],
   workspaces: Pick<Workspace, "id" | "name">[],
   timeZone: string,
+  m: Messages = en,
 ): ReviewSummary {
   const names = new Map(workspaces.map((workspace) => [workspace.id, workspace.name]));
   const completed = entries.filter((entry) => entry.outcome === "completed");
@@ -280,7 +259,7 @@ export function summarize(
       count,
     })),
     completedByWorkspace: countBy(
-      completed.map((entry) => names.get(entry.task.workspaceId) ?? `workspace ${entry.task.workspaceId}`),
+      completed.map((entry) => names.get(entry.task.workspaceId) ?? m.review.unnamedWorkspace(entry.task.workspaceId)),
     ).map(({ key, count }) => ({ workspace: key, count })),
     leadTime: median(durations(completed, ({ task, at }) => [task.milestones.plannedAt, at])),
     cycleTime: median(durations(completed, ({ task, at }) => [task.milestones.startedAt, at])),
@@ -382,23 +361,28 @@ export function planVsActual(periodEnd: Timestamp, entries: ReviewEntry[], now: 
 }
 
 /** Estimated against active time, e.g. `12h estimated, 15h active (4 tasks, 1.25x)`. */
-export function formatEstimateAccuracy(time: NonNullable<PlanVsActual["time"]>): string {
-  return `${formatDuration(time.estimated)} estimated, ${formatDuration(time.actual)} active (${plural(
-    time.tasks,
-    "task",
-  )}, ${(time.actual / time.estimated).toFixed(2)}x)`;
+export function formatEstimateAccuracy(time: NonNullable<PlanVsActual["time"]>, m: Messages): string {
+  return m.review.estimateAccuracy({
+    estimated: formatDuration(time.estimated, m),
+    actual: formatDuration(time.actual, m),
+    tasks: time.tasks,
+    ratio: (time.actual / time.estimated).toFixed(2),
+  });
 }
 
 /** Share of due dates met, e.g. `3 of 4 (75%)`. */
-export function formatDueRate(dueDates: NonNullable<PlanVsActual["dueDates"]>): string {
-  return `${dueDates.onTime} of ${dueDates.tasks} (${Math.round((dueDates.onTime / dueDates.tasks) * 100)}%)`;
+export function formatDueRate(dueDates: NonNullable<PlanVsActual["dueDates"]>, m: Messages): string {
+  return m.review.dueRate(dueDates.onTime, dueDates.tasks, Math.round((dueDates.onTime / dueDates.tasks) * 100));
 }
 
 /** Why a late task is late, e.g. `due 2026-10-10, done 2026-10-12, 1.5d late`. */
-export function lateDetails({ task, dueDate, done, secondsLate }: LateTask): string {
+export function lateDetails({ task, dueDate, done, secondsLate }: LateTask, m: Messages, locale: Locale): string {
   const completedAt = task.milestones.completedAt;
-  const finish = done && completedAt !== null ? `done ${formatDate(completedAt)}` : "still open";
-  return `due ${dueDate}, ${finish}, ${formatDuration(secondsLate)} ${done ? "late" : "overdue"}`;
+  const finish = done && completedAt !== null
+    ? m.review.lateCompleted(formatReviewDay(formatDate(completedAt), locale))
+    : m.review.stillOpen;
+  const detail = done ? m.review.lateDetails : m.review.overdueDetails;
+  return detail(formatReviewDay(dueDate, locale), finish, formatDuration(secondsLate, m));
 }
 
 /** Merged pull requests of completed tasks with their size and reviews, summed. */
@@ -483,16 +467,13 @@ export function yearInReview(entries: ReviewEntry[]): YearInReview | null {
 }
 
 /** Reviews of merged pull requests, e.g. `5 reviews on 3 of 4 pull requests`. */
-export function formatReviews(totals: PullRequestTotals): string {
-  return `${plural(totals.reviews, "review")} on ${totals.reviewed} of ${plural(totals.pullRequests, "pull request")}`;
+export function formatReviews(totals: PullRequestTotals, m: Messages): string {
+  return m.review.pullRequestReviews(totals);
 }
 
 /** The summed size of merged pull requests, e.g. `+120/-30 in 9 files (3 pull requests)`. */
-export function formatChanges(changes: ChangeStat): string {
-  return `+${changes.additions}/-${changes.deletions} in ${plural(changes.changedFiles, "file")} (${plural(
-    changes.pullRequests,
-    "pull request",
-  )})`;
+export function formatChanges(changes: ChangeStat, m: Messages): string {
+  return m.review.pullRequestChanges(changes);
 }
 
 function periodMonths(period: ReviewPeriod): string[] {
@@ -507,21 +488,14 @@ function periodMonths(period: ReviewPeriod): string[] {
 }
 
 /** A duration in seconds as hours below a day, otherwise as days with one decimal. */
-export function formatDuration(seconds: number): string {
+export function formatDuration(seconds: number, m: Messages = en): string {
   const hours = seconds / 3600;
-  if (hours < 1) return "<1h";
-  if (Math.round(hours) < 24) return `${Math.round(hours)}h`;
-  return `${(hours / 24).toFixed(1)}d`;
+  if (hours < 1) return m.review.underOneHour;
+  if (Math.round(hours) < 24) return m.review.hours(Math.round(hours));
+  return m.review.days((hours / 24).toFixed(1));
 }
 
 export const durationKeys = ["leadTime", "cycleTime", "activeTime", "reviewTime"] as const;
-
-export const durationLabels = {
-  leadTime: "Median lead time (planned to completed)",
-  cycleTime: "Median cycle time (started to completed)",
-  activeTime: "Median active time (started to completed, without pauses)",
-  reviewTime: "Median review time (awaiting completion to merged)",
-} as const;
 
 /** Which reviewed tasks to show: those of one workspace and with one label; `null` for any. */
 export type ReviewFilter = { workspaceId: WorkspaceId | null; label: string | null };

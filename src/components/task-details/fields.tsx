@@ -1,3 +1,5 @@
+import type { Messages } from "@/locales/en";
+import { useMessages } from "@/lib/i18n";
 import { Bot, X } from "lucide-react";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Button, IconButton } from "@/components/button";
@@ -18,31 +20,32 @@ import { type TaskContext, taskRef, DueDate, DetailField, TaskLabels, useServerD
 import { openUrl } from "@/web/opener";
 
 /** What a status change with a reason did, e.g. `Started` or `Paused`. */
-function eventLabel(event: TaskEvent): string {
+function eventLabel(event: TaskEvent, m: Messages): string {
   switch (event.status) {
     case "in_progress":
-      return "Started";
+      return m.details.milestones.startedAt;
     case "in_review":
-      return "In review";
+      return m.details.fields.inReview;
     case "done":
-      return "Completed";
+      return m.details.milestones.completedAt;
     case "planned":
-      return event.reopened ? "Reopened" : "Paused";
+      return event.reopened ? m.details.milestones.reopenedAt : m.details.milestones.pausedAt;
   }
 }
 
 /** The status changes of `task` that were recorded with a reason, oldest first. */
 function TaskReasons({ task }: { task: Task }) {
+  const m = useMessages();
   const reasons = task.timeline.filter((event) => event.reason !== null);
   if (reasons.length === 0) {
     return null;
   }
   return (
-    <ol aria-label={`Reasons of #${task.id}`} className="mt-1 flex flex-col gap-0.5">
+    <ol aria-label={m.details.fields.reasons(task.id)} className="mt-1 flex flex-col gap-0.5">
       {reasons.map((event, index) => (
         <li key={index} className="flex min-w-0 items-baseline gap-2 max-md:flex-wrap max-md:gap-y-0">
           <When className="shrink-0 text-muted-foreground" at={event.at} />
-          <span className="shrink-0 font-medium">{eventLabel(event)}</span>
+          <span className="shrink-0 font-medium">{eventLabel(event, m)}</span>
           <span className="min-w-0 whitespace-pre-line break-words-keep max-md:basis-full">{event.reason}</span>
         </li>
       ))}
@@ -51,10 +54,10 @@ function TaskReasons({ task }: { task: Task }) {
 }
 
 /** The prefixes of references Toodo names, e.g. `lane:search` as Lane `search`. */
-const refKinds: Record<string, string> = { lane: "Lane", discord: "Discord", pr: "PR" };
 
 /** One reference of a task: a URL as a link, a known `<kind>:<value>` with its kind as a label. */
 function TaskRef({ value }: { value: string }) {
+  const m = useMessages();
   if (/^https?:\/\//i.test(value)) {
     const open = (event: { preventDefault: () => void }) => {
       event.preventDefault();
@@ -72,7 +75,10 @@ function TaskRef({ value }: { value: string }) {
     );
   }
   const separator = value.indexOf(":");
-  const kind = separator > 0 ? refKinds[value.slice(0, separator)] : undefined;
+  const prefix = value.slice(0, separator);
+  const kind = separator > 0 && (prefix === "lane" || prefix === "discord" || prefix === "pr")
+    ? m.details.refKinds[prefix]
+    : undefined;
   if (kind === undefined) {
     return <code className="min-w-0 break-all">{value}</code>;
   }
@@ -86,12 +92,13 @@ function TaskRef({ value }: { value: string }) {
 
 /** Where the work of a task is tracked or discussed, in the order the references were added. */
 export function TaskRefs({ task }: { task: Task }) {
+  const m = useMessages();
   if (task.refs.length === 0) {
     return null;
   }
   return (
-    <DetailField label="Refs">
-      <ul aria-label={`Refs of #${task.id}`} className="flex flex-col gap-0.5">
+    <DetailField label={m.details.fields.refs}>
+      <ul aria-label={m.details.fields.refsOf(task.id)} className="flex flex-col gap-0.5">
         {task.refs.map((value) => (
           <li key={value} className="flex min-w-0">
             <TaskRef value={value} />
@@ -104,14 +111,15 @@ export function TaskRefs({ task }: { task: Task }) {
 
 
 export function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean }) {
-  const milestones = reachedMilestones(task.milestones);
+  const m = useMessages();
+  const milestones = reachedMilestones(task.milestones, m);
   if (milestones.length === 0) {
     return null;
   }
   if (detailed) {
     return (
-      <DetailField label="Timeline">
-        <dl aria-label={`Timeline of #${task.id}`} className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
+      <DetailField label={m.details.fields.timeline}>
+        <dl aria-label={m.details.fields.timelineOf(task.id)} className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
           {milestones.map(({ label, at }) => (
             <div key={label} className="contents">
               <dt className="text-muted-foreground">{label}</dt>
@@ -126,7 +134,7 @@ export function TaskTimeline({ task, detailed }: { task: Task; detailed: boolean
     );
   }
   return (
-    <p aria-label={`Timeline of #${task.id}`} className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+    <p aria-label={m.details.fields.timelineOf(task.id)} className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
       {milestones.map(({ label, at }) => (
         <When key={label} at={at} prefix={`${label} `} />
       ))}
@@ -149,6 +157,7 @@ export function RelatedTasks({
   context: TaskContext;
   navigation?: SheetNavigation;
 }) {
+  const m = useMessages();
   const relations = useTaskRelations();
   const addRelation = useAddRelation();
   const removeRelation = useRemoveRelation();
@@ -167,11 +176,11 @@ export function RelatedTasks({
   }
   const picker = groups.length > 0 && (
     <Selector
-      label={`Add related task to #${task.id}`}
+      label={m.details.fields.addRelated(task.id)}
       isLabelHidden
       size="sm"
       width={192}
-      placeholder="Add related task..."
+      placeholder={m.details.fields.addRelatedHint}
       // Always shows the placeholder: picking a task adds it instead of keeping a value.
       value=""
       isDisabled={busy}
@@ -201,8 +210,8 @@ export function RelatedTasks({
     );
   }
   return (
-    <DetailField label="Related">
-      <ul aria-label={`Related tasks of #${task.id}`} className="flex flex-wrap items-center gap-1 max-md:gap-2">
+    <DetailField label={m.details.fields.related}>
+      <ul aria-label={m.details.fields.relatedOf(task.id)} className="flex flex-wrap items-center gap-1 max-md:gap-2">
         {related.map((id) => {
           const other = context.byId.get(id);
           const label = taskRef(id, task.workspaceId, context);
@@ -212,7 +221,7 @@ export function RelatedTasks({
                 size="sm"
                 variant="secondary"
                 label={other === undefined ? label : `${label} ${other.title}`}
-                aria-label={`Open related task ${label}`}
+                aria-label={m.details.fields.openRelated(label)}
                 tooltip={other?.title}
                 className="min-w-0 max-w-56 tabular-nums"
                 isDisabled={navigation === undefined || !navigation.canOpen(id)}
@@ -221,8 +230,8 @@ export function RelatedTasks({
               <IconButton
                 size="sm"
                 variant="ghost"
-                label={`Remove related task #${id} from #${task.id}`}
-                tooltip="Remove related task"
+                label={m.details.fields.removeRelated(id, task.id)}
+                tooltip={m.details.fields.removeRelatedHint}
                 icon={<X />}
                 isDisabled={busy}
                 onClick={() => removeRelation.mutate({ taskId: task.id, relatedId: id })}
@@ -242,6 +251,7 @@ export function RelatedTasks({
  * records since when, clearing drops it. The other fields are sent unchanged.
  */
 export function AutopilotToggle({ task }: { task: Task }) {
+  const m = useMessages();
   const updateTask = useUpdateTask();
   const toggle = () =>
     updateTask.mutate({
@@ -262,13 +272,13 @@ export function AutopilotToggle({ task }: { task: Task }) {
         variant={task.autopilot ? "primary" : "secondary"}
         changesData
         aria-pressed={task.autopilot}
-        aria-label={`Autopilot of #${task.id}`}
-        label={task.autopilot ? "Autopilot on" : "Autopilot off"}
+        aria-label={m.details.fields.autopilotOf(task.id)}
+        label={task.autopilot ? m.details.fields.autopilotOn : m.details.fields.autopilotOff}
         icon={<Bot aria-hidden />}
         tooltip={
           task.autopilot
-            ? "Marked for autopilot: an executor may take it up on its own once it is ready. Click to clear."
-            : "Not marked for autopilot. Click to let an executor take it up on its own once it is ready."
+            ? m.details.fields.autopilotOnHint
+            : m.details.fields.autopilotOffHint
         }
         isDisabled={updateTask.isPending}
         onClick={toggle}
@@ -288,6 +298,7 @@ export function AutopilotToggle({ task }: { task: Task }) {
  * live workspace. Only the workspace changes: history, notes, criteria, refs, and links stay.
  */
 export function TaskWorkspace({ task }: { task: Task }) {
+  const m = useMessages();
   const workspaces = useWorkspaces();
   const moveTask = useMoveTask();
   const serverDown = useServerDown();
@@ -299,10 +310,10 @@ export function TaskWorkspace({ task }: { task: Task }) {
     <>
       <span
         className="inline-flex"
-        title="Move the task to another workspace; its history, notes, criteria, refs, and links stay"
+        title={m.details.fields.workspaceHint}
       >
         <Selector
-          label={`Workspace of #${task.id}`}
+          label={m.details.fields.workspaceOf(task.id)}
           isLabelHidden
           size="sm"
           width={160}
@@ -323,11 +334,12 @@ export function TaskWorkspace({ task }: { task: Task }) {
 
 /** A task's estimate and due date, the due date in red once it is missed. */
 export function TaskPlan({ task }: { task: Task }) {
+  const m = useMessages();
   return (
     <>
       {(task.estimate !== null || task.dueDate !== null) && (
-        <p aria-label={`Plan of #${task.id}`} className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
-          {task.estimate !== null && <span>Estimate {formatEstimate(task.estimate)}</span>}
+        <p aria-label={m.details.fields.planOf(task.id)} className="flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+          {task.estimate !== null && <span>{m.details.fields.estimate(formatEstimate(task.estimate, m))}</span>}
           {task.dueDate !== null && <DueDate task={task} />}
         </p>
       )}

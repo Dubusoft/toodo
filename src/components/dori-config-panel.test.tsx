@@ -1,8 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DoriConfigPanel } from "@/components/dori-config-panel";
+import { DoriConfigPanel, LanguageSettingField } from "@/components/dori-config-panel";
 import type { DoriConfigEntry, DoriConfigView } from "@/lib/dori-config";
+import { I18nProvider, useLocaleFromSettings, useMessages } from "@/lib/i18n";
+import { ko } from "@/locales/ko";
 import { chooseOption } from "@/test/app";
 import { fetchDoriConfig, saveDoriConfig } from "@/web/dori-config";
 
@@ -36,9 +38,66 @@ function renderPanel(active = true) {
   );
 }
 
+/** The General section's Language field beside a heading in the UI language, as the app follows it. */
+function LocalizedLanguageField() {
+  useLocaleFromSettings();
+  return (
+    <>
+      <h2>{useMessages().settings.title}</h2>
+      <LanguageSettingField />
+    </>
+  );
+}
+
+function renderLanguageField() {
+  render(
+    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+      <I18nProvider>
+        <LocalizedLanguageField />
+      </I18nProvider>
+    </QueryClientProvider>,
+  );
+}
+
 beforeEach(() => {
   fetched.mockReset();
   saved.mockReset();
+  localStorage.clear();
+});
+
+describe("LanguageSettingField", () => {
+  it("switches the language with the Language option", async () => {
+    fetched.mockResolvedValue(view("English"));
+    saved.mockResolvedValue({ view: view("Japanese"), restart: false });
+    renderLanguageField();
+    chooseOption(await screen.findByRole("combobox", { name: /Language/ }), "Japanese");
+    await waitFor(() => expect(saved).toHaveBeenCalledWith({ key: "ownerLanguage", value: "Japanese" }));
+    expect(await screen.findByText("Saved. Dori applies it now, without a restart.")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /Language/ })).toHaveTextContent("Japanese");
+  });
+
+  it("switches the app's screens to Korean and back to English without a reload", async () => {
+    fetched.mockResolvedValue(view("English"));
+    saved.mockResolvedValueOnce({ view: view("Korean"), restart: false });
+    saved.mockResolvedValueOnce({ view: view("English"), restart: false });
+    renderLanguageField();
+    chooseOption(await screen.findByRole("combobox", { name: /Language/ }), "Korean");
+    expect(await screen.findByRole("heading", { name: ko.settings?.title })).toBeInTheDocument();
+    expect(await screen.findByText(ko.settings?.savedNow ?? "")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: new RegExp(ko.settings?.language ?? "") })).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe("ko");
+    chooseOption(screen.getByRole("combobox"), ko.settings?.languageNames?.English ?? "");
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe("en");
+  });
+
+  it("shows nothing on a server without Dori", async () => {
+    fetched.mockRejectedValue(new Error("Not Found"));
+    renderLanguageField();
+    await waitFor(() => expect(fetched).toHaveBeenCalled());
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+  });
 });
 
 describe("DoriConfigPanel", () => {
@@ -47,14 +106,12 @@ describe("DoriConfigPanel", () => {
     expect(fetched).not.toHaveBeenCalled();
   });
 
-  it("switches the language with the Language option", async () => {
+  it("leaves the language to the General section", async () => {
     fetched.mockResolvedValue(view("Korean"));
-    saved.mockResolvedValue({ view: view("Japanese"), restart: false });
     renderPanel();
-    chooseOption(await screen.findByRole("combobox", { name: /Language/ }), "Japanese");
-    await waitFor(() => expect(saved).toHaveBeenCalledWith({ key: "ownerLanguage", value: "Japanese" }));
-    expect(await screen.findByText("Saved. Dori applies it now, without a restart.")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: /Language/ })).toHaveTextContent("Japanese");
+    await screen.findByRole("listitem", { name: "Config defaultModel" });
+    expect(screen.queryByRole("combobox", { name: /Language/ })).toBeNull();
+    expect(screen.queryByRole("listitem", { name: "Config ownerLanguage" })).toBeNull();
   });
 
   it("saves an edited key and shows the server's reason when it refuses one", async () => {

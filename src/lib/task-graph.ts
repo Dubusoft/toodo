@@ -1,3 +1,4 @@
+import type { Locale } from "@/lib/i18n";
 import type { Task, TaskId, TaskStatus, Timestamp } from "@/lib/bindings";
 import { type WorkState, workSegments } from "@/lib/timeline";
 import { dueEnd, dueState, estimatedSeconds, type DueState } from "@/lib/plan";
@@ -478,6 +479,20 @@ const majorLabels: Record<TickUnit, (date: Date) => string> = {
   day: (date) => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
 };
 
+const tickDateOptions: Record<TickUnit, Intl.DateTimeFormatOptions> = {
+  hour: { hour: "numeric" },
+  day: { month: "short", day: "numeric" },
+  week: { month: "short", day: "numeric" },
+  month: { year: "numeric", month: "short" },
+  year: { year: "numeric" },
+};
+
+function localizedTick(date: Date, unit: TickUnit, locale: Locale, major = false): string {
+  return date.toLocaleString(locale, major && unit === "day"
+    ? { ...tickDateOptions.day, year: "numeric" }
+    : tickDateOptions[unit]);
+}
+
 /** The local start of the `unit` containing `at`: its hour, midnight, Monday, first of the month, or New Year. */
 function startOfUnit(at: Timestamp, unit: TickUnit): Date {
   const date = new Date(at * 1000);
@@ -531,6 +546,7 @@ export function timelineAxis(
   layout: TimelineLayout,
   from: number,
   to: number,
+  locale: Locale = "en",
 ): { ticks: TimelineTick[]; majorTicks: TimelineMajorTick[] } {
   const perDay = pixelsPerDay[layout.scale];
   const xAt = (at: Timestamp) => ((at - layout.start) / day) * perDay;
@@ -541,9 +557,11 @@ export function timelineAxis(
     toAt = Math.min(toAt, layout.period.end);
   }
   const { minor, major } = tickUnits[layout.scale];
+  const minorLabel = (date: Date) => locale === "en" ? minorLabels[minor](date) : localizedTick(date, minor, locale);
+  const majorLabel = (date: Date) => locale === "en" ? majorLabels[major](date) : localizedTick(date, major, locale, true);
   const ticks = unitStarts(fromAt, toAt, minor)
     .filter((date) => date.getTime() / 1000 >= fromAt)
-    .map((date) => ({ at: date.getTime() / 1000, x: xAt(date.getTime() / 1000), label: minorLabels[minor](date) }));
+    .map((date) => ({ at: date.getTime() / 1000, x: xAt(date.getTime() / 1000), label: minorLabel(date) }));
   const majorTicks = unitStarts(fromAt, toAt, major).map((date): TimelineMajorTick => {
     const next = new Date(date);
     nextUnit(next, major);
@@ -553,7 +571,7 @@ export function timelineAxis(
       at = Math.max(at, layout.period.start);
       end = Math.min(end, layout.period.end);
     }
-    return { at, x: xAt(at), right: xAt(end), label: majorLabels[major](date) };
+    return { at, x: xAt(at), right: xAt(end), label: majorLabel(date) };
   });
   return { ticks, majorTicks };
 }

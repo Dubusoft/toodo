@@ -16,7 +16,8 @@ Guidance for AI coding agents (and humans) working in this repository.
 Rules:
 
 - Everything written into the repository is English. No Korean text in tracked files,
-  except for user-facing localization resources if the product later adds a Korean locale.
+  except for user-facing localization resources: the web app's Korean catalog in
+  `src/locales/ko/`.
 - Exception for `dori/`: text Dori writes for its owner stays in that owner's language and
   counts as a localization resource. This covers the Korean report and message templates
   and the strings Dori sends to the owner, plus the translated READMEs
@@ -86,6 +87,17 @@ Layout:
   - `src/components/button.tsx`: the app's `Button` and `IconButton`, the Astryx ones plus
     `changesData` (disabled while the server is unreachable; on for submit buttons) and
     `autoFocus`. Use them instead of importing the Astryx buttons directly.
+  - `src/lib/i18n.tsx` and `src/locales/`: the web app's UI language. The Language setting
+    in Settings > General (Dori's `ownerLanguage`, `src/lib/dori-config.ts`) picks it: Korean
+    shows `src/locales/ko/`, any other language or none shows `src/locales/en/`, and a key the
+    Korean catalog lacks shows its English text. Each catalog has one module per area
+    (`common`, `app`, `tasks`, `details`, `chat`, `settings`, `review`, `alerts`); `en` defines the
+    keys and their types (a message with values is a function of them), `ko` is a
+    `Partial` of each area. Components read them with `useMessages()` (or `useI18n()` for
+    the locale of dates), and a sentence with elements in it is a catalog string with
+    `{name}` placeholders rendered by `fill`; text built outside React, such as browser
+    notifications, reads `currentMessages()`. Write UI strings there, never inline, and add
+    the Korean text with each new key.
   - `src/lib/astryx-theme.ts`: the Astryx theme (defaults with the brand accent);
     `src/index.css` points the app's Tailwind color names at its tokens.
   - `src/web/`: browser modules the bindings and the app use to talk to `toodo-server`:

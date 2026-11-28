@@ -1,21 +1,34 @@
 import type { CommandError } from "@/lib/bindings";
+import { en, type Messages } from "@/locales/en";
+
+/** Keeps the diagnostic message stable while letting the UI format an error at render time. */
+export class LocalizedError extends Error {
+  constructor(readonly localize: (m: Messages) => string) {
+    super(localize(en));
+  }
+}
+
+export function errorMessage(error: Error, m: Messages): string {
+  return error instanceof LocalizedError ? error.localize(m) : error.message;
+}
 
 /**
  * The message the web app shows for a command error, chosen by its code. Codes whose
  * server message is written for agents or the server log get a message with the next
  * step in the app; every other code shows the server's own message.
  */
-export function commandErrorMessage(error: CommandError): string {
+export function commandErrorMessage(error: CommandError, m: Messages): string {
+  const copy = m.app.commandError;
   switch (error.code) {
     case "unknownCommand":
     case "invalidArguments":
-      return "This page is out of date with the Toodo server. Reload the page, then try again.";
+      return copy.outOfDate;
     case "commandPanicked":
-      return 'Something went wrong on the Toodo server. Try again; if it keeps failing, look for "a command panicked" in the toodo-server log.';
+      return copy.panicked;
     case "guidelineNotFound":
-      return "This guideline no longer exists; it was deleted elsewhere. Reload the page to see the current guidelines, and add your text as a new guideline if it is still needed.";
+      return copy.guidelineMissing;
     case "storageFailed":
-      return `The Toodo server could not use its database (${error.message}). Try again; if it keeps failing, check the toodo-server log.`;
+      return copy.storageFailed(error.message);
     default:
       return error.message;
   }

@@ -43,19 +43,20 @@ import {
   type Workspace,
   type WorkspaceId,
 } from "@/lib/bindings";
-import { commandErrorMessage } from "@/lib/error-messages";
+import { commandErrorMessage, LocalizedError } from "@/lib/error-messages";
+import { useMessages } from "@/lib/i18n";
 import { downloadBackup, downloadExport, uploadRestore } from "@/web/files";
 import { apiRequest } from "@/web/session";
 import { notify, taskStatusAlerts } from "@/lib/task-alerts";
 
 type CommandResult<T> = { status: "ok"; data: T } | { status: "error"; error: CommandError };
 
-export class CommandFailure extends Error {
+export class CommandFailure extends LocalizedError {
   readonly kind: CommandError["kind"];
   readonly code: CommandError["code"];
 
   constructor(error: CommandError) {
-    super(commandErrorMessage(error));
+    super((m) => commandErrorMessage(error, m));
     this.name = "CommandFailure";
     this.kind = error.kind;
     this.code = error.code;
@@ -603,6 +604,7 @@ export function useDeleteReviewSnapshot() {
 /** Applies the task, workspace, and guideline changes the server reports while the app is mounted. */
 export function useServerEvents() {
   const queryClient = useQueryClient();
+  const { alerts } = useMessages();
   useEffect(() => {
     const subscriptions = [
       events.tasksChanged.listen(async () => {
@@ -613,7 +615,7 @@ export function useServerEvents() {
           return;
         }
         const next = cachedTasks(queryClient) ?? [];
-        notify(taskStatusAlerts(previous, next)).catch((error: unknown) =>
+        notify(taskStatusAlerts(previous, next, alerts)).catch((error: unknown) =>
           console.error("toodo: failed to show status notifications", error),
         );
       }),
@@ -630,7 +632,7 @@ export function useServerEvents() {
         void subscription.then((unlisten) => unlisten());
       }
     };
-  }, [queryClient]);
+  }, [queryClient, alerts]);
 }
 
 export function useStartTask() {

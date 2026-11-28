@@ -3,16 +3,12 @@ import { Badge, type BadgeVariant } from "@astryxdesign/core/Badge";
 import { DecisionMark } from "@/components/chat-panel";
 import { needsAttention, type AttentionReason } from "@/lib/attention";
 import type { TaskId } from "@/lib/bindings";
+import { useMessages } from "@/lib/i18n";
 import { useChatThreads, useTasks } from "@/lib/queries";
 import { toneChip, toneText } from "@/lib/status-styles";
 import { waitingThreads } from "@/lib/task-chats";
 import { cn } from "@/lib/utils";
 import type { ChatTarget } from "@/web/push";
-
-const reasonLabels: Record<AttentionReason, string> = {
-  blocker_note: "Blocker",
-  stalled: "Stalled",
-};
 
 const reasonVariants: Record<AttentionReason, BadgeVariant> = {
   blocker_note: "warning",
@@ -34,6 +30,7 @@ export function NeedsAttention({
   onShow: (id: TaskId) => void;
   onOpenChat: (target: ChatTarget) => void;
 }) {
+  const { app: { attention: copy } } = useMessages();
   const tasks = useTasks();
   const threads = useChatThreads({ archived: true });
   const decisions = waitingThreads(threads.data ?? []);
@@ -50,19 +47,19 @@ export function NeedsAttention({
         className={cn("flex items-center gap-1.5 px-1 text-xs font-medium uppercase", toneText.attention)}
       >
         <BellRing aria-hidden className="size-3.5" />
-        Needs attention
+        {copy.title}
         <span className={cn("ml-auto rounded-full px-1.5 tabular-nums", toneChip.attention)}>{count}</span>
       </h2>
       <div className="flex max-h-60 flex-col gap-0.5 overflow-y-auto">
         {decisions.length > 0 && (
-          <ul aria-label="Waiting on your decision" className="flex flex-col gap-0.5">
+          <ul aria-label={copy.waiting} className="flex flex-col gap-0.5">
             {decisions.map((thread) => {
               const task = thread.taskId === null ? undefined : taskOf.get(thread.taskId);
               return (
                 <li key={thread.id} className="flex items-start gap-0.5 rounded-md hover:bg-sidebar-accent">
                   <button
                     type="button"
-                    title="Open its chat"
+                    title={copy.openChat}
                     className={itemButton}
                     onClick={() => onOpenChat({ channel: thread.channelId, thread: thread.id })}
                   >
@@ -80,17 +77,17 @@ export function NeedsAttention({
           </ul>
         )}
         {items.length > 0 && (
-          <ul aria-label="Tasks needing attention" className="flex flex-col gap-0.5">
+          <ul aria-label={copy.tasks} className="flex flex-col gap-0.5">
             {items.map(({ task, reasons }) => (
               <li key={task.id} className="flex items-start gap-0.5 rounded-md hover:bg-sidebar-accent">
-                <button type="button" title="Show on the timeline" className={itemButton} onClick={() => onShow(task.id)}>
+                <button type="button" title={copy.showTimeline} className={itemButton} onClick={() => onShow(task.id)}>
                   <span className="flex min-w-0 items-center gap-1.5 text-xs">
                     <span className="tabular-nums text-muted-foreground">#{task.id}</span>
                     <span className="truncate font-medium">{task.title}</span>
                   </span>
                   <span className="flex flex-wrap gap-1">
                     {reasons.map((reason) => (
-                      <Badge key={reason} data-reason={reason} variant={reasonVariants[reason]} label={reasonLabels[reason]} />
+                      <Badge key={reason} data-reason={reason} variant={reasonVariants[reason]} label={copy.reasons[reason]} />
                     ))}
                   </span>
                 </button>

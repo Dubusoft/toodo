@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useI18n, useMessages } from "@/lib/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { Button } from "@/components/button";
@@ -13,58 +14,48 @@ import {
   type PushFailure,
   type PushSettings,
   type PushState,
-  type PushSupport,
   type ServerSubscription,
 } from "@/web/push";
 
 const pushKey = ["push"];
 
-const settingOptions = [
-  { key: "completion", label: "Task awaiting completion" },
-  { key: "messages", label: "Agent messages in the chat" },
-] as const satisfies readonly { key: keyof PushSettings; label: string }[];
-
-const unavailable: Record<Exclude<PushSupport, "supported">, string> = {
-  "needs-install": "Add Toodo to the Home Screen to get notifications (iOS 16.4 or later).",
-  unsupported: "This browser cannot get notifications from Toodo.",
-};
-
-function summary({ subscription, permission }: PushState): string {
-  return subscription ? "on" : permission === "denied" ? "blocked" : "off";
-}
+const settingOptions = ["completion", "messages"] as const;
 
 /** Why notifications stopped reaching this device, and what to try. */
 function LastFailure({ failure }: { failure: PushFailure }) {
+  const { locale, m } = useI18n();
+  const t = m.settings.pushPanel;
   return (
-    <div role="note" aria-label="Last delivery failure" className="flex flex-col gap-0.5 rounded-md border border-destructive/40 p-2">
-      <p className="font-medium">The last notification did not reach this device</p>
+    <div role="note" aria-label={t.deliveryNote} className="flex flex-col gap-0.5 rounded-md border border-destructive/40 p-2">
+      <p className="font-medium">{t.notDelivered}</p>
       <p className="break-words text-muted-foreground">
-        <time dateTime={new Date(failure.at * 1000).toISOString()} title={formatFull(failure.at)}>
-          {formatWhen(failure.at)}
+        <time dateTime={new Date(failure.at * 1000).toISOString()} title={formatFull(failure.at, locale)}>
+          {formatWhen(failure.at, undefined, locale, m)}
         </time>
         : {failure.message}
       </p>
       <p className="text-muted-foreground">
-        Send a test notification to check again. If it keeps failing, disable and enable notifications to subscribe
-        this device anew.
+        {t.retryHelp}
       </p>
     </div>
   );
 }
 
 function PushControls({ state }: { state: PushState }) {
+  const m = useMessages();
+  const t = m.settings.pushPanel;
   const queryClient = useQueryClient();
   const show = (subscription: ServerSubscription | null) =>
     queryClient.setQueryData<PushState>(pushKey, (current) => current && { ...current, subscription });
   // A refused permission or a lost subscription changes what the panel offers.
   const recheck = () => queryClient.invalidateQueries({ queryKey: pushKey });
   const enable = useMutation({
-    mutationFn: (permission: Promise<NotificationPermission>) => enablePush(permission, state.publicKey),
+    mutationFn: (permission: Promise<NotificationPermission>) => enablePush(permission, state.publicKey, t),
     onSuccess: show,
     onError: recheck,
   });
   const disable = useMutation({ mutationFn: disablePush, onSuccess: () => show(null), onError: recheck });
-  const save = useMutation({ mutationFn: saveSettings, onSuccess: show });
+  const save = useMutation({ mutationFn: (settings: PushSettings) => saveSettings(settings, t), onSuccess: show });
   // A test notification records its outcome as the device's last delivery failure or clears it.
   const test = useMutation({ mutationFn: sendTest, onSettled: recheck });
   // Only the outcome of the latest action shows.
@@ -81,14 +72,14 @@ function PushControls({ state }: { state: PushState }) {
     <>
       {subscription && settings ? (
         <>
-          <p className="font-medium">Notifications are on for this device.</p>
+          <p className="font-medium">{t.enabled}</p>
           {subscription.lastFailure && <LastFailure failure={subscription.lastFailure} />}
           <fieldset className="flex flex-col gap-1">
-            <legend className="mb-1 text-muted-foreground">Notify about</legend>
-            {settingOptions.map(({ key, label }) => (
+            <legend className="mb-1 text-muted-foreground">{t.notifyAbout}</legend>
+            {settingOptions.map((key) => (
               <CheckboxInput
                 key={key}
-                label={label}
+                label={t[key]}
                 value={settings[key]}
                 isDisabled={save.isPending}
                 onChange={(checked) => save.mutate({ ...settings, [key]: checked })}
@@ -100,7 +91,7 @@ function PushControls({ state }: { state: PushState }) {
               changesData
               size="sm"
               variant="secondary"
-              label="Send test notification"
+              label={t.test}
               isDisabled={test.isPending}
               onClick={() => test.mutate()}
             />
@@ -108,34 +99,34 @@ function PushControls({ state }: { state: PushState }) {
               changesData
               size="sm"
               variant="ghost"
-              label="Disable notifications on this device"
+              label={t.disableDevice}
               isDisabled={disable.isPending}
               onClick={() => disable.mutate()}
             >
-              Disable notifications
+              {t.disable}
             </Button>
           </div>
         </>
       ) : state.permission === "denied" ? (
-        <p>Notifications are blocked for Toodo in the browser settings. Allow them there to turn them on.</p>
+        <p>{t.blockedHelp}</p>
       ) : (
         <>
-          <p className="font-medium">Notifications are off for this device.</p>
+          <p className="font-medium">{t.disabled}</p>
           <Button
             size="sm"
             variant="primary"
             className="self-start"
-            label="Enable notifications on this device"
+            label={t.enableDevice}
             isDisabled={enable.isPending}
             onClick={askAndEnable}
           >
-            Enable notifications
+            {t.enable}
           </Button>
         </>
       )}
       {latest === test && test.isSuccess && (
         <p role="status" className="text-muted-foreground">
-          Test notification sent.
+          {t.sent}
         </p>
       )}
       {latest.error && (
@@ -148,27 +139,33 @@ function PushControls({ state }: { state: PushState }) {
 }
 
 function usePushState() {
+  const m = useMessages();
+  const t = m.settings.pushPanel;
   // Whether the browser can get pushes does not change while the page is open.
   const [support] = useState(pushSupport);
-  const state = useQuery({ queryKey: pushKey, queryFn: getPushState, enabled: support === "supported" });
+  const state = useQuery({ queryKey: pushKey, queryFn: () => getPushState(t), enabled: support === "supported" });
   return { support, state };
 }
 
 /** Whether notifications are on for this device, shown next to the Notifications settings once known. */
 export function NotificationsStatus() {
+  const m = useMessages();
+  const t = m.settings.pushPanel;
   const { state } = usePushState();
-  return state.data ? <>{summary(state.data)}</> : null;
+  return state.data ? <>{state.data.subscription ? t.status.on : state.data.permission === "denied" ? t.status.blocked : t.status.off}</> : null;
 }
 
 export function NotificationsPanel() {
+  const m = useMessages();
+  const t = m.settings.pushPanel;
   const { support, state } = usePushState();
 
   return (
-    <section aria-label="Notifications" className="flex flex-col gap-2 text-sm">
+    <section aria-label={m.settings.sections.notifications} className="flex flex-col gap-2 text-sm">
       <p className="text-muted-foreground">
-        {support === "supported" ? "Alerts reach this device even while Toodo is closed." : unavailable[support]}
+        {support === "supported" ? t.supported : t.unavailable[support]}
       </p>
-      {state.isLoading && <p className="text-muted-foreground">Checking this device...</p>}
+      {state.isLoading && <p className="text-muted-foreground">{t.checking}</p>}
       {state.error && (
         <p role="alert" className="break-words text-destructive">
           {state.error.message}

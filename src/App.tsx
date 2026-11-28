@@ -31,6 +31,7 @@ import { Button, IconButton } from "@/components/button";
 import { NewWorkspaceDialog, WorkspaceList } from "@/components/workspace-list";
 import type { Task, TaskId, WorkspaceId } from "@/lib/bindings";
 import { keepFocusIn } from "@/lib/focus-trap";
+import { useLocaleFromSettings, useMessages } from "@/lib/i18n";
 import { useServerEvents, useTasks, useWorkspaces } from "@/lib/queries";
 import { useNarrow } from "@/lib/narrow";
 import { useRoute, type Route } from "@/lib/route";
@@ -50,8 +51,10 @@ function searchField(): HTMLInputElement | null {
 }
 
 export default function App() {
+  const m = useMessages();
   const workspaces = useWorkspaces();
   useServerEvents();
+  useLocaleFromSettings();
   // A task to select on the All workspaces timeline, until the timeline shows it.
   const [shownTask, setShownTask] = useState<ShownTask | null>(null);
   // An address opened or returned to brings its task out on the timeline, as a shown task does.
@@ -165,55 +168,49 @@ export default function App() {
   const paletteCommands = (): PaletteCommand[] => {
     const workspaceName = new Map(workspaces.data?.map((workspace) => [workspace.id, workspace.name]));
     const search = searchField();
-    const newTask = document.querySelector<HTMLInputElement>("form[aria-label='New task'] input");
+    const newTask = document.querySelector<HTMLInputElement>("form[data-collapsible-form] input");
     const actions: (PaletteCommand | false)[] = [
       !!workspaces.data?.length && {
         id: "timeline",
-        group: "Actions",
-        label: "Show the timeline of all workspaces",
+        label: m.app.palette.timeline,
         icon: <ChartGantt />,
         run: () => openPage({ page: "all", view: "timeline", task: null }),
       },
       !!workspaces.data?.length && {
         id: "list",
-        group: "Actions",
-        label: "Show the task list of all workspaces",
+        label: m.app.palette.list,
         icon: <List />,
         run: () => openPage({ page: "all", view: "list", task: null }),
       },
       !!workspaces.data?.length && {
         id: "plan",
-        group: "Actions",
-        label: "Show the quarter and year plan of all workspaces",
+        label: m.app.palette.plan,
         icon: <CalendarRange />,
         run: () => openPage({ page: "all", view: "plan", task: null }),
       },
-      { id: "review", group: "Actions", label: "Show the review", icon: <ChartColumn />, run: () => openPage({ page: "review" }) },
+      { id: "review", label: m.app.palette.review, icon: <ChartColumn />, run: () => openPage({ page: "review" }) },
       newTask !== null && {
         id: "new-task",
-        group: "Actions",
-        label: "New task in this workspace",
+        label: m.app.palette.newTask,
         icon: <Plus />,
         run: () => newTask.focus(),
       },
-      search !== null && { id: "search", group: "Actions", label: "Search tasks", hint: "/", icon: <Search />, run: () => search.focus() },
-      { id: "settings", group: "Actions", label: "Open settings", icon: <Settings />, run: showSettings },
+      search !== null && { id: "search", label: m.app.searchTasks, hint: "/", icon: <Search />, run: () => search.focus() },
+      { id: "settings", label: m.app.palette.settings, icon: <Settings />, run: showSettings },
       {
         id: "shortcuts",
-        group: "Actions",
-        label: "Show keyboard shortcuts",
+        label: m.app.palette.shortcuts,
         hint: "?",
         icon: <Keyboard />,
         run: () => setShortcutsOpen(true),
       },
-      { id: "light", group: "Actions", label: "Use the light theme", icon: <Sun />, run: () => setThemePreference("light") },
-      { id: "dark", group: "Actions", label: "Use the dark theme", icon: <Moon />, run: () => setThemePreference("dark") },
-      { id: "system", group: "Actions", label: "Use the system theme", icon: <SunMoon />, run: () => setThemePreference("system") },
+      { id: "light", label: m.app.palette.light, icon: <Sun />, run: () => setThemePreference("light") },
+      { id: "dark", label: m.app.palette.dark, icon: <Moon />, run: () => setThemePreference("dark") },
+      { id: "system", label: m.app.palette.system, icon: <SunMoon />, run: () => setThemePreference("system") },
       ...(workspaces.data ?? []).map(
         (workspace): PaletteCommand => ({
           id: `workspace-${workspace.id}`,
-          group: "Actions",
-          label: `Open workspace ${workspace.name}`,
+          label: m.app.palette.openWorkspace(workspace.name),
           icon: <FolderGit2 />,
           run: () => openPage({ page: "workspace", workspace: workspace.id, task: null }),
         }),
@@ -226,7 +223,7 @@ export default function App() {
     const taskCommands = ordered.map(
       (task): PaletteCommand => ({
         id: `task-${task.id}`,
-        group: "Tasks",
+        kind: "task",
         label: `#${task.id} ${task.title}`,
         keywords: workspaceName.get(task.workspaceId),
         hint: workspaceName.get(task.workspaceId),
@@ -247,7 +244,7 @@ export default function App() {
         inert={settingsOpen}
         role={menuOpen ? "dialog" : undefined}
         aria-modal={menuOpen || undefined}
-        aria-label={menuOpen ? "Menu" : undefined}
+        aria-label={menuOpen ? m.app.menu : undefined}
         className={cn(
           "flex min-h-0 w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r bg-sidebar p-3 text-sidebar-foreground print:hidden",
           "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:shadow-lg",
@@ -268,7 +265,7 @@ export default function App() {
             variant="ghost"
             size="sm"
             className="ml-auto md:hidden"
-            label="Close menu"
+            label={m.app.closeMenu}
             icon={<X />}
             ref={closeMenuButton}
             onClick={() => setMenuOpen(false)}
@@ -288,7 +285,7 @@ export default function App() {
           <Button
             variant={reviewing ? "secondary" : "ghost"}
             className="justify-start"
-            label="Review"
+            label={m.app.review}
             icon={<ChartColumn />}
             aria-pressed={reviewing}
             onClick={() => openPage({ page: "review" })}
@@ -296,7 +293,7 @@ export default function App() {
           <Button
             variant={showingAll ? "secondary" : "ghost"}
             className="justify-start"
-            label="All workspaces"
+            label={m.app.allWorkspaces}
             icon={<Layers />}
             aria-pressed={showingAll}
             isDisabled={!workspaces.data?.length}
@@ -312,7 +309,7 @@ export default function App() {
         <Button
           variant="ghost"
           className="mt-auto shrink-0 justify-start"
-          label="Settings"
+          label={m.settings.title}
           icon={<Settings />}
           // The backup status is part of the button's name, so it is read with it.
           endContent={
@@ -331,7 +328,7 @@ export default function App() {
           <IconButton
             variant="ghost"
             size="sm"
-            label="Open menu"
+            label={m.app.openMenu}
             icon={<Menu />}
             ref={openMenuButton}
             onClick={() => setMenuOpen(true)}
@@ -344,7 +341,7 @@ export default function App() {
           </div>
           <ErrorBoundary label="this view" resetKey={reviewing ? "review" : showingAll ? "all" : selected?.id}>
             {reviewing ? (
-              <Suspense fallback={<p className="text-sm text-muted-foreground">Loading review...</p>}>
+              <Suspense fallback={<p className="text-sm text-muted-foreground">{m.app.loadingReview}</p>}>
                 <Review onShowTask={showTask} />
               </Suspense>
             ) : route.page === "all" && workspaces.data?.length ? (
@@ -376,13 +373,13 @@ export default function App() {
               !workspaces.isPending && !workspaces.isError && (
                 <EmptyState
                   icon={<FolderPlus />}
-                  title="Create a workspace to start planning tasks."
-                  hint="A workspace groups tasks, e.g. those of one repository or project."
+                  title={m.app.workspace.firstTitle}
+                  hint={m.app.workspace.firstHint}
                   action={
                     <Button
                       ref={addFirstButton}
                       variant="primary"
-                      label="Add workspace"
+                      label={m.app.workspace.add}
                       icon={<Plus />}
                       aria-haspopup="dialog"
                       onClick={() => setAddingFirst(true)}

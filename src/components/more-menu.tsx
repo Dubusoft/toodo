@@ -2,6 +2,7 @@ import { useSyncExternalStore, type ReactNode } from "react";
 import { DropdownMenu, DropdownMenuItem } from "@astryxdesign/core/DropdownMenu";
 import { Ellipsis } from "lucide-react";
 import { IconButton } from "@/components/button";
+import { useMessages } from "@/lib/i18n";
 import { reachability, subscribeReachability } from "@/web/connection";
 
 /** An action offered as a button, or as an item of a "More" menu. */
@@ -24,13 +25,14 @@ export type Action = {
 
 /** A "More" (`...`) button opening a menu of secondary actions, in the order given. */
 export function MoreMenu({ label, actions }: { label: string; actions: Action[] }) {
+  const m = useMessages();
   const state = useSyncExternalStore(subscribeReachability, reachability);
   const serverDown = state === "unreachable" || state === "retrying";
   return (
     <DropdownMenu
       alignment="end"
       renderTrigger={(trigger) => (
-        <IconButton {...trigger} label={label} tooltip="More actions" size="sm" icon={<Ellipsis />} />
+        <IconButton {...trigger} label={label} tooltip={m.app.moreActions} size="sm" icon={<Ellipsis />} />
       )}
     >
       {actions.map((action) => (

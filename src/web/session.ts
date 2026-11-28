@@ -7,6 +7,7 @@
  * again; a 401 from a proxy in front of the server leaves it alone.
  */
 import type { CommandError } from "@/lib/bindings";
+import { LocalizedError } from "@/lib/error-messages";
 import { serverFetch } from "@/web/connection";
 import { activeServer } from "@/web/server";
 
@@ -74,7 +75,7 @@ export async function rejectedByServer(response: Response): Promise<boolean> {
 
 /** The error for a 401 that did not come from `toodo-server`. */
 export function proxyRefused(): Error {
-  return new Error("A proxy in front of the Toodo server refused the request (401). Reload the app to sign in to it again.");
+  return new LocalizedError((m) => m.app.connection.proxyRefused);
 }
 
 /**
@@ -101,13 +102,13 @@ export async function checkAccess(): Promise<boolean> {
 export async function apiRequest(path: string, init: RequestInit = {}): Promise<Response> {
   const signedIn = credentials();
   if (signedIn === null) {
-    throw new Error("No access token for the Toodo server.");
+    throw new LocalizedError((m) => m.app.connection.noToken);
   }
   const response = await serverFetch(path, { ...init, headers: { ...signedIn, ...init.headers } });
   if (response.status === 401) {
     if (!(await rejectedByServer(response))) throw proxyRefused();
     forgetToken();
-    throw new Error("The Toodo server did not accept the access token.");
+    throw new LocalizedError((m) => m.app.connection.tokenRejected);
   }
   if (!response.ok) {
     throw new Error(await failureMessage(response));

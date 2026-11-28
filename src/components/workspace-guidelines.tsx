@@ -7,23 +7,15 @@ import { escapeCloses } from "@/components/workspace-list";
 import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import { Markdown } from "@/components/task-common";
 import type { Guideline, GuidelineKind, Workspace } from "@/lib/bindings";
+import { errorMessage } from "@/lib/error-messages";
+import { useMessages } from "@/lib/i18n";
 import { useAddGuideline, useDeleteGuideline, useGuidelines, useUpdateGuideline } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
 /** The most characters the server keeps in a guideline body, after trimming. */
 const bodyLimit = 4000;
 
-const kindNames: Record<GuidelineKind, string> = { rule: "Rule", memory: "Memory" };
-
-const kindOptions = (["rule", "memory"] as const).map((kind) => ({ value: kind, label: kindNames[kind] }));
-
-const groupNames: Record<GuidelineKind, string> = { rule: "Rules", memory: "Memory" };
-
-/** What each kind is for, shown next to the kind picker. */
-const kindHints: Record<GuidelineKind, string> = {
-  rule: "Agents must follow it.",
-  memory: "A lesson or fact worth keeping for this workspace.",
-};
+const kinds = ["rule", "memory"] as const;
 
 /**
  * The guidelines of a workspace, which agents read before working on one of its tasks: rules
@@ -32,6 +24,8 @@ const kindHints: Record<GuidelineKind, string> = {
  * there are none, to say what they are for. Folding only hides them: open forms keep their text.
  */
 export function WorkspaceGuidelines({ workspace }: { workspace: Workspace }) {
+  const m = useMessages();
+  const copy = m.app.guidelines;
   const guidelines = useGuidelines(workspace.id);
   const addGuideline = useAddGuideline();
   // Null until the user folds or unfolds the guidelines.
@@ -45,8 +39,8 @@ export function WorkspaceGuidelines({ workspace }: { workspace: Workspace }) {
   const memory = entries.filter((entry) => entry.kind === "memory");
   const expanded = shown ?? guidelines.data?.length === 0;
   const summary = [
-    rules.length > 0 && `${rules.length} ${rules.length === 1 ? "rule" : "rules"}`,
-    memory.length > 0 && `${memory.length} ${memory.length === 1 ? "memory" : "memories"}`,
+    rules.length > 0 && copy.count.rule(rules.length),
+    memory.length > 0 && copy.count.memory(memory.length),
   ]
     .filter(Boolean)
     .join(", ");
@@ -63,7 +57,7 @@ export function WorkspaceGuidelines({ workspace }: { workspace: Workspace }) {
   }
 
   return (
-    <section aria-label="Guidelines" className="flex flex-col gap-2">
+    <section aria-label={copy.title} className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
         <h3 className="min-w-0 flex-1 text-sm font-medium text-muted-foreground">
           <button
@@ -74,41 +68,41 @@ export function WorkspaceGuidelines({ workspace }: { workspace: Workspace }) {
             onClick={() => setShown(!expanded)}
           >
             <ChevronDown aria-hidden className={cn("size-4 shrink-0 transition-transform", !expanded && "-rotate-90")} />
-            Guidelines {summary && <span className="font-normal tabular-nums">{summary}</span>}
+            {copy.title}{" "}{summary && <span className="font-normal tabular-nums">{summary}</span>}
           </button>
         </h3>
         {!adding && (
           <Button
             size="sm"
             variant="secondary"
-            label="Add guideline"
-            tooltip="Add a rule or memory for agents"
+            label={copy.add}
+            tooltip={copy.addTooltip}
             icon={<Plus />}
             autoFocus={refocusAdd}
             onClick={openAdd}
           >
-            Add
+            {m.app.add}
           </Button>
         )}
       </div>
       {guidelines.isError && (
         <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-destructive">
-          <p>Failed to load guidelines: {guidelines.error.message}</p>
-          <Button size="sm" variant="secondary" label="Retry now" onClick={() => void guidelines.refetch()} />
+          <p>{copy.loadFailed(errorMessage(guidelines.error, m))}</p>
+          <Button size="sm" variant="secondary" label={m.app.retryNow} onClick={() => void guidelines.refetch()} />
         </div>
       )}
       <div id={panel} hidden={!expanded} className="flex flex-col gap-2">
-        {guidelines.isPending && <p className="text-xs text-muted-foreground">Loading guidelines...</p>}
+        {guidelines.isPending && <p className="text-xs text-muted-foreground">{copy.loading}</p>}
         {guidelines.data?.length === 0 && (
           <p className="text-xs text-muted-foreground">
-            No rules or memory yet; agents read them before working on a task in this workspace.
+            {copy.empty}
           </p>
         )}
         <GuidelineGroup kind="rule" entries={rules} />
         <GuidelineGroup kind="memory" entries={memory} />
         {adding && (
           <GuidelineForm
-            label="Add guideline"
+            label={copy.add}
             className="rounded-xl border bg-card p-2.5"
             pending={addGuideline.isPending}
             error={addGuideline.error}
@@ -125,11 +119,12 @@ export function WorkspaceGuidelines({ workspace }: { workspace: Workspace }) {
 
 /** The guidelines of one kind, in the order they were added; nothing while there are none. */
 function GuidelineGroup({ kind, entries }: { kind: GuidelineKind; entries: Guideline[] }) {
+  const name = useMessages().app.guidelines.groups[kind];
   if (entries.length === 0) return null;
   return (
     <div className="flex flex-col gap-1">
-      <h4 className="text-xs font-medium text-muted-foreground">{groupNames[kind]}</h4>
-      <ul aria-label={groupNames[kind]} className="flex flex-col divide-y rounded-xl border bg-card">
+      <h4 className="text-xs font-medium text-muted-foreground">{name}</h4>
+      <ul aria-label={name} className="flex flex-col divide-y rounded-xl border bg-card">
         {entries.map((entry, index) => (
           <GuidelineItem key={entry.id} guideline={entry} position={index + 1} />
         ))}
@@ -143,14 +138,16 @@ function GuidelineGroup({ kind, entries }: { kind: GuidelineKind; entries: Guide
  * The button that opened a form or question takes the focus back when it closes.
  */
 function GuidelineItem({ guideline, position }: { guideline: Guideline; position: number }) {
+  const m = useMessages();
+  const copy = m.app.guidelines;
   const updateGuideline = useUpdateGuideline();
   const deleteGuideline = useDeleteGuideline();
   const [editing, setEditing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [refocus, setRefocus] = useState<"edit" | "delete" | null>(null);
   // "rule 2" in the names of its buttons, "Rule 2" as its own.
-  const name = `${guideline.kind} ${position}`;
-  const label = `${kindNames[guideline.kind]} ${position}`;
+  const name = copy.item(copy.inlineKinds[guideline.kind], position);
+  const label = copy.item(copy.kinds[guideline.kind], position);
 
   function stopEditing() {
     setEditing(false);
@@ -166,7 +163,7 @@ function GuidelineItem({ guideline, position }: { guideline: Guideline; position
     return (
       <li aria-label={label} className="px-2.5 py-2">
         <GuidelineForm
-          label={`Edit ${name}`}
+          label={copy.edit(name)}
           guideline={guideline}
           pending={updateGuideline.isPending}
           error={updateGuideline.error}
@@ -192,8 +189,8 @@ function GuidelineItem({ guideline, position }: { guideline: Guideline; position
             <IconButton
               size="sm"
               variant="ghost"
-              label={`Edit ${name}`}
-              tooltip="Edit"
+              label={copy.edit(name)}
+              tooltip={m.common.edit}
               icon={<Pencil />}
               autoFocus={refocus === "edit"}
               onClick={() => {
@@ -204,8 +201,8 @@ function GuidelineItem({ guideline, position }: { guideline: Guideline; position
             <IconButton
               size="sm"
               variant="ghost"
-              label={`Delete ${name}`}
-              tooltip="Delete"
+              label={copy.delete(name)}
+              tooltip={m.common.delete}
               icon={<Trash2 />}
               autoFocus={refocus === "delete"}
               onClick={() => {
@@ -219,28 +216,28 @@ function GuidelineItem({ guideline, position }: { guideline: Guideline; position
       {confirming && (
         <div
           role="group"
-          aria-label={`Delete ${name}?`}
+          aria-label={copy.deleteLabel(name)}
           className="flex flex-wrap items-center gap-1 text-xs max-md:gap-2"
           onKeyDown={escapeCloses(stopConfirming, deleteGuideline.isPending)}
         >
-          <span className="mr-1">Delete this {guideline.kind}? It cannot be restored.</span>
+          <span className="mr-1">{copy.deleteQuestion(copy.inlineKinds[guideline.kind])}</span>
           <Button
             changesData
             size="sm"
             variant="destructive"
-            label={`Confirm delete ${name}`}
+            label={copy.confirmDelete(name)}
             icon={<Trash2 />}
             isDisabled={deleteGuideline.isPending}
             onClick={() => deleteGuideline.mutate(guideline.id)}
           >
-            {deleteGuideline.isPending ? "Deleting..." : "Delete"}
+            {deleteGuideline.isPending ? copy.deleting : m.common.delete}
           </Button>
-          <Button size="sm" variant="ghost" label="Back" autoFocus onClick={stopConfirming} />
+          <Button size="sm" variant="ghost" label={m.app.back} autoFocus onClick={stopConfirming} />
         </div>
       )}
       {deleteGuideline.isError && (
         <p role="alert" className="text-xs text-destructive">
-          {deleteGuideline.error.message}
+          {errorMessage(deleteGuideline.error, m)}
         </p>
       )}
     </li>
@@ -268,6 +265,8 @@ function GuidelineForm({
   onSave: (kind: GuidelineKind, body: string) => void;
   onClose: () => void;
 }) {
+  const m = useMessages();
+  const copy = m.app.guidelines;
   const initialKind = guideline?.kind ?? "rule";
   const initialBody = guideline?.body ?? "";
   const [kind, setKind] = useState<GuidelineKind>(initialKind);
@@ -290,22 +289,24 @@ function GuidelineForm({
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <Selector
           size="sm"
-          label="Kind"
+          label={copy.kind}
           isLabelHidden
           aria-describedby={hint}
-          options={kindOptions}
+          options={kinds.map((value) => ({ value, label: copy.kinds[value] }))}
           value={kind}
-          onChange={(value) => setKind(value as GuidelineKind)}
+          onChange={(value) => {
+            if (value === "rule" || value === "memory") setKind(value);
+          }}
         />
         <span id={hint} className="text-xs text-muted-foreground">
-          {kindHints[kind]}
+          {copy.hints[kind]}
         </span>
       </div>
       <TextArea
         size="sm"
-        label="Guideline"
+        label={copy.guideline}
         isLabelHidden
-        placeholder="Write it in Markdown"
+        placeholder={copy.placeholder}
         rows={4}
         value={body}
         htmlMaxLength={bodyLimit}
@@ -314,8 +315,8 @@ function GuidelineForm({
       />
       {guard.asking ? (
         <DiscardConfirm
-          label={guideline ? "Discard guideline changes" : "Discard new guideline"}
-          question={guideline ? "Discard the changes to the guideline?" : "Discard the new guideline?"}
+          label={guideline ? copy.discardEditLabel : copy.discardNewLabel}
+          question={guideline ? copy.discardEditQuestion : copy.discardNewQuestion}
           onKeep={guard.keep}
           onDiscard={guard.discard}
         />
@@ -325,21 +326,21 @@ function GuidelineForm({
             type="submit"
             size="sm"
             variant="secondary"
-            label={guideline ? "Save" : "Add"}
+            label={guideline ? m.common.save : m.app.add}
             isDisabled={pending || body.trim() === ""}
           />
           <Button
             type="button"
             size="sm"
             variant="ghost"
-            label={guideline ? "Discard" : "Cancel"}
+            label={guideline ? m.app.discard : m.common.cancel}
             onClick={guard.request}
           />
         </div>
       )}
       {error && (
         <p role="alert" className="text-xs text-destructive">
-          {error.message}
+          {errorMessage(error, m)}
         </p>
       )}
     </form>

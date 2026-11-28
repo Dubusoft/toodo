@@ -1,3 +1,4 @@
+import { useMessages } from "@/lib/i18n";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { CircleSlash, Flag, GitMerge, Pencil, RotateCcw, StickyNote } from "lucide-react";
 import { Selector } from "@astryxdesign/core/Selector";
@@ -12,7 +13,6 @@ import {
   useSetTaskOutcome,
 } from "@/lib/queries";
 import { isNotAdopted } from "@/lib/task-graph";
-import { statusNames } from "@/lib/status-styles";
 import { type TaskContext, taskRef } from "@/components/task-common";
 
 
@@ -29,6 +29,7 @@ export function ConcludeForm({
   onDone: () => void;
   onShipped: () => void;
 }) {
+  const m = useMessages();
   const concludeTask = useConcludeTask();
   const [note, setNote] = useState("");
   const guard = useDiscardGuard(note.trim() !== "", onDone, concludeTask.isPending);
@@ -41,26 +42,26 @@ export function ConcludeForm({
   return (
     <form
       onSubmit={submit}
-      aria-label={`Conclude #${task.id}`}
+      aria-label={m.details.outcome.conclude(task.id)}
       className="flex flex-col gap-1"
       onKeyDown={guard.onKeyDown}
     >
       <p className="text-xs text-muted-foreground">
-        Finish #{task.id} without completing it. It is marked not adopted. Tasks that depend on it stay blocked.
+        {m.details.outcome.concludeDescription(task.id)}
       </p>
       <TextArea
         rows={2}
-        label={`Conclusion of #${task.id}`}
+        label={m.details.outcome.conclusion(task.id)}
         isLabelHidden
-        placeholder="What was tried, what was found, and why it is not adopted."
+        placeholder={m.details.outcome.conclusionHint}
         value={note}
         onChange={setNote}
         hasAutoFocus
       />
       {guard.asking ? (
         <DiscardConfirm
-          label={`Discard conclusion of #${task.id}`}
-          question={`Discard your conclusion of #${task.id}?`}
+          label={m.details.outcome.discardConclusion(task.id)}
+          question={m.details.outcome.discardConclusionQuestion(task.id)}
           onKeep={guard.keep}
           onDiscard={guard.discard}
         />
@@ -71,7 +72,7 @@ export function ConcludeForm({
             size="sm"
             variant="destructive"
             icon={<CircleSlash />}
-            label={concludeTask.isPending ? "Concluding..." : "Conclude as not adopted"}
+            label={concludeTask.isPending ? m.details.outcome.concluding : m.details.outcome.concludeNotAdopted}
             isDisabled={concludeTask.isPending || note.trim() === ""}
           />
           {/* Work that shipped through another task is done, not concluded. */}
@@ -80,13 +81,13 @@ export function ConcludeForm({
             size="sm"
             variant="secondary"
             icon={<GitMerge />}
-            label="Complete as shipped by..."
-            aria-label={`Complete #${task.id} as shipped by another task`}
-            tooltip="The work shipped through another task: complete the task instead"
+            label={m.details.outcome.pickShipped}
+            aria-label={m.details.outcome.shippedByOther(task.id)}
+            tooltip={m.details.outcome.pickShippedHint}
             isDisabled={concludeTask.isPending}
             onClick={onShipped}
           />
-          <Button type="button" size="sm" variant="ghost" label="Back" onClick={guard.request} />
+          <Button type="button" size="sm" variant="ghost" label={m.details.actions.back} onClick={guard.request} />
         </div>
       )}
       {concludeTask.isError && (
@@ -97,13 +98,6 @@ export function ConcludeForm({
     </form>
   );
 }
-
-/** What a form says about the outcome of a task. */
-const resolutionNames: Record<TaskResolution, string> = {
-  merged: "Merged",
-  completed: "Completed",
-  not_adopted: statusNames.not_adopted,
-};
 
 /**
  * Reopens a done task completed or concluded by mistake. The reason is required and kept as
@@ -116,6 +110,7 @@ export function ReopenForm({
   task: Task;
   onDone: () => void;
 }) {
+  const m = useMessages();
   const reopenTask = useReopenTask();
   const [reason, setReason] = useState("");
   const guard = useDiscardGuard(reason.trim() !== "", onDone, reopenTask.isPending);
@@ -126,24 +121,23 @@ export function ReopenForm({
   }
 
   return (
-    <form onSubmit={submit} aria-label={`Reopen #${task.id}`} className="flex flex-col gap-1" onKeyDown={guard.onKeyDown}>
+    <form onSubmit={submit} aria-label={m.details.outcome.reopen(task.id)} className="flex flex-col gap-1" onKeyDown={guard.onKeyDown}>
       <p className="text-xs text-muted-foreground">
-        Reopen #{task.id}: it is paused, and Resume continues the
-        work. Its outcome and completion note are cleared and kept, with your reason, as a progress note.
+        {m.details.outcome.reopenDescription(task.id)}
       </p>
       <TextArea
         rows={2}
-        label={`Reason to reopen #${task.id}`}
+        label={m.details.outcome.reopenReason(task.id)}
         isLabelHidden
-        placeholder="Why is the task not finished after all?"
+        placeholder={m.details.outcome.reopenHint}
         value={reason}
         onChange={setReason}
         hasAutoFocus
       />
       {guard.asking ? (
         <DiscardConfirm
-          label={`Discard reason to reopen #${task.id}`}
-          question={`Discard your reason to reopen #${task.id}?`}
+          label={m.details.outcome.discardReopen(task.id)}
+          question={m.details.outcome.discardReopenQuestion(task.id)}
           onKeep={guard.keep}
           onDiscard={guard.discard}
         />
@@ -155,10 +149,10 @@ export function ReopenForm({
             size="sm"
             variant="primary"
             icon={<RotateCcw />}
-            label={reopenTask.isPending ? "Reopening..." : "Reopen"}
+            label={reopenTask.isPending ? m.details.outcome.reopening : m.details.outcome.reopenSubmit}
             isDisabled={reopenTask.isPending || reason.trim() === ""}
           />
-          <Button type="button" size="sm" variant="ghost" label="Back" onClick={guard.request} />
+          <Button type="button" size="sm" variant="ghost" label={m.details.actions.back} onClick={guard.request} />
         </div>
       )}
       {reopenTask.isError && (
@@ -175,8 +169,9 @@ export function ReopenForm({
  * completion note; the earlier outcome is kept as a progress note.
  */
 export function OutcomeForm({ task, onDone }: { task: Task; onDone: () => void }) {
+  const m = useMessages();
   const setOutcome = useSetTaskOutcome();
-  const choices = (Object.keys(resolutionNames) as TaskResolution[]).filter((resolution) => resolution !== task.resolution);
+  const choices = (Object.keys(m.details.resolution) as TaskResolution[]).filter((resolution) => resolution !== task.resolution);
   const [resolution, setResolution] = useState<TaskResolution>(choices[0]);
   const [note, setNote] = useState("");
   const guard = useDiscardGuard(note.trim() !== "", onDone, setOutcome.isPending);
@@ -189,36 +184,34 @@ export function OutcomeForm({ task, onDone }: { task: Task; onDone: () => void }
   return (
     <form
       onSubmit={submit}
-      aria-label={`Outcome of #${task.id}`}
+      aria-label={m.details.outcome.outcome(task.id)}
       className="flex flex-col gap-1"
       onKeyDown={guard.onKeyDown}
     >
       <p className="text-xs text-muted-foreground">
-        #{task.id} is done as {task.resolution === null ? "done" : resolutionNames[task.resolution].toLowerCase()}.
-        Correct how it ended; the earlier outcome and note are kept as a progress note. Tasks that depend on it wait
-        while it is not adopted.
+        {m.details.outcome.outcomeDescription(task.id, (task.resolution === null ? m.details.status.done : m.details.resolution[task.resolution]).toLowerCase())}
       </p>
       <Selector
-        label={`New outcome of #${task.id}`}
+        label={m.details.outcome.newOutcome(task.id)}
         isLabelHidden
         width={160}
         value={resolution}
-        options={choices.map((choice) => ({ value: choice, label: resolutionNames[choice] }))}
+        options={choices.map((choice) => ({ value: choice, label: m.details.resolution[choice] }))}
         onChange={(choice) => setResolution(choice as TaskResolution)}
       />
       <TextArea
         rows={2}
-        label={`Outcome note of #${task.id}`}
+        label={m.details.outcome.outcomeNote(task.id)}
         isLabelHidden
-        placeholder="What happened, e.g. the change was reverted. This becomes the completion note."
+        placeholder={m.details.outcome.outcomeHint}
         value={note}
         onChange={setNote}
         hasAutoFocus
       />
       {guard.asking ? (
         <DiscardConfirm
-          label={`Discard outcome of #${task.id}`}
-          question={`Discard the new outcome of #${task.id}?`}
+          label={m.details.outcome.discardOutcome(task.id)}
+          question={m.details.outcome.discardOutcomeQuestion(task.id)}
           onKeep={guard.keep}
           onDiscard={guard.discard}
         />
@@ -230,10 +223,10 @@ export function OutcomeForm({ task, onDone }: { task: Task; onDone: () => void }
             size="sm"
             variant="primary"
             icon={<Flag />}
-            label={setOutcome.isPending ? "Saving..." : "Change outcome"}
+            label={setOutcome.isPending ? m.details.actions.saving : m.details.outcome.changeOutcome}
             isDisabled={setOutcome.isPending || note.trim() === ""}
           />
-          <Button type="button" size="sm" variant="ghost" label="Back" onClick={guard.request} />
+          <Button type="button" size="sm" variant="ghost" label={m.details.actions.back} onClick={guard.request} />
         </div>
       )}
       {setOutcome.isError && (
@@ -261,6 +254,7 @@ export function ShippedByForm({
   context: TaskContext;
   onDone: () => void;
 }) {
+  const m = useMessages();
   const concludeTask = useConcludeTask();
   // Only work that shipped can carry this task's work with it.
   const shippers = tasks
@@ -287,18 +281,18 @@ export function ShippedByForm({
   return (
     <form
       onSubmit={submit}
-      aria-label={`Complete #${task.id} as shipped by`}
+      aria-label={m.details.outcome.shippedForm(task.id)}
       className="flex flex-col gap-1"
       onKeyDown={guard.onKeyDown}
     >
       <p className="text-xs text-muted-foreground">
-        Complete #{task.id} as shipped by another done task. It becomes done, and tasks that depend on it can start.
+        {m.details.outcome.shippedDescription(task.id)}
       </p>
       <Selector
         ref={picker}
-        label={`Task that shipped #${task.id}`}
+        label={m.details.outcome.shippedTask(task.id)}
         isLabelHidden
-        placeholder="Choose a task..."
+        placeholder={m.details.outcome.chooseTask}
         value={shipper}
         options={shippers.map((other) => ({
           value: String(other.id),
@@ -308,16 +302,16 @@ export function ShippedByForm({
       />
       <TextArea
         rows={2}
-        label={`Shipped note of #${task.id}`}
+        label={m.details.outcome.shippedNote(task.id)}
         isLabelHidden
-        placeholder="How the other task shipped this work. This becomes the completion note."
+        placeholder={m.details.outcome.shippedHint}
         value={note}
         onChange={setNote}
       />
       {guard.asking ? (
         <DiscardConfirm
-          label={`Discard completion of #${task.id}`}
-          question={`Discard completing #${task.id} as shipped by another?`}
+          label={m.details.outcome.discardShipped(task.id)}
+          question={m.details.outcome.discardShippedQuestion(task.id)}
           onKeep={guard.keep}
           onDiscard={guard.discard}
         />
@@ -329,10 +323,10 @@ export function ShippedByForm({
             size="sm"
             variant="primary"
             icon={<GitMerge />}
-            label={concludeTask.isPending ? "Completing..." : "Complete as shipped"}
+            label={concludeTask.isPending ? m.details.outcome.completing : m.details.outcome.submitShipped}
             isDisabled={concludeTask.isPending || !ready}
           />
-          <Button type="button" size="sm" variant="ghost" label="Back" onClick={guard.request} />
+          <Button type="button" size="sm" variant="ghost" label={m.details.actions.back} onClick={guard.request} />
         </div>
       )}
       {concludeTask.isError && (
@@ -349,6 +343,7 @@ export function ShippedByForm({
  * nothing until `adding`, set from the task's "Add note" action.
  */
 export function CompletionNote({ task, adding, onAdded }: { task: Task; adding: boolean; onAdded: () => void }) {
+  const m = useMessages();
   const setNote = useSetCompletionNote();
   const [editingNote, setEditing] = useState(false);
   const [note, setNoteText] = useState("");
@@ -382,14 +377,14 @@ export function CompletionNote({ task, adding, onAdded }: { task: Task; adding: 
     return task.completionNote === null ? null : (
       <div className="flex items-start gap-1 rounded-md bg-muted/60 px-2 py-1">
         <StickyNote aria-hidden className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
-        <p aria-label={`Completion note of #${task.id}`} className="min-w-0 flex-1 whitespace-pre-line break-words-keep text-xs">
+        <p aria-label={m.details.outcome.note(task.id)} className="min-w-0 flex-1 whitespace-pre-line break-words-keep text-xs">
           {task.completionNote}
         </p>
         <IconButton
           size="sm"
           variant="ghost"
-          label={`Edit completion note of #${task.id}`}
-          tooltip="Edit note"
+          label={m.details.outcome.editNote(task.id)}
+          tooltip={m.details.outcome.editNoteTooltip}
           icon={<Pencil />}
           onClick={edit}
         />
@@ -399,23 +394,23 @@ export function CompletionNote({ task, adding, onAdded }: { task: Task; adding: 
   return (
     <form
       onSubmit={submit}
-      aria-label={`Completion note form of #${task.id}`}
+      aria-label={m.details.outcome.noteForm(task.id)}
       className="flex flex-col gap-1"
       onKeyDown={guard.onKeyDown}
     >
       <TextArea
         rows={2}
-        label={`Completion note for #${task.id}`}
+        label={m.details.outcome.noteField(task.id)}
         isLabelHidden
-        placeholder="What did this achieve? Impact, decisions, follow-ups. Reviews include this note."
+        placeholder={m.details.outcome.noteHint}
         value={note}
         onChange={setNoteText}
         hasAutoFocus
       />
       {guard.asking ? (
         <DiscardConfirm
-          label={`Discard note of #${task.id}`}
-          question={`Discard your note for #${task.id}?`}
+          label={m.details.outcome.discardNote(task.id)}
+          question={m.details.outcome.discardNoteQuestion(task.id)}
           onKeep={guard.keep}
           onDiscard={guard.discard}
         />
@@ -425,11 +420,11 @@ export function CompletionNote({ task, adding, onAdded }: { task: Task; adding: 
             type="submit"
             size="sm"
             variant="primary"
-            label={setNote.isPending ? "Saving..." : "Save note"}
+            label={setNote.isPending ? m.details.actions.saving : m.details.outcome.saveNote}
             // The conclusion of work that was not adopted cannot be cleared.
             isDisabled={setNote.isPending || note.trim() === saved || (isNotAdopted(task) && note.trim() === "")}
           />
-          <Button type="button" size="sm" variant="ghost" label="Discard" onClick={guard.request} />
+          <Button type="button" size="sm" variant="ghost" label={m.details.actions.discard} onClick={guard.request} />
         </div>
       )}
       {setNote.isError && (

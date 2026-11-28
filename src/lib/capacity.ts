@@ -1,3 +1,5 @@
+import type { Locale } from "@/lib/i18n";
+import { en, type Messages } from "@/locales/en";
 import type { Estimate, EstimateUnit, Task } from "@/lib/bindings";
 import { estimatedSeconds, formatEstimate } from "@/lib/plan";
 import { periodContaining, periodLabel, shiftPeriod, type ReviewPeriod } from "@/lib/review";
@@ -48,7 +50,9 @@ function sumEstimates(tasks: Task[]): number {
  * their work filled the period too. `today` (`YYYY-MM-DD`) makes sure the current period
  * is shown even when nothing is due in it.
  */
-export function planLoad(tasks: Task[], scale: PlanScale, capacity: Capacity | null, today: string): PlanLoad {
+export function planLoad(tasks: Task[], scale: PlanScale, capacity: Capacity | null, today: string,
+  language: { m: Messages; locale: Locale } = { m: en, locale: "en" },
+): PlanLoad {
   const planned = tasks.filter((task) => !isNotAdopted(task));
   const scheduled = planned
     .filter((task): task is Task & { dueDate: string } => task.dueDate !== null)
@@ -70,7 +74,7 @@ export function planLoad(tasks: Task[], scale: PlanScale, capacity: Capacity | n
     const estimated = sumEstimates(due);
     periods.push({
       period,
-      label: periodLabel(period),
+      label: periodLabel(period, language),
       tasks: due,
       estimated,
       done: sumEstimates(due.filter((task) => task.status === "done")),
@@ -83,8 +87,8 @@ export function planLoad(tasks: Task[], scale: PlanScale, capacity: Capacity | n
 }
 
 /** Seconds of work as an amount of `unit`, e.g. `2.5w`. */
-export function formatWork(seconds: number, unit: EstimateUnit): string {
-  return formatEstimate({ unit, amount: seconds / (estimatedSeconds({ unit, amount: 1 }) ?? 1) });
+export function formatWork(seconds: number, unit: EstimateUnit, m: Messages = en): string {
+  return formatEstimate({ unit, amount: seconds / (estimatedSeconds({ unit, amount: 1 }) ?? 1) }, m);
 }
 
 const storageKey = "toodo-plan-capacity";

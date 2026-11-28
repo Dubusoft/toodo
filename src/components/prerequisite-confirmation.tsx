@@ -1,3 +1,4 @@
+import { useMessages } from "@/lib/i18n";
 import { Pause } from "lucide-react";
 import { Button } from "@/components/button";
 import { escapeCloses } from "@/components/workspace-list";
@@ -20,25 +21,26 @@ export function PrerequisiteConfirmation({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const m = useMessages();
   return (
     <div
       role="group"
-      aria-label={`Confirm prerequisite of #${taskId}`}
+      aria-label={m.tasks.confirmPrerequisite(taskId)}
       className={cn("flex flex-wrap items-center gap-2 rounded-md px-2 py-1.5 text-xs", tonePanel.attention)}
       onKeyDown={escapeCloses(onCancel, pending)}
     >
       <span className="min-w-0 flex-1">
-        Adding {prerequisite} as a prerequisite pauses #{taskId} until {prerequisite} is done.
+        {m.tasks.confirmPrerequisiteHint(taskId, prerequisite)}
       </span>
       <Button
         size="sm"
         variant="destructive"
         icon={<Pause />}
-        label={pending ? "Pausing..." : "Pause and add"}
+        label={pending ? m.tasks.pausing : m.tasks.pauseAndAdd}
         isDisabled={pending}
         onClick={onConfirm}
       />
-      <Button size="sm" variant="ghost" label="Back" autoFocus isDisabled={pending} onClick={onCancel} />
+      <Button size="sm" variant="ghost" label={m.tasks.back} autoFocus isDisabled={pending} onClick={onCancel} />
     </div>
   );
 }

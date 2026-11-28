@@ -1,24 +1,14 @@
+import { en } from "@/locales/en";
 import type { ShownStatus } from "@/lib/task-filter";
 
 /**
  * The one glossary for statuses: chips, the timeline legend, the status filter, history and
  * Review all use these names, so one state never goes by two names.
  */
-export const statusNames: Record<ShownStatus, string> = {
-  // A planned task that cannot start yet, because a prerequisite is not done.
-  planned: "Blocked",
-  ready: "Ready",
-  // A task that waits until a time and goes on by itself then: planned, but not blocked.
-  waiting: "Planned",
-  paused: "Paused",
-  in_progress: "In progress",
-  in_review: "Awaiting completion",
-  done: "Done",
-  not_adopted: "Not adopted",
-};
+export const statusNames: Record<ShownStatus, string> = en.tasks.statuses;
 
 /** The timeline mark at the time a task was planned; not a status. */
-export const plannedOnName = "Planned on";
+export const plannedOnName = en.tasks.plannedOn;
 
 /**
  * The one colour map for states shown across the app: status chips, timeline bars, the

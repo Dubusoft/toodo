@@ -4,6 +4,8 @@
  * replace the cached list.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMessages } from "@/lib/i18n";
+import type { Messages } from "@/locales/en";
 import type { ScheduledJob, ScheduleRequest, ScheduleTimeZone } from "@/lib/supervisor-schedules";
 import { serverFetch } from "@/web/connection";
 import { credentials, forgetToken, rejectedByServer } from "@/web/session";
@@ -15,9 +17,9 @@ const REFRESH_MS = 30_000;
 
 export type ScheduledJobs = { readonly jobs: readonly ScheduledJob[]; readonly timeZone: ScheduleTimeZone };
 
-async function call(request?: ScheduleRequest): Promise<ScheduledJobs> {
+async function call(t: Messages["settings"]["schedules"], request?: ScheduleRequest): Promise<ScheduledJobs> {
   const signedIn = credentials();
-  if (signedIn === null) throw new Error("No access token for the Toodo server.");
+  if (signedIn === null) throw new Error(t.noToken);
   const response = await serverFetch(
     SCHEDULES_PATH,
     request === undefined
@@ -33,19 +35,21 @@ async function call(request?: ScheduleRequest): Promise<ScheduledJobs> {
     if ("error" in body && typeof body.error === "string") throw new Error(body.error);
   }
   const message = typeof body === "object" && body !== null && "message" in body && typeof body.message === "string" ? `: ${body.message}` : "";
-  throw new Error(`The scheduled jobs request failed: HTTP ${response.status}${message}`);
+  throw new Error(t.requestFailed(response.status, message));
 }
 
 /** Every scheduled job, fetched while the panel is `active`. */
 export function useScheduledJobs(active: boolean) {
-  return useQuery({ queryKey, queryFn: () => call(), enabled: active, refetchInterval: active ? REFRESH_MS : false });
+  const t = useMessages().settings.schedules;
+  return useQuery({ queryKey, queryFn: () => call(t), enabled: active, refetchInterval: active ? REFRESH_MS : false });
 }
 
 /** Applies one change; the answer is the new list. */
 export function useChangeSchedule() {
+  const t = useMessages().settings.schedules;
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (request: ScheduleRequest) => call(request),
+    mutationFn: (request: ScheduleRequest) => call(t, request),
     onSuccess: (reply) => queryClient.setQueryData(queryKey, reply),
   });
 }

@@ -2,6 +2,7 @@
  * Runs commands on `toodo-server`: the generated bindings invoke commands through `invoke`,
  * which posts them to the server.
  */
+import { LocalizedError } from "@/lib/error-messages";
 import { serverFetch } from "@/web/connection";
 import { credentials, forgetToken, proxyRefused, rejectedByServer } from "@/web/session";
 
@@ -29,7 +30,7 @@ function isCommandError(value: unknown): value is CommandError {
 export async function invoke<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   const signedIn = credentials();
   if (signedIn === null) {
-    throw new Error("No access token for the Toodo server.");
+    throw new LocalizedError((m) => m.app.connection.noToken);
   }
   // A timer of its own rather than `AbortSignal.timeout`, so that fake timers drive it in tests.
   const timeout = new AbortController();
@@ -46,12 +47,12 @@ export async function invoke<T>(command: string, args: Record<string, unknown> =
     if (response.status === 401) {
       if (!(await rejectedByServer(response))) throw proxyRefused();
       forgetToken();
-      throw new Error("The Toodo server did not accept the access token.");
+      throw new LocalizedError((m) => m.app.connection.tokenRejected);
     }
     text = await response.text();
   } catch (error) {
     if (timeout.signal.aborted) {
-      throw new Error(`The Toodo server did not answer ${command} within ${INVOKE_TIMEOUT_MS / 1000} s.`);
+      throw new LocalizedError((m) => m.app.connection.commandTimedOut(command, INVOKE_TIMEOUT_MS / 1000));
     }
     throw error;
   } finally {

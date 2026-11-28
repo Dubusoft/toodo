@@ -1,3 +1,4 @@
+import { fill, useMessages } from "@/lib/i18n";
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { Bot, Check, ChevronDown, Inbox, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { Badge } from "@astryxdesign/core/Badge";
@@ -21,11 +22,11 @@ import {
   toggleStatus,
   type TaskFilter,
 } from "@/lib/task-filter";
-import { statusNames, toneChip, toneFill, toneOutline, type Tone } from "@/lib/status-styles";
+import { toneChip, toneFill, toneOutline, type Tone } from "@/lib/status-styles";
 import { singleKeyShortcut } from "@/lib/shortcuts";
 import { cn } from "@/lib/utils";
 import {
-  taskTypes,
+  taskTypeOptions,
   statusLabel,
   statusTones,
   shownStatusStyle,
@@ -45,12 +46,6 @@ const TaskGraph = lazy(() => import("@/components/task-graph").then((module) => 
 const TaskDetailsSheet = lazy(() =>
   import("@/components/task-details").then((module) => ({ default: module.TaskDetailsSheet })),
 );
-
-/** What the task list tells screen readers once tasks are loaded: how many it shows out of how many. */
-function shownTasksMessage(shown: number, total: number): string {
-  const count = (n: number) => `${n} ${n === 1 ? "task" : "tasks"}`;
-  return shown === total ? `Showing ${count(total)}.` : `Showing ${shown} of ${count(total)}.`;
-}
 
 /**
  * Tasks of `workspace`, or of every workspace when it is null. The dependency DAG spans
@@ -91,6 +86,7 @@ export function TaskList({
   /** Called once the timeline selected `shownTask`. */
   onTaskShown?: () => void;
 }) {
+  const m = useMessages();
   const workspaces = useWorkspaces();
   const [timelineWorkspace, setTimelineWorkspace] = useState<WorkspaceId | null>(null);
   // The filter the user set; until then the timeline leaves finished tasks out and the list shows every status.
@@ -104,7 +100,7 @@ export function TaskList({
   const byWorkspace = new Map(workspaces.data?.map((entry) => [entry.id, entry]));
   const context: TaskContext = {
     byId: new Map(allTasks.data?.map((task) => [task.id, task])),
-    workspaceName: (id) => byWorkspace.get(id)?.name ?? `Workspace ${id}`,
+    workspaceName: (id) => byWorkspace.get(id)?.name ?? m.tasks.workspaceFallback(id),
   };
   const tasks =
     workspace === null ? allTasks.data : allTasks.data?.filter((task) => task.workspaceId === workspace.id);
@@ -209,12 +205,12 @@ export function TaskList({
     <section aria-labelledby="tasks-heading" className="flex flex-1 flex-col gap-4 max-md:gap-3">
       <header className="flex flex-col max-md:gap-2">
         <h2 id="tasks-heading" className="text-xl font-semibold tracking-tight">
-          {workspace?.name ?? "All workspaces"}
+          {workspace?.name ?? m.tasks.allWorkspaces}
         </h2>
         {workspace ? (
           <WorkspaceDetails key={workspace.id} workspace={workspace} />
         ) : (
-          <p className="text-sm text-muted-foreground max-md:hidden">Tasks of every workspace and the dependencies between them.</p>
+          <p className="text-sm text-muted-foreground max-md:hidden">{m.tasks.allWorkspacesHint}</p>
         )}
       </header>
 
@@ -225,23 +221,23 @@ export function TaskList({
       {/* Stays mounted so screen readers hear loading start and finish, and how many tasks a search leaves. */}
       <p role="status" className={cn("text-sm text-muted-foreground", !allTasks.isPending && "sr-only")}>
         {allTasks.isPending
-          ? "Loading tasks..."
+          ? m.tasks.loadingTasks
           : tasks && filtered
-            ? shownTasksMessage(filtered.length + (numbered ? 1 : 0), tasks.length)
+            ? m.tasks.shownTasks(filtered.length + (numbered ? 1 : 0), tasks.length)
             : ""}
       </p>
       {allTasks.isError && (
         <p role="alert" className="text-sm text-destructive">
-          Failed to load tasks: {allTasks.error.message}
+          {m.tasks.loadTasksError(allTasks.error.message)}
         </p>
       )}
       {tasks?.length === 0 && (
         <EmptyState
-          title={workspace ? "No tasks in this workspace yet." : "No tasks yet."}
+          title={workspace ? m.tasks.emptyWorkspace : m.tasks.emptyTasks}
           hint={
             workspace
-              ? "Plan the first task above; tasks can depend on each other across workspaces."
-              : "Pick a workspace in the sidebar to plan its tasks."
+              ? m.tasks.emptyWorkspaceHint
+              : m.tasks.emptyTasksHint
           }
         />
       )}
@@ -250,40 +246,40 @@ export function TaskList({
           <div className="flex flex-wrap items-center gap-2">
             {workspace === null && (
               <ToggleButtonGroup
-                label="Task view"
+                label={m.tasks.taskView}
                 type="single"
                 size="sm"
                 value={view}
                 // Pressing the shown view again keeps it: one view is always shown.
                 onChange={(next) => typeof next === "string" && onViewChange?.(next as AllView)}
               >
-                <ToggleButton value="timeline" label="Timeline" />
-                <ToggleButton value="list" label="List" />
-                <ToggleButton value="plan" label="Plan" />
+                <ToggleButton value="timeline" label={m.tasks.timeline} />
+                <ToggleButton value="list" label={m.tasks.list} />
+                <ToggleButton value="plan" label={m.tasks.plan} />
               </ToggleButtonGroup>
             )}
             <Button
               size="sm"
               variant="secondary"
               className="ml-auto md:hidden"
-              label={activeFilters > 0 ? `Filters, ${activeFilters} active` : "Filters"}
+              label={activeFilters > 0 ? m.tasks.activeFilters(activeFilters) : m.tasks.filters}
               icon={<SlidersHorizontal />}
               endContent={activeFilters > 0 ? <Badge variant="info" label={activeFilters} /> : undefined}
               aria-expanded={filtersOpen}
               aria-controls="task-filters"
               onClick={() => setFiltersOpen(!filtersOpen)}
             >
-              Filters
+              {m.tasks.filters}
             </Button>
             <div id="task-filters" className={cn("contents", !filtersOpen && "max-md:hidden")}>
               {narrowable && (
                 <Selector
-                  label={showPlan ? "Plan workspace" : "Timeline workspace"}
+                  label={showPlan ? m.tasks.planWorkspace : m.tasks.timelineWorkspace}
                   isLabelHidden
                   size="sm"
                   value={filter === null ? "all" : String(filter)}
                   options={[
-                    { value: "all", label: "All workspaces" },
+                    { value: "all", label: m.tasks.allWorkspaces },
                     ...filterOptions.map((id) => ({ value: String(id), label: context.workspaceName(id) })),
                   ]}
                   onChange={(value) => setTimelineWorkspace(value === "all" ? null : Number(value))}
@@ -295,8 +291,8 @@ export function TaskList({
           {filtered.length === 0 && numbered === undefined ? (
             <EmptyState
               icon={<Search />}
-              title="No tasks match the search and filters."
-              hint="Change the search text, status, or type, or clear the filters."
+              title={m.tasks.noMatches}
+              hint={m.tasks.noMatchesHint}
             />
           ) : !showTimeline ? (
             <>
@@ -306,13 +302,13 @@ export function TaskList({
                 <PlanView tasks={timelineTasks} onShowTask={setDetailId} />
               </>
             ) : (
-            <div role="region" aria-label="Tasks" className="flex flex-col gap-4">
+            <div role="region" aria-label={m.tasks.region} className="flex flex-col gap-4">
               {numbered && (
-                <section aria-label="Task number match" className="flex flex-col gap-2">
+                <section aria-label={m.tasks.numberMatch} className="flex flex-col gap-2">
                   <h3 className="text-sm font-medium text-muted-foreground">
-                    Task <span className="tabular-nums font-normal">#{numbered.id}</span>
+                    {fill(m.tasks.numberedTask, { number: <span className="tabular-nums font-normal">#{numbered.id}</span> })}
                   </h3>
-                  <ul aria-label="Task number match" className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
+                  <ul aria-label={m.tasks.numberMatch} className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
                     <TaskRow
                       task={numbered}
                       tasks={allTasks.data}
@@ -329,12 +325,12 @@ export function TaskList({
                     <Button
                       size="sm"
                       variant="ghost"
-                      label={`Done ${doneCount}`}
+                      label={m.tasks.doneCount(doneCount)}
                       icon={<ChevronDown aria-hidden className={cn("transition-transform", !doneListed && "-rotate-90")} />}
                       aria-expanded={doneListed}
                       onClick={() => setDoneShown(!doneListed)}
                     >
-                      Done <span className="tabular-nums font-normal">{doneCount}</span>
+                      {fill(m.tasks.doneCountStyled, { count: <span className="tabular-nums font-normal">{doneCount}</span> })}
                     </Button>
                   </h3>
                   {/* Deleting acts on every done task of a workspace, so only a workspace's own list offers it. */}
@@ -343,7 +339,7 @@ export function TaskList({
               )}
               {olderLoader}
               {listed.length > 0 && (
-                <ul aria-label="Task list" className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
+                <ul aria-label={m.tasks.taskList} className="flex flex-col divide-y rounded-xl border bg-card shadow-xs">
                   {listed.map((task) => (
                     <TaskRow
                       key={task.id}
@@ -359,7 +355,7 @@ export function TaskList({
             </div>
             )}
               {detailId !== null && context.byId.has(detailId) && (
-                <Suspense fallback={<p className="text-sm text-muted-foreground">Loading details...</p>}>
+                <Suspense fallback={<p className="text-sm text-muted-foreground">{m.tasks.loadingDetails}</p>}>
                   <TaskDetailsSheet onClose={() => setDetailId(null)}>
                     <TaskRow
                       key={detailId}
@@ -376,7 +372,7 @@ export function TaskList({
             </>
           ) : (
             <ErrorBoundary label="the timeline">
-              <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">Loading timeline...</p>}>
+              <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">{m.tasks.loadingTimeline}</p>}>
                 <TaskGraph
                   tasks={[...timelineTasks, ...prerequisites]}
                   allTasks={allTasks.data}
@@ -384,7 +380,7 @@ export function TaskList({
                   workspaceLabel={(task) =>
                     filter === null || task.workspaceId !== filter ? context.workspaceName(task.workspaceId) : null
                   }
-                  statusLabel={(task) => statusLabel(task, context.byId)}
+                  statusLabel={(task) => statusLabel(task, context.byId, m)}
                   statusStyle={(task) => statusStyle(task, context.byId)}
                   ready={(task) => shownStatus(task, context.byId) === "ready"}
                   scale={timelineScale}
@@ -434,6 +430,7 @@ function scrollerOf(element: Element): Element {
  * to try again, instead of asking the server over and over.
  */
 function OlderTasksLoader({ loading, failed, onLoad }: { loading: boolean; failed: boolean; onLoad: () => void }) {
+  const m = useMessages();
   const top = useRef<HTMLDivElement>(null);
   const latest = useRef({ loading, failed, onLoad });
   useEffect(() => {
@@ -475,11 +472,11 @@ function OlderTasksLoader({ loading, failed, onLoad }: { loading: boolean; faile
   }, []);
   return (
     <div ref={top} className="flex min-h-8 items-center gap-2 text-sm text-muted-foreground">
-      <span role="status">{loading ? "Loading older finished tasks..." : ""}</span>
+      <span role="status">{loading ? m.tasks.loadingOlder : ""}</span>
       {failed && !loading && (
         <>
-          <span role="alert">Could not load older finished tasks.</span>
-          <Button size="sm" variant="secondary" label="Try again" onClick={onLoad} />
+          <span role="alert">{m.tasks.loadOlderError}</span>
+          <Button size="sm" variant="secondary" label={m.tasks.tryAgain} onClick={onLoad} />
         </>
       )}
     </div>
@@ -501,29 +498,30 @@ function filterChipStyle(tone: Tone, pressed: boolean, filled: string = toneChip
 
 /** Search text and status and type filters narrowing the task list and the timeline. */
 function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (filter: TaskFilter) => void }) {
+  const m = useMessages();
   return (
     <div
       role="search"
-      aria-label="Task filters"
+      aria-label={m.tasks.taskFilters}
       className="flex flex-1 flex-wrap items-center justify-end gap-2 max-md:grid max-md:basis-full max-md:grid-cols-2"
     >
       <TextInput
         type="search"
-        label="Search tasks"
+        label={m.tasks.searchTasks}
         isLabelHidden
         size="sm"
-        placeholder="Search title, description, or #number"
+        placeholder={m.tasks.searchHint}
         containerClassName="w-56 max-md:col-span-2 max-md:w-full"
         value={filter.query}
         onChange={(query) => onChange({ ...filter, query })}
       />
-      <div role="group" aria-label="Status filter" className="flex flex-wrap gap-1 max-md:col-span-2 max-md:gap-2">
+      <div role="group" aria-label={m.tasks.statusFilter} className="flex flex-wrap gap-1 max-md:col-span-2 max-md:gap-2">
         {shownStatuses.map((status) => (
           // Not selected: a dot in the hue of the status chip. Selected: a check.
           <ToggleButton
             key={status}
             size="sm"
-            label={statusNames[status]}
+            label={m.tasks.statuses[status]}
             icon={<span aria-hidden className={cn("size-1.5 rounded-full", toneFill[statusTones[status]])} />}
             pressedIcon={<Check aria-hidden />}
             className={filterChipStyle(
@@ -534,31 +532,31 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
             isPressed={filter.statuses.includes(status)}
             onPressedChange={() => onChange({ ...filter, statuses: toggleStatus(filter.statuses, status) })}
           >
-            {statusNames[status]}
+            {m.tasks.statuses[status]}
           </ToggleButton>
         ))}
       </div>
       <Selector
-        label="Type filter"
+        label={m.tasks.typeFilter}
         isLabelHidden
         size="sm"
         value={filter.type ?? "all"}
-        options={[{ value: "all", label: "All types" }, ...taskTypes]}
+        options={[{ value: "all", label: m.tasks.allTypes }, ...taskTypeOptions(m)]}
         onChange={(value) => onChange({ ...filter, type: value === "all" ? null : (value as TaskType) })}
       />
       <ToggleButton
         size="sm"
-        label="Autopilot"
-        tooltip="Only tasks marked for autopilot"
+        label={m.tasks.autopilot}
+        tooltip={m.tasks.autopilotFilter}
         icon={<Bot aria-hidden />}
         className={filterChipStyle("info", filter.autopilot)}
         isPressed={filter.autopilot}
         onPressedChange={(autopilot) => onChange({ ...filter, autopilot })}
       >
-        Autopilot
+        {m.tasks.autopilot}
       </ToggleButton>
       {isFilterActive(filter) && (
-        <Button size="sm" variant="ghost" label="Clear filters" icon={<X />} onClick={() => onChange(emptyTaskFilter)} />
+        <Button size="sm" variant="ghost" label={m.tasks.clearFilters} icon={<X />} onClick={() => onChange(emptyTaskFilter)} />
       )}
     </div>
   );
@@ -570,6 +568,7 @@ function TaskFilterBar({ filter, onChange }: { filter: TaskFilter; onChange: (fi
  * loaded pages may hold only the newest done tasks and a search may hide some.
  */
 function DeleteDoneTasks({ workspace }: { workspace: Workspace }) {
+  const m = useMessages();
   const deleteDone = useDeleteDoneTasks();
   // When the confirmation opened; null while it is closed.
   const [openedAt, setOpenedAt] = useState<number | null>(null);
@@ -582,7 +581,6 @@ function DeleteDoneTasks({ workspace }: { workspace: Workspace }) {
   // the number deleted.
   const counted =
     openedAt !== null && count.isSuccess && count.dataUpdatedAt >= openedAt ? count.data : undefined;
-  const named = counted === undefined ? "done tasks" : `${counted} done ${counted === 1 ? "task" : "tasks"}`;
 
   function stopConfirming() {
     setOpenedAt(null);
@@ -593,7 +591,7 @@ function DeleteDoneTasks({ workspace }: { workspace: Workspace }) {
     <>
       <div
         role={confirming ? "group" : undefined}
-        aria-label={confirming ? `Delete ${named}?` : undefined}
+        aria-label={confirming ? m.tasks.deleteDoneQuestion(counted) : undefined}
         className={cn("ml-auto flex items-center gap-1 max-md:gap-2", confirming && "basis-full flex-wrap justify-end")}
         onKeyDown={confirming ? escapeCloses(stopConfirming, deleteDone.isPending) : undefined}
       >
@@ -601,30 +599,28 @@ function DeleteDoneTasks({ workspace }: { workspace: Workspace }) {
           <>
             <span className="min-w-0 flex-1 basis-48 text-xs">
               {counted === undefined
-                ? "Counting done tasks..."
-                : counted === 1
-                  ? `Delete ${named}? It moves to Settings > Archive with its history, where it can be restored.`
-                  : `Delete ${named}? They move to Settings > Archive with their history, where they can be restored.`}
+                ? m.tasks.countingDone
+                : m.tasks.deleteDoneDescription(counted)}
             </span>
             <Button
               changesData
               size="sm"
               variant="destructive"
-              label={deleteDone.isPending ? "Deleting..." : "Confirm delete"}
+              label={deleteDone.isPending ? m.tasks.deleting : m.tasks.confirmDelete}
               icon={<Trash2 />}
               isDisabled={deleteDone.isPending || counted === undefined || count.isFetching}
               onClick={() => deleteDone.mutate(workspace.id, { onSuccess: stopConfirming })}
             />
             {/* Focus lands on Back, so pressing Enter or Space again cannot delete. */}
-            <Button size="sm" variant="ghost" label="Back" autoFocus onClick={stopConfirming} />
+            <Button size="sm" variant="ghost" label={m.tasks.back} autoFocus onClick={stopConfirming} />
           </>
         ) : (
           <Button
             size="sm"
             variant="ghost"
-            label="Delete done"
+            label={m.tasks.deleteDone}
             icon={<Trash2 />}
-            tooltip="Move every done task of this workspace to the archive"
+            tooltip={m.tasks.deleteDoneHint}
             autoFocus={refocus}
             onClick={() => {
               deleteDone.reset();
@@ -641,7 +637,7 @@ function DeleteDoneTasks({ workspace }: { workspace: Workspace }) {
         confirming &&
         count.isError && (
           <p role="alert" className="basis-full text-xs text-destructive">
-            Could not count the done tasks: {count.error.message} Choose Back, then Delete done to count them again.
+            {m.tasks.countDoneError(count.error.message)}
           </p>
         )
       )}

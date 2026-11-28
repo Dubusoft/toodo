@@ -1,9 +1,11 @@
+import { useI18n, useMessages } from "@/lib/i18n";
+import { en, type Messages } from "@/locales/en";
 import { lazy, useSyncExternalStore, type ReactNode } from "react";
 import { Badge, type BadgeVariant } from "@astryxdesign/core/Badge";
 import type { Task, TaskId, TaskType, WorkspaceId } from "@/lib/bindings";
 import { shownStatus, type ShownStatus } from "@/lib/task-filter";
-import { dueState, dueStateLabels, type MissingPlanField, missingPlan, missingPlanLabel } from "@/lib/plan";
-import { statusNames, toneChip, toneText, type Tone } from "@/lib/status-styles";
+import { dueState, formatDueDate, type MissingPlanField, missingPlan, missingPlanLabel } from "@/lib/plan";
+import { toneChip, toneText, type Tone } from "@/lib/status-styles";
 import { formatRemaining } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import { reachability, subscribeReachability } from "@/web/connection";
@@ -12,16 +14,20 @@ export const Markdown = lazy(() => import("@/components/markdown"));
 
 export const taskTypes: TaskType[] = ["feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd"];
 
+export function taskTypeOptions(m: Messages) {
+  return taskTypes.map((value) => ({ value, label: m.tasks.types[value] }));
+}
+
 /**
  * The status of `task`, naming a planned task that can be started now "Ready", one still
  * waiting on a prerequisite "Blocked", one that was worked on before "Paused", a task that
  * waits until a time "Planned" with the time left, e.g. "Planned ~7d", and a task concluded
  * without merging "Not adopted".
  */
-export function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>): string {
-  if (task.status === "done" && task.resolution === "completed") return "Completed";
-  if (task.wait !== null) return `${statusNames.waiting} ~${formatRemaining(task.wait.until)}`;
-  return statusNames[shownStatus(task, byId)];
+export function statusLabel(task: Task, byId: ReadonlyMap<TaskId, Task>, m: Messages = en): string {
+  if (task.status === "done" && task.resolution === "completed") return m.tasks.completed;
+  if (task.wait !== null) return m.tasks.statusWaiting(m.tasks.statuses.waiting, formatRemaining(task.wait.until, undefined, m));
+  return m.tasks.statuses[shownStatus(task, byId)];
 }
 
 /** The tone of each shown status, shared by the status chips and the status filter. */
@@ -49,11 +55,12 @@ const toneBadges: Record<Tone, BadgeVariant> = {
 
 /** The status of `task` as a badge, as `statusLabel` names it. */
 export function StatusBadge({ task, byId }: { task: Task; byId: ReadonlyMap<TaskId, Task> }) {
+  const m = useMessages();
   const status = shownStatus(task, byId);
   return (
     <Badge
       variant={toneBadges[statusTones[status]]}
-      label={statusLabel(task, byId)}
+      label={statusLabel(task, byId, m)}
       // Not adopted is neutral like planned, outlined to tell the two apart.
       className={cn("shrink-0", status === "not_adopted" && "ring-1 ring-inset ring-muted-foreground/40")}
     />
@@ -102,11 +109,12 @@ export function DetailField({ label, children }: { label: string; children: Reac
 
 /** The due date of a task, flagged when it is late or overdue. */
 export function DueDate({ task }: { task: Task }) {
+  const { m, locale } = useI18n();
   const state = dueState(task, Date.now() / 1000);
   const behind = state === "late" || state === "overdue";
   return (
     <span data-due-state={state ?? undefined} className={cn(behind && cn("font-medium", toneText.danger))}>
-      {state === null || state === "upcoming" ? "Due" : dueStateLabels[state]} {task.dueDate}
+      {task.dueDate !== null && m.tasks.dueDateStatus(m.tasks.dueStates[state ?? "upcoming"], formatDueDate(task.dueDate, locale))}
     </span>
   );
 }
@@ -117,14 +125,15 @@ export function DueDate({ task }: { task: Task }) {
  * task has both.
  */
 export function MissingPlanMark({ task, onEdit }: { task: Task; onEdit: (field: MissingPlanField) => void }) {
+  const m = useMessages();
   const missing = missingPlan(task);
-  const label = missingPlanLabel(missing);
+  const label = missingPlanLabel(missing, m);
   if (label === null) return null;
   return (
     <button
       type="button"
-      aria-label={`Edit plan of #${task.id}: ${label.toLowerCase()}`}
-      title="Reviews compare estimates and due dates with what happened; add them"
+      aria-label={m.tasks.editPlan(task.id, label.toLowerCase())}
+      title={m.tasks.missingPlanHint}
       data-missing-plan={missing.join(" ")}
       className="cursor-pointer rounded-sm underline decoration-dotted underline-offset-2 outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11"
       onClick={() => onEdit(missing[0])}
@@ -146,9 +155,10 @@ export function useServerDown(): boolean {
 
 /** The labels of a task as chips. */
 export function TaskLabels({ task, className }: { task: Task; className?: string }) {
+  const m = useMessages();
   if (task.labels.length === 0) return null;
   return (
-    <ul aria-label={`Labels of #${task.id}`} className={cn("flex flex-wrap gap-1", className)}>
+    <ul aria-label={m.tasks.taskLabels(task.id)} className={cn("flex flex-wrap gap-1", className)}>
       {task.labels.map((label) => (
         <li key={label}>
           <Badge label={label} />
