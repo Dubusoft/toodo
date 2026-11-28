@@ -1,16 +1,18 @@
-// The web app's UI language. The language setting (Dori's `ownerLanguage`, see
-// `src/lib/dori-config.ts`) picks it: Korean shows the Korean catalog, any other language or
-// none shows English. The catalogs live in `src/locales/<locale>/`, one module per area; a
-// key the Korean catalog lacks shows its English text.
+// The web app's UI language. The App language setting, kept on the server for every device,
+// picks it; until it is set the app follows Dori's language (`ownerLanguage`, see
+// `src/lib/dori-config.ts`): Korean shows the Korean catalog, any other language or none shows
+// English. The catalogs live in `src/locales/<locale>/`, one module per area; a key the Korean
+// catalog lacks shows its English text.
 import { createContext, Fragment, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { en, type Messages } from "@/locales/en";
 import { ko, nativeNames as koNames } from "@/locales/ko";
+import { commands, type AppLanguage } from "@/lib/bindings";
 import { DORI_LANGUAGE_KEY, DORI_TIME_ZONE_KEY } from "@/lib/dori-config";
 import { setDisplayTimeZone } from "@/lib/timeline";
 import { fetchDoriConfig } from "@/web/dori-config";
 
-export type Locale = "en" | "ko";
+export type Locale = AppLanguage;
 
 /** A partial catalog: each area may leave out keys, which then show in English. */
 export type Catalog = { readonly [Area in keyof Messages]?: Partial<Messages[Area]> };
@@ -116,19 +118,31 @@ export function useMessages(): Messages {
 /** The query of the Dori config, shared with the Settings page that edits it. */
 export const doriConfigKey = ["dori-config"];
 
+/** The query of the App language setting, shared with the Settings page that edits it. */
+export const appLanguageKey = ["app-language"];
+
+/** The App language setting: the language set, null while none is set, undefined until known. */
+export function useAppLanguage() {
+  return useQuery({ queryKey: appLanguageKey, queryFn: () => commands.getAppLanguage(), retry: false });
+}
+
 /**
  * Follows the language and time zone settings: reads them once signed in and again whenever the
- * Settings page saves or refetches them. A server without Dori has neither, so the language stays
- * as it is and dates stay in this device's time zone.
+ * Settings page saves or refetches them. The App language wins; while it is unset (or the server
+ * is older than it) the app follows Dori's language, and a server without Dori has neither, so the
+ * language stays as it is. Dates stay in this device's time zone without Dori's.
  */
 export function useLocaleFromSettings(): void {
   const { setLocale, setTimeZone } = useContext(I18nContext);
+  const app = useAppLanguage();
   const config = useQuery({ queryKey: doriConfigKey, queryFn: fetchDoriConfig, retry: false, staleTime: Infinity });
+  const chosen = app.isError ? null : app.data;
   const language = config.data?.entries.find((entry) => entry.key === DORI_LANGUAGE_KEY)?.value;
   const timeZone = config.data?.entries.find((entry) => entry.key === DORI_TIME_ZONE_KEY)?.value;
   useEffect(() => {
-    if (language !== undefined) setLocale(localeOf(language));
-  }, [language]);
+    if (chosen) setLocale(chosen);
+    else if (chosen === null && language !== undefined) setLocale(localeOf(language));
+  }, [chosen, language]);
   useEffect(() => {
     if (timeZone !== undefined) setTimeZone(timeZone || null);
   }, [timeZone]);

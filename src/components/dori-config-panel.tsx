@@ -13,7 +13,8 @@ import {
   type DoriConfigSaved,
   type DoriConfigView,
 } from "@/lib/dori-config";
-import { doriConfigKey, fill, useMessages } from "@/lib/i18n";
+import { commands } from "@/lib/bindings";
+import { appLanguageKey, doriConfigKey, fill, useAppLanguage, useI18n, useMessages } from "@/lib/i18n";
 import type { Messages } from "@/locales/en";
 import { fetchDoriConfig, saveDoriConfig } from "@/web/dori-config";
 
@@ -25,10 +26,13 @@ function savedNotice(saved: DoriConfigSaved, m: Messages): string {
   return saved.restart ? m.settings.savedAfterRestart : m.settings.savedNow;
 }
 
-function useSave(onSaved: (saved: DoriConfigSaved) => void) {
+function useSave(onSaved: (saved: DoriConfigSaved) => void, beforeSave?: () => Promise<unknown>) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (edit: DoriConfigEdit) => saveDoriConfig(edit),
+    mutationFn: async (edit: DoriConfigEdit) => {
+      await beforeSave?.();
+      return saveDoriConfig(edit);
+    },
     onSuccess: (saved) => {
       queryClient.setQueryData<DoriConfigView>(doriConfigKey, saved.view);
       onSaved(saved);
@@ -75,17 +79,20 @@ export function ChoiceSetting({
   description,
   options,
   searchable = false,
+  beforeSave,
 }: {
   entry: DoriConfigEntry;
   label: string;
   description: string;
   options: readonly ChoiceOption[];
   searchable?: boolean;
+  /** Runs before each save; a failure stops the save and shows. */
+  beforeSave?: () => Promise<unknown>;
 }) {
   const m = useMessages();
-  // The save itself is kept, not its text: saving the language changes the language of the text.
+  // The save itself is kept, not its text, so the notice follows a later change of the language.
   const [notice, setNotice] = useState<DoriConfigSaved | null>(null);
-  const save = useSave(setNotice);
+  const save = useSave(setNotice, beforeSave);
   const listed = options.some((option) => option.value === entry.value);
   return (
     <div className="flex flex-col gap-1">
@@ -107,13 +114,30 @@ export function ChoiceSetting({
   );
 }
 
-function LanguageSetting({ entry }: { entry: DoriConfigEntry }) {
-  const m = useMessages();
+/**
+ * Dori's language. The app's screens follow it only while no App language is set, so before the
+ * first change the App language is set to the one shown: the screens keep their language.
+ */
+function DoriLanguageSetting({ entry }: { entry: DoriConfigEntry }) {
+  const { locale, m } = useI18n();
+  const queryClient = useQueryClient();
+  const app = useAppLanguage();
+  const keepScreens = async () => {
+    queryClient.setQueryData(appLanguageKey, await commands.setAppLanguage(locale));
+  };
   const options = [
     { value: UNSET, label: m.settings.languageUnset },
     ...LANGUAGES.map((l) => ({ value: l, label: m.settings.languageNames[l] })),
   ];
-  return <ChoiceSetting entry={entry} label={m.settings.language} description={m.settings.languageDescription} options={options} />;
+  return (
+    <ChoiceSetting
+      entry={entry}
+      label={m.settings.doriLanguage}
+      description={m.settings.doriLanguageDescription}
+      options={options}
+      beforeSave={app.data === null ? keepScreens : undefined}
+    />
+  );
 }
 
 /**
@@ -145,13 +169,13 @@ function hint(entry: DoriConfigEntry, m: Messages): string {
 }
 
 /**
- * The Language setting of the General section: the language of the app's screens and of what Dori
- * writes to its owner. A server without Dori has no such setting, so nothing shows.
+ * The Dori language setting of the General section: the language Dori writes to its owner in. A
+ * server without Dori has no such setting, so nothing shows.
  */
-export function LanguageSettingField() {
+export function DoriLanguageSettingField() {
   const config = useDoriConfig();
   const language = config.data?.entries.find((e) => e.key === DORI_LANGUAGE_KEY);
-  return language ? <LanguageSetting entry={language} /> : null;
+  return language ? <DoriLanguageSetting entry={language} /> : null;
 }
 
 function EntryRow({ entry }: { entry: DoriConfigEntry }) {

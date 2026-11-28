@@ -4,10 +4,11 @@ import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { Activity, Bell, ChevronLeft, ChevronRight, DatabaseBackup, Info, MonitorSmartphone, Plug, Server, SlidersHorizontal, Trash2, Wrench, X } from "lucide-react";
 import { AdvancedSettings } from "@/components/advanced-settings";
 import { AiConnectionsPanel } from "@/components/ai-connections-panel";
+import { AppLanguageSettingField } from "@/components/app-language-setting";
 import { ArchivePanel } from "@/components/archive-panel";
 import { BackupPanel, BackupStatusLabel } from "@/components/backup-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
-import { LanguageSettingField, TimeZoneSettingField, useDoriConnected } from "@/components/dori-config-panel";
+import { DoriLanguageSettingField, TimeZoneSettingField, useDoriConnected } from "@/components/dori-config-panel";
 import { DoriPanel, MachinesPanel } from "@/components/dori-panel";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
@@ -83,7 +84,8 @@ function GeneralSettings({ update, onShowAbout }: { update: UpdateCheck | undefi
   const voiceAutoSend = useVoiceAutoSend();
   return (
     <section aria-label={m.settings.sections.general} className="flex flex-col gap-5 text-sm">
-      <LanguageSettingField />
+      <AppLanguageSettingField />
+      <DoriLanguageSettingField />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium">{m.settings.theme}</span>
         <ThemeToggle />

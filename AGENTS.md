@@ -89,10 +89,16 @@ Layout:
     `autoFocus`. Use them instead of importing the Astryx buttons directly.
   - `src/lib/i18n.tsx` and `src/locales/`: the web app's UI language and time zone. The
     Time zone setting in Settings > General (Dori's `displayTimeZone`) sets the zone the
-    shared formatters of `src/lib/timeline.ts` show dates in. The Language setting
-    in Settings > General (Dori's `ownerLanguage`, `src/lib/dori-config.ts`) picks the language: Korean
-    shows `src/locales/ko/`, any other language or none shows `src/locales/en/`, and a key the
-    Korean catalog lacks shows its English text. Each catalog has one module per area
+    shared formatters of `src/lib/timeline.ts` show dates in. Settings > General has two
+    language settings. App language (`get_app_language` / `set_app_language`, the server's
+    `app_language` setting in `server/src/storage/app-language.ts`, shared by every device)
+    picks the language of the screens: `ko` shows `src/locales/ko/`, `en` shows
+    `src/locales/en/`. While it is unset the screens follow Dori's language, so a setup from
+    before the split keeps its language. Dori's language (Dori's `ownerLanguage`,
+    `src/lib/dori-config.ts`) is the language Dori and its lanes write to the owner in; its
+    first change sets the unset App language to the language shown, so it never changes the
+    screens. Followed, Korean shows Korean and any other language or none shows English. A
+    key the Korean catalog lacks shows its English text. Each catalog has one module per area
     (`common`, `app`, `tasks`, `details`, `chat`, `settings`, `review`, `alerts`); `en` defines the
     keys and their types (a message with values is a function of them), `ko` is a
     `Partial` of each area. Components read them with `useMessages()` (or `useI18n()` for
