@@ -71,19 +71,43 @@ export interface ChannelEdit {
   push?: boolean;
 }
 
-/** Every channel in the order they were made, with its unread count. */
+/** Every channel in the order people set, with its unread count. */
 export function listChatChannels(db: Database): ChatChannel[] {
-  return db.query<ChannelRow, []>(`${CHANNEL_SELECT} ORDER BY c.id`).all().map(channel);
+  return db.query<ChannelRow, []>(`${CHANNEL_SELECT} ORDER BY c.position, c.id`).all().map(channel);
 }
 
-/** Makes a channel named `name`, which no other channel has in any case. */
+/** Makes a channel named `name`, which no other channel has in any case, after the others. */
 export function createChatChannel(db: Database, name: string, at: number): ChatChannel {
   return db.transaction(() => {
     nameFree(db, name, null);
     const id = Number(
-      db.run("INSERT INTO chat_channels (name, created_at) VALUES (?1, ?2)", [name, at]).lastInsertRowid,
+      db.run(
+        `INSERT INTO chat_channels (name, created_at, position)
+         VALUES (?1, ?2, (SELECT coalesce(max(position), 0) + 1 FROM chat_channels))`,
+        [name, at],
+      ).lastInsertRowid,
     );
     return findChannel(db, chatChannelId(id));
+  })();
+}
+
+/**
+ * Puts the channels `order` names first, in that order, and the others after them in the order
+ * they had, so a channel made meanwhile on another device stays; returns every channel in the
+ * new order. Each ID must name a channel.
+ */
+export function reorderChatChannels(db: Database, order: readonly ChatChannelId[]): ChatChannel[] {
+  return db.transaction(() => {
+    for (const id of order) channelExists(db, id);
+    const named = new Set<number>(order);
+    const rest = db
+      .query<{ id: number }, []>("SELECT id FROM chat_channels ORDER BY position, id")
+      .all()
+      .map((row) => row.id)
+      .filter((id) => !named.has(id));
+    const place = db.query<null, [number, number]>("UPDATE chat_channels SET position = ?2 WHERE id = ?1");
+    [...order, ...rest].forEach((id, index) => place.run(id, index + 1));
+    return listChatChannels(db);
   })();
 }
 

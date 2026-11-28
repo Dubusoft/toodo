@@ -54,6 +54,10 @@ export const MIGRATIONS: readonly string[] = [
        CHECK (started IN (0, 1));
    ALTER TABLE push_subscriptions ADD COLUMN finished INTEGER NOT NULL DEFAULT 0
        CHECK (finished IN (0, 1));`,
+  // 60: the place of each chat channel in the order people set, starting in the order the
+  // channels were made.
+  `ALTER TABLE chat_channels ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+   UPDATE chat_channels SET position = id;`,
 ];
 
 /** The schema version this server reads and writes. */

@@ -20,6 +20,7 @@ import {
   deleteChatChannel,
   listChatChannels,
   markChatRead,
+  reorderChatChannels,
   updateChatChannel,
 } from "./chat-channels.ts";
 import { listChatMessages } from "./chat-messages.ts";
@@ -189,6 +190,28 @@ describe("chat channels and threads", () => {
       kind: "chat_channel_not_found",
       channel: 9,
     });
+  });
+
+  test("channels keep the order people set, with new ones last and unnamed ones after the named", () => {
+    const db = openMemoryDatabase();
+    const work = createChatChannel(db, "work", 100);
+    const ops = createChatChannel(db, "ops", 100);
+    const names = () => listChatChannels(db).map((c) => c.name);
+    expect(names()).toEqual(["general", "work", "ops"]);
+
+    expect(reorderChatChannels(db, [ops.id, FIRST_CHANNEL, work.id]).map((c) => c.name)).toEqual(["ops", "general", "work"]);
+    expect(names()).toEqual(["ops", "general", "work"]);
+    createChatChannel(db, "docs", 100);
+    expect(names()).toEqual(["ops", "general", "work", "docs"]);
+    // A channel made on another device after the order was read keeps its place after the others.
+    reorderChatChannels(db, [work.id, ops.id]);
+    expect(names()).toEqual(["work", "ops", "general", "docs"]);
+
+    expect(failure(() => reorderChatChannels(db, [work.id, chatChannelId(9)]))).toEqual({
+      kind: "chat_channel_not_found",
+      channel: 9,
+    });
+    expect(names()).toEqual(["work", "ops", "general", "docs"]);
   });
 
   test("deleting a channel moves its threads and messages to the default room", () => {

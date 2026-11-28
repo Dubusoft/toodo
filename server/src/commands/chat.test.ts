@@ -9,6 +9,7 @@ import {
   createChatChannel,
   createChatThread,
   listChat,
+  reorderChatChannels,
   sendChatMessage,
   updateChatChannel,
   updateChatThread,
@@ -88,5 +89,12 @@ describe("chat commands", () => {
     expect(refused.code).toBe("rejected");
     const quiet = updateChatChannel(storage, work.id, { name: null, push: false });
     expect(quiet.push).toBe(false);
+  });
+
+  test("an order that names a channel twice is refused", () => {
+    const storage = memoryStorage();
+    const work = createChatChannel(storage, "work");
+    expect(failure(() => reorderChatChannels(storage, [work.id, 1, work.id])).code).toBe("invalidInput");
+    expect(reorderChatChannels(storage, [work.id, 1]).map((c) => c.id)).toEqual([work.id, 1]);
   });
 });

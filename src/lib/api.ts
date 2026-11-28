@@ -238,12 +238,17 @@ export function makeCommands(invoke: Invoke) {
 		searchChat: (query: string, place: ({ channel: ChatChannelId }) & { thread?: never } | ({ thread: ChatThreadId }) & { channel?: never } | null) => typedError<ChatSearchHit[], CommandError>(invoke("search_chat", { query, place })),
 		/**  Records that people read `place` up to message `up_to`, which clears its unread count. */
 		markChatRead: (place: ChatPlace, upTo: ChatMessageId) => typedError<null, CommandError>(invoke("mark_chat_read", { place, upTo })),
-		/**  Every channel, in the order they were made, with its unread count. */
+		/**  Every channel, in the order people set (new ones last), with its unread count. */
 		listChatChannels: () => typedError<ChatChannel[], CommandError>(invoke("list_chat_channels")),
 		/**  Makes a channel; its name is shown after `#`, which it may start with. */
 		createChatChannel: (name: string) => typedError<ChatChannel, CommandError>(invoke("create_chat_channel", { name })),
 		/**  Renames a channel or turns its notifications on or off. */
 		updateChatChannel: (id: ChatChannelId, edit: ChatChannelEdit) => typedError<ChatChannel, CommandError>(invoke("update_chat_channel", { id, edit })),
+		/**
+		 *  Puts the channels in the order `ids` names, each once; a channel it leaves out keeps its
+		 *  place after them. Returns every channel in the new order.
+		 */
+		reorderChatChannels: (ids: ChatChannelId[]) => typedError<ChatChannel[], CommandError>(invoke("reorder_chat_channels", { ids })),
 		/**
 		 *  Deletes a channel other than the default room (channel 1): its threads move to the
 		 *  default room, and its own messages into an archived thread there named after it.
