@@ -42,6 +42,16 @@ describe("ArchivePanel", () => {
     mocked.listArchive.mockResolvedValue({ status: "ok", data: { workspaces: [workspace], tasks: [task] } });
   });
 
+  it("names an archived task's status in the app's words", async () => {
+    mocked.listArchive.mockResolvedValue({
+      status: "ok",
+      data: { workspaces: [], tasks: [{ ...task, status: "in_progress" } as Task] },
+    });
+    renderPanel();
+
+    expect(await screen.findByText("In progress")).toBeInTheDocument();
+  });
+
   it("restores an archived task", async () => {
     mocked.restoreTask.mockResolvedValue({ status: "ok", data: task });
     renderPanel();

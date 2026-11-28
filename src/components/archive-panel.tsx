@@ -88,7 +88,7 @@ export function ArchivePanel() {
           <ArchiveItem
             key={task.id}
             name={`#${task.id} ${task.title}`}
-            detail={task.status.replace("_", " ")}
+            detail={m.alerts.statuses[task.status]}
             busy={busy}
             onRestore={() => {
               reset();
