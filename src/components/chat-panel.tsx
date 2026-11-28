@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
   type FormEvent,
   type ReactNode,
+  type RefObject,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -445,6 +446,31 @@ function taskTrigger(loaded: () => readonly Task[], words: Messages["chat"]): Ch
   };
 }
 
+/**
+ * Opens the composer's `#` menu just above `composer`, the whole input box, at its width, wherever
+ * the `#` is typed. Astryx anchors the menu to a span it adds to the page at the caret; this moves
+ * that span into the box to cover it, and `index.css` sizes the menu to it.
+ */
+function useTriggerMenuAboveComposer(composer: RefObject<HTMLElement | null>) {
+  useEffect(() => {
+    const observer = new MutationObserver((records) => {
+      const box = composer.current;
+      // Only the conversation being typed in, when a channel and a thread show at once.
+      if (box === null || !box.contains(document.activeElement)) return;
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof HTMLElement) || !node.hasAttribute("data-astryx-trigger-anchor")) continue;
+          // The box's border box, which its 1px border puts 1px outside its padding box.
+          Object.assign(node.style, { left: "", top: "", width: "", height: "", position: "absolute", inset: "-1px" });
+          box.append(node);
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true });
+    return () => observer.disconnect();
+  }, [composer]);
+}
+
 /** A file picked for the next message: uploading, uploaded, or failed. */
 type Upload = { key: string; file: File; preview: string | null; attachment: ChatAttachment | null; error: string | null };
 
@@ -489,6 +515,8 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
   const triggers = useMemo(() => [taskTrigger(() => loadedTasks.current, m.chat)], [m]);
   const [uploads, setUploads] = useState<readonly Upload[]>([]);
   const picker = useRef<HTMLInputElement>(null);
+  const composer = useRef<HTMLDivElement>(null);
+  useTriggerMenuAboveComposer(composer);
   const messages = chat.data === undefined ? [] : chatMessages(chat.data);
   const storedClientIds = new Set(messages.map((message) => message.clientId));
   const outgoing = outbox.filter((message) => samePlace(message.place, place) && !storedClientIds.has(message.clientId));
@@ -658,7 +686,10 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
                 {voice.speech.interimTranscript || m.chat.listening}
               </p>
             )}
-            <div className="flex items-end gap-1 rounded-2xl border border-input bg-background p-1 focus-within:border-ring">
+            <div
+              ref={composer}
+              className="relative flex items-end gap-1 rounded-2xl border border-input bg-background p-1 focus-within:border-ring"
+            >
               <IconButton
                 variant="ghost"
                 size="sm"

@@ -17,6 +17,20 @@ async function openChat(app: Page) {
   return chat;
 }
 
+/** The input box around the composer's input, attach and send buttons, which the `#` menu opens above. */
+function composer(input: Locator) {
+  return input.locator("xpath=ancestor::div[contains(@class, 'rounded-2xl')][1]");
+}
+
+/** The menu opens just above the composer's input box, as wide as it, wherever the `#` is typed. */
+async function expectAboveComposer(menu: Locator, input: Locator) {
+  const shown = await box(menu);
+  const target = await box(composer(input));
+  expect(shown.bottom).toBeLessThanOrEqual(target.y);
+  expect(shown.x).toBeCloseTo(target.x, 0);
+  expect(shown.width).toBeCloseTo(target.width, 0);
+}
+
 /** The task numbers the `#` menu lists, in order. */
 async function listedNumbers(menu: Locator) {
   const texts = await menu.getByRole("option").allTextContents();
@@ -47,7 +61,7 @@ for (const { name, width, height } of [
     await expect.poll(() => listedNumbers(menu)).toEqual([12, 11, 10, 9, 8, 7, 6, 5, 4, 3]);
     await expect(menu.getByRole("option").first()).toContainText("Mention target 12");
     await expect(menu.getByRole("option").first()).toContainText("Ready");
-    expect((await box(menu)).bottom).toBeLessThanOrEqual((await box(input)).y);
+    await expectAboveComposer(menu, input);
     expect((await box(menu)).x).toBeGreaterThanOrEqual(0);
     expect((await box(menu)).right).toBeLessThanOrEqual(width);
     await testInfo.attach(`# menu on ${name}`, { body: await app.screenshot(), contentType: "image/png" });
@@ -107,13 +121,14 @@ test("completes a task number in a task's thread", async ({ app, server }, testI
   const menu = app.getByRole("listbox", { name: "Tasks" });
 
   await input.click();
-  await app.keyboard.type(`#${other.id}`);
+  // A # typed after other words still opens the menu over the whole input box.
+  await app.keyboard.type(`See #${other.id}`);
   await expect.poll(() => listedNumbers(menu)).toEqual([other.id]);
   await expect(menu.getByRole("option").first()).toContainText(other.title);
-  expect((await box(menu)).bottom).toBeLessThanOrEqual((await box(input)).y);
+  await expectAboveComposer(menu, input);
   await testInfo.attach("# menu in a task thread", { body: await app.screenshot(), contentType: "image/png" });
   await app.keyboard.press("Enter");
-  await expect.poll(() => draft(input)).toBe(`#${other.id} `);
+  await expect.poll(() => draft(input)).toBe(`See #${other.id} `);
   await app.keyboard.press("Enter");
-  await expect(chat.getByText(`#${other.id}`, { exact: true })).toBeVisible();
+  await expect(chat.getByText(`See #${other.id}`, { exact: true })).toBeVisible();
 });
