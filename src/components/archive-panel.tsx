@@ -134,7 +134,7 @@ function ArchiveItem({
   const t = m.settings.archivePanel;
   return (
     <li className="flex flex-wrap items-center gap-x-2 gap-y-1 py-1.5 first:pt-0">
-      <span className="flex min-w-0 flex-1 flex-col">
+      <span className="flex min-w-0 flex-1 basis-48 flex-col">
         <span className="truncate font-medium">{name}</span>
         <span className="truncate text-muted-foreground">{detail}</span>
       </span>
