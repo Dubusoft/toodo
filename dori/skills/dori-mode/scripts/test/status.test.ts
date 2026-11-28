@@ -131,6 +131,20 @@ test("status shows services, pending waits, watched repos with poll time and fai
   expect(trusted).toContain("- 이슈: 저장소 1개 감시");
 });
 
+test("with Discord off a fresh heartbeat shows the gateway as off, not a problem; a stale one still is", async () => {
+  const f = await fixture();
+  const off = { ...f.deps, config: { ...f.deps.config, platforms: ["toodo"] as const } };
+  writeGatewayStatus(f.dir, { pid: 1, at: NOW - 4_000, connected: false, messageContent: false });
+  const s = await collectStatus(off);
+  expect(s.gateway.state).toBe("off");
+  const text = renderStatus(s);
+  expect(text).toContain("\n- Discord 게이트웨이: 꺼짐\n");
+  expect(text).not.toContain("게이트웨이 연결 안 됨");
+  expect((await collectStatus(f.deps)).gateway.state).toBe("disconnected");
+  writeGatewayStatus(f.dir, { pid: 1, at: NOW - 5 * 60_000, connected: false, messageContent: false });
+  expect(renderStatus(await collectStatus(off))).toContain("게이트웨이 응답 끊김");
+});
+
 test("status shows open owner decisions and answered decisions awaiting close", async () => {
   const f = await fixture();
   writeFileSync(join(f.dir, "decisions.json"), JSON.stringify({ nextSeq: 3, decisions: [
