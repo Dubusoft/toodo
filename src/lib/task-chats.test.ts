@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { ChatThread, Task, TaskStatus } from "@/lib/bindings";
 import { laneOf, taskChats } from "@/lib/task-chats";
 
-function task(id: number, status: TaskStatus, refs: string[] = []): Task {
-  return { id, title: `Task ${id}`, status, refs } as unknown as Task;
+function task(id: number, status: TaskStatus, refs: string[] = [], overrides: Partial<Task> = {}): Task {
+  return { id, title: `Task ${id}`, status, refs, timeline: [], notes: [], ...overrides } as unknown as Task;
 }
+
+const startedAt = (at: number): Partial<Task> => ({
+  timeline: [{ status: "in_progress", at, reopened: false, reason: null }],
+});
 
 function thread(id: number, taskId: number | null, overrides: Partial<ChatThread> = {}): ChatThread {
   return {
@@ -46,6 +50,20 @@ describe("taskChats", () => {
       needsAnswer: [[4, 12], [3, null]],
       inProgress: [[2, 11], [1, 10]],
     });
+  });
+
+  it("ranks a chat without messages by its task's latest status change or note", () => {
+    const tasks = [
+      task(1, "in_progress", ["lane:a-1"], startedAt(100)),
+      task(2, "in_progress", ["lane:b-1"], {
+        ...startedAt(50),
+        notes: [{ kind: "progress", body: "Halfway", at: 250 }],
+      }),
+      task(3, "in_progress", ["lane:c-1"], startedAt(400)),
+      task(4, "in_progress", ["lane:d-1"], startedAt(500)),
+    ];
+    const threads = [thread(10, 1, { lastMessageAt: 300 }), thread(13, 4, { lastMessageAt: 200 })];
+    expect(ids(taskChats(tasks, threads)).inProgress).toEqual([[3, null], [1, 10], [2, null], [4, 13]]);
   });
 
   it("leaves out finished tasks, tasks without a lane, and paused or waiting ones that need no answer", () => {
