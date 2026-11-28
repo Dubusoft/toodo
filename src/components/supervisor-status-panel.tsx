@@ -6,16 +6,16 @@ import { useSupervisorNotice } from "@/web/host-status";
 import { useSupervisorStatus } from "@/web/supervisor-status";
 
 /** A snapshot older than this means the supervisor stopped reporting: it pushes every 10 s while a panel is open. */
-const STALE_AFTER_MS = 2 * 60_000;
+export const STALE_AFTER_MS = 2 * 60_000;
 
-function age(ms: number, t: Messages["settings"]["supervisorPanel"]): string {
+export function age(ms: number, t: Messages["settings"]["supervisorPanel"]): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
   if (seconds < 60) return t.seconds(seconds);
   const minutes = Math.round(seconds / 60);
   return minutes < 120 ? t.minutes(minutes) : t.hours(Math.round(minutes / 60));
 }
 
-function useNow(): number {
+export function useNow(): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 5000);
@@ -94,7 +94,7 @@ export function SupervisorStatusPanel({ active }: { active: boolean }) {
   );
   if (snapshot === null) {
     return (
-      <section aria-label={m.settings.sections.dori} className="flex flex-col gap-2 text-sm">
+      <section aria-label={m.settings.advanced.supervisor} className="flex flex-col gap-2 text-sm">
         {noticeLine || <p className="text-muted-foreground">{t.waiting}</p>}
         {notice === null && error !== null && (
           <p role="alert" className="break-words text-destructive">
@@ -106,7 +106,7 @@ export function SupervisorStatusPanel({ active }: { active: boolean }) {
   }
   const stale = now - snapshot.at > STALE_AFTER_MS;
   return (
-    <section aria-label={m.settings.sections.dori} className="flex flex-col gap-5 text-sm">
+    <section aria-label={m.settings.advanced.supervisor} className="flex flex-col gap-5 text-sm">
       {noticeLine}
       <p role="status" className={stale ? "text-destructive" : "text-muted-foreground"}>
         {(stale ? t.stale : t.updated)(age(now - snapshot.at, t))}

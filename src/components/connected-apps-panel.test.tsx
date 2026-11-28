@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ConnectedAppsPanel } from "@/components/connected-apps-panel";
+import { ChatAppsCard } from "@/components/connected-apps-panel";
 import { commands, type ConnectedApp } from "@/lib/bindings";
 
 vi.mock("@/lib/bindings", () => ({
@@ -34,12 +34,12 @@ const unnamed: ConnectedApp = {
 function renderPanel() {
   render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-      <ConnectedAppsPanel />
+      <ChatAppsCard />
     </QueryClientProvider>,
   );
 }
 
-describe("ConnectedAppsPanel", () => {
+describe("ChatAppsCard", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     mocked.listConnectedApps.mockResolvedValue({ status: "ok", data: { publicMcpUrl, apps: [chatgpt, unnamed] } });
@@ -51,10 +51,10 @@ describe("ConnectedAppsPanel", () => {
     renderPanel();
 
     expect(await screen.findByLabelText("Public MCP URL")).toHaveTextContent(publicMcpUrl);
-    fireEvent.click(screen.getByRole("button", { name: "Copy MCP URL" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy connector address" }));
 
     // Astryx buttons carry empty live regions of their own, so the notice is found by its text.
-    expect(await screen.findByText("Copied the MCP URL.")).toHaveAttribute("role", "status");
+    expect(await screen.findByText("Copied the connector address.")).toHaveAttribute("role", "status");
     expect(writeText).toHaveBeenCalledWith(publicMcpUrl);
   });
 
@@ -63,11 +63,11 @@ describe("ConnectedAppsPanel", () => {
     renderPanel();
 
     expect(await screen.findByText("No apps connected yet.")).toBeInTheDocument();
-    const panel = screen.getByRole("region", { name: "Connected apps" });
+    const panel = screen.getByRole("region", { name: "Chat apps" });
     expect(panel).toHaveTextContent("TOODO_PUBLIC_URL");
     expect(panel).toHaveTextContent("docs/server.md");
     expect(screen.queryByLabelText("Public MCP URL")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Copy MCP URL" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy connector address" })).toBeNull();
     expect(screen.queryByRole("list", { name: "Apps with access" })).toBeNull();
   });
 

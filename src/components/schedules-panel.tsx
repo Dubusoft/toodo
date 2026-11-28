@@ -446,7 +446,7 @@ export function SchedulesPanel({ active }: { active: boolean }) {
   const error = mutation.error ?? (down === null ? jobs.error : null);
   const data = jobs.data;
   return (
-    <section aria-label={m.settings.sections.schedules} className="flex flex-col gap-3 text-sm">
+    <section aria-label={t.title} className="flex flex-col gap-3 text-sm">
       <p className="text-muted-foreground">{t.intro}</p>
       {notice !== null && (
         <p role="status" className="text-xs text-muted-foreground">

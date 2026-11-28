@@ -1,19 +1,18 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Activity, Archive, Bell, Bot, CalendarClock, ChevronLeft, ChevronRight, DatabaseBackup, FileCog, MonitorSmartphone, Plug, SlidersHorizontal, X } from "lucide-react";
-import { AgentAccessPanel } from "@/components/agent-access-panel";
+import { Activity, Bell, ChevronLeft, ChevronRight, DatabaseBackup, Info, MonitorSmartphone, Plug, Server, SlidersHorizontal, Trash2, Wrench, X } from "lucide-react";
+import { AdvancedSettings } from "@/components/advanced-settings";
+import { AiConnectionsPanel } from "@/components/ai-connections-panel";
 import { ArchivePanel } from "@/components/archive-panel";
 import { BackupPanel, BackupStatusLabel } from "@/components/backup-panel";
-import { ConnectedAppsPanel } from "@/components/connected-apps-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
-import { DoriConfigPanel, LanguageSettingField } from "@/components/dori-config-panel";
+import { LanguageSettingField, useDoriConnected } from "@/components/dori-config-panel";
+import { DoriPanel, MachinesPanel } from "@/components/dori-panel";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
-import { SchedulesPanel } from "@/components/schedules-panel";
-import { SupervisorStatusPanel } from "@/components/supervisor-status-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { IconButton } from "@/components/button";
-import { commands } from "@/lib/bindings";
+import { Button, IconButton } from "@/components/button";
+import { commands, type UpdateCheck } from "@/lib/bindings";
 import { fill, useMessages } from "@/lib/i18n";
 import { en, type Messages } from "@/locales/en";
 import { keepFocusIn } from "@/lib/focus-trap";
@@ -22,15 +21,16 @@ import { cn } from "@/lib/utils";
 
 export type SettingsSection =
   | "general"
-  | "agents"
-  | "dori"
-  | "schedules"
-  | "dori-config"
-  | "apps"
-  | "devices"
   | "notifications"
+  | "devices"
+  | "connections"
+  | "dori-setup"
+  | "dori"
+  | "machines"
   | "backups"
-  | "archive";
+  | "trash"
+  | "about"
+  | "advanced";
 
 type Section = {
   id: SettingsSection;
@@ -38,53 +38,87 @@ type Section = {
   status?: ReactNode;
 };
 
-const sections: Section[] = [
-  { id: "general", icon: <SlidersHorizontal /> },
-  { id: "agents", icon: <Bot /> },
-  { id: "dori", icon: <Activity /> },
-  { id: "schedules", icon: <CalendarClock /> },
-  { id: "dori-config", icon: <FileCog /> },
-  { id: "apps", icon: <Plug /> },
-  { id: "devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
-  { id: "notifications", icon: <Bell />, status: <NotificationsStatus /> },
-  { id: "backups", icon: <DatabaseBackup />, status: <BackupStatusLabel /> },
-  { id: "archive", icon: <Archive /> },
-];
+/** A run of sections under a heading; the last run, About and Advanced, has none. */
+type Group = { id: keyof Messages["settings"]["groups"] | null; sections: Section[] };
+
+const SECTIONS = {
+  general: { id: "general", icon: <SlidersHorizontal /> },
+  notifications: { id: "notifications", icon: <Bell />, status: <NotificationsStatus /> },
+  devices: { id: "devices", icon: <MonitorSmartphone />, status: <DevicesStatus /> },
+  connections: { id: "connections", icon: <Plug /> },
+  doriSetup: { id: "dori-setup", icon: <Activity /> },
+  dori: { id: "dori", icon: <Activity /> },
+  machines: { id: "machines", icon: <Server /> },
+  backups: { id: "backups", icon: <DatabaseBackup />, status: <BackupStatusLabel /> },
+  trash: { id: "trash", icon: <Trash2 /> },
+  about: { id: "about", icon: <Info /> },
+  advanced: { id: "advanced", icon: <Wrench /> },
+} satisfies Record<string, Section>;
+
+/**
+ * The sections, most used first: the Dori group only once the server has Dori, and in its place
+ * a Set up Dori entry once it is known not to. Advanced comes last.
+ */
+function groupsFor(doriConnected: boolean | null): Group[] {
+  return [
+    { id: "mine", sections: [SECTIONS.general, SECTIONS.notifications, SECTIONS.devices] },
+    { id: "connections", sections: doriConnected === false ? [SECTIONS.connections, SECTIONS.doriSetup] : [SECTIONS.connections] },
+    ...(doriConnected ? [{ id: "dori" as const, sections: [SECTIONS.dori, SECTIONS.machines] }] : []),
+    { id: "data", sections: [SECTIONS.backups, SECTIONS.trash] },
+    { id: null, sections: [SECTIONS.about, SECTIONS.advanced] },
+  ];
+}
 
 const sectionLabel = (id: SettingsSection, m: Messages) => m.settings.sections[id];
 
-function GeneralSettings() {
+/** Whether a newer Toodo is published; the server asks the npm registry, so once in a while is enough. */
+function useUpdateCheck() {
+  return useQuery({ queryKey: ["update-check"], queryFn: () => commands.checkUpdate(), staleTime: 6 * 60 * 60 * 1000 });
+}
+
+function GeneralSettings({ update, onShowAbout }: { update: UpdateCheck | undefined; onShowAbout: () => void }) {
   const m = useMessages();
-  const appInfo = useQuery({ queryKey: ["app-info"], queryFn: () => commands.appInfo() });
-  // The server asks the npm registry; once in a while is enough.
-  const update = useQuery({
-    queryKey: ["update-check"],
-    queryFn: () => commands.checkUpdate(),
-    staleTime: 6 * 60 * 60 * 1000,
-  });
   return (
     <section aria-label={m.settings.sections.general} className="flex flex-col gap-5 text-sm">
+      <LanguageSettingField />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium">{m.settings.theme}</span>
         <ThemeToggle />
       </div>
-      <LanguageSettingField />
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      {update?.newer && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border p-3">
+          <span role="status" className="font-medium">{m.settings.newVersion(`v${update.latest}`)}</span>
+          <Button size="sm" variant="secondary" className="ml-auto" label={m.settings.howToUpdate} onClick={onShowAbout} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AboutSettings({ update }: { update: UpdateCheck | undefined }) {
+  const m = useMessages();
+  const appInfo = useQuery({ queryKey: ["app-info"], queryFn: () => commands.appInfo() });
+  return (
+    <section aria-label={m.settings.sections.about} className="flex flex-col gap-3 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium">{m.settings.version}</span>
         <span className="ml-auto text-muted-foreground">
           {appInfo.data ? `v${appInfo.data.version}` : m.settings.connecting}
         </span>
-        {update.data?.newer && (
-          <p role="status" className="w-full text-muted-foreground">
-            {fill(m.settings.updateAvailable, {
-              version: `v${update.data.latest}`,
-              channel: update.data.channel,
-              command: <code>toodo update</code>,
-            })}
-          </p>
-        )}
-        {update.data?.error && <p className="w-full text-muted-foreground">{m.settings.updateCheckFailed(update.data.error)}</p>}
       </div>
+      {update?.newer ? (
+        <div className="flex flex-col gap-1">
+          <p role="status">
+            {fill(m.settings.updateAvailable, { version: `v${update.latest}`, channel: update.channel })}
+          </p>
+          <details>
+            <summary className="cursor-pointer text-muted-foreground">{m.settings.showHow}</summary>
+            <p className="pt-2 text-muted-foreground">{fill(m.settings.updateHow, { command: <code>toodo update</code> })}</p>
+          </details>
+        </div>
+      ) : (
+        update && !update.error && <p className="text-muted-foreground">{m.settings.about.upToDate}</p>
+      )}
     </section>
   );
 }
@@ -121,7 +155,11 @@ export function SettingsDialog({
     setWasOpen(open);
     if (open) setSection(null);
   }
-  const shown = section ?? "general";
+  const groups = groupsFor(useDoriConnected());
+  const sections = groups.flatMap((group) => group.sections);
+  // A section that went away (Dori's, once the server turns out to have none) shows General.
+  const shown = sections.some((item) => item.id === section) ? (section ?? "general") : "general";
+  const update = useUpdateCheck();
   const close = useRef(onClose);
   close.current = onClose;
   const restore = useRef(returnFocus);
@@ -221,30 +259,41 @@ export function SettingsDialog({
             />
           </div>
           <div role="tablist" aria-orientation="vertical" aria-label={m.settings.sectionsLabel} className="flex flex-col gap-0.5" onKeyDown={onTabKeyDown}>
-            {sections.map((item) => {
-              const selected = item.id === shown;
-              return (
-                <button
-                  key={item.id}
-                  id={tabId(item.id)}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  aria-controls={panelId(item.id)}
-                  tabIndex={selected ? 0 : -1}
-                  onClick={() => choose(item.id)}
-                  className={cn(
-                    "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
-                    selected && "md:bg-secondary md:font-medium",
-                  )}
-                >
-                  {item.icon}
-                  <span>{sectionLabel(item.id, m)}</span>
-                  {item.status && <span className="ml-auto text-xs text-muted-foreground">{item.status}</span>}
-                  <ChevronRight aria-hidden className={cn("md:hidden", !item.status && "ml-auto")} />
-                </button>
-              );
-            })}
+            {groups.map((group) => (
+              <Fragment key={group.id ?? "more"}>
+                {group.id === null ? (
+                  <div role="presentation" className="mx-2.5 my-2 border-t" />
+                ) : (
+                  <div role="presentation" className="px-2.5 pt-3 pb-1 text-xs font-medium text-muted-foreground first:pt-0">
+                    {m.settings.groups[group.id]}
+                  </div>
+                )}
+                {group.sections.map((item) => {
+                  const selected = item.id === shown;
+                  return (
+                    <button
+                      key={item.id}
+                      id={tabId(item.id)}
+                      type="button"
+                      role="tab"
+                      aria-selected={selected}
+                      aria-controls={panelId(item.id)}
+                      tabIndex={selected ? 0 : -1}
+                      onClick={() => choose(item.id)}
+                      className={cn(
+                        "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 max-md:min-h-11 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
+                        selected && "md:bg-secondary md:font-medium",
+                      )}
+                    >
+                      {item.icon}
+                      <span>{sectionLabel(item.id, m)}</span>
+                      {item.status && <span className="ml-auto text-xs text-muted-foreground">{item.status}</span>}
+                      <ChevronRight aria-hidden className={cn("md:hidden", !item.status && "ml-auto")} />
+                    </button>
+                  );
+                })}
+              </Fragment>
+            ))}
           </div>
         </div>
         <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", section === null && "max-md:hidden")}>
@@ -281,25 +330,27 @@ export function SettingsDialog({
               >
                 <ErrorBoundary label={`the ${en.settings.sections[item.id]} settings`}>
                   {item.id === "general" ? (
-                    <GeneralSettings />
-                  ) : item.id === "dori" ? (
-                    <SupervisorStatusPanel active={open && shown === "dori"} />
-                  ) : item.id === "schedules" ? (
-                    <SchedulesPanel active={open && shown === "schedules"} />
-                  ) : item.id === "dori-config" ? (
-                    <DoriConfigPanel active={open && shown === "dori-config"} />
-                  ) : item.id === "agents" ? (
-                    <AgentAccessPanel />
-                  ) : item.id === "apps" ? (
-                    <ConnectedAppsPanel />
-                  ) : item.id === "devices" ? (
-                    <DevicesPanel />
+                    <GeneralSettings update={update.data} onShowAbout={() => choose("about")} />
                   ) : item.id === "notifications" ? (
                     <NotificationsPanel />
+                  ) : item.id === "devices" ? (
+                    <DevicesPanel />
+                  ) : item.id === "connections" ? (
+                    <AiConnectionsPanel />
+                  ) : item.id === "dori-setup" ? (
+                    <MachinesPanel setup />
+                  ) : item.id === "dori" ? (
+                    <DoriPanel active={open && shown === "dori"} />
+                  ) : item.id === "machines" ? (
+                    <MachinesPanel />
                   ) : item.id === "backups" ? (
                     <BackupPanel />
-                  ) : (
+                  ) : item.id === "trash" ? (
                     <ArchivePanel />
+                  ) : item.id === "about" ? (
+                    <AboutSettings update={update.data} />
+                  ) : (
+                    <AdvancedSettings active={open && shown === "advanced"} updateError={update.data?.error ?? null} />
                   )}
                 </ErrorBoundary>
               </div>

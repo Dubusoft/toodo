@@ -72,7 +72,7 @@ describe("DevicesPanel", () => {
     renderPanel();
 
     const group = await screen.findByRole("group", { name: "This browser" });
-    expect(group).toHaveTextContent("This browser: shared token");
+    expect(group).toHaveTextContent("This browser: temporary sign-in with the server's access token");
     expect(screen.getByText("2 signed in")).toBeInTheDocument();
     vi.mocked(listDevices).mockResolvedValue([phone, { ...laptop, label: "Chrome on Linux" }]);
     fireEvent.click(within(group).getByRole("button", { name: "Register this browser" }));

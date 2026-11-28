@@ -75,7 +75,7 @@ describe("BackupPanel", () => {
   it("does not expose the restore picker to a page-wide file input selector", () => {
     renderPanel();
 
-    expect(screen.getByRole("region", { name: "Backups" }).querySelector('input[type="file"]')).toBeNull();
+    expect(screen.getByRole("region", { name: "Backup & restore" }).querySelector('input[type="file"]')).toBeNull();
   });
 
   it("uploads a picked file only after confirmation and refetches everything", async () => {
