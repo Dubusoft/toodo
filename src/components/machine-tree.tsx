@@ -1,17 +1,11 @@
 import { Fragment, type ReactNode } from "react";
-import { Badge } from "@astryxdesign/core/Badge";
+import { LaneStatusBadge, machineTones } from "@/components/lane-view";
 import { STALE_AFTER_MS, useNow } from "@/components/supervisor-status-panel";
-import { toneBadges } from "@/components/task-common";
 import type { Task, TaskId, Workspace, WorkspaceId } from "@/lib/bindings";
 import { useMessages } from "@/lib/i18n";
 import { useTasks } from "@/lib/queries";
-import { toneText, type Tone } from "@/lib/status-styles";
-import type {
-  SupervisorLane,
-  SupervisorLaneStatus,
-  SupervisorMachine,
-  SupervisorStatusSnapshot,
-} from "@/lib/supervisor-status";
+import { toneText } from "@/lib/status-styles";
+import type { SupervisorLane, SupervisorMachine, SupervisorStatusSnapshot } from "@/lib/supervisor-status";
 import { cn } from "@/lib/utils";
 import { useSupervisorStatus } from "@/web/supervisor-status";
 
@@ -26,23 +20,6 @@ export function onServerHost(hostname: string): boolean {
   const host = hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1");
   return host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
 }
-
-const laneTones: Record<SupervisorLaneStatus, Tone> = {
-  working: "info",
-  paused: "attention",
-  "done-claimed": "review",
-  "verified-done": "success",
-  "not-done": "danger",
-  closed: "neutral",
-};
-
-const machineTones: Record<SupervisorMachine["state"], Tone> = {
-  connected: "success",
-  stale: "attention",
-  offline: "danger",
-  lost: "danger",
-  revoked: "danger",
-};
 
 /** One machine with its lanes, grouped by the workspace of each lane's task. */
 export type MachineNode = {
@@ -103,50 +80,32 @@ function MachineFacts({ machine }: { machine: SupervisorMachine | null }) {
   return <p className="px-2.5 text-xs text-muted-foreground">{facts.join(" · ")}</p>;
 }
 
-function LaneItem({ lane, onShowTask }: { lane: SupervisorLane; onShowTask: (id: TaskId) => void }) {
+function LaneItem({ lane, onShowLane }: { lane: SupervisorLane; onShowLane: (lane: SupervisorLane) => void }) {
   const t = useMessages().app.machines;
-  const status = lane.status ?? "working";
   // A lane is named by its task; the lane key, also in the tooltip, names one without a task.
   const title = lane.progress === null ? lane.key : `${lane.key}: ${lane.progress}`;
-  const content = (
-    <>
-      <span className="min-w-0 flex-1 truncate">{lane.task === null ? lane.key : `#${lane.task}`}</span>
-      <Badge
-        data-lane-status={status}
-        variant={toneBadges[laneTones[status]]}
-        label={t.laneStatus[status]}
-        className="shrink-0"
-      />
-    </>
-  );
-  const row = "flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs";
   return (
     <li data-lane={lane.key}>
-      {lane.task === null ? (
-        <div className={row} title={title}>
-          {content}
-        </div>
-      ) : (
-        <button
-          type="button"
-          aria-label={t.showTask(lane.key, lane.task)}
-          title={title}
-          className={cn(row, "hover:bg-sidebar-accent")}
-          onClick={() => onShowTask(lane.task as TaskId)}
-        >
-          {content}
-        </button>
-      )}
+      <button
+        type="button"
+        aria-label={t.showLane(lane.key)}
+        title={title}
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent"
+        onClick={() => onShowLane(lane)}
+      >
+        <span className="min-w-0 flex-1 truncate">{lane.task === null ? lane.key : `#${lane.task}`}</span>
+        <LaneStatusBadge lane={lane} className="shrink-0" />
+      </button>
     </li>
   );
 }
 
-function LaneList({ name, lanes, onShowTask }: { name: string; lanes: readonly SupervisorLane[]; onShowTask: (id: TaskId) => void }) {
+function LaneList({ name, lanes, onShowLane }: { name: string; lanes: readonly SupervisorLane[]; onShowLane: (lane: SupervisorLane) => void }) {
   const t = useMessages().app.machines;
   return (
     <ul aria-label={t.lanesOf(name)} className="ml-3 flex flex-col gap-0.5 border-l pl-1">
       {lanes.map((lane) => (
-        <LaneItem key={lane.key} lane={lane} onShowTask={onShowTask} />
+        <LaneItem key={lane.key} lane={lane} onShowLane={onShowLane} />
       ))}
     </ul>
   );
@@ -158,17 +117,18 @@ function LaneList({ name, lanes, onShowTask }: { name: string; lanes: readonly S
  * live status; lanes of no workspace come last. Workspaces no lane works in sit under the server,
  * which is named Local when this page was opened on its host and Server otherwise. It follows
  * the Dori status without counting as a status panel, so it makes Dori read no lane screens or
- * quota; on a server Dori never reported to, it is the server with every workspace.
+ * quota; on a server Dori never reported to, it is the server with every workspace. A lane opens
+ * its lane view, with its task's details beside it when it has a task.
  */
 export function MachineTree({
   workspaces,
   renderWorkspace,
-  onShowTask,
+  onShowLane,
 }: {
   workspaces: readonly Workspace[];
   /** A workspace's item, with the list of its lanes on that machine (`null` for none) inside it. */
   renderWorkspace: (workspace: Workspace, lanes: ReactNode) => ReactNode;
-  onShowTask: (id: TaskId) => void;
+  onShowLane: (lane: SupervisorLane) => void;
 }) {
   const t = useMessages().app.machines;
   const { snapshot } = useSupervisorStatus(true, { watch: false });
@@ -207,14 +167,14 @@ export function MachineTree({
                     <Fragment key={workspace.id}>
                       {renderWorkspace(
                         workspace,
-                        lanes.length > 0 ? <LaneList name={workspace.name} lanes={lanes} onShowTask={onShowTask} /> : null,
+                        lanes.length > 0 ? <LaneList name={workspace.name} lanes={lanes} onShowLane={onShowLane} /> : null,
                       )}
                     </Fragment>
                   ))}
                   {node.loose.length > 0 && (
                     <li className="flex flex-col">
                       <span className="block w-full truncate px-2 py-1 text-sm text-muted-foreground">{t.noWorkspace}</span>
-                      <LaneList name={t.noWorkspace} lanes={node.loose} onShowTask={onShowTask} />
+                      <LaneList name={t.noWorkspace} lanes={node.loose} onShowLane={onShowLane} />
                     </li>
                   )}
                 </ul>

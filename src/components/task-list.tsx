@@ -34,6 +34,7 @@ import {
   type TaskContext,
 } from "@/components/task-common";
 import { TaskRow } from "@/components/task-row";
+import { TaskLaneTabs, type DetailLane } from "@/components/lane-view";
 import { WorkspaceDetails } from "@/components/workspace-settings";
 import { WorkspaceGuidelines } from "@/components/workspace-guidelines";
 import { type TaskDraft, emptyDraft, NewTaskForm } from "@/components/new-task-form";
@@ -67,6 +68,8 @@ export function TaskList({
   onViewChange,
   selectedTask: detailId,
   onSelectTask: setDetailId,
+  detailLane = null,
+  onDetailLaneChange,
 }: {
   workspace: Workspace | null;
   /** The view of every workspace's tasks; a workspace only has the list. */
@@ -85,8 +88,22 @@ export function TaskList({
   shownTask?: ShownTask | null;
   /** Called once the timeline selected `shownTask`. */
   onTaskShown?: () => void;
+  /** The task whose details show its lane, and that lane; owned by the caller, which opens a lane there. */
+  detailLane?: DetailLane | null;
+  onDetailLaneChange?: (lane: DetailLane | null) => void;
 }) {
   const m = useMessages();
+  // A task's details, with a Lane tab when a lane works on the task.
+  const withLane = (id: TaskId, details: ReactNode) => (
+    <TaskLaneTabs
+      key={id}
+      task={id}
+      lane={detailLane?.task === id ? detailLane.lane : null}
+      onLaneChange={(lane) => onDetailLaneChange?.(lane === null ? null : { task: id, lane })}
+    >
+      {details}
+    </TaskLaneTabs>
+  );
   const workspaces = useWorkspaces();
   const [timelineWorkspace, setTimelineWorkspace] = useState<WorkspaceId | null>(null);
   // The filter the user set; until then the timeline leaves finished tasks out and the list shows every status.
@@ -357,15 +374,18 @@ export function TaskList({
               {detailId !== null && context.byId.has(detailId) && (
                 <Suspense fallback={<p className="text-sm text-muted-foreground">{m.tasks.loadingDetails}</p>}>
                   <TaskDetailsSheet onClose={() => setDetailId(null)}>
-                    <TaskRow
-                      key={detailId}
-                      task={context.byId.get(detailId)!}
-                      tasks={allTasks.data}
-                      context={context}
-                      showWorkspace
-                      detailed
-                      navigation={{ open: setDetailId, canOpen: (id) => context.byId.has(id) }}
-                    />
+                    {withLane(
+                      detailId,
+                      <TaskRow
+                        key={detailId}
+                        task={context.byId.get(detailId)!}
+                        tasks={allTasks.data}
+                        context={context}
+                        showWorkspace
+                        detailed
+                        navigation={{ open: setDetailId, canOpen: (id) => context.byId.has(id) }}
+                      />,
+                    )}
                   </TaskDetailsSheet>
                 </Suspense>
               )}
@@ -391,17 +411,20 @@ export function TaskList({
                   searchMatchId={numbered?.id}
                   onTaskShown={() => onTaskShown?.()}
                   onNearPast={allTasks.isFetchingNextPage || allTasks.isFetchNextPageError ? undefined : loadOlder}
-                  renderDetail={(selected, navigation) => (
-                    <TaskRow
-                      key={selected.id}
-                      task={selected}
-                      tasks={allTasks.data ?? []}
-                      context={context}
-                      showWorkspace
-                      detailed
-                      navigation={navigation}
-                    />
-                  )}
+                  renderDetail={(selected, navigation) =>
+                    withLane(
+                      selected.id,
+                      <TaskRow
+                        key={selected.id}
+                        task={selected}
+                        tasks={allTasks.data ?? []}
+                        context={context}
+                        showWorkspace
+                        detailed
+                        navigation={navigation}
+                      />,
+                    )
+                  }
                 />
               </Suspense>
             </ErrorBoundary>

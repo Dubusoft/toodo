@@ -27,6 +27,7 @@ export const detailsSheet = "[data-details-sheet]";
 export function DetailsSheet({
   ref,
   width,
+  title,
   takeFocus = true,
   returnFocus,
   onClose,
@@ -35,6 +36,8 @@ export function DetailsSheet({
 }: {
   ref?: Ref<HTMLElement>;
   width: string;
+  /** The sheet's name and heading; Task details unless given. */
+  title?: string;
   takeFocus?: boolean;
   returnFocus?: () => HTMLElement | null | undefined;
   onClose: () => void;
@@ -87,7 +90,7 @@ export function DetailsSheet({
           ref.current = element;
         }
       }}
-      aria-label={m.details.sheet.title}
+      aria-label={title ?? m.details.sheet.title}
       data-details-sheet=""
       data-dragging={drag.dragging ? "" : undefined}
       className={cn(
@@ -111,7 +114,7 @@ export function DetailsSheet({
         {...dragHandlers}
       >
         <h3 ref={heading} tabIndex={-1} className="text-xs font-medium text-muted-foreground outline-none">
-          {m.details.sheet.title}
+          {title ?? m.details.sheet.title}
         </h3>
         <IconButton
           size="sm"

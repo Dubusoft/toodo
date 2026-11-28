@@ -199,7 +199,7 @@ export const app = {
       "not-done": "Not done",
       closed: "Closed",
     },
-    showTask: (key: string, task: number) => `Show task #${task} of lane ${key}`,
+    showLane: (key: string) => `Show lane ${key}`,
     stale: "Dori has not reported for a while; these states may be old.",
   },
 };

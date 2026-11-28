@@ -5,11 +5,12 @@ import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button, IconButton } from "@/components/button";
 import { MachineTree } from "@/components/machine-tree";
-import type { NewWorkspace, TaskId, Workspace, WorkspaceId } from "@/lib/bindings";
+import type { NewWorkspace, Workspace, WorkspaceId } from "@/lib/bindings";
 import { errorMessage } from "@/lib/error-messages";
 import { useMessages } from "@/lib/i18n";
 import { useNarrow } from "@/lib/narrow";
 import { useCreateWorkspace, useDeleteWorkspace, useWorkspaces } from "@/lib/queries";
+import type { SupervisorLane } from "@/lib/supervisor-status";
 import { cn } from "@/lib/utils";
 import { reachability, subscribeReachability, unreachableCause } from "@/web/connection";
 
@@ -19,12 +20,12 @@ export const inputClass =
 type WorkspaceListProps = {
   selectedId: WorkspaceId | null;
   onSelect: (id: WorkspaceId) => void;
-  /** Shows a lane's task, from the machine tree. */
-  onShowTask: (id: TaskId) => void;
+  /** Shows a lane, from the machine tree. */
+  onShowLane: (lane: SupervisorLane) => void;
 };
 
 /** The workspaces, each under the machines whose lanes work in it (see `MachineTree`). */
-export function WorkspaceList({ selectedId, onSelect, onShowTask }: WorkspaceListProps) {
+export function WorkspaceList({ selectedId, onSelect, onShowLane }: WorkspaceListProps) {
   const m = useMessages();
   const copy = m.app.workspace;
   const workspaces = useWorkspaces();
@@ -76,7 +77,7 @@ export function WorkspaceList({ selectedId, onSelect, onShowTask }: WorkspaceLis
       {workspaces.data && (
         <MachineTree
           workspaces={workspaces.data}
-          onShowTask={onShowTask}
+          onShowLane={onShowLane}
           renderWorkspace={(workspace, lanes) => (
             <WorkspaceItem workspace={workspace} selected={workspace.id === selectedId} onSelect={onSelect}>
               {lanes}

@@ -1096,11 +1096,13 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   instead, after which the client refetches everything.
 - `GET /api/supervisor/status`: the Dori status panel (Settings > Dori, in full under Settings > Advanced), as
   server-sent `status` events carrying the supervisor's latest snapshot (the `/status`
-  pages, the `/quota` text, every open lane with its status and the working lanes' recent
-  screens, and the runner machines with their last reading, typed in
-  `src/lib/supervisor-status.ts`), then each new one; before the supervisor's first
-  snapshot the stream starts with `ready`. The navigation's workspace list, grouped by machine, follows it with
-  `?watch=0`, which is not counted as an open panel. The server keeps only the latest snapshot, in
+  pages, the `/quota` text, every open lane with its status, its thread and pull request
+  links (`https` only), and the working lanes' recent screens, and the runner machines with
+  their last reading, typed in `src/lib/supervisor-status.ts`), then each new one; before the
+  supervisor's first snapshot the stream starts with `ready`. The navigation's workspace list,
+  grouped by machine, and a task's details follow it with `?watch=0`, which is not counted as an
+  open panel; a lane opened from the navigation (the Lane tab of its task's details, or the lane
+  alone without a task) follows it without, as a panel, while it is shown. The server keeps only the latest snapshot, in
   memory. The supervisor pushes it with `PUT /mcp/supervisor-status` and asks how many
   panels are open with `GET /mcp/supervisor-status` (`{ "watchers": n }`): both take the
   MCP token from loopback only, even in public mode, and a push is refused with `400`
