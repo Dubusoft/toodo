@@ -116,7 +116,7 @@ const firstChannel: ChatChannelId = 1;
 /** Whether the chat list's Completed section is open, kept in this browser. */
 const completedShownKey = "toodo-chat-completed-shown";
 
-/** How many past chats the open Completed section lists at first, and how many more each "more" adds. */
+/** How many past chats the open Completed section lists at first, and how many more each scroll to its end adds. */
 const recentPast = 5;
 const morePast = 20;
 
@@ -976,26 +976,32 @@ function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boole
   );
 }
 
-/** A group of listed tasks under a heading, left out while it is empty. */
+/**
+ * A group of listed tasks under a heading with their count, left out while it is empty unless
+ * it is `kept`.
+ */
 function TaskGroup({
   label,
   icon,
+  kept = false,
   chats,
   selection,
   onOpenTask,
 }: {
   label: string;
   icon?: ReactNode;
+  kept?: boolean;
   chats: readonly TaskChat[];
   selection: Selection;
   onOpenTask: (chat: TaskChat) => void;
 }) {
-  if (chats.length === 0) return null;
+  if (chats.length === 0 && !kept) return null;
   return (
     <div className="flex flex-col gap-0.5 pt-2">
       <h3 className="flex items-center gap-1 px-2 pb-1 text-xs font-medium text-muted-foreground">
         {icon}
         {label}
+        <span className="tabular-nums font-normal">{chats.length}</span>
       </h3>
       <ul aria-label={label} className="flex flex-col gap-0.5">
         {chats.map((chat) => (
@@ -1150,6 +1156,7 @@ function PlaceList({
       />
       <TaskGroup
         label={m.chat.inProgress}
+        kept
         chats={tasks.inProgress}
         selection={selection}
         onOpenTask={onOpenTask}
@@ -1171,8 +1178,8 @@ function PlaceList({
 
 /**
  * The threads whose conversation is over, latest first, in a section its heading opens and
- * folds. The open section lists the latest few and the rest behind a "more" button; picking a
- * thread shows it.
+ * folds. The open section lists the latest few and lists more each time it is scrolled to its
+ * end; picking a thread shows it.
  */
 function PastChats({
   threads,
@@ -1191,8 +1198,19 @@ function PastChats({
 }) {
   const m = useMessages();
   const [limit, setLimit] = useState(recentPast);
+  const end = useRef<HTMLDivElement>(null);
   const listed = threads.slice(0, limit);
   const hidden = threads.length - listed.length;
+  // Watched again after each page, so an end still in view lists the next one too.
+  useEffect(() => {
+    const element = end.current;
+    if (element === null) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) setLimit((shown) => shown + morePast);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [open, limit, hidden]);
   return (
     <div className="flex flex-col gap-0.5 pt-2">
       <h3 className="px-2 pb-1 text-xs font-medium text-muted-foreground">
@@ -1237,11 +1255,7 @@ function PastChats({
           ))}
         </ul>
       )}
-      {open && hidden > 0 && (
-        <div>
-          <Button variant="ghost" size="sm" label={m.chat.moreCompleted(hidden)} onClick={() => setLimit(limit + morePast)} />
-        </div>
-      )}
+      {open && hidden > 0 && <div ref={end} aria-hidden className="h-px" />}
     </div>
   );
 }

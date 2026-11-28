@@ -50,7 +50,6 @@ export const chat = {
   needsAnswer: "Needs answer",
   inProgress: "In progress",
   completed: "Completed",
-  moreCompleted: (count: number) => `Show more (${count})`,
   noCompleted: "No finished or closed chats yet.",
   closeThread: "Close thread",
   reopenThread: "Reopen thread",

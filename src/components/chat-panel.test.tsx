@@ -590,8 +590,33 @@ describe("Chat", () => {
     await waitFor(() => expect(mocked.listChat).toHaveBeenCalledWith({ thread: 6 }, null));
   });
 
-  it("lists the latest completed chats with the rest behind more, and keeps the section open across starts", async () => {
-    serve([], undefined, Array.from({ length: 8 }, (_, i) => thread(10 + i, `Talk ${i}`, { status: "closed", closedAt: i })));
+  it("shows the In progress heading with its count while no task is in progress", async () => {
+    serve([], undefined, []);
+    serveTasks([]);
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+
+    expect(await screen.findByRole("heading", { name: /^In progress\s*0$/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^In progress/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /^Needs answer/ })).not.toBeInTheDocument();
+  });
+
+  it("lists the latest completed chats and more each time the list is scrolled to its end, and keeps the section open across starts", async () => {
+    const ends: { see: () => void }[] = [];
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        constructor(private readonly callback: IntersectionObserverCallback) {}
+        observe() {
+          ends.push({ see: () => this.callback([{ isIntersecting: true } as IntersectionObserverEntry], this as never) });
+        }
+        disconnect() {}
+      },
+    );
+    onTestFinished(() => {
+      vi.unstubAllGlobals();
+    });
+    serve([], undefined, Array.from({ length: 30 }, (_, i) => thread(10 + i, `Talk ${i}`, { status: "closed", closedAt: i })));
     serveTasks([]);
     renderChat();
     fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
@@ -600,10 +625,14 @@ describe("Chat", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^Completed/, expanded: false }));
     const past = await screen.findByRole("list", { name: "Completed" });
     await waitFor(() => expect(within(past).getAllByRole("listitem")).toHaveLength(5));
-    expect(within(past).getAllByRole("listitem")[0]).toHaveTextContent("Talk 7");
-    fireEvent.click(screen.getByRole("button", { name: "Show more (3)" }));
-    expect(within(past).getAllByRole("listitem")).toHaveLength(8);
-    expect(screen.queryByRole("button", { name: /Show more/ })).not.toBeInTheDocument();
+    expect(within(past).getAllByRole("listitem")[0]).toHaveTextContent("Talk 29");
+    act(() => ends.at(-1)?.see());
+    expect(within(past).getAllByRole("listitem")).toHaveLength(25);
+    const watched = ends.length;
+    act(() => ends.at(-1)?.see());
+    expect(within(past).getAllByRole("listitem")).toHaveLength(30);
+    // With every chat listed there is no end left to watch.
+    expect(ends).toHaveLength(watched);
     cleanup();
 
     renderChat();
