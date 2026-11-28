@@ -31,6 +31,7 @@ import {
 import { Avatar } from "@astryxdesign/core/Avatar";
 import { Badge } from "@astryxdesign/core/Badge";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { InternationalizationProvider } from "@astryxdesign/core/i18n";
 import { Thumbnail } from "@astryxdesign/core/Thumbnail";
 import { Token } from "@astryxdesign/core/Token";
 import { Tooltip } from "@astryxdesign/core/Tooltip";
@@ -96,7 +97,8 @@ import {
   useUpdateChatThread,
 } from "@/lib/queries";
 import { awaitsAnswer, taskChats, waitingThreads, type TaskChat, type TaskChats } from "@/lib/task-chats";
-import { formatFull } from "@/lib/timeline";
+import { fill, useI18n, useMessages, type Locale } from "@/lib/i18n";
+import { en, type Messages } from "@/locales/en";
 import { cn } from "@/lib/utils";
 import { useVoiceInput } from "@/lib/voice";
 import { apiRequest } from "@/web/session";
@@ -159,16 +161,21 @@ export function totalUnread(channels: readonly ChatChannel[], tasks: TaskChats):
  * while it waits too long. Received by the agent but not yet read stays sent, as in other
  * messengers.
  */
-export function receipt(message: ChatMessage): { status: ChatMessageStatus; note: string | null } {
+export function receipt(message: ChatMessage, m: Messages = en): { status: ChatMessageStatus; note: string | null } {
   const status: ChatMessageStatus = message.ackedAt !== null ? "read" : "sent";
-  return { status, note: message.overdue ? "Waiting for an answer" : null };
+  return { status, note: message.overdue ? m.chat.waitingForAnswer : null };
+}
+
+function fullMessageTime(date: Date, locale: Locale): string {
+  return date.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
 }
 
 function Time({ at }: { at: Timestamp }) {
+  const { locale } = useI18n();
   const date = new Date(at * 1000);
   return (
-    <time dateTime={date.toISOString()} title={formatFull(at)}>
-      {date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+    <time dateTime={date.toISOString()} title={fullMessageTime(date, locale)}>
+      {date.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}
     </time>
   );
 }
@@ -178,18 +185,19 @@ function Time({ at }: { at: Timestamp }) {
  * server, or why the server refused it, with a retry, and for a refused one a way to drop it.
  */
 function OutboxNote({ message, refresh }: { message: OutboxMessage; refresh: () => Promise<unknown> }) {
+  const m = useMessages();
   return (
     <span className="flex flex-wrap items-center gap-1">
-      <span>{message.refused ?? "Not sent yet: it goes out once the server answers."}</span>
+      <span>{message.refused ?? m.chat.outboxWaiting}</span>
       <Button
         variant="ghost"
         size="sm"
-        label="Retry"
+        label={m.common.retry}
         changesData
         onClick={() => void retryChatMessage(message.clientId, refresh)}
       />
       {message.refused !== null && (
-        <Button variant="ghost" size="sm" label="Discard" onClick={() => discardChatMessage(message.clientId)} />
+        <Button variant="ghost" size="sm" label={m.chat.discard} onClick={() => discardChatMessage(message.clientId)} />
       )}
     </span>
   );
@@ -227,9 +235,10 @@ function ImageAttachment({ attachment }: { attachment: ChatAttachment }) {
 
 /** The files of a message: images in place, other files as buttons that download them. */
 function Attachments({ attachments }: { attachments: readonly ChatAttachment[] }) {
+  const m = useMessages();
   if (attachments.length === 0) return null;
   return (
-    <ul aria-label="Attachments" className="mt-1.5 flex flex-col gap-1.5">
+    <ul aria-label={m.chat.attachments} className="mt-1.5 flex flex-col gap-1.5">
       {attachments.map((attachment) => (
         <li key={attachment.id}>
           {inlineImages.includes(attachment.contentType) ? (
@@ -253,12 +262,13 @@ function Attachments({ attachments }: { attachments: readonly ChatAttachment[] }
 
 /** The choices the agent offers under its message; one may be chosen, which closes the others. */
 function Actions({ message }: { message: ChatMessage }) {
+  const m = useMessages();
   const choose = useChooseChatAction();
   if (message.actions.length === 0) return null;
   const chosen = message.chosen?.key ?? null;
   return (
     <div className="mt-2 flex flex-col gap-1">
-      <div role="group" aria-label="Choices" className="flex flex-wrap gap-1.5">
+      <div role="group" aria-label={m.chat.choices} className="flex flex-wrap gap-1.5">
         {message.actions.map((action) => (
           <Button
             key={action.key}
@@ -298,15 +308,14 @@ function AgentAvatar({ agent }: { agent: ChatAgent }) {
 }
 
 /**
- * The agent writing a reply: bouncing dots in a bubble beside its avatar, captioned in the
- * browser's language (Korean or English).
+ * The agent writing a reply: bouncing dots in a bubble beside its avatar.
  */
 function TypingMessage({ agent }: { agent: ChatAgent }) {
-  const caption = navigator.language.toLowerCase().startsWith("ko") ? "입력 중" : "Typing";
+  const m = useMessages();
   return (
     <Message sender="assistant" avatar={<AgentAvatar agent={agent} />}>
-      <ChatMessageBubble metadata={<ChatMessageMetadata footer={caption} />}>
-        <span role="status" aria-label={`${agent.name} is writing`} className="flex h-5 items-center gap-1">
+      <ChatMessageBubble metadata={<ChatMessageMetadata footer={m.chat.typing} />}>
+        <span role="status" aria-label={m.chat.agentWriting(agent.name)} className="flex h-5 items-center gap-1">
           {[0, 150, 300].map((delay) => (
             <span
               key={delay}
@@ -322,6 +331,7 @@ function TypingMessage({ agent }: { agent: ChatAgent }) {
 }
 
 function Messages({ agent, messages }: { agent: ChatAgent; messages: readonly ChatMessage[] }) {
+  const m = useMessages();
   return messages.map((message) => {
     switch (message.author) {
       case "system":
@@ -339,7 +349,7 @@ function Messages({ agent, messages }: { agent: ChatAgent; messages: readonly Ch
           </Message>
         );
       case "user": {
-        const { status, note } = receipt(message);
+        const { status, note } = receipt(message, m);
         return (
           <Message key={message.id} sender="user">
             <ChatMessageBubble
@@ -353,8 +363,7 @@ function Messages({ agent, messages }: { agent: ChatAgent; messages: readonly Ch
             >
               {message.choiceOf !== null ? (
                 <span className="whitespace-pre-wrap break-words">
-                  <span className="opacity-80">Chose </span>
-                  <strong>{message.body}</strong>
+                  {fill(m.chat.chose, { choice: <strong>{message.body}</strong> })}
                 </span>
               ) : (
                 <span className="whitespace-pre-wrap break-words">{message.body}</span>
@@ -466,13 +475,14 @@ function useTyping(place: ChatPlace, initial: Timestamp | null | undefined): boo
  * replaces with a note. What it shows counts as read. Give it a `key` per place.
  */
 export function Conversation({ place, open = true, label }: { place: ChatPlace; open?: boolean; label: string }) {
+  const { locale, m } = useI18n();
   const chat = useChat(place);
   const queryClient = useQueryClient();
   const refreshChat = () => queryClient.invalidateQueries({ queryKey: queryKeys.chat });
   const markRead = useMarkChatRead();
   const outbox = useSyncExternalStore(subscribeChatOutbox, chatOutbox);
   const [draft, setDraft] = useState("");
-  const voice = useVoiceInput(setDraft);
+  const voice = useVoiceInput(setDraft, m);
   const tasks = useTasks();
   const loadedTasks = useRef<readonly Task[]>([]);
   loadedTasks.current = tasks.data ?? [];
@@ -522,7 +532,7 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
       return current.filter((upload) => upload.key !== key);
     });
   const uploading = uploads.some((upload) => upload.attachment === null && upload.error === null);
-  const failedUpload = uploads.find((upload) => upload.error !== null);
+  const failedUpload = uploads.find((upload): upload is Upload & { error: string } => upload.error !== null);
   // As in other messengers, the microphone holds the send button's place until there is something to send,
   // and keeps it while it listens, so dictation can be stopped once its first phrase lands in the draft.
   const showsMicrophone = voice.speech.isSupported && (voice.speech.isListening || (draft.trim() === "" && uploads.length === 0));
@@ -539,11 +549,11 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
     setUploads([]);
   };
 
-  return (
+  const content = (
     <div className="flex min-h-0 flex-1 flex-col">
       <div
         ref={scroller}
-        aria-label={`Messages in ${label}`}
+        aria-label={m.chat.messagesIn(label)}
         className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 py-2"
         onScroll={(event) => {
           const element = event.currentTarget;
@@ -555,7 +565,7 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
             <Button
               variant="ghost"
               size="sm"
-              label="Show earlier messages"
+              label={m.chat.earlierMessages}
               isDisabled={chat.isFetchingNextPage}
               onClick={() => {
                 atBottom.current = false;
@@ -566,11 +576,11 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
         )}
         {chat.isError ? (
           <p role="alert" className="text-sm text-destructive">
-            The chat could not be loaded: {chat.error.message}
+            {m.chat.loadFailed(chat.error.message)}
           </p>
         ) : messages.length === 0 && outgoing.length === 0 && !typing ? (
           <p className="m-auto max-w-64 text-center text-sm text-muted-foreground">
-            {chat.isPending ? "Loading the chat..." : "Messages here go to the agent connected to Toodo over MCP."}
+            {chat.isPending ? m.chat.loading : m.chat.empty}
           </p>
         ) : (
           // New messages start at the bottom, as in other chats.
@@ -613,14 +623,14 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
               type="file"
               multiple
               hidden
-              aria-label="Files to attach"
+              aria-label={m.chat.filesToAttach}
               onChange={(event) => {
                 pick([...(event.currentTarget.files ?? [])]);
                 event.currentTarget.value = "";
               }}
             />
             {uploads.length > 0 && (
-              <ul aria-label="Files to send" className="flex flex-wrap items-center gap-1.5 px-1 pb-2">
+              <ul aria-label={m.chat.filesToSend} className="flex flex-wrap items-center gap-1.5 px-1 pb-2">
                 {uploads.map((upload) => (
                   <li key={upload.key}>
                     {upload.preview !== null ? (
@@ -635,7 +645,7 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
                       <Token
                         size="sm"
                         color={upload.error !== null ? "red" : "default"}
-                        label={upload.attachment === null && upload.error === null ? `${upload.file.name} (uploading)` : upload.file.name}
+                        label={upload.attachment === null && upload.error === null ? m.chat.uploading(upload.file.name) : upload.file.name}
                         onRemove={() => unpick(upload.key)}
                       />
                     )}
@@ -645,23 +655,21 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
             )}
             {voice.speech.isListening && (
               <p className="truncate px-1 pb-1 text-xs text-muted-foreground">
-                {voice.speech.interimTranscript || "Listening..."}
+                {voice.speech.interimTranscript || m.chat.listening}
               </p>
             )}
             <div className="flex items-end gap-1 rounded-2xl border border-input bg-background p-1 focus-within:border-ring">
               <IconButton
                 variant="ghost"
                 size="sm"
-                label="Attach files"
+                label={m.chat.attachFiles}
                 icon={<Plus />}
                 changesData
                 onClick={() => picker.current?.click()}
               />
               <ChatComposerInput
                 className="min-w-0 flex-1 self-center"
-                placeholder={
-                  navigator.language.toLowerCase().startsWith("ko") ? `${agent.name}에게 메시지 보내기` : `Message ${agent.name}`
-                }
+                placeholder={m.chat.messageAgent(agent.name)}
                 maxRows={6}
                 triggers={triggers}
                 value={draft}
@@ -676,13 +684,13 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
                 }}
               />
               {showsMicrophone ? (
-                <ChatDictationButton dictation={voice.speech} size="sm" label="Voice input" />
+                <ChatDictationButton dictation={voice.speech} size="sm" label={m.chat.voiceInput} />
               ) : (
                 // Not paused while the server is unreachable: the outbox keeps the message until it answers.
                 <IconButton
                   variant="primary"
                   size="sm"
-                  label="Send"
+                  label={m.chat.send}
                   icon={<SendHorizontal />}
                   isDisabled={uploading || (draft.trim() === "" && uploads.every((upload) => upload.attachment === null))}
                   onClick={() => sendDraft(draft)}
@@ -691,7 +699,7 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
             </div>
             {failedUpload !== undefined ? (
               <p role="alert" className="px-1 pt-1 text-xs text-destructive">
-                {failedUpload.file.name} could not be uploaded: {failedUpload.error}
+                {m.chat.uploadFailed(failedUpload.file.name, failedUpload.error)}
               </p>
             ) : (
               voice.error !== null && (
@@ -703,11 +711,16 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
           </>
         ) : (
           <p className="px-1 py-2 text-center text-xs text-muted-foreground">
-            This thread is closed. Reopen it to write in it.
+            {m.chat.threadClosed}
           </p>
         )}
       </div>
     </div>
+  );
+  return (
+    <InternationalizationProvider locale={locale} overrides={{ [locale]: m.chat.astryx }}>
+      {content}
+    </InternationalizationProvider>
   );
 }
 
@@ -729,6 +742,7 @@ function NameForm({
   pending: boolean;
   error: string | null;
 }) {
+  const m = useMessages();
   const [name, setName] = useState(initial);
   const submit = (event: FormEvent) => {
     event.preventDefault();
@@ -754,7 +768,7 @@ function NameForm({
       )}
       <div className="flex gap-1">
         <Button type="submit" size="sm" label={submitLabel} changesData isDisabled={pending || name.trim() === ""} />
-        <Button variant="ghost" size="sm" label="Cancel" onClick={onCancel} />
+        <Button variant="ghost" size="sm" label={m.common.cancel} onClick={onCancel} />
       </div>
     </form>
   );
@@ -779,11 +793,12 @@ export function DecisionFlag({ className }: { className?: string }) {
 
 /** The mark of a thread waiting on the owner's answer to a decision or request. */
 export function DecisionMark() {
+  const m = useMessages();
   return (
     <span className={cn("flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-xs font-semibold", decisionFill)}>
       <DecisionFlag />
-      Decision
-      <span className="sr-only">, waiting on your answer</span>
+      {m.chat.decision}
+      <span className="sr-only">{m.chat.decisionHint}</span>
     </span>
   );
 }
@@ -800,11 +815,10 @@ function PlaceMarks({ thread }: { thread: ChatThread | null }) {
 }
 
 
-const statusLabels: Record<ChatThreadStatus, string> = { open: "Open", closed: "Closed", archived: "Archived" };
-
 export function ThreadStatusBadge({ status }: { status: ChatThreadStatus }) {
+  const m = useMessages();
   if (status === "open") return null;
-  return <Badge className="shrink-0" variant={status === "closed" ? "neutral" : "warning"} label={statusLabels[status]} />;
+  return <Badge className="shrink-0" variant={status === "closed" ? "neutral" : "warning"} label={m.chat.threadStatus[status]} />;
 }
 
 function placeItem(selected: boolean, waiting = false) {
@@ -872,8 +886,9 @@ function PlaceButton({
 
 /** A listed task: its number and title, and under them the latest message of its thread. */
 function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boolean; onOpen: () => void }) {
+  const m = useMessages();
   const { task, thread } = chat;
-  const status = thread?.lastMessage ?? (task.status === "in_review" ? "In review" : "");
+  const status = thread?.lastMessage ?? (task.status === "in_review" ? m.chat.inReview : "");
   return (
     <li>
       <PlaceButton
@@ -962,6 +977,7 @@ function PlaceList({
   onSelect: (selection: Selection) => void;
   onOpenTask: (chat: TaskChat) => void;
 }) {
+  const m = useMessages();
   const [adding, setAdding] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [showPast, setShowPast] = useState(false);
@@ -989,12 +1005,12 @@ function PlaceList({
           <span data-place-title className="min-w-0 truncate">
             {channel.name}
           </span>
-          {!channel.push && <BellOff aria-label="Notifications off" className="size-3 shrink-0 text-muted-foreground" />}
+          {!channel.push && <BellOff aria-label={m.chat.notificationsOff} className="size-3 shrink-0 text-muted-foreground" />}
           <UnreadBadge count={channel.unread} />
         </PlaceButton>
         {current && (
           <div className="ml-3 flex flex-col gap-0.5 border-l pl-1">
-            <ul aria-label={`Threads in #${channel.name}`} className="flex flex-col gap-0.5">
+            <ul aria-label={m.chat.threadsIn(channel.name)} className="flex flex-col gap-0.5">
               {shown.map((thread) => (
                 <li key={thread.id}>
                   <PlaceButton
@@ -1010,7 +1026,7 @@ function PlaceList({
                       {thread.title}
                     </span>
                     {thread.status !== "open" && (
-                      <span className="sr-only">{`, ${statusLabels[thread.status].toLowerCase()}`}</span>
+                      <span className="sr-only">{m.chat.threadStatusHint(m.chat.threadStatus[thread.status])}</span>
                     )}
                     {thread.status === "closed" && <Lock aria-hidden className="size-3 shrink-0 text-muted-foreground" />}
                     {thread.status === "archived" && (
@@ -1026,7 +1042,7 @@ function PlaceList({
                 <Button
                   variant="ghost"
                   size="sm"
-                  label={showArchived ? "Hide archived threads" : `Show archived threads (${archived})`}
+                  label={showArchived ? m.chat.hideArchived : m.chat.showArchived(archived)}
                   onClick={() => setShowArchived(!showArchived)}
                 />
               </div>
@@ -1040,13 +1056,13 @@ function PlaceList({
   return (
     <div className="flex flex-col gap-0.5 p-2">
       <div className="flex items-center justify-between px-2 pb-1">
-        <h3 className="text-xs font-medium text-muted-foreground">Channels</h3>
-        <IconButton variant="ghost" size="sm" label="New channel" icon={<Plus />} onClick={() => setAdding(!adding)} />
+        <h3 className="text-xs font-medium text-muted-foreground">{m.chat.channels}</h3>
+        <IconButton variant="ghost" size="sm" label={m.chat.newChannel} icon={<Plus />} onClick={() => setAdding(!adding)} />
       </div>
       {adding && (
         <NameForm
-          label="Channel name"
-          submitLabel="Add"
+          label={m.chat.channelName}
+          submitLabel={m.chat.add}
           pending={createChannel.isPending}
           error={createChannel.error?.message ?? null}
           onCancel={() => setAdding(false)}
@@ -1060,23 +1076,23 @@ function PlaceList({
           }
         />
       )}
-      <ul aria-label="Channels" className="flex flex-col gap-0.5">
+      <ul aria-label={m.chat.channels} className="flex flex-col gap-0.5">
         {ordered.map(place)}
       </ul>
       <TaskGroup
-        label="Needs answer"
+        label={m.chat.needsAnswer}
         icon={<Flag aria-hidden className="size-3 text-warning" />}
         chats={tasks.needsAnswer}
         selection={selection}
         onOpenTask={onOpenTask}
       />
       <TaskGroup
-        label="In progress"
+        label={m.chat.inProgress}
         action={
           <IconButton
             variant="ghost"
             size="sm"
-            label={showPast ? "Hide completed" : "Completed"}
+            label={showPast ? m.chat.hideCompleted : m.chat.completed}
             icon={<Archive />}
             aria-pressed={showPast}
             onClick={() => setShowPast(!showPast)}
@@ -1103,13 +1119,14 @@ function PastChats({
   selection: Selection;
   onSelect: (selection: Selection) => void;
 }) {
+  const m = useMessages();
   return (
     <div className="flex flex-col gap-0.5 pt-2">
-      <h3 className="px-2 pb-1 text-xs font-medium text-muted-foreground">Completed</h3>
+      <h3 className="px-2 pb-1 text-xs font-medium text-muted-foreground">{m.chat.completed}</h3>
       {threads.length === 0 ? (
-        <p className="px-2 text-xs text-muted-foreground">No finished or closed chats yet.</p>
+        <p className="px-2 text-xs text-muted-foreground">{m.chat.noCompleted}</p>
       ) : (
-        <ul aria-label="Completed" className="flex flex-col gap-0.5">
+        <ul aria-label={m.chat.completed} className="flex flex-col gap-0.5">
           {threads.map((thread) => (
             <li key={thread.id}>
               <PlaceButton
@@ -1150,17 +1167,18 @@ export function pastThreads(threads: readonly ChatThread[], tasks: readonly Task
 
 /** Closes, archives, or reopens a thread, as its status allows. */
 export function ThreadActions({ thread }: { thread: ChatThread }) {
+  const m = useMessages();
   const update = useUpdateChatThread();
   const set = (status: ChatThreadStatus) => update.mutate({ id: thread.id, edit: { status } });
   return (
     <>
       {thread.status === "open" ? (
-        <IconButton variant="ghost" size="sm" label="Close thread" icon={<Lock />} changesData onClick={() => set("closed")} />
+        <IconButton variant="ghost" size="sm" label={m.chat.closeThread} icon={<Lock />} changesData onClick={() => set("closed")} />
       ) : (
         <IconButton
           variant="ghost"
           size="sm"
-          label="Reopen thread"
+          label={m.chat.reopenThread}
           icon={<RotateCcw />}
           changesData
           onClick={() => set("open")}
@@ -1170,7 +1188,7 @@ export function ThreadActions({ thread }: { thread: ChatThread }) {
         <IconButton
           variant="ghost"
           size="sm"
-          label="Archive thread"
+          label={m.chat.archiveThread}
           icon={<Archive />}
           changesData
           onClick={() => set("archived")}
@@ -1193,16 +1211,17 @@ function DeleteChannelDialog({
   defaultRoom: string;
   onClose: () => void;
 }) {
+  const { locale, m } = useI18n();
   const remove = useDeleteChatChannel();
   const close = () => {
     if (!remove.isPending) onClose();
   };
-  return (
+  const dialog = (
     <Dialog isOpen onOpenChange={(open) => !open && close()} width={420}>
-      <DialogHeader title={`Delete #${channel.name}?`} onOpenChange={(open) => !open && close()} />
+      <DialogHeader title={m.chat.confirmDeleteChannel(channel.name)} onOpenChange={(open) => !open && close()} />
       <div className="flex flex-col gap-2 py-3 text-sm">
         <p>
-          {`Its threads move to #${defaultRoom}, and the messages posted in #${channel.name} itself are kept there in an archived thread named #${channel.name}. Nothing is lost, but the channel cannot be brought back.`}
+          {m.chat.deleteChannelExplanation(defaultRoom, channel.name)}
         </p>
         {remove.isError && (
           <p role="alert" className="text-xs break-words text-destructive">
@@ -1211,17 +1230,22 @@ function DeleteChannelDialog({
         )}
       </div>
       <div className="flex items-center gap-2 border-t pt-3">
-        <Button variant="ghost" label="Cancel" isDisabled={remove.isPending} onClick={close} />
+        <Button variant="ghost" label={m.common.cancel} isDisabled={remove.isPending} onClick={close} />
         <Button
           variant="destructive"
           className="ml-auto"
-          label={remove.isPending ? "Deleting..." : "Delete channel"}
+          label={remove.isPending ? m.chat.deleting : m.chat.deleteChannel}
           changesData
           isDisabled={remove.isPending}
           onClick={() => remove.mutate(channel.id, { onSuccess: onClose })}
         />
       </div>
     </Dialog>
+  );
+  return (
+    <InternationalizationProvider locale={locale} overrides={{ [locale]: { "@astryx.dialog.close": m.common.close } }}>
+      {dialog}
+    </InternationalizationProvider>
   );
 }
 
@@ -1235,16 +1259,17 @@ function ChannelActions({
   defaultRoom: string;
   onRename: () => void;
 }) {
+  const m = useMessages();
   const updateChannel = useUpdateChatChannel();
   const [deleting, setDeleting] = useState(false);
   return (
     <>
-      <IconButton variant="ghost" size="sm" label={`Rename #${channel.name}`} icon={<Pencil />} changesData onClick={onRename} />
+      <IconButton variant="ghost" size="sm" label={m.chat.renameChannel(channel.name)} icon={<Pencil />} changesData onClick={onRename} />
       {channel.id !== firstChannel && (
         <IconButton
           variant="ghost"
           size="sm"
-          label={`Delete #${channel.name}`}
+          label={m.chat.deleteNamedChannel(channel.name)}
           icon={<Trash2 />}
           changesData
           onClick={() => setDeleting(true)}
@@ -1253,7 +1278,7 @@ function ChannelActions({
       <IconButton
         variant="ghost"
         size="sm"
-        label={channel.push ? `Turn off notifications for #${channel.name}` : `Turn on notifications for #${channel.name}`}
+        label={channel.push ? m.chat.muteChannel(channel.name) : m.chat.unmuteChannel(channel.name)}
         icon={channel.push ? <Bell /> : <BellOff />}
         aria-pressed={channel.push}
         changesData
@@ -1280,6 +1305,7 @@ function PlaceHeader({
   onBack: () => void;
   onShowTask: (id: TaskId) => void;
 }) {
+  const m = useMessages();
   const rename = useUpdateChatChannel();
   const [renaming, setRenaming] = useState(false);
   if (renaming && channel !== undefined && thread === undefined) {
@@ -1287,8 +1313,8 @@ function PlaceHeader({
       <div className="border-b px-1 py-1">
         <NameForm
           key={channel.id}
-          label="Channel name"
-          submitLabel="Rename"
+          label={m.chat.channelName}
+          submitLabel={m.chat.rename}
           initial={channel.name}
           pending={rename.isPending}
           error={rename.error?.message ?? null}
@@ -1300,9 +1326,10 @@ function PlaceHeader({
       </div>
     );
   }
+  const taskId = thread?.taskId ?? null;
   return (
     <div className="flex min-h-11 items-center gap-1 border-b px-2 py-1">
-      <IconButton variant="ghost" size="sm" className="@2xl:hidden" label="Channels" icon={<ArrowLeft />} onClick={onBack} />
+      <IconButton variant="ghost" size="sm" className="@2xl:hidden" label={m.chat.channels} icon={<ArrowLeft />} onClick={onBack} />
       <div className="flex min-w-0 flex-1 flex-col">
         <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-semibold">
           <span className="min-w-0 truncate">{thread !== undefined ? threadLabel : `#${channel?.name ?? ""}`}</span>
@@ -1310,15 +1337,16 @@ function PlaceHeader({
         </h3>
         {thread !== undefined && channel !== undefined && (
           <p className="truncate text-xs text-muted-foreground">
-            {`in #${channel.name}`}
-            {thread.taskId !== null && (
-              <>
-                {" · "}
-                <button type="button" className="underline" onClick={() => onShowTask(thread.taskId!)}>
-                  {`task #${thread.taskId}`}
-                </button>
-              </>
-            )}
+            {taskId === null
+              ? m.chat.inChannel(channel.name)
+              : fill(m.chat.inChannelWithTask, {
+                  channel: m.chat.inChannel(channel.name),
+                  task: (
+                    <button type="button" className="underline" onClick={() => onShowTask(taskId)}>
+                      {m.chat.taskLink(taskId)}
+                    </button>
+                  ),
+                })}
           </p>
         )}
       </div>
@@ -1356,6 +1384,7 @@ export function ChatSearch({
   onOpen: (selection: Selection) => void;
   threadLabel?: (id: ChatThreadId, title: string) => string;
 }) {
+  const { locale, m } = useI18n();
   const [query, setQuery] = useState("");
   const searched = useDeferredValue(query);
   const results = useSearchChat(searched, null);
@@ -1363,21 +1392,21 @@ export function ChatSearch({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="border-b p-2">
-        <TextInput label="Search messages" isLabelHidden size="sm" value={query} onChange={setQuery} hasAutoFocus placeholder="Search messages" />
+        <TextInput label={m.chat.searchMessages} isLabelHidden size="sm" value={query} onChange={setQuery} hasAutoFocus placeholder={m.chat.searchMessages} />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
         {results.isError ? (
           <p role="alert" className="text-sm text-destructive">
-            The search failed: {results.error.message}
+            {m.chat.searchFailed(results.error.message)}
           </p>
         ) : searched.trim() === "" ? (
-          <p className="p-2 text-center text-sm text-muted-foreground">Find messages by the words in them.</p>
+          <p className="p-2 text-center text-sm text-muted-foreground">{m.chat.searchHint}</p>
         ) : results.isPending ? (
-          <p className="p-2 text-center text-sm text-muted-foreground">Searching...</p>
+          <p className="p-2 text-center text-sm text-muted-foreground">{m.chat.searching}</p>
         ) : hits.length === 0 ? (
-          <p className="p-2 text-center text-sm text-muted-foreground">No messages match.</p>
+          <p className="p-2 text-center text-sm text-muted-foreground">{m.chat.noSearchResults}</p>
         ) : (
-          <ul aria-label="Search results" className="flex flex-col gap-1">
+          <ul aria-label={m.chat.searchResults} className="flex flex-col gap-1">
             {hits.map((hit) => (
               <li key={hit.message.id}>
                 <button
@@ -1393,7 +1422,7 @@ export function ChatSearch({
                         ` / ${threadLabel(hit.message.threadId, hit.threadTitle)}`}
                     </span>
                     <span aria-hidden>·</span>
-                    <span className="shrink-0">{formatFull(hit.message.at)}</span>
+                    <span className="shrink-0">{fullMessageTime(new Date(hit.message.at * 1000), locale)}</span>
                   </span>
                   <span className="line-clamp-2 whitespace-pre-wrap break-words text-sm">{hit.message.body}</span>
                 </button>
@@ -1430,6 +1459,7 @@ function ChatPanel({
   target: Selection | null;
   onTargetShown: () => void;
 }) {
+  const m = useMessages();
   const channels = useChatChannels();
   const [selection, setSelection] = useState(() => target ?? storedSelection());
   const [searching, setSearching] = useState(false);
@@ -1510,7 +1540,7 @@ function ChatPanel({
     <section
       ref={panel}
       role="dialog"
-      aria-label="Chat"
+      aria-label={m.chat.title}
       data-chat=""
       data-state={open ? "open" : "closed"}
       inert={!open}
@@ -1534,16 +1564,16 @@ function ChatPanel({
         open ? "motion-safe:animate-chat-in" : "motion-safe:animate-chat-out",
       )}
     >
-      <ResizeHandle label="Resize the chat" width="chat-width" />
-      <ResizeHandle label="Resize the chat's height" height="chat-height" />
-      <ResizeHandle label="Resize the chat's width and height" width="chat-width" height="chat-height" />
+      <ResizeHandle label={m.chat.resize} width="chat-width" />
+      <ResizeHandle label={m.chat.resizeHeight} height="chat-height" />
+      <ResizeHandle label={m.chat.resizeBoth} width="chat-width" height="chat-height" />
       <header className="flex items-center gap-2 border-b px-3 py-2">
-        <h2 className="text-sm font-semibold">Chat</h2>
+        <h2 className="text-sm font-semibold">{m.chat.title}</h2>
         <IconButton
           variant="ghost"
           size="sm"
           className="ml-auto"
-          label={searching ? "Close search" : "Search messages"}
+          label={searching ? m.chat.closeSearch : m.chat.searchMessages}
           icon={<Search />}
           aria-pressed={searching}
           onClick={() => {
@@ -1551,16 +1581,16 @@ function ChatPanel({
             setListShown(false);
           }}
         />
-        <IconButton variant="ghost" size="sm" label="Close chat" icon={<X />} onClick={onClose} />
+        <IconButton variant="ghost" size="sm" label={m.chat.close} icon={<X />} onClick={onClose} />
       </header>
       <div className="@container flex min-h-0 flex-1">
         <nav
-          aria-label="Chat channels"
+          aria-label={m.chat.chatChannels}
           className={cn("w-full shrink-0 overflow-y-auto @2xl:w-56 @2xl:border-r", !listShown && "@max-2xl:hidden")}
         >
           {channels.isError ? (
             <p role="alert" className="p-3 text-sm text-destructive">
-              The channels could not be loaded: {channels.error.message}
+              {m.chat.channelsFailed(channels.error.message)}
             </p>
           ) : (
             <PlaceList
@@ -1626,6 +1656,7 @@ export function Chat({
   target?: Selection | null;
   onTargetShown?: () => void;
 }) {
+  const m = useMessages();
   const channels = useChatChannels();
   const threads = useChatThreads({ archived: true });
   const tasks = useTasks();
@@ -1665,11 +1696,11 @@ export function Chat({
           type="button"
           aria-label={
             open
-              ? "Close chat"
+              ? m.chat.close
               : [
-                  "Open chat",
-                  ...(decisions > 0 ? [`${decisions} waiting on your decision`] : []),
-                  ...(unread > 0 ? [`${unread} unread`] : []),
+                  m.chat.open,
+                  ...(decisions > 0 ? [m.chat.decisionCount(decisions)] : []),
+                  ...(unread > 0 ? [m.chat.unreadCount(unread)] : []),
                 ].join(", ")
           }
           aria-expanded={open}

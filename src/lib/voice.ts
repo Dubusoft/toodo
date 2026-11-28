@@ -12,6 +12,7 @@
  */
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { UseSpeechRecognitionReturn } from "@astryxdesign/core/Chat";
+import { en, type Messages } from "@/locales/en";
 
 /** The part of the Web Speech API's `SpeechRecognition` used here; TypeScript's DOM types lack it. */
 interface Recognition {
@@ -54,23 +55,23 @@ export function appendSpoken(draft: string, spoken: string): string {
 }
 
 /** What to tell the person when recognition fails, from its error code; nothing for a stop they asked for. */
-export function voiceErrorMessage(error: string): string | null {
+export function voiceErrorMessage(error: string, m: Messages = en): string | null {
   switch (error) {
     case "aborted":
       return null;
     case "no-speech":
-      return "No speech was heard. Try again closer to the microphone.";
+      return m.chat.voiceErrors.noSpeech;
     case "not-allowed":
     case "service-not-allowed":
-      return "The browser blocked the microphone. Allow it for this site to use voice input.";
+      return m.chat.voiceErrors.blockedMicrophone;
     case "audio-capture":
-      return "No microphone was found on this device. Connect one to use voice input.";
+      return m.chat.voiceErrors.missingMicrophone;
     case "network":
-      return "Voice input needs a connection to the browser's speech service.";
+      return m.chat.voiceErrors.network;
     case "language-not-supported":
-      return `Voice input does not support ${navigator.language}.`;
+      return m.chat.voiceErrors.unsupportedLanguage(navigator.language);
     default:
-      return `Voice input stopped (${error}).`;
+      return m.chat.voiceErrors.stopped(error);
   }
 }
 
@@ -86,24 +87,26 @@ async function lacksMicrophone(): Promise<boolean> {
   }
 }
 
-/**
- * `voiceErrorMessage` for a failed recognition, after telling a missing microphone from a
- * blocked one: Chrome reports `not-allowed` for both, with no permission prompt to answer.
- */
-export async function recognitionErrorMessage(error: string): Promise<string | null> {
-  if (error === "not-allowed" && (await lacksMicrophone())) return voiceErrorMessage("audio-capture");
-  return voiceErrorMessage(error);
+/** Chrome reports `not-allowed` for both a missing microphone and a blocked one. */
+async function recognitionErrorCode(error: string): Promise<string | null> {
+  if (error === "aborted") return null;
+  return error === "not-allowed" && (await lacksMicrophone()) ? "audio-capture" : error;
+}
+
+export async function recognitionErrorMessage(error: string, m: Messages = en): Promise<string | null> {
+  const code = await recognitionErrorCode(error);
+  return code === null ? null : voiceErrorMessage(code, m);
 }
 
 /**
  * Voice input into a draft, in the browser's language: each phrase recognized in full is added
  * to the end of it. `error` tells why the last attempt failed, until the next one starts.
  */
-export function useVoiceInput(setDraft: Dispatch<SetStateAction<string>>): {
+export function useVoiceInput(setDraft: Dispatch<SetStateAction<string>>, m: Messages): {
   speech: UseSpeechRecognitionReturn;
   error: string | null;
 } {
-  const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
   const [isListening, setListening] = useState(false);
   const [isSpeaking, setSpeaking] = useState(false);
   const [interimTranscript, setInterimTranscript] = useState("");
@@ -117,8 +120,8 @@ export function useVoiceInput(setDraft: Dispatch<SetStateAction<string>>): {
 
   const fail = (code: string) => {
     const failed = attempt.current;
-    void recognitionErrorMessage(code).then((message) => {
-      if (attempt.current === failed) setError(message);
+    void recognitionErrorCode(code).then((error) => {
+      if (attempt.current === failed) setErrorCode(error);
     });
   };
 
@@ -131,7 +134,7 @@ export function useVoiceInput(setDraft: Dispatch<SetStateAction<string>>): {
     recognition.interimResults = true;
     recognition.onstart = () => {
       attempt.current += 1;
-      setError(null);
+      setErrorCode(null);
       setListening(true);
     };
     recognition.onend = () => {
@@ -175,5 +178,5 @@ export function useVoiceInput(setDraft: Dispatch<SetStateAction<string>>): {
     abort,
     toggle: () => (isListening ? stop() : start()),
   };
-  return { speech, error };
+  return { speech, error: errorCode === null ? null : voiceErrorMessage(errorCode, m) };
 }
