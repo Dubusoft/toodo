@@ -131,7 +131,11 @@ const ENTRIES: readonly Entry[] = [
   def("appInfo", [], () => appInfo()),
   def("checkUpdate", [], () => checkUpdate(VERSION)),
   def("getAppLanguage", [], (s) => appLanguage(s.reader.db)),
-  def("setAppLanguage", ["language:enum:en|ko?"], (s, language) => setAppLanguage(s.storage.db, language)),
+  def("setAppLanguage", ["language:enum:en|ko?"], (s, language) => {
+    const set = setAppLanguage(s.storage.db, language);
+    s.appLanguageChanged(set);
+    return set;
+  }),
   def("listConnectedApps", [], (s) => ({
     publicMcpUrl: s.publicUrl === null ? null : `${s.publicUrl}/mcp`,
     apps: oauthListGrants(s.reader.db, s.reader.now()).map((grant) => ({

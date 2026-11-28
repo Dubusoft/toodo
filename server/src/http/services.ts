@@ -143,6 +143,11 @@ export class Services implements Notifier {
     this.emit(EVENT_NAMES.chatChanged, null satisfies B.ChatChanged);
   }
 
+  /** Tells every open app the App language now set, so its screens switch without a reload. */
+  appLanguageChanged(language: B.AppLanguage | null): void {
+    this.emit(EVENT_NAMES.appLanguageChanged, language satisfies B.AppLanguageChanged);
+  }
+
   agentPosted(message: B.ChatMessage, notice: ChatNotice | null): void {
     this.agentTyping(message.threadId !== null ? { thread: message.threadId } : { channel: message.channelId }, false);
     this.chatChanged();

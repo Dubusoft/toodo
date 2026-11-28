@@ -1,4 +1,4 @@
-// Task, workspace, and chat changes announced to connected clients: the name each event is
+// Task, workspace, chat, and App language changes announced to connected clients: the name each event is
 // sent under, its payload from `src/lib/api.ts`, and what the server tells about them.
 
 import type * as B from "../../../src/lib/api.ts";
@@ -8,6 +8,7 @@ import type { LatestMessage } from "../push/alerts.ts";
 import type { ChatNotice } from "../storage/chat-channels.ts";
 
 export type {
+  AppLanguageChanged,
   ChatActionChosen,
   ChatChanged,
   ChatTyping,
@@ -28,6 +29,7 @@ export const EVENT_NAMES = {
   chatChanged: "chat-changed",
   chatTyping: "chat-typing",
   chatActionChosen: "chat-action-chosen",
+  appLanguageChanged: "app-language-changed",
 } as const satisfies Record<keyof Events, string>;
 
 export interface Notifier {

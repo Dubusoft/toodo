@@ -81,6 +81,7 @@ vi.mock("@/lib/bindings", () => ({
     guidelinesChanged: { listen: vi.fn() },
     chatChanged: { listen: vi.fn() },
     chatTyping: { listen: vi.fn() },
+    appLanguageChanged: { listen: vi.fn() },
   },
 }));
 
@@ -319,6 +320,7 @@ beforeEach(() => {
   mockedEvents.guidelinesChanged.listen.mockResolvedValue(() => {});
   mockedEvents.chatChanged.listen.mockResolvedValue(() => {});
   mockedEvents.chatTyping.listen.mockResolvedValue(() => {});
+  mockedEvents.appLanguageChanged.listen.mockResolvedValue(() => {});
   mocked.listChat.mockResolvedValue({
     status: "ok",
     data: { agent: { name: "Agent", avatarUrl: null }, messages: [], hasEarlier: false, typingUntil: null },

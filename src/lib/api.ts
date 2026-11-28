@@ -288,6 +288,7 @@ export function makeEvents(listen: Listen) {
 		chatChanged: makeEvent<ChatChanged>("chat-changed"),
 		chatTyping: makeEvent<ChatTyping>("chat-typing"),
 		chatActionChosen: makeEvent<ChatActionChosen>("chat-action-chosen"),
+		appLanguageChanged: makeEvent<AppLanguageChanged>("app-language-changed"),
 	};
 }
 
@@ -1295,6 +1296,9 @@ export type Workspace = {
 export type WorkspaceId = number;
 
 export type WorkspacesChanged = null;
+
+/** The App language was set or unset, from any device or agent: the language now set. */
+export type AppLanguageChanged = AppLanguage | null;
 
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
     try {

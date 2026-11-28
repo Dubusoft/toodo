@@ -45,7 +45,7 @@ import {
   type WorkspaceId,
 } from "@/lib/bindings";
 import { commandErrorMessage, LocalizedError } from "@/lib/error-messages";
-import { useMessages } from "@/lib/i18n";
+import { appLanguageKey, useMessages } from "@/lib/i18n";
 import { downloadBackup, downloadExport, uploadRestore } from "@/web/files";
 import { apiRequest } from "@/web/session";
 import { notify, taskStatusAlerts } from "@/lib/task-alerts";
@@ -625,7 +625,10 @@ export function useDeleteReviewSnapshot() {
   });
 }
 
-/** Applies the task, workspace, and guideline changes the server reports while the app is mounted. */
+/**
+ * Applies the task, workspace, guideline, chat, and App language changes the server reports
+ * while the app is mounted, so a change made on another device or by an agent shows here too.
+ */
 export function useServerEvents() {
   const queryClient = useQueryClient();
   const { alerts } = useMessages();
@@ -650,6 +653,7 @@ export function useServerEvents() {
         queryClient.invalidateQueries({ queryKey: queryKeys.guidelines(event.payload.workspaceId) }),
       ),
       events.chatChanged.listen(() => queryClient.invalidateQueries({ queryKey: queryKeys.chat })),
+      events.appLanguageChanged.listen((event) => queryClient.setQueryData(appLanguageKey, event.payload)),
     ];
     return () => {
       for (const subscription of subscriptions) {
