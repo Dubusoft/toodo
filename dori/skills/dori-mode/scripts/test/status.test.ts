@@ -15,7 +15,7 @@ import { convertJsonStore } from "../src/store-import.ts";
 import { HUB_FILE, RunnerHub } from "../src/runner/hub.ts";
 import { healthPath } from "../src/runner/health.ts";
 import { displayTime } from "../src/display-time.ts";
-import { collectStatus, lookupStatus, machineLines, renderStatus, runnerViews, shortModel, STATUS_MAX_CHARS, statusPages, waitFireMs, type Status, type StatusDeps } from "../src/status.ts";
+import { collectStatus, discordThreadUrl, lookupStatus, machineLines, renderStatus, runnerViews, shortModel, STATUS_MAX_CHARS, statusPages, waitFireMs, type Status, type StatusDeps } from "../src/status.ts";
 import { unsandboxedReason } from "../src/runner-sandbox.ts";
 import { fakeClock, storePath, withState, writeJournal, writeWakes } from "./fakes.ts";
 import { builtInTunables } from "../src/tunables.ts";
@@ -412,6 +412,24 @@ test("collectStatus derives a lane's repo and PR from its Done signal, with no n
   const s = await collectStatus(f.deps);
   expect(s.lanes.find((l) => l.key === "pr-lane")).toMatchObject({ repo: "dev-bokdong/dori-mode", pr: 55 });
   expect(s.lanes.find((l) => l.key === "wt-lane")).toMatchObject({ repo: "some-repo" });
+});
+
+test("a lane's PR is the first one its done claim recorded, ahead of any Done-signal guess", async () => {
+  const f = await fixture();
+  await f.registry.write(lane("claimed", { status: "done-claimed", done: "see https://github.com/o/guess/pull/1", claim: { at: OPENED, evidence: "e", pulls: [{ repo: "o/r", number: 7, sha: "abc" }] } }));
+  const s = await collectStatus(f.deps);
+  expect(s.otherLanes?.find((l) => l.key === "claimed")).toMatchObject({ repo: "o/r", pr: 7 });
+});
+
+test("a lane's Discord thread is linked in the configured guild, and not without a guild or off Discord", async () => {
+  expect(discordThreadUrl("discord:1560508306567602259/1576059404787257384", "42")).toBe("https://discord.com/channels/42/1576059404787257384");
+  expect(discordThreadUrl("discord:1576059404787257384", "42")).toBe("https://discord.com/channels/42/1576059404787257384");
+  expect(discordThreadUrl("discord:1/2", undefined)).toBeUndefined();
+  expect(discordThreadUrl("none", "42")).toBeUndefined();
+  const f = await fixture();
+  f.deps = { ...f.deps, config: { ...f.deps.config, discord: { applicationId: "1", guildId: "42", ownerId: "3" } } };
+  await f.registry.write(lane("threaded"));
+  expect((await collectStatus(f.deps)).lanes.find((l) => l.key === "threaded")?.threadUrl).toBe("https://discord.com/channels/42/2");
 });
 
 test("item 6: lanes pending or exhausted on recovery are a status problem and marked in the lane list", async () => {

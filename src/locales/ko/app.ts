@@ -197,7 +197,7 @@ export const app: Partial<Messages["app"]> = {
       "not-done": "미완료",
       closed: "닫힘",
     },
-    showTask: (key, task) => `레인 ${key}의 태스크 #${task} 보기`,
+    showLane: (key) => `레인 ${key} 보기`,
     stale: "도리가 한동안 보고하지 않아 아래 상태가 오래됐을 수 있습니다.",
   },
 };

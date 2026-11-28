@@ -20,6 +20,9 @@ export type SupervisorLane = {
   readonly ageMin: number;
   /** The lane's last progress line. */
   readonly progress: string | null;
+  /** The lane's chat thread and pull request as `https` links, when it has them; absent from an older supervisor. */
+  readonly threadUrl?: string;
+  readonly prUrl?: string;
   /**
    * The last lines of the lane's terminal, read when the snapshot was taken; `null` when
    * nobody was watching the panel then, an error when the screen could not be read.

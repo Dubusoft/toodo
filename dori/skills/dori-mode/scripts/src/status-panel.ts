@@ -78,6 +78,9 @@ export const collectPanel = async (deps: StatusPanelDeps, watched: boolean): Pro
     model: lane.model ?? null,
     ageMin: lane.ageMin,
     progress: lane.progress ?? null,
+    ...(lane.threadUrl ? { threadUrl: lane.threadUrl } : {}),
+    // A repo guessed from a worktree directory is no owner/name, so it makes no link.
+    ...(lane.repo?.includes("/") && lane.pr !== undefined ? { prUrl: `https://github.com/${lane.repo}/pull/${lane.pr}` } : {}),
     screen: !watched || lane.status !== "working" ? null : await deps.screen(lane.key).then((text) => ({ text }), (e: unknown) => ({ error: message(e) })),
   })));
   return { at, status: statusPages(status), quota, lanes, machines: (status.runners ?? []).map(panelMachine) };

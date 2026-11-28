@@ -24,12 +24,14 @@ import { Chat } from "@/components/chat-panel";
 import { CommandPalette, ShortcutsDialog, type PaletteCommand } from "@/components/command-palette";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { InstallBanner } from "@/components/install-banner";
+import { LoneLane, type DetailLane } from "@/components/lane-view";
 import { NeedsAttention } from "@/components/needs-attention";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { Button, IconButton } from "@/components/button";
 import { NewWorkspaceDialog, WorkspaceList } from "@/components/workspace-list";
 import type { Task, TaskId, WorkspaceId } from "@/lib/bindings";
+import type { SupervisorLane } from "@/lib/supervisor-status";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { useLocaleFromSettings, useMessages } from "@/lib/i18n";
 import { useServerEvents, useTasks, useWorkspaces } from "@/lib/queries";
@@ -43,6 +45,10 @@ import { type ChatTarget, chatTargetAt, listenForOpenChat, listenForOpenTask } f
 
 // The review screen loads only when it is first shown.
 const Review = lazy(() => import("@/components/review").then((module) => ({ default: module.Review })));
+// A lane with no task opens in the task details' sheet, which loads with the first one shown.
+const TaskDetailsSheet = lazy(() =>
+  import("@/components/task-details").then((module) => ({ default: module.TaskDetailsSheet })),
+);
 
 /** The search field of the shown task view, unless it is folded away on a phone. */
 function searchField(): HTMLInputElement | null {
@@ -116,6 +122,26 @@ export default function App() {
   };
   // A clicked notification opens its task.
   useEffect(() => listenForOpenTask(showTask), []);
+  // A lane from the navigation opens on the Lane tab of its task's details, or alone without a task.
+  const [detailLane, setDetailLane] = useState<DetailLane | null>(null);
+  const [loneLane, setLoneLane] = useState<string | null>(null);
+  const showLane = (lane: SupervisorLane) => {
+    if (lane.task === null) {
+      if (route.page !== "review" && route.task !== null) navigate({ ...route, task: null });
+      setLoneLane(lane.key);
+      setMenuOpen(false);
+    } else {
+      setLoneLane(null);
+      showTask(lane.task as TaskId);
+      setDetailLane({ task: lane.task as TaskId, lane: lane.key });
+    }
+  };
+  const routeTask = route.page === "review" ? null : route.task;
+  // Another task, or none, drops the lane shown in the details; a task shown closes a lone lane.
+  useEffect(() => {
+    setDetailLane((current) => (current !== null && current.task !== routeTask ? null : current));
+    if (routeTask !== null) setLoneLane(null);
+  }, [routeTask]);
   // The chat opens from its button, from a clicked chat notification, from a decision under Needs
   // attention, or at an address with `?chat`; the place named is shown until the chat takes it.
   const [chatOpen, setChatOpen] = useState(() => new URLSearchParams(location.search).has("chat"));
@@ -304,7 +330,7 @@ export default function App() {
           <WorkspaceList
             selectedId={reviewing || showingAll ? null : (selected?.id ?? null)}
             onSelect={(id) => openPage({ page: "workspace", workspace: id, task: null })}
-            onShowTask={showTask}
+            onShowLane={showLane}
           />
         </ErrorBoundary>
         <Button
@@ -357,6 +383,8 @@ export default function App() {
                 onTimelineScaleChange={setTimelineScale}
                 shownTask={shownTask}
                 onTaskShown={() => setShownTask(null)}
+                detailLane={detailLane}
+                onDetailLaneChange={setDetailLane}
               />
             ) : selected ? (
               <TaskList
@@ -368,6 +396,8 @@ export default function App() {
                 onTimelineScaleChange={setTimelineScale}
                 draft={drafts.get(selected.id)}
                 onDraftChange={(draft) => setDraft(selected.id, draft)}
+                detailLane={detailLane}
+                onDetailLaneChange={setDetailLane}
               />
             ) : (
               // A failed load is explained, with a retry, in the sidebar's workspace list.
@@ -390,6 +420,13 @@ export default function App() {
               )
             )}
           </ErrorBoundary>
+          {loneLane !== null && (
+            <Suspense fallback={null}>
+              <TaskDetailsSheet title={m.details.sheet.laneTitle} onClose={() => setLoneLane(null)}>
+                <LoneLane key={loneLane} laneKey={loneLane} />
+              </TaskDetailsSheet>
+            </Suspense>
+          )}
         </main>
       </div>
       <SettingsDialog

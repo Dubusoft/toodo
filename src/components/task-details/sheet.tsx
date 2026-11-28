@@ -5,10 +5,10 @@ import { DetailsSheet } from "@/components/details-sheet";
 import { openMenuButton } from "@/lib/shortcuts";
 
 /**
- * The details sheet of the task list, like the timeline's. Escape, the close button, or a swipe
- * down closes it, after asking when an edit form in it has unsaved changes.
+ * The details sheet of the task list, like the timeline's, and of a lane alone (`title`). Escape,
+ * the close button, or a swipe down closes it, after asking when an edit form in it has unsaved changes.
  */
-export function TaskDetailsSheet({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+export function TaskDetailsSheet({ title, onClose, children }: { title?: string; onClose: () => void; children: ReactNode }) {
   const m = useMessages();
   const sheet = useRef<HTMLElement>(null);
   const [discarding, setDiscarding] = useState(false);
@@ -40,6 +40,7 @@ export function TaskDetailsSheet({ onClose, children }: { onClose: () => void; c
     <DetailsSheet
       ref={sheet}
       width="min(480px, max(360px, 40vw), calc(100vw - 32px))"
+      title={title}
       onClose={close}
       banner={
         discarding && (

@@ -35,7 +35,7 @@ beforeEach(() => {
 
 /** Renders the list and opens the new workspace dialog. */
 function openNewWorkspace() {
-  render(<WorkspaceList selectedId={null} onSelect={() => {}} onShowTask={() => {}} />);
+  render(<WorkspaceList selectedId={null} onSelect={() => {}} onShowLane={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "Add workspace" }));
   return screen.getByRole("dialog", { name: "New workspace" });
 }
@@ -88,7 +88,7 @@ describe("Workspace list", () => {
       { id: 1, name: "toodo", description: null, repository: "dev-bokdong/toodo", archivedAt: null },
       { id: 2, name: "ops", description: "Server chores", repository: null, archivedAt: null },
     ];
-    render(<WorkspaceList selectedId={1} onSelect={() => {}} onShowTask={() => {}} />);
+    render(<WorkspaceList selectedId={1} onSelect={() => {}} onShowLane={() => {}} />);
 
     const toodo = screen.getByRole("button", { name: /^toodo/ });
     expect(toodo).toHaveAttribute("aria-current", "true");

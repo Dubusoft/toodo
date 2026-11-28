@@ -30,6 +30,9 @@ const isQuota = (value: unknown): boolean =>
     (isText(value.error) ||
       (isText(value.text) && (value.fetchedAt === null || Number.isFinite(value.fetchedAt)))));
 
+/** A link the panel opens: only `https`, so a snapshot cannot hand the app a script URL. */
+const isOptionalLink = (value: unknown): boolean => value === undefined || (isText(value) && /^https:\/\/[^\s]+$/.test(value));
+
 const isScreen = (value: unknown): boolean => value === null || (isObject(value) && (isText(value.text) || isText(value.error)));
 
 const LANE_STATUSES: ReadonlySet<unknown> = new Set<SupervisorLaneStatus>([
@@ -67,6 +70,8 @@ const isLane = (value: unknown): boolean =>
   isNullableText(value.model) &&
   Number.isFinite(value.ageMin) &&
   isNullableText(value.progress) &&
+  isOptionalLink(value.threadUrl) &&
+  isOptionalLink(value.prUrl) &&
   isScreen(value.screen);
 
 /** Whether a pushed body is a snapshot the panel can show. */

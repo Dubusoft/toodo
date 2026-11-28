@@ -89,6 +89,22 @@ test("every open lane comes with its status, only working lanes' screens are rea
   ]);
 });
 
+test("a lane links its thread and, with an owner/name repo, its pull request", async () => {
+  const snapshot = await collectPanel(deps({
+    status: async () => ({
+      ...status,
+      lanes: [
+        { key: "ap-1-1", ageMin: 1, machine: "local", threadUrl: "https://discord.com/channels/9/2", repo: "o/r", pr: 7 },
+        { key: "ap-2-1", ageMin: 1, machine: "local", repo: "some-worktree", pr: 8 },
+      ],
+    }),
+  }), false);
+  expect(snapshot.lanes.map((lane) => [lane.key, lane.threadUrl, lane.prUrl])).toEqual([
+    ["ap-1-1", "https://discord.com/channels/9/2", "https://github.com/o/r/pull/7"],
+    ["ap-2-1", undefined, undefined],
+  ]);
+});
+
 test("an unwatched snapshot reads neither the quota nor any screen", async () => {
   let reads = 0;
   const snapshot = await collectPanel(deps({
