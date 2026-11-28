@@ -226,7 +226,7 @@ function JobCard({ job, t }: { job: MachineJob; t: Texts }) {
       <pre
         ref={log}
         aria-label={t.jobLog(title)}
-        className="max-h-64 overflow-auto rounded-md bg-muted px-2 py-1.5 font-mono text-xs whitespace-pre-wrap wrap-anywhere dark:bg-card"
+        className="max-h-64 overflow-auto rounded-md bg-muted px-2 py-1.5 font-mono text-xs whitespace-pre-wrap wrap-anywhere"
       >
         {job.log}
       </pre>

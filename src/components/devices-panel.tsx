@@ -24,7 +24,7 @@ function ThisBrowser({ devices }: { devices: Device[] }) {
   const current = devices.find((device) => device.current);
 
   return (
-    <div role="group" aria-label={t.thisBrowser} className="flex flex-col gap-1 rounded-md bg-muted px-2 py-1.5 dark:bg-card">
+    <div role="group" aria-label={t.thisBrowser} className="flex flex-col gap-1 rounded-md bg-muted px-2 py-1.5">
       <p>
         <span className="text-muted-foreground">{t.thisBrowserPrefix}</span>
         <span className="font-medium break-words">{current ? current.label : t.shared}</span>
