@@ -64,6 +64,41 @@ error>` when a ping cannot be sent. Without the file the host logs `HOST_HEALTHC
 When `toodo.service` stops, nothing pings, and healthchecks.io alerts the owner after the
 checks' grace time, without Discord.
 
+## Discord
+
+This host runs Dori with Discord off. Dori talks to the owner on the chat platforms listed
+in `platforms` of `~/.dori/config.json` (`DORI_CONFIG` moves it), and the line is:
+
+```json
+"platforms": ["toodo"]
+```
+
+The Toodo chat then carries everything: owner messages, decisions and requests, lane
+reports, and the supervisor's own notices. The supervisor opens no Discord gateway and
+needs no `DORI_DISCORD_TOKEN`; it logs `DISCORD_OFF platforms=toodo` when it starts.
+`dori doctor` reports `discord` and `gateway` as off (OK) and fails `toodo chat` when the
+Toodo chat cannot be reached, since the owner then has no other way to reach Dori.
+`dori status` shows the gateway as off. The `HC_DORI_URL` check keeps working, because the
+supervisor writes `gateway-status.json` every loop whether Discord is on or off. The
+Discord server and bot are left as they are.
+
+To turn Discord back on, change that one line and replace the supervisor Worker:
+
+```json
+"platforms": ["discord", "toodo"]
+```
+
+```sh
+systemctl --user reload toodo.service
+```
+
+The supervisor reads `platforms` for Discord only when it starts: a hot reload that adds
+or drops `discord` logs `CONFIG_RELOAD_RESTART_NEEDED platforms (discord)` and changes
+nothing until the reload. Turning it back on needs the `discord` and `discordChannels`
+keys in the config and `DORI_DISCORD_TOKEN` in `~/.dori/env`, so keep them while Discord
+is off. This works only while dori still has its Discord code; once that code is removed,
+the way back is to revert that removal and run `toodo update`.
+
 ## The `toodo` Command
 
 `bun link` in the checkout's root puts `toodo` on `PATH` (in `~/.bun/bin`), next to `dori`.
