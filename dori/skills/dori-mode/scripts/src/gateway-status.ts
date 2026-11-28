@@ -33,12 +33,14 @@ export const readGatewayStatus = (stateDir: string): GatewayStatus | undefined =
   }
 };
 
-export type GatewayView = { readonly state: "live" | "no-content" | "disconnected" | "stale" | "missing"; readonly text: string };
+export type GatewayView = { readonly state: "live" | "no-content" | "disconnected" | "off" | "stale" | "missing"; readonly text: string };
 
-export const gatewayView = (status: GatewayStatus | undefined, now: number): GatewayView => {
+/** `discord` false (config platforms without discord): a fresh heartbeat is "off", while a stale or missing one still means the supervisor stopped. */
+export const gatewayView = (status: GatewayStatus | undefined, now: number, discord = true): GatewayView => {
   if (!status) return { state: "missing", text: "no gateway status file (supervisor not running, or an older build)" };
   const age = Math.max(0, Math.round((now - status.at) / 1000));
   if (now - status.at > GATEWAY_STALE_MS) return { state: "stale", text: `stale: last heartbeat ${age}s ago` };
+  if (!discord) return { state: "off", text: `Discord off (heartbeat ${age}s ago)` };
   if (!status.connected) return { state: "disconnected", text: `not connected (heartbeat ${age}s ago)` };
   if (!status.messageContent) return { state: "no-content", text: `connected without Message Content; REST fallback (heartbeat ${age}s ago)` };
   return { state: "live", text: `live, Message Content on (heartbeat ${age}s ago)` };

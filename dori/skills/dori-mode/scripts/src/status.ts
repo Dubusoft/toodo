@@ -444,7 +444,7 @@ export const collectStatus = async (d: StatusDeps): Promise<Status> => {
       issueAuthors: d.config.githubIssueAuthors,
       issueRepos: gh.issueRepos,
     },
-    gateway: gatewayView(readGatewayStatus(d.config.stateDir), now),
+    gateway: gatewayView(readGatewayStatus(d.config.stateDir), now, discordOn(d.config)),
     unacked: readUnacked(d.config.stateDir),
     unreported: readUnreported(d.config.stateDir),
     decisions: decisions.map((decision) => ({
@@ -528,7 +528,7 @@ const unitWords = (u: UnitState): string => {
 };
 const unitName = (u: UnitState): string => u.name.replace(/\.service$/, "");
 
-const GATEWAY_WORDS: Readonly<Record<string, string>> = { missing: "상태 파일 없음", stale: "응답 끊김", disconnected: "연결 안 됨", "no-content": "메시지 내용 권한 없음" };
+const GATEWAY_WORDS: Readonly<Record<string, string>> = { missing: "상태 파일 없음", stale: "응답 끊김", disconnected: "연결 안 됨", off: "꺼짐", "no-content": "메시지 내용 권한 없음" };
 const gatewayWords = (g: GatewayView): string => GATEWAY_WORDS[g.state] ?? g.state;
 /** The gateway's state with the heartbeat age its English text carries, in Korean. */
 const gatewayDetail = (g: GatewayView): string => {
@@ -598,7 +598,7 @@ const problems = (s: Status, now: number): Problem[] => {
   // hc-core is a oneshot that only starts the core (`hc server start`): enabled is all it needs to be.
   const bad = s.services.filter((u) => (u.name === LEGACY_PRESENCE ? u.active === "active" : u.enabled !== "enabled" || (u.name !== HC_CORE_UNIT && u.active !== "active")));
   for (const u of bad) out.push({ label: `${unitName(u)} ${RUN_WORDS[u.active] ?? u.active}`, line: `서비스 ${unitName(u)}: ${unitWords(u)}` });
-  if (s.gateway.state !== "live") out.push({ label: `게이트웨이 ${gatewayWords(s.gateway)}`, line: `Discord 게이트웨이: ${gatewayDetail(s.gateway)}` });
+  if (s.gateway.state !== "live" && s.gateway.state !== "off") out.push({ label: `게이트웨이 ${gatewayWords(s.gateway)}`, line: `Discord 게이트웨이: ${gatewayDetail(s.gateway)}` });
   const g = s.github;
   if (g.failures.length) out.push({ label: "GitHub 폴링 실패", line: `GitHub 폴링 실패: ${list(g.failures.map((f) => `${f.repo} ${ago(f.at, now)}`), 4, 200)}` });
   if (!g.issueAuthors.length) out.push({ label: "신뢰 이슈 작성자 없음", line: "신뢰하는 이슈 작성자 없음 (githubIssueAuthors): 새 이슈가 리드를 깨우지 않음" });
