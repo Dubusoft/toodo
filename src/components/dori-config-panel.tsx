@@ -7,6 +7,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button } from "@/components/button";
 import {
   DORI_LANGUAGE_KEY,
+  DORI_TIME_ZONE_KEY,
   type DoriConfigEdit,
   type DoriConfigEntry,
   type DoriConfigSaved,
@@ -35,33 +36,103 @@ function useSave(onSaved: (saved: DoriConfigSaved) => void) {
   });
 }
 
-function LanguageSetting({ entry }: { entry: DoriConfigEntry }) {
+/**
+ * The Dori config of the server's host, shared by every setting that shows a key of it. A setting
+ * that mounts later reads the answer already given instead of asking again: asking again would
+ * clear a refusal (a server without Dori) while it waits, and whether the Dori sections show
+ * would flip with it.
+ */
+export function useDoriConfig() {
+  return useQuery({
+    queryKey: doriConfigKey,
+    queryFn: fetchDoriConfig,
+    retry: false,
+    retryOnMount: false,
+    staleTime: Infinity,
+    refetchOnMount: false,
+  });
+}
+
+/**
+ * Whether Dori is set up on the server: true once the host has a Dori config file, false when it
+ * has none or the server runs without Dori, and null until the server answers.
+ */
+export function useDoriConnected(): boolean | null {
+  const config = useDoriConfig();
+  if (config.data) return config.data.present;
+  return config.isError ? false : null;
+}
+
+export type ChoiceOption = { readonly value: string; readonly label: string };
+
+/**
+ * One Dori config key picked from `options` and saved as soon as it is picked. A value the
+ * options do not name (set on the host) is offered as it is, so picking leaves nothing unseen.
+ */
+export function ChoiceSetting({
+  entry,
+  label,
+  description,
+  options,
+  searchable = false,
+}: {
+  entry: DoriConfigEntry;
+  label: string;
+  description: string;
+  options: readonly ChoiceOption[];
+  searchable?: boolean;
+}) {
   const m = useMessages();
   // The save itself is kept, not its text: saving the language changes the language of the text.
   const [notice, setNotice] = useState<DoriConfigSaved | null>(null);
   const save = useSave(setNotice);
-  const known: readonly string[] = LANGUAGES;
-  const options = [
-    { value: UNSET, label: m.settings.languageUnset },
-    ...LANGUAGES.map((l) => ({ value: l, label: m.settings.languageNames[l] })),
-    ...(entry.value && !known.includes(entry.value) ? [{ value: entry.value, label: entry.value }] : []),
-  ];
+  const listed = options.some((option) => option.value === entry.value);
   return (
     <div className="flex flex-col gap-1">
       <Selector
-        label={m.settings.language}
-        description={m.settings.languageDescription}
-        options={options}
+        label={label}
+        description={description}
+        options={listed ? [...options] : [...options, { value: entry.value, label: entry.value }]}
+        hasSearch={searchable}
         value={entry.value}
         isDisabled={save.isPending || entry.access !== "edit"}
         onChange={(value) => {
           setNotice(null);
-          save.mutate({ key: DORI_LANGUAGE_KEY, value: value ?? UNSET });
+          save.mutate({ key: entry.key, value: value ?? UNSET });
         }}
       />
       {notice && <p role="status" className="text-muted-foreground">{savedNotice(notice, m)}</p>}
       {save.error && <p role="alert" className="break-words text-destructive">{save.error.message}</p>}
     </div>
+  );
+}
+
+function LanguageSetting({ entry }: { entry: DoriConfigEntry }) {
+  const m = useMessages();
+  const options = [
+    { value: UNSET, label: m.settings.languageUnset },
+    ...LANGUAGES.map((l) => ({ value: l, label: m.settings.languageNames[l] })),
+  ];
+  return <ChoiceSetting entry={entry} label={m.settings.language} description={m.settings.languageDescription} options={options} />;
+}
+
+/**
+ * The Time zone setting of the General section: the time zone the app shows dates in and Dori
+ * writes times to its owner in. A server without Dori has no such setting, so nothing shows.
+ */
+export function TimeZoneSettingField() {
+  const m = useMessages();
+  const entry = useDoriConfig().data?.entries.find((e) => e.key === DORI_TIME_ZONE_KEY);
+  if (!entry) return null;
+  const zones = Intl.supportedValuesOf("timeZone").map((zone) => ({ value: zone, label: zone.replaceAll("_", " ") }));
+  return (
+    <ChoiceSetting
+      entry={entry}
+      label={m.settings.timeZone}
+      description={m.settings.timeZoneDescription}
+      options={[{ value: UNSET, label: m.settings.timeZoneUnset }, ...zones]}
+      searchable
+    />
   );
 }
 
@@ -78,7 +149,7 @@ function hint(entry: DoriConfigEntry, m: Messages): string {
  * writes to its owner. A server without Dori has no such setting, so nothing shows.
  */
 export function LanguageSettingField() {
-  const config = useQuery({ queryKey: doriConfigKey, queryFn: fetchDoriConfig, retry: false, staleTime: Infinity });
+  const config = useDoriConfig();
   const language = config.data?.entries.find((e) => e.key === DORI_LANGUAGE_KEY);
   return language ? <LanguageSetting entry={language} /> : null;
 }
@@ -136,15 +207,34 @@ function EntryRow({ entry }: { entry: DoriConfigEntry }) {
 }
 
 /**
- * The Dori config of the server's host (`~/.dori/config.json`): every key Dori reads but the
- * language, which the General section sets. It asks the server only while shown (`active`).
+ * The keys other settings show in plain words: the language and time zone in General, how Dori
+ * works in the Dori section. The raw config leaves them out.
+ */
+export const DORI_KEYS_SHOWN_ELSEWHERE: readonly string[] = [DORI_LANGUAGE_KEY, DORI_TIME_ZONE_KEY, "platforms", "autoReport", "threadCloseAfterHours"];
+
+function EntryList({ label, entries }: { label: string; entries: readonly DoriConfigEntry[] }) {
+  return (
+    <ul aria-label={label} className="flex flex-col gap-3">
+      {entries.map((entry) => (
+        <EntryRow key={entry.key} entry={entry} />
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * The Dori config of the server's host (`~/.dori/config.json`), key by key: every key Dori reads
+ * but those other settings show, with the keys only the host changes folded away. It asks the
+ * server only while shown (`active`).
  */
 export function DoriConfigPanel({ active }: { active: boolean }) {
   const m = useMessages();
   const config = useQuery({ queryKey: doriConfigKey, queryFn: fetchDoriConfig, enabled: active });
   const view = config.data;
+  const entries = view?.entries.filter((e) => !DORI_KEYS_SHOWN_ELSEWHERE.includes(e.key)) ?? [];
+  const hostOnly = entries.filter((e) => e.access !== "edit");
   return (
-    <section aria-label="Dori config" className="flex flex-col gap-4 text-sm">
+    <section aria-label={m.settings.advanced.doriConfig} className="flex flex-col gap-4 text-sm">
       {config.error && <p role="alert" className="break-words text-destructive">{config.error.message}</p>}
       {view && (
         <>
@@ -153,13 +243,15 @@ export function DoriConfigPanel({ active }: { active: boolean }) {
           </p>
           {view.error && <p role="alert" className="break-words text-destructive">{view.error}</p>}
           {!view.present && <p role="alert">{fill(m.settings.configMissing, { command: <code>dori setup</code> })}</p>}
-          <ul aria-label="Dori config keys" className="flex flex-col gap-3">
-            {view.entries
-              .filter((e) => e.key !== DORI_LANGUAGE_KEY)
-              .map((entry) => (
-                <EntryRow key={entry.key} entry={entry} />
-              ))}
-          </ul>
+          <EntryList label="Dori config keys" entries={entries.filter((e) => e.access === "edit")} />
+          {hostOnly.length > 0 && (
+            <details>
+              <summary className="cursor-pointer text-muted-foreground">{m.settings.advanced.hostOnlyKeys(hostOnly.length)}</summary>
+              <div className="pt-3">
+                <EntryList label="Dori config keys changed only on the host" entries={hostOnly} />
+              </div>
+            </details>
+          )}
         </>
       )}
     </section>

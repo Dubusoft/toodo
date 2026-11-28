@@ -9,7 +9,10 @@ import { unwrap } from "@/lib/queries";
 
 const connectedAppsKey = ["connected-apps"];
 
-/** The MCP URL chat apps connect to in public mode, or how to turn public mode on. */
+/**
+ * The MCP URL chat apps connect to in public mode, or that the server must be public first; the
+ * technical steps wait behind Show how.
+ */
 function PublicMcpUrl({ url }: { url: string | null }) {
   const m = useMessages();
   const t = m.settings.connectedApps;
@@ -26,24 +29,34 @@ function PublicMcpUrl({ url }: { url: string | null }) {
 
   if (url === null) {
     return (
-      <p className="text-muted-foreground">
-        {fill(t.publicSetup, { env: <code>TOODO_PUBLIC_URL</code>, scheme: <code>https://</code>, docs: <code>docs/server.md</code> })}
-      </p>
+      <>
+        <p className="text-muted-foreground">{t.publicSetup}</p>
+        <details>
+          <summary className="cursor-pointer text-muted-foreground">{m.settings.showHow}</summary>
+          <p className="pt-2 text-muted-foreground">
+            {fill(t.publicSetupHow, { env: <code>TOODO_PUBLIC_URL</code>, scheme: <code>https://</code>, docs: <code>docs/server.md</code> })}
+          </p>
+        </details>
+      </>
     );
   }
   return (
     <>
-      <p className="text-muted-foreground">
-        {fill(t.connector, { token: <code>web-token</code> })}
-      </p>
-      <code
-        className="overflow-x-auto break-normal rounded bg-muted px-1.5 py-1 [overflow-wrap:normal]"
-        aria-label={t.url}
-      >
-        {url}
-      </code>
+      <p className="text-muted-foreground">{t.connector}</p>
       <Button size="sm" variant="primary" className="self-start" label={t.copy} onClick={() => void copy(url)} />
       {notice && <p role="status">{notice}</p>}
+      <details>
+        <summary className="cursor-pointer text-muted-foreground">{m.settings.connections.details}</summary>
+        <div className="flex flex-col gap-2 pt-2">
+          <code
+            className="overflow-x-auto break-normal rounded bg-muted px-1.5 py-1 [overflow-wrap:normal]"
+            aria-label={t.url}
+          >
+            {url}
+          </code>
+          <p className="text-muted-foreground">{fill(t.connectorHow, { token: <code>web-token</code> })}</p>
+        </div>
+      </details>
     </>
   );
 }
@@ -109,14 +122,16 @@ function AppRow({ app }: { app: ConnectedApp }) {
   );
 }
 
-/** Chat apps such as ChatGPT and Claude that the owner approved over OAuth, and where they connect. */
-export function ConnectedAppsPanel() {
+/** Chat apps in AI app connections: ChatGPT, Claude, and others the owner approved over OAuth, and where they connect. */
+export function ChatAppsCard() {
   const m = useMessages();
   const t = m.settings.connectedApps;
   const connected = useQuery({ queryKey: connectedAppsKey, queryFn: () => unwrap(commands.listConnectedApps()) });
 
   return (
-    <section aria-label={m.settings.sections.apps} className="flex flex-col gap-2 text-sm">
+    <section aria-label={m.settings.connections.chatApps} className="flex flex-col gap-2">
+      <h4 className="font-medium">{m.settings.connections.chatApps}</h4>
+      <p className="text-muted-foreground">{m.settings.connections.chatAppsIntro}</p>
       {connected.error && (
         <p role="alert" className="break-words text-destructive">
           {connected.error.message}

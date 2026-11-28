@@ -87,8 +87,10 @@ Layout:
   - `src/components/button.tsx`: the app's `Button` and `IconButton`, the Astryx ones plus
     `changesData` (disabled while the server is unreachable; on for submit buttons) and
     `autoFocus`. Use them instead of importing the Astryx buttons directly.
-  - `src/lib/i18n.tsx` and `src/locales/`: the web app's UI language. The Language setting
-    in Settings > General (Dori's `ownerLanguage`, `src/lib/dori-config.ts`) picks it: Korean
+  - `src/lib/i18n.tsx` and `src/locales/`: the web app's UI language and time zone. The
+    Time zone setting in Settings > General (Dori's `displayTimeZone`) sets the zone the
+    shared formatters of `src/lib/timeline.ts` show dates in. The Language setting
+    in Settings > General (Dori's `ownerLanguage`, `src/lib/dori-config.ts`) picks the language: Korean
     shows `src/locales/ko/`, any other language or none shows `src/locales/en/`, and a key the
     Korean catalog lacks shows its English text. Each catalog has one module per area
     (`common`, `app`, `tasks`, `details`, `chat`, `settings`, `review`, `alerts`); `en` defines the

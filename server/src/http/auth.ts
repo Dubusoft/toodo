@@ -42,13 +42,13 @@ export function sameSecret(presented: string, token: string): boolean {
 const REJECTION_MESSAGES: Record<Surface, Record<Rejection, string>> = {
   mcp: {
     no_header:
-      "Toodo MCP: the request has no Authorization header. Send `Authorization: Bearer <MCP token>`: copy the MCP config from Settings > Agent access in the Toodo app, or use the token in `mcp-token` in the server's data directory.",
+      "Toodo MCP: the request has no Authorization header. Send `Authorization: Bearer <MCP token>`: copy the MCP config from Settings > AI app connections in the Toodo app, or use the token in `mcp-token` in the server's data directory.",
     not_bearer:
-      "Toodo MCP: the Authorization header is not `Bearer <token>`. Send `Authorization: Bearer <MCP token>` with the token alone, without quotes: copy the MCP config from Settings > Agent access in the Toodo app, or use the token in `mcp-token` in the server's data directory.",
+      "Toodo MCP: the Authorization header is not `Bearer <token>`. Send `Authorization: Bearer <MCP token>` with the token alone, without quotes: copy the MCP config from Settings > AI app connections in the Toodo app, or use the token in `mcp-token` in the server's data directory.",
     wrong_token:
-      "Toodo MCP: this server does not accept the token. It is mistyped, from before the token was replaced, or from another Toodo server, so retrying with it fails again. Copy the MCP config again from Settings > Agent access of the Toodo app that shows the instance below, or use the token in `mcp-token` in this server's data directory, then restart the agent session with it.",
+      "Toodo MCP: this server does not accept the token. It is mistyped, from before the token was replaced, or from another Toodo server, so retrying with it fails again. Copy the MCP config again from Settings > AI app connections of the Toodo app that shows the instance below, or use the token in `mcp-token` in this server's data directory, then restart the agent session with it.",
     other_surface_token:
-      "Toodo MCP: this is the web sign-in token (`web-token`), which only the web app uses. Agents send the MCP token: copy the MCP config from Settings > Agent access in the Toodo app, or use the token in `mcp-token` in the server's data directory.",
+      "Toodo MCP: this is the web sign-in token (`web-token`), which only the web app uses. Agents send the MCP token: copy the MCP config from Settings > AI app connections in the Toodo app, or use the token in `mcp-token` in the server's data directory.",
   },
   api: {
     no_header:
@@ -191,7 +191,7 @@ export function readOnlyRefused(): Response {
     403,
     new CommandError(
       "notPermitted",
-      "this device signed in read-only, so it cannot change data; make the change on a device with full access, or revoke this device under Settings > Devices and sign in again with the shared web token, choosing full access",
+      "this device signed in read-only, so it cannot change data; make the change on a device with full access, or revoke this device under Settings > Devices & sign-in and sign in again with the shared web token, choosing full access",
     ),
   );
 }

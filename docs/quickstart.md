@@ -44,7 +44,7 @@ The sign-in form asks for the access token. Print it on the server and paste it:
 cat ~/.local/share/toodo-server/web-token
 ```
 
-The browser then gets a device token of its own, which Settings > Devices lists.
+The browser then gets a device token of its own, which Settings > Devices & sign-in lists.
 
 ## 4. Create a Workspace
 

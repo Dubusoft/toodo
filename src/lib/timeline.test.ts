@@ -7,6 +7,7 @@ import {
   formatRemaining,
   formatWhen,
   reachedMilestones,
+  setDisplayTimeZone,
   waitingSeconds,
   workSegments,
 } from "@/lib/timeline";
@@ -142,6 +143,20 @@ describe("formatRemaining", () => {
 describe("formatFull", () => {
   it("prints date and time down to the minute", () => {
     expect(formatFull(new Date(2026, 0, 5, 23, 30, 45).getTime() / 1000)).toBe("Jan 5, 2026, 11:30 PM");
+  });
+
+  it("shows the time in the display time zone, and in this device's one for a zone it does not know", () => {
+    const at = Date.UTC(2026, 0, 5, 14, 30) / 1000;
+    try {
+      setDisplayTimeZone("Asia/Seoul");
+      expect(formatFull(at)).toBe("Jan 5, 2026, 11:30 PM");
+      setDisplayTimeZone("America/New_York");
+      expect(formatFull(at)).toBe("Jan 5, 2026, 9:30 AM");
+      setDisplayTimeZone("Mars/Olympus");
+      expect(formatFull(at)).toBe(new Date(at * 1000).toLocaleString("en", { dateStyle: "medium", timeStyle: "short" }));
+    } finally {
+      setDisplayTimeZone(null);
+    }
   });
 });
 

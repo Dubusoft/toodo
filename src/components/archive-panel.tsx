@@ -32,7 +32,7 @@ export function ArchivePanel() {
   const tasks = archive.data?.tasks ?? [];
 
   return (
-    <section aria-label={m.settings.sections.archive} className="flex flex-col gap-3 text-xs">
+    <section aria-label={m.settings.sections.trash} className="flex flex-col gap-3 text-sm">
       <p className="text-muted-foreground">
         {t.intro}
       </p>

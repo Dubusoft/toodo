@@ -200,7 +200,7 @@ earlier outcome. Reopening is rejected while a task that depends on it has start
 `delete_task` (or "Delete" in the app) archives the task record. It touches nothing
 outside Toodo. An archived task leaves the task lists and stops holding back its
 dependents, but keeps its history and notes, and the review report still counts it.
-Settings > Archive restores an archived workspace or task, or deletes it for good after a
+Settings > Trash restores an archived workspace or task, or deletes it for good after a
 confirmation.
 
 Only `planned` and `done` tasks can be deleted; pause an `in_progress` or `in_review`

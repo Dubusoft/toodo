@@ -60,3 +60,6 @@ export type DoriConfigStore = {
 
 /** The key the Language setting edits: the language Dori writes to its owner in. */
 export const DORI_LANGUAGE_KEY = "ownerLanguage";
+
+/** The key the Time zone setting edits: the IANA time zone the app and Dori show times in. */
+export const DORI_TIME_ZONE_KEY = "displayTimeZone";

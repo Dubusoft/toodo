@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { fill, useI18n } from "@/lib/i18n";
+import { fill, useI18n, useMessages } from "@/lib/i18n";
 import { Button } from "@/components/button";
 import type { McpServerInfo } from "@/lib/bindings";
 import { useMcpServerInfo } from "@/lib/queries";
@@ -67,7 +67,12 @@ function breakableUrl(url: string) {
   ));
 }
 
-export function AgentAccessPanel() {
+/**
+ * Coding agents in AI app connections: copy the connection settings an agent needs, and test
+ * them. The address and the token itself wait behind Show details; the token's background is in
+ * Advanced (`AgentConnectionDetails`).
+ */
+export function CodingAgentsCard() {
   const { locale, m } = useI18n();
   const t = m.settings.agentAccess;
   const info = useMcpServerInfo();
@@ -96,18 +101,11 @@ export function AgentAccessPanel() {
   const rejection = data?.lastRejection;
 
   return (
-    <section aria-label={m.settings.sections.agents} className="flex flex-col gap-2 text-sm">
-      <p className="text-muted-foreground">
-        {t.intro}
-      </p>
+    <section aria-label={m.settings.connections.codingAgents} className="flex flex-col gap-2">
+      <h4 className="font-medium">{m.settings.connections.codingAgents}</h4>
+      <p className="text-muted-foreground">{m.settings.connections.codingAgentsIntro}</p>
       {data && (
         <>
-          <code
-            className="overflow-x-auto break-normal rounded bg-muted px-1.5 py-1 [overflow-wrap:normal]"
-            aria-label={t.url}
-          >
-            {breakableUrl(data.url)}
-          </code>
           {data.error ? (
             <p role="alert" className="text-destructive">
               {t.notRunning(data.error)}
@@ -124,12 +122,6 @@ export function AgentAccessPanel() {
                 <Button
                   size="sm"
                   variant="secondary"
-                  label={t.copyToken}
-                  onClick={() => void copy(data.token ?? "", t.copiedToken)}
-                />
-                <Button
-                  size="sm"
-                  variant="secondary"
                   label={t.testButton}
                   isDisabled={test === "testing"}
                   onClick={() => void testConnection(data)}
@@ -142,14 +134,26 @@ export function AgentAccessPanel() {
               {test.message}
             </p>
           )}
-          <p className="text-muted-foreground">
-            {fill(t.tokenHelp, {
-              token: <code>web-token</code>,
-              instance: <code aria-label={t.instance}>{data.instance}</code>,
-              unauthorized: <code>401</code>,
-              serverInfo: <code>serverInfo</code>,
-            })}
-          </p>
+          <details>
+            <summary className="cursor-pointer text-muted-foreground">{m.settings.connections.details}</summary>
+            <div className="flex flex-col gap-2 pt-2">
+              <code
+                className="overflow-x-auto break-normal rounded bg-muted px-1.5 py-1 [overflow-wrap:normal]"
+                aria-label={t.url}
+              >
+                {breakableUrl(data.url)}
+              </code>
+              {data.token && !data.error && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="self-start"
+                  label={t.copyToken}
+                  onClick={() => void copy(data.token ?? "", t.copiedToken)}
+                />
+              )}
+            </div>
+          </details>
           {rejection && (
             <p aria-label={t.rejectionLabel} className="break-words text-destructive">
               {fill(t.rejected, {
@@ -165,5 +169,23 @@ export function AgentAccessPanel() {
       )}
       {notice && <p role="status">{notice}</p>}
     </section>
+  );
+}
+
+/** For Advanced: which token agents use, and the server instance a refused agent sees. */
+export function AgentConnectionDetails() {
+  const m = useMessages();
+  const t = m.settings.agentAccess;
+  const data = useMcpServerInfo().data;
+  if (!data) return null;
+  return (
+    <p className="text-muted-foreground">
+      {fill(t.tokenHelp, {
+        token: <code>web-token</code>,
+        instance: <code aria-label={t.instance}>{data.instance}</code>,
+        unauthorized: <code>401</code>,
+        serverInfo: <code>serverInfo</code>,
+      })}
+    </p>
   );
 }

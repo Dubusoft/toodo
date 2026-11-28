@@ -144,12 +144,12 @@ describe("App: workspaces and settings", () => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
     renderApp();
-    await openSettings("Agent access");
+    await openSettings("AI app connections");
 
-    const panel = await screen.findByRole("region", { name: "Agent access" });
+    const panel = await screen.findByRole("region", { name: "Coding agents" });
     expect(await within(panel).findByLabelText("MCP server URL")).toHaveTextContent("http://127.0.0.1:47615/mcp");
-    fireEvent.click(within(panel).getByRole("button", { name: "Copy MCP config" }));
-    expect(await within(panel).findByText("Copied the MCP config.")).toBeInTheDocument();
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy connection settings" }));
+    expect(await within(panel).findByText("Copied the connection settings.")).toBeInTheDocument();
     expect(JSON.parse(writeText.mock.calls[0][0] as string)).toEqual({
       mcpServers: {
         toodo: {
@@ -179,11 +179,10 @@ describe("App: workspaces and settings", () => {
     onTestFinished(() => void vi.unstubAllGlobals());
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
     renderApp();
-    await openSettings("Agent access");
+    const dialog = await openSettings("AI app connections");
 
-    const panel = await screen.findByRole("region", { name: "Agent access" });
-    expect(await within(panel).findByLabelText("Server instance")).toHaveTextContent("0123456789ab");
-    expect(within(panel).getByLabelText("Last rejected agent request")).toHaveTextContent(
+    const panel = await screen.findByRole("region", { name: "Coding agents" });
+    expect(await within(panel).findByLabelText("Last rejected agent request")).toHaveTextContent(
       "Last rejected agent request 2 min. ago: a token this server does not accept (old, mistyped, or another server's) (3 since the server started).",
     );
     expect(within(panel).getByRole("button", { name: "Copy MCP token for agents" })).toBeInTheDocument();
@@ -191,6 +190,9 @@ describe("App: workspaces and settings", () => {
     expect(await within(panel).findByRole("status", { name: "Connection test" })).toHaveTextContent(
       "Connected: instance 0123456789ab accepts this token.",
     );
+    // Which instance agents reach is a detail for whoever runs the server, under Advanced.
+    fireEvent.click(within(dialog).getByRole("tab", { name: "Advanced" }));
+    expect(within(screen.getByRole("region", { name: "Advanced" })).getByLabelText("Server instance")).toHaveTextContent("0123456789ab");
     const [path, init] = fetch.mock.calls[0];
     expect(path).toBe("/mcp");
     expect(JSON.parse(init?.body as string)).toMatchObject({ method: "initialize" });
@@ -206,14 +208,14 @@ describe("App: workspaces and settings", () => {
     });
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
     renderApp();
-    await openSettings("Agent access");
+    await openSettings("AI app connections");
 
-    const panel = await screen.findByRole("region", { name: "Agent access" });
+    const panel = await screen.findByRole("region", { name: "Coding agents" });
     expect(await within(panel).findByRole("alert")).toHaveTextContent("address in use");
-    expect(within(panel).queryByRole("button", { name: "Copy MCP config" })).not.toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "Copy connection settings" })).not.toBeInTheDocument();
   });
 
-  it("flags a failed automatic backup on the Settings button and the Backups tab", async () => {
+  it("flags a failed automatic backup on the Settings button and the Backup & restore tab", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
     mocked.getBackupStatus.mockResolvedValue({ lastFailure: { at: 1_791_970_205, message: "file error: disk full" } });
     renderApp();
@@ -221,14 +223,14 @@ describe("App: workspaces and settings", () => {
     const settings = await screen.findByRole("button", { name: /^Settings.*Backup failed$/ });
     fireEvent.click(settings);
     const dialog = screen.getByRole("dialog", { name: "Settings" });
-    expect(within(dialog).getByRole("tab", { name: /^Backups.*Backup failed/ })).toBeInTheDocument();
+    expect(within(dialog).getByRole("tab", { name: /^Backup & restore.*Backup failed/ })).toBeInTheDocument();
   });
 
   it("groups the settings in a dialog that Escape and a click beside it close", async () => {
     mocked.listWorkspaces.mockResolvedValue({ status: "ok", data: [] });
     renderApp();
     const settings = await screen.findByRole("button", { name: /^Settings/ });
-    expect(screen.queryByRole("region", { name: "Backups" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Backup & restore" })).not.toBeInTheDocument();
 
     fireEvent.click(settings);
     const dialog = screen.getByRole("dialog", { name: "Settings" });
@@ -237,16 +239,22 @@ describe("App: workspaces and settings", () => {
     expect(general).toHaveAttribute("aria-selected", "true");
     expect(general).toHaveFocus();
     expect(within(dialog).getByRole("group", { name: "Theme" })).toBeInTheDocument();
-    expect(within(dialog).getByRole("tab", { name: "Backups" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("tab", { name: "Backup & restore" })).toBeInTheDocument();
 
     fireEvent.keyDown(general, { key: "ArrowDown" });
-    const agents = within(dialog).getByRole("tab", { name: "Agent access" });
-    expect(agents).toHaveAttribute("aria-selected", "true");
-    expect(agents).toHaveFocus();
-    expect(within(dialog).getByRole("region", { name: "Agent access" })).toBeVisible();
+    const notifications = within(dialog).getByRole("tab", { name: /^Notifications/ });
+    expect(notifications).toHaveAttribute("aria-selected", "true");
+    expect(notifications).toHaveFocus();
+    expect(within(dialog).getByRole("region", { name: "Notifications" })).toBeVisible();
     expect(within(dialog).queryByRole("region", { name: "General" })).not.toBeInTheDocument();
 
-    fireEvent.keyDown(agents, { key: "Escape" });
+    // Advanced is the last section; End reaches it.
+    fireEvent.keyDown(notifications, { key: "End" });
+    const advanced = within(dialog).getByRole("tab", { name: "Advanced" });
+    expect(advanced).toHaveAttribute("aria-selected", "true");
+    expect(advanced).toHaveFocus();
+
+    fireEvent.keyDown(advanced, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument();
     expect(settings).toHaveFocus();
 
@@ -260,14 +268,20 @@ describe("App: workspaces and settings", () => {
     mocked.checkUpdate.mockResolvedValue({ current: "1.2.3", channel: "latest", latest: "1.3.0", newer: true, error: null });
     renderApp();
     fireEvent.click(await screen.findByRole("button", { name: /^Settings/ }));
-    const general = within(screen.getByRole("dialog", { name: "Settings" })).getByRole("region", { name: "General" });
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    const general = within(dialog).getByRole("region", { name: "General" });
     // Buttons carry live regions of their own, so the update notice is the status with text.
     await waitFor(() =>
       expect(within(general).getAllByRole("status").filter((status) => status.textContent !== "")).toEqual([
-        expect.objectContaining({
-          textContent: "v1.3.0 is available on the latest channel. Update the server with toodo update.",
-        }),
+        expect.objectContaining({ textContent: "Toodo v1.3.0 is available" }),
       ]),
     );
+    fireEvent.click(within(general).getByRole("button", { name: "How to update" }));
+    expect(within(dialog).getByRole("tab", { name: "About" })).toHaveAttribute("aria-selected", "true");
+    const about = within(dialog).getByRole("region", { name: "About" });
+    expect(within(about).getAllByRole("status").filter((status) => status.textContent !== "")).toEqual([
+      expect.objectContaining({ textContent: "v1.3.0 is available on the latest channel." }),
+    ]);
+    expect(about).toHaveTextContent("toodo update");
   });
 });

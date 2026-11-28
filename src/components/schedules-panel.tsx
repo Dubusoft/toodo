@@ -23,7 +23,7 @@ import type {
 } from "@/lib/supervisor-schedules";
 import { formatFull, formatWhen } from "@/lib/timeline";
 import type { Messages } from "@/locales/en";
-import { useSupervisorNotice } from "@/web/host-status";
+import { supervisorDown, useHostSupervisor } from "@/web/host-status";
 import { useChangeSchedule, useScheduledJobs } from "@/web/supervisor-schedules";
 
 const seconds = (ms: number): number => Math.floor(ms / 1000);
@@ -329,6 +329,16 @@ function Job({
 
 type Action = "text" | "command";
 
+/**
+ * The event kind a job sends when none is typed, made from its name (`gmail-digest` sends
+ * `GMAIL_DIGEST`) in the shape Dori accepts: a capital letter, then capitals, digits, or underscores.
+ */
+export function kindFromName(name: string): string {
+  const kind = name.trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (kind === "") return "";
+  return (/^[A-Z]/.test(kind) ? kind : `JOB_${kind}`).slice(0, 41);
+}
+
 function AddJob({
   zone,
   locale,
@@ -348,11 +358,12 @@ function AddJob({
   const [kind, setKind] = useState("");
   const [description, setDescription] = useState("");
   const [draft, setDraft] = useState(() => draftOf(undefined, zone));
-  const [action, setAction] = useState<Action>("command");
+  const [action, setAction] = useState<Action>("text");
   const [body, setBody] = useState("");
   const [cwd, setCwd] = useState("");
   const [catchUp, setCatchUp] = useState<ScheduleCatchUp>("once");
   const saved = draftTiming(draft, zone);
+  const eventKind = kind.trim() || kindFromName(name);
   function submit(event: FormEvent) {
     event.preventDefault();
     if (saved === null) return;
@@ -360,7 +371,7 @@ function AddJob({
       ...saved.timing,
       tz: saved.tz,
       name: name.trim(),
-      kind: kind.trim(),
+      kind: eventKind,
       ...(description.trim() ? { description: description.trim() } : {}),
       ...(action === "text" ? { text: body } : { command: body, ...(cwd.trim() ? { cwd: cwd.trim() } : {}) }),
       catchUp,
@@ -369,27 +380,40 @@ function AddJob({
   return (
     <form aria-label={t.addForm} className="flex flex-col gap-2 rounded-md border p-3" onSubmit={submit}>
       <TextInput size="sm" label={t.name} description={t.nameHint} hasSpellCheck={false} value={name} onChange={setName} hasAutoFocus />
-      <TextInput size="sm" label={t.eventKind} description={t.eventKindHint} hasSpellCheck={false} value={kind} onChange={setKind} />
       <TextInput size="sm" label={t.description} description={t.descriptionHint} value={description} onChange={setDescription} />
       <ScheduleFields draft={draft} onChange={setDraft} zone={zone} locale={locale} />
-      <Selector
-        size="sm"
-        label={t.action}
-        options={[
-          { value: "command", label: t.runCommand },
-          { value: "text", label: t.sendEvent },
-        ]}
-        value={action}
-        onChange={(value) => setAction(value as Action)}
-      />
-      {action === "command" ? (
-        <>
-          <TextInput size="sm" label={t.command} description={t.commandHint} hasSpellCheck={false} value={body} onChange={setBody} />
-          <TextInput size="sm" label={t.directory} description={t.directoryHint} hasSpellCheck={false} value={cwd} onChange={setCwd} />
-        </>
-      ) : (
-        <TextInput size="sm" label={t.eventText} value={body} onChange={setBody} />
-      )}
+      {action === "text" && <TextInput size="sm" label={t.eventText} description={t.eventTextHint} value={body} onChange={setBody} />}
+      {/* The event's kind and running a command on the host are for whoever runs Dori. */}
+      <details>
+        <summary className="cursor-pointer text-muted-foreground">{t.moreOptions}</summary>
+        <div className="flex flex-col gap-2 pt-2">
+          <TextInput
+            size="sm"
+            label={t.eventKind}
+            description={t.eventKindHint}
+            placeholder={kindFromName(name)}
+            hasSpellCheck={false}
+            value={kind}
+            onChange={setKind}
+          />
+          <Selector
+            size="sm"
+            label={t.action}
+            options={[
+              { value: "text", label: t.sendEvent },
+              { value: "command", label: t.runCommand },
+            ]}
+            value={action}
+            onChange={(value) => setAction(value as Action)}
+          />
+          {action === "command" && (
+            <>
+              <TextInput size="sm" label={t.command} description={t.commandHint} hasSpellCheck={false} value={body} onChange={setBody} />
+              <TextInput size="sm" label={t.directory} description={t.directoryHint} hasSpellCheck={false} value={cwd} onChange={setCwd} />
+            </>
+          )}
+        </div>
+      </details>
       <Selector
         size="sm"
         label={t.missed}
@@ -408,7 +432,7 @@ function AddJob({
           variant="primary"
           type="submit"
           label={busy ? t.adding : t.addJob}
-          isDisabled={busy || !name.trim() || !kind.trim() || saved === null || !body.trim()}
+          isDisabled={busy || !name.trim() || !eventKind || saved === null || !body.trim()}
         />
         <Button size="sm" variant="ghost" label={m.common.cancel} onClick={onCancel} isDisabled={busy} />
       </div>
@@ -428,7 +452,7 @@ export function SchedulesPanel({ active }: { active: boolean }) {
   const t = m.settings.schedules;
   const jobs = useScheduledJobs(active);
   const mutation = useChangeSchedule();
-  const down = useSupervisorNotice(active);
+  const down = supervisorDown(useHostSupervisor(active));
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -442,29 +466,25 @@ export function SchedulesPanel({ active }: { active: boolean }) {
     });
   }
 
-  // `down` says why the supervisor cannot list the jobs, so its refusal is not repeated.
-  const error = mutation.error ?? (down === null ? jobs.error : null);
+  // While Dori is down the Dori section's status says why, so the supervisor's refusal is not repeated.
+  const error = mutation.error ?? (down ? null : jobs.error);
   const data = jobs.data;
   return (
-    <section aria-label={m.settings.sections.schedules} className="flex flex-col gap-3 text-sm">
+    <section aria-label={t.title} className="flex flex-col gap-3 text-sm">
       <p className="text-muted-foreground">{t.intro}</p>
       {notice !== null && (
-        <p role="status" className="text-xs text-muted-foreground">
+        <p role="status" className="text-muted-foreground">
           {notice}
         </p>
       )}
-      {down !== null && (
-        <p role="alert" className="break-words text-destructive">
-          {down}
-        </p>
-      )}
+      {down && <p className="text-muted-foreground">{t.unavailable}</p>}
       {error && (
-        <p role="alert" className="text-xs break-words text-destructive">
+        <p role="alert" className="break-words text-destructive">
           {error.message}
         </p>
       )}
       {data === undefined ? (
-        down === null && !jobs.error && <p className="text-muted-foreground">{t.loading}</p>
+        !down && !jobs.error && <p className="text-muted-foreground">{t.loading}</p>
       ) : data.jobs.length === 0 ? (
         <p className="text-muted-foreground">{t.empty}</p>
       ) : (

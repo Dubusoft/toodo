@@ -41,7 +41,7 @@ function BackupFailureAlert() {
   const failure = status.data?.lastFailure;
   if (!failure) return null;
   return (
-    <p role="alert" aria-label={t.autoFailed} className="text-xs break-words text-destructive">
+    <p role="alert" aria-label={t.autoFailed} className="break-words text-destructive">
       {fill(t.failure, { at: <time dateTime={new Date(failure.at * 1000).toISOString()} title={formatFull(failure.at, locale)}>{formatWhen(failure.at, undefined, locale, m)}</time>, message: failure.message })}
     </p>
   );
@@ -104,7 +104,7 @@ export function BackupPanel() {
     downloadExport.error ?? downloadBackup.error ?? restoreBackup.error ?? uploadRestore.error ?? backups.error;
 
   return (
-    <section aria-label={m.settings.sections.backups} className="flex flex-col gap-2">
+    <section aria-label={m.settings.sections.backups} className="flex flex-col gap-2 text-sm">
       <div className="flex gap-1">
         <Button
           size="sm"
@@ -117,7 +117,7 @@ export function BackupPanel() {
       </div>
       {confirming && (
         <div role="alertdialog" aria-label={t.confirm} className="flex flex-col gap-1 rounded-md border border-destructive/40 p-2">
-          <p className="text-xs break-words">
+          <p className="break-words">
             {fill(t.replacePrompt, { name: <span className="font-medium">{sourceName(confirming)}</span> })}
           </p>
           <div className="flex gap-1">
@@ -133,21 +133,21 @@ export function BackupPanel() {
         </div>
       )}
       {notice && (
-        <p role="status" className="text-xs break-words text-muted-foreground">
+        <p role="status" className="break-words text-muted-foreground">
           {notice}
         </p>
       )}
       {error && (
-        <p role="alert" className="text-xs break-words text-destructive">
+        <p role="alert" className="break-words text-destructive">
           {error.message}
         </p>
       )}
       <BackupFailureAlert />
       <AutoBackupSettings />
       <ul aria-label={t.list} className="flex flex-col divide-y">
-        {backups.data?.length === 0 && <li className="text-xs text-muted-foreground">{t.empty}</li>}
+        {backups.data?.length === 0 && <li className="text-muted-foreground">{t.empty}</li>}
         {backups.data?.map((backup) => (
-          <li key={backup.path} className="flex flex-col gap-1 py-1.5 text-xs first:pt-0" title={backup.path}>
+          <li key={backup.path} className="flex flex-col gap-1 py-1.5 first:pt-0" title={backup.path}>
             <span className="flex flex-col">
               <time className="font-medium" dateTime={new Date(backup.createdAt * 1000).toISOString()}>
                 {formatFull(backup.createdAt, locale)}
@@ -211,7 +211,7 @@ function AutoBackupForm({ initial }: { initial: BackupSettings }) {
   }
 
   return (
-    <form onSubmit={submit} aria-label={t.auto} className="flex flex-col gap-1 text-xs">
+    <form onSubmit={submit} aria-label={t.auto} className="flex flex-col gap-1">
       <CheckboxInput size="sm" label={t.autoToggle} value={enabled} onChange={setEnabled} />
       <div className="flex items-center gap-2">
         {fill(t.intervalField, { input: (
@@ -245,15 +245,19 @@ function AutoBackupForm({ initial }: { initial: BackupSettings }) {
           />
         ) })}
       </div>
-      <TextInput
-        size="sm"
-        label={t.directory}
-        description={t.directoryHint}
-        placeholder={t.directoryPlaceholder}
-        hasSpellCheck={false}
-        value={directory}
-        onChange={setDirectory}
-      />
+      {/* Where the server writes the backups is for whoever runs the server, so it waits behind a disclosure. */}
+      <details open={Boolean(initial.directory)}>
+        <summary className="cursor-pointer text-muted-foreground">{t.moreOptions}</summary>
+        <TextInput
+          size="sm"
+          label={t.directory}
+          description={t.directoryHint}
+          placeholder={t.directoryPlaceholder}
+          hasSpellCheck={false}
+          value={directory}
+          onChange={setDirectory}
+        />
+      </details>
       {save.isError && (
         <p role="alert" className="text-destructive">
           {save.error.message}

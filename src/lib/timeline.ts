@@ -14,6 +14,26 @@ export function formatDate(at: Timestamp): string {
 
 const WEEK_SECONDS = 7 * 24 * 3600;
 
+/** The IANA time zone `formatWhen` and `formatFull` show dates in; undefined is this device's. */
+let displayTimeZone: string | undefined;
+
+/**
+ * Shows dates in `zone` from now on: the Time zone setting (Dori's `displayTimeZone`). A zone
+ * this browser does not know, or none, leaves dates in this device's time zone.
+ */
+export function setDisplayTimeZone(zone: string | null | undefined): void {
+  displayTimeZone = zone && knownTimeZone(zone) ? zone : undefined;
+}
+
+function knownTimeZone(zone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The one way the app shows a moment: relative within 7 days ("5 min. ago"), a short date
  * ("Oct 12", with the year when it is not this one) otherwise. Never shows seconds; pair it
@@ -30,7 +50,7 @@ export function formatWhen(at: Timestamp, now: Timestamp = Date.now() / 1000, lo
   }
   const date = new Date(at * 1000);
   const sameYear = date.getFullYear() === new Date(now * 1000).getFullYear();
-  return date.toLocaleDateString(locale, { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
+  return date.toLocaleDateString(locale, { month: "short", day: "numeric", timeZone: displayTimeZone, ...(sameYear ? {} : { year: "numeric" }) });
 }
 
 /**
@@ -52,7 +72,7 @@ export function formatRemaining(at: Timestamp, now: Timestamp = Date.now() / 100
 
 /** The full local date and time of `at` without seconds, for tooltips and detail views. */
 export function formatFull(at: Timestamp, locale: Locale = "en"): string {
-  return new Date(at * 1000).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
+  return new Date(at * 1000).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short", timeZone: displayTimeZone });
 }
 
 export type WorkState = "in_progress" | "in_review" | "paused";
