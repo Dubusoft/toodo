@@ -608,7 +608,14 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
           </p>
         ) : messages.length === 0 && outgoing.length === 0 && !typing ? (
           <p className="m-auto max-w-64 text-center text-sm text-muted-foreground">
-            {chat.isPending ? m.chat.loading : m.chat.empty}
+            {chat.isPending ? (
+              m.chat.loading
+            ) : (
+              <>
+                <span className="block">{m.chat.empty}</span>
+                <span className="block">{m.chat.emptyHint}</span>
+              </>
+            )}
           </p>
         ) : (
           // New messages start at the bottom, as in other chats.
