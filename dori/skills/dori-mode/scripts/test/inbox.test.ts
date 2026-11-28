@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 
 import { defaultConfig, deliveryConfigError, loadConfig } from "../src/config.ts";
-import { checklistLine, EVENT_LOG, InboxError, readCarried, readCursorFile, take, takeCursor, takeOutput, takesDir, unreadAfterAck, writeCursorFile } from "../src/inbox.ts";
+import { checklistLine, EVENT_LOG, InboxError, readCursorFile, take, takeCursor, takeOutput, takesDir, writeCursorFile } from "../src/inbox.ts";
 import { SQLITE_FILE, SqliteStore } from "../src/store.ts";
 import { Supervisor } from "../src/supervise.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
@@ -83,7 +83,7 @@ test("the supervisor consumes take receipts in every mode: cursor file first, th
   await supervisor.flush();
   expect(readCursorFile(s.dir)).toBe(0);
   const taken = take(s.dir, { maxBytes: 16_384, now: NOW });
-  supervisor.ackTick(60_000);
+  await supervisor.reportTick();
   expect(readCursorFile(s.dir)).toBe(taken.offset);
   expect(receipts(s.dir)).toEqual([]);
 });
@@ -159,112 +159,42 @@ test("when no line has meta the take output is byte-identical to the ungrouped f
 });
 
 test("checklistLine: owner chat plus an outcome event puts one checklist line first, deduping lane keys", () => {
-  expect(checklistLine(["e1\tINBOUND discord 1 hi", "e2\tLANE_DONE_CLAIMED alpha ok", "e3\tVISITOR x hello", "e4\tLANE_CLOSED alpha", "e5\tCI_MERGED pr=1 lane=beta"]))
+  expect(checklistLine(["e1\tINBOUND toodo 1 hi", "e2\tLANE_DONE_CLAIMED alpha ok", "e3\tINBOUND toodo 1 again", "e4\tLANE_CLOSED alpha", "e5\tCI_MERGED pr=1 lane=beta"]))
     .toBe("checklist:e1\tCHECKLIST this batch owes: reply to 2 owner message(s); report lane alpha, beta (dori reported <key> --text ...)");
 });
 
 test("checklistLine: owner-only and outcome-only batches get none", () => {
-  expect(checklistLine(["e1\tINBOUND discord 1 hi", "e2\tWAIT_DONE x"])).toBeUndefined();
+  expect(checklistLine(["e1\tINBOUND toodo 1 hi", "e2\tWAIT_DONE x"])).toBeUndefined();
   expect(checklistLine(["e1\tLANE_CLOSED alpha", "unreported:beta\tUNREPORTED beta since now: run it"])).toBeUndefined();
   expect(checklistLine([])).toBeUndefined();
 });
 
 test("checklistLine: an UNREPORTED reminder plus owner chat gives the checklist", () => {
-  expect(checklistLine(["e9\tINBOUND discord 2 yo", "unreported:gamma\tUNREPORTED gamma since 2026: run dori reported gamma --text TEXT"]))
+  expect(checklistLine(["e9\tINBOUND toodo 2 yo", "unreported:gamma\tUNREPORTED gamma since 2026: run dori reported gamma --text TEXT"]))
     .toBe("checklist:e9\tCHECKLIST this batch owes: reply to 1 owner message(s); report lane gamma (dori reported <key> --text ...)");
 });
 
-test("take prints owner messages and edits first, before lane groups and ## other, without changing the receipt order", () => {
+test("take prints owner messages first, before lane groups and ## other, without changing the receipt order", () => {
   const dir = state();
   log(dir, metaLine("a", "LANE_REPORT alpha question one?", { lane: "alpha", cwd: "/repo/a" })
     + line("n", "WAIT_DONE no meta")
-    + line("discord:1:2", "INBOUND discord 1 hello")
-    + line("discord:1:2:edit:x", "INBOUND_EDIT discord 1 hello there")
-    + line("v", "VISITOR someone hi"));
+    + line("toodo:chat:2", "INBOUND toodo 1 hello")
+    + line("toodo:chat:3", "INBOUND toodo 1 hello there"));
   const result = take(dir, { maxBytes: 16_384, now: NOW });
   expect(takeOutput(result)).toEqual([
     "## owner",
-    "discord:1:2\tINBOUND discord 1 hello",
-    "discord:1:2:edit:x\tINBOUND_EDIT discord 1 hello there",
-    "v\tVISITOR someone hi",
+    "toodo:chat:2\tINBOUND toodo 1 hello",
+    "toodo:chat:3\tINBOUND toodo 1 hello there",
     "## lane alpha  cwd /repo/a",
     "a\tLANE_REPORT alpha question one?",
     "## other",
     "n\tWAIT_DONE no meta",
   ]);
-  expect(result.events.map((e) => e.id)).toEqual(["a", "n", "discord:1:2", "discord:1:2:edit:x", "v"]);
+  expect(result.events.map((e) => e.id)).toEqual(["a", "n", "toodo:chat:2", "toodo:chat:3"]);
 });
 
 test("without any meta, owner lines still lead the ungrouped output", () => {
   const dir = state();
-  log(dir, line("n", "WAIT_DONE x") + line("discord:1:2", "INBOUND discord 1 hi"));
-  expect(takeOutput(take(dir, { maxBytes: 16_384, now: NOW, peek: true }))).toEqual(["discord:1:2\tINBOUND discord 1 hi", "n\tWAIT_DONE x"]);
-});
-
-test("checklistLine counts INBOUND_EDIT and carried owner notices, once per owner message", () => {
-  expect(checklistLine(["e1\tINBOUND_EDIT discord 1 fixed", "e2\tLANE_CLOSED alpha"]))
-    .toBe("checklist:e1\tCHECKLIST this batch owes: reply to 1 owner message(s); report lane alpha (dori reported <key> --text ...)");
-  expect(checklistLine(["unfinished:discord:1:2\tUNFINISHED discord:1:2 taken and not handled (dori ack it unless acked, then handle it): INBOUND discord 1 hi", "e2\tLANE_CLOSED alpha"]))
-    .toBe("checklist:unfinished:discord:1:2\tCHECKLIST this batch owes: reply to 1 owner message(s); report lane alpha (dori reported <key> --text ...)");
-  expect(checklistLine(["discord:1:2\tINBOUND discord 1 hi", "unfinished:discord:1:2\tUNFINISHED discord:1:2 taken and not handled (x): INBOUND discord 1 hi", "e2\tLANE_CLOSED alpha"]))
-    .toContain("reply to 1 owner message(s)");
-});
-
-test("unreadAfterAck lists same-channel owner events past the cursor, leaving out only the acked original, and moves nothing", () => {
-  const dir = state();
-  log(dir, line("discord:11:20", "INBOUND 11 20 owner earlier, already taken"));
-  writeCursorFile(dir, Buffer.byteLength(line("discord:11:20", "INBOUND 11 20 owner earlier, already taken")));
-  log(dir, line("discord:11:22", "INBOUND 11 22 owner build the thing")
-    + line("discord:11:22:edit:2026-11-05T00:00:00Z", "INBOUND_EDIT 11 22 owner (edited) build the other thing")
-    + line("discord:11:23", "INBOUND 11 23 owner   and\n  the docs too")
-    + line("discord:11:22:delete", "INBOUND_DELETE 11 22 (deleted)")
-    + line("discord:99:5", "INBOUND 99 5 owner another channel")
-    + line("discord:11:24", "VISITOR 11 24 guest (not the owner) hi")
-    + line("w1", "WAIT_DONE k note"));
-  const before = readCursorFile(dir);
-  expect(unreadAfterAck(dir, [{ channel: "11", message: "22" }])).toEqual([
-    "UNREAD 11 INBOUND_EDIT discord:11:22:edit:2026-11-05T00:00:00Z owner (edited) build the other thing",
-    "UNREAD 11 INBOUND discord:11:23 owner and the docs too",
-    "UNREAD 11 INBOUND_DELETE discord:11:22:delete (deleted)",
-  ]);
-  // Read only: no take receipt, no carried owner text, the same cursor; the next take still prints everything.
-  expect(receipts(dir)).toEqual([]);
-  expect(readCarried(dir)).toEqual([]);
-  expect(readCursorFile(dir)).toBe(before);
-  expect(take(dir, { maxBytes: 16_384, now: NOW }).events.map((event) => event.id)).toContain("discord:11:22");
-});
-
-test("unreadAfterAck caps each channel and counts the overflow, prints each channel once, and says none when nothing waits", () => {
-  const dir = state();
-  log(dir, Array.from({ length: 7 }, (_, i) => line(`discord:11:${30 + i}`, `INBOUND 11 ${30 + i} owner m${i}`)).join("")
-    + line("discord:44:1", "INBOUND 44 1 owner acked one"));
-  expect(unreadAfterAck(dir, [{ channel: "11", message: "30" }, { channel: "44", message: "1" }, { channel: "11", message: "31" }], 3)).toEqual([
-    "UNREAD 11 INBOUND discord:11:32 owner m2",
-    "UNREAD 11 INBOUND discord:11:33 owner m3",
-    "UNREAD 11 INBOUND discord:11:34 owner m4",
-    "UNREAD_MORE 11 2",
-    "UNREAD_NONE 44",
-  ]);
-});
-
-test("unreadAfterAck keeps the channel name token last, outside the cut preview, and on UNREAD_MORE", () => {
-  const dir = state();
-  log(dir, line("discord:11:2", `INBOUND 11 2 owner ${"x".repeat(400)} channel=#일반/작업`)
-    + line("discord:11:3", "INBOUND 11 3 owner short channel=#일반/작업"));
-  const [first, more] = unreadAfterAck(dir, [{ channel: "11", message: "1" }], 1);
-  expect(first).toEndWith("x... channel=#일반/작업");
-  expect(more).toBe("UNREAD_MORE 11 1 channel=#일반/작업");
-});
-
-test("unreadAfterAck cuts a long preview and reports UNREAD_UNAVAILABLE instead of throwing without a cursor or on a read failure", () => {
-  const dir = state();
-  log(dir, line("discord:11:2", `INBOUND 11 2 owner ${"x".repeat(400)}`));
-  const [first] = unreadAfterAck(dir, [{ channel: "11", message: "1" }]);
-  expect(first?.endsWith("...")).toBe(true);
-  expect(first?.length).toBeLessThan(260);
-  expect(unreadAfterAck(state(null), [{ channel: "11", message: "1" }])[0]).toStartWith("UNREAD_UNAVAILABLE ");
-  const broken = state();
-  mkdirSync(join(broken, EVENT_LOG));
-  writeFileSync(join(broken, "inbox-cursor.json"), JSON.stringify({ offset: 0 }));
-  expect(unreadAfterAck(broken, [{ channel: "11", message: "1" }])[0]).toStartWith("UNREAD_UNAVAILABLE ");
+  log(dir, line("n", "WAIT_DONE x") + line("toodo:chat:2", "INBOUND toodo 1 hi"));
+  expect(takeOutput(take(dir, { maxBytes: 16_384, now: NOW, peek: true }))).toEqual(["toodo:chat:2\tINBOUND toodo 1 hi", "n\tWAIT_DONE x"]);
 });

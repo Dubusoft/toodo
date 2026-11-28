@@ -2,8 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { recordHandled } from "../src/ack.ts";
-import { readCarried, takeAwaitingReminders, writeCarried } from "../src/inbox.ts";
+import { readCarried } from "../src/inbox.ts";
 import type { Runner } from "../src/run.ts";
 import { hasColumn, PRE_SQLITE_FILE, SCHEMA_VERSION, SQLITE_FILE, SqliteStore, StoreError } from "../src/store.ts";
 import { convertJsonStore } from "../src/store-import.ts";
@@ -131,7 +130,7 @@ test("a delivery whose store row was lost is recovered from the log tail, not ap
   check.close();
 });
 
-test("the conversion carries every journal field and reads it back unchanged", () => {
+test("conversion retains live journal fields and ignores retired tracking", () => {
   const state = withState();
   cleanups.push(state.done);
   // Given a journal with every mapped field set, and one event from before enqueue times existed.
@@ -145,7 +144,7 @@ test("the conversion carries every journal field and reads it back unchanged", (
     noticed: ["discord:11:2"],
     closedOwners: ["discord:11:0", "discord:11:0:edit:1"],
     outbox: [{ id: "lead-model:s", text: "switched", attempts: 2, retryAt: T0 + 60_000 }],
-    restart: { session: "s-1", events: [{ id: "old", line: "LANE_REPORT old" }], offset: 12, phase: "submitted", strikes: 1, unconfirmed: 2, reason: "stuck", request: { id: "r", at: T0, models: [{ model: "a/b" }] }, force: true },
+    restart: { session: "s-1", events: [{ id: "old", line: "LANE_REPORT old" }], offset: 12, phase: "submitted" as const, strikes: 1, unconfirmed: 2, reason: "stuck", request: { id: "r", at: T0, models: [{ model: "a/b" }] }, force: true as const },
     models: [{ model: "a/b", thinking: "high" }], leadBusySince: T0 + 2, leadScreen: { hash: "ab", since: T0 },
   };
   writeFileSync(join(state.dir, "supervisor.json"), JSON.stringify(journal));
@@ -154,7 +153,8 @@ test("the conversion carries every journal field and reads it back unchanged", (
   expect(convertJsonStore(state.dir, T0 + 100)).toBe(true);
   // Then the read-back equals the source, the stamped time is flagged, and readers outside the supervisor see the store.
   const store = new SqliteStore(join(state.dir, SQLITE_FILE));
-  expect(store.read(true)).toEqual(journal as never);
+  const { events, models, outbox, restart } = journal;
+  expect(store.read(true)).toEqual({ events, models, outbox, restart });
   expect(store.read(false).events[0]).toEqual({ id: "old", line: "LANE_REPORT old", at: T0 + 100 });
   expect(store.deliveredIds()).toEqual(new Set(["old"]));
   expect(store.database.query("SELECT id FROM events WHERE at_synthetic = 1").all()).toEqual([{ id: "old" }]);
@@ -186,28 +186,27 @@ test("a supervisor refuses a state dir whose supervisor.json is not converted ye
   f.open();
 });
 
-test("a version 8 database (no awaiting columns) is read by take and handled before the supervisor migrates it, then migrated keeping its rows", async () => {
+test("opening an older store ignores owner rows and reminders while retaining announcements and held launches", async () => {
   const state = withState();
   cleanups.push(state.done);
   const path = join(state.dir, SQLITE_FILE);
   // Given a version 8 database holding one acked owner message, and its carried UNFINISHED reminder.
   new SqliteStore(path, { create: true }).close();
   const raw = new (await import("bun:sqlite")).Database(path);
-  raw.exec(`ALTER TABLE owner_messages DROP COLUMN awaiting_owner_at; ALTER TABLE owner_messages DROP COLUMN awaiting_note;
+  raw.exec(`CREATE TABLE owner_messages (id TEXT PRIMARY KEY, pos INTEGER, lead TEXT, generation INTEGER, state TEXT, acked_at INTEGER, tasks INTEGER);
+    INSERT INTO outbox (id, pos, text) VALUES ('lead-model:s', 1, 'switched');
     UPDATE meta SET value = '8' WHERE key = 'schema_version';
     INSERT INTO meta (key, value) VALUES ('journal', '1');
     INSERT INTO owner_messages (id, pos, lead, generation, state, acked_at, tasks) VALUES ('discord:11:22', 1, 'dori', 0, 'acked', ${T0}, 1);`);
   raw.close();
-  writeCarried(state.dir, [{ kind: "owner", id: "discord:11:22", line: "INBOUND 11 22 hi" }]);
-  // When the CLI paths read it unmigrated, then this code opens it.
-  expect(takeAwaitingReminders(state.dir)).toEqual([]);
-  recordHandled(state.dir, "11", "22", T0 + 1, { reply: true });
-  expect(readCarried(state.dir)).toEqual([]);
+  const held = { kind: "held" as const, id: "launch-queue:s", line: "LAUNCH_QUEUE pending" };
+  writeFileSync(join(state.dir, "carried.json"), JSON.stringify([{ kind: "owner", id: "discord:11:22", line: "INBOUND 11 22 hi" }, held]));
+  expect(readCarried(state.dir)).toEqual([held]);
   const store = new SqliteStore(path);
   try {
-    // Then it is at version 9 and the row reads back with nothing parked.
     expect(store.meta("schema_version")).toBe("9");
-    expect(store.read(false).awaitingAck).toEqual([{ id: "discord:11:22", ackedAt: T0, tasks: 1 }]);
+    expect(store.load()).toEqual({ events: [], outbox: [{ id: "lead-model:s", text: "switched" }] });
+    expect(store.database.query("SELECT id FROM owner_messages").all()).toEqual([{ id: "discord:11:22" }]);
   } finally { store.close(); }
 });
 
@@ -249,7 +248,7 @@ test("extra columns from an older database do not affect load and save", () => {
   cleanups.push(state.done);
   const path = join(state.dir, SQLITE_FILE);
   const store = new SqliteStore(path, { create: true });
-  const journal = { events: [{ id: "old", line: "HOOK old", at: T0 }], models: [{ model: "a/one" }], leadBusySince: T0 };
+  const journal = { events: [{ id: "old", line: "HOOK old", at: T0 }], models: [{ model: "a/one" }] };
   store.save(journal, "full");
   const baseline = store.read(false);
   store.database.exec("ALTER TABLE lead_state ADD COLUMN quota_exhausted TEXT; ALTER TABLE lead_state ADD COLUMN quota_stall_since INTEGER; ALTER TABLE lead_state ADD COLUMN primary_retry_at INTEGER; UPDATE lead_state SET quota_exhausted = '{}', quota_stall_since = 1, primary_retry_at = 1");
@@ -257,8 +256,8 @@ test("extra columns from an older database do not affect load and save", () => {
   const reopened = new SqliteStore(path);
   try {
     expect(reopened.load()).toEqual(baseline);
-    reopened.save({ ...journal, leadBusySince: T0 + 1 }, "full");
-    expect(reopened.load()).toEqual({ ...baseline, leadBusySince: T0 + 1 });
+    reopened.save({ ...journal, models: [{ model: "a/two" }] }, "full");
+    expect(reopened.load()).toEqual({ ...baseline, models: [{ model: "a/two" }] });
   } finally { reopened.close(); }
 });
 
@@ -289,12 +288,12 @@ test.each(["abc", "", "0", "-1", "2.5", "1e1", " 9", "9x"])("a stored schema_ver
   const state = withState();
   cleanups.push(state.done);
   const path = join(state.dir, SQLITE_FILE);
-  await storedAt(path, version, "ALTER TABLE owner_messages DROP COLUMN awaiting_note");
+  await storedAt(path, version, "ALTER TABLE gh_prs DROP COLUMN head_repo");
   expect(() => new SqliteStore(path)).toThrow(StoreError);
   expect(() => new SqliteStore(path)).toThrow(`STORE_SCHEMA ${path}: unreadable version ${JSON.stringify(version)}`);
   expect(await storedVersion(path)).toBe(version);
   const raw = new (await import("bun:sqlite")).Database(path, { readonly: true });
-  try { expect(hasColumn(raw, "owner_messages", "awaiting_note")).toBe(false); } finally { raw.close(); }
+  try { expect(hasColumn(raw, "gh_prs", "head_repo")).toBe(false); } finally { raw.close(); }
 });
 
 test("a migration that fails mid-way rolls back its own step, keeps the steps before it, and resumes from there on the next open", async () => {
@@ -303,7 +302,6 @@ test("a migration that fails mid-way rolls back its own step, keeps the steps be
   const path = join(state.dir, SQLITE_FILE);
   // Given a version 6 database whose gh_prs is a view, so migration 8 (ADD COLUMN head_repo) cannot apply.
   await storedAt(path, "6", `ALTER TABLE lead_state DROP COLUMN pending;
-    ALTER TABLE owner_messages DROP COLUMN awaiting_owner_at; ALTER TABLE owner_messages DROP COLUMN awaiting_note;
     DROP TABLE gh_prs; CREATE VIEW gh_prs AS SELECT 'o/r' AS repo, 1 AS number;`);
   // When this code opens it, the open fails at migration 8.
   expect(() => new SqliteStore(path)).toThrow();
@@ -313,7 +311,6 @@ test("a migration that fails mid-way rolls back its own step, keeps the steps be
   try {
     expect(hasColumn(raw, "lead_state", "pending")).toBe(true);
     expect(hasColumn(raw, "gh_prs", "head_repo")).toBe(false);
-    expect(hasColumn(raw, "owner_messages", "awaiting_owner_at")).toBe(false);
     // And once the cause is fixed the next open applies 8 and 9 only.
     raw.exec(`DROP VIEW gh_prs; CREATE TABLE gh_prs (
       repo TEXT NOT NULL, number INTEGER NOT NULL, state TEXT NOT NULL, sha TEXT NOT NULL, branch TEXT NOT NULL, updated TEXT NOT NULL,
@@ -323,6 +320,5 @@ test("a migration that fails mid-way rolls back its own step, keeps the steps be
   try {
     expect(store.meta("schema_version")).toBe(String(SCHEMA_VERSION));
     expect(hasColumn(store.database, "gh_prs", "head_repo")).toBe(true);
-    expect(hasColumn(store.database, "owner_messages", "awaiting_owner_at")).toBe(true);
   } finally { store.close(); }
 });

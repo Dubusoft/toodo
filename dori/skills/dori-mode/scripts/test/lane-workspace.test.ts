@@ -40,7 +40,7 @@ const workspaces: Workspace[] = [
 ];
 
 const depsFor = (url: string) => ({
-  config: { platforms: ["discord", "toodo"] },
+  config: {},
   tunables: { toodoWriter: { url, tokenFile } },
   registry: { patch: async () => { throw new Error("no task may be recorded"); } },
 }) as unknown as Pick<FlowDeps, "config" | "tunables" | "registry">;

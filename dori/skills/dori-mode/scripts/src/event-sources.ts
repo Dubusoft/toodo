@@ -17,7 +17,7 @@ export { SOURCE_TYPES, type SourceEnqueue, SourceError, type SourceStatus, type 
 /*
  * The event source registry (design 1.8). Every event the supervisor journals comes from a named
  * source and goes through Supervisor.enqueue, so the store dedupes it and the policy table (event-policy.ts) decides
- * who hears it. The built-ins are the code paths that existed before (discord, github, sweeps, waits) and `emit`, the
+ * who hears it. The built-ins are the code paths that existed before (github, sweeps, waits, toodo) and `emit`, the
  * spool `dori emit` writes. The user sources live in <stateDir>/sources.json, managed by `dori source add/remove/list`:
  *   poll     runs an argv every `everySec`; each stdout line matching `match` is one `<kind> <line>` event, deduped by its
  *            first capture group (else the whole line), so a source polls for ever and reports each match once;
@@ -29,7 +29,7 @@ export { SOURCE_TYPES, type SourceEnqueue, SourceError, type SourceStatus, type 
  * and the others keep running. The per-source last event and error are written to sources-status.json for dori status.
  */
 
-export const BUILTIN_SOURCES = ["discord", "github", "sweeps", "waits", "emit", "toodo"] as const;
+export const BUILTIN_SOURCES = ["github", "sweeps", "waits", "emit", "toodo"] as const;
 export type BuiltinSource = (typeof BUILTIN_SOURCES)[number];
 
 export type PollSpec = {

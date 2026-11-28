@@ -6,7 +6,7 @@ type Json = Record<string, unknown>;
 /** The top-level key that holds a file's schema version; absent means version 0 (written before versions existed). */
 export const CONFIG_SCHEMA_KEY = "schemaVersion";
 /** The version this dori writes. Raise it together with a new CONFIG_MIGRATIONS entry. */
-export const CONFIG_SCHEMA_VERSION = 9;
+export const CONFIG_SCHEMA_VERSION = 10;
 
 export type ConfigMigration = {
   /** The version a file has after this step. */
@@ -57,6 +57,20 @@ export const CONFIG_MIGRATIONS: readonly ConfigMigration[] = [
   { to: 8, drops: { secrets: "every stored secret arrives in every lane environment at launch" } },
   // hc is the only terminal runtime, so the lead's runtime choice means nothing any more.
   { to: 9, drops: { leadRuntime: "hc is the only terminal runtime; the lead's pane always opens on hc" } },
+  // Dori's Discord code is removed: the owner talks to dori on the Toodo chat only, so the Discord settings mean nothing.
+  {
+    to: 10,
+    drops: {
+      discord: "dori no longer talks to Discord",
+      discordChannels: "dori no longer talks to Discord",
+      alertsChannel: "system notices go to the Toodo chat's default room",
+      decisionsChannel: "owner decisions go to the Toodo chat",
+      platforms: "the Toodo chat is the only chat platform",
+      buttonHooks: "dori no longer talks to Discord",
+      threadCloseAfterHours: "dori no longer closes Discord threads",
+      "autopilot.threadChannel": "autopilot lanes start with no Discord thread",
+    },
+  },
 ];
 
 export class ConfigSchemaError extends Error {}

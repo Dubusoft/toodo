@@ -1,10 +1,9 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
-import { existsSync, readFileSync, watch } from "node:fs";
+import { existsSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import * as quota from "../src/claude-quota.ts";
 import * as memoryCheck from "../src/memory-check.ts";
-import type { Http } from "../src/messenger/http.ts";
 import { supervise, WATCHDOG_STALL_MS } from "../src/supervise-loop.ts";
 import { depsFor, fakeClock, manualPause, newWorld, withState } from "./fakes.ts";
 
@@ -24,8 +23,7 @@ afterEach(() => {
 
 const T0 = 1_800_000_000_000;
 const STALL_MS = 120_000;
-const OWNER = "123456789012345";
-const MESSAGE = "1900000000000000001";
+const MESSAGE = 42;
 
 /** Resolves once `check` holds, re-checked on each `subscribe` signal; rejects after `ms`. */
 const until = (subscribe: (signal: () => void) => () => void, check: () => boolean, ms: number, what: string): Promise<void> =>
@@ -54,58 +52,51 @@ const setup = () => {
   console.error = (...args: unknown[]) => { errors.push(args.map(String).join(" ")); for (const listener of errorListeners) listener(); };
   cleanups.push(() => { console.error = error; });
   spyOn(quota, "lookupQuotaResults").mockReturnValue(async () => ({ results: [], text: "" }));
-  // Outbound Discord (reactions, owner notices, command registration) is accepted and otherwise irrelevant here.
-  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => new Response(JSON.stringify({ id: "33" }), { status: 200 }), { preconnect: fetch.preconnect }));
   const clock = fakeClock(T0);
   const world = newWorld();
   world.panes.push({ pane_id: "hc:t1", workspace_id: "test", agent: "omo", agent_status: "working" });
-  const base = depsFor(world, clock, state.dir, {
-    discord: { applicationId: "100", guildId: "200", ownerId: OWNER }, discordChannels: ["11"], defaultModel: "test/model",
-  });
+  const tokenFile = join(state.dir, "mcp-token");
+  writeFileSync(tokenFile, "test-token\n");
+  const deps = depsFor(world, clock, state.dir, { toodoWriter: { url: "http://127.0.0.1:47616", tokenFile }, defaultModel: "test/model" });
   // The memory sweep (only the sweeps task runs it) hangs for STALL_MS: the injected sweep stall.
   const stall: { at?: number; release: () => void } = { release: () => {} };
   const stallListeners = new Set<() => void>();
   let ownerPosted = false;
-  const deps = base;
+  let taken = false;
+  const takeListeners = new Set<() => void>();
+
   spyOn(memoryCheck, "memorySweep").mockImplementation(() => new Promise<string[]>((resolve) => {
     const timer = setTimeout(() => { stall.release(); }, STALL_MS);
     stall.release = () => { clearTimeout(timer); resolve([]); };
     stall.at = performance.now();
-    // The owner writes while the sweep is stuck; the REST catch-up is due again on the next pass.
+    // The owner writes while the sweep is stuck; the Toodo safety poll is due again on the next pass.
     ownerPosted = true;
-    clock.at += 6_000;
     for (const listener of stallListeners) listener();
   }));
   cleanups.push(() => { stall.release(); });
-  const http: Http = async (request) => {
-    if (request.url.endsWith("/threads/active")) return { status: 200, headers: {}, body: JSON.stringify({ threads: [] }) };
-    if (request.url.includes("/channels/11/messages") && ownerPosted) {
-      return { status: 200, headers: {}, body: JSON.stringify([{ id: MESSAGE, channel_id: "11", author: { id: OWNER, username: "owner" }, content: "status?", attachments: [] }]) };
+  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (_input: unknown, init?: RequestInit) => {
+    const rpc = JSON.parse(String(init?.body));
+    if (ownerPosted && rpc.params?.name === "take_pending") {
+      taken = true;
+      for (const listener of takeListeners) listener();
     }
-    return { status: 200, headers: {}, body: "[]" };
-  };
+    const messages = ownerPosted && ["peek_pending", "take_pending"].includes(rpc.params?.name)
+      ? [{ id: MESSAGE, channelId: 1, author: "user", body: "status?", attachments: [] }] : [];
+    return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { content: [{ type: "text", text: JSON.stringify(messages) }] } });
+  }, { preconnect: fetch.preconnect }));
   const notified: string[] = [];
   // Each task's next pass waits for the test, not for real time.
   const pauses = manualPause();
   const parkListeners = new Set<() => void>();
   const pause = (ms: number, signal: AbortSignal) => { const parked = pauses.pause(ms, signal); for (const listener of parkListeners) listener(); return parked; };
   const controller = new AbortController();
-  const running = supervise(deps, controller.signal, {
-    token: `sweep-task-test-${state.dir}`, spawnRunner: idleRunner, gatewayLockDir: join(state.dir, "gateway-locks"), http, lookup: async () => "", statusLookup: async () => "",
-    open: () => {
-      let closed = (_code: number) => {};
-      return {
-        send: () => {}, close: () => { closed(1000); },
-        onMessage: () => {}, onError: () => {}, onClose: (callback) => { closed = callback; },
-      };
-    },
-    timers: { setInterval: () => 0, clearInterval: () => {} },
-  }, async (s) => { notified.push(s); return true; }, undefined, pause);
+  const running = supervise(deps, controller.signal, { spawnRunner: idleRunner }, async (s) => { notified.push(s); return true; }, undefined, pause);
   const log = join(state.dir, "lead-events.log");
-  const delivered = () => existsSync(log) && readFileSync(log, "utf8").split("\n").some((line) => line.includes(`"line":"INBOUND 11 ${MESSAGE} `));
+  const delivered = () => existsSync(log) && readFileSync(log, "utf8").split("\n").some((line) => line.includes(`"line":"INBOUND toodo:channel/1 ${MESSAGE} owner status?`));
   const onLog = (signal: () => void) => { const watcher = watch(state.dir, signal); return () => { watcher.close(); }; };
   const onError = (signal: () => void) => { errorListeners.add(signal); return () => { errorListeners.delete(signal); }; };
   const onStall = (signal: () => void) => { stallListeners.add(signal); return () => { stallListeners.delete(signal); }; };
+  const onTake = (signal: () => void) => { takeListeners.add(signal); return () => { takeListeners.delete(signal); }; };
   const onPark = (signal: () => void) => { parkListeners.add(signal); return () => { parkListeners.delete(signal); }; };
   // Once the five working tasks, the runners, autopilot and status panel tasks (the hub always opens) and the stall check are parked (the sweeps task is stuck), each takes its next pass.
   const next = async () => {
@@ -113,7 +104,7 @@ const setup = () => {
     pauses.tick();
   };
   const stop = async () => { controller.abort(); stall.release(); await running; };
-  return { clock, errors, notified, stall, delivered, onLog, onError, onStall, stop, next };
+  return { clock, errors, notified, stall, delivered, onLog, onError, onStall, onTake, taken: () => taken, stop, next };
 };
 
 test("an injected 120 s sweep stall still delivers an owner INBOUND to the lead in under 10 s, and the stuck sweep withholds the watchdog", async () => {
@@ -122,6 +113,10 @@ test("an injected 120 s sweep stall still delivers an owner INBOUND to the lead 
   try {
     await until(s.onStall, () => s.stall.at !== undefined, 10_000, "the sweep stall");
     // When the other tasks keep running beside the stuck sweep.
+    s.clock.at += 60_000;
+    await s.next();
+    await until(s.onTake, s.taken, 10_000, "Toodo take_pending after the owner message was journaled");
+    s.clock.at += 5_000;
     await s.next();
     await until(s.onLog, s.delivered, 10_000, "INBOUND in lead-events.log");
     // Then the owner's INBOUND reached the lead's delivery log well before the stall ends.

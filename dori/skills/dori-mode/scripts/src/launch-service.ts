@@ -181,7 +181,7 @@ export const admitLaunch = async (deps: FlowDeps, input: LaunchInput, placed: Pl
     });
     return { kind: "held", target: placed.target, verdict, queued: queue.length };
   }
-  // A refused sandbox and an allowed unsandboxed run both reach the owner on Discord (sandbox-notice.ts).
+  // A refused sandbox and an allowed unsandboxed run both reach the owner (sandbox-notice.ts).
   const r = await launchLane(deps, { ...input, machine: placed.machine, ...(placed.cwd ? { cwd: placed.cwd } : {}) }).catch(async (e: unknown) => {
     releaseSlot(stateDir, input.key);
     if (e instanceof SandboxRefusal) for (const line of await postSandboxNotice(deps, input, e.message)) err(line);

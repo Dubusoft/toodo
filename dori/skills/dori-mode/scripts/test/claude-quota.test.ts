@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { classifyClaude, NO_CLAUDE, quotaReport, readUsage, resetIn, usageLine, type QuotaResult, type UsageLookup } from "../src/claude-quota.ts";
+import { classifyClaude, NO_CLAUDE, quotaReportText, readUsage, resetIn, usageLine, type QuotaResult, type UsageLookup } from "../src/claude-quota.ts";
 
 const NOW = Date.parse("2026-10-22T03:00:00.000Z");
 const RESET_5H = Date.parse("2026-10-22T06:10:00.000Z"); // 15:10 KST
@@ -23,9 +23,9 @@ test("Claude usage keeps every Claude account that answered; other providers and
   expect(classifyClaude([openai], NOW).usage).toBeUndefined();
 });
 
-test("the Discord /quota reply is pi-quota's own block with no QUOTA line, with or without a Claude account", async () => {
+test("the quota text is pi-quota's own block with no QUOTA line, with or without a Claude account", async () => {
   for (const results of [[claude(15, 50)], [openai]]) {
-    expect(await quotaReport(lookupOf(...results))(AbortSignal.timeout(5_000))).toBe("pi-quota text");
+    expect(quotaReportText(await lookupOf(...results)(AbortSignal.timeout(5_000)), Date.now())).toBe("pi-quota text");
   }
 });
 

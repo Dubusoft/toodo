@@ -8,7 +8,6 @@ import { type ExecutorDeps, type ExecutorResult, reconcileExecutions, runExecuto
 import { AutopilotTick } from "../src/autopilot-tick.ts";
 import { type LaunchInput, SandboxRefusal } from "../src/launch.ts";
 import type { PlacedLaunch } from "../src/launch-service.ts";
-import type { ThreadMember } from "../src/messenger/discord.ts";
 import { SqliteOperations, type Observed, type Operation, type OperationStore, plan, settleOperation } from "../src/operations.ts";
 import type { Lane } from "../src/registry.ts";
 import { dequeueLaunch, enqueueLaunch, launchQueue } from "../src/routing.ts";
@@ -34,7 +33,6 @@ const harness = (initial = task(), attempt = 1) => {
   let held = false;
   let remote = false;
   let observed: Observed = "unknown";
-  let member: ThreadMember = "added";
   let startup = "STARTUP_OK";
   let admissionError: Error | undefined;
   let validationError: Error | undefined;
@@ -43,10 +41,9 @@ const harness = (initial = task(), attempt = 1) => {
   let mutateOnStart = false;
   let worktreeRoot: string | undefined = "/wt/";
   const dirs: string[] = [];
-  const calls = { start: 0, thread: 0, brief: 0, admit: 0, launch: 0, blocker: 0, notify: 0, reserve: 0 };
+  const calls = { start: 0, brief: 0, admit: 0, launch: 0, blocker: 0, notify: 0, reserve: 0 };
   const notes: { kind: string; body: string }[] = [];
   const lanes = new Map<string, Lane>();
-  const threads = new Map<string, string>();
   const files = new Map<string, string>();
   const notices = new Map<string, string>();
   const logs: string[] = [];
@@ -85,14 +82,6 @@ const harness = (initial = task(), attempt = 1) => {
       read: async () => { checkpoint(); return record(); },
       reportBlocker: async (_id, note) => { checkpoint(); calls.blocker++; notes.push({ kind: "blocker", body: note }); return { wrote: true, task: record() }; },
     },
-    parentChannel: "c",
-    createThread: async (thread) => {
-      checkpoint(); calls.thread++;
-      expect(ops.get(`toodo:12/autopilot-thread/${attempt}`)?.state).toBe("attempted");
-      threads.set(thread.title, "thread-12");
-      return { id: "thread-12", member };
-    },
-    findThread: async (thread) => { checkpoint(); return threads.get(thread.title); },
     readLane: async (key) => { checkpoint(); return lanes.get(key); },
     observeLaunch: async () => { checkpoint(); return observed; },
     place: async () => {
@@ -129,15 +118,15 @@ const harness = (initial = task(), attempt = 1) => {
     writeBrief: async (path, brief) => { checkpoint(); calls.brief++; files.set(path, brief); },
     worktreeRoot: (label) => { expect(label).toBe("local"); return worktreeRoot; },
     makeLaneDir: async (path) => { checkpoint(); dirs.push(path); },
-    // No crash point: the read-back would swallow it (a crash after thread lands in the brief write instead).
+    // No crash point: the read-back would swallow it.
     readBrief: async (path) => files.get(path),
     notify: (id, line) => { checkpoint(); calls.notify++; notices.set(id, line); },
   });
   return {
-    fresh, calls, lanes, threads, files, notices, notes, logs, inputs, placements, dirs,
+    fresh, calls, lanes, files, notices, notes, logs, inputs, placements, dirs,
     worktreeRoot: (value: string | undefined) => { worktreeRoot = value; },
     task: (patch: Partial<ToodoTask>) => { current = { ...current, ...patch }; },
-    held: (value: boolean) => { held = value; }, remote: () => { remote = true; }, member: (value: ThreadMember) => { member = value; },
+    held: (value: boolean) => { held = value; }, remote: () => { remote = true; },
     observe: (value: Observed) => { observed = value; }, startup: (value: string) => { startup = value; },
     failAdmission: (error: Error) => { admissionError = error; }, failValidation: () => { validationError = new Error("checkout is shared"); },
     crashAfter: (step: string) => { crashAfter = step; }, crashed: () => crashed,
@@ -150,33 +139,26 @@ const harness = (initial = task(), attempt = 1) => {
 const row = (action: string): Operation => store.get(`toodo:12/autopilot-${action}/1`)!;
 const freshStore = () => new SqliteOperations(storePath(dir));
 
-test("ready contract reserves, starts, threads, writes, launches and settles exactly once", async () => {
+test("ready contract reserves, starts, writes, launches and settles exactly once, with no thread", async () => {
   const h = harness(task({ refs: [...task().refs, "mode:mass-ulw", "model:test-model"] }));
   expect(await runExecutor(h.fresh(), [12])).toEqual([{ taskId: 12, laneKey: KEY, kind: "launched" }]);
-  expect(h.calls).toEqual({ start: 1, thread: 1, brief: 1, admit: 1, launch: 1, blocker: 0, notify: 1, reserve: 1 });
-  expect(h.inputs[0]).toMatchObject({ key: KEY, done: "pr owner/repo autopilot/12", mode: "mass-ulw", model: "test-model", task: 12, thread: "discord:c/thread-12" });
+  expect(h.calls).toEqual({ start: 1, brief: 1, admit: 1, launch: 1, blocker: 0, notify: 1, reserve: 1 });
+  expect(h.inputs[0]).toMatchObject({ key: KEY, done: "pr owner/repo autopilot/12", mode: "mass-ulw", model: "test-model", task: 12, thread: "none" });
   expect(h.inputs[0]!.cwd).toBe(`/wt/repo-${KEY}`);
   expect(h.inputs[0]!.cwd!.startsWith(dir)).toBe(false);
   expect(h.dirs).toEqual([`/wt/repo-${KEY}`]);
   expect([...h.files.keys()][0]).toBe(join(dir, "autopilot", KEY, "brief.md"));
   expect([...h.files.values()][0]).toContain("origin/dev");
   expect(ledgerRows(store)[0]?.state).toBe("verified");
-  for (const action of ["prepare", "reserve", "start-task", "thread", "brief", "admit", "settle", "notice", "execute"]) expect(row(action).state).toBe("verified");
-  expect(JSON.parse(row("execute").data!).thread).toMatchObject({ parent: "c", title: `${KEY}: Build the feature`, id: "thread-12" });
+  for (const action of ["prepare", "reserve", "start-task", "brief", "admit", "settle", "notice", "execute"]) expect(row(action).state).toBe("verified");
+  expect(row("thread")).toBeUndefined();
   await runExecutor(h.fresh(freshStore()), [12]);
   await reconcileExecutions(h.fresh(freshStore()));
   expect(h.calls.admit).toBe(1);
   expect(h.calls.notify).toBe(1);
 });
 
-test("with Discord off a lane launches with no Discord thread, and no thread channel is needed", async () => {
-  const h = harness();
-  expect(await runExecutor({ ...h.fresh(), parentChannel: "", discordThreads: false }, [12])).toEqual([{ taskId: 12, laneKey: KEY, kind: "launched" }]);
-  expect(h.calls).toMatchObject({ start: 1, thread: 0, brief: 1, admit: 1, launch: 1 });
-  expect(h.inputs[0]).toMatchObject({ key: KEY, task: 12, thread: "none" });
-});
-
-test("review contract has no reservations, writes, threads, or admission", async () => {
+test("review contract has no reservations, writes, or admission", async () => {
   const h = harness(task({ refs: ["owner:discord:c/m", "repo:a/b", "repo:a/c"] }));
   expect(await runExecutor(h.fresh(), [12])).toEqual([{ taskId: 12, kind: "review", reasons: ["repo-ambiguous"] }]);
   expect(store.list()).toEqual([]);
@@ -237,7 +219,7 @@ test("HOLD keeps its queue and reservation, then resumes under the same lane key
   expect((await reconcileExecutions(h.fresh(freshStore())))[0]?.kind).toBe("launched");
   expect(h.inputs.map((input) => input.key)).toEqual([KEY, KEY]);
   expect(h.calls.launch).toBe(1);
-  expect([h.calls.start, h.calls.thread, h.calls.brief, h.calls.reserve]).toEqual([1, 1, 1, 1]);
+  expect([h.calls.start, h.calls.brief, h.calls.reserve]).toEqual([1, 1, 1]);
   expect(launchQueue(dir)).toEqual([]);
   expect(ledgerRows(store)).toHaveLength(1);
 });
@@ -327,10 +309,10 @@ test("guideline changes and a changed merge gate are checked again before HOLD d
   expect(h.calls.launch).toBe(0);
 });
 
-test("scope changing during start-task stops before thread creation", async () => {
+test("scope changing during start-task stops before admission", async () => {
   const h = harness(); h.changeOnStart();
   expect((await runExecutor(h.fresh(), [12]))[0]).toMatchObject({ kind: "review", reasons: ["contract-changed"] });
-  expect([h.calls.start, h.calls.thread, h.calls.admit]).toEqual([1, 0, 0]);
+  expect([h.calls.start, h.calls.admit, h.calls.launch]).toEqual([1, 0, 0]);
 });
 
 test("a dependency re-read refuses an open prerequisite", async () => {
@@ -368,10 +350,10 @@ const overRpc = (h: ReturnType<typeof harness>) => {
   return { deps, sent, fail: (n: number, status: number) => { failures.set(n, status); } };
 };
 
-// One launch reads the contract (get_task, list_tasks for prerequisites, list_guidelines, get_workspace) four times:
-// once to plan it and again before start-task, the thread and the launch. The reservation reads list_tasks twice and
+// One launch reads the contract (get_task, list_tasks for prerequisites, list_guidelines, get_workspace) three times:
+// once to plan it and again before start-task and the launch. The reservation reads list_tasks twice and
 // start-task reads get_task back before and after its write. All of it runs under the launch lock.
-const LAUNCH_READS_MAX = 4 * 4 + 2 + 2;
+const LAUNCH_READS_MAX = 3 * 4 + 2 + 2;
 
 test("one launch reads Toodo at most LAUNCH_READS_MAX times", async () => {
   const h = harness(task({ dependsOn: [3] }));
@@ -379,7 +361,7 @@ test("one launch reads Toodo at most LAUNCH_READS_MAX times", async () => {
   const rpc = overRpc(h);
   expect(await runExecutor(rpc.deps(), [12])).toEqual([{ taskId: 12, laneKey: KEY, kind: "launched" }]);
   expect(rpc.sent.length).toBeLessThanOrEqual(LAUNCH_READS_MAX);
-  expect(rpc.sent.filter((c) => c === "list_guidelines")).toHaveLength(4);
+  expect(rpc.sent.filter((c) => c === "list_guidelines")).toHaveLength(3);
 });
 
 test("one 5xx from Toodo under the launch lock is read again and the launch goes on", async () => {
@@ -397,21 +379,13 @@ test("a lead file the description names but cannot ship stops the task before it
   expect([h.calls.start, h.calls.admit]).toEqual([0, 0]);
 });
 
-test("failed member addition is partial success and never creates another thread", async () => {
-  const h = harness(); h.member({ failed: "403" });
-  expect((await runExecutor(h.fresh(), [12]))[0]?.kind).toBe("launched");
-  await reconcileExecutions(h.fresh(freshStore()));
-  expect(h.calls.thread).toBe(1);
-  expect(JSON.parse(row("execute").data!).thread.member).toEqual({ failed: "403" });
-});
-
-for (const boundary of ["prepare", "reserve", "start-task", "thread", "brief", "admit", "settle"]) {
+for (const boundary of ["prepare", "reserve", "start-task", "brief", "admit", "settle"]) {
   test(`crash after ${boundary}: fresh executor resumes each effect once`, async () => {
     const h = harness(); h.crashAfter(boundary);
     await runExecutor(h.fresh(), [12]);
     expect(h.crashed()).toBe(true);
     expect((await reconcileExecutions(h.fresh(freshStore())))[0]?.kind).toBe("launched");
-    expect([h.calls.start, h.calls.thread, h.calls.brief, h.calls.admit, h.calls.launch, h.calls.notify]).toEqual([1, 1, 1, 1, 1, 1]);
+    expect([h.calls.start, h.calls.brief, h.calls.admit, h.calls.launch, h.calls.notify]).toEqual([1, 1, 1, 1, 1]);
     expect(ledgerRows(store)).toHaveLength(1);
     expect(row("execute").state).toBe("verified");
   });
@@ -422,7 +396,7 @@ test("a throw inside an open execution is that task's interrupted result, and th
   expect(await runExecutor(h.fresh(), [12])).toEqual([{ taskId: 12, laneKey: KEY, kind: "interrupted", reasons: ["crash after brief"] }]);
   expect(row("execute").state).toBe("planned");
   expect(await runExecutor(h.fresh(freshStore()), [12])).toEqual([{ taskId: 12, laneKey: KEY, kind: "launched" }]);
-  expect(h.calls.thread).toBe(1);
+  expect(h.calls.brief).toBe(1);
 });
 
 test("an execution row without its required fields is that task's interrupted result naming them, and nothing launches", async () => {
@@ -431,7 +405,7 @@ test("an execution row without its required fields is that task's interrupted re
   expect(await reconcileExecutions(h.fresh())).toEqual([
     { taskId: 12, kind: "interrupted", reasons: ["AUTOPILOT_EXECUTION_MALFORMED toodo:12/autopilot-execute/1 data has no valid laneKey, contract"] },
   ]);
-  expect([h.calls.start, h.calls.thread, h.calls.launch]).toEqual([0, 0, 0]);
+  expect([h.calls.start, h.calls.launch]).toEqual([0, 0]);
 });
 
 test("attempted launch with unknown read-back becomes ambiguous and never admits again", async () => {

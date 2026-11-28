@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { GITHUB_FILE, importGithub, retireGithubFile } from "./github-events.ts";
 import { acquireSupervisor } from "./supervise-loop.ts";
-import { JOURNAL_FIELDS, JOURNAL_FILE, jsonStorePending, PRE_SQLITE_FILE, SQLITE_FILE, SqliteStore, StoreError } from "./store.ts";
+import { JOURNAL_FIELDS, JOURNAL_FILE, jsonStorePending, PRE_SQLITE_FILE, RETIRED_TRACKING_FIELDS, SQLITE_FILE, SqliteStore, StoreError } from "./store.ts";
 import type { Journal } from "./supervise.ts";
 import { byAt, OPERATIONS_DDL, OPERATIONS_FILE, type Operation, putRows, readRows } from "./operations.ts";
 import { LANE_REPORTS_FILE, LANE_REPORTS_LOCK, type LaneReport, putReportRows, readReportRows, reportOrder } from "./lane-report-store.ts";
@@ -57,7 +57,7 @@ const OBSOLETE_JOURNAL_FIELDS: readonly string[] = ["leadModel", "primaryRetryAt
 
 /** Drops the obsolete fields from a parsed journal (and the restart's chain index `modelIndex`, a column the store no longer has). */
 const dropObsolete = (parsed: Record<string, unknown>): void => {
-  for (const field of OBSOLETE_JOURNAL_FIELDS) delete parsed[field];
+  for (const field of [...OBSOLETE_JOURNAL_FIELDS, ...RETIRED_TRACKING_FIELDS]) delete parsed[field];
   const restart = parsed.restart;
   if (typeof restart === "object" && restart !== null) delete (restart as Record<string, unknown>).modelIndex;
 };

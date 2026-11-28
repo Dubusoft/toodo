@@ -1,13 +1,7 @@
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 
-import { ack, ackRecorded, handled } from "./ack.ts";
-import { discordOn } from "./config.ts";
-import { routedDecisionTransport } from "./decision-toodo.ts";
 import type { FlowDeps } from "./done-flow.ts";
-import { staleOwnerEvents } from "./inbox.ts";
-import { Discord } from "./messenger/discord.ts";
-import { fetchHttp } from "./messenger/http.ts";
 import { TOODO_THREAD_REF, toodoChat } from "./messenger/toodo-chat.ts";
 import { realClock } from "./run.ts";
 import { oneLine } from "./line-text.ts";
@@ -15,11 +9,10 @@ import { oneLine } from "./line-text.ts";
 export type DecisionCliDeps = {
   readonly flow: FlowDeps;
   readonly die: (message: string, code?: number) => never;
-  readonly messengerToken: (name: string) => string;
 };
 
 /** `dori decision open|close|list` for the lead; a refusal or failure ends the process through die. */
-export const decisionMain = async (rest: string[], { flow: deps, die, messengerToken }: DecisionCliDeps): Promise<number> => {
+export const decisionMain = async (rest: string[], { flow: deps, die }: DecisionCliDeps): Promise<number> => {
   const { config } = deps;
   // `dori decision open|close|list`: owner decisions (owner-decisions.ts), lead-only.
   const { callerLane, laneDecisionRefusal } = await import("./lane-perms.ts");
@@ -30,30 +23,8 @@ export const decisionMain = async (rest: string[], { flow: deps, die, messengerT
   const { decisionChoicesProblem, inputRequestProblem } = await import("./runner/decision-text.ts");
   const { toodoAnswerReceipts } = await import("./decision-toodo-cards.ts");
   const [sub, ...subArgs] = rest;
-  /** Discord is reached only when a call needs it; `token` already resolved, else read on first use. A Toodo chat ref goes to the Toodo chat. */
-  const decisionContext = (token?: string, withReceipts = false): import("./owner-decisions.ts").DecisionContext => {
-    let transport: Discord | undefined;
-    const discord = (): Discord => transport ??= new Discord(fetchHttp, realClock, token ?? messengerToken("DORI_DISCORD_TOKEN"));
-    const chat = () => toodoChat(deps.tunables.toodoWriter);
-    const routed = routedDecisionTransport(discord, chat);
-    const toodo = toodoAnswerReceipts(config.stateDir, chat);
-    // close settles the owner's answer messages with the same stale guard, ack and handled as dori send/ack/handled; an
-    // answer given in the Toodo chat gets Toodo's receipts instead.
-    const receipts: import("./owner-decisions.ts").DecisionReceipts = {
-      unseen: (channel) => staleOwnerEvents(config.stateDir, channel),
-      acked: (channel, message) => !toodo.owns(channel) && ackRecorded(config.stateDir, channel, message),
-      ack: (channel, message) => (toodo.owns(channel) ? toodo.ack(message) : ack(config.stateDir, discord(), channel, message, realClock.now())),
-      handled: async (channel, message, tasks) => {
-        if (toodo.owns(channel)) { await toodo.handled(channel, message); return; }
-        const outcome = await handled(config.stateDir, discord, channel, message, realClock.now(), { reply: true, ...(tasks > 1 ? { tasks } : {}) });
-        if (outcome.autoAck === "failed") console.error(`DECISION_ACK_FAILED ${channel} ${message}: ${outcome.error}; handled is recorded anyway`);
-      },
-    };
-    return {
-      config, now: realClock.now, home: homedir(), transport: routed, toodo: chat,
-      ...(withReceipts ? { receipts } : {}),
-    };
-  };
+  const chat = () => toodoChat(deps.tunables.toodoWriter);
+  const context: import("./owner-decisions.ts").DecisionContext = { config, now: realClock.now, home: homedir(), toodo: chat };
   if (sub === "open") {
     const usage = "usage: dori decision open --question TEXT --option TEXT --option TEXT [...] --recommend N --reason TEXT --waiting TEXT [--task N] [--lane KEY | --relay-to KEY] [--thread REF | --no-origin] [--nonblocking] [--from-event EVENT_ID]\n       dori decision open --request --question \"<what is needed>\" --reason TEXT --waiting TEXT [--file PATH] [--task N] [--lane KEY | --relay-to KEY] [--thread REF | --no-origin] [--nonblocking] [--from-event EVENT_ID]";
     const refuse = (reason: string): never => {
@@ -96,24 +67,19 @@ export const decisionMain = async (rest: string[], { flow: deps, die, messengerT
     task ??= found?.task ?? od.taskOfLane(laneKey);
     const thread = v.thread?.trim();
     // A Toodo thread origin puts the card in that thread when the decision has no task (decision-toodo.ts toodoDecisionPlace).
-    if (thread !== undefined && !od.refIds(thread) && !TOODO_THREAD_REF.test(thread)) refuse(`--thread ${thread} is not a thread ref such as discord:<channel>/<thread> or toodo:thread/<id>`);
-    const laneThread = found?.thread && found.thread !== "none" ? found.thread : undefined;
+    if (thread !== undefined && !TOODO_THREAD_REF.test(thread)) refuse(`--thread ${thread} is not a thread ref such as toodo:thread/<id>`);
+    const laneThread = found?.thread && TOODO_THREAD_REF.test(found.thread) ? found.thread : undefined;
     const noOrigin = v["no-origin"] === true;
     if (noOrigin && thread !== undefined) refuse("--no-origin cannot go with --thread");
     const origin = noOrigin ? undefined : thread ?? laneThread;
-    // The link line cannot be added once the decision is posted, so a missing origin is said up front, never guessed.
-    // With Discord off there is no link line: the decision goes to its task's Toodo thread.
-    const onDiscord = discordOn(config);
-    if (onDiscord && !origin && !noOrigin) refuse("no origin: pass --thread REF (the thread the question came from) or --no-origin");
     const fromEvent = v["from-event"]?.trim();
     const { recordResolved, validEventId } = await import("./decision-obligations.ts");
     if (fromEvent !== undefined && !validEventId(fromEvent)) refuse(`--from-event ${fromEvent} is not an event id`);
-    const token = onDiscord ? messengerToken("DORI_DISCORD_TOKEN") : undefined;
     const asked = request
       ? od.requestSpec({ need: oneLine(v.question ?? ""), reason: oneLine(v.reason ?? ""), waiting: oneLine(v.waiting ?? ""), blocking: v.nonblocking !== true, ...(v.file !== undefined ? { file: oneLine(v.file) } : {}) })
       : { question: oneLine(v.question ?? ""), options: (v.option ?? []).map((text) => oneLine(text)), recommend: Number((v.recommend ?? "").trim()),
         reason: oneLine(v.reason ?? ""), waiting: oneLine(v.waiting ?? ""), blocking: v.nonblocking !== true };
-    const opened = await od.openOwnerDecision(decisionContext(token), {
+    const opened = await od.openOwnerDecision(context, {
       ...asked, source: "lead",
       ...(task !== undefined ? { task } : {}), ...(laneKey ? { lane: laneKey } : {}), ...(relayTo ? { relayTo } : {}), ...(origin ? { origin } : {}),
     }).catch((e: unknown) => {
@@ -122,16 +88,6 @@ export const decisionMain = async (rest: string[], { flow: deps, die, messengerT
     });
     const d = opened.decision;
     console.log(`DECISION_OPENED ${d.id} ${od.decisionRef(d)}${d.kind === "request" ? " request" : ""}`);
-    if (d.attachedTo && !opened.duplicateOf) console.log(`DECISION_ATTACHED ${d.id} ${d.attachedTo}: posted in the thread of ${d.attachedTo}, the open blocking decision of the same lane or task`);
-    if (opened.channel.unset) console.log(od.channelUnsetLine(opened.channel));
-    if (opened.noticeKept) console.log(`DECISION_NOTICE_KEPT ${d.id}: the channel's "started a thread" notice could not be deleted: ${opened.noticeKept}`);
-    const link = opened.link;
-    if (link.kind === "linked") {
-      const ids = od.refIds(d.origin);
-      console.log(`DECISION_LINKED ${d.id} discord:${ids?.channel ? `${ids.channel}/` : ""}${link.origin} ${link.message}`);
-    } else if (link.kind === "skipped") console.log(`DECISION_LINK_SKIPPED ${d.id}: ${link.reason}`);
-    else if (link.kind === "failed") console.log(`DECISION_LINK_FAILED ${d.id} ${link.reason}`);
-    else if (!d.origin && !d.inLaneThread) console.log(`DECISION_LINK_SKIPPED ${d.id}: no origin thread`);
     if (fromEvent !== undefined) {
       recordResolved(config.stateDir, fromEvent, realClock.now(), `decision ${d.id}`);
       console.log(`DECISION_SOURCE_RESOLVED ${d.id} ${fromEvent}`);
@@ -139,35 +95,33 @@ export const decisionMain = async (rest: string[], { flow: deps, die, messengerT
     return 0;
   }
   if (sub === "close") {
-    const usage = "usage: dori decision close <id> --text TEXT [--owner-text TEXT] [--choice N] [--from CHANNEL/MESSAGE] [--cancel] [--tasks N] [--force]";
+    const usage = "usage: dori decision close <id> --text TEXT [--owner-text TEXT] [--choice N] [--from CHANNEL/MESSAGE] [--cancel] [--tasks N]";
     const parsed = (() => {
       try {
         return parseArgs({
           args: subArgs, allowPositionals: true, strict: true,
           options: {
             text: { type: "string" }, "owner-text": { type: "string" }, choice: { type: "string" }, from: { type: "string" }, cancel: { type: "boolean" },
-            tasks: { type: "string" }, force: { type: "boolean" },
+            tasks: { type: "string" },
           },
         });
       } catch (e) { return die(`${e instanceof Error ? e.message : String(e)}\n${usage}`, 2); }
     })();
     const [id, ...extra] = parsed.positionals;
-    const { text, "owner-text": ownerText, choice, from, cancel, tasks, force } = parsed.values;
+    const { text, "owner-text": ownerText, choice, from, cancel, tasks } = parsed.values;
     if (!id || extra.length || !text?.trim() || (ownerText !== undefined && !ownerText.trim()) || (choice !== undefined && !/^\d+$/.test(choice.trim()))
       || (from !== undefined && !od.isAnswerRef(from.trim())) || (cancel && choice !== undefined)
       || (tasks !== undefined && !/^[1-9]\d*$/.test(tasks.trim()))) die(usage, 2);
-    const closed = await od.closeOwnerDecision(decisionContext(undefined, true), id ?? "", {
+    const receipts = toodoAnswerReceipts(config.stateDir, chat);
+    const closed = await od.closeOwnerDecision({ ...context, receipts: {
+      ack: (_channel, message) => receipts.ack(message),
+      handled: receipts.handled,
+    } }, id ?? "", {
       text: (text ?? "").trim(), ...(ownerText !== undefined ? { ownerText: ownerText.trim() } : {}), ...(choice !== undefined ? { choice: Number(choice.trim()) } : {}),
       ...(from !== undefined ? { from: from.trim() } : {}), ...(cancel ? { cancel: true } : {}),
-      ...(tasks !== undefined ? { tasks: Number(tasks.trim()) } : {}), ...(force ? { force: true } : {}),
+      ...(tasks !== undefined ? { tasks: Number(tasks.trim()) } : {}),
     }).catch((e: unknown) => {
       if (!(e instanceof ds.OwnerDecisionError)) throw e;
-      // Like SEND_STALE: nothing was posted; the unseen messages are printed (and now seen), so a close after reading them goes through.
-      if (e.code === "DECISION_STALE") {
-        console.log(e.message);
-        for (const line of e.lines) console.log(line);
-        process.exit(3);
-      }
       for (const line of e.lines) console.log(line);
       return die(e.message, e.code === "DECISION_NOT_CLOSED" ? 1 : 2);
     });
@@ -178,10 +132,7 @@ export const decisionMain = async (rest: string[], { flow: deps, die, messengerT
     const relayed = relayLine(await relayDecisionClose(deps, closed.decision));
     if (relayed) console.log(relayed);
     for (const line of closed.answers ? od.answerOutcomeLines(closed.answers) : []) console.log(line);
-    if (closed.buttonsNote) console.log(`DECISION_BUTTONS_NOTE ${did}: ${closed.buttonsNote}`);
-    if (closed.archivePending) console.log(`DECISION_ARCHIVE_PENDING ${did}: ${closed.archivePending}`);
     if (closed.resolved) console.log(`DECISION_RESOLVED_EVENT ${did} ${closed.resolved}`);
-    if (closed.linkNote) console.log(`DECISION_LINK_NOTE ${did}: ${closed.linkNote}`);
     return 0;
   }
   if (sub === "list") {

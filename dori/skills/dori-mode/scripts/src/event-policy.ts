@@ -21,7 +21,7 @@ export type EventPolicy = {
 };
 
 const URGENT_KINDS = [
-  "INBOUND", "INBOUND_EDIT", "INBOUND_DELETE", "VISITOR", "LANE_NOT_DONE", "LANE_REPORT",
+  "INBOUND", "LANE_NOT_DONE", "LANE_REPORT",
   // A lane waiting on its agent's on-screen question instead of dori report (ask-user.ts).
   "LANE_ASKING",
   "DEAD_PANE", "UNRECOGNISED_PANE", "NO-PROGRESS",
@@ -32,11 +32,11 @@ const URGENT_KINDS = [
   "HOST_GUARD ALERT", "HOST_GUARD CLEAR", "HOST_GUARD OFFLINE", "LAUNCH_READY", "WORKING-WHILE-PAUSED",
   // The supervisor killed or paused something because memory ran critically low; the lead relays it to the owner.
   "HOST_GUARD CRITICAL",
-  "WAIT_DONE", "WAIT_TIMEOUT", "SUPERVISOR_STUCK", "UNHANDLED", "UNREPORTED", "UNRESOLVED",
+  "WAIT_DONE", "WAIT_TIMEOUT", "SUPERVISOR_STUCK", "UNREPORTED", "UNRESOLVED",
   "LANE_RECOVERY_EXHAUSTED",
   // Sandbox (launch.ts SandboxRefusal): a lane its sandbox refused to relaunch stays down until someone fixes the sandbox,
   // a lane allowed to run unsandboxed (runners.<label>.allowUnsandboxed, or a relaunch recorded without one) runs
-  // without isolation, and a sandbox notice that reached no Discord channel (sandbox-notice.ts) carries the owner's warning.
+  // without isolation, and a sandbox notice that reached no owner chat (sandbox-notice.ts) carries the owner's warning.
   // Other LANE_RECOVERY_ERROR lines stay digest (the default); SANDBOX_NOTICE_FALLBACK did reach the owner and stays digest.
   "LANE_RECOVERY_ERROR * sandbox-missing:", "LANE_RECOVERY_ERROR * sandbox-broken:", "LANE_RECOVERY_ERROR * sandbox-unavailable:",
   "SANDBOX_MISSING", "SANDBOX_BROKEN", "SANDBOX_UNAVAILABLE", "SANDBOX_SKIPPED", "SANDBOX_NOTICE_ERROR",
@@ -47,8 +47,6 @@ const URGENT_KINDS = [
   // The supervisor could not open its runner hub: every lane operation fails until a retry opens it. RUNNER_HUB_OPENED
   // stays digest (the default).
   "RUNNER_HUB_DISABLED",
-  // The supervisor's Discord gateway hit a close code it must not reconnect after (messenger/discord.ts DISCORD_FATAL_CLOSE).
-  "DISCORD_GATEWAY_FATAL",
   // The restart cap refused to restart a lead that does not take its events (supervise-lead-lifecycle.ts capRefuses).
   "LEAD_UNRESPONSIVE",
   "WAIT_FAILED", "WAITS_CORRUPT",
@@ -149,13 +147,13 @@ const DIGEST_KINDS = [
  * Kinds the supervisor settles or that need no lead action: journaled and counted, never delivered. A lane PR's routine
  * states (the lane and CI follow-up act on them; a merged one is read back as MERGE_VERIFIED, or urgent MERGE_UNVERIFIED),
  * runner link states (a runner owning open lanes wakes the lead as urgent HOST_GUARD OFFLINE or LANE_RUNNER_LOST), a
- * nudge that reached the lane, the owner's own thread close, and the Toodo moves that only queue or start a task (the
+ * nudge that reached the lane, and the Toodo moves that only queue or start a task (the
  * lead makes most of them itself). LANE_FINISH_NOTICE is kept only for old journals of the removed lane-finish line.
  */
 const ENGINE_KINDS = [
   "GH_PR * opened", "GH_PR * updated", "GH_PR * checks_green", "GH_PR * merged", "MERGE_VERIFIED",
   "RUNNER_STALE", "RUNNER_UNREACHABLE", "RUNNER_UNAVAILABLE", "RUNNER_OFFLINE",
-  "NUDGED", "THREAD_CLOSED_BY_OWNER", "GOAL_RESUMED",
+  "NUDGED", "GOAL_RESUMED",
   "TOODO_TASK_STATUS * new->planned", "TOODO_TASK_STATUS * planned->in_progress",
   "LANE_FINISH_NOTICE",
   // A met wait registered with --on-success silent (waits.ts).
@@ -171,8 +169,8 @@ export const DEFAULT_EVENT_POLICY: EventPolicy = {
   ]),
 };
 
-/** Owner tracking reads these from the lead's journal: they may only be lead classes. */
-const LEAD_ONLY_KINDS = ["INBOUND", "INBOUND_EDIT", "INBOUND_DELETE"];
+/** The owner's chat messages reach the lead through its journal: they may only be lead classes. */
+const LEAD_ONLY_KINDS = ["INBOUND"];
 
 export class EventPolicyError extends Error {}
 

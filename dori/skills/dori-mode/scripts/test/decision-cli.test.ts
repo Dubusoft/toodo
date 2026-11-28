@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { EVENT_LOG, writeCursorFile } from "../src/inbox.ts";
 import { DECISIONS_FILE } from "../src/decision-store.ts";
-import { Registry } from "../src/registry.ts";
 
 // Each case spawns `bun src/cli.ts`; process startup under a loaded full run outgrows bun's default 5 s.
 setDefaultTimeout(30_000);
@@ -62,7 +60,7 @@ test("decision list shows a direct answer's newest revision and where its delive
   expect(r.out).toContain("d2 open blocking lane=ap-7-1 answer=r1:withdrawn delivery=cancelled age=");
 });
 
-test("decision open refuses bad input with DECISION_REFUSED and a usage line (exit 2), before any token is needed", async () => {
+test("decision open refuses bad input with DECISION_REFUSED and a usage line (exit 2)", async () => {
   const base = ["decision", "open", "--question", "q", "--recommend", "1", "--reason", "r", "--waiting", "w"];
   for (const [extra, reason] of [
     [["--option", "a"], "DECISION_REFUSED needs 2-9 --option values, got 1"],
@@ -76,22 +74,18 @@ test("decision open refuses bad input with DECISION_REFUSED and a usage line (ex
     expect(r.err).toStartWith(reason);
     expect(r.err).toContain("usage: dori decision open");
   }
-  const noToken = await cli([...base, "--option", "a", "--option", "b", "--no-origin"]);
+  const noToken = await cli([...base, "--option", "a", "--option", "b"]);
   expect(noToken.code).toBe(1);
-  expect(noToken.err).toContain("DORI_DISCORD_TOKEN is not set");
+  expect(noToken.err).toContain("cannot read the token file");
 });
 
-test("a lead decision with no origin thread is refused unless --no-origin says so (exit 2), before any token is needed", async () => {
+test("decision open rejects conflicting or invalid Toodo origins", async () => {
   const base = ["decision", "open", "--question", "q", "--option", "a", "--option", "b", "--recommend", "1", "--reason", "r", "--waiting", "w"];
-  const none = await cli(base);
-  expect(none.code).toBe(2);
-  expect(none.err).toStartWith("DECISION_REFUSED no origin: pass --thread REF (the thread the question came from) or --no-origin\n");
-  await new Registry(dir).write({ key: "ap-7-1", title: "t", brief: "b", done: "d", thread: "none", status: "working" } as never);
-  expect((await cli([...base, "--lane", "ap-7-1"])).err).toStartWith("DECISION_REFUSED no origin");
-  expect((await cli([...base, "--no-origin", "--thread", "discord:1/2"])).err).toStartWith("DECISION_REFUSED --no-origin cannot go with --thread");
+  expect((await cli([...base, "--no-origin", "--thread", "toodo:thread/2"])).err).toStartWith("DECISION_REFUSED --no-origin cannot go with --thread");
+  expect((await cli([...base, "--thread", "toodo:channel/1"])).err).toStartWith("DECISION_REFUSED --thread toodo:channel/1 is not a thread ref");
 });
 
-test("decision open --request refuses options and a long-lived secret without --file (exit 2), before any token is needed", async () => {
+test("decision open --request refuses options and a long-lived secret without --file (exit 2)", async () => {
   const base = ["decision", "open", "--request", "--reason", "r", "--waiting", "w"];
   for (const [extra, reason] of [
     [["--question", "login code", "--option", "a"], "DECISION_REFUSED a --request takes no --option or --recommend"],
@@ -102,12 +96,12 @@ test("decision open --request refuses options and a long-lived secret without --
     expect(r.code).toBe(2);
     expect(r.err).toStartWith(reason);
   }
-  const noToken = await cli([...base, "--question", "the npm API token", "--file", "~/.config/npm-token", "--thread", "discord:1/2"]);
+  const noToken = await cli([...base, "--question", "the npm API token", "--file", "~/.config/npm-token", "--thread", "toodo:thread/2"]);
   expect(noToken.code).toBe(1);
-  expect(noToken.err).toContain("DORI_DISCORD_TOKEN is not set");
+  expect(noToken.err).toContain("cannot read the token file");
 });
 
-test("decision close: unknown, already closed and out-of-range choice exit 2 without touching Discord", async () => {
+test("decision close: unknown, already closed and out-of-range choice exit 2 before posting anything", async () => {
   writeFileSync(join(dir, DECISIONS_FILE), JSON.stringify({ nextSeq: 3, decisions: [
     decision("d1", "open", Date.now()), decision("d2", "closed", Date.now(), { closedAt: Date.now() }),
   ] }));
@@ -115,19 +109,6 @@ test("decision close: unknown, already closed and out-of-range choice exit 2 wit
   expect(await cli(["decision", "close", "d2", "--text", "x"])).toMatchObject({ code: 2, err: "DECISION_ALREADY_CLOSED d2\n" });
   expect((await cli(["decision", "close", "d1", "--text", "x", "--choice", "3"])).err).toStartWith("DECISION_BAD_CHOICE d1");
   expect((await cli(["decision", "close", "d1"])).code).toBe(2);
-});
-
-test("decision close refuses with DECISION_STALE and the unread lines (exit 3) while an owner message in the thread is unseen, then goes on", async () => {
-  writeFileSync(join(dir, DECISIONS_FILE), JSON.stringify({ nextSeq: 2, decisions: [decision("d1", "open", Date.now())] }));
-  writeCursorFile(dir, 0);
-  appendFileSync(join(dir, EVENT_LOG), `${JSON.stringify({ id: "discord:901:7", line: "INBOUND 901 7 also do X" })}\n`);
-  const stale = await cli(["decision", "close", "d1", "--text", "x", "--choice", "1"]);
-  expect(stale).toMatchObject({ code: 3, out: "DECISION_STALE 1\nUNREAD 901 INBOUND discord:901:7 also do X\n" });
-  // Printed once, it counts as seen: the next close goes on to Discord (no token here).
-  const again = await cli(["decision", "close", "d1", "--text", "x", "--choice", "1"]);
-  expect(again.code).toBe(1);
-  expect(again.err).toContain("DORI_DISCORD_TOKEN is not set");
-  expect((await cli(["decision", "close", "d1", "--text", "x", "--tasks", "0"])).code).toBe(2);
 });
 
 test("a lane (DORI_LANE_KEY) is refused decision with DORI_CLI_LANE_ONLY (exit 2)", async () => {

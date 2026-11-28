@@ -2,12 +2,12 @@ import { redactMeta, redactSecrets } from "./redact.ts";
 import type { Database } from "bun:sqlite";
 
 import { DEFAULT_LEAD, readStoreView } from "./store.ts";
-import type { Event, Journal, LaneOutcome } from "./supervise-journal.ts";
+import type { Event, LaneOutcome } from "./supervise-journal.ts";
 
 /**
  * `dori event trace <id>`: one event's path through the supervisor, read from the journal store without its lock.
  * enqueued -> delivered (in lead-events.log) -> taken (a consumed `dori inbox take` receipt, with its session) ->
- * acked/handled (an owner message) or reported (an event of a finished lane's report obligation).
+ * reported (for a finished lane’s report obligation).
  */
 
 /** What the store holds about one event id, whichever backend it is. */
@@ -20,9 +20,6 @@ export type TraceSources = {
   readonly deliveredAt?: number;
   readonly takenAt?: number;
   readonly takenSession?: string;
-  readonly owner?: { readonly ackedAt?: number; readonly handledAt?: number; readonly deleted?: boolean };
-  /** The owner message was handled long enough ago that its tracking was compacted to a tombstone. */
-  readonly ownerClosed?: boolean;
   readonly outcome?: LaneOutcome;
 };
 
@@ -48,13 +45,6 @@ export const buildTrace = (id: string, src: TraceSources): Trace | undefined => 
   else open.push("delivered");
   if (src.takenAt !== undefined) steps.push({ step: "taken", at: src.takenAt, ...(src.takenSession ? { detail: `session ${src.takenSession}` } : {}) });
   else if (src.delivered) open.push("taken");
-  const { owner } = src;
-  if (owner) {
-    if (owner.ackedAt !== undefined) steps.push({ step: "acked", at: owner.ackedAt });
-    if (owner.deleted) steps.push({ step: "deleted", detail: "the owner deleted the message" });
-    else if (owner.handledAt !== undefined) steps.push({ step: "handled", at: owner.handledAt });
-    else open.push(...(owner.ackedAt === undefined ? ["acked"] : []), "handled");
-  } else if (src.ownerClosed) steps.push({ step: "handled", detail: "owner tracking compacted" });
   const { outcome } = src;
   if (outcome) {
     if (outcome.reportedAt !== undefined) steps.push({ step: "reported", at: outcome.reportedAt, detail: redactSecrets(`lane ${outcome.lane}${outcome.note ? `: ${outcome.note}` : ""}`) });
@@ -78,7 +68,6 @@ const num = (value: unknown): number | undefined => (typeof value === "number" ?
 const fromSqlite = (id: string, db: Database): TraceSources => {
   const eventRow = db.query("SELECT * FROM events WHERE id = ?").get(id) as Row | null;
   const delivery = db.query("SELECT * FROM deliveries WHERE event_id = ?").get(id) as Row | null;
-  const ownerRow = db.query("SELECT * FROM owner_messages WHERE id = ?").get(id) as Row | null;
   const state = db.query("SELECT * FROM lead_state WHERE lead = ?").get(DEFAULT_LEAD) as Row | null;
   const outcomes = typeof state?.outcomes === "string" ? JSON.parse(state.outcomes) as LaneOutcome[] : [];
   const outcome = outcomes.find((entry) => entry.events?.includes(id));
@@ -89,8 +78,6 @@ const fromSqlite = (id: string, db: Database): TraceSources => {
     tombstoned: db.query("SELECT 1 AS hit FROM event_tombstones WHERE id = ?").get(id) !== null,
     delivered: delivery !== null,
     ...(delivery ? { deliveredAt: num(delivery.delivered_at), takenAt: num(delivery.taken_at), ...(typeof delivery.taken_session === "string" ? { takenSession: delivery.taken_session } : {}) } : {}),
-    ...(ownerRow ? { owner: { ackedAt: num(ownerRow.acked_at), handledAt: num(ownerRow.handled_at), deleted: ownerRow.deleted === 1 } } : {}),
-    ...(db.query("SELECT 1 AS hit FROM owner_tombstones WHERE id = ?").get(id) !== null ? { ownerClosed: true } : {}),
     ...(outcome ? { outcome } : {}),
   };
 };

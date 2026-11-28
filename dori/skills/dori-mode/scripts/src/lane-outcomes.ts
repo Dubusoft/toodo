@@ -5,13 +5,7 @@ import { join } from "node:path";
 import { eventClass, forLead } from "./event-policy.ts";
 import { replaceFileAtomic } from "./durable-write.ts";
 import { dropFile, publishReceipt, receiptPaths } from "./receipts.ts";
-import { unresolved } from "./decision-obligations.ts";
-import { ownerDecisionBlockers } from "./owner-decisions.ts";
 import type { Registry } from "./registry.ts";
-import { discordThreadOf } from "./messenger/target.ts";
-import { dropCloseTimer, readCloseTimers, readFinishedThreads, recordCloseTimer, recordFinishedThread, threadBlockers } from "./thread-finality.ts";
-import { lastReportIn, readOwnerClosed, recordOwnerClosed } from "./thread-followup.ts";
-import { Waits } from "./waits.ts";
 import type { Event, Journal, JournalCore, LaneOutcome } from "./supervise-journal.ts";
 
 /**
@@ -80,14 +74,8 @@ const riderLane = (line: string): string | undefined => keyOf(line.startsWith(AU
 /** The lane whose done claim was rejected: `LANE_NOT_DONE <key> ...`. */
 export const rejectedLane = (line: string): string | undefined => keyOf(line.startsWith(REJECTED) ? line.split(" ")[1] : undefined);
 
-/**
- * Where `dori reported` posted the report: the message id and its target (`platform:to[/thread]`); `thread` is the id of
- * the lane's thread (its bound thread, else the thread the report went into), `button` that the post carried the owner's
- * close-thread button (only receipts of an older `dori reported --final`; it no longer posts one). `followUp` marks a post
- * that is no new report in the thread (an edit appended to the last report, or a line sent to the owner channel because
- * the thread is closed): it never re-arms the thread's automatic close.
- */
-export type ReportedPost = { readonly message: string; readonly target: string; readonly thread?: string; readonly button?: boolean; readonly followUp?: boolean };
+/** Where `dori reported` posted the report: the message id and its target (a Toodo chat ref). */
+export type ReportedPost = { readonly message: string; readonly target: string };
 
 /**
  * The lead's receipt that it told the owner about lane `lane`'s outcome: tmp, fsync, rename, then both directories.
@@ -95,22 +83,20 @@ export type ReportedPost = { readonly message: string; readonly target: string; 
  */
 export const recordReported = (stateDir: string, lane: string, at: number, note?: string, posted?: ReportedPost): string => {
   if (!LANE_KEY.test(lane)) throw new ReportedError("usage: dori reported <key> --text TEXT [--to TARGET] [--thread ID] [--note TEXT] (a lane key)");
-  return publishReceipt(stateDir, REPORTED_DIR, at, { lane, at, ...(note ? { note: redactSecrets(note) } : {}), ...(posted ? { message: posted.message, target: posted.target } : {}),
-    ...(posted?.thread ? { thread: posted.thread } : {}), ...(posted?.button ? { button: true } : {}), ...(posted?.followUp ? { followUp: true } : {}) });
+  return publishReceipt(stateDir, REPORTED_DIR, at, { lane, at, ...(note ? { note: redactSecrets(note) } : {}), ...(posted ? { message: posted.message, target: posted.target } : {}) });
 };
 
 /** `message` and `target` are absent in receipts written before `dori reported` posted the report itself. */
 export type ReportedReceipt = {
   readonly path: string; readonly lane: string; readonly at: number; readonly note?: string; readonly message?: string; readonly target?: string;
-  readonly thread?: string; readonly button?: true; readonly followUp?: true;
 };
 
 /** Receipts waiting for the supervisor; unreadable or malformed files are skipped (and never dropped). */
 export const pendingReported = (stateDir: string): ReportedReceipt[] => {
   return receiptPaths(join(stateDir, REPORTED_DIR)).flatMap((path) => {
     try {
-      const { lane, at, note, message, target, thread, button, followUp } = JSON.parse(readFileSync(path, "utf8")) as {
-        lane?: unknown; at?: unknown; note?: unknown; message?: unknown; target?: unknown; thread?: unknown; button?: unknown; followUp?: unknown;
+      const { lane, at, note, message, target } = JSON.parse(readFileSync(path, "utf8")) as {
+        lane?: unknown; at?: unknown; note?: unknown; message?: unknown; target?: unknown;
       };
       if (typeof lane !== "string" || !LANE_KEY.test(lane)) return [];
       return [{
@@ -118,22 +104,10 @@ export const pendingReported = (stateDir: string): ReportedReceipt[] => {
         ...(typeof note === "string" && note ? { note } : {}),
         ...(typeof message === "string" && message ? { message } : {}),
         ...(typeof target === "string" && target ? { target } : {}),
-        ...(typeof thread === "string" && /^\d+$/.test(thread) ? { thread } : {}),
-        ...(button === true ? { button: true as const } : {}),
-        ...(followUp === true ? { followUp: true as const } : {}),
       }];
     } catch { return []; }
   });
 };
-
-/** What the automatic thread close does in Discord (supervise-loop.ts). */
-export type ThreadCloseTransport = {
-  /** Shows the owner's close-thread button on report `message` in `thread` live, disabled as closed, or takes it off. */
-  readonly button: (thread: string, message: string, state: "live" | "closed" | "none") => Promise<void>;
-  readonly archive: (thread: string) => Promise<void>;
-};
-
-const failure = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 export const unreported = (journal: Journal): LaneOutcome[] => (journal.outcomes ?? []).filter((outcome) => outcome.reportedAt === undefined);
 
@@ -213,10 +187,7 @@ export class OutcomeTracking {
   /**
    * `dori reported` receipts close their lane's obligation; one for a lane with none yet (reported before its outcome
    * event arrived) is kept, so that event opens nothing. Persisted before the receipts are dropped: a replay only takes
-   * the earliest report time again. A repeat report of a lane into the same thread without a button keeps its last report
-   * time, so it does not re-arm that thread's automatic close; new work in a thread runs under a new lane key. A follow-up
-   * receipt (an appended edit, or a line sent to the owner channel for a closed thread) leaves the thread and its last
-   * report time as they were. Receipts are taken in time order.
+   * the earliest report time again. Receipts are taken in time order.
    */
   consumeReceipts(): void {
     const receipts = pendingReported(this.core.deps.config.stateDir).sort((a, b) => a.at - b.at);
@@ -226,16 +197,11 @@ export class OutcomeTracking {
       const at = outcomes.findIndex((outcome) => outcome.lane === receipt.lane);
       const found = at < 0 ? undefined : outcomes[at];
       const note = found?.note ?? receipt.note;
-      const thread = receipt.thread ?? found?.thread;
-      const repeat = found?.lastReportAt !== undefined && receipt.thread === found.thread && !receipt.button;
       const next: LaneOutcome = {
         ...(found ?? { lane: receipt.lane, since: receipt.at }),
         reportedAt: Math.min(found?.reportedAt ?? Infinity, receipt.at),
         ...(note ? { note } : {}),
-        ...(thread && !receipt.followUp ? { thread, lastReportAt: repeat ? found.lastReportAt : Math.max(found?.lastReportAt ?? -Infinity, receipt.at) } : {}),
       };
-      // An older --final report's button stands for the thread's close: the supervisor does not close it for that report.
-      if (receipt.button && receipt.thread) recordFinishedThread(this.core.deps.config.stateDir, receipt.thread, receipt.at);
       if (at < 0) outcomes.push(next); else outcomes[at] = next;
       if (found?.reportedAt === undefined) console.log(`LANE_OUTCOME_REPORTED ${receipt.lane}`);
     }
@@ -342,113 +308,6 @@ export class OutcomeTracking {
       this.core.persist("normal");
     }
     this.publish();
-  }
-
-  /**
-   * A finished thread gets the owner's close button, then closes on its own. A thread is finished when a report into it
-   * was recorded after the thread was last finished (by this tick, or an older --final report's button) and
-   * threadBlockers finds nothing left on it. A report for a lane that closed before that time is covered by it and
-   * re-arms nothing; one for a lane that closed later (or has not closed yet) is new work. A thread already closed after
-   * its last report is left alone. Run every pass, so it fires right after the last report or right after the last lane
-   * closes, whichever comes later.
-   *
-   * The button goes on the thread's last report message (thread-followup.ts lastReportIn) and the thread's wait starts
-   * (thread-close-timers.json). A thread holds one button at most: before it goes on another message, it is taken off
-   * the one that had it, and a failed step is retried on the next pass. While the thread waits, a newer report in it
-   * moves the button there and restarts the wait, and so does the owner writing in it (touchCloseTimer); new work on it
-   * (threadBlockers again) takes the button off. A click archives it at once and ends the wait (discord-supervisor.ts).
-   * Past config `threadCloseAfterHours` from the wait's start the button is shown closed and the thread archived. A
-   * thread with no report message in it is archived at once. An archived thread is recorded as both finished and closed
-   * (owner-closed-threads.json), so later posts addressed to it are redirected to its parent channel as for a thread the
-   * owner closed, until the owner writes in it and it opens again. A failed archive is retried on the next pass.
-   */
-  async autoCloseTick(registry: Pick<Registry, "open" | "read">, transport: ThreadCloseTransport): Promise<void> {
-    const stateDir = this.core.deps.config.stateDir;
-    const outcomes = this.journal.outcomes ?? [];
-    const buttons = readFinishedThreads(stateDir);
-    const latest = new Map<string, number>();
-    for (const outcome of outcomes) {
-      if (outcome.thread === undefined || outcome.lastReportAt === undefined) continue;
-      const button = buttons[outcome.thread];
-      if (button !== undefined && outcome.lastReportAt > button) {
-        const closedAt = (await registry.read(outcome.lane))?.closedAt;
-        if (closedAt && Date.parse(closedAt) < button) continue;
-      }
-      latest.set(outcome.thread, Math.max(latest.get(outcome.thread) ?? -Infinity, outcome.lastReportAt));
-    }
-    const closed = readOwnerClosed(stateDir);
-    const due = [...latest].filter(([thread, at]) => at > (buttons[thread] ?? -Infinity) && at > (closed[thread] ?? -Infinity));
-    if (!due.length && !Object.keys(readCloseTimers(stateDir)).length) return;
-    const open = await registry.open();
-    const waits = new Waits(stateDir).list();
-    // An open owner decision of a lane keeps its thread's button back too (it names its lane directly).
-    const decisions = [...unresolved(this.journal).map(({ id, line }) => ({ id, ...(line ? { line } : {}) })), ...ownerDecisionBlockers(stateDir)];
-    // Unreported lanes have no receipt yet: their thread comes from the registry (an open lane, else the archive).
-    const threadOf = new Map<string, string | undefined>();
-    for (const outcome of unreported(this.journal)) {
-      const bound = open.find((lane) => lane.key === outcome.lane)?.thread ?? (await registry.read(outcome.lane))?.thread;
-      threadOf.set(outcome.lane, bound && bound !== "none" ? discordThreadOf(bound, this.core.deps.config.discordChannels) : undefined);
-    }
-    const blockers = (thread: string): string[] => threadBlockers({
-      thread, open, waits, decisions,
-      lanes: outcomes.filter((outcome) => outcome.thread === thread).map((outcome) => outcome.lane),
-      unreported: [...threadOf].filter(([, on]) => on === thread).map(([lane]) => lane),
-    });
-    // Puts the button on `message`, first taking it off the message that had it: never two at once.
-    const place = async (thread: string, message: string): Promise<boolean> => {
-      const previous = readCloseTimers(stateDir)[thread];
-      try {
-        if (previous && previous.message !== message) await transport.button(thread, previous.message, "none");
-        await transport.button(thread, message, "live");
-        return true;
-      } catch (e) {
-        console.error(`THREAD_CLOSE_BUTTON_FAILED ${thread}: ${failure(e)}`);
-        return false;
-      }
-    };
-    const archive = async (thread: string): Promise<boolean> => {
-      try { await transport.archive(thread); }
-      catch (e) { console.error(`THREAD_AUTO_CLOSE_FAILED ${thread}: ${failure(e)}`); return false; }
-      const now = this.core.deps.clock.now();
-      recordFinishedThread(stateDir, thread, now);
-      recordOwnerClosed(stateDir, thread, now);
-      dropCloseTimer(stateDir, thread);
-      console.log(`THREAD_AUTO_CLOSED ${thread}`);
-      return true;
-    };
-    for (const [thread] of due) {
-      if (blockers(thread).length) continue;
-      const report = lastReportIn(stateDir, thread);
-      if (!report) { await archive(thread); continue; }
-      if (!(await place(thread, report.message))) continue;
-      const now = this.core.deps.clock.now();
-      recordFinishedThread(stateDir, thread, now);
-      recordCloseTimer(stateDir, thread, { message: report.message, reportAt: report.at, since: now });
-      console.log(`THREAD_CLOSE_BUTTON_POSTED ${thread} ${report.message}`);
-    }
-    const waitMs = this.core.deps.config.threadCloseAfterHours * 3_600_000;
-    for (const [thread, timer] of Object.entries(readCloseTimers(stateDir))) {
-      const held = blockers(thread);
-      if (held.length) {
-        try { await transport.button(thread, timer.message, "none"); }
-        catch (e) { console.error(`THREAD_CLOSE_BUTTON_FAILED ${thread}: ${failure(e)}`); continue; }
-        dropCloseTimer(stateDir, thread);
-        console.log(`THREAD_CLOSE_BUTTON_WITHDRAWN ${thread}: ${held.join("; ")}`);
-        continue;
-      }
-      const report = lastReportIn(stateDir, thread);
-      if (report && report.at > timer.reportAt) {
-        if (!(await place(thread, report.message))) continue;
-        recordCloseTimer(stateDir, thread, { message: report.message, reportAt: report.at, since: report.at });
-        console.log(`THREAD_CLOSE_BUTTON_MOVED ${thread} ${timer.message} -> ${report.message}`);
-        continue;
-      }
-      if (this.core.deps.clock.now() - timer.since < waitMs) continue;
-      // Shown closed before the archive: an archived thread's messages cannot be edited.
-      await transport.button(thread, timer.message, "closed").catch((e: unknown) => { console.error(`THREAD_CLOSE_BUTTON_FAILED ${thread}: ${failure(e)}`); });
-      if (await archive(thread)) continue;
-      await transport.button(thread, timer.message, "live").catch((e: unknown) => { console.error(`THREAD_CLOSE_BUTTON_FAILED ${thread}: ${failure(e)}`); });
-    }
   }
 
   /** Writes UNREPORTED_FILE when the open obligations changed (tmp + rename; it is derived, the store is the record). */

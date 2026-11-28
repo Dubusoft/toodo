@@ -358,7 +358,7 @@ test("the real supervisor runs a due job through the registry", async () => {
   const w = newWorld();
   w.panes.push({ pane_id: "hc:t1", workspace_id: "test", agent: "omo", agent_status: "working" });
   const base = depsFor(w, clock, state.dir, {
-    discord: { applicationId: "100", guildId: "200", ownerId: "123456789012345" }, discordChannels: ["11"], defaultModel: "test/model",
+    defaultModel: "test/model",
   });
   const deps = {
     ...base,
@@ -378,16 +378,7 @@ test("the real supervisor runs a due job through the registry", async () => {
     return parked;
   };
   const controller = new AbortController();
-  const running = supervise(deps, controller.signal, {
-    token: `schedule-test-${state.dir}`, spawnRunner: idleRunner, gatewayLockDir: join(state.dir, "gateway-locks"),
-    http: async (request) => ({ status: 200, headers: {}, body: request.url.endsWith("/threads/active") ? JSON.stringify({ threads: [] }) : "[]" }),
-    lookup: async () => "", statusLookup: async () => "",
-    open: () => {
-      let closed = (_code: number) => {};
-      return { send: () => {}, close: () => { closed(1000); }, onMessage: () => {}, onError: () => {}, onClose: (callback) => { closed = callback; } };
-    },
-    timers: { setInterval: () => 0, clearInterval: () => {} },
-  }, async () => true, undefined, pause);
+  const running = supervise(deps, controller.signal, { spawnRunner: idleRunner }, async () => true, undefined, pause);
   const done = () => readSourceStatus(state.dir)?.sources.report?.lastResult === "ok";
   try {
     await new Promise<void>((resolve, reject) => {

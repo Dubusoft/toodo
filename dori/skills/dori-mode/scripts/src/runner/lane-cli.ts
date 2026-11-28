@@ -125,7 +125,7 @@ const LANE_HELP: Record<(typeof LANE_CLI_COMMANDS)[number], string> = {
     "  question needs 2-9 --option values, --recommend N (1-based, in range) and --reason; --waiting names what is paused",
     "  (with --nonblocking: what goes ahead on the recommendation). An open-ended blocker without choices is: blocked --text ...",
     "  request asks the owner for input only they can give (a one-time code such as 2FA, login or device codes, a file or a value)",
-    "  in its own thread; the owner replies there. A long-lived secret (password, API key, token) is never asked for in Discord:",
+    "  in its own thread; the owner replies there. A long-lived secret (password, API key, token) is never asked for in the chat:",
     "  --file <path> names where the owner writes it (chmod 600), and a request naming one without --file is refused",
     "usage: dori report ack <id>",
   ].join("\n"),

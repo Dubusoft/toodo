@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 
 import { realClock } from "../run.ts";
-import { checklistLine, InboxError, take, takeAwaitingReminders, takeCarriedReminders, takeOutput } from "../inbox.ts";
+import { checklistLine, InboxError, take, takeCarriedReminders, takeOutput } from "../inbox.ts";
 import { BUILT_IN } from "../tunables.ts";
 import { type CliCommand, die } from "./context.ts";
 
@@ -22,14 +22,12 @@ export const inboxCommand: CliCommand = {
       const { opensObligation, takeDecisionReminders } = await import("../decision-obligations.ts");
       const lines = takeOutput(result, (line) => opensObligation(line, deps.tunables));
       const sentinel = /^INBOX_(MORE|EMPTY)\b/.test(lines.at(-1) ?? "") ? lines.splice(-1) : [];
-      const reminders = [...takeCarriedReminders(config.stateDir, new Set(result.events.map((event) => event.id))), ...takeReminders(config.stateDir), ...takeDecisionReminders(config.stateDir)];
+      const reminders = [...takeCarriedReminders(config.stateDir), ...takeReminders(config.stateDir), ...takeDecisionReminders(config.stateDir)];
       // Owner chat mixed with lane outcomes: one checklist line first, so answering the chat cannot hide the report owed.
       const checklist = checklistLine([...result.events.map((event) => `${event.id}\t${event.line}`), ...reminders]);
-      // Messages parked on the owner's answer are information, not work: listed last and kept out of the checklist.
-      // Owner decisions still open are information too: the owner has not answered, or the answer is an UNRESOLVED reminder.
       const { takeOwnerDecisionLines } = await import("../owner-decisions.ts");
       const decisionLines = takeOwnerDecisionLines(config.stateDir, realClock.now());
-      for (const line of [...(checklist ? [checklist] : []), ...lines, ...reminders, ...takeAwaitingReminders(config.stateDir), ...decisionLines, ...sentinel]) console.log(line);
+      for (const line of [...(checklist ? [checklist] : []), ...lines, ...reminders, ...decisionLines, ...sentinel]) console.log(line);
     } catch (e) {
       if (e instanceof InboxError) die(e.message, 2);
       throw e;

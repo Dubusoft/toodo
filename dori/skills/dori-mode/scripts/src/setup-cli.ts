@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -6,7 +6,6 @@ import { parseArgs } from "node:util";
 import { ConfigKeyError, DORI_CONFIG_KEYS, parseSetArgs } from "./config-keys.ts";
 import { configPath } from "./config.ts";
 import { doctorMain } from "./doctor.ts";
-import { fetchHttp } from "./messenger/http.ts";
 import { run } from "./run.ts";
 import { ReposError } from "./repos.ts";
 import { type Prompter, runSetup, SetupError, type SetupInput } from "./setup.ts";
@@ -15,20 +14,18 @@ export const SETUP_USAGE = `dori setup [options]
 
   Interactive by default: every question shows the current value in [brackets] (none shown: the default applies),
   Enter keeps it and - clears an optional key.
-  Asks five questions: bot token, channel ids, owner id, whether new GitHub issues start work (yes: the logins and
-  repos to watch), and autostart (yes: every system step runs). Everything else keeps its value or default.
-  --advanced              also ask models, directories, every other config key, each autostart step
-                          and whether to keep a channel that failed its check; GitHub repos are asked every time
+  Asks two questions: whether new GitHub issues start work (yes: the logins and repos to watch), and autostart (yes:
+  every system step runs). Everything else keeps its value or default.
+  --advanced              also ask models, directories, every other config key and each autostart step; GitHub repos
+                          are asked every time
   --yes, -y               non-interactive: take flags, then stored values, then defaults
-  --token-file FILE       read the Discord bot token from FILE ("-" for stdin); never pass it as an argument
-  --channel ID            main Discord channel id (repeatable)
   --model M  --cwd DIR  --state-dir DIR
   --issue-author LOGIN    GitHub account whose new issues start work automatically (repeatable)
   --set KEY=VALUE         set a config.json key as given, without asking (repeatable; an empty VALUE unsets it)
   --unset KEY             delete a config.json key without asking (repeatable)
   --migrate               after an update: migrate the schema, remove keys config.json no longer reads (warned once first)
                           and keys the local runner's runner-config.json no longer reads, and ask only keys never shown
-                          before; no token, Discord or autostart steps
+                          before; no autostart steps
   --autostart             install and enable the systemd user units (with --yes: runs every step)
 
   Keys config.json no longer reads are warned about on the first run that finds them and removed on the next;
@@ -105,7 +102,7 @@ export const setupMain = async (args: readonly string[]): Promise<number> => {
     args: [...args],
     strict: true,
     options: {
-      yes: { type: "boolean", short: "y" }, "token-file": { type: "string" }, channel: { type: "string", multiple: true },
+      yes: { type: "boolean", short: "y" },
       model: { type: "string" }, cwd: { type: "string" }, "state-dir": { type: "string" }, "issue-author": { type: "string", multiple: true },
       autostart: { type: "boolean" }, help: { type: "boolean", short: "h" },
       set: { type: "string", multiple: true }, unset: { type: "string", multiple: true }, migrate: { type: "boolean" },
@@ -119,7 +116,6 @@ export const setupMain = async (args: readonly string[]): Promise<number> => {
   const interactive = !values.yes && Boolean(process.stdin.isTTY);
   const home = homedir();
   const cfg = configPath();
-  const tokenFile = values["token-file"];
   let keys: ReturnType<typeof parseSetArgs>;
   try {
     keys = parseSetArgs(DORI_CONFIG_KEYS, values.set ?? [], values.unset ?? []);
@@ -129,8 +125,6 @@ export const setupMain = async (args: readonly string[]): Promise<number> => {
     return 1;
   }
   const input: SetupInput = {
-    token: tokenFile ? readFileSync(tokenFile === "-" ? 0 : tokenFile, "utf8").trim() || undefined : undefined,
-    channels: values.channel?.flatMap((c) => c.split(",")).map((c) => c.trim()).filter(Boolean),
     model: values.model,
     cwd: values.cwd,
     stateDir: values["state-dir"],
@@ -146,7 +140,6 @@ export const setupMain = async (args: readonly string[]): Promise<number> => {
     const code = await runSetup(
       {
         run,
-        http: fetchHttp,
         prompt: interactive ? ttyPrompter() : defaultsPrompter,
         log: (line) => console.log(line),
         interactive,

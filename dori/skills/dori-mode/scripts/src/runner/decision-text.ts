@@ -123,7 +123,7 @@ export type InputRequest = {
 };
 
 /**
- * Long-lived secrets: never asked for in Discord, only through a file. A request that names one without a file is refused;
+ * Long-lived secrets: never asked for in chat, only through a file. A request that names one without a file is refused;
  * short one-time codes (2FA, login or device codes) may come back in the thread.
  */
 export const LONG_LIVED_SECRET = /pass(?:word|phrase|wd)|api[\s_-]?key|secret|token|private[\s_-]?key|credential|비밀번호|패스워드|암호|토큰|시크릿|API\s?키|개인\s?키/i;
@@ -153,7 +153,7 @@ export const inputRequestProblem = (request: {
     return undefined;
   }
   return LONG_LIVED_SECRET.test(`${request.need} ${request.reason}`)
-    ? "a long-lived secret (password, API key, token) is never asked for in Discord: name the file the owner writes it to with --file <path> (chmod 600)"
+    ? "a long-lived secret (password, API key, token) is never asked for in chat: name the file the owner writes it to with --file <path> (chmod 600)"
     : undefined;
 };
 

@@ -76,7 +76,7 @@ const world = (cap: number) => {
 
 type World = ReturnType<typeof world>;
 
-/** Real autopilot executor over the World: only Toodo, Discord threads, quota and the lock are faked. */
+/** Real autopilot executor over the World: only Toodo, quota and the lock are faked. */
 const autopilot = (h: World, count: number) => {
   const store = openOperations({ stateDir: h.state.dir });
   cleanups.push(() => store.close());
@@ -96,7 +96,6 @@ const autopilot = (h: World, count: number) => {
     ...live,
     lock: async () => () => {},
     quota: async () => ({ readable: true, accounts: [{ name: "default", maxUsedPct: 10 }] }),
-    parentChannel: "c",
     toodo: () => ({
       task: async (id) => tasks.get(id),
       tasksByIds: async (ids) => ids.map((id) => tasks.get(id)).filter((t): t is ToodoTask => t !== undefined),
@@ -113,8 +112,6 @@ const autopilot = (h: World, count: number) => {
       read: async (id) => record(id),
       reportBlocker: async (id) => ({ wrote: true, task: record(id) }),
     },
-    createThread: async (thread) => ({ id: `thread-${thread.title.split(":")[0]}`, member: "added" }),
-    findThread: async (thread) => thread.id,
     worktreeRoot: () => worktrees.dir,
   };
   return { deps, run: (ids: readonly number[]) => runExecutor(deps, ids), notices };

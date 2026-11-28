@@ -1,12 +1,7 @@
 import type { ParseArgsOptionsConfig } from "node:util";
 
-import { envFilePath, resolveCredential } from "../credentials.ts";
 import type { FlowDeps } from "../done-flow.ts";
 import { laneOps, type LaneOps } from "../lane-ops.ts";
-import { Discord } from "../messenger/discord.ts";
-import { discordThread } from "../messenger/discord-inbound.ts";
-import { fetchHttp } from "../messenger/http.ts";
-import { withThreadParent } from "../messenger/target.ts";
 import { type Registry, statusOf } from "../registry.ts";
 import { realClock, run } from "../run.ts";
 import { RunnerUnavailable } from "../runner/call.ts";
@@ -74,22 +69,6 @@ export const commandArgv = (command: string | undefined): unknown => {
   if (!command) return die("--command is required");
   if (!command.startsWith("[")) return ["sh", "-c", command];
   try { return JSON.parse(command) as unknown; } catch { return die("--command starting with [ must be a JSON argv array"); }
-};
-
-export const messengerToken = (name: string): string => resolveCredential(name) ?? die(`${name} is not set in the environment or in ${envFilePath()}`);
-
-/**
- * A launch's `--thread` as the lane stores it: `discord:<channel>/<thread>`, the parent read from Discord when the value names
- * only the thread. Without a token or an answer it is kept in ref form (`discord:<id>`), with THREAD_PARENT_UNKNOWN on stderr.
- */
-export const laneThreadRef = async (value: string | undefined, channels: readonly string[]): Promise<string | undefined> => {
-  if (value === undefined || value === "none") return value;
-  const token = resolveCredential("DORI_DISCORD_TOKEN");
-  return withThreadParent(value, channels, async (id) => {
-    if (!token) { console.error(`THREAD_PARENT_UNKNOWN ${id}: DORI_DISCORD_TOKEN is not set; the lane keeps discord:${id}`); return undefined; }
-    try { return discordThread(await new Discord(fetchHttp, realClock, token).call("GET", `/channels/${id}`))?.parent; }
-    catch (e) { console.error(`THREAD_PARENT_UNKNOWN ${id}: ${e instanceof Error ? e.message : String(e)}; the lane keeps discord:${id}`); return undefined; }
-  });
 };
 
 export const every = async (minutes: number, tick: () => Promise<void>): Promise<void> => {

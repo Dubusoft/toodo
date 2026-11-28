@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 
 import { autopilotPausePath, readPause } from "./autopilot-cli.ts";
-import { discordOn, type DoriConfig } from "./config.ts";
+import type { DoriConfig } from "./config.ts";
 import { displayTime } from "./display-time.ts";
 import { eventClass, eventKind, type EventClass, type EventPolicy } from "./event-policy.ts";
 import { readSourceStatus, SourceSpecs, type SourceView, sourceViews } from "./event-sources.ts";
@@ -72,8 +72,6 @@ export type Status = {
     readonly issueRepos: readonly string[];
   };
   readonly gateway: GatewayView;
-  /** Owner messages the lead was handed and reminded about after the ack window, without acking them yet. */
-  readonly unacked: number;
   /** Finished lanes (LANE_CLOSED, CI_MERGED) the lead has not reported to the owner with dori reported, oldest first. */
   readonly unreported?: readonly { readonly lane: string; readonly since: string }[];
   /** Owner decisions not yet closed, including answered decisions awaiting lead action. */
@@ -91,8 +89,6 @@ export type Status = {
 
 export type StatusLane = {
   readonly key: string; readonly model?: string; readonly ageMin: number; readonly progress?: string; readonly repo?: string; readonly pr?: number;
-  /** The lane's Discord thread as a link, when the lane has one and the config names the guild. */
-  readonly threadUrl?: string;
   /** The Toodo task the lane works on (Lane.task); absent when none was named. */
   readonly task?: number;
   /** The runner the lane runs on (its owning runner, else its machine, else "local"); absent in an older status reads as "local". */
@@ -347,10 +343,6 @@ const readWaits = (stateDir: string): Status["waits"] => {
   }
 };
 
-const readUnacked = (stateDir: string): number => readStoreView(stateDir, {
-  sqlite: (db) => (db.query("SELECT count(*) AS n FROM owner_messages WHERE reminded = 1").get() as { n: number }).n,
-}) ?? 0;
-
 const readUnreported = (stateDir: string): NonNullable<Status["unreported"]> => {
   const owed = (outcomes: unknown) => (Array.isArray(outcomes) ? outcomes : [])
     .filter((entry: { lane?: unknown; since?: unknown; reportedAt?: unknown }) => typeof entry?.lane === "string" && typeof entry.since === "number" && entry.reportedAt === undefined)
@@ -380,12 +372,6 @@ const laneRepoPr = (l: Lane): { repo?: string; pr?: number } => {
   return { ...(repo ? { repo } : {}), ...(pr !== undefined ? { pr } : {}) };
 };
 
-/** The link of a lane's `discord:<thread>` or `discord:<channel>/<thread>` thread in `guildId`; undefined for any other thread. */
-export const discordThreadUrl = (thread: string, guildId: string | undefined): string | undefined => {
-  const id = /^discord:(?:\d+\/)?(\d+)$/.exec(thread)?.[1];
-  return id && guildId ? `https://discord.com/channels/${guildId}/${id}` : undefined;
-};
-
 /** Read-only and no LLM: unit states, files under stateDir, one hc terminal list. */
 export const collectStatus = async (d: StatusDeps): Promise<Status> => {
   const now = d.clock.now();
@@ -401,13 +387,8 @@ export const collectStatus = async (d: StatusDeps): Promise<Status> => {
   try { repos = new Repos(d.config.stateDir).list(); } catch { /* unreadable list: show none */ }
   const reports = latestLaneReports(d.config);
   const decisions = openOwnerDecisions(d.config.stateDir);
-  const threadUrlOf = (thread: string): { threadUrl?: string } => {
-    const threadUrl = discordOn(d.config) ? discordThreadUrl(thread, d.config.discord?.guildId) : undefined;
-    return threadUrl ? { threadUrl } : {};
-  };
   const statusLane = (l: Lane): StatusLane => ({
     key: l.key, ...(l.model ? { model: l.model } : {}), ...laneRepoPr(l), ...(l.task !== undefined ? { task: l.task } : {}),
-    ...threadUrlOf(l.thread),
     ageMin: Math.max(0, Math.floor((now - Date.parse(l.openedAt)) / 60_000)),
     ...(l.lastProgressPost ? { progress: l.lastProgressPost } : {}),
     ...(l.recoveryPending ? { recovery: (l as RecoveryLane).recoveryExhausted ? "exhausted" as const : "pending" as const } : {}),
@@ -444,8 +425,7 @@ export const collectStatus = async (d: StatusDeps): Promise<Status> => {
       issueAuthors: d.config.githubIssueAuthors,
       issueRepos: gh.issueRepos,
     },
-    gateway: gatewayView(readGatewayStatus(d.config.stateDir), now, discordOn(d.config)),
-    unacked: readUnacked(d.config.stateDir),
+    gateway: gatewayView(readGatewayStatus(d.config.stateDir), now),
     unreported: readUnreported(d.config.stateDir),
     decisions: decisions.map((decision) => ({
       id: decision.id, state: decision.state, blocking: decision.blocking,
@@ -528,19 +508,12 @@ const unitWords = (u: UnitState): string => {
 };
 const unitName = (u: UnitState): string => u.name.replace(/\.service$/, "");
 
-const GATEWAY_WORDS: Readonly<Record<string, string>> = { missing: "상태 파일 없음", stale: "응답 끊김", disconnected: "연결 안 됨", off: "꺼짐", "no-content": "메시지 내용 권한 없음" };
-const gatewayWords = (g: GatewayView): string => GATEWAY_WORDS[g.state] ?? g.state;
-/** The gateway's state with the heartbeat age its English text carries, in Korean. */
+const GATEWAY_WORDS: Readonly<Record<GatewayView["state"], string>> = { live: "정상", missing: "상태 파일 없음", stale: "응답 끊김" };
+/** The heartbeat's state with the age its English text carries, in Korean. */
 const gatewayDetail = (g: GatewayView): string => {
   const sec = /(\d+)s ago/.exec(g.text)?.[1];
   const beat = sec === undefined ? "" : ` (하트비트 ${agoSec(Number(sec))})`;
-  switch (g.state) {
-    case "missing": return "상태 파일 없음 (수퍼바이저가 꺼져 있거나 예전 빌드)";
-    case "stale": return `응답 끊김${beat}`;
-    case "disconnected": return `연결 안 됨${beat}`;
-    case "no-content": return `메시지 내용 권한 없이 연결됨, REST로 대신 읽음${beat}`;
-    default: return clip(g.text, 120);
-  }
+  return g.state === "missing" ? "상태 파일 없음 (수퍼바이저가 꺼져 있거나 예전 빌드)" : `${GATEWAY_WORDS[g.state]}${beat}`;
 };
 
 const RUNNER_WORDS: Readonly<Record<RunnerView["state"], string>> = { connected: "연결됨", stale: "응답 늦음", offline: "오프라인", lost: "끊김", revoked: "해지됨" };
@@ -598,12 +571,11 @@ const problems = (s: Status, now: number): Problem[] => {
   // hc-core is a oneshot that only starts the core (`hc server start`): enabled is all it needs to be.
   const bad = s.services.filter((u) => (u.name === LEGACY_PRESENCE ? u.active === "active" : u.enabled !== "enabled" || (u.name !== HC_CORE_UNIT && u.active !== "active")));
   for (const u of bad) out.push({ label: `${unitName(u)} ${RUN_WORDS[u.active] ?? u.active}`, line: `서비스 ${unitName(u)}: ${unitWords(u)}` });
-  if (s.gateway.state !== "live" && s.gateway.state !== "off") out.push({ label: `게이트웨이 ${gatewayWords(s.gateway)}`, line: `Discord 게이트웨이: ${gatewayDetail(s.gateway)}` });
+  if (s.gateway.state !== "live") out.push({ label: `하트비트 ${GATEWAY_WORDS[s.gateway.state]}`, line: `수퍼바이저 하트비트: ${gatewayDetail(s.gateway)}` });
   const g = s.github;
   if (g.failures.length) out.push({ label: "GitHub 폴링 실패", line: `GitHub 폴링 실패: ${list(g.failures.map((f) => `${f.repo} ${ago(f.at, now)}`), 4, 200)}` });
   if (!g.issueAuthors.length) out.push({ label: "신뢰 이슈 작성자 없음", line: "신뢰하는 이슈 작성자 없음 (githubIssueAuthors): 새 이슈가 리드를 깨우지 않음" });
   if (s.lead.state === "missing" || s.lead.state === "unknown") out.push({ label: `리드 ${LEAD_WORDS[s.lead.state]}`, line: "" });
-  if (s.unacked > 0) out.push({ label: `미확인 메시지 ${s.unacked}`, line: `리드에 넘긴 오너 메시지 ${s.unacked}개가 확인 시간이 지나도 ack 안 됨 (dori ack)` });
   const owed = s.unreported ?? [];
   if (owed.length) {
     out.push({
@@ -654,7 +626,7 @@ const machineMark = (s: Status, machine: string | undefined): string => {
   return `@${machine}${state === "offline" || state === "lost" || state === "revoked" ? " 오프라인" : ""}`;
 };
 
-/** "- event sources: discord INBOUND 2 min ago, github no events, deploys (poll) ... failing" in the owner's wording: each source's last event age. */
+/** "- event sources: toodo INBOUND 2 min ago, github no events, deploys (poll) ... failing" in the owner's wording: each source's last event age. */
 const sourceLine = (s: Status, now: number, max: number): string[] => {
   if (!s.sources) return [];
   const parts = s.sources.sources.map((src) => {
@@ -685,7 +657,7 @@ const eventLines = (e: EventStats, max: number): string[] => {
   const shown = e.kinds.map((k) => `${k.kind} 이벤트 ${k.events}${k.wakes ? ` · 깨움 ${k.wakes}` : ""}`);
   return [head, `- 많은 순: ${list(shown, Math.min(max, 5), 220, "; ")}`];
 };
-/** Discord's limit is 2000 including the code fence the command adds; stay well inside. */
+/** Longest status page the status panel shows. */
 export const STATUS_MAX_CHARS = 1900;
 
 type Lanes = Status["lanes"];
@@ -776,7 +748,7 @@ const build = (s: Status, lim: Limits, more: More = plainMore): string => {
 
   const g = s.github;
   section("연결", [
-    `- Discord 게이트웨이: ${s.gateway.state === "live" ? "연결됨" : gatewayWords(s.gateway)}`,
+    `- 수퍼바이저 하트비트: ${gatewayDetail(s.gateway)}`,
     `- GitHub: 저장소 ${g.repos.length}개 감시, 마지막 폴링 ${ago(g.lastPollAt, now)}${g.failures.length ? `, ${g.failures.length}개 실패` : ""}`,
     g.issueAuthors.length ? `- 이슈: 저장소 ${g.issueRepos.length}개 감시` : "- 이슈: 꺼짐 (신뢰 작성자 없음)",
     ...sourceLine(s, now, lim.kinds),
@@ -807,7 +779,7 @@ const fit = (s: Status, more: More): { readonly text: string; readonly lim: Limi
   return { text: bounded(build(s, lim, more)), lim };
 };
 
-/** Plain text (no fence; the Discord command adds it), at most STATUS_MAX_CHARS, in short titled sections. */
+/** Plain text, at most STATUS_MAX_CHARS, in short titled sections. */
 export const renderStatus = (s: Status): string => fit(s, plainMore).text;
 
 /** Lane lines on pages 2+: progress clipped like the roomiest page 1, and a line never longer than this. */
@@ -817,7 +789,7 @@ const PAGE_LINE_MAX = 300;
 const PAGE_BODY_MAX = STATUS_MAX_CHARS - 120;
 
 /**
- * `/status` as pages, each at most STATUS_MAX_CHARS: page 1 is renderStatus (the report with its first lanes) naming the
+ * The status as pages (the status panel's), each at most STATUS_MAX_CHARS: page 1 is renderStatus (the report with its first lanes) naming the
  * pages that hold the rest, and pages 2.. list the remaining lanes in order, as many as fit, under a short header.
  */
 export const statusPages = (s: Status): string[] => {
@@ -850,15 +822,12 @@ export const statusPages = (s: Status): string[] => {
     "",
     `■ 레인 (${s.lanes.length}) 이어서`,
     ...lines,
-    ...(i + 2 < total ? ["", `다음: /status page:${i + 3}`] : []),
+    ...(i + 2 < total ? ["", `다음: ${i + 3}쪽`] : []),
   ].join("\n"))];
 };
 
-/** One page of `/status` (1-based); a page past the end says how many there are. */
+/** One page of the status (1-based, `dori status --page N`); a page past the end says how many there are. */
 export const statusPage = (s: Status, page: number): string => {
   const pages = statusPages(s);
   return pages[page - 1] ?? `도리 상태는 ${pages.length}쪽까지 있습니다. ${page}쪽은 없습니다.`;
 };
-
-/** The /status slash command text: page 1 unless the command named another. */
-export const lookupStatus = (d: StatusDeps) => async (_signal?: AbortSignal, page = 1): Promise<string> => statusPage(await collectStatus(d), page);

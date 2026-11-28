@@ -5,10 +5,8 @@ import { join } from "node:path";
 import { CiFollowUp } from "../src/ci-follow.ts";
 import { claimDone, watchTick } from "../src/done-flow.ts";
 import type { OpenPull } from "../src/github-events.ts";
-import { openLaneReports } from "../src/lane-report-store.ts";
-import type { LaneStatusTransport } from "../src/lane-status.ts";
 import { readDecisions } from "../src/decision-store.ts";
-import { type DecisionContext, type DecisionTransport } from "../src/owner-decisions.ts";
+import { type DecisionContext } from "../src/owner-decisions.ts";
 import { type Lane, statusOf } from "../src/registry.ts";
 import { type PrInfo, REVIEW_POLICY_VERSION, ReviewGate, type ReviewGateIo } from "../src/review-gate.ts";
 import type { ReviewJobRecord } from "../src/review-jobs.ts";
@@ -21,7 +19,7 @@ import { depsFor, fakeClock, fakeRunner, newWorld, sent, withSqliteStore, withSt
 /**
  * T8: the three review flows end to end across the supervisor/runner boundary. Each scenario runs the real CiFollowUp,
  * ReviewGate and done-flow claimDone/objectDone over an isolated state dir; only GitHub (gh through deps.run and the
- * gate's GitHub reads), Discord (decision and status transports) and the runner (fakeLaneOps over a World) are faked.
+ * gate's GitHub reads), Toodo chat (decision cards) and the runner (fakeLaneOps over a World) are faked.
  * The author lane claims through claimDone, so its claim binds the PR heads GitHub shows; a reviewer lane writes its
  * out files and claims through claimDone too, and the gate's tick takes the result in.
  */
@@ -180,24 +178,20 @@ const harness = async (nums: readonly number[] = [7]) => {
 
 const mergeArgv = (n: number, head: string): string[] => ["gh", "pr", "merge", String(n), "-R", REPO, "--merge", "--match-head-commit", head];
 
-/** Owner decisions over fake Discord transports, and the supervisor's review status tick that opens them. */
+/** Owner decisions over a fake Toodo chat, and the supervisor's review status tick that opens them. */
 const ownerSide = (h: Awaited<ReturnType<typeof harness>>) => {
   let m = 0;
-  const decisionTransport: DecisionTransport = {
-    send: async () => `m${++m}`, editComponents: async () => {}, edit: async () => {}, content: async () => "", deleteMessage: async () => {}, messagesAfter: async () => [],
-    startThread: async () => ({ id: `900${++m}` }), setThread: async () => {}, threadState: async () => ({ archived: false, parent: "555" }), threadArchived: async () => true,
-  };
-  const status: LaneStatusTransport = {
-    post: async () => `s${++m}`, edit: async () => {}, remove: async () => {},
-    threadState: async () => ({ archived: false, parent: "111" }), laterMessages: async () => ({ messages: [], more: false }),
-  };
   const decisions: DecisionContext = {
-    config: { stateDir: h.dir, discordChannels: ["999"], decisionsChannel: "555", alertsChannel: undefined, displayTimeZone: "UTC" },
-    transport: decisionTransport, now: () => h.clock.now(), home: "/home/test",
+    config: { stateDir: h.dir, displayTimeZone: "UTC" },
+    now: () => h.clock.now(), home: "/home/test",
+    toodo: () => ({
+      taskThread: async (id) => ({ kind: "thread", id }),
+      reply: async (place, body) => ({ id: ++m, place, body, author: "agent", attachments: [] }),
+    }),
   };
   return () => reviewStatusTick({
-    flow: h.deps, stores: { jobs: h.gate.jobs, exemptions: h.gate.exemptions, merges: h.gate.merges }, reports: openLaneReports(h.deps.config),
-    transport: status, decisions, home: "/home/test", emit: (id, line) => { h.events.push([id, line]); },
+    flow: h.deps, stores: { jobs: h.gate.jobs, exemptions: h.gate.exemptions, merges: h.gate.merges },
+    decisions, home: "/home/test", emit: (id, line) => { h.events.push([id, line]); },
   });
 };
 

@@ -63,7 +63,7 @@ const WORDS = {
   en: { keySpace: " ", header: (name: string) => `${name} is done.`, evidence: "Evidence" },
 } as const;
 
-/** Longest auto report: room is left in Discord's 2000-character message for the merge fact appended at the close. */
+/** Longest auto report. */
 export const AUTO_REPORT_MAX = 1500;
 
 /**

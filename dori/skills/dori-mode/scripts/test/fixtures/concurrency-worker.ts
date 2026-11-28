@@ -48,7 +48,7 @@ if (mode === "hold-fsync") {
   }));
 }
 
-const pausedRead = mode.startsWith("hold-") ? "launch-hold.json" : mode.startsWith("owner-closed-") ? "owner-closed-threads.json" : undefined;
+const pausedRead = mode.startsWith("hold-") ? "launch-hold.json" : undefined;
 if (pausedRead && mode !== "hold-fsync") {
   const originalRead = fs.readFileSync;
   let intercepted = false;
@@ -64,7 +64,7 @@ if (pausedRead && mode !== "hold-fsync") {
       return result;
     },
   }));
-  if (mode === "hold-second" || mode === "owner-closed-second") {
+  if (mode === "hold-second") {
     const exec = Database.prototype.exec;
     Database.prototype.exec = function (sql: string) {
       if (sql.includes("BEGIN")) { signal("locking"); barrier(); }
@@ -101,9 +101,6 @@ if (mode === "registry-holder" || mode === "registry-publication-holder" || mode
     if (!(error instanceof LaunchError) || !error.message.includes("already registered")) throw error;
     signal("refused");
   }
-} else if (mode === "owner-closed-first" || mode === "owner-closed-second") {
-  const { recordOwnerClosed } = await import("../../src/thread-followup.ts");
-  recordOwnerClosed(stateDir, mode === "owner-closed-first" ? "901" : "902", 1);
 } else {
   const { enqueueLaunch } = await import("../../src/routing.ts");
   enqueueLaunch(stateDir, {

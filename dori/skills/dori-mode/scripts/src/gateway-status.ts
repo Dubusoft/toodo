@@ -3,12 +3,14 @@ import { join } from "node:path";
 
 import { replaceFileAtomic } from "./durable-write.ts";
 
-/** The supervisor's heartbeat file: doctor and status read it, so they never touch the lock or the socket. */
+/**
+ * The supervisor's heartbeat file, written every inbound pass: doctor, status and the host's healthcheck read it, so
+ * they never touch the lock or the socket. The name predates the removal of the Discord gateway; files of older
+ * builds carry two more fields, which are ignored.
+ */
 export type GatewayStatus = {
   readonly pid: number;
   readonly at: number;
-  readonly connected: boolean;
-  readonly messageContent: boolean;
 };
 
 export const GATEWAY_STALE_MS = 60_000;
@@ -26,22 +28,19 @@ export const readGatewayStatus = (stateDir: string): GatewayStatus | undefined =
     const raw: unknown = JSON.parse(readFileSync(gatewayStatusPath(stateDir), "utf8"));
     if (typeof raw !== "object" || raw === null) return;
     const s = raw as Record<string, unknown>;
-    if (typeof s.pid !== "number" || typeof s.at !== "number" || typeof s.connected !== "boolean" || typeof s.messageContent !== "boolean") return;
-    return { pid: s.pid, at: s.at, connected: s.connected, messageContent: s.messageContent };
+    if (typeof s.pid !== "number" || typeof s.at !== "number") return;
+    return { pid: s.pid, at: s.at };
   } catch {
     return;
   }
 };
 
-export type GatewayView = { readonly state: "live" | "no-content" | "disconnected" | "off" | "stale" | "missing"; readonly text: string };
+export type GatewayView = { readonly state: "live" | "stale" | "missing"; readonly text: string };
 
-/** `discord` false (config platforms without discord): a fresh heartbeat is "off", while a stale or missing one still means the supervisor stopped. */
-export const gatewayView = (status: GatewayStatus | undefined, now: number, discord = true): GatewayView => {
-  if (!status) return { state: "missing", text: "no gateway status file (supervisor not running, or an older build)" };
+/** A fresh heartbeat is "live"; a stale or missing one means the supervisor stopped. */
+export const gatewayView = (status: GatewayStatus | undefined, now: number): GatewayView => {
+  if (!status) return { state: "missing", text: "no heartbeat file (supervisor not running, or an older build)" };
   const age = Math.max(0, Math.round((now - status.at) / 1000));
   if (now - status.at > GATEWAY_STALE_MS) return { state: "stale", text: `stale: last heartbeat ${age}s ago` };
-  if (!discord) return { state: "off", text: `Discord off (heartbeat ${age}s ago)` };
-  if (!status.connected) return { state: "disconnected", text: `not connected (heartbeat ${age}s ago)` };
-  if (!status.messageContent) return { state: "no-content", text: `connected without Message Content; REST fallback (heartbeat ${age}s ago)` };
-  return { state: "live", text: `live, Message Content on (heartbeat ${age}s ago)` };
+  return { state: "live", text: `supervisor heartbeat ${age}s ago` };
 };

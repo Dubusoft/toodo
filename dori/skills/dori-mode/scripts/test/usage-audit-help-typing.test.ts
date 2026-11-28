@@ -12,7 +12,6 @@ const cli = async (home: string, args: string[]) => {
       HOME: home,
       DORI_CONFIG: join(home, "missing.json"),
       DORI_STATE_DIR: join(home, "state"),
-      DORI_DISCORD_TOKEN: "t",
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -31,24 +30,19 @@ for (const flag of ["--help", "-h"]) {
     const r = await cli(dir, ["launch", flag]);
     expect(r.code).toBe(0);
     expect(r.out).toContain("  launch <key>");
-    expect(r.out).toContain("                [--from-message CHANNEL MESSAGE_ID]");
+    expect(r.out).toContain("                [--mode ulw|mass-ulw]");
     expect(r.out).not.toContain("  adopt ");
     expect(r.err).toBe("");
   }));
 }
 
-test("dori typing accepts an implicit Discord target", () => inState(async (dir) => {
-  const r = await cli(dir, ["typing", "123"]);
-  expect(r.code).toBe(0);
-  expect(r.out).toContain("FAKE_CALL https://discord.com/api/v10/channels/123/typing");
-  expect(r.out).toContain("TYPING discord 123 on");
-}));
-
-test("dori typing keeps the explicit Discord platform form", () => inState(async (dir) => {
-  const r = await cli(dir, ["typing", "discord", "123"]);
-  expect(r.code).toBe(0);
-  expect(r.out).toContain("FAKE_CALL https://discord.com/api/v10/channels/123/typing");
-  expect(r.out).toContain("TYPING discord 123 on");
+test("dori typing takes only a Toodo chat ref and calls nothing for a Discord channel", () => inState(async (dir) => {
+  for (const args of [["typing", "123"], ["typing", "discord", "123"]]) {
+    const r = await cli(dir, args);
+    expect(r.code).toBe(1);
+    expect(r.err).toMatch(/usage: dori typing REF \[--off\]|bad Toodo chat ref "123"/);
+    expect(r.out).not.toContain("FAKE_CALL");
+  }
 }));
 
 test("dori setup --help prints setup-specific help and exits successfully", () => inState(async (dir) => {
@@ -58,11 +52,3 @@ test("dori setup --help prints setup-specific help and exits successfully", () =
   expect(r.out).toContain("--advanced");
   expect(r.err).toBe("");
 }));
-
-test("send, thread, typing and presence usage make Discord optional", async () => {
-  const cliSource = await Bun.file(join(import.meta.dir, "../src/commands/usage.ts")).text();
-  expect(cliSource).toMatch(/send \[discord\]/);
-  expect(cliSource).toMatch(/thread \[discord\]/);
-  expect(cliSource).toMatch(/typing \[discord\]/);
-  expect(cliSource).toMatch(/presence \[discord\]/);
-});

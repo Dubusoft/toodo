@@ -3,9 +3,7 @@ import { dirname, join } from "node:path";
 
 import { configureKeys, DORI_CONFIG_KEYS, doriConfigDefault, formatValue, KEY_INPUT_HINT, keyLabel, pruneDoriConfig, readSeenKeys, writeSeenKeys } from "./config-keys.ts";
 import { CONFIG_SCHEMA_KEY, CONFIG_SCHEMA_VERSION, ConfigSchemaError, migrateConfigSchema, removalReason } from "./config-schema.ts";
-import { defaultConfig, expandHome, type DiscordConfig } from "./config.ts";
-import { envFileValue } from "./credentials.ts";
-import type { Http } from "./messenger/http.ts";
+import { defaultConfig, expandHome } from "./config.ts";
 import { hostServices, pruneLocalRunnerConfig } from "./host-runtimes.ts";
 import { LEGACY_PANE_KEYS, resolveManagedPanes } from "./managed-panes.ts";
 import { Repos } from "./repos.ts";
@@ -14,7 +12,6 @@ import type { Runner } from "./run.ts";
 
 export class SetupError extends Error {}
 
-export const TOKEN_KEY = "DORI_DISCORD_TOKEN";
 /** The script the supervisor unit runs first (ExecStartPre), rendered from templates/dori-boot-prep.sh. */
 export const BOOT_PREP = "dori-boot-prep.sh";
 /** Started by OnFailure= of the host's units (hostServices); never enabled itself. */
@@ -31,7 +28,6 @@ export type Prompter = {
 
 export type SetupDeps = {
   readonly run: Runner;
-  readonly http: Http;
   readonly prompt: Prompter;
   readonly log: (line: string) => void;
   readonly interactive: boolean;
@@ -45,8 +41,6 @@ export type SetupDeps = {
 };
 
 export type SetupInput = {
-  readonly token?: string;
-  readonly channels?: readonly string[];
   readonly model?: string;
   readonly cwd?: string;
   readonly stateDir?: string;
@@ -60,13 +54,12 @@ export type SetupInput = {
   readonly unset?: readonly string[];
   /**
    * Prune obsolete keys (config.json, and the local runner's runner-config.json) and ask only keys never shown before;
-   * no token, Discord or autostart steps.
+   * no autostart steps.
    */
   readonly migrate?: boolean;
   /**
    * Also ask what the default flow takes from flags, stored values or defaults: models, directories, every other config
-   * key, each autostart step and keeping a channel that failed its check. The default flow asks five
-   * questions: bot token, channels, owner id, issue auto-start and autostart.
+   * key and each autostart step. The default flow asks two questions: issue auto-start and autostart.
    */
   readonly advanced?: boolean;
 };
@@ -76,7 +69,7 @@ type Json = Record<string, unknown>;
 /** In `<stateDir>`: the config keys setup has already shown, so a later run asks only new ones. */
 export const SETUP_KEYS_FILE = "setup-keys.json";
 /** The config keys the core setup questions own; the generic key pass skips them. */
-export const SETUP_CORE_KEYS = ["discord", "discordChannels", "defaultModel", "leadModel", "leadCwd", "stateDir", "githubIssueAuthors", "ignorePanes"] as const;
+export const SETUP_CORE_KEYS = ["defaultModel", "leadModel", "leadCwd", "stateDir", "githubIssueAuthors", "ignorePanes"] as const;
 
 const labelOf = (key: string): string => {
   const spec = DORI_CONFIG_KEYS.find((s) => s.key === key);
@@ -216,42 +209,10 @@ export const saveConfig = (path: string, existing: Json, next: Json, log?: (line
   return true;
 };
 
-const envLine = (key: string) => new RegExp(`^\\s*(?:export\\s+)?${key}=(.*)$`);
-
-export const envSet = (text: string, key: string, value: string): string => {
-  const lines = text ? text.split(/\r?\n/) : [];
-  if (lines.length && lines[lines.length - 1] === "") lines.pop();
-  const at = lines.findIndex((l) => envLine(key).test(l));
-  const entry = `${key}=${value}`;
-  if (at >= 0) lines[at] = entry;
-  else lines.push(entry);
-  return `${lines.join("\n")}\n`;
-};
-
 const modeOf = (path: string): number => statSync(path).mode & 0o777;
 
-export type ChannelCheck = { readonly id: string; readonly ok: boolean; readonly detail: string };
-
-export const verifyChannel = async (http: Http, token: string, id: string): Promise<ChannelCheck> => {
-  if (!/^\d{15,22}$/.test(id)) return { id, ok: false, detail: "not a channel id (Discord ids are 17-20 digits; right-click the channel, Copy Channel ID)" };
-  try {
-    const r = await http({ method: "GET", url: `https://discord.com/api/v10/channels/${id}`, headers: { Authorization: `Bot ${token}` } });
-    if (r.status === 200) {
-      const name = (JSON.parse(r.body) as { name?: string }).name;
-      return { id, ok: true, detail: name ? `#${name}` : "readable" };
-    }
-    const why: Record<number, string> = {
-      401: "the bot token was rejected (401); check the token in the Developer Portal",
-      403: "the bot cannot see this channel (403 Missing Access); invite it to the server and allow View Channel and Read Message History",
-      404: "no such channel (404), or it is in a server the bot is not in",
-    };
-    return { id, ok: false, detail: why[r.status] ?? `Discord answered HTTP ${r.status}` };
-  } catch (e) {
-    return { id, ok: false, detail: `request failed: ${e instanceof Error ? e.message : String(e)}` };
-  }
-};
-
-export const parseChannels = (text: string): string[] => [...new Set(text.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean))];
+/** The distinct entries of a comma- or space-separated list. */
+export const parseList = (text: string): string[] => [...new Set(text.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean))];
 
 export const renderTemplate = (text: string, values: Readonly<Record<string, string>>): string =>
   text.replace(/\{\{(\w+)\}\}/g, (_, name: string) => {
@@ -307,58 +268,6 @@ export const renderAutostart = (d: SetupDeps, workDir: string): Map<string, { co
 const str = (v: unknown): string => (typeof v === "string" && !v.startsWith("<") ? v : "");
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !x.startsWith("<")) : []);
 
-const askToken = async (d: SetupDeps, stored: string | undefined, given: string | undefined): Promise<string | undefined> => {
-  const typed = (await d.prompt.secret("Discord bot token [required]", Boolean(given ?? stored))).trim();
-  const token = typed || given || stored;
-  if (token && !/^[\w.-]+$/.test(token)) throw new SetupError("the bot token has characters a Discord token never has (spaces, quotes or newlines); paste it again");
-  return token;
-};
-
-/** `given` channels (from a flag or --set) are verified but never asked. */
-const askChannels = async (d: SetupDeps, token: string | undefined, initial: readonly string[], given: boolean, advanced: boolean): Promise<string[]> => {
-  let current = [...initial];
-  for (;;) {
-    const channels = given ? current : parseChannels(await d.prompt.ask(`Main Discord channel id(s), comma separated ${labelOf("discordChannels")}`, current.join(",")));
-    if (!channels.length || !token) {
-      if (channels.length) d.log("SETUP channels not verified: no bot token yet");
-      return channels;
-    }
-    const checks = await Promise.all(channels.map((id) => verifyChannel(d.http, token, id)));
-    for (const c of checks) d.log(`SETUP channel ${c.id} ${c.ok ? "ok" : "FAILED"}: ${c.detail}`);
-    if (checks.every((c) => c.ok)) return channels;
-    if (d.interactive && advanced && (await d.prompt.confirm("Keep these channels anyway?", false))) return channels;
-    if (!d.interactive || given) throw new SetupError(`the bot cannot read channel(s) ${checks.filter((c) => !c.ok).map((c) => c.id).join(", ")}; nothing was written`);
-    current = channels;
-  }
-};
-
-const askDiscord = async (d: SetupDeps, token: string, channel: string, existing: unknown): Promise<DiscordConfig> => {
-  const metadata = async (path: string): Promise<Json> => {
-    let result;
-    try {
-      result = await d.http({ method: "GET", url: `https://discord.com/api/v10${path}`, headers: { Authorization: `Bot ${token}` } });
-    } catch (e) {
-      if (!(e instanceof Error)) throw e;
-      throw new SetupError(`cannot read Discord ${path}; nothing was written`);
-    }
-    if (result.status !== 200) throw new SetupError(`Discord ${path} answered HTTP ${result.status}; nothing was written`);
-    const value: unknown = JSON.parse(result.body);
-    if (!value || typeof value !== "object" || Array.isArray(value)) throw new SetupError(`Discord ${path} returned invalid metadata`);
-    return value as Json;
-  };
-  const app = await metadata("/oauth2/applications/@me");
-  const room = await metadata(`/channels/${channel}`);
-  const prior = existing && typeof existing === "object" && !Array.isArray(existing) ? existing as Json : {};
-  const owner = app.owner && typeof app.owner === "object" && "id" in app.owner ? str(app.owner.id) : "";
-  const applicationId = str(prior.applicationId) || str(app.id);
-  const guildId = str(prior.guildId) || str(room.guild_id);
-  const ownerId = (await d.prompt.ask(`Discord owner user id for slash commands ${labelOf("discord")}`, str(prior.ownerId) || owner)).trim();
-  if (![applicationId, guildId, ownerId].every((id) => /^\d{15,22}$/.test(id))) {
-    throw new SetupError("Discord application, guild and owner ids must be snowflakes; use a server channel and a Discord owner user id");
-  }
-  return { applicationId, guildId, ownerId };
-};
-
 /** Logs each required key with no value; true when any is missing. */
 const reportMissing = (d: SetupDeps, missing: readonly string[]): boolean => {
   for (const key of missing) d.log(`SETUP_KEY_MISSING ${key} [required]`);
@@ -398,7 +307,6 @@ export const runSetup = async (d: SetupDeps, input: SetupInput = {}): Promise<nu
   const advanced = input.advanced ?? false;
   const problems: string[] = [];
   const raw = readConfigObject(d.configPath);
-  const envText = existsSync(d.envPath) ? readFileSync(d.envPath, "utf8") : "";
   const base = defaultConfig(d.home);
   const patch = input.patch ?? {};
   const unset = input.unset ?? [];
@@ -429,24 +337,6 @@ export const runSetup = async (d: SetupDeps, input: SetupInput = {}): Promise<nu
   };
   if (d.interactive) d.log(`SETUP ${KEY_INPUT_HINT}`);
 
-  // With Discord off (platforms without discord) nothing about Discord is asked; what is stored stays as it is.
-  const platforms = "platforms" in patch ? patch.platforms : raw.platforms;
-  const onDiscord = !Array.isArray(platforms) || platforms.includes("discord");
-  const storedToken = envFileValue(envText, TOKEN_KEY);
-  const token = onDiscord ? await askToken(d, storedToken, input.token) : input.token ?? storedToken;
-  const givenChannels = input.channels ?? givenList("discordChannels");
-  if (onDiscord && !givenChannels && !unset.includes("discordChannels")) asked.push("discordChannels");
-  const channels = unset.includes("discordChannels") ? [] : onDiscord
-    ? await askChannels(d, token, givenChannels ?? strings(raw.discordChannels), Boolean(givenChannels), advanced)
-    : givenChannels ?? strings(raw.discordChannels);
-  let discord: unknown;
-  if ("discord" in patch) {
-    consumed.push("discord");
-    discord = patch.discord;
-  } else if (onDiscord && token && channels[0] && !unset.includes("discord")) {
-    asked.push("discord");
-    discord = await askDiscord(d, token, channels[0], raw.discord);
-  }
   /** Advanced only: the default flow keeps `current` (the stored value or the default) without asking. */
   const askAdvanced = async (key: string, question: string, current: string, fallback?: string): Promise<string> =>
     advanced ? ask(key, question, current, fallback) : unset.includes(key) ? "" : current;
@@ -471,7 +361,7 @@ export const runSetup = async (d: SetupDeps, input: SetupInput = {}): Promise<nu
     ? (await d.prompt.ask("GitHub repos to watch (owner/repo, comma separated) [optional]", repos.list().join(","))).split(/[\s,]+/).filter(Boolean)
     : repos.list();
   if (issuesOn === false) asked.push("githubIssueAuthors");
-  const issueAuthors = parseChannels((givenAuthors ? givenAuthors.join(",") : issuesOn ? await ask(
+  const issueAuthors = parseList((givenAuthors ? givenAuthors.join(",") : issuesOn ? await ask(
     "githubIssueAuthors",
     "GitHub accounts whose new issues start work automatically (comma separated)",
     storedAuthors.join(","),
@@ -482,16 +372,8 @@ export const runSetup = async (d: SetupDeps, input: SetupInput = {}): Promise<nu
   for (const dir of [workDir, expandHome(stateDir, d.home)]) ensureDir(d, dir);
   repos.replace(watchedRepos);
 
-  if (token) {
-    const next = envSet(envText, TOKEN_KEY, token);
-    const changed = next !== envText || !existsSync(d.envPath) || modeOf(d.envPath) !== 0o600;
-    if (changed) writeFileAtomic(d.envPath, next, 0o600);
-    d.log(`SETUP env ${TOKEN_KEY} ${token === storedToken ? "kept" : "saved"} in ${d.envPath} (mode 600)${changed ? "" : ", unchanged"}`);
-  } else if (onDiscord) d.log(`SETUP env no bot token; set ${TOKEN_KEY} later by running dori setup again`);
-  if (!onDiscord) d.log("SETUP Discord is off (platforms has no discord): its token, channels and ids were not asked; add discord to platforms to turn it on");
-
   const merged = mergeConfig(raw, {
-    discordChannels: channels, defaultModel, leadModel: chain ?? (leadModel || undefined), leadCwd, stateDir, discord,
+    defaultModel, leadModel: chain ?? (leadModel || undefined), leadCwd, stateDir,
     // Keep configs that never set it byte-identical.
     githubIssueAuthors: issueAuthors.length || Array.isArray(raw.githubIssueAuthors) ? issueAuthors : undefined,
   });
@@ -505,22 +387,11 @@ export const runSetup = async (d: SetupDeps, input: SetupInput = {}): Promise<nu
     patch: Object.fromEntries(Object.entries(patch).filter(([key]) => !consumed.includes(key))), unset,
     prompt: d.prompt, interactive: d.interactive && advanced, seen, mode: "full", skip: SETUP_CORE_KEYS, defaults: doriConfigDefault(d.home), hinted: true, log: d.log,
   });
-  let config = configured.next;
-  d.log(`SETUP config ${saveConfig(d.configPath, raw, config, d.log) ? "written" : "unchanged"}: ${d.configPath}`);
+  d.log(`SETUP config ${saveConfig(d.configPath, raw, configured.next, d.log) ? "written" : "unchanged"}: ${d.configPath}`);
   // The default flow settles every key it does not ask with its value or default, so a later --migrate asks only keys added after it.
   const settled = advanced ? [] : DORI_CONFIG_KEYS.map((s) => s.key);
   if (d.interactive) writeSeenKeys(seenPath, [...seen, ...configured.shown, ...asked, ...settled, ...Object.keys(patch), ...unset]);
   if (reportMissing(d, configured.missingRequired)) problems.push("config");
-  if (onDiscord) {
-    const alertsChannel = str(config.alertsChannel).trim();
-    d.log(alertsChannel
-      ? `SETUP alertsChannel ${alertsChannel}: system notices go there`
-      : `SETUP alertsChannel unset: system notices go to the first discordChannels entry; optional, add "alertsChannel": "<channel id>" to ${d.configPath} to send them elsewhere`);
-    const decisionsChannel = str(config.decisionsChannel).trim();
-    d.log(decisionsChannel
-      ? `SETUP decisionsChannel ${decisionsChannel}: owner decisions open one thread each there`
-      : `SETUP decisionsChannel unset: owner decisions go to the requesting channel; optional, add "decisionsChannel": "<channel id>" to ${d.configPath} to open them in one channel`);
-  } else d.log("SETUP owner decisions and system notices go to the Toodo chat: a task's thread, else its default room");
 
   if (await d.prompt.confirm("Start hc and the supervisor automatically at boot (systemd user units)?", input.autostart ?? false)) {
     problems.push(...(await autostart(d, workDir, advanced)));
@@ -580,7 +451,7 @@ const autostart = async (d: SetupDeps, workDir: string, advanced: boolean): Prom
     return [...problems, "systemctl"];
   }
   if (installed.out.split(/\s+/).includes(legacy)) {
-    await step("Disable and stop the legacy presence unit? The supervisor now owns Discord presence and slash commands.", ["systemctl", "--user", "disable", "--now", legacy]);
+    await step("Disable and stop the legacy presence unit? The command it runs was removed.", ["systemctl", "--user", "disable", "--now", legacy]);
   }
   await step("Enable the units so they start at boot?", ["systemctl", "--user", "enable", ...units]);
   await step("Start the hc core now?", ["systemctl", "--user", "start", HC_CORE_UNIT]);

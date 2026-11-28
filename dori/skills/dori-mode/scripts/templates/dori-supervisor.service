@@ -1,5 +1,5 @@
 [Unit]
-Description=Dori supervisor (Discord presence, slash commands, inbound, sweeps, lead lifecycle)
+Description=Dori supervisor (Toodo chat inbound, sweeps, lead lifecycle)
 Wants=hc-core.service
 After=hc-core.service
 # Crash-looping (a full disk, a broken config) stops after 5 starts in 10 minutes and alerts the owner once.

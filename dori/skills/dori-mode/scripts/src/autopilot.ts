@@ -58,8 +58,6 @@ export type AutopilotConfig = {
   readonly tickSec: number;
   /** Seconds a quota read is reused by every caller (judge, `dori quota`, `/quota`) before the endpoints are read again. */
   readonly quotaCacheSec: number;
-  /** Discord channel the executor opens lane threads under (autopilotThreadChannelOf); empty: `discordChannels[0]`. */
-  readonly threadChannel: string;
 };
 
 export const TICK_SEC_MIN = 30;
@@ -69,7 +67,7 @@ export const QUOTA_CACHE_SEC_MAX = 900;
 
 export const DEFAULT_AUTOPILOT: AutopilotConfig = {
   executor: false,
-  mergeBase: "dev", tickSec: 300, quotaCacheSec: 90, threadChannel: "",
+  mergeBase: "dev", tickSec: 300, quotaCacheSec: 90,
 };
 
 export const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -77,9 +75,10 @@ export const isRecord = (v: unknown): v is Record<string, unknown> => typeof v =
 /**
  * Keys read as nothing so an older config still loads: the bundle design's, `mode` (autopilot is always on; `dori
  * setup` removes it, see config-schema.ts), `quotaMaxUsedPct` (an account counts as spent only at 100%), and
- * `quotaUnreadable` / `crossWorkspacePrereqs` (each had one value: unreadable quota holds, a cross-workspace prerequisite refuses).
+ * `quotaUnreadable` / `crossWorkspacePrereqs` (each had one value: unreadable quota holds, a cross-workspace prerequisite refuses),
+ * and `threadChannel` (lanes no longer get a Discord thread).
  */
-const REMOVED_KEYS: ReadonlySet<string> = new Set(["workspaces", "bundleExpiryDays", "wip", "wipCap", "attemptCap", "onRevoke", "mode", "quotaMaxUsedPct", "quotaUnreadable", "crossWorkspacePrereqs"]);
+const REMOVED_KEYS: ReadonlySet<string> = new Set(["workspaces", "bundleExpiryDays", "wip", "wipCap", "attemptCap", "onRevoke", "mode", "quotaMaxUsedPct", "quotaUnreadable", "crossWorkspacePrereqs", "threadChannel"]);
 
 /**
  * The config's `autopilot` (absent: DEFAULT_AUTOPILOT; each key optional). Throws TypeError naming the key on an
@@ -105,7 +104,6 @@ export const parseAutopilotConfig = (raw: unknown, warn: (line: string) => void 
       `an integer from ${TICK_SEC_MIN} to ${TICK_SEC_MAX}`),
     quotaCacheSec: pick<number>("quotaCacheSec", (v) => Number.isInteger(v) && (v as number) >= QUOTA_CACHE_SEC_MIN && (v as number) <= QUOTA_CACHE_SEC_MAX,
       `an integer from ${QUOTA_CACHE_SEC_MIN} to ${QUOTA_CACHE_SEC_MAX}`),
-    threadChannel: pick<string>("threadChannel", (v) => typeof v === "string", "a Discord channel id string").trim(),
   };
 };
 

@@ -19,7 +19,6 @@ test("the spec lists match the keys each file reads, in order", () => {
   expect(DORI_CONFIG_KEYS.map((s) => s.key)).toEqual([...CONFIG_FILE_KEYS]);
   expect(RUNNER_CONFIG_KEYS.map((s) => s.key)).toEqual([...RUNNER_POLICY_KEYS]);
   expect(DORI_CONFIG_KEYS.filter((s) => s.required).map((s) => s.key).sort()).toEqual(["defaultModel", "leadCwd", "stateDir"]);
-  expect(DORI_CONFIG_KEYS.filter((s) => s.whenDiscord).map((s) => s.key)).toEqual(["discord", "discordChannels"]);
   expect(RUNNER_CONFIG_KEYS.filter((s) => s.required).map((s) => s.key)).toEqual(["agents"]);
 });
 
@@ -27,14 +26,14 @@ test("pruneDoriConfig drops what loadConfig no longer reads and keeps the rest i
   const raw = {
     stateDir: "~/.dori/state", memoryCheck: { enabled: true }, sessionsDir: "/x", store: "sqlite",
     hooks: { threadReply: ["a"], threadDone: ["b"] }, laneSandbox: { command: ["lane-sandbox"], default: true },
-    runners: { listen: "0.0.0.0", mac: { allowUnsandboxed: true } }, discordChannels: ["1"], placement: { defaultMachine: "mini", workspaces: { "*": "mini" }, fallback: ["local"] },
+    runners: { listen: "0.0.0.0", mac: { allowUnsandboxed: true } }, discordChannels: ["1"], ignorePanes: ["p"], placement: { defaultMachine: "mini", workspaces: { "*": "mini" }, fallback: ["local"] },
   };
   const before = JSON.stringify(raw);
   const { next, removed } = pruneDoriConfig(raw);
   expect(JSON.stringify(raw)).toBe(before);
-  expect(next).toEqual({ stateDir: "~/.dori/state", hooks: { threadReply: ["a"] }, laneSandbox: { command: ["lane-sandbox"] }, runners: { mac: { allowUnsandboxed: true } }, discordChannels: ["1"], placement: { defaultMachine: "mini", fallback: ["local"] } });
-  expect(Object.keys(next)).toEqual(["stateDir", "hooks", "laneSandbox", "runners", "discordChannels", "placement"]);
-  expect(removed).toEqual(["memoryCheck", "sessionsDir", "store", "hooks.threadDone", "laneSandbox.default", "runners.listen", "placement.workspaces"]);
+  expect(next).toEqual({ stateDir: "~/.dori/state", hooks: { threadReply: ["a"] }, laneSandbox: { command: ["lane-sandbox"] }, runners: { mac: { allowUnsandboxed: true } }, ignorePanes: ["p"], placement: { defaultMachine: "mini", fallback: ["local"] } });
+  expect(Object.keys(next)).toEqual(["stateDir", "hooks", "laneSandbox", "runners", "ignorePanes", "placement"]);
+  expect(removed).toEqual(["memoryCheck", "sessionsDir", "store", "hooks.threadDone", "laneSandbox.default", "runners.listen", "discordChannels", "placement.workspaces"]);
   expect(pruneDoriConfig({ runners: [{ label: "a" }] })).toEqual({ next: {}, removed: ["runners"] });
 });
 
@@ -71,11 +70,11 @@ test("the retired runtime keys are in neither spec list", () => {
 });
 
 test("parseValue reads each kind and names the key on bad input", () => {
-  expect(parseValue(dori("discordChannels"), " 1, 2 ,,3 ")).toEqual(["1", "2", "3"]);
+  expect(parseValue(dori("ignorePanes"), " 1, 2 ,,3 ")).toEqual(["1", "2", "3"]);
   expect(parseValue(dori("agentCommand"), '["omo", "--model"]')).toEqual(["omo", "--model"]);
   expect(() => parseValue(dori("agentCommand"), "[oops")).toThrow(ConfigKeyError);
-  expect(parseValue(dori("discord"), '{"ownerId":"1"}')).toEqual({ ownerId: "1" });
-  expect(() => parseValue(dori("discord"), "{bad")).toThrow(/discord must be JSON/);
+  expect(parseValue(dori("review"), '{"repos":["o/r"]}')).toEqual({ repos: ["o/r"] });
+  expect(() => parseValue(dori("review"), "{bad")).toThrow(/review must be JSON/);
   expect(parseValue(runner("detectWorkspaces"), "YES")).toBe(true);
   expect(parseValue(runner("detectWorkspaces"), "false")).toBe(false);
   expect(() => parseValue(runner("detectWorkspaces"), "maybe")).toThrow(/detectWorkspaces must be true\|false/);
@@ -87,9 +86,10 @@ test("parseValue reads each kind and names the key on bad input", () => {
 });
 
 test("parseSetArgs splits at the first =, treats an empty value as unset, and refuses bad keys and conflicts", () => {
-  expect(parseSetArgs(DORI_CONFIG_KEYS, ["defaultModel=a/b=c", "discordChannels=1,2", "alertsChannel="], ["ownerLanguage"]))
-    .toEqual({ patch: { defaultModel: "a/b=c", discordChannels: ["1", "2"] }, unset: ["alertsChannel", "ownerLanguage"] });
-  expect(() => parseSetArgs(DORI_CONFIG_KEYS, ["memoryCheck=1"], [])).toThrow(/unknown key memoryCheck.*valid keys: discord, stateDir/);
+  expect(parseSetArgs(DORI_CONFIG_KEYS, ["defaultModel=a/b=c", "ignorePanes=1,2", "leadThinking="], ["ownerLanguage"]))
+    .toEqual({ patch: { defaultModel: "a/b=c", ignorePanes: ["1", "2"] }, unset: ["leadThinking", "ownerLanguage"] });
+  expect(() => parseSetArgs(DORI_CONFIG_KEYS, ["memoryCheck=1"], [])).toThrow(/unknown key memoryCheck.*valid keys: stateDir, leadCwd/);
+  expect(() => parseSetArgs(DORI_CONFIG_KEYS, ["discordChannels=1"], [])).toThrow(/unknown key discordChannels/);
   expect(() => parseSetArgs(DORI_CONFIG_KEYS, ["defaultModel"], [])).toThrow(ConfigKeyError);
   expect(() => parseSetArgs(DORI_CONFIG_KEYS, [], ["nope"])).toThrow(/unknown key nope/);
   expect(() => parseSetArgs(DORI_CONFIG_KEYS, ["defaultModel=x"], ["defaultModel"])).toThrow(/both set and unset/);
@@ -98,8 +98,8 @@ test("parseSetArgs splits at the first =, treats an empty value as unset, and re
 
 test("formatValue shows lists comma joined and other values as compact JSON", () => {
   expect(formatValue(dori("ownerLanguage"), undefined)).toBe("");
-  expect(formatValue(dori("discordChannels"), ["1", "2"])).toBe("1,2");
-  expect(formatValue(dori("discord"), { ownerId: "1" })).toBe('{"ownerId":"1"}');
+  expect(formatValue(dori("ignorePanes"), ["1", "2"])).toBe("1,2");
+  expect(formatValue(dori("review"), { repos: ["o/r"] })).toBe('{"repos":["o/r"]}');
   expect(formatValue(runner("detectWorkspaces"), false)).toBe("false");
 });
 
@@ -208,13 +208,13 @@ test("a key without a value shows its effective default, and hinted callers get 
   const prompt: KeyPrompter = { ask: async (q, current) => { questions.push(q); return current; }, confirm: async () => false };
   const lines: string[] = [];
   await configureKeys({
-    specs: DORI_CONFIG_KEYS.filter((s) => ["worktreeRoot", "alertsChannel", "leadModel"].includes(s.key)),
-    current: { discordChannels: ["123"], defaultModel: "p/m", leadModel: "p/lead" }, patch: {}, unset: [], prompt, interactive: true,
+    specs: DORI_CONFIG_KEYS.filter((s) => ["worktreeRoot", "leadModel", "leadThinking"].includes(s.key)),
+    current: { defaultModel: "p/m", leadThinking: "high" }, patch: {}, unset: [], prompt, interactive: true,
     seen: new Set(), mode: "full", defaults: doriConfigDefault("/h"), hinted: true, log: (l) => lines.push(l),
   });
   expect(questions.find((q) => q.startsWith("worktreeRoot "))).not.toContain("(default:");
-  expect(questions.find((q) => q.startsWith("alertsChannel "))).toEndWith("(default: 123)");
-  expect(questions.find((q) => q.startsWith("leadModel "))).not.toContain("(default:");
+  expect(questions.find((q) => q.startsWith("leadModel "))).toEndWith("(default: p/m)");
+  expect(questions.find((q) => q.startsWith("leadThinking "))).not.toContain("(default:");
   expect(lines).toEqual([]);
 });
 
@@ -224,15 +224,6 @@ test("non-interactive asks nothing and reports required keys without a value", a
   expect(p.s.asked).toEqual([]);
   expect(r.missingRequired).toEqual(["name", "roots"]);
   expect(r.shown).toEqual(["lead"]);
-});
-
-test("the Discord keys are required while platforms has discord (or is absent), and not with Discord off", async () => {
-  const missing = async (current: Record<string, unknown>) =>
-    (await configureKeys({ specs: DORI_CONFIG_KEYS, current, patch: {}, unset: [], prompt: scripted([]), interactive: false, seen: new Set(), mode: "full", log: () => {} })).missingRequired;
-  const base = { defaultModel: "p/m", leadCwd: "~", stateDir: "~/s" };
-  expect(await missing(base)).toEqual(["discord", "discordChannels"]);
-  expect(await missing({ ...base, platforms: ["discord", "toodo"] })).toEqual(["discord", "discordChannels"]);
-  expect(await missing({ ...base, platforms: ["toodo"] })).toEqual([]);
 });
 
 test("seen keys round trip through a sorted 0600 file; missing or malformed reads as empty", () => {

@@ -125,7 +125,7 @@ test("a state dir still on the json store is converted once at the CLI entry, no
   }
   const store = openStore(dir);
   try {
-    expect(store.load()).toMatchObject({ events: [{ id: "e1", line: "INBOUND 1 2 hi", at: T0 }], awaitingAck: [{ id: "e1", since: T0 }] });
+    expect(store.load()).toEqual({ events: journal.events, outbox: [] });
     expect([...store.deliveredIds()!]).toEqual(["e1"]);
   } finally { store.close(); }
   const ops = openOperations(config);
@@ -182,9 +182,8 @@ test("a json state dir with every field real data carried converts at the CLI en
   expect(existsSync(join(dir, "supervisor.json"))).toBe(false);
   const store = openStore(dir);
   try {
-    const { leadModel, primaryRetryAt, primaryClearChecks, quotaExhausted, quotaStallSince, emergencyEpisode, ...kept } = journal;
-    expect([leadModel, primaryRetryAt, primaryClearChecks, quotaExhausted, quotaStallSince, emergencyEpisode]).toHaveLength(6);
-    expect(store.load()).toMatchObject(kept);
+    const { events, models, outbox, inbox, outcomes, pending } = journal;
+    expect(store.load()).toMatchObject({ events, models, outbox, inbox, outcomes, pending });
   } finally { store.close(); }
   const opStore = openOperations(config);
   try { expect(opStore.list()).toEqual(Object.values(ops)); } finally { opStore.close(); }

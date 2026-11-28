@@ -1,4 +1,4 @@
-import { type CliCommand, die, messengerToken } from "./context.ts";
+import { type CliCommand, die } from "./context.ts";
 
 /** `dori decision open|close|list`: decision-cli.ts reads its own flags. */
 export const decisionCommand: CliCommand = {
@@ -6,7 +6,7 @@ export const decisionCommand: CliCommand = {
   ownFlags: true,
   run: async ({ deps, rest }) => {
     const { decisionMain } = await import("../decision-cli.ts");
-    const code = await decisionMain(rest, { flow: deps, die, messengerToken });
+    const code = await decisionMain(rest, { flow: deps, die });
     if (code !== 0) process.exit(code);
   },
 };

@@ -5,7 +5,7 @@ import { type ToodoAttachment, type ToodoClientConfig, type ToodoFetch, type Too
 import { guardText } from "./http.ts";
 
 /*
- * The Toodo chat as a Dori platform, beside Discord. Dori is the agent of the chat (toodo-server's MCP chat tools, with
+ * The Toodo chat, where the owner talks to Dori. Dori is the agent of the chat (toodo-server's MCP chat tools, with
  * the `mcp-token`): it takes the owner's messages, acknowledges them, answers, and keeps one thread per task.
  *
  * A place in the chat is a ref: `toodo:channel/<id>` (the channel itself; channel 1 is the default room every chat has)
@@ -206,7 +206,7 @@ export const saveToodoAttachments = async (chat: Pick<ToodoChat, "download">, m:
   return saved;
 };
 
-/** One ` [attachment name=<file> type=<mime> path=<saved path>]` per file (`error=<why>` when unsaved), as Discord's lines name a url. */
+/** One ` [attachment name=<file> type=<mime> path=<saved path>]` per file (`error=<why>` when unsaved). */
 const inboundFiles = (files: readonly ToodoSavedFile[]): string =>
   files.map((f) => {
     const where = "path" in f ? `path=${f.path}` : `id=${f.attachment.id} error=${f.error}`;
@@ -214,7 +214,7 @@ const inboundFiles = (files: readonly ToodoSavedFile[]): string =>
   }).join("");
 
 /**
- * The journal event of an owner's chat message: `INBOUND <ref> <id> owner <text>` like a Discord owner message, with its
+ * The journal event of an owner's chat message: `INBOUND <ref> <id> owner <text>`, with its
  * attached files as saved (saveToodoAttachments). The id `toodo-chat:<id>` differs from the removed Toodo Lead chat's
  * `toodo:chat:<n>`, whose rows an old journal may still hold.
  */
