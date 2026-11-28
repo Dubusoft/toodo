@@ -6,7 +6,7 @@
 
 # omo-dori-mode-experimental
 
-Dori 模式把一个编程智能体会话变成常驻的消息智能体。你只需要在 Discord 上和一个机器人对话。Dori 把每件事交给 hc 终端里单独启动的智能体会话，记住自己启动过的每个会话，只有在工作真正完成后才关闭它:PR 已合并、issue 已关闭、版本已发布。
+Dori 模式把一个编程智能体会话变成常驻的消息智能体。你在 Toodo 网页应用的 Toodo 聊天里和 Dori 对话。Dori 把每件事交给 hc 终端里单独启动的智能体会话，记住自己启动过的每个会话，只有在工作真正完成后才关闭它:PR 已合并、issue 已关闭、版本已发布。
 
 它由一个技能(`skills/dori-mode/SKILL.md` 和 references)以及一个用 bun + TypeScript 写的小 CLI `dori` 组成。目前还是实验版本，会有不完善的地方。
 
@@ -18,7 +18,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/Dubusoft/toodo/main/dori
 
 它会匿名把公开仓库 Dubusoft/toodo(Dori 位于其 `dori/` 目录)克隆到 `~/.dori/src`,把技能链接到 `~/.agents/skills/dori-mode`,用 `bun link` 把 `dori` 放进 PATH,然后启动 `dori setup`。如果你的智能体从别的目录加载技能，请设置 `SKILLS_DIR`。
 
-`dori setup` 会询问 Discord 机器人令牌(保存到 `~/.dori/env`,权限 600,不会显示出来)、主频道 ID(用令牌确认能读取)、默认模型、工作目录和状态目录。需要的话，它还会安装 systemd 用户单元，让 hc 核心、supervisor 和 presence 开机自启;每个系统级步骤都会先询问。可以随时重新运行：当前值就是默认值，按回车保留。通过管道交给 bash 安装时没有终端可以提问，只会打印提示，请自己运行 `dori setup`。脚本用法:`dori setup --yes --token-file FILE --channel ID [--autostart]`。
+`dori setup` 会询问新的 GitHub issue 是否自动开工，需要的话还会安装 systemd 用户单元，让 hc 核心和 supervisor 开机自启(`--advanced` 还会询问模型、目录和其他键);每个系统级步骤都会先询问。可以随时重新运行：当前值就是默认值，按回车保留。通过管道交给 bash 安装时没有终端可以提问，只会打印提示，请自己运行 `dori setup`。脚本用法:`dori setup --yes [--autostart]`。
 
 然后打开智能体，说一句 "Dori mode" 就行。
 
@@ -28,7 +28,6 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/Dubusoft/toodo/main/dori
 - hc(herdr-core):主控和各条 lane 运行的无界面终端运行时(`curl -fsSL https://releases.herdr.dev/core/install.sh | sh`)
 - 能加载技能的编程智能体(按 [OmO](https://github.com/code-yeongyu/oh-my-openagent) 设计，启动命令可以在配置里改)
 - 用来确认 PR 合并和 issue 关闭的 `gh`(GitHub CLI),以及确认已发布版本的 `npm`
-- 机器人本身用的 [agent-messenger](https://github.com/agent-messenger/agent-messenger)
 
 主机监控在 macOS 上功能完整。在 Linux 上只看负载和磁盘，内存和 swap 显示为未知。
 
@@ -36,17 +35,17 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/Dubusoft/toodo/main/dori
 
 从零到完成第一件工作:
 
-1. **创建 Discord 机器人。** 在 [Discord Developer Portal](https://discord.com/developers/applications) 创建应用，在 **Bot** 页面打开 **Message Content Intent** 并复制令牌。把机器人邀请进你的服务器(OAuth2 URL generator,`bot` scope),再复制你要和它对话的频道 ID(打开开发者模式，右键频道，复制频道 ID)。
-2. **安装 hc**,然后运行上面的一行安装命令。`dori setup` 会询问这个令牌和频道 ID、模型和目录。
+1. **运行 toodo-server。** 在主机上启动 toodo-server 并打开它的网页应用，里面的 Toodo 聊天就是和 Dori 对话的地方。
+2. **安装 hc**,然后运行上面的一行安装命令。
 3. **检查安装**:`dori doctor` 逐项显示 OK、WARN 或 FAIL,失败的项目会给出具体的修复方法。
-4. **开启**:在 `dori-lead` 窗格里启动编程智能体，说一句 "Dori mode"。Dori 会问你怎么称呼它，通过机器人跟你打招呼，并提议做 onboarding。
-5. **交给它一件工作**:在频道里给机器人写，比如 "修一下 acme/app README 里的错别字并开个 PR"。它会在 hc 里开一条 lane,在帖子里汇报进度，PR 合并后关闭这条 lane。
+4. **开启**:在 `dori-lead` 窗格里启动编程智能体，说一句 "Dori mode"。Dori 会问你怎么称呼它，在 Toodo 聊天里跟你打招呼，并提议做 onboarding。
+5. **交给它一件工作**:在 Toodo 聊天里写，比如 "修一下 acme/app README 里的错别字并开个 PR"。它会在 hc 里开一条 lane,在任务帖子里汇报进度，PR 合并后关闭这条 lane。
 
-包括斜杠命令、监控和开机自启在内的完整设置说明见 [`references/setup.md`](skills/dori-mode/references/setup.md)。
+包括监控和开机自启在内的完整设置说明见 [`references/setup.md`](skills/dori-mode/references/setup.md)。
 
 ## 给你的 Dori 起名
 
-Dori 第一件事就是问你该怎么称呼它。直接叫 "Dori" 可以，用 Dori 结尾的名字也可以，比如 ShipDori 或 WorkDori,同时运行好几个时更好区分。定下的名字会用在机器人名、消息落款和模式名上，下次只要说一句 "ShipDori mode" 就能重新开启。
+Dori 第一件事就是问你该怎么称呼它。直接叫 "Dori" 可以，用 Dori 结尾的名字也可以，比如 ShipDori 或 WorkDori,同时运行好几个时更好区分。定下的名字会用在消息落款和模式名上，下次只要说一句 "ShipDori mode" 就能重新开启。
 
 ## Dori 怎么说话
 
@@ -140,16 +139,13 @@ CLI 还带有 Dori 需要的消息相关功能，也可以作为 `scripts/src/me
 
 | 命令 | 作用 |
 |---|---|
-| `dori send discord --to T --text X [--thread ID] [--edit ID]` | 发送或编辑消息。遇到限流会等待后重发，含有 `$(` 的文字会被拒绝 |
-| `dori presence discord` | 通过 Discord 网关让机器人保持在线显示 |
+| `dori send --to REF\|alerts --text X [--file PATH ...]` | 在 Toodo 聊天里发消息(`--to alerts` 是默认房间)。含有 `$(` 的文字会被拒绝 |
+| `dori typing REF [--off]` | 在 Toodo 聊天的频道或帖子里显示或关闭"正在输入" |
 | `dori transcribe <file>` | 用 `hooks.transcribe` 的命令把语音消息转成文字 |
 | `dori can-launch` | 看看还有没有余量再开一条 lane |
 
 没有对应命令、但模块里提供的功能:
-- Discord:创建线程、改名、归档
 - `typingWhile`:工作进行时一直显示"正在输入"
-
-令牌从 `DORI_DISCORD_TOKEN` 读取。
 
 ## 测试
 
@@ -176,8 +172,7 @@ Toodo 的[贡献者许可协议](../CLA.md),详见 [`CONTRIBUTING.md`](../CONTRI
 如果你之前用 gist 设置过 OmOMeow 模式，机器人照常能用。改下面四处，它就成了 Dori。
 
 1. **起一个 Dori 名字。** 就叫 "Dori",或者用 Dori 结尾的名字，比如 ShipDori、WorkDori。对智能体说:"从现在起你叫 ShipDori,这是 ShipDori mode。"之后开启模式的说法就从 "OmOMeow mode" 换成 "ShipDori mode"。
-2. **改机器人的名字和头像。**
-   - Discord:在 Developer Portal 打开你的应用。在 **Bot** 页面改用户名和图标，在 **General Information** 页面改应用名和图标(可以用同一张默认头像),然后保存。
+2. **把对话搬到 Toodo 聊天。** Dori 只在 Toodo 聊天里对话。原来的机器人和服务器保持原样,Dori 不再读取它们。
 3. **安装这个仓库。** 运行上面的一行安装命令，再对智能体说 "ShipDori mode",它就会用这个技能和 `dori` CLI,不再用以前粘贴的提示词。
 4. **做一次初次了解。** 如果 OmOMeow 时期没做过，说一句"做一下 onboarding"就行。
 

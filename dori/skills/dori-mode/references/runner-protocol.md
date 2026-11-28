@@ -472,7 +472,7 @@ the worker, leaves hc's core running, and only then revokes the runner and drops
   otherwise downloads the latest release into `~/.dori/runner/bun`.
 - On Linux, `~/.config/systemd/user/dori-runner.service` (from `templates/dori-runner-remote.service`) runs
   `bun ~/.dori/runner/bin/dori.js runner serve --label <label> --listen <host>:7411`. It has no
-  `EnvironmentFile`: a worker holds no supervisor or Discord credentials.
+  `EnvironmentFile`: a worker holds no supervisor credentials.
 - The enrollment code and the supervisor fingerprint are shell variables in the script. They reach
   `runner serve --enroll-only` through a pipe from the `printf` builtin, so they appear in no process's argv on either
   machine. A worker that already has `~/.dori/runner/keys/supervisor.pub` skips enrollment: a reinstall or an upgrade
@@ -848,8 +848,7 @@ Each decision runs `dori runner probe --json` on the runner's host: over ssh for
 
 The restart circuit allows 3 restarts per runner per hour. A heartbeat or hello ends a disconnect, with
 `HOST_GUARD ONLINE machine=<label>` when it had woken the lead with `HOST_GUARD OFFLINE`. Each such
-`HOST_GUARD OFFLINE` and `HOST_GUARD ONLINE` is also posted as a system notice to the alerts channel (config
-`alertsChannel`, else the first `discordChannels` entry).
+`HOST_GUARD OFFLINE` and `HOST_GUARD ONLINE` is also posted as a system notice to the Toodo chat's default room.
 
 Outages have hysteresis per machine: an outage ends only once the runner has stayed connected for 10 minutes. A
 disconnect before then folds into the same outage: no new `RUNNER_STALE` or `RUNNER_OFFLINE`, and owned lanes do not

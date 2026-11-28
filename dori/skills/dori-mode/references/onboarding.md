@@ -14,7 +14,7 @@ Wait for the answer. If it is no, record that onboarding was declined and stop. 
 
 Look only at what is visible without opening anyone's data: installed CLIs, logged-in apps, the platforms agent-messenger supports, config files that name a workspace. Usual candidates:
 
-- messengers: Discord, KakaoTalk, LINE
+- messengers: Slack, KakaoTalk, LINE
 - docs and knowledge: Notion, Google Docs, Confluence
 - tickets: Linear, Jira, GitHub Issues
 - code: GitHub, GitLab

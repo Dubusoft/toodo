@@ -6,8 +6,8 @@ A lane is one agent session doing one job in its own hc terminal. You launch it,
 
 ```sh
 dori launch fix-login --title "Fix the login redirect loop" \
-  --from-message <channel> <messageId> --note "worktree from origin/dev; leave the session store alone" --done "merged acme/app#412; closed acme/app#398" \
-  --thread "discord:<channel>/<thread>" --mode ulw
+  --brief ~/.dori/state/briefs/fix-login.md --done "merged acme/app#412; closed acme/app#398" \
+  --task 412 --mode ulw
 ```
 
 Every lane runs on `defaultModel` at thinking medium (opus-5-5, effort medium by default); pick the mode, not the model. `--mode ulw` (the default, opened with `launchKeywords`) is for clear, contained work whose instructions say exactly what to change. `--mode mass-ulw` (opened with `massLaunchKeywords`) is for work that touches many places or whose instructions are vague enough that it has to investigate before it can decide what to change. `--model` stays only for the relaunch after a `STARTUP_ERROR`.

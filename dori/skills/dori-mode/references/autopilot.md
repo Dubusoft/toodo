@@ -5,7 +5,7 @@ Autopilot decides which ready toodo tasks may run as lanes without a fresh word 
 ## Flag contract
 
 - A task is a candidate when it is `planned` and marked for autopilot, in any workspace. There is no workspace allow list and no approval list kept by dori: the mark is the owner's approval, and clearing it withdraws it.
-- Toodo does not record who set the mark, so the lead sets it only when the owner asked for autopilot on that task, and adds the owner's message as a task ref `owner:<ref>` (e.g. `owner:discord:<channel>/<message>`). A marked task without such a ref refuses `owner-ref-missing`.
+- Toodo does not record who set the mark, so the lead sets it only when the owner asked for autopilot on that task, and adds the owner's message as a task ref `owner:<ref>` (e.g. `owner:toodo:thread/<id>`). A marked task without such a ref refuses `owner-ref-missing`.
 - A marked task needs at least one criterion, so the lane has something to verify (`criteria-missing` otherwise).
 - Editing a marked task does not withdraw the mark; there is no content hash. When the lead changes a marked task's scope (title, criteria), it records the change as a `decision` progress note.
 - A follow-up task is never marked by inheritance; the owner asks for it on that task.
@@ -25,7 +25,7 @@ A marked task states how it runs through task refs, which toodo stores without i
 | `model:<id>` | `defaultModel` | The lane's model. |
 | `approved:<version>` | none | The lead reviewed the task at that contract version. |
 
-Without a `repo:` ref the task takes its workspace's `repository` when that free text names a GitHub repository (`owner/name`, or a github.com URL or remote); anything else there (empty, `discord:<channel>`, a path) means no repo. A task with no repo at all runs repo-less:
+Without a `repo:` ref the task takes its workspace's `repository` when that free text names a GitHub repository (`owner/name`, or a github.com URL or remote); anything else there (empty, `slack:<channel>`, a path) means no repo. A task with no repo at all runs repo-less:
 
 - It makes no branch, commit or PR (`repo` and `branch` are null). Its brief says so, declares `deliverable: report` (the runner refuses a done claim without report files) and asks for the result, criterion by criterion, in `DORI_LANE_OUT/report.md`.
 - Its Done is `file "<research>/<laneKey>/report.md"`: the lead-host path where the claim installs that file (`lane-files.ts` `laneReportFile`, next to the state dir). Done checks of local and remote lanes both run on the lead host, so the signal is live once the claim is collected.
@@ -79,9 +79,8 @@ Key `autopilot` in `config.json`; every field is optional. An invalid value or a
 | --- | --- | --- |
 | `mergeBase` | `"dev"` | Autopilot lanes merge into this branch only. |
 | `tickSec` | `300` | Seconds between the supervisor's ticks, an integer from 30 to 3600. |
-| `quotaCacheSec` | `90` | Seconds a quota read is reused before the usage endpoints are read again, an integer from 30 to 900. It applies to every quota caller (the judge, `dori quota`, Discord `/quota`); see Quota reads. |
+| `quotaCacheSec` | `90` | Seconds a quota read is reused before the usage endpoints are read again, an integer from 30 to 900. It applies to every quota caller (the judge, `dori quota`, the status panel); see Quota reads. |
 | `executor` | `false` | A boolean (anything else is rejected). `true` lets the supervisor launch LAUNCH tasks itself; see Supervisor executor. |
-| `threadChannel` | `""` | The Discord channel id the executor opens lane threads under (trimmed; anything but a string is rejected). Empty: the first `discordChannels` entry. Set it when `discordChannels[0]` is not where lane threads belong (e.g. a reports channel); closed-thread redirects and owner lines keep using `discordChannels[0]`. `dori doctor` shows the channel in use as `config.autopilot.threadChannel`. |
 
 All apply live when `config.json` is edited (no supervisor restart). There is no workspace allow list (every workspace's marked tasks are candidates), no autopilot WIP cap and no daily cap: the host guard alone limits how many lanes run (see Slots).
 
@@ -119,7 +118,7 @@ HOLD is temporary; the next tick judges again:
 
 ## Quota reads
 
-Every quota caller (the judge, `dori quota`, Discord `/quota`) reads through one cache file, `<stateDir>/quota-cache.json`, so the supervisor and CLI invocations together call the usage endpoints at most once per `quotaCacheSec`:
+Every quota caller (the judge, `dori quota`, the status panel) reads through one cache file, `<stateDir>/quota-cache.json`, so the supervisor and CLI invocations together call the usage endpoints at most once per `quotaCacheSec`:
 
 - A read younger than `quotaCacheSec` is served from the file without calling the endpoints.
 - An expired read is refreshed by one caller under a state lock (`quota-cache.json.lock`); concurrent callers wait for it and reuse its answer, or serve the old file when the lock is still held after 10 s.
@@ -183,11 +182,10 @@ When on, each supervisor tick first runs `reconcileExecutions`, then `runExecuto
 1. prepare: read the task and its contract again; a reason to stop goes to review before anything is reserved or started. Nobody reads an executor brief before its launch, so a path it names under an attachment root (`~/.dori/research/...` included) that does not exist on the lead is review `lane-file-missing:<path>` rather than a lane that starts without it; the lane's own `research/<key>` collection directory is exempt.
 2. reserve: open the task's `autopilot-launch` ledger attempt, exactly as the CLI does. A reservation the CLI opened is never adopted.
 3. start-task: `start_task` with the `lane:<key>` ref.
-4. thread: create the lane's Discord thread under `autopilot.threadChannel` (else the first `discordChannels` entry) and add `discord.ownerId`.
-5. launch: write the brief, then place, validate and admit through the real launch service (never `launchLane` directly). A HOLD from admission queues the lane.
-6. settle: settle the ledger attempt `verified`, `failed` or `ambiguous`, and notify with `AUTOPILOT_EXECUTOR_LAUNCHED`, `_REVIEW`, `_FAILED` or `_AMBIGUOUS`.
+4. launch: the lane starts with thread `none` and uses its Toodo task thread; write the brief, then place, validate and admit through the real launch service (never `launchLane` directly). A HOLD from admission queues the lane.
+5. settle: settle the ledger attempt `verified`, `failed` or `ambiguous`, and notify with `AUTOPILOT_EXECUTOR_LAUNCHED`, `_REVIEW`, `_FAILED` or `_AMBIGUOUS`.
 
-Every step is journaled in the operation store: one sequence row `toodo:<taskId>/autopilot-execute/<n>` (attempt `n`: 1, or one past the attempts a re-arm covers) and step rows with actions `autopilot-prepare`, `autopilot-reserve`, `autopilot-start-task`, `autopilot-thread`, `autopilot-brief`, `autopilot-hold`, `autopilot-admit`, `autopilot-settle`, `autopilot-drop-held`, `autopilot-blocker`, `autopilot-notice` and `autopilot-orphan`. The thread id and its member result are kept, so a member-add error doesn't create a second thread. The `autopilot-launch` ledger row stays authoritative.
+Every step is journaled in the operation store: one sequence row `toodo:<taskId>/autopilot-execute/<n>` (attempt `n`: 1, or one past the attempts a re-arm covers) and step rows with actions `autopilot-prepare`, `autopilot-reserve`, `autopilot-start-task`, `autopilot-brief`, `autopilot-hold`, `autopilot-admit`, `autopilot-settle`, `autopilot-drop-held`, `autopilot-blocker`, `autopilot-notice` and `autopilot-orphan`. The `autopilot-launch` ledger row stays authoritative.
 
 - Crash reconcile: at startup and on every tick, `reconcileExecutions` resumes open sequences from their last journaled step. It never relaunches. An admission whose start can't be proved (a startup receipt or the runner's journaled startup result; a registered pane alone isn't proof) settles `ambiguous` and goes to the lead, as does a lost thread-create reply. Positive proof that a launch never started settles `failed` with one blocker, without retry.
 - Orphaned start: an ambiguous `start_task` (`AUTOPILOT_EXECUTOR_AMBIGUOUS ... at start-task, before any lane launched`) that has no `autopilot-hold` or `autopilot-admit` row is read again on each tick until Toodo answers. If the task is `in_progress` with its `lane:<key>` ref while the registry has no lane for the key (a paused reservation counts as one) and nothing is queued for it, the supervisor journals one `AUTOPILOT_EXECUTOR_ORPHAN #<id> lane=<key> ...` per attempt and records `autopilot-orphan`, so later ticks and restarts stay quiet. An unreadable task is unknown and waits for a later tick. It never pauses, edits or relaunches the task.

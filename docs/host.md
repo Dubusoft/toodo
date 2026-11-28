@@ -36,7 +36,7 @@ The journal (`journalctl --user -u toodo.service`) shows `HOST_LISTENING`, the c
 ## Secrets
 
 The unit has no `EnvironmentFile` and no secret in its environment. The supervisor Worker
-reads `~/.dori/env` (the Discord token, `GH_TOKEN`, and the rest `dori setup` writes) into
+reads `~/.dori/env` (`GH_TOKEN` and the rest `dori setup` writes) into
 its own `process.env` when it starts. That is a copy the main thread never sees, so the
 thread that serves HTTP holds no Dori secret. Commands the supervisor starts get the values
 because Dori spawns them with its environment.
@@ -62,42 +62,19 @@ log: a check logs `HOST_HEALTHCHECK <name> ok` or `HOST_HEALTHCHECK <name> faili
 error>` when a ping cannot be sent. Without the file the host logs `HOST_HEALTHCHECK_OFF`.
 
 When `toodo.service` stops, nothing pings, and healthchecks.io alerts the owner after the
-checks' grace time, without Discord.
+checks' grace time, without the Toodo chat.
 
-## Discord
+## Toodo Chat
 
-This host runs Dori with Discord off. Dori talks to the owner on the chat platforms listed
-in `platforms` of `~/.dori/config.json` (`DORI_CONFIG` moves it), and the line is:
+Dori talks to the owner only on the Toodo chat: owner messages, decisions and requests,
+lane reports, and the supervisor's own notices all go there. `dori doctor` fails
+`toodo chat` when the chat cannot be reached, since the owner then has no other way to
+reach Dori. The supervisor writes `gateway-status.json` (`{pid, at}`) on every loop, which
+the `HC_DORI_URL` check reads.
 
-```json
-"platforms": ["toodo"]
-```
-
-The Toodo chat then carries everything: owner messages, decisions and requests, lane
-reports, and the supervisor's own notices. The supervisor opens no Discord gateway and
-needs no `DORI_DISCORD_TOKEN`; it logs `DISCORD_OFF platforms=toodo` when it starts.
-`dori doctor` reports `discord` and `gateway` as off (OK) and fails `toodo chat` when the
-Toodo chat cannot be reached, since the owner then has no other way to reach Dori.
-`dori status` shows the gateway as off. The `HC_DORI_URL` check keeps working, because the
-supervisor writes `gateway-status.json` every loop whether Discord is on or off. The
-Discord server and bot are left as they are.
-
-To turn Discord back on, change that one line and replace the supervisor Worker:
-
-```json
-"platforms": ["discord", "toodo"]
-```
-
-```sh
-systemctl --user reload toodo.service
-```
-
-The supervisor reads `platforms` for Discord only when it starts: a hot reload that adds
-or drops `discord` logs `CONFIG_RELOAD_RESTART_NEEDED platforms (discord)` and changes
-nothing until the reload. Turning it back on needs the `discord` and `discordChannels`
-keys in the config and `DORI_DISCORD_TOKEN` in `~/.dori/env`, so keep them while Discord
-is off. This works only while dori still has its Discord code; once that code is removed,
-the way back is to revert that removal and run `toodo update`.
+The Discord server and bot this host once used are left in place; Dori no longer reads
+them. `dori update` runs `dori setup --migrate`, which drops the old Discord keys from
+`~/.dori/config.json`, and a `DORI_DISCORD_TOKEN` line left in `~/.dori/env` is unused.
 
 ## The `toodo` Command
 
@@ -208,7 +185,7 @@ build, so no Rust toolchain is needed:
    ```
 6. Check: `toodo doctor` and `dori doctor` have no FAIL, the journal shows
    `HOST_HEALTHCHECK toodo ok` and `HOST_HEALTHCHECK dori ok`, both checks are up on
-   healthchecks.io, and the web app and a Discord message to Dori work.
+   healthchecks.io, and the web app and a Toodo chat message to Dori work.
 7. Resume autopilot.
 
 ### Rolling Back
