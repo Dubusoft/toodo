@@ -31,7 +31,7 @@ const setup = (over: Partial<RunnerLanesDeps> = {}) => {
   dirs.push(join(runnerDir, ".."));
   mkdirSync(runnerDir, { mode: 0o700 });
   const world = newHcWorld();
-  const control = { checkOut: "DORI_LANE_FILES=1\n", checkCode: 0, checkThrows: false, runThrows: false, beforeRun: () => {} };
+  const control = { checkOut: "DORI_LANE_FILES=1\n", checkCode: 0, checkThrows: false, runThrows: false, beforeRun: () => {}, beforeRead: async () => {} };
   const calls: string[][] = [];
   const published: [RunnerEventType, unknown][] = [];
   let tokens = 0;
@@ -50,6 +50,7 @@ const setup = (over: Partial<RunnerLanesDeps> = {}) => {
         control.beforeRun();
         if (control.runThrows) throw new Error("lost run reply");
       }
+      if (argv[0] === "hc" && argv[2] === "read") await control.beforeRead();
       return hcAnswer(world, argv) ?? ({ code: 0, out: "", err: "" } as Ran);
     },
   });
@@ -235,6 +236,22 @@ test("lane.asking: an owned lane's on-screen question is published once, and aga
   t.world.screen = QUESTION;
   expect(await t.lanes.askTick()).toEqual(["lane-a"]);
   expect(t.published).toHaveLength(2);
+});
+
+test("an ask pass keeps a lane started and drops a lane closed while it reads the screens", async () => {
+  const t = setup();
+  await t.lanes.start(START);
+  await t.lanes.start({ ...START, cmdId: "c2", key: "lane-c" });
+  t.world.screen = QUESTION;
+  t.world.panes = [{ pane_id: "hc:t1" }];
+  t.control.beforeRead = async () => {
+    t.control.beforeRead = async () => {};
+    await t.lanes.start({ ...START, cmdId: "c3", key: "lane-b" });
+    expect((await t.lanes.close("lane-c")).result.gone).toBe(true);
+  };
+  expect(await t.lanes.askTick()).toEqual(["lane-a"]);
+  expect(Object.keys(t.lanes.records()).sort()).toEqual(["lane-a", "lane-b"]);
+  expect(t.lanes.records()["lane-a"]?.lastAsk).toBeDefined();
 });
 
 test("observe answers dead but leaves publishing a dead agent to the serve loop, which holds it through its grace windows", async () => {

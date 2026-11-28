@@ -655,14 +655,12 @@ export class RunnerLanes {
   /**
    * One pass over the owned lanes: a question prompt on a lane's screen not published yet goes out as `lane.asking`
    * and is remembered in the record (`lastAsk`); a lane whose prompt is gone forgets it, so its next question goes out
-   * again. An empty or failed screen read changes nothing. Returns the keys published.
+   * again. An empty or failed screen read changes nothing. Returns the keys published. Each change is written to the
+   * lane's current record: the pass awaits screen reads, and a lane started or closed meanwhile must stay so.
    */
   async askTick(panes?: readonly Pane[], instance?: string): Promise<string[]> {
     const asked: string[] = [];
-    const records = this.records();
-    const next = { ...records };
-    let changed = false;
-    for (const record of Object.values(records)) {
+    for (const record of Object.values(this.records())) {
       const pane = await this.currentPane(record, panes, instance);
       if (!pane) continue;
       const screen = await readScreen(this.deps.run, record.pane, ASK_SCREEN_LINES).catch(() => "");
@@ -672,14 +670,8 @@ export class RunnerLanes {
       const seen = q ? questionKey(q) : undefined;
       if (seen === record.lastAsk) continue;
       if (q) { this.deps.publish("lane.asking", { key: record.key, text: askingLine(record.key, q) }); asked.push(record.key); }
-      const current = next[record.key];
-      if (current) {
-        const { lastAsk: _was, ...rest } = current;
-        next[record.key] = seen ? { ...rest, lastAsk: seen } : rest;
-        changed = true;
-      }
+      this.update(record.key, ({ lastAsk: _was, ...rest }) => (seen ? { ...rest, lastAsk: seen } : rest));
     }
-    if (changed) this.save(next);
     return asked;
   }
 }
