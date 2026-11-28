@@ -252,7 +252,8 @@ export type ReviewStatusTickDeps = {
   readonly flow: FlowDeps;
   readonly stores: ReviewStores;
   readonly reports: LaneReportStore;
-  readonly transport: LaneStatusTransport;
+  /** Null with Discord off: review lines are not written into any status message. */
+  readonly transport: LaneStatusTransport | null;
   readonly decisions: DecisionContext;
   readonly home: string;
   readonly emit: (id: string, line: string) => void;
@@ -293,7 +294,7 @@ export const reviewStatusTick = async (d: ReviewStatusTickDeps): Promise<string[
   for (const lane of await flow.registry.open()) {
     if (lane.review || statusOf(lane) === "closed") continue;
     const channel = statusChannel(lane);
-    if (!channel) continue;
+    if (!channel || !d.transport) continue;
     try {
       input ??= await readReviewStatus(flow, stores);
       const lines = reviewStatusLines(lane, input);

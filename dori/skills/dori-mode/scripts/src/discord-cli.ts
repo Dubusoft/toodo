@@ -99,6 +99,18 @@ export const discordMain = async (args: string[], { flow: deps, die, messengerTo
         if (posted.kind === "posted") console.log(`REPORTED_RECORDED ${found.key} ${posted.message}`);
         else console.log(`REPORT_REDIRECTED ${found.key} ${posted.message}: thread ${posted.thread} was closed by the owner, so one line linking it went to ${posted.parent ? "its parent channel" : "the owner channel"} ${posted.target}`);
       };
+      if (append !== undefined && !discordOn(config)) {
+        // With Discord off there is no report message to edit (whatever thread the lane was bound to): the follow-up goes
+        // into the lane's Toodo task thread as its own post. A Toodo thread is never closed, so --no-redirect changes nothing.
+        const { appendLaneToodo } = await import("./lane-toodo.ts");
+        const appended = await appendLaneToodo(deps, found, append).catch((e: unknown) => ({ appended: false as const, why: e instanceof Error ? e.message : String(e) }));
+        if (!appended.appended) die(`REPORT_NOT_APPENDED ${found.key}: Discord is off and ${appended.why}; nothing recorded`);
+        else {
+          receipt({ message: appended.message, target: appended.target ?? "toodo", followUp: true });
+          console.log(`REPORT_APPENDED ${found.key} ${appended.message}`);
+        }
+        break;
+      }
       if (append !== undefined) {
         // The follow-up edits the lane's last report (else its [System] status message): nothing new lands in the thread.
         const status = found.statusMessageId && found.thread.startsWith("discord:") ? { channel: resolveTarget("discord", found.thread).to, message: found.statusMessageId } : undefined;

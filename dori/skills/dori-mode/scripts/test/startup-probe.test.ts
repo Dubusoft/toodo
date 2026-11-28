@@ -9,6 +9,7 @@ import { cliRunnerCall, cliSocketPath } from "../src/runner/cli-relay.ts";
 import { defaultRunnerDir } from "../src/runner/fs-safety.ts";
 import { localRunnerArgv } from "../src/runner/local-child.ts";
 import { acquireSupervisor, supervise } from "../src/supervise-loop.ts";
+import { readCloseTimers, recordCloseTimer } from "../src/thread-finality.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 
 type Spawn = (argv: readonly string[], env: Record<string, string>) => { readonly pid: number; readonly exited: Promise<number>; kill(sig: "SIGTERM" | "SIGKILL"): void };
@@ -173,6 +174,11 @@ test("with Discord off (platforms toodo) supervise reaches READY=1 with no gatew
   });
   const notified: string[] = [];
   const discordCalls: string[] = [];
+  // A Discord thread whose close button waited past threadCloseAfterHours before Discord was turned off.
+  const before = 1_800_000_000_000 - 25 * 3_600_000;
+  recordCloseTimer(state.dir, "200", { message: "m-1", reportAt: before, since: before });
+  const errors: string[] = [];
+  spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
   // When it starts and every task runs one pass.
   await superviseWith(state.dir, probe, controller.signal, async (s) => { notified.push(s); return true; }, idleRunner, { platforms: ["toodo"] }, discordCalls);
   // Then it got ready without the Discord steps, and nothing reached Discord.
@@ -180,6 +186,9 @@ test("with Discord off (platforms toodo) supervise reaches READY=1 with no gatew
   expect(steps(lines.find((line) => line.startsWith("STARTUP_TIMINGS ready ")))).toEqual(["lock", "supervisor", "schedules", "waits", "github", "review-gate", "ci-follow", "lane-reports", "runners", "ready"]);
   expect(discordCalls).toEqual([]);
   expect(existsSync(join(state.dir, "gateway-locks"))).toBe(false);
+  // The close-button pass is skipped (its refused Discord client would fail every pass); the wait resumes once Discord is on.
+  expect(errors.filter((line) => line.includes("Discord is off"))).toEqual([]);
+  expect(readCloseTimers(state.dir)["200"]).toMatchObject({ message: "m-1" });
 });
 
 test("a startup that fails still logs how far it got", async () => {
