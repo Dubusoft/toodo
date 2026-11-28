@@ -30,7 +30,8 @@ function Link({ href, children }: { href?: string; children: ReactNode }) {
   );
 }
 
-const heading = "text-sm font-semibold text-foreground";
+// The extra space above a heading ties it to the text it introduces rather than the text before it.
+const heading = "text-sm font-semibold text-foreground not-first:mt-1";
 
 function Checkbox({ checked }: { checked?: boolean }) {
   const m = useMessages();

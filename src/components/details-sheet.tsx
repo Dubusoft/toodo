@@ -126,7 +126,8 @@ export function DetailsSheet({
         />
       </div>
       {banner}
-      <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+      {/* The bottom padding lets the end scroll clear of the chat button floating over this corner. */}
+      <ul className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-14">
         <ErrorBoundary label="the task details" as="li" className="m-4">
           {children}
         </ErrorBoundary>
