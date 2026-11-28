@@ -287,7 +287,8 @@ export function TaskGraph({
   const { removable, confirmingEdge } = edits;
 
   return (
-    <section aria-label={m.details.graph.timeline} className="flex flex-1 flex-col gap-2">
+    // The bottom padding ends the timeline above the floating chat button, so the chips of its last rows stay clear of it.
+    <section aria-label={m.details.graph.timeline} className="flex flex-1 flex-col gap-2 pb-14">
       {/* On a phone the controls stay on one line that scrolls sideways, until the legend opens below them. */}
       <div
         className={cn(
