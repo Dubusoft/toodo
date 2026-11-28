@@ -17,6 +17,7 @@ import { checkUpdate } from "../commands/updates.ts";
 import * as workspaces from "../commands/workspaces.ts";
 import { workspaceId } from "../domain/model.ts";
 import { formatScopes } from "../oauth/scopes.ts";
+import { appLanguage, setAppLanguage } from "../storage/app-language.ts";
 import { oauthListGrants, oauthRevokeGrant } from "../storage/oauth.ts";
 import { failed, json } from "./auth.ts";
 import type { Services } from "./services.ts";
@@ -68,6 +69,7 @@ function def<N extends Name>(
 export const READ_COMMANDS: ReadonlySet<string> = new Set([
   "app_info",
   "check_update",
+  "get_app_language",
   "list_connected_apps",
   "list_workspaces",
   "get_workspace",
@@ -116,6 +118,8 @@ export function appInfo(): B.AppInfo {
 const ENTRIES: readonly Entry[] = [
   def("appInfo", [], () => appInfo()),
   def("checkUpdate", [], () => checkUpdate(VERSION)),
+  def("getAppLanguage", [], (s) => appLanguage(s.reader.db)),
+  def("setAppLanguage", ["language:enum:en|ko?"], (s, language) => setAppLanguage(s.storage.db, language)),
   def("listConnectedApps", [], (s) => ({
     publicMcpUrl: s.publicUrl === null ? null : `${s.publicUrl}/mcp`,
     apps: oauthListGrants(s.reader.db, s.reader.now()).map((grant) => ({

@@ -24,6 +24,8 @@ vi.mock("@/lib/bindings", () => ({
   commands: {
     appInfo: vi.fn(),
     checkUpdate: vi.fn(),
+    getAppLanguage: vi.fn(),
+    setAppLanguage: vi.fn(),
     listWorkspaces: vi.fn(),
     createWorkspace: vi.fn(),
     updateWorkspace: vi.fn(),
@@ -295,6 +297,7 @@ beforeEach(() => {
   }));
   mocked.appInfo.mockResolvedValue({ name: "toodo", version: "1.2.3" });
   mocked.checkUpdate.mockResolvedValue({ current: "1.2.3", channel: "latest", latest: "1.2.3", newer: false, error: null });
+  mocked.getAppLanguage.mockResolvedValue(null);
   mocked.listTaskRelations.mockResolvedValue({ status: "ok", data: [] });
   mocked.listBackups.mockResolvedValue({ status: "ok", data: [] });
   mocked.listArchive.mockResolvedValue({ status: "ok", data: { workspaces: [], tasks: [] } });

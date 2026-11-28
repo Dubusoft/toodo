@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { DoriConfigPanel, LanguageSettingField } from "@/components/dori-config-panel";
+import { AppLanguageSettingField } from "@/components/app-language-setting";
+import { DoriConfigPanel, DoriLanguageSettingField } from "@/components/dori-config-panel";
+import { commands } from "@/lib/bindings";
 import type { DoriConfigEntry, DoriConfigView } from "@/lib/dori-config";
 import { I18nProvider, useLocaleFromSettings, useMessages } from "@/lib/i18n";
 import { ko } from "@/locales/ko";
@@ -9,9 +11,12 @@ import { chooseOption } from "@/test/app";
 import { fetchDoriConfig, saveDoriConfig } from "@/web/dori-config";
 
 vi.mock("@/web/dori-config", () => ({ fetchDoriConfig: vi.fn(), saveDoriConfig: vi.fn() }));
+vi.mock("@/lib/bindings", () => ({ commands: { getAppLanguage: vi.fn(), setAppLanguage: vi.fn() } }));
 
 const fetched = vi.mocked(fetchDoriConfig);
 const saved = vi.mocked(saveDoriConfig);
+const appLanguage = vi.mocked(commands.getAppLanguage);
+const setAppLanguage = vi.mocked(commands.setAppLanguage);
 
 const entry = (key: string, value: string, over: Partial<DoriConfigEntry> = {}): DoriConfigEntry => ({
   key, kind: "string", describe: `${key} help`, values: null, required: false, value, access: "edit", restart: false, ...over,
@@ -38,13 +43,14 @@ function renderPanel(active = true) {
   );
 }
 
-/** The General section's Language field beside a heading in the UI language, as the app follows it. */
+/** The General section's two language fields beside a heading in the UI language, as the app follows it. */
 function LocalizedLanguageField() {
   useLocaleFromSettings();
   return (
     <>
       <h2>{useMessages().settings.title}</h2>
-      <LanguageSettingField />
+      <AppLanguageSettingField />
+      <DoriLanguageSettingField />
     </>
   );
 }
@@ -62,40 +68,57 @@ function renderLanguageField() {
 beforeEach(() => {
   fetched.mockReset();
   saved.mockReset();
+  appLanguage.mockReset();
+  setAppLanguage.mockReset();
+  appLanguage.mockResolvedValue(null);
+  setAppLanguage.mockImplementation(async (language) => language);
   localStorage.clear();
 });
 
-describe("LanguageSettingField", () => {
-  it("switches the language with the Language option", async () => {
-    fetched.mockResolvedValue(view("English"));
-    saved.mockResolvedValue({ view: view("Japanese"), restart: false });
+describe("language settings", () => {
+  it("shows the screens in Dori's language while no app language is set", async () => {
+    fetched.mockResolvedValue(view("Korean"));
     renderLanguageField();
-    chooseOption(await screen.findByRole("combobox", { name: /Language/ }), "Japanese");
-    await waitFor(() => expect(saved).toHaveBeenCalledWith({ key: "ownerLanguage", value: "Japanese" }));
-    expect(await screen.findByText("Saved. Dori applies it now, without a restart.")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: /Language/ })).toHaveTextContent("Japanese");
+    expect(await screen.findByRole("heading", { name: ko.settings?.title })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: new RegExp(ko.settings?.appLanguage ?? "") })).toHaveTextContent(
+      ko.settings?.appLanguageFollowsDori ?? "",
+    );
   });
 
-  it("switches the app's screens to Korean and back to English without a reload", async () => {
+  it("switches the screens with the app language and leaves Dori's language alone", async () => {
     fetched.mockResolvedValue(view("English"));
-    saved.mockResolvedValueOnce({ view: view("Korean"), restart: false });
-    saved.mockResolvedValueOnce({ view: view("English"), restart: false });
     renderLanguageField();
-    chooseOption(await screen.findByRole("combobox", { name: /Language/ }), "Korean");
+    chooseOption(await screen.findByRole("combobox", { name: /App language/ }), "Korean");
     expect(await screen.findByRole("heading", { name: ko.settings?.title })).toBeInTheDocument();
-    expect(await screen.findByText(ko.settings?.savedNow ?? "")).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: new RegExp(ko.settings?.language ?? "") })).toBeInTheDocument();
+    expect(setAppLanguage).toHaveBeenCalledWith("ko");
     expect(document.documentElement.lang).toBe("ko");
-    chooseOption(screen.getByRole("combobox"), ko.settings?.languageNames?.English ?? "");
+    expect(screen.getByRole("combobox", { name: new RegExp(ko.settings?.doriLanguage ?? "") })).toHaveTextContent(
+      ko.settings?.languageNames?.English ?? "",
+    );
+    chooseOption(screen.getByRole("combobox", { name: new RegExp(ko.settings?.appLanguage ?? "") }), ko.settings?.languageNames?.English ?? "");
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(document.documentElement.lang).toBe("en");
+    expect(saved).not.toHaveBeenCalled();
+  });
+
+  it("saves Dori's language and keeps the screens in theirs", async () => {
+    fetched.mockResolvedValue(view("English"));
+    saved.mockResolvedValue({ view: view("Korean"), restart: false });
+    renderLanguageField();
+    chooseOption(await screen.findByRole("combobox", { name: /Dori's language/ }), "Korean");
+    await waitFor(() => expect(saved).toHaveBeenCalledWith({ key: "ownerLanguage", value: "Korean" }));
+    expect(setAppLanguage).toHaveBeenCalledWith("en");
+    expect(await screen.findByText("Saved. Dori applies it now, without a restart.")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /Dori's language/ })).toHaveTextContent("Korean");
+    expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
     expect(document.documentElement.lang).toBe("en");
   });
 
-  it("shows nothing on a server without Dori", async () => {
+  it("offers only the app language on a server without Dori", async () => {
     fetched.mockRejectedValue(new Error("Not Found"));
     renderLanguageField();
-    await waitFor(() => expect(fetched).toHaveBeenCalled());
-    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(await screen.findByRole("combobox", { name: /App language/ })).toHaveTextContent("Not set");
+    expect(screen.queryByRole("combobox", { name: /Dori's language/ })).toBeNull();
     expect(screen.getByRole("heading", { name: "Settings" })).toBeInTheDocument();
   });
 });

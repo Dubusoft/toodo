@@ -23,6 +23,13 @@ export function makeCommands(invoke: Invoke) {
 		 *  version on the channel of the running server.
 		 */
 		checkUpdate: () => invoke<UpdateCheck>("check_update"),
+		/**
+		 *  The language the web app's screens are in on every device; `null` while none is set,
+		 *  and the app follows Dori's language.
+		 */
+		getAppLanguage: () => invoke<AppLanguage | null>("get_app_language"),
+		/**  Sets the language of the web app's screens on every device; `null` unsets it. */
+		setAppLanguage: (language: AppLanguage | null) => invoke<AppLanguage | null>("set_app_language", { language }),
 		listWorkspaces: () => typedError<Workspace[], CommandError>(invoke("list_workspaces")),
 		getWorkspace: (id: WorkspaceId) => typedError<Workspace, CommandError>(invoke("get_workspace", { id })),
 		/**  Stores a workspace without inspecting its external location. */
@@ -291,6 +298,9 @@ export type AppInfo = {
 	name: string,
 	version: string,
 };
+
+/**  A language the web app's screens can be in. */
+export type AppLanguage = "en" | "ko";
 
 /**
  *  What deleting moved to the archive: workspaces, archived with their tasks, and tasks of
