@@ -30,6 +30,7 @@ function serve(jobs: readonly ScheduledJob[], answer: (request: ScheduleRequest)
   localStorage.setItem(TOKEN_KEY, "secret");
   const posted: ScheduleRequest[] = [];
   vi.stubGlobal("fetch", vi.fn(async (path: string, init?: RequestInit) => {
+    if (path === "/api/host") return Response.json({ supervisor: { state: "running", starts: 1, lastHeartbeatAt: null, nextStartAt: null } });
     expect(path).toBe("/api/supervisor/schedules");
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
     if (init?.method !== "POST") return Response.json({ ok: true, jobs, timeZone });
@@ -53,6 +54,19 @@ function renderPanel(language = "ko-KR") {
 }
 
 describe("SchedulesPanel", () => {
+  it("says the supervisor is not responding instead of loading while the host restarts it", async () => {
+    localStorage.setItem(TOKEN_KEY, "secret");
+    vi.stubGlobal("fetch", async (path: string) =>
+      path === "/api/host"
+        ? Response.json({ supervisor: { state: "backoff", starts: 2, lastHeartbeatAt: null, nextStartAt: Date.now() + 60_000 } })
+        : Response.json({ ok: false, error: "the supervisor is backoff" }, { status: 503 }),
+    );
+    renderPanel("en-US");
+    expect(await screen.findByRole("alert")).toHaveTextContent(/^The Dori supervisor is not responding \(backoff; the host tries again in 1 min\)/);
+    expect(screen.queryByText("Loading the scheduled jobs...")).not.toBeInTheDocument();
+    expect(screen.queryByText("the supervisor is backoff")).not.toBeInTheDocument();
+  });
+
   it("lists every job with its schedule as a sentence, its description instead of its command, its next and last run and result, and pauses one", async () => {
     const posted = serve([digest, tidy, office], () => Response.json({ ok: true, jobs: [{ ...digest, paused: true, nextRunAt: null }, tidy, office], timeZone }));
     renderPanel();

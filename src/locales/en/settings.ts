@@ -324,6 +324,10 @@ export const settings = {
     screen: "Recent screen",
     readingScreen: "Reading the screen...",
     waiting: "Waiting for the supervisor's first report...",
+    notConnected: "Dori is not connected: this server runs without the Dori supervisor. Dori runs in the host service, toodo.service (see docs/host.md).",
+    off: "Dori is off: the server runs in safe mode (TOODO_SUPERVISOR=off). Remove that setting from toodo.service and restart it to start Dori.",
+    notResponding: (state: string, retryMinutes: number | null) =>
+      `The Dori supervisor is not responding (${state}${retryMinutes === null ? "" : `; the host tries again in ${retryMinutes} min`}). Check journalctl --user -u toodo.service or run toodo doctor.`,
     quota: "Quota",
     empty: "No lane is working.",
     status: "Status",
