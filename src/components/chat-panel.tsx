@@ -17,6 +17,7 @@ import {
   ArrowLeft,
   Bell,
   BellOff,
+  ChevronDown,
   Flag,
   Lock,
   MessageCircle,
@@ -111,6 +112,22 @@ const selectionKey = "toodo-chat-place";
 
 /** The channel every chat has. */
 const firstChannel: ChatChannelId = 1;
+
+/** Whether the chat list's Completed section is open, kept in this browser. */
+const completedShownKey = "toodo-chat-completed-shown";
+
+/** How many past chats the open Completed section lists at first, and how many more each "more" adds. */
+const recentPast = 5;
+const morePast = 20;
+
+function storedCompletedShown(): boolean {
+  return localStorage.getItem(completedShownKey) === "true";
+}
+
+function storeCompletedShown(shown: boolean) {
+  if (shown) localStorage.setItem(completedShownKey, "true");
+  else localStorage.removeItem(completedShownKey);
+}
 
 function storedSelection(): Selection {
   try {
@@ -959,32 +976,27 @@ function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boole
   );
 }
 
-/** A group of listed tasks under a heading, left out while it is empty unless it has an `action`. */
+/** A group of listed tasks under a heading, left out while it is empty. */
 function TaskGroup({
   label,
   icon,
-  action,
   chats,
   selection,
   onOpenTask,
 }: {
   label: string;
   icon?: ReactNode;
-  action?: ReactNode;
   chats: readonly TaskChat[];
   selection: Selection;
   onOpenTask: (chat: TaskChat) => void;
 }) {
-  if (chats.length === 0 && action === undefined) return null;
+  if (chats.length === 0) return null;
   return (
     <div className="flex flex-col gap-0.5 pt-2">
-      <div className="flex items-center justify-between px-2 pb-1">
-        <h3 className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
-          {icon}
-          {label}
-        </h3>
-        {action}
-      </div>
+      <h3 className="flex items-center gap-1 px-2 pb-1 text-xs font-medium text-muted-foreground">
+        {icon}
+        {label}
+      </h3>
       <ul aria-label={label} className="flex flex-col gap-0.5">
         {chats.map((chat) => (
           <TaskPlace
@@ -1027,7 +1039,7 @@ function PlaceList({
   const m = useMessages();
   const [adding, setAdding] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
-  const [showPast, setShowPast] = useState(false);
+  const [showPast, setShowPast] = useState(storedCompletedShown);
   const createChannel = useCreateChatChannel();
   const loose = threads.filter((thread) => thread.taskId === null);
   const archived = loose.filter((thread) => thread.status === "archived").length;
@@ -1138,46 +1150,72 @@ function PlaceList({
       />
       <TaskGroup
         label={m.chat.inProgress}
-        action={
-          <IconButton
-            variant="ghost"
-            size="sm"
-            label={showPast ? m.chat.hideCompleted : m.chat.completed}
-            icon={<Archive />}
-            aria-pressed={showPast}
-            onClick={() => setShowPast(!showPast)}
-          />
-        }
         chats={tasks.inProgress}
         selection={selection}
         onOpenTask={onOpenTask}
       />
-      {showPast && <PastChats threads={past} nameOf={nameOf} selection={selection} onSelect={onSelect} />}
+      <PastChats
+        threads={past}
+        open={showPast}
+        onToggle={() => {
+          storeCompletedShown(!showPast);
+          setShowPast(!showPast);
+        }}
+        nameOf={nameOf}
+        selection={selection}
+        onSelect={onSelect}
+      />
     </div>
   );
 }
 
-/** The threads whose conversation is over, latest first; picking one shows it. */
+/**
+ * The threads whose conversation is over, latest first, in a section its heading opens and
+ * folds. The open section lists the latest few and the rest behind a "more" button; picking a
+ * thread shows it.
+ */
 function PastChats({
   threads,
+  open,
+  onToggle,
   nameOf,
   selection,
   onSelect,
 }: {
   threads: readonly ChatThread[];
+  open: boolean;
+  onToggle: () => void;
   nameOf: (thread: ChatThread) => string;
   selection: Selection;
   onSelect: (selection: Selection) => void;
 }) {
   const m = useMessages();
+  const [limit, setLimit] = useState(recentPast);
+  const listed = threads.slice(0, limit);
+  const hidden = threads.length - listed.length;
   return (
     <div className="flex flex-col gap-0.5 pt-2">
-      <h3 className="px-2 pb-1 text-xs font-medium text-muted-foreground">{m.chat.completed}</h3>
-      {threads.length === 0 ? (
+      <h3 className="px-2 pb-1 text-xs font-medium text-muted-foreground">
+        <button
+          type="button"
+          aria-expanded={open}
+          className="-mx-1 flex items-center gap-1 rounded-sm px-1 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+          onClick={() => {
+            // Opening again starts with the latest few.
+            setLimit(recentPast);
+            onToggle();
+          }}
+        >
+          <ChevronDown aria-hidden className={cn("size-3 transition-transform", !open && "-rotate-90")} />
+          {m.chat.completed}
+          <span className="tabular-nums font-normal">{threads.length}</span>
+        </button>
+      </h3>
+      {!open ? null : threads.length === 0 ? (
         <p className="px-2 text-xs text-muted-foreground">{m.chat.noCompleted}</p>
       ) : (
         <ul aria-label={m.chat.completed} className="flex flex-col gap-0.5">
-          {threads.map((thread) => (
+          {listed.map((thread) => (
             <li key={thread.id}>
               <PlaceButton
                 title={nameOf(thread)}
@@ -1198,6 +1236,11 @@ function PastChats({
             </li>
           ))}
         </ul>
+      )}
+      {open && hidden > 0 && (
+        <div>
+          <Button variant="ghost" size="sm" label={m.chat.moreCompleted(hidden)} onClick={() => setLimit(limit + morePast)} />
+        </div>
       )}
     </div>
   );

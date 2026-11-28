@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { Chat, receipt, suggestedTasks, totalUnread } from "@/components/chat-panel";
@@ -582,12 +582,37 @@ describe("Chat", () => {
     renderChat();
     fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
 
-    fireEvent.click(await screen.findByRole("button", { name: "Completed" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Completed/, expanded: false }));
     const past = await screen.findByRole("list", { name: "Completed" });
     await waitFor(() => expect(within(past).getAllByRole("button").map((b) => b.textContent)).toEqual(["#7 ShipMerged", "Old talkClosed"]));
 
     fireEvent.click(within(past).getByRole("button", { name: /Old talk/ }));
     await waitFor(() => expect(mocked.listChat).toHaveBeenCalledWith({ thread: 6 }, null));
+  });
+
+  it("lists the latest completed chats with the rest behind more, and keeps the section open across starts", async () => {
+    serve([], undefined, Array.from({ length: 8 }, (_, i) => thread(10 + i, `Talk ${i}`, { status: "closed", closedAt: i })));
+    serveTasks([]);
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+
+    expect(screen.queryByRole("list", { name: "Completed" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /^Completed/, expanded: false }));
+    const past = await screen.findByRole("list", { name: "Completed" });
+    await waitFor(() => expect(within(past).getAllByRole("listitem")).toHaveLength(5));
+    expect(within(past).getAllByRole("listitem")[0]).toHaveTextContent("Talk 7");
+    fireEvent.click(screen.getByRole("button", { name: "Show more (3)" }));
+    expect(within(past).getAllByRole("listitem")).toHaveLength(8);
+    expect(screen.queryByRole("button", { name: /Show more/ })).not.toBeInTheDocument();
+    cleanup();
+
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+    const reopened = await screen.findByRole("list", { name: "Completed" });
+    expect(within(reopened).getAllByRole("listitem")).toHaveLength(5);
+    fireEvent.click(screen.getByRole("button", { name: /^Completed/, expanded: true }));
+    expect(screen.queryByRole("list", { name: "Completed" })).not.toBeInTheDocument();
+    expect(localStorage.getItem("toodo-chat-completed-shown")).toBeNull();
   });
 
   it("closes the shown thread and keeps a closed one from taking messages", async () => {
