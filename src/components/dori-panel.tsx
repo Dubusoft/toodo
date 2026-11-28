@@ -154,7 +154,7 @@ function BehaviorSettings() {
 export function DoriPanel({ active }: { active: boolean }) {
   const m = useMessages();
   return (
-    <section aria-label={m.settings.sections.dori} className="flex flex-col gap-6 text-sm">
+    <section aria-label={m.settings.sections.dori} className="break-words-keep flex flex-col gap-6 text-sm">
       <div className="flex flex-col gap-2">
         <h4 className="font-medium">{m.settings.doriPanel.status}</h4>
         <StatusSummary active={active} />
