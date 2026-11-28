@@ -156,7 +156,6 @@ export const details: Partial<Messages["details"]> = {
     ago: (age) => `${age} 전`,
     progress: "진행",
     links: "링크",
-    thread: "스레드",
     pullRequest: "PR",
     screen: "실시간 화면",
     noScreen: "도리는 작업 중인 레인의 화면만 읽습니다.",

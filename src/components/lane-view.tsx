@@ -120,11 +120,10 @@ export function LaneView({
         {lane.model !== null && <Fact label={t.model}>{lane.model}</Fact>}
         <Fact label={t.opened}>{t.ago(age(lane.ageMin * 60_000, panel))}</Fact>
         {lane.progress !== null && <Fact label={t.progress}>{lane.progress}</Fact>}
-        {(lane.threadUrl !== undefined || lane.prUrl !== undefined) && (
+        {lane.prUrl !== undefined && (
           <Fact label={t.links}>
             <span className="flex flex-wrap gap-x-3 gap-y-1">
-              {lane.threadUrl !== undefined && <LaneLink label={t.thread} url={lane.threadUrl} />}
-              {lane.prUrl !== undefined && <LaneLink label={t.pullRequest} url={lane.prUrl} />}
+              <LaneLink label={t.pullRequest} url={lane.prUrl} />
             </span>
           </Fact>
         )}

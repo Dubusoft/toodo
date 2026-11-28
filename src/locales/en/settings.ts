@@ -363,9 +363,6 @@ export const settings = {
     viewLanes: "View lanes",
     rawHint: "The full status, quota, lane screens, and what to do when Dori stops are under Advanced.",
     behavior: "How Dori works",
-    platforms: "Where Dori talks to you",
-    platformsDescription: "The chat Dori posts its questions and reports in.",
-    platformOptions: { discord: "Discord", toodo: "Toodo chat", both: "Toodo chat and Discord" },
     autoReport: "Result reports",
     autoReportDescription: "Who tells you when a lane finishes.",
     autoReportOptions: {
@@ -373,9 +370,6 @@ export const settings = {
       autopilot: "Autopilot results are reported automatically",
       all: "Every result is reported automatically",
     },
-    threadClose: "Close finished threads",
-    threadCloseDescription: "How long a finished work thread stays open before it closes.",
-    afterHours: (hours: number) => (hours === 1 ? "After 1 hour" : `After ${hours} hours`),
   },
   machines: {
     intro: "The computer that runs the Toodo server and each computer Dori runs agents on, with the tools they need and their runner settings.",

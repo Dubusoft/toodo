@@ -121,13 +121,13 @@ describe("supervisor status", () => {
     expect((await server.send("PUT", "/mcp/supervisor-status", AGENT, badMachine)).status).toBe(400);
   });
 
-  test("a lane may link its thread and pull request, over https only", async () => {
+  test("a lane may link its pull request, over https only", async () => {
     const server = await start();
     const linked = (links: Record<string, unknown>) => ({ ...snapshot(1), lanes: [{ ...snapshot(1).lanes[0]!, ...links }] });
-    const good = linked({ threadUrl: "https://discord.com/channels/1/2", prUrl: "https://github.com/o/r/pull/7" });
+    const good = linked({ prUrl: "https://github.com/o/r/pull/7" });
     expect((await server.send("PUT", "/mcp/supervisor-status", AGENT, good)).status).toBe(200);
     expect((await server.send("PUT", "/mcp/supervisor-status", AGENT, linked({ prUrl: "javascript:alert(1)" }))).status).toBe(400);
-    expect((await server.send("PUT", "/mcp/supervisor-status", AGENT, linked({ threadUrl: "http://example.com" }))).status).toBe(400);
+    expect((await server.send("PUT", "/mcp/supervisor-status", AGENT, linked({ prUrl: "http://example.com" }))).status).toBe(400);
   });
 
   test("a stream with watch=0 gets every snapshot but is not counted as a panel", async () => {

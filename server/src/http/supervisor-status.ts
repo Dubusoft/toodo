@@ -70,7 +70,6 @@ const isLane = (value: unknown): boolean =>
   isNullableText(value.model) &&
   Number.isFinite(value.ageMin) &&
   isNullableText(value.progress) &&
-  isOptionalLink(value.threadUrl) &&
   isOptionalLink(value.prUrl) &&
   isScreen(value.screen);
 

@@ -363,9 +363,6 @@ export const settings: Partial<Messages["settings"]> = {
     viewLanes: "레인 보기",
     rawHint: "전체 상태, 할당량, 레인 화면, Dori가 멈추었을 때 할 일은 고급에 있습니다.",
     behavior: "Dori 동작 설정",
-    platforms: "대화 채널",
-    platformsDescription: "Dori가 질문과 보고를 올리는 채팅입니다.",
-    platformOptions: { discord: "Discord", toodo: "Toodo 채팅", both: "Toodo 채팅과 Discord" },
     autoReport: "완료 보고",
     autoReportDescription: "레인이 끝났을 때 누가 알려 주는지 정합니다.",
     autoReportOptions: {
@@ -373,9 +370,6 @@ export const settings: Partial<Messages["settings"]> = {
       autopilot: "오토파일럿 결과는 자동으로 보고합니다",
       all: "모든 결과를 자동으로 보고합니다",
     },
-    threadClose: "끝난 스레드 닫기",
-    threadCloseDescription: "끝난 작업 스레드를 닫기 전까지 열어 두는 시간입니다.",
-    afterHours: (hours: number) => `${hours}시간 후`,
   },
   machines: {
     intro: "Toodo 서버가 실행 중인 컴퓨터와 Dori가 에이전트를 돌리는 각 컴퓨터, 그리고 필요한 도구와 러너 설정입니다.",
