@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { ArgumentError, numbersFromStrings } from "./args.ts";
 import TOOL_LIST from "./tools.json" with { type: "json" };
+import * as R from "./tools/requests.ts";
 
 type Schema = Record<string, unknown>;
 const TOOLS = TOOL_LIST as Array<{ name: string; inputSchema: Schema }>;
@@ -20,6 +21,25 @@ function convert(tool: string, args: Schema): Schema | string {
     throw error;
   }
 }
+
+test("A rejected field is named by its path", () => {
+  const rejection = (read: () => unknown) => {
+    try {
+      read();
+    } catch (error) {
+      if (error instanceof ArgumentError) return error.message;
+      throw error;
+    }
+    throw new Error("the arguments were accepted");
+  };
+  expect(rejection(() => R.createTask({ workspace_id: 1, task_type: "feature", title: "x" }))).toBe(
+    "task_type: unknown variant `feature`, expected one of `feat`, `fix`, `modify`, `refactor`, `docs`, `test`, `chore`, `rnd`",
+  );
+  expect(rejection(() => R.createPlan({ tasks: [{ key: "a", workspace_id: 1, task_type: "feat", title: "x" }, { key: "b", workspace_id: 1, task_type: "bogus", title: "y" }] }))).toStartWith(
+    "tasks[1].task_type: unknown variant `bogus`",
+  );
+  expect(rejection(() => R.createTask({ workspace_id: 1, title: "x" }))).toBe("missing field `task_type`");
+});
 
 test("Every integer argument takes a numeric string", () => {
   const checked: string[] = [];

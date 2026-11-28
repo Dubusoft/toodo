@@ -241,7 +241,7 @@ test("Unknown arguments are rejected with the accepted ones", () => {
   const nested = { id: 1, criteria: [{ idd: 7, text: "Docs updated", kind: "manual" }] };
   expect(() => R.updateTask(nested)).toThrow(ArgumentError);
   expect(() => R.updateTask(nested)).toThrow(
-    new ArgumentError("unknown field `idd`, expected one of `id`, `text`, `kind`, `target`"),
+    new ArgumentError("criteria[0]: unknown field `idd`, expected one of `id`, `text`, `kind`, `target`"),
   );
 });
 
