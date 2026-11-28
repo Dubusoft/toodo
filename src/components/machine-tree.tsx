@@ -1,8 +1,9 @@
 import { Fragment, type ReactNode } from "react";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Laptop, Monitor, Server } from "lucide-react";
-import { LaneStatusBadge, machineTones } from "@/components/lane-view";
+import { laneStatus, LaneStatusBadge, laneTones, machineTones } from "@/components/lane-view";
 import { STALE_AFTER_MS, useNow } from "@/components/supervisor-status-panel";
+import { TypingDots } from "@/components/typing-dots";
 import type { Task, TaskId, Workspace, WorkspaceId } from "@/lib/bindings";
 import { useMessages } from "@/lib/i18n";
 import { useTasks } from "@/lib/queries";
@@ -118,8 +119,14 @@ function MachineFacts({ machine }: { machine: SupervisorMachine | null }) {
   );
 }
 
+/**
+ * One lane: its task number and status chip. A working lane also moves, with the chat's typing
+ * dots beside its chip and its last progress line under it, so it reads as at work while every
+ * other lane stays still.
+ */
 function LaneItem({ lane, onShowLane }: { lane: SupervisorLane; onShowLane: (lane: SupervisorLane) => void }) {
   const t = useMessages().app.machines;
+  const working = laneStatus(lane) === "working";
   // A lane is named by its task; the lane key, also in the tooltip, names one without a task.
   const title = lane.progress === null ? lane.key : `${lane.key}: ${lane.progress}`;
   return (
@@ -128,11 +135,23 @@ function LaneItem({ lane, onShowLane }: { lane: SupervisorLane; onShowLane: (lan
         type="button"
         aria-label={t.showLane(lane.key)}
         title={title}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent max-md:min-h-11"
+        className="flex w-full min-w-0 flex-col justify-center rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent max-md:min-h-11"
         onClick={() => onShowLane(lane)}
       >
-        <span className="min-w-0 flex-1 truncate">{lane.task === null ? lane.key : `#${lane.task}`}</span>
-        <LaneStatusBadge lane={lane} className="shrink-0" />
+        <span className="flex w-full min-w-0 items-center gap-1.5">
+          <span className={cn("min-w-0 flex-1 truncate", working && "font-medium")}>
+            {lane.task === null ? lane.key : `#${lane.task}`}
+          </span>
+          {working && (
+            <span data-lane-working className={cn("flex shrink-0 items-center gap-0.5", toneText[laneTones.working])}>
+              <TypingDots className="size-1" />
+            </span>
+          )}
+          <LaneStatusBadge lane={lane} className="shrink-0" />
+        </span>
+        {working && lane.progress !== null && (
+          <span className="w-full truncate text-[11px] text-muted-foreground">{lane.progress}</span>
+        )}
       </button>
     </li>
   );
