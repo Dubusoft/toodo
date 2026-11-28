@@ -89,49 +89,52 @@ export function CriteriaEditor({
               // Below md each criterion is a block: its text on the first line, kind and remove on the next.
               <li
                 key={draft.key}
-                className="flex flex-wrap items-center gap-1 max-md:grid max-md:grid-cols-[1rem_1fr_auto] max-md:gap-2 max-md:rounded-lg max-md:border max-md:p-2"
+                className="flex items-start gap-1 max-md:grid max-md:grid-cols-[1rem_1fr_auto] max-md:items-center max-md:gap-2 max-md:rounded-lg max-md:border max-md:p-2"
               >
-                <span aria-hidden className="w-4 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                <span aria-hidden className="w-4 shrink-0 text-right text-xs leading-6 tabular-nums text-muted-foreground">
                   {n}
                 </span>
-                <TextInput
-                  size="sm"
-                  containerClassName="flex-1 basis-48 max-md:col-span-2"
-                  label={m.details.criteria.text(n, taskId)}
-                  isLabelHidden
-                  placeholder={m.details.criteria.textPlaceholder}
-                  value={draft.text}
-                  onChange={(text) => update(draft.key, { text })}
-                  hasAutoFocus={draft.key === addedKey}
-                />
-                <span className="max-md:col-start-2 max-md:row-start-2" title={m.details.criteria.kindHint}>
-                  <Selector
+                {/* From md on, a wrapped URL field stays in line with the text; below md its fields join the grid. */}
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1 max-md:contents">
+                  <TextInput
                     size="sm"
-                    label={m.details.criteria.kind(n, taskId)}
+                    containerClassName="flex-1 basis-48 max-md:col-span-2"
+                    label={m.details.criteria.text(n, taskId)}
                     isLabelHidden
-                    value={draft.kind}
-                    options={criterionKinds.map((kind) => ({ value: kind, label: m.details.criterionKind[kind] }))}
-                    onChange={(kind) => update(draft.key, { kind: kind as CheckKind })}
+                    placeholder={m.details.criteria.textPlaceholder}
+                    value={draft.text}
+                    onChange={(text) => update(draft.key, { text })}
+                    hasAutoFocus={draft.key === addedKey}
                   />
-                </span>
-                {takesTarget(draft.kind) && (
-                  <span
-                    className="flex-1 basis-40 max-md:col-span-2 max-md:col-start-2 max-md:row-start-3"
-                    title={problem ?? m.details.criteria.urlHint}
-                  >
-                    <TextInput
+                  <span className="max-md:col-start-2 max-md:row-start-2" title={m.details.criteria.kindHint}>
+                    <Selector
                       size="sm"
-                      controlClassName="font-mono"
-                      label={m.details.criteria.target(n, taskId)}
+                      label={m.details.criteria.kind(n, taskId)}
                       isLabelHidden
-                      status={problem === null ? undefined : { type: "error", message: problem }}
-                      statusVariant="tooltip"
-                      placeholder={m.details.criteria.urlPlaceholder}
-                      value={draft.target}
-                      onChange={(target) => update(draft.key, { target })}
+                      value={draft.kind}
+                      options={criterionKinds.map((kind) => ({ value: kind, label: m.details.criterionKind[kind] }))}
+                      onChange={(kind) => update(draft.key, { kind: kind as CheckKind })}
                     />
                   </span>
-                )}
+                  {takesTarget(draft.kind) && (
+                    <span
+                      className="flex-1 basis-40 max-md:col-span-2 max-md:col-start-2 max-md:row-start-3"
+                      title={problem ?? m.details.criteria.urlHint}
+                    >
+                      <TextInput
+                        size="sm"
+                        controlClassName="font-mono"
+                        label={m.details.criteria.target(n, taskId)}
+                        isLabelHidden
+                        status={problem === null ? undefined : { type: "error", message: problem }}
+                        statusVariant="tooltip"
+                        placeholder={m.details.criteria.urlPlaceholder}
+                        value={draft.target}
+                        onChange={(target) => update(draft.key, { target })}
+                      />
+                    </span>
+                  )}
+                </div>
                 <IconButton
                   size="sm"
                   variant="ghost"
