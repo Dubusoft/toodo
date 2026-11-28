@@ -84,9 +84,10 @@ describe("push delivery", () => {
     const took = performance.now() - start;
     expect(took).toBeGreaterThanOrEqual(deadline - 1);
     expect(took).toBeLessThan(deadline + 1000);
-    expect(transport.requests.map((request) => request.endpoint)).toEqual([
-      "https://push.example/stalled",
+    // Both devices are tried side by side, so the order their requests start in is not fixed.
+    expect(transport.requests.map((request) => request.endpoint).sort()).toEqual([
       "https://push.example/phone",
+      "https://push.example/stalled",
     ]);
     expect(failures(db)).toEqual(["cannot reach the push service: no answer within 0.2 seconds", null]);
 
