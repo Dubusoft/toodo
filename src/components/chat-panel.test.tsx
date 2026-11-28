@@ -218,6 +218,107 @@ describe("voice input", () => {
     expect(await screen.findByText("Listening...")).toBeInTheDocument();
     expect(getUserMedia).not.toHaveBeenCalled();
   });
+
+  describe("auto-send", () => {
+    /** Opens the chat, starts dictation, and lets the test drive time from then on. */
+    async function dictate() {
+      vi.stubGlobal("webkitSpeechRecognition", FakeRecognition);
+      mocked.sendChatMessage.mockResolvedValue({ status: "ok", data: message(2, "user", "sent") });
+      serve([]);
+      renderChat();
+      fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+      const input = await screen.findByRole("combobox");
+      vi.useFakeTimers();
+      fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+      return { input, recognition: FakeRecognition.started[0] };
+    }
+    const elapse = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+    const sentBodies = () => mocked.sendChatMessage.mock.calls.map((call) => call[1]);
+
+    afterEach(() => vi.useRealTimers());
+
+    it("sends what was said once the person stays silent, after a countdown it shows", async () => {
+      const { recognition } = await dictate();
+      act(() => recognition.say("call the bank", true));
+
+      await elapse(1499);
+      expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+      await elapse(1);
+      expect(screen.getByText("Sending in 2s...")).toBeInTheDocument();
+      await elapse(1000);
+      expect(screen.getByText("Sending in 1s...")).toBeInTheDocument();
+      expect(mocked.sendChatMessage).not.toHaveBeenCalled();
+      await elapse(1000);
+      expect(sentBodies()).toEqual(["call the bank"]);
+      expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+    });
+
+    it("waits again when the person goes on speaking after a pause or during the countdown", async () => {
+      const { recognition } = await dictate();
+      act(() => recognition.say("call the bank", true));
+      await elapse(1000);
+      act(() => recognition.say("tomorrow", false));
+      await elapse(3000);
+      expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+
+      act(() => recognition.say("tomorrow", true));
+      await elapse(1500);
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+      act(() => recognition.say("at", false));
+      expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+      await elapse(3000);
+      expect(mocked.sendChatMessage).not.toHaveBeenCalled();
+
+      act(() => recognition.say("at nine", true));
+      await elapse(3500);
+      expect(sentBodies()).toEqual(["call the bank tomorrow at nine"]);
+    });
+
+    it("counts down at once when the browser stops listening by itself", async () => {
+      const { recognition } = await dictate();
+      act(() => recognition.say("call the bank", true));
+      act(() => recognition.onend?.());
+      expect(screen.getByText("Sending in 2s...")).toBeInTheDocument();
+      await elapse(2000);
+      expect(sentBodies()).toEqual(["call the bank"]);
+    });
+
+    it("keeps the draft unsent for editing when the countdown is cancelled", async () => {
+      const { input, recognition } = await dictate();
+      act(() => recognition.say("call the bank", true));
+      await elapse(1500);
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await elapse(10000);
+
+      expect(mocked.sendChatMessage).not.toHaveBeenCalled();
+      expect(input).toHaveTextContent("call the bank");
+      // Listening stopped, so the send button is back for when the person is done editing.
+      expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+    });
+
+    it("never sends after the microphone is stopped by hand", async () => {
+      const { recognition } = await dictate();
+      act(() => recognition.say("call the bank", true));
+      await elapse(500);
+      fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+      await elapse(10000);
+      expect(mocked.sendChatMessage).not.toHaveBeenCalled();
+    });
+
+    it("leaves sending to the send button when it is turned off", async () => {
+      localStorage.setItem("toodo-voice-auto-send", "off");
+      const { recognition } = await dictate();
+      act(() => recognition.say("call the bank", true));
+      await elapse(10000);
+
+      expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+      expect(mocked.sendChatMessage).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+      await elapse(0);
+      expect(sentBodies()).toEqual(["call the bank"]);
+    });
+  });
 });
 
 describe("receipts", () => {

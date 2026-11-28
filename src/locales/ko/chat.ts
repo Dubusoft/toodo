@@ -32,6 +32,8 @@ export const chat: Partial<Messages["chat"]> = {
   send: "보내기",
   voiceInput: "음성 입력",
   listening: "듣는 중...",
+  autoSendCountdown: (seconds) => `${seconds}초 후 보냅니다...`,
+  cancelAutoSend: "취소",
   threadClosed: "닫힌 스레드입니다. 메시지를 쓰려면 다시 여세요.",
   decision: "결정",
   decisionHint: ", 답변 대기 중",

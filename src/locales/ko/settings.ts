@@ -22,6 +22,9 @@ export const settings: Partial<Messages["settings"]> = {
   groups: { mine: "내 설정", connections: "연결", dori: "Dori", data: "데이터" },
   theme: "테마",
   themes: { light: "라이트 테마", dark: "다크 테마", system: "시스템 테마" },
+  voiceAutoSend: "음성 메시지 자동 전송",
+  voiceAutoSendDescription:
+    "채팅에서 말을 멈추면 짧은 카운트다운 뒤 메시지를 자동으로 보냅니다. 끄면 보내기 버튼으로 보냅니다. 이 기기에만 적용됩니다.",
   version: "버전",
   connecting: "백엔드에 연결하는 중...",
   newVersion: (version: string) => `Toodo ${version}이(가) 나왔습니다`,
