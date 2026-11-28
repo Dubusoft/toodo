@@ -525,7 +525,9 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
   const markRead = useMarkChatRead();
   const outbox = useSyncExternalStore(subscribeChatOutbox, chatOutbox);
   const [draft, setDraft] = useState("");
-  const voice = useVoiceInput(setDraft, m);
+  // What auto-send sends: the draft as it is when the countdown ends, set once `sendDraft` exists below.
+  const sendDictated = useRef(() => {});
+  const voice = useVoiceInput(setDraft, m, () => sendDictated.current());
   const tasks = useTasks();
   const loadedTasks = useRef<readonly Task[]>([]);
   loadedTasks.current = tasks.data ?? [];
@@ -593,6 +595,7 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
     for (const upload of uploads) if (upload.preview) URL.revokeObjectURL(upload.preview);
     setUploads([]);
   };
+  sendDictated.current = () => sendDraft(draft);
 
   const content = (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -705,10 +708,19 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
                 ))}
               </ul>
             )}
-            {voice.speech.isListening && (
-              <p className="truncate px-1 pb-1 text-xs text-muted-foreground">
-                {voice.speech.interimTranscript || m.chat.listening}
-              </p>
+            {voice.countdown !== null ? (
+              <div className="flex items-center gap-2 px-1 pb-1 text-xs text-muted-foreground">
+                <span role="status" className="min-w-0 flex-1 truncate">
+                  {m.chat.autoSendCountdown(voice.countdown)}
+                </span>
+                <Button variant="secondary" size="sm" label={m.chat.cancelAutoSend} onClick={voice.cancelAutoSend} />
+              </div>
+            ) : (
+              voice.speech.isListening && (
+                <p className="truncate px-1 pb-1 text-xs text-muted-foreground">
+                  {voice.speech.interimTranscript || m.chat.listening}
+                </p>
+              )
             )}
             <div
               ref={composer}
@@ -728,7 +740,11 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
                 maxRows={6}
                 triggers={triggers}
                 value={draft}
-                onChange={setDraft}
+                onChange={(value) => {
+                  // Typing takes the draft over from dictation, so it does not send by itself.
+                  if (voice.countdown !== null || voice.speech.isListening) voice.cancelAutoSend();
+                  setDraft(value);
+                }}
                 onSubmit={sendDraft}
                 enterKeyHint={hasTouchKeyboard() ? "enter" : "send"}
                 onKeyDown={(event) => {

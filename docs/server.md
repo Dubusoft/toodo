@@ -669,9 +669,13 @@ starts a new line.
 **Voice input.** Where the browser offers speech recognition (Chrome on desktop and
 Android), the composer shows a microphone in the send button's place while there is
 nothing to send, and keeps it while it listens: what the person says, recognized in the
-browser's language, joins the draft, which they send like typed text. The browser
-recognizes speech through its own service, so voice input needs a connection; the server
-receives only the text.
+browser's language, joins the draft, which they send like typed text. Once they stop
+speaking, the draft sends itself: after 1.5 seconds of silence a two-second countdown
+shows with a **Cancel** button. More speech starts the wait over; Cancel, typing, or
+stopping the microphone by hand keeps the draft unsent for editing. **Send voice messages
+automatically** in Settings > General turns this off on that device, leaving the send
+button. The browser recognizes speech through its own service, so voice input needs a
+connection; the server receives only the text.
 
 **Unsent messages.** A message the app could not get to the server, because the server
 was unreachable, waits in the browser under its client id, also across reloads, and goes

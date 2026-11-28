@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { Activity, Bell, ChevronLeft, ChevronRight, DatabaseBackup, Info, MonitorSmartphone, Plug, Server, SlidersHorizontal, Trash2, Wrench, X } from "lucide-react";
 import { AdvancedSettings } from "@/components/advanced-settings";
 import { AiConnectionsPanel } from "@/components/ai-connections-panel";
@@ -17,6 +18,7 @@ import { fill, useMessages } from "@/lib/i18n";
 import { en, type Messages } from "@/locales/en";
 import { keepFocusIn } from "@/lib/focus-trap";
 import { useNarrow } from "@/lib/narrow";
+import { setVoiceAutoSend, useVoiceAutoSend, voiceInputSupported } from "@/lib/voice";
 import { cn } from "@/lib/utils";
 
 export type SettingsSection =
@@ -78,6 +80,7 @@ function useUpdateCheck() {
 
 function GeneralSettings({ update, onShowAbout }: { update: UpdateCheck | undefined; onShowAbout: () => void }) {
   const m = useMessages();
+  const voiceAutoSend = useVoiceAutoSend();
   return (
     <section aria-label={m.settings.sections.general} className="flex flex-col gap-5 text-sm">
       <LanguageSettingField />
@@ -86,6 +89,14 @@ function GeneralSettings({ update, onShowAbout }: { update: UpdateCheck | undefi
         <ThemeToggle />
       </div>
       <TimeZoneSettingField />
+      {voiceInputSupported() && (
+        <CheckboxInput
+          label={m.settings.voiceAutoSend}
+          description={m.settings.voiceAutoSendDescription}
+          value={voiceAutoSend}
+          onChange={setVoiceAutoSend}
+        />
+      )}
       {update?.newer && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border p-3">
           <span role="status" className="font-medium">{m.settings.newVersion(`v${update.latest}`)}</span>

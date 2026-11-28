@@ -31,6 +31,8 @@ export const chat = {
   send: "Send",
   voiceInput: "Voice input",
   listening: "Listening...",
+  autoSendCountdown: (seconds: number) => `Sending in ${seconds}s...`,
+  cancelAutoSend: "Cancel",
   threadClosed: "This thread is closed. Reopen it to write in it.",
   decision: "Decision",
   decisionHint: ", waiting on your answer",

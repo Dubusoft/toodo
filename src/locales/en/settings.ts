@@ -21,6 +21,9 @@ export const settings = {
   groups: { mine: "My settings", connections: "Connections", dori: "Dori", data: "Data" },
   theme: "Theme",
   themes: { light: "Light theme", dark: "Dark theme", system: "System theme" },
+  voiceAutoSend: "Send voice messages automatically",
+  voiceAutoSendDescription:
+    "When you stop speaking in the chat, a short countdown starts and the message sends itself. Off: send it with the send button. Applies to this device.",
   version: "Version",
   connecting: "Connecting to backend...",
   newVersion: (version: string) => `Toodo ${version} is available`,
