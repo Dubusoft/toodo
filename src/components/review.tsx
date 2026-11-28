@@ -344,7 +344,8 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   }
 
   return (
-    <section aria-labelledby="review-heading" className="flex flex-col gap-4">
+    // The bottom padding lets the last entry scroll clear of the floating chat button.
+    <section aria-labelledby="review-heading" className="flex flex-col gap-4 pb-14 print:pb-0">
       <header className="flex flex-col gap-1">
         <h2 id="review-heading" className="text-xl font-semibold tracking-tight">
           {viewing && snapshot.data ? snapshot.data.summary.title : m.review.periodTitles[shownPeriod.kind]}
