@@ -16,6 +16,17 @@ import type { Args, Reply } from "../commands/types.ts";
 import { checkUpdate } from "../commands/updates.ts";
 import * as workspaces from "../commands/workspaces.ts";
 import { workspaceId } from "../domain/model.ts";
+import { ArgumentError, bool, i64, optional, required, string, struct, u32, vec, type Decoder } from "../mcp/args.ts";
+import {
+  criterionInput,
+  estimate,
+  guidelineKind,
+  reportFormat,
+  reviewPeriodKind,
+  taskStatus,
+  taskType,
+  threadStatus,
+} from "../mcp/tools/requests.ts";
 import { formatScopes } from "../oauth/scopes.ts";
 import { appLanguage, setAppLanguage } from "../storage/app-language.ts";
 import { oauthListGrants, oauthRevokeGrant } from "../storage/oauth.ts";
@@ -27,7 +38,8 @@ type Name = keyof Commands;
 
 /** What a parameter takes, as the Rust command's `Deserialize` reads it: `int` (an i64
  * newtype or number), `bool`, `string`, `ints` and `strings` (sequences), `object:<Type>` (a
- * struct the command validates), or `enum:<a>|<b>`; `?` after it makes it an `Option`. */
+ * struct read by its decoder in `STRUCTS`), or `enum:<a>|<b>`; `?` after it makes it an
+ * `Option`. */
 type Param = { readonly key: string; readonly kind: string; readonly detail: string; readonly optional: boolean };
 
 type Entry = {
@@ -235,6 +247,119 @@ export const COMMANDS: ReadonlyMap<string, Entry> = new Map(ENTRIES.map((entry) 
 /** The arguments do not match the command's parameters; the message is serde's. */
 class BadArguments extends Error {}
 
+/** `{ "channel": id }` or `{ "thread": id }`, as serde reads the enum `ChatPlace`. */
+const chatPlaceFields = struct("ChatPlace", { channel: optional(i64), thread: optional(i64) });
+
+const chatPlace: Decoder<B.ChatPlace> = (value) => {
+  const { channel, thread } = chatPlaceFields(value);
+  if (channel !== null && thread === null) return { channel };
+  if (thread !== null && channel === null) return { thread };
+  throw new ArgumentError("expected a map with exactly one of `channel` or `thread`");
+};
+
+/** How each `object:<Type>` parameter is read, field by field, as the Rust command's
+ * `Deserialize` read it: a field of the wrong type, an unknown variant, or a missing
+ * required field is refused as invalid arguments naming the field, and a missing `Option` is
+ * `null`. Keys a struct does not know are ignored. */
+const STRUCTS: Readonly<Record<string, Decoder<unknown>>> = {
+  NewWorkspace: struct("NewWorkspace", {
+    name: required(string),
+    description: optional(string),
+    repository: optional(string),
+    machine: optional(string),
+  }, false),
+  Workspace: struct("Workspace", {
+    id: required(i64),
+    name: required(string),
+    description: optional(string),
+    repository: optional(string),
+    machine: optional(string),
+    archivedAt: optional(i64),
+  }, false),
+  NewGuideline: struct("NewGuideline", {
+    workspaceId: required(i64),
+    kind: required(guidelineKind),
+    body: required(string),
+  }, false),
+  GuidelineUpdate: struct("GuidelineUpdate", {
+    id: required(i64),
+    kind: required(guidelineKind),
+    body: required(string),
+  }, false),
+  TaskListFilter: struct("TaskListFilter", {
+    workspaceId: optional(i64),
+    statuses: optional(vec(taskStatus)),
+    ids: optional(vec(i64)),
+    before: optional(i64),
+    limit: optional(i64),
+  }, false),
+  NewTask: struct("NewTask", {
+    workspaceId: required(i64),
+    taskType: required(taskType),
+    title: required(string),
+    description: required(string),
+    estimate: optional(estimate),
+    dueDate: optional(string),
+    labels: optional(vec(string)),
+    autopilot: optional(bool),
+    criteria: required(vec(criterionInput)),
+  }, false),
+  TaskEdit: struct("TaskEdit", {
+    status: optional(taskStatus),
+    id: required(i64),
+    taskType: required(taskType),
+    title: required(string),
+    description: required(string),
+    estimate: optional(estimate),
+    dueDate: optional(string),
+    labels: optional(vec(string)),
+    autopilot: optional(bool),
+    criteria: optional(vec(criterionInput)),
+  }, false),
+  ReviewReportRequest: struct("ReviewReportRequest", {
+    period: required(reviewPeriodKind),
+    date: optional(string),
+    from: optional(string),
+    to: optional(string),
+    format: required(reportFormat),
+    timeZone: optional(string),
+    workspaceId: optional(i64),
+    label: optional(string),
+  }, false),
+  SaveReviewSnapshotRequest: struct("SaveReviewSnapshotRequest", {
+    period: required(reviewPeriodKind),
+    from: required(string),
+    to: optional(string),
+    workspaceId: optional(i64),
+    label: optional(string),
+    title: optional(string),
+  }, false),
+  ChatPlace: chatPlace,
+  ChatChannelEdit: struct("ChatChannelEdit", { name: optional(string), push: optional(bool) }, false),
+  ChatThreadFilter: struct("ChatThreadFilter", {
+    channelId: optional(i64),
+    taskId: optional(i64),
+    archived: optional(bool),
+  }, false),
+  NewChatThread: struct("NewChatThread", {
+    channelId: required(i64),
+    title: required(string),
+    taskId: optional(i64),
+  }, false),
+  ChatThreadEdit: struct("ChatThreadEdit", {
+    title: optional(string),
+    status: optional(threadStatus),
+    taskId: optional(i64),
+    unlinkTask: optional(bool),
+  }, false),
+  BackupSettings: struct("BackupSettings", {
+    enabled: required(bool),
+    intervalHours: required(u32),
+    keep: required(u32),
+    directory: optional(string),
+  }, false),
+};
+
 /** A JSON value as serde names what it found. */
 function unexpected(value: unknown): string {
   if (value === null) return "null";
@@ -256,25 +381,36 @@ function checkString(value: unknown): void {
   if (typeof value !== "string") throw invalidType(value, "a string");
 }
 
-function checkValue(p: Param, value: unknown): void {
+/** `value` as the parameter `p` takes it: as it is, or a struct as its decoder read it. */
+function readValue(p: Param, value: unknown): unknown {
   switch (p.kind) {
     case "int":
-      return checkInt(value);
+      checkInt(value);
+      return value;
     case "bool":
       if (typeof value !== "boolean") throw invalidType(value, "a boolean");
-      return;
+      return value;
     case "string":
-      return checkString(value);
+      checkString(value);
+      return value;
     case "ints":
     case "strings":
       if (!Array.isArray(value)) throw invalidType(value, "a sequence");
       for (const item of value) (p.kind === "ints" ? checkInt : checkString)(item);
-      return;
-    case "object":
+      return value;
+    case "object": {
       if (value === null || typeof value !== "object" || Array.isArray(value)) {
         throw invalidType(value, p.detail === "ChatPlace" ? "enum ChatPlace" : `struct ${p.detail}`);
       }
-      return;
+      const decode = STRUCTS[p.detail];
+      if (decode === undefined) throw new Error(`no decoder for struct ${p.detail}`);
+      try {
+        return decode(value);
+      } catch (error) {
+        if (error instanceof ArgumentError) throw new BadArguments(error.at(p.key).message);
+        throw error;
+      }
+    }
     case "enum": {
       const variants = p.detail.split("|");
       if (typeof value !== "string") throw invalidType(value, `enum ${p.key}`);
@@ -283,7 +419,7 @@ function checkValue(p: Param, value: unknown): void {
         const expected = quoted.length === 2 ? `${quoted[0]} or ${quoted[1]}` : `one of ${quoted.join(", ")}`;
         throw new BadArguments(`unknown variant \`${value}\`, expected ${expected}`);
       }
-      return;
+      return value;
     }
     default:
       throw new Error(`unknown parameter kind ${p.kind}`);
@@ -302,8 +438,7 @@ function parseArgs(entry: Entry, args: unknown): unknown[] {
       if (p.optional) return null;
       throw new BadArguments(`missing field \`${p.key}\``);
     }
-    checkValue(p, value);
-    return value;
+    return readValue(p, value);
   });
 }
 

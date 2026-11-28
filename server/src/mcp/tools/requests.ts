@@ -21,23 +21,23 @@ import {
   type Decoder,
 } from "../args.ts";
 
-const taskStatus = variants("planned", "in_progress", "in_review", "done");
-const taskType = variants("feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd");
-const guidelineKind = variants("rule", "memory");
+export const taskStatus = variants("planned", "in_progress", "in_review", "done");
+export const taskType = variants("feat", "fix", "modify", "refactor", "docs", "test", "chore", "rnd");
+export const guidelineKind = variants("rule", "memory");
 const checkKind = variants("manual", "url");
 const concludeOutcome = variants("not_adopted", "shipped_with");
-const reviewPeriodKind = variants("week", "month", "quarter", "year", "custom");
-const reportFormat = variants("markdown", "csv");
+export const reviewPeriodKind = variants("week", "month", "quarter", "year", "custom");
+export const reportFormat = variants("markdown", "csv");
 const progressNoteKind = variants("progress", "decision");
-const threadStatus = variants("open", "closed", "archived");
+export const threadStatus = variants("open", "closed", "archived");
 
-const estimate: Decoder<B.Estimate> = struct(
+export const estimate: Decoder<B.Estimate> = struct(
   "Estimate",
   { unit: required(variants("hours", "days", "weeks", "months")), amount: required(f64) },
   false,
 );
 
-const criterionInput: Decoder<B.CriterionInput> = struct("CriterionInput", {
+export const criterionInput: Decoder<B.CriterionInput> = struct("CriterionInput", {
   id: optional(i64),
   text: optional(string),
   kind: optional(checkKind),

@@ -71,6 +71,47 @@ describe("arguments", () => {
     expect(await message("get_task", [])).toContain("invalid type: sequence, expected struct Args");
   });
 
+  test("fields of a struct argument are checked and named in the refusal", async () => {
+    const workspace = (await rpc("create_workspace", { workspace: { name: "fields" } })).body;
+    const fields = { workspaceId: workspace.id, taskType: "feat", title: "One", description: "", criteria: [] };
+    const refusal = async (command: string, args: unknown) => {
+      const answer = await rpc(command, args);
+      expect(answer.status).toBe(400);
+      expect(answer.body.code).toBe("invalidArguments");
+      return answer.body.message as string;
+    };
+    expect(await refusal("create_task", { task: { ...fields, taskType: "feature" } })).toContain(
+      "task.taskType: unknown variant `feature`, expected one of `feat`, `fix`,",
+    );
+    expect(await refusal("create_task", { task: { ...fields, title: 5 } })).toContain(
+      "task.title: invalid type: integer `5`, expected a string",
+    );
+    expect(await refusal("create_task", { task: { ...fields, criteria: [{ text: "Done", kind: "maybe" }] } })).toContain(
+      "task.criteria[0].kind: unknown variant `maybe`",
+    );
+    const task = (await rpc("create_task", { task: fields })).body;
+    expect(task.estimate).toBeNull();
+    expect(await refusal("update_task", { task: { id: task.id, title: "Two" } })).toContain("task: missing field `taskType`");
+    const edited = await rpc("update_task", { task: { id: task.id, taskType: "fix", title: "Two", description: "" } });
+    expect(edited.status).toBe(200);
+    expect(edited.body.taskType).toBe("fix");
+  });
+
+  test("no struct argument a command takes makes it fail on the server", async () => {
+    const filler: Record<string, unknown> = { int: 999999, bool: false, string: "x", ints: [], strings: [] };
+    for (const [name, entry] of COMMANDS) {
+      if (!entry.params.some((p) => p.kind === "object")) continue;
+      for (const value of [{}, { id: "1", name: 5, taskType: "bogus", channel: "x" }]) {
+        const args = Object.fromEntries(entry.params.map((p) => [
+          p.key,
+          p.kind === "object" ? value : p.kind === "enum" ? p.detail.split("|")[0] : filler[p.kind],
+        ]));
+        const answer = await rpc(name, args);
+        expect({ name, args, status: answer.status < 500 ? "client" : answer.body }).toEqual({ name, args, status: "client" });
+      }
+    }
+  });
+
   test("missing options are null and a null body is no arguments", async () => {
     expect((await rpc("list_tasks", {})).status).toBe(200);
     expect((await rpc("list_workspaces", null)).status).toBe(200);

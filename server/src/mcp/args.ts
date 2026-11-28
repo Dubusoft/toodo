@@ -5,8 +5,31 @@
 
 import { debugString } from "../domain/rust.ts";
 
-/** The arguments do not fit the tool's request; the message is the one `serde` gives. */
-export class ArgumentError extends Error {}
+/** The arguments do not fit the tool's request; the message is the one `serde` gives, led
+ * by the path of the field it is about, e.g. `criteria[1].kind: unknown variant ...`. */
+export class ArgumentError extends Error {
+  constructor(
+    readonly reason: string,
+    readonly path = "",
+  ) {
+    super(path === "" ? reason : `${path}: ${reason}`);
+  }
+
+  /** This error inside the field or index `segment` (`name` or `[0]`). */
+  at(segment: string): ArgumentError {
+    const path = this.path === "" || this.path.startsWith("[") ? `${segment}${this.path}` : `${segment}.${this.path}`;
+    return new ArgumentError(this.reason, path);
+  }
+}
+
+/** `decode(value)`, with a rejection placed inside `segment`. */
+function inside<T>(segment: string, decode: () => T): T {
+  try {
+    return decode();
+  } catch (error) {
+    throw error instanceof ArgumentError ? error.at(segment) : error;
+  }
+}
 
 /** Reads one JSON value as a `T`, or throws an `ArgumentError`. */
 export type Decoder<T> = (value: unknown) => T;
@@ -58,7 +81,7 @@ export const bool: Decoder<boolean> = (value) => {
 export function vec<T>(item: Decoder<T>): Decoder<T[]> {
   return (value) => {
     if (!Array.isArray(value)) throw invalidType(value, "a sequence");
-    return value.map(item);
+    return value.map((element, index) => inside(`[${index}]`, () => item(element)));
   };
 }
 
@@ -151,7 +174,7 @@ export function struct<F extends Fields>(name: string, fields: F, deny = true): 
       }
       if (seen.has(field)) throw new ArgumentError(`duplicate field \`${field}\``);
       seen.add(field);
-      read[field] = fields[field].decode(item);
+      read[field] = inside(field, () => fields[field].decode(item));
     }
     for (const [field, spec] of Object.entries(fields)) {
       if (seen.has(field)) continue;
