@@ -289,11 +289,16 @@ export function TaskGraph({
   return (
     // The bottom padding ends the timeline above the floating chat button, so the chips of its last rows stay clear of it.
     <section aria-label={m.details.graph.timeline} className="flex flex-1 flex-col gap-2 pb-14">
-      {/* On a phone the controls stay on one line that scrolls sideways, until the legend opens below them. */}
+      {/*
+        On a phone the controls stay on one line that scrolls sideways, until the legend opens below them.
+        The scrolling line clips what overflows it, so it keeps room above and below for the controls'
+        invisible touch targets, without moving anything.
+      */}
       <div
         className={cn(
           "flex flex-wrap items-center gap-2 text-xs",
-          !legendOpen && "max-md:flex-nowrap max-md:overflow-x-auto max-md:[scrollbar-width:none] max-md:*:shrink-0",
+          !legendOpen &&
+            "max-md:-my-2.5 max-md:flex-nowrap max-md:overflow-x-auto max-md:py-2.5 max-md:[scrollbar-width:none] max-md:*:shrink-0",
         )}
       >
         <ToggleButtonGroup
