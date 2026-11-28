@@ -103,6 +103,7 @@ export const toodo: Workspace = {
   name: "toodo",
   description: null,
   repository: "dev-bokdong/toodo",
+  machine: null,
   archivedAt: null,
 };
 
@@ -111,6 +112,7 @@ export const herdr: Workspace = {
   name: "herdr",
   description: null,
   repository: null,
+  machine: null,
   archivedAt: null,
 };
 

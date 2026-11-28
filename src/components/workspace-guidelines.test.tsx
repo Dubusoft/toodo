@@ -20,6 +20,7 @@ const app: Workspace = {
   name: "app",
   description: null,
   repository: null,
+  machine: null,
   archivedAt: null,
 };
 

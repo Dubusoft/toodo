@@ -100,7 +100,9 @@ calls it. Done tasks keep their criteria as a record.
 A workspace is a group of tasks. It has a name, an optional Markdown description, and an
 optional repository reference: a free string such as `Dubusoft/toodo` or
 `discord:<channel>`. Toodo doesn't interpret it. A GitHub `owner/repo` value is shown as a
-link. There's no directory, machine, or branch, so work that has no repository fits too.
+link. There's no directory or branch, so work that has no repository fits too. A workspace
+can also name the machine it lives on (the server's host or a Dori runner), which the
+navigation shows it under; without one it sits under the machines its lanes run on.
 
 Create one in the app or with `create_workspace`, change it with `update_workspace`, and
 archive it with `archive_workspace`. Archiving takes its tasks with it; they stay in the

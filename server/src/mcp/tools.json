@@ -955,6 +955,13 @@
             "null"
           ]
         },
+        "machine": {
+          "description": "The Dori runner the workspace lives on, as Dori labels it (`local` for the Toodo server's host); the web app shows the workspace under it. Unset when omitted, blank, or null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "name": {
           "type": "string"
         },
@@ -2422,6 +2429,14 @@
           "type": [
             "integer",
             "string"
+          ]
+        },
+        "machine": {
+          "default": null,
+          "description": "The Dori runner the workspace lives on (`local` for the Toodo server's host). Unchanged when omitted; null or blank clears it.",
+          "type": [
+            "string",
+            "null"
           ]
         },
         "name": {

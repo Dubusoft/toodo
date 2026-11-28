@@ -4,7 +4,7 @@ import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button, IconButton } from "@/components/button";
-import { MachineTree } from "@/components/machine-tree";
+import { MachineSelector, MachineTree } from "@/components/machine-tree";
 import type { NewWorkspace, Workspace, WorkspaceId } from "@/lib/bindings";
 import { errorMessage } from "@/lib/error-messages";
 import { useMessages } from "@/lib/i18n";
@@ -203,7 +203,10 @@ type NewWorkspaceDialogProps = {
   onClose: () => void;
 };
 
-/** Adds a workspace: a name, an optional Markdown description, and an optional repository reference. */
+/**
+ * Adds a workspace: a name, an optional Markdown description, an optional repository reference,
+ * and the machine it lives on, if any.
+ */
 export function NewWorkspaceDialog({ onCreated, onClose }: NewWorkspaceDialogProps) {
   const m = useMessages();
   const copy = m.app.workspace;
@@ -212,6 +215,7 @@ export function NewWorkspaceDialog({ onCreated, onClose }: NewWorkspaceDialogPro
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [repository, setRepository] = useState("");
+  const [machine, setMachine] = useState<string | null>(null);
   const busy = createWorkspace.isPending;
 
   function close() {
@@ -224,6 +228,7 @@ export function NewWorkspaceDialog({ onCreated, onClose }: NewWorkspaceDialogPro
       name: name.trim(),
       description: description.trim() || null,
       repository: repository.trim() || null,
+      machine,
     };
     createWorkspace.mutate(workspace, { onSuccess: onCreated });
   }
@@ -249,6 +254,7 @@ export function NewWorkspaceDialog({ onCreated, onClose }: NewWorkspaceDialogPro
             value={repository}
             onChange={setRepository}
           />
+          <MachineSelector value={machine} onChange={setMachine} />
           {createWorkspace.isError && (
             <p role="alert" className="text-xs break-words text-destructive">
               {errorMessage(createWorkspace.error, m)}

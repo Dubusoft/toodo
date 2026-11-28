@@ -149,6 +149,9 @@ export const app: Partial<Messages["app"]> = {
     optionalRepository: "저장소 (선택 사항, 예: owner/repo 또는 URL)",
     discardLabel: "워크스페이스 변경 사항 버리기",
     discardQuestion: "워크스페이스 변경 사항을 버릴까요?",
+    machine: "머신",
+    machineHint: "워크스페이스가 있는 머신입니다. 내비게이션에서 이 머신 아래에 보입니다.",
+    noMachine: "지정 안 함 (레인 기준)",
   },
   guidelines: {
     title: "지침",

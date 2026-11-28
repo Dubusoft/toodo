@@ -842,6 +842,8 @@ export type NewWorkspace = {
 	name: string,
 	description: string | null,
 	repository: string | null,
+	/**  The Dori runner the workspace lives on (`local` for the server's host); unset when omitted, blank, or `null`. */
+	machine?: string | null,
 };
 
 /**  What a note left on a task records. */
@@ -1281,6 +1283,12 @@ export type Workspace = {
 	name: string,
 	description: string | null,
 	repository: string | null,
+	/**
+	 *  The Dori runner the workspace lives on (`local` for the server's host), which the
+	 *  navigation shows it under; `null` when unset, which places it by its lanes. A blank
+	 *  one is stored as `null`.
+	 */
+	machine: string | null,
 	archivedAt: Timestamp | null,
 };
 

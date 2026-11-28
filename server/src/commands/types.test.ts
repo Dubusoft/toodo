@@ -9,7 +9,9 @@ import { createWorkspace } from "./workspaces.ts";
 test("Workspace metadata is stored without interpreting the repository", () => {
   const storage = memoryStorage();
   const created = createWorkspace(storage, { name: " toodo ", description: "# Planning", repository: "discord:tasks" });
-  expect(created).toEqual({ id: created.id, name: "toodo", description: "# Planning", repository: "discord:tasks", archivedAt: null });
+  expect(created).toEqual({ id: created.id, name: "toodo", description: "# Planning", repository: "discord:tasks", machine: null, archivedAt: null });
+  expect(createWorkspace(storage, { name: "dori", description: null, repository: null, machine: " mac-mini " }).machine).toBe("mac-mini");
+  expect(createWorkspace(storage, { name: "notes", description: null, repository: null, machine: "  " }).machine).toBeNull();
   expect(failure(() => createWorkspace(storage, { name: " ", description: null, repository: null })).code).toBe("invalidInput");
 });
 

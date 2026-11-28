@@ -39,12 +39,18 @@ export const listArchive: Command<"listArchive"> = command((storage) => ({
   tasks: storage.archivedTasks().map(task),
 }));
 
+/** A workspace's machine as stored: trimmed, and `null` for a blank or missing one. */
+function machine(value: string | null | undefined): string | null {
+  return value?.trim() || null;
+}
+
 /** Stores a workspace without inspecting its external location. */
 export const createWorkspace: Command<"createWorkspace"> = command((storage, input) =>
   workspace(storage.createWorkspace({
     name: required("workspace name", input.name),
     description: input.description,
     repository: input.repository,
+    machine: machine(input.machine),
   })));
 
 export const updateWorkspace: Command<"updateWorkspace"> = command((storage, input) => {
@@ -56,6 +62,7 @@ export const updateWorkspace: Command<"updateWorkspace"> = command((storage, inp
     name: required("workspace name", input.name),
     description: input.description,
     repository: input.repository,
+    machine: machine(input.machine),
     archivedAt: stored.archivedAt,
   };
   storage.updateWorkspace(updated);

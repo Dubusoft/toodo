@@ -110,6 +110,7 @@ const toodo: Workspace = {
   name: "toodo",
   description: null,
   repository: null,
+  machine: null,
   archivedAt: null,
 };
 const herdr: Workspace = { ...toodo, id: 2, name: "herdr" };
