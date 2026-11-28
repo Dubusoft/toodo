@@ -51,7 +51,6 @@ export const chat: Partial<Messages["chat"]> = {
   needsAnswer: "답변 필요",
   inProgress: "진행 중",
   completed: "완료",
-  moreCompleted: (count) => `더 보기 (${count}개)`,
   noCompleted: "아직 완료되거나 닫힌 채팅이 없습니다.",
   closeThread: "스레드 닫기",
   reopenThread: "스레드 다시 열기",

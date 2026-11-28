@@ -9,6 +9,20 @@ globalThis.ResizeObserver ??= class {
   disconnect() {}
 };
 
+// Nor does it lay out, so no element ever comes into view.
+globalThis.IntersectionObserver ??= class {
+  readonly root = null;
+  readonly rootMargin = "";
+  readonly scrollMargin = "";
+  readonly thresholds = [];
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+};
+
 afterEach(() => {
   cleanup();
 });
