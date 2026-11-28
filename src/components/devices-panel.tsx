@@ -128,13 +128,18 @@ function DeviceRow({ device }: { device: Device }) {
   );
 }
 
-/** How many devices are signed in, shown next to the Devices settings once known. */
+/**
+ * How many browsers are signed in, shown next to the Devices settings once known: the
+ * devices whose tokens still work, plus this browser when it signed in without a device of
+ * its own (with the shared token), since it is signed in too but not listed.
+ */
 export function DevicesStatus() {
   const devices = useQuery({ queryKey: devicesKey, queryFn: listDevices });
   if (!devices.data) return null;
   const now = Date.now() / 1000;
   const signedIn = devices.data.filter((device) => device.revokedAt === null && (device.expiresAt === null || device.expiresAt > now));
-  return <>{signedIn.length} signed in</>;
+  const unlisted = devices.data.some((device) => device.current) ? 0 : 1;
+  return <>{signedIn.length + unlisted} signed in</>;
 }
 
 export function DevicesPanel() {

@@ -73,6 +73,7 @@ describe("DevicesPanel", () => {
 
     const group = await screen.findByRole("group", { name: "This browser" });
     expect(group).toHaveTextContent("This browser: shared token");
+    expect(screen.getByText("2 signed in")).toBeInTheDocument();
     vi.mocked(listDevices).mockResolvedValue([phone, { ...laptop, label: "Chrome on Linux" }]);
     fireEvent.click(within(group).getByRole("button", { name: "Register this browser" }));
 
@@ -80,6 +81,13 @@ describe("DevicesPanel", () => {
     expect(vi.mocked(registerDevice).mock.calls[0][0]).toBe("Chrome on Linux");
     expect(getToken()).toBe("device-token");
     expect(screen.getByText("2 signed in")).toBeInTheDocument();
+  });
+
+  it("counts a browser signed in with the shared token when no device is registered", async () => {
+    vi.mocked(listDevices).mockResolvedValue([tablet]);
+    renderPanel();
+
+    expect(await screen.findByText("1 signed in")).toBeInTheDocument();
   });
 
   it("warns that revoking this device signs this browser out", async () => {
