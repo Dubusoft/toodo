@@ -277,6 +277,19 @@
 .react-flow .react-flow__handle.connectingfrom {
   opacity: 1;
 }
+
+/*
+ * The chat composer's `#` menu is as wide as the input box it opens above: its layer is anchored
+ * to a span covering the box (`useTriggerMenuAboveComposer` in `chat-panel.tsx`). On a phone the
+ * box sits 0.5rem from the screen's edges, inside a layer's usual spacing-4 gutter, so this layer's
+ * gutter is 0.5rem instead.
+ */
+[popover]:has(> .astryx-popover > .astryx-trigger-menu) {
+  --astryx-layer-inset-inline-start: calc(0.5rem - var(--spacing-4));
+  --astryx-layer-inset-inline-end: calc(0.5rem - var(--spacing-4));
+  width: anchor-size(width);
+}
+
 /*
  * Printing (or saving as PDF) shows the page content alone: elements marked `print:hidden`,
  * such as the sidebar and the controls, are left out, and sections are not split across pages.
