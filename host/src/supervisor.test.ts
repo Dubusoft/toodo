@@ -100,8 +100,8 @@ describe("SupervisorHost", () => {
       { type: "schedules", id: 2, request: { op: "list" } },
     ]);
     const job = {
-      id: "job-1", kind: "install", tool: "hc", machine: "local", state: "running", command: "hc update", startedAt: 1, endedAt: null,
-      log: "$ hc update\n", exitCode: null, version: null, device: null, problem: null,
+      id: "job-1", kind: "install", tool: "hc", provider: null, machine: "local", state: "running", command: "hc update", startedAt: 1, endedAt: null,
+      log: "$ hc update\n", exitCode: null, version: null, signIn: null, problem: null,
     } as const;
     latest().events.message({ type: "schedules", id: 2, reply: { ok: true, jobs: [], timeZone: { name: "Asia/Seoul", label: "KST" } } });
     latest().events.message({ type: "machines", id: 1, reply: { ok: true, job } });

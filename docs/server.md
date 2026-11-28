@@ -1133,14 +1133,17 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   host (runner `local`) and every runner the supervisor knows, each with its state, runner
   version, OS and hc's and omo's versions (a worker's through its runner, `null` with the
   reason while it cannot be asked), why they cannot be installed or updated there
-  (`jobsUnavailable`: `runner-outdated` or `unsupported-os`, `null` when they can), and the
-  latest jobs. `GET .../config` answers a runner's
+  (`jobsUnavailable`: `runner-outdated` or `unsupported-os`, `null` when they can), the
+  Claude and Codex accounts omo signs in there (`logins`: `{ signedIn, accounts }` each, read
+  with `omo auth check` without credentials; `null` when omo cannot be asked or the runner
+  predates it), and the latest jobs. `GET .../config` answers a runner's
   `runner-config.json` as config entries: the host's own file, or a worker's over ssh when the
   host has its target. `POST` takes one request: `config-set` of a key (only the placement keys
   `workspaces`, `detectWorkspaces`, `reposRoot` and `worktreeRoot`; every other key runs a
   command or moves the sandbox and is changed on that machine), `install` of `hc` or `omo` on
-  a `machine` (an update when it is installed), `login` on a `machine` (`omo login
-  --no-browser`, with `replace` for `--replace`), `cancel` of a running job, or adding another computer as a
+  a `machine` (an update when it is installed), `login` of a `provider` (`claude` or `codex`)
+  on a `machine`, `login-answer` of a running sign-in's `job` with the `value` its page gave
+  back, `cancel` of a running job, or adding another computer as a
   runner: `precheck` of an ssh `target` and `label` (whether the target resolves to a private
   address, ssh reaches it, and hc and bun are there; it answers the problems found),
   `add-ssh` (a job that runs `dori runner install <target> --label <label>`), or
@@ -1148,11 +1151,20 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   10 minutes, for the command pasted on a computer without ssh access; see
   `/runner-enroll/` below). The runner applies a saved key itself, without a restart. `GET /api/machines/jobs` streams `job` events, each a job's
   latest state with the last 32 KB of its output (credentials masked) and, for a sign-in,
-  its device URL, user code and matching code; a new stream first gets the updates kept in
-  memory. The server runs none of these commands: the host hands each request to the
+  `signIn`: the provider's sign-in page and the question it waits on; a new stream first gets
+  the updates kept in memory. A sign-in signs the account in inside omo, which has no sign-in
+  command for it: the Worker drives `omo --mode rpc` (`login_start`) through the routes that
+  need no browser on that machine, Claude's copy-code login and Codex's legacy browser login
+  with its paste field (Codex's device-code login is not used, since omo's RPC passes on only
+  its verification URL, not the user code). It signs in the provider's first account again,
+  or a first one. The owner opens the page on any device and pastes back the code Claude
+  shows or the localhost address the ChatGPT page ends on; the answer goes to omo and is
+  neither kept nor logged. OmO's own account (`omo login`) is not needed for lanes and is
+  not offered here. The server runs none of these commands: the host hands each request to the
   supervisor Worker, which runs it and sends each job's state back. An install or sign-in on
-  a runner's machine runs there: the Worker asks that runner over its link (`tool.job`) and
-  reads the job's state and log from it while it runs. A refused request is
+  a runner's machine runs there: the Worker asks that runner over its link (`tool.job`, and
+  `tool.answer` for a sign-in's answer) and reads the job's state and log from it while it
+  runs. A refused request is
   `400` with its `error`, a body that is no request `400`, and `503` when no supervisor runs
   beside the server or it does not answer within 60 seconds. A read-only device may read
   but not change anything.

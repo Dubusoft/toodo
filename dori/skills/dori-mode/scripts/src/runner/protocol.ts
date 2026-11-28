@@ -235,6 +235,7 @@ export type CommandResults = {
   readonly "job.run": { readonly exitCode: number; readonly timedOut: boolean; readonly output: string; readonly err: string };
   /** A tool job started (or, for a replayed `job`, already running) on the runner's host: the command line it runs. */
   readonly "tool.job": { readonly command: string };
+  readonly "tool.answer": Record<never, never>;
   readonly "tool.cancel": Record<never, never>;
 };
 /** The commands a supervisor awaits a structured result for. */
@@ -282,18 +283,23 @@ export type MachineObservation = {
   readonly profiles?: readonly string[];
   /** hc's and omo's versions on the host (`null`: not installed), when the query asked for `tools`; absent from an older runner. */
   readonly tools?: { readonly hc: string | null; readonly omo: string | null };
-  /** With `tools`: `true` from a runner that installs, updates and signs in hc and omo (`tool.job`); absent from an older one. */
+  /** With `tools`: `true` from a runner that installs and updates hc and omo (`tool.job`); absent from an older one. */
   readonly toolJobs?: true;
+  /**
+   * With `tools`, from a runner that signs omo's Claude and Codex accounts in (`tool.job` `login`): each one's sign-in
+   * (`null`: omo could not be asked); absent from an older runner.
+   */
+  readonly logins?: { readonly [P in "claude" | "codex"]: { readonly signedIn: boolean; readonly accounts: number } } | null;
 };
 
 /**
- * A tool job as its runner holds it (`q.tool.job`): `log` is its masked output so far, `device` the device code a
- * sign-in waits on (read before masking), `version` the tool's once it ended.
+ * A tool job as its runner holds it (`q.tool.job`): `log` is its masked output so far, `signIn` the sign-in page and
+ * question a running sign-in waits on (`tool.answer` answers it), `version` the tool's once it ended.
  */
 export type ToolJobView = {
   readonly state: "running" | "succeeded" | "failed" | "cancelled";
   readonly log: string;
-  readonly device: { readonly url: string; readonly userCode: string; readonly matchingCode: string | null } | null;
+  readonly signIn: { readonly url: string | null; readonly ask: string | null } | null;
   readonly exitCode: number | null;
   readonly version: string | null;
 };
@@ -531,11 +537,16 @@ const COMMAND_SCHEMAS = {
   }),
   "guard.kill": cmd({ keys: req("string[]") }),
   /**
-   * Installs or updates hc or omo, or signs omo in, on the runner's host (Settings > Machines & accounts), as job `job`;
-   * its state and log are read with `q.tool.job`. A runner reports it can with `q.machine.observe` `toolJobs`, so no
-   * proto bump: an older runner refuses it `RUNNER_CMD_REJECTED unknown-type`.
+   * Installs or updates hc or omo (`install`), or signs omo's `provider` account in (`login`, tool `omo`), on the
+   * runner's host (Settings > Machines & accounts), as job `job`; its state and log are read with `q.tool.job`. A runner
+   * reports it can with `q.machine.observe` `toolJobs` (and `logins` for sign-in), so no proto bump: an older runner
+   * refuses it `RUNNER_CMD_REJECTED unknown-type`.
    */
-  "tool.job": cmd({ job: req("string"), tool: req({ enum: ["hc", "omo"] }), kind: req({ enum: ["install", "login"] }), replace: opt("bool") }),
+  "tool.job": cmd({
+    job: req("string"), tool: req({ enum: ["hc", "omo"] }), kind: req({ enum: ["install", "login"] }), provider: opt({ enum: ["claude", "codex"] }),
+  }),
+  /** Passes the owner's answer (a pasted code or address) to the question sign-in `job` waits on; never logged or kept. */
+  "tool.answer": cmd({ job: req("string"), value: req("string") }),
   /** Stops the runner's running tool job `job`. */
   "tool.cancel": cmd({ job: req("string") }),
   "runner.rotate": cmd({}),

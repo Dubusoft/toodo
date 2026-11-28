@@ -80,7 +80,7 @@ export const runnerEffects = (deps: {
   readonly lanes: RunnerLanes; readonly guard: Pick<RunnerGuard, "killLanes">; readonly run: Runner;
   /** Where wait.result and job.result go; a caller that never receives those commands may omit it. */
   readonly publish?: ConstructorParameters<typeof RunnerLanes>[0]["publish"];
-  /** Runs tool.job and tool.cancel; a caller that never receives those commands may omit it. */
+  /** Runs tool.job, tool.answer and tool.cancel; a caller that never receives those commands may omit it. */
   readonly toolJobs?: RunnerToolJobs;
 }): DispatchDeps["effects"] => {
   const effectPublish: NonNullable<typeof deps.publish> = deps.publish ?? (() => { throw new Error("runner publish is not wired"); });
@@ -113,6 +113,7 @@ export const runnerEffects = (deps: {
   "wait.check": waitCheckEffect({ run: deps.run, publish: effectPublish }),
   "job.run": jobRunEffect({ run: deps.run, publish: effectPublish }),
   "tool.job": async (command) => toolJobs().start(command.body),
+  "tool.answer": async (command) => toolJobs().answer(command.body.job, command.body.value),
   "tool.cancel": async (command) => toolJobs().cancel(command.body.job),
   };
 };

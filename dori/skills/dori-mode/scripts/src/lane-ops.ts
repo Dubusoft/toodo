@@ -90,6 +90,8 @@ export type LaneOps = {
   // effects (durable commands)
   /** Starts tool job `body.job` on that machine's runner; throws like `start` (an older runner: RUNNER_CMD_REJECTED unknown-type). */
   readonly toolJob: (machine: string, body: Omit<SupervisorCommandBodies["tool.job"], "cmdId">) => Promise<CommandResults["tool.job"]>;
+  /** Passes the owner's answer to sign-in `job` on that machine's runner. */
+  readonly toolAnswer: (machine: string, job: string, value: string) => Promise<void>;
   readonly toolCancel: (machine: string, job: string) => Promise<void>;
   /** Never throws: an unreachable runner and a failed result are "failed" (logged once per lane per minute); a timed-out or ambiguous result is "unconfirmed". */
   readonly send: (lane: LaneRef, text: string, opts?: SendOptions) => Promise<Delivery>;
@@ -140,6 +142,7 @@ const GOALS = oneOf(["confirmed", "unconfirmed", "failed"]);
 const CLOSED = oneOf(["tab", "pane", "none"]);
 const DELIVERIES = oneOf<Delivery>(["delivered", "unconfirmed", "failed", "sent"]);
 const isPane = (v: unknown): boolean => isObj(v) && isStr(v.pane_id) && isStr(v.workspace_id);
+const isProviderLogin = (v: unknown): boolean => isObj(v) && isBool(v.signedIn) && isNum(v.accounts);
 const isStartup = (v: unknown): boolean => isObj(v) && oneOf(["ok", "error", "unconfirmed"])(v.verdict) && isStr(v.detail);
 const isCheck = (v: unknown): boolean => isObj(v) && isStr(v.signal) && isBool(v.ok) && isStr(v.detail);
 const isWorktree = (v: unknown): boolean => isObj(v) && isStr(v.path) && isBool(v.exists);
@@ -162,10 +165,11 @@ const QUERY_GUARDS: { readonly [T in QueryType]: (v: unknown) => boolean } = {
     && (v.guard === undefined || (isObj(v.guard) && Object.values(v.guard).every(isNum)))
     && (v.profiles === undefined || listOf(v.profiles, isStr))
     && (v.tools === undefined || (isObj(v.tools) && [v.tools.hc, v.tools.omo].every((t) => t === null || isStr(t))))
-    && (v.toolJobs === undefined || v.toolJobs === true),
+    && (v.toolJobs === undefined || v.toolJobs === true)
+    && (v.logins === undefined || v.logins === null || (isObj(v.logins) && [v.logins.claude, v.logins.codex].every(isProviderLogin))),
   "q.tool.job": (v) => isObj(v) && oneOf(["running", "succeeded", "failed", "cancelled"])(v.state) && isStr(v.log)
     && (v.exitCode === null || isNum(v.exitCode)) && (v.version === null || isStr(v.version))
-    && (v.device === null || (isObj(v.device) && isStr(v.device.url) && isStr(v.device.userCode) && (v.device.matchingCode === null || isStr(v.device.matchingCode)))),
+    && (v.signIn === null || (isObj(v.signIn) && (v.signIn.url === null || isStr(v.signIn.url)) && (v.signIn.ask === null || isStr(v.signIn.ask)))),
 };
 
 export const RESULT_GUARDS: { readonly [T in DurableCommandType]: (v: unknown) => boolean } = {
@@ -185,6 +189,7 @@ export const RESULT_GUARDS: { readonly [T in DurableCommandType]: (v: unknown) =
   "wait.check": (v) => isObj(v) && isBool(v.met) && optStr(v.error),
   "job.run": (v) => isObj(v) && isNum(v.exitCode) && isBool(v.timedOut) && isStr(v.output) && isStr(v.err),
   "tool.job": (v) => isObj(v) && isStr(v.command),
+  "tool.answer": (v) => v === undefined || isObj(v),
   "tool.cancel": (v) => v === undefined || isObj(v),
 };
 
@@ -304,6 +309,7 @@ export const laneOps = (call: RunnerCall, deps: { readonly now: () => number; re
     observeMachine: (machine, opts = {}) => query(machineRunner(machine), "q.machine.observe", opts.tools ? { tools: true } : {}),
     toolJobState: (machine, job) => query(machine, "q.tool.job", { job }),
     toolJob: (machine, body) => effect(machine, "tool.job", body),
+    toolAnswer: async (machine, job, value) => { await effect(machine, "tool.answer", { job, value }); },
     toolCancel: async (machine, job) => { await effect(machine, "tool.cancel", { job }); },
 
     send: async (lane, text, opts = {}) => {

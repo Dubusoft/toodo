@@ -2,17 +2,17 @@
 // Toodo web app here, so every command runs on this thread and none on the core's. It lists the server host and the
 // runners the hub knows with hc's and omo's versions, reads and edits a runner's runner-config.json (the local one, or
 // a worker's over ssh; the runner's own file watch applies a saved change without a restart), and runs the jobs that
-// install or update hc and omo and sign omo in, publishing each job's state as its output arrives: on the host itself,
-// and on a runner's machine through that runner (`tool.job`, whose state and log it reads with `q.tool.job`), both with
-// the commands of tool-jobs.ts. It adds
+// install or update hc and omo (tool-jobs.ts) and sign omo's Claude and Codex accounts in (provider-login.ts), publishing
+// each job's state as it changes: on the host itself, and on a runner's machine through that runner (`tool.job`, whose
+// state and log it reads with `q.tool.job`, and `tool.answer` for a sign-in's pasted code). It adds
 // another computer as a runner: over ssh, after the checks of runner/precheck.ts, as a job running `dori runner install`;
 // or by a pasted command, whose enrollment code, installer download and enrollment exchange runner/paste-enroll.ts answers.
 
 import { join } from "node:path";
 
 import {
-  HOST_MACHINE, MACHINE_JOB_LOG_LIMIT, type MachineJob, type MachineJobsUnavailable, type MachineReply, type MachineRequest, type MachineRow,
-  type MachineTool, type RunnerConfigView,
+  HOST_MACHINE, MACHINE_JOB_LOG_LIMIT, type MachineJob, type MachineJobsUnavailable, type MachineLogins, type MachineProvider, type MachineReply,
+  type MachineRequest, type MachineRow, type MachineTool, type RunnerConfigView,
 } from "../../../../../src/lib/machines.ts";
 import type { DoriConfigEntry } from "../../../../../src/lib/dori-config.ts";
 import { ConfigKeyError, formatValue, type Json, parseValue, RUNNER_CONFIG_KEYS } from "./config-keys.ts";
@@ -28,12 +28,11 @@ import { labelFromHost, parseInstallTarget } from "./runner/machines.ts";
 import { bootstrapScript, EnrollRefused, PasteEnrollments } from "./runner/paste-enroll.ts";
 import { installProblem, precheckRunner } from "./runner/precheck.ts";
 import { LABEL_PATTERN } from "./runner/protocol.ts";
+import { loginCommand, type ProviderLoginHandle, readProviderLogins, startProviderLogin } from "./provider-login.ts";
 import { localRunnerConfigIO, remoteRunnerConfigIO, type RunnerConfigIO, runRunnerSetup } from "./runner/runner-setup.ts";
 import { defaultsPrompter } from "./setup-cli.ts";
 import { runnerViews } from "./status.ts";
-import {
-  envRunner, jobLog, parseDeviceCode, runStreamedJob, type ToolJobKind, toolJobCommand, toolJobsUnsupported, withLocalBin,
-} from "./tool-jobs.ts";
+import { envRunner, installCommand, jobLog, runStreamedJob, type ToolJobKind, toolJobsUnsupported, withLocalBin } from "./tool-jobs.ts";
 import { toolVersions, type ToolVersions } from "./tool-versions.ts";
 
 /**
@@ -69,17 +68,18 @@ export type MachineAdminDeps = {
   readonly agentCommand: readonly string[];
   readonly now: () => number;
   /**
-   * A connected worker's runner: hc's and omo's versions and whether it runs tool jobs (`q.machine.observe` with
-   * `tools`), and its tool jobs (`tool.job`, `q.tool.job`, `tool.cancel`).
+   * A connected worker's runner: hc's and omo's versions, its Claude and Codex sign-ins and whether it runs tool jobs
+   * (`q.machine.observe` with `tools`), and its tool jobs (`tool.job`, `q.tool.job`, `tool.answer`, `tool.cancel`).
    */
-  readonly runners: Pick<LaneOps, "observeMachine" | "toolJob" | "toolJobState" | "toolCancel">;
+  readonly runners: Pick<LaneOps, "observeMachine" | "toolJob" | "toolJobState" | "toolAnswer" | "toolCancel">;
   /** Receives each job's latest state while it runs and once it ends. */
   readonly publish: (job: MachineJob) => void;
 };
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-type Running = { job: MachineJob; readonly kill: () => void | Promise<void> };
+/** A job the Worker holds; `answer` passes a running sign-in the owner's pasted answer. */
+type Running = { job: MachineJob; readonly kill: () => void | Promise<void>; answer?: (value: string) => void | Promise<void> };
 type Update = (patch: Partial<MachineJob>, now?: boolean) => void;
 
 export class MachineAdmin {
@@ -124,8 +124,9 @@ export class MachineAdmin {
         case "list": return { ok: true, machines: await this.#machines(), jobs: this.jobs() };
         case "config": return { ok: true, config: await this.#config(request.machine) };
         case "config-set": return { ok: true, config: await this.#configSet(request.machine, request.key, request.value) };
-        case "install": return { ok: true, job: await this.#toolJob(request.machine, request.tool, "install", false) };
-        case "login": return { ok: true, job: await this.#toolJob(request.machine, "omo", "login", request.replace) };
+        case "install": return { ok: true, job: await this.#install(request.machine, request.tool) };
+        case "login": return { ok: true, job: await this.#login(request.machine, request.provider) };
+        case "login-answer": return { ok: true, job: await this.#loginAnswer(request.job, request.value) };
         case "cancel": return { ok: true, job: await this.#cancel(request.job) };
         case "precheck": return { ok: true, precheck: await precheckRunner(this.#deps, request) };
         case "add-ssh": return { ok: true, job: this.#addRunner(request.target, request.label) };
@@ -154,8 +155,9 @@ export class MachineAdmin {
       let tools: ToolVersions | null = null;
       let toolsError: string | null = null;
       let jobsUnavailable: MachineJobsUnavailable | null = null;
+      let logins: MachineLogins | null = null;
       if (host) {
-        tools = await toolVersions(this.#run);
+        [tools, logins] = await Promise.all([toolVersions(this.#run), readProviderLogins(this.#run)]);
         jobsUnavailable = unavailable(process.platform, true);
       } else if (view.state !== "connected") toolsError = `the runner is ${view.state}`;
       else {
@@ -163,6 +165,7 @@ export class MachineAdmin {
           const seen = await this.#deps.runners.observeMachine(view.label, { tools: true });
           os = seen.os;
           tools = seen.tools ?? null;
+          logins = seen.logins ?? null;
           if (tools === null) toolsError = "the runner does not report tool versions yet; update it (dori update)";
           jobsUnavailable = unavailable(seen.os, seen.toolJobs === true);
         } catch (e) {
@@ -170,7 +173,8 @@ export class MachineAdmin {
         }
       }
       return {
-        label: view.label, state: view.state, version: view.version ?? null, os, tools, toolsError, jobsUnavailable, config: host || ssh.has(view.label),
+        label: view.label, state: view.state, version: view.version ?? null, os, tools, toolsError, jobsUnavailable, logins,
+        config: host || ssh.has(view.label),
       };
     }));
   }
@@ -247,38 +251,84 @@ export class MachineAdmin {
     return this.#start("runner", null, name, [process.execPath, CLI_ENTRY, ...args], `dori ${args.join(" ")}`, RUNNER_INSTALL_TIMEOUT_MS);
   }
 
-  /** Installs or updates `tool`, or signs omo in, on the host or on runner `machine`'s host. */
-  async #toolJob(machine: string, tool: MachineTool, kind: ToolJobKind, replace: boolean): Promise<MachineJob> {
-    if (machine !== HOST_MACHINE) return this.#runnerToolJob(machine, tool, kind, replace);
+  /** Installs or updates `tool` on the host or on runner `machine`'s host. */
+  async #install(machine: string, tool: MachineTool): Promise<MachineJob> {
+    if (machine !== HOST_MACHINE) return this.#runnerToolJob(machine, { tool, kind: "install" });
     const installed = (await toolVersions(this.#run))[tool] !== null;
     // Checked after the version read, so two requests that arrive together cannot both start.
     const busy = this.#runningFor(machine, tool);
     if (busy) throw new Error(`a ${tool} job is already running (${busy.job.id})`);
-    const { argv, command, timeoutMs } = toolJobCommand(tool, kind, installed, replace);
-    return this.#start(kind, tool, machine, argv, command, timeoutMs);
+    const { argv, command, timeoutMs } = installCommand(tool, installed);
+    return this.#start("install", tool, machine, argv, command, timeoutMs);
+  }
+
+  /**
+   * Signs `provider`'s account in inside omo on the host or on runner `machine`'s host. It runs in omo, so it waits for
+   * no other omo job there; a runner older than provider sign-in (no `logins` in its observation) is refused.
+   */
+  async #login(machine: string, provider: MachineProvider): Promise<MachineJob> {
+    if (machine !== HOST_MACHINE) {
+      const seen = await this.#deps.runners.observeMachine(machine, { tools: true });
+      if (seen.logins === undefined) throw new Error(`the runner on ${machine} cannot sign Claude and Codex in yet; update it on that machine (dori update)`);
+      return this.#runnerToolJob(machine, { tool: "omo", kind: "login", provider });
+    }
+    const busy = this.#runningFor(machine, "omo");
+    if (busy) throw new Error(`an omo job is already running (${busy.job.id})`);
+    const command = loginCommand(provider);
+    const lines: string[] = [];
+    const log = (): string => jobLog(command, lines.map((l) => `${l}\n`).join(""), MACHINE_JOB_LOG_LIMIT);
+    let handle: ProviderLoginHandle | undefined;
+    const { running, update } = this.#track(this.#newId(), "login", "omo", provider, machine, command, () => { handle?.cancel(); });
+    const login = startProviderLogin({
+      provider, env: this.#env, cwd: this.#deps.home,
+      onLog: (line) => { lines.push(line); update({ log: log() }); },
+      onSignIn: (signIn) => { update({ signIn }); },
+      onEnd: ({ state, error }) => {
+        if (error !== null && lines.at(-1) !== error) lines.push(error);
+        update({ state, log: log(), signIn: null, endedAt: this.#deps.now() }, true);
+      },
+    });
+    handle = login;
+    running.answer = (value) => { login.answer(value); };
+    return running.job;
+  }
+
+  /** Passes the owner's answer to sign-in `id` (never kept or logged here). */
+  async #loginAnswer(id: string, value: string): Promise<MachineJob> {
+    const running = this.#jobs.get(id);
+    if (running === undefined) throw new Error(`no job ${id}`);
+    if (running.job.state !== "running" || running.answer === undefined) throw new Error(`${id} is not a sign-in that waits for an answer`);
+    if (value.trim() === "") throw new Error("the answer is empty");
+    await running.answer(value);
+    return running.job;
   }
 
   /**
    * Starts the tool job on runner `machine`, which runs it on its host, then reads its state and log there every
    * FOLLOW_EVERY_MS and publishes them like a host job's, until it ends or cannot be read for FOLLOW_GIVE_UP_MS.
    */
-  async #runnerToolJob(machine: string, tool: MachineTool, kind: ToolJobKind, replace: boolean): Promise<MachineJob> {
-    const busy = this.#runningFor(machine, tool);
-    if (busy) throw new Error(`a ${tool} job is already running on ${machine} (${busy.job.id})`);
+  async #runnerToolJob(
+    machine: string, body: { readonly tool: MachineTool; readonly kind: ToolJobKind; readonly provider?: MachineProvider },
+  ): Promise<MachineJob> {
+    const busy = this.#runningFor(machine, body.tool);
+    if (busy) throw new Error(`a ${body.tool} job is already running on ${machine} (${busy.job.id})`);
     const id = this.#newId();
-    const { command } = await this.#deps.runners.toolJob(machine, { job: id, tool, kind, ...(replace ? { replace } : {}) });
-    const { running, update } = this.#track(id, kind, tool, machine, command, () => this.#deps.runners.toolCancel(machine, id));
+    const { command } = await this.#deps.runners.toolJob(machine, { job: id, ...body });
+    const { running, update } = this.#track(
+      id, body.kind, body.tool, body.provider ?? null, machine, command, () => this.#deps.runners.toolCancel(machine, id),
+    );
+    if (body.kind === "login") running.answer = (value) => this.#deps.runners.toolAnswer(machine, id, value);
     let failingSince: number | undefined;
     const follow = async (): Promise<void> => {
       try {
         const view = await this.#deps.runners.toolJobState(machine, id);
         failingSince = undefined;
         if (view.state === "running") {
-          update({ log: view.log, device: view.device });
+          update({ log: view.log, signIn: view.signIn });
           setTimeout(follow, FOLLOW_EVERY_MS);
           return;
         }
-        update({ state: view.state, log: view.log, device: view.device, exitCode: view.exitCode, version: view.version, endedAt: this.#deps.now() }, true);
+        update({ state: view.state, log: view.log, signIn: null, exitCode: view.exitCode, version: view.version, endedAt: this.#deps.now() }, true);
       } catch (e) {
         failingSince ??= this.#deps.now();
         // A restarted runner no longer knows the job: it will never end there.
@@ -304,16 +354,16 @@ export class MachineAdmin {
     return `job-${this.#deps.now()}-${++this.#lastId}`;
   }
 
-  /** Runs `argv` on the host as a job, its masked output published as it arrives. */
+  /** Runs `argv` on the host as an install or runner job, its masked output published as it arrives. */
   #start(
-    kind: MachineJob["kind"], tool: MachineTool | null, machine: string, argv: readonly string[], command: string, timeoutMs: number,
+    kind: "install" | "runner", tool: MachineTool | null, machine: string, argv: readonly string[], command: string, timeoutMs: number,
   ): MachineJob {
     const id = this.#newId();
     let kill = (): void => {};
-    const { running, update } = this.#track(id, kind, tool, machine, command, () => { kill(); });
+    const { running, update } = this.#track(id, kind, tool, null, machine, command, () => { kill(); });
     kill = runStreamedJob({
       argv, env: this.#env, cwd: this.#deps.home, timeoutMs,
-      onOutput: (output) => { update({ log: jobLog(command, output, MACHINE_JOB_LOG_LIMIT), device: parseDeviceCode(output) }); },
+      onOutput: (output) => { update({ log: jobLog(command, output, MACHINE_JOB_LOG_LIMIT) }); },
       onEnd: ({ exitCode, output, cancelled }) => {
         running.job = { ...running.job, log: jobLog(command, output, MACHINE_JOB_LOG_LIMIT) };
         void (async () => {
@@ -329,12 +379,13 @@ export class MachineAdmin {
 
   /** Holds a new running job and returns the function that changes it and publishes it, at most every PUBLISH_EVERY_MS. */
   #track(
-    id: string, kind: MachineJob["kind"], tool: MachineTool | null, machine: string, command: string, kill: Running["kill"],
+    id: string, kind: MachineJob["kind"], tool: MachineTool | null, provider: MachineProvider | null, machine: string, command: string,
+    kill: Running["kill"],
   ): { readonly running: Running; readonly update: Update } {
     const running: Running = {
       job: {
-        id, kind, tool, machine, state: "running", command, startedAt: this.#deps.now(), endedAt: null,
-        log: `$ ${command}\n`, exitCode: null, version: null, device: null, problem: null,
+        id, kind, tool, provider, machine, state: "running", command, startedAt: this.#deps.now(), endedAt: null,
+        log: `$ ${command}\n`, exitCode: null, version: null, signIn: kind === "login" ? { url: null, ask: null } : null, problem: null,
       },
       kill,
     };

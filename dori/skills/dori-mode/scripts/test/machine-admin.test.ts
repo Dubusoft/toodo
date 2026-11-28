@@ -13,10 +13,51 @@ afterEach(() => {
 });
 
 /**
- * A host whose PATH holds fake `hc` and `omo` scripts, each `omo` sub-command given as a shell body, and a runner
- * `mac-mini` whose tool jobs run with the same scripts.
+ * omo's RPC mode as a Claude sign-in meets it: the first `login_start` is cancelled because the session was still
+ * starting, the next one asks for the account name, the login method, then the code, and only `the-code` signs in.
+ * Every answer it gets is noted in `$FAKE_RPC_LOG`.
  */
-const world = (omo: { readonly login?: string; readonly update?: string } = {}) => {
+const FAKE_RPC = `
+import { appendFileSync } from "node:fs";
+const out = (frame) => process.stdout.write(JSON.stringify(frame) + "\\n");
+const provider = "anthropic-subscription";
+let starts = 0;
+let buffer = "";
+const decoder = new TextDecoder();
+for await (const chunk of Bun.stdin.stream()) {
+  buffer += decoder.decode(chunk, { stream: true });
+  for (let i = buffer.indexOf("\\n"); i >= 0; i = buffer.indexOf("\\n")) {
+    const f = JSON.parse(buffer.slice(0, i));
+    buffer = buffer.slice(i + 1);
+    if (f.type === "get_auth_providers") out({ id: f.id, type: "response", command: f.type, success: true, data: { providers: [] } });
+    else if (f.type === "login_start") {
+      out({ id: f.id, type: "response", command: f.type, success: true });
+      starts += 1;
+      if (starts === 1) out({ type: "auth_login_end", provider, success: false, error: "Extension UI request cancelled: session closed" });
+      else out({ type: "extension_ui_request", id: "name", method: "input", title: "Name for this account (existing: default; press Enter to add account-2, or type an existing name to refresh it)" });
+    } else if (f.type === "login_cancel") out({ type: "auth_login_end", provider, success: false, error: "Login cancelled" });
+    else if (f.type === "extension_ui_response") {
+      appendFileSync(process.env.FAKE_RPC_LOG, f.id + "=" + f.value + "\\n");
+      if (f.id === "name") out({ type: "extension_ui_request", id: "method", method: "select", title: "Select Anthropic login method:", options: ["Browser login (default)", "Copy code login (headless)"] });
+      else if (f.id === "method") {
+        out({ type: "auth_login_url", provider, url: "https://claude.com/cai/oauth/authorize?code=true" });
+        out({ type: "extension_ui_request", id: "code", method: "input", title: "Paste the code Anthropic shows after you sign in:" });
+      } else if (f.id === "code") {
+        out(f.value === "the-code"
+          ? { type: "auth_login_end", provider, success: true, account: { name: "default" }, check: { model: "m", outcome: "ok", at: 1 } }
+          : { type: "auth_login_end", provider, success: false, error: "invalid code" });
+      }
+    }
+  }
+}
+`;
+
+/**
+ * A host whose PATH holds fake `hc` and `omo` scripts (`omo update` given as a shell body, `omo auth check` with a
+ * signed-in Claude account and no Codex one, `omo --mode rpc` the FAKE_RPC sign-in), and a runner `mac-mini` whose
+ * tool jobs run with the same scripts.
+ */
+const world = (omo: { readonly update?: string } = {}) => {
   const root = mkdtempSync(join(tmpdir(), "machine-admin-"));
   dirs.push(root);
   const bin = join(root, "bin");
@@ -26,26 +67,36 @@ const world = (omo: { readonly login?: string; readonly update?: string } = {}) 
     chmodSync(join(bin, name), 0o755);
   };
   script("hc", 'if [ "$1" = "--version" ]; then echo "hc 0.1.22"; else echo "hc $*"; fi');
+  writeFileSync(join(root, "rpc.mjs"), FAKE_RPC);
   script("omo", [
     'case "$1" in',
     '  --version) echo "omo 5.1.84 (engine: senpi 2026.11.23; scheme nodef)" ;;',
-    `  login) ${omo.login ?? "exit 1"} ;;`,
+    `  --mode) exec "${process.execPath}" "${join(root, "rpc.mjs")}" ;;`,
     `  update) ${omo.update ?? "exit 1"} ;;`,
+    '  auth) case "$4" in',
+    `    anthropic-subscription) echo '{"status":"not_ready","provider":"anthropic-subscription","reason":"provider_not_found","accounts":[{"name":"default","signIn":"signed_in"}]}' ;;`,
+    `    *) echo '{"status":"not_ready","provider":"chatgpt-subscription","reason":"credentials_not_configured","accounts":[]}' ;;`,
+    "  esac ;;",
     "esac",
   ].join("\n"));
   const runnerDir = join(root, "runner");
   mkdirSync(runnerDir);
   const published: MachineJob[] = [];
   const waiters: { readonly match: (job: MachineJob) => boolean; readonly resolve: (job: MachineJob) => void }[] = [];
-  const env = { PATH: `${bin}:/usr/bin:/bin` };
+  const rpcLog = join(root, "rpc.log");
+  const env = { PATH: `${bin}:/usr/bin:/bin`, FAKE_RPC_LOG: rpcLog };
   const runnerJobs = new RunnerToolJobs({ env, home: root, platform: "darwin" });
   const admin = new MachineAdmin({
     stateDir: join(root, "state"), guardMachines: {}, runnerDir, home: root, env,
     run: async () => ({ code: 1, out: "", err: "no ssh in this test" }), now: () => Date.now(), agentCommand: [],
     runners: {
-      observeMachine: async () => { throw new Error("no connected worker in this test"); },
+      observeMachine: async () => ({
+        os: "darwin", sampledAt: 0, sample: {} as never, panes: [], tools: { hc: "0.1.22", omo: "5.1.84" }, toolJobs: true,
+        logins: { claude: { signedIn: true, accounts: 1 }, codex: { signedIn: false, accounts: 0 } },
+      }),
       toolJob: async (_machine, body) => (await runnerJobs.start(body)).result,
       toolJobState: async (_machine, job) => runnerJobs.read(job),
+      toolAnswer: async (_machine, job, value) => { runnerJobs.answer(job, value); },
       toolCancel: async (_machine, job) => { runnerJobs.cancel(job); },
     },
     publish: (job) => {
@@ -63,7 +114,8 @@ const world = (omo: { readonly login?: string; readonly update?: string } = {}) 
     const timer = setTimeout(() => reject(new Error(`job ${id} never matched`)), 10_000);
     waiters.push({ match: (job) => job.id === id && match(job), resolve: (job) => { clearTimeout(timer); resolve(job); } });
   });
-  return { admin, runnerDir, root, next };
+  const answers = (): string => { try { return readFileSync(rpcLog, "utf8"); } catch { return ""; } };
+  return { admin, runnerDir, root, next, answers };
 };
 
 const ok = <T extends MachineReply>(reply: T): Extract<T, { ok: true }> => {
@@ -71,12 +123,15 @@ const ok = <T extends MachineReply>(reply: T): Extract<T, { ok: true }> => {
   return reply as Extract<T, { ok: true }>;
 };
 
-test("lists the server host with hc's and omo's versions and its runner settings", async () => {
+test("lists the server host with hc's and omo's versions, its Claude and Codex sign-ins and its runner settings", async () => {
   const { admin } = world();
   const { machines, jobs } = ok(await admin.handle({ op: "list" }));
   expect(jobs).toEqual([]);
   expect(machines).toHaveLength(1);
-  expect(machines[0]).toMatchObject({ label: "local", tools: { hc: "0.1.22", omo: "5.1.84" }, toolsError: null, config: true });
+  expect(machines[0]).toMatchObject({
+    label: "local", tools: { hc: "0.1.22", omo: "5.1.84" }, toolsError: null, config: true,
+    logins: { claude: { signedIn: true, accounts: 1 }, codex: { signedIn: false, accounts: 0 } },
+  });
 });
 
 test("edits only the placement keys of the host's runner-config.json, and refuses the rest unwritten", async () => {
@@ -112,33 +167,44 @@ test("updates an installed omo as a job whose output and new version are publish
   expect(ok(await admin.handle({ op: "list" })).jobs.map((job) => job.id)).toEqual([started.id]);
 });
 
-test("shows omo login's device code while it waits for approval, and stops it on cancel", async () => {
-  const { admin, next } = world({
-    login: 'echo "Open https://signin.omo.dev/device?code=TWJM-QTWV"; echo "User code: TWJM-QTWV"; echo "Matching code: 932 514"; exec sleep 30',
+test("signs Claude in inside omo: shows its sign-in page, passes the pasted code to omo alone, and ends signed in", async () => {
+  const { admin, next, answers } = world();
+  const started = ok(await admin.handle({ op: "login", machine: "local", provider: "claude" })).job;
+  expect(started).toMatchObject({
+    kind: "login", tool: "omo", provider: "claude", state: "running", command: "omo --mode rpc (sign in anthropic-subscription)",
+    signIn: { url: null, ask: null },
   });
-  const started = ok(await admin.handle({ op: "login", machine: "local", replace: true })).job;
-  expect(started.command).toBe("omo login --no-browser --replace");
-  const waiting = await next(started.id, (job) => job.device !== null);
-  expect(waiting.device).toEqual({ url: "https://signin.omo.dev/device?code=TWJM-QTWV", userCode: "TWJM-QTWV", matchingCode: "932 514" });
-  expect((await admin.handle({ op: "login", machine: "local", replace: false })).ok).toBe(false);
-  ok(await admin.handle({ op: "cancel", job: started.id }));
-  expect(await next(started.id, (job) => job.state !== "running")).toMatchObject({ state: "cancelled" });
+  expect((await admin.handle({ op: "login-answer", job: started.id, value: "too-early" })).ok).toBe(false);
+  const waiting = await next(started.id, (job) => job.signIn?.ask != null);
+  expect(waiting.signIn).toEqual({ url: "https://claude.com/cai/oauth/authorize?code=true", ask: "Paste the code Anthropic shows after you sign in:" });
+  // The existing account is signed in again through the copy-code login, after omo's restarted session.
+  expect(answers()).toBe("name=default\nmethod=Copy code login (headless)\n");
+  expect((await admin.handle({ op: "login", machine: "local", provider: "codex" })).ok).toBe(false);
+  ok(await admin.handle({ op: "login-answer", job: started.id, value: " the-code " }));
+  const done = await next(started.id, (job) => job.state !== "running");
+  expect(done).toMatchObject({ state: "succeeded", signIn: null });
+  expect(answers()).toEndWith("code=the-code\n");
+  expect(done.log).toContain("Signed in as account default; connection test ok.");
+  expect(done.log).not.toContain("the-code");
 });
 
-test("runs a runner's sign-in and update through that runner, following its log, device code and end", async () => {
-  const { admin, next } = world({
-    login: 'echo "Open https://signin.omo.dev/device?code=TWJM-QTWV"; echo "User code: TWJM-QTWV"; exec sleep 30',
-    update: 'echo "downloading omo"; echo "omo updated"',
-  });
-  const login = ok(await admin.handle({ op: "login", machine: "mac-mini", replace: false })).job;
-  expect(login).toMatchObject({ kind: "login", tool: "omo", machine: "mac-mini", state: "running", command: "omo login --no-browser" });
-  // The runner masks the log, so the code reaches the web app only as the device it read from the raw output.
-  const waiting = await next(login.id, (job) => job.device !== null);
-  expect(waiting.device).toEqual({ url: "https://signin.omo.dev/device?code=TWJM-QTWV", userCode: "TWJM-QTWV", matchingCode: null });
-  expect(waiting.log).not.toContain("TWJM-QTWV");
+test("runs a runner's sign-in and update through that runner, following its sign-in page, answer and end", async () => {
+  const { admin, next, answers } = world({ update: 'echo "downloading omo"; echo "omo updated"' });
+  const login = ok(await admin.handle({ op: "login", machine: "mac-mini", provider: "claude" })).job;
+  expect(login).toMatchObject({ kind: "login", tool: "omo", provider: "claude", machine: "mac-mini", state: "running" });
+  const waiting = await next(login.id, (job) => job.signIn?.ask != null);
+  expect(waiting.signIn?.url).toBe("https://claude.com/cai/oauth/authorize?code=true");
   expect((await admin.handle({ op: "install", machine: "mac-mini", tool: "omo" })).ok).toBe(false);
-  ok(await admin.handle({ op: "cancel", job: login.id }));
-  expect(await next(login.id, (job) => job.state !== "running")).toMatchObject({ state: "cancelled" });
+  ok(await admin.handle({ op: "login-answer", job: login.id, value: "wrong" }));
+  const failed = await next(login.id, (job) => job.state !== "running");
+  expect(failed).toMatchObject({ state: "failed", signIn: null });
+  expect(failed.log).toContain("invalid code");
+  expect(answers()).toEndWith("code=wrong\n");
+
+  const again = ok(await admin.handle({ op: "login", machine: "mac-mini", provider: "claude" })).job;
+  await next(again.id, (job) => job.signIn?.ask != null);
+  ok(await admin.handle({ op: "cancel", job: again.id }));
+  expect(await next(again.id, (job) => job.state !== "running")).toMatchObject({ state: "cancelled" });
 
   const update = ok(await admin.handle({ op: "install", machine: "mac-mini", tool: "omo" })).job;
   expect(update.command).toBe("omo update");

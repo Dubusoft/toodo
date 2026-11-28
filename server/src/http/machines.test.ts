@@ -18,8 +18,8 @@ afterEach(() => {
 });
 
 const job: MachineJob = {
-  id: "job-1", kind: "install", tool: "hc", machine: "local", state: "running", command: "hc update", startedAt: 1, endedAt: null,
-  log: "$ hc update\n", exitCode: null, version: null, device: null, problem: null,
+  id: "job-1", kind: "install", tool: "hc", provider: null, machine: "local", state: "running", command: "hc update", startedAt: 1, endedAt: null,
+  log: "$ hc update\n", exitCode: null, version: null, signIn: null, problem: null,
 };
 
 describe("machines", () => {
@@ -41,13 +41,15 @@ describe("machines", () => {
     expect(await server.send("POST", "/api/machines", WEB, { op: "install", machine: "local", tool: "hc" })).toEqual({ status: 200, body: { ok: true, job } });
     const refused = await server.send("POST", "/api/machines", WEB, { op: "config-set", machine: "local", key: "agents", value: "{}" });
     expect(refused).toEqual({ status: 400, body: { ok: false, error: "agents is changed only on that machine (dori runner setup)" } });
-    expect((await server.send("POST", "/api/machines", WEB, { op: "login", machine: "mac-mini" })).status).toBe(200);
+    expect((await server.send("POST", "/api/machines", WEB, { op: "login", machine: "mac-mini", provider: "codex" })).status).toBe(200);
+    expect((await server.send("POST", "/api/machines", WEB, { op: "login-answer", job: "job-1", value: "code" })).status).toBe(200);
     expect(seen).toEqual([
       { op: "list" },
       { op: "config", machine: "mac-mini" },
       { op: "install", machine: "local", tool: "hc" },
       { op: "config-set", machine: "local", key: "agents", value: "{}" },
-      { op: "login", machine: "mac-mini", replace: false },
+      { op: "login", machine: "mac-mini", provider: "codex" },
+      { op: "login-answer", job: "job-1", value: "code" },
     ]);
   });
 
@@ -60,7 +62,10 @@ describe("machines", () => {
       { op: "install" },
       { op: "config-set", machine: "local", key: "reposRoot" },
       { op: "config", machine: "" },
-      { op: "login", replace: "yes" },
+      { op: "login", machine: "local" },
+      { op: "login", machine: "local", provider: "gemini" },
+      { op: "login-answer", job: "job-1", value: " " },
+      { op: "login-answer", job: "job-1", value: "x".repeat(4097) },
       { op: "cancel" },
       { op: "precheck", target: "" },
       { op: "enroll-code", label: "studio" },

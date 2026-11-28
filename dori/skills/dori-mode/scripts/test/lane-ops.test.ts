@@ -47,7 +47,10 @@ const remote: LaneRef = { key: "far", machine: "box", runner: "box", pane: "w9:p
 const PANE = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent_status: "working" };
 const INSPECTION = { status: "working", cwd: "/repo/demo", cwdExists: true };
 const OBSERVATION = { os: "linux", sampledAt: 5, sample: { load1: 0.1, memFreePct: 50, diskFreeGb: 10, swapFreeGb: 0, swapTotalGb: 0, panes: 1 }, panes: [PANE] };
-const TOOL_JOB = { state: "running", log: "$ omo login --no-browser\n", device: { url: "https://signin.omo.dev/device", userCode: "AB-CD", matchingCode: null }, exitCode: null, version: null };
+const TOOL_JOB = {
+  state: "running", log: "$ omo --mode rpc (sign in anthropic-subscription)\n", signIn: { url: "https://claude.com/cai/oauth/authorize", ask: "Paste the code" },
+  exitCode: null, version: null,
+};
 
 const clock = () => { const c = { at: 1_000_000, now: () => c.at }; return c; };
 
@@ -67,6 +70,7 @@ const ALL = {
     "lane.observe": verified({ status: "idle" }),
     "guard.kill": verified({ killed: [{ pid: 42, lane: "demo", comm: "node", rssKb: 100 }] }),
     "tool.job": verified({ command: "omo update" }),
+    "tool.answer": verified({}),
     "tool.cancel": verified({}),
   },
   queries: {
@@ -139,6 +143,7 @@ describe("laneOps: one runner call per method", () => {
     ["toolJob", (o) => o.toolJob("box", { job: "job-1", tool: "omo", kind: "install" }),
       { fn: "call", label: "box", type: "tool.job", body: { job: "job-1", tool: "omo", kind: "install" } }, { command: "omo update" }],
     ["toolJobState", (o) => o.toolJobState("box", "job-1"), { fn: "query", label: "box", type: "q.tool.job", body: { job: "job-1" } }, TOOL_JOB],
+    ["toolAnswer", (o) => o.toolAnswer("box", "job-1", "code"), { fn: "call", label: "box", type: "tool.answer", body: { job: "job-1", value: "code" } }, undefined],
     ["toolCancel", (o) => o.toolCancel("box", "job-1"), { fn: "call", label: "box", type: "tool.cancel", body: { job: "job-1" } }, undefined],
   ];
 

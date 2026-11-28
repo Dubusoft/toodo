@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { Badge } from "@astryxdesign/core/Badge";
-import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { TextInput } from "@astryxdesign/core/TextInput";
 import { AddMachine, ProblemText } from "@/components/add-machine";
 import { Button } from "@/components/button";
 import { ConfigEntryRow } from "@/components/dori-config-panel";
@@ -8,10 +8,13 @@ import { escapeCloses } from "@/components/workspace-list";
 import { fill, useMessages } from "@/lib/i18n";
 import {
   HOST_MACHINE,
+  MACHINE_PROVIDERS,
   MACHINE_TOOLS,
   type MachineJob,
+  type MachineProvider,
   type MachineRow,
   type MachineTool,
+  type ProviderLogin,
   type RunnerConfigView,
 } from "@/lib/machines";
 import type { Messages } from "@/locales/en";
@@ -72,23 +75,41 @@ function InstallButton({ machine, tool, installed, busy, t }: { machine: string;
   );
 }
 
-function SignInButton({ machine, busy, t }: { machine: string; busy: boolean; t: Texts }) {
-  const [replace, setReplace] = useState(false);
+/** One agent account omo uses on a machine: whether it is signed in, and the sign-in that (re)signs it in there. */
+function ProviderRow({ machine, provider, login, busy, t }: { machine: string; provider: MachineProvider; login: ProviderLogin; busy: boolean; t: Texts }) {
   const action = useMachineJobAction();
+  const name = t.providers[provider];
   return (
-    <div className="flex basis-full flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-3">
+    <li aria-label={name} className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="min-w-24">{name}</span>
+        <Badge variant={login.signedIn ? "success" : "neutral"} label={login.signedIn ? t.signedIn(login.accounts) : t.signedOut} />
         <Button
           changesData
           size="sm"
           variant="secondary"
-          label={t.signIn}
+          label={login.signedIn ? t.signInAgain(name) : t.signIn(name)}
           isDisabled={busy || action.isPending}
-          onClick={() => action.mutate({ op: "login", machine, replace })}
+          onClick={() => action.mutate({ op: "login", machine, provider })}
         />
-        <CheckboxInput label={t.replaceDevice(machineHere(machine, t))} value={replace} onChange={setReplace} />
       </div>
       {action.error && <p role="alert" className="break-words text-destructive">{action.error.message}</p>}
+    </li>
+  );
+}
+
+/** The Claude and Codex accounts omo signs in on a machine. */
+function AgentAccounts({ row, busy, t }: { row: MachineRow; busy: boolean; t: Texts }) {
+  const logins = row.logins;
+  if (logins === null) return <p className="text-muted-foreground">{t.loginsUnknown}</p>;
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-muted-foreground">{t.accounts}</span>
+      <ul aria-label={t.accountsOf(machineName(row.label, t))} className="flex flex-col gap-2">
+        {MACHINE_PROVIDERS.map((provider) => (
+          <ProviderRow key={provider} machine={row.label} provider={provider} login={logins[provider]} busy={busy} t={t} />
+        ))}
+      </ul>
     </div>
   );
 }
@@ -147,9 +168,9 @@ function MachineCard({ row, jobs, t }: { row: MachineRow; jobs: readonly Machine
           {MACHINE_TOOLS.map((tool) => (
             <InstallButton key={tool} machine={row.label} tool={tool} installed={row.tools?.[tool] != null} busy={busy(tool)} t={t} />
           ))}
-          {row.tools.omo !== null && <SignInButton machine={row.label} busy={busy("omo")} t={t} />}
         </div>
       )}
+      {row.tools?.omo != null && row.jobsUnavailable === null && <AgentAccounts row={row} busy={busy("omo")} t={t} />}
       {row.tools && row.jobsUnavailable !== null && <p className="text-muted-foreground">{t.jobsUnavailable[row.jobsUnavailable]}</p>}
       {row.config ? (
         <details onToggle={(event) => setConfigOpen(event.currentTarget.open)}>
@@ -163,33 +184,51 @@ function MachineCard({ row, jobs, t }: { row: MachineRow; jobs: readonly Machine
   );
 }
 
-function DeviceCodeBox({ job, t }: { job: MachineJob; t: Texts }) {
-  const device = job.device!;
+/**
+ * A running sign-in: the provider's sign-in page, opened on any device, and the field that
+ * sends omo what the page gives back. The answer goes to omo once and is not kept here.
+ */
+function SignInBox({ job, provider, t }: { job: MachineJob; provider: MachineProvider; t: Texts }) {
+  const [value, setValue] = useState("");
+  const answer = useMachineJobAction();
+  const signIn = job.signIn!;
+  if (signIn.url === null) return <p role="status" className="text-muted-foreground">{t.signInPreparing}</p>;
+  const send = (event: FormEvent) => {
+    event.preventDefault();
+    answer.mutate({ op: "login-answer", job: job.id, value }, { onSuccess: () => setValue("") });
+  };
   return (
     <div className="flex flex-col gap-2 rounded-md border border-primary/40 p-3">
-      <p>{t.signInHow}</p>
-      <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
-        <div className="flex flex-col">
-          <span className="text-muted-foreground">{t.userCode}</span>
-          <span className="font-mono text-2xl font-semibold tracking-widest" aria-label={t.userCode}>{device.userCode}</span>
-        </div>
-        {device.matchingCode && (
-          <div className="flex flex-col">
-            <span className="text-muted-foreground">{t.matchingCode}</span>
-            <span className="font-mono text-lg" aria-label={t.matchingCode}>{device.matchingCode}</span>
-          </div>
-        )}
-      </div>
-      <a href={device.url} target="_blank" rel="noreferrer" className="self-start font-medium text-primary underline underline-offset-2 break-all">
+      <p>{t.signInSteps[provider]}</p>
+      <a href={signIn.url} target="_blank" rel="noreferrer" className="self-start font-medium text-primary underline underline-offset-2 break-all">
         {t.openSignIn}
       </a>
-      <p role="status" className="text-muted-foreground">{t.waitingApproval}</p>
+      {signIn.ask === null ? (
+        <p role="status" className="text-muted-foreground">{t.signInWaiting}</p>
+      ) : (
+        <form aria-label={t.answerForm} className="flex flex-col gap-2" onSubmit={send}>
+          <TextInput size="sm" label={t.answerLabel[provider]} hasSpellCheck={false} autoComplete="off" value={value} onChange={setValue} />
+          <Button
+            changesData
+            type="submit"
+            size="sm"
+            variant="primary"
+            className="self-start"
+            label={t.sendAnswer}
+            isDisabled={answer.isPending || value.trim() === ""}
+          />
+        </form>
+      )}
+      {answer.error && <p role="alert" className="break-words text-destructive">{answer.error.message}</p>}
     </div>
   );
 }
 
 function JobCard({ job, t }: { job: MachineJob; t: Texts }) {
-  const title = job.kind === "login" ? t.jobTitle.login : job.kind === "runner" ? t.jobTitle.runner(job.machine) : t.jobTitle.install(job.tool ?? "");
+  const title =
+    job.kind === "login" ? t.jobTitle.login(t.providers[job.provider ?? "claude"])
+    : job.kind === "runner" ? t.jobTitle.runner(job.machine)
+    : t.jobTitle.install(job.tool ?? "");
   const cancel = useMachineJobAction();
   const log = useRef<HTMLPreElement>(null);
   // The newest output is at the bottom: follow it while the job runs.
@@ -215,8 +254,9 @@ function JobCard({ job, t }: { job: MachineJob; t: Texts }) {
           />
         )}
       </div>
-      {job.state === "running" && job.device && <DeviceCodeBox job={job} t={t} />}
-      {job.state === "succeeded" && job.tool && job.version && <p role="status">{t.nowVersion(job.tool, job.version)}</p>}
+      {job.state === "running" && job.signIn && job.provider && <SignInBox job={job} provider={job.provider} t={t} />}
+      {job.state === "succeeded" && job.kind === "login" && job.provider && <p role="status">{t.signedInNow(t.providers[job.provider])}</p>}
+      {job.state === "succeeded" && job.kind === "install" && job.tool && job.version && <p role="status">{t.nowVersion(job.tool, job.version)}</p>}
       {job.state === "succeeded" && job.kind === "runner" && <p role="status">{t.runnerAdded(job.machine)}</p>}
       {job.state === "failed" && job.problem && (
         <div role="alert" className="flex flex-col gap-1 rounded-md border border-destructive/50 p-2">
@@ -237,8 +277,9 @@ function JobCard({ job, t }: { job: MachineJob; t: Texts }) {
 
 /**
  * Settings > Machines & accounts: the server host and every runner Dori knows, with their state
- * and hc's and omo's versions, each runner's settings, the jobs that install or update hc and
- * omo and sign omo in on the host or a runner, their logs streamed while they run, and adding another
+ * and hc's and omo's versions, the Claude and Codex accounts omo uses there, each runner's settings,
+ * the jobs that install or update hc and omo or sign those accounts in on the host or a runner,
+ * their logs streamed while they run, and adding another
  * computer as a runner (AddMachine). On a server without Dori
  * it is the Set up Dori entry (`setup`). It asks the server only while shown (`active`).
  */
