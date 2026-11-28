@@ -128,7 +128,7 @@ function LaneItem({ lane, onShowLane }: { lane: SupervisorLane; onShowLane: (lan
         type="button"
         aria-label={t.showLane(lane.key)}
         title={title}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent"
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent max-md:min-h-11"
         onClick={() => onShowLane(lane)}
       >
         <span className="min-w-0 flex-1 truncate">{lane.task === null ? lane.key : `#${lane.task}`}</span>

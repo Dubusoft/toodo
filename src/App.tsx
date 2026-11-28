@@ -290,7 +290,7 @@ export default function App() {
           <IconButton
             variant="ghost"
             size="sm"
-            className="ml-auto md:hidden"
+            className="ml-auto min-h-11 min-w-11 md:hidden"
             label={m.app.closeMenu}
             icon={<X />}
             ref={closeMenuButton}
@@ -310,7 +310,7 @@ export default function App() {
         <nav className="flex flex-col gap-0.5">
           <Button
             variant={reviewing ? "secondary" : "ghost"}
-            className="justify-start"
+            className="justify-start max-md:min-h-11"
             label={m.app.review}
             icon={<ChartColumn />}
             aria-pressed={reviewing}
@@ -318,7 +318,7 @@ export default function App() {
           />
           <Button
             variant={showingAll ? "secondary" : "ghost"}
-            className="justify-start"
+            className="justify-start max-md:min-h-11"
             label={m.app.allWorkspaces}
             icon={<Layers />}
             aria-pressed={showingAll}
@@ -335,7 +335,7 @@ export default function App() {
         </ErrorBoundary>
         <Button
           variant="ghost"
-          className="mt-auto shrink-0 justify-start"
+          className="mt-auto shrink-0 justify-start max-md:min-h-11"
           label={m.settings.title}
           icon={<Settings />}
           // The backup status is part of the button's name, so it is read with it.
@@ -355,6 +355,7 @@ export default function App() {
           <IconButton
             variant="ghost"
             size="sm"
+            className="min-h-11 min-w-11"
             label={m.app.openMenu}
             icon={<Menu />}
             ref={openMenuButton}
