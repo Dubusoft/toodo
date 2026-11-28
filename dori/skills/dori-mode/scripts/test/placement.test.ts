@@ -11,6 +11,7 @@ import {
   checkMachine, LOAD_PER_CORE_MAX, LOCAL_MACHINE, machineVerdict, placementLine, placementTable, planLaunch, resolvePlacement, type RunnerPlacement,
   runnerPlacements, verdictLine,
 } from "../src/placement.ts";
+import { taskWorkspaceHome } from "../src/launch-service.ts";
 import type { MachineSample, SampleResult } from "../src/remote-guard.ts";
 import { readRunnerRows, RunnerHub, runnerWorktreeRoot } from "../src/runner/hub.ts";
 import { type MachineObservation, PROTO, runnerControl, validateFrame } from "../src/runner/protocol.ts";
@@ -200,6 +201,61 @@ test("planLaunch holds a launch for its offline owning runner without checking o
   expect(plan.lines).toEqual(["PLACEMENT machine=mini source=runner rule=acme/blog cwd=/w/blog"]);
   expect(plan.check).toEqual({ machine: "mini", verdict: { ok: false, reasons: ["runner mini that owns acme/blog is offline; the launch waits for it"] }, summary: "" });
   expect(verdictLine(plan.check.machine, plan.check.verdict)).toBe("HOLD machine=mini runner mini that owns acme/blog is offline; the launch waits for it");
+});
+
+test("the task's workspace machine is preferred over defaultMachine among declaring runners, only while it is online", async () => {
+  const both = [...REPORTS, runner("big", [["acme/blog", "/srv/blog"]])];
+  const c = config({ defaultMachine: "mini" });
+  const done = "merged acme/blog#1";
+  expect(resolvePlacement({ done, home: { machine: "big", repository: null } }, c, both))
+    .toMatchObject({ machine: "big", source: "workspace-machine", rule: "acme/blog", cwd: "/srv/blog", home: "big" });
+  // No workspace machine, one that declares no checkout of the repo, or an offline one: placed exactly as before.
+  const before = resolvePlacement({ done }, c, both);
+  expect(before).toMatchObject({ machine: "mini", source: "runner" });
+  expect(resolvePlacement({ done, home: { machine: "local", repository: null } }, c, both)).toEqual(before);
+  const away = both.map((r) => (r.machine === "big" ? { ...r, online: false } : r));
+  expect(resolvePlacement({ done, home: { machine: "big", repository: null } }, c, away)).toMatchObject({ machine: "mini", source: "runner" });
+  // A single declaring runner wins over the workspace machine (the repo rule comes first).
+  expect(resolvePlacement({ done, home: { machine: "local", repository: null } }, c, REPORTS)).toMatchObject({ machine: "mini", source: "runner" });
+  // A full workspace machine leaves the pick to defaultMachine, as the runner rule.
+  const plan = await planLaunch({ done, home: { machine: "big", repository: null } }, c, async (machine) => ({ machine, verdict: { ok: machine !== "big", reasons: machine === "big" ? ["full"] : [] }, summary: "" }), both);
+  expect(plan.lines).toEqual(["PLACEMENT machine=mini source=runner rule=acme/blog cwd=/Users/me/work/repos/blog", "PLACEMENT_CANDIDATES repo=acme/blog machines=big,mini chosen=mini"]);
+});
+
+test("a repo-less launch goes to its workspace machine when that runner is connected and declares the workspace's repository", async () => {
+  const c = config({ defaultMachine: "big", fallback: ["spare"] });
+  const home = { machine: "mini", repository: "https://github.com/Acme/Blog" };
+  expect(resolvePlacement({ done: RESEARCH, home }, c, REPORTS)).toEqual({ machine: "mini", source: "workspace-machine", rule: "acme/blog", movable: true });
+  expect(resolvePlacement({ done: RESEARCH, home: { machine: "local", repository: "acme/dori" } }, c, REPORTS)).toMatchObject({ machine: "local", source: "workspace-machine" });
+  // Placed exactly as before: no machine, an offline one, one without the repo (only detected counts as absent), no repository.
+  const before = resolvePlacement({ done: RESEARCH }, c, REPORTS);
+  expect(before).toEqual({ machine: "big", source: "default", movable: true });
+  const offline = REPORTS.map((r) => ({ ...r, online: r.machine !== "mini" }));
+  for (const [input, reports] of [
+    [{ done: RESEARCH, home }, offline],
+    [{ done: RESEARCH, home: { machine: "mini", repository: "acme/dori" } }, REPORTS],
+    [{ done: RESEARCH, home: { machine: "mini", repository: null } }, REPORTS],
+    [{ done: RESEARCH, home: { machine: "ghost", repository: "acme/blog" } }, REPORTS],
+  ] as const) expect(resolvePlacement(input, c, reports)).toEqual(before);
+  // An undeclared Done repo is not moved to the workspace machine either.
+  expect(resolvePlacement({ done: "merged acme/unknown#1", home }, c, REPORTS)).toEqual(before);
+  // A full workspace machine falls back to defaultMachine, then the fallback machines.
+  const asked: string[] = [];
+  const plan = await planLaunch({ done: RESEARCH, home }, c, async (machine) => {
+    asked.push(machine);
+    return { machine, verdict: { ok: machine === "spare", reasons: machine === "spare" ? [] : ["full"] }, summary: "" };
+  }, REPORTS);
+  expect(asked).toEqual(["mini", "big", "spare"]);
+  expect(plan.lines).toEqual(["PLACEMENT machine=mini source=workspace-machine rule=acme/blog", "PLACEMENT_FALLBACK mini -> spare (full)"]);
+});
+
+test("taskWorkspaceHome reads the task's workspace machine and never fails the launch", async () => {
+  expect(await taskWorkspaceHome(async () => { throw new Error("unused"); }, undefined)).toEqual({});
+  expect(await taskWorkspaceHome(async () => ({ machine: " mini ", repository: "acme/blog" }), 7)).toEqual({ home: { machine: "mini", repository: "acme/blog" } });
+  expect(await taskWorkspaceHome(async () => ({ machine: " ", repository: "acme/blog" }), 7)).toEqual({});
+  expect(await taskWorkspaceHome(async () => undefined, 7)).toEqual({});
+  expect(await taskWorkspaceHome(async () => { throw new Error("toodo down"); }, 7))
+    .toEqual({ note: "PLACEMENT_WORKSPACE_UNREAD #7: toodo down (placed without the workspace machine)" });
 });
 
 test("placementTable lists declared repos per runner, only-detected repos and the default", () => {

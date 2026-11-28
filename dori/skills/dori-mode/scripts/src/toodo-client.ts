@@ -226,10 +226,22 @@ export class ToodoClient {
    * null when it has none or toodo-server has no such workspace.
    */
   async workspaceRepository(workspaceId: number): Promise<string | null> {
+    return (await this.workspace(workspaceId))?.repository ?? null;
+  }
+
+  /**
+   * A workspace's `repository` and `machine` (the Dori runner it lives on, `local` for toodo-server's host), each null
+   * when unset; undefined when toodo-server has no such workspace.
+   */
+  async workspace(workspaceId: number): Promise<{ readonly repository: string | null; readonly machine: string | null } | undefined> {
     const reply = await this.call("get_workspace", { id: workspaceId }, true);
-    if (reply === undefined) return null;
-    if (!isRecord(reply) || (reply.repository != null && typeof reply.repository !== "string")) throw new ToodoUnreadable(`toodo-server get_workspace returned workspace ${workspaceId} with an unreadable repository`);
-    return reply.repository ?? null;
+    if (reply === undefined) return undefined;
+    const text = (key: string): string | null => {
+      const value = isRecord(reply) ? reply[key] ?? null : undefined;
+      if (value !== null && typeof value !== "string") throw new ToodoUnreadable(`toodo-server get_workspace returned workspace ${workspaceId} with an unreadable ${key}`);
+      return value;
+    };
+    return { repository: text("repository"), machine: text("machine") };
   }
 }
 

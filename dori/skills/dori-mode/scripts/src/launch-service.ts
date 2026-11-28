@@ -6,8 +6,9 @@ import { runnerWorktreeRoot } from "./runner/hub.ts";
 import { doneRepos } from "./signals.ts";
 import {
   checkMachine, type LaunchPlan, LOCAL_MACHINE, type MachineCheck, type PlacementInput, placementTargets, planLaunch, resolvePlacement,
-  type RunnerPlacement, runnerPlacements,
+  type RunnerPlacement, runnerPlacements, type WorkspaceHome,
 } from "./placement.ts";
+import { ToodoClient } from "./toodo-client.ts";
 import type { Lane } from "./registry.ts";
 import { dequeueLaunch, enqueueLaunch, type LaunchVerdict } from "./routing.ts";
 import { postSandboxNotice, postSkippedNotices } from "./sandbox-notice.ts";
@@ -57,10 +58,39 @@ export type PlacedLaunch = {
   readonly lines: readonly string[];
 };
 
-/** Places `input` (planLaunch over the runners' reports) and checks the machine it lands on. */
-export const placeLaunch = async (deps: Pick<FlowDeps, "ops" | "config"> & Partial<Pick<FlowDeps, "clock">>, input: LaunchInput): Promise<PlacedLaunch> => {
+/** Reads the Toodo workspace of task `task`: its machine and repository; undefined when the task or workspace is missing. */
+export type WorkspaceLookup = (task: number) => Promise<{ readonly machine: string | null; readonly repository: string | null } | undefined>;
+
+/** The WorkspaceLookup over toodo-server's read API (the autopilot reader's url and token). */
+export const toodoWorkspaceLookup = (deps: Pick<FlowDeps, "tunables">): WorkspaceLookup => async (task) => {
+  const client = new ToodoClient(deps.tunables.toodoEvents);
+  const found = await client.task(task);
+  return found === undefined ? undefined : client.workspace(found.workspaceId);
+};
+
+/**
+ * The workspace machine placement considers for a launch with a task: the machine the task's workspace names, else
+ * nothing. A failed read never fails the launch: it places as if no machine were named and says so in `note`.
+ */
+export const taskWorkspaceHome = async (lookup: WorkspaceLookup, task: number | undefined): Promise<{ readonly home?: WorkspaceHome; readonly note?: string }> => {
+  if (task === undefined) return {};
+  try {
+    const workspace = await lookup(task);
+    const machine = workspace?.machine?.trim();
+    return machine ? { home: { machine, repository: workspace!.repository } } : {};
+  } catch (e) {
+    return { note: `PLACEMENT_WORKSPACE_UNREAD #${task}: ${e instanceof Error ? e.message : String(e)} (placed without the workspace machine)` };
+  }
+};
+
+/** Places `input` (planLaunch over the runners' reports and its task's workspace machine) and checks the machine it lands on. */
+export const placeLaunch = async (
+  deps: Pick<FlowDeps, "ops" | "config" | "tunables"> & Partial<Pick<FlowDeps, "clock">> & { readonly workspaceLookup?: WorkspaceLookup },
+  input: LaunchInput,
+): Promise<PlacedLaunch> => {
   const { config } = deps;
-  const plan = await planLaunch(input, config.placement, async (machine) => {
+  const { home, note } = await taskWorkspaceHome(deps.workspaceLookup ?? toodoWorkspaceLookup(deps), input.task);
+  const plan = await planLaunch({ ...input, ...(home ? { home } : {}) }, config.placement, async (machine) => {
     const check = await checkMachine(deps.ops, config, machine);
     if (!check.verdict.ok) return check;
     const refusal = input.review ? await reviewRefusal(deps.ops, machine) : undefined;
@@ -74,7 +104,7 @@ export const placeLaunch = async (deps: Pick<FlowDeps, "ops" | "config"> & Parti
   const warn = !machine && config.guard.panesMax <= 0
     ? [`LAUNCH_WARN guard.panesMax is ${config.guard.panesMax}: the pane-count limit is off, so nothing caps concurrent lanes; set guard.panesMax to re-enable it`]
     : [];
-  return { plan, target, ...(machine ? { machine } : {}), ...(cwd ? { cwd } : {}), lines: [...plan.lines, ...warn] };
+  return { plan, target, ...(machine ? { machine } : {}), ...(cwd ? { cwd } : {}), lines: [...(note ? [note] : []), ...plan.lines, ...warn] };
 };
 
 /** `dori launch --worktree <repo>`'s base when `--base` is not given. */
