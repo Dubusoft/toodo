@@ -40,7 +40,7 @@ function OfflineBanner({ retrying }: { retrying: boolean }) {
       className="fixed inset-x-2 bottom-2 z-50 mx-auto flex max-w-xl flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-amber-500 bg-amber-100 p-3 text-sm text-amber-950 shadow-md dark:bg-amber-950 dark:text-amber-100"
     >
       <WifiOff aria-hidden className="size-4 shrink-0" />
-      <div className="min-w-0 flex-1">
+      <div className="break-words-keep min-w-0 flex-1">
         <p className="font-medium">
           {signIn ? copy.signIn : copy.unreachable}
         </p>

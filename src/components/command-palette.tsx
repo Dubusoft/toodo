@@ -144,11 +144,11 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
                 </kbd>
               ))}
             </dt>
-            <dd className="text-muted-foreground">{shortcut.description}</dd>
+            <dd className="break-words-keep text-muted-foreground">{shortcut.description}</dd>
           </div>
         ))}
       </dl>
-      <p className="border-t pt-2 text-xs text-muted-foreground">{m.app.shortcuts.typingHint}</p>
+      <p className="break-words-keep border-t pt-2 text-xs text-muted-foreground">{m.app.shortcuts.typingHint}</p>
     </Dialog>
   );
 }

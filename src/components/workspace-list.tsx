@@ -65,7 +65,7 @@ export function WorkspaceList({ selectedId, onSelect, onShowLane }: WorkspaceLis
       )}
       {(workspaces.isError || (workspaces.isPending && serverDown)) && (
         <div role="alert" className="flex flex-col items-start gap-2 text-sm text-destructive">
-          <p>
+          <p className="break-words-keep">
             {copy.loadFailed(workspaces.error ? errorMessage(workspaces.error, m) : unreachableCause(m) || copy.noReply)}
           </p>
           <Button size="sm" variant="secondary" label={m.app.retryNow} onClick={() => void workspaces.refetch()} />
@@ -161,7 +161,7 @@ function WorkspaceItem({ workspace, selected, onSelect, children }: WorkspaceIte
             }
           }}
         >
-          <p className="text-xs text-muted-foreground">
+          <p className="break-words-keep text-xs text-muted-foreground">
             {copy.removeQuestion(workspace.name)}
           </p>
           {deleteWorkspace.isError && (

@@ -213,7 +213,7 @@ export function MachineTree({
   return (
     <>
       {snapshot !== null && now - snapshot.at > STALE_AFTER_MS && (
-        <p role="status" className="px-2.5 text-xs text-destructive">
+        <p role="status" className="break-words-keep px-2.5 text-xs text-destructive">
           {t.stale}
         </p>
       )}

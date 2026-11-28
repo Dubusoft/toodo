@@ -30,7 +30,7 @@ export function UpdateBanner() {
       )}
     >
       <RefreshCw aria-hidden className="size-4 shrink-0" />
-      <div className="min-w-0 flex-1 basis-48">
+      <div className="break-words-keep min-w-0 flex-1 basis-48">
         <p className="font-medium">{m.app.update.title}</p>
         <p className="text-xs">{m.app.update.description}</p>
       </div>
