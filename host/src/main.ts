@@ -111,6 +111,7 @@ if (import.meta.main) {
     core = await openCore(config, {
       ...(mode === "off" ? {} : {
         schedules: (request) => supervisor?.schedules(request) ?? Promise.reject(new Error("the supervisor has not started")),
+        machines: (request) => supervisor?.machines(request) ?? Promise.reject(new Error("the supervisor has not started")),
       }),
       doriConfig: await loadDoriConfigStore(),
     });
@@ -120,6 +121,7 @@ if (import.meta.main) {
   }
   const host = startHost({ listen: config.listen, core: core.fetch, supervisor: mode === "off" ? "off" : SUPERVISOR_ENTRY });
   supervisor = host.supervisor;
+  supervisor?.onJob((job) => { core.machineJob(job); });
   core.listening(Number(host.url.port));
   const paths = healthcheckPaths(process.env);
   const urls = await readPingFile(paths.pingFile);

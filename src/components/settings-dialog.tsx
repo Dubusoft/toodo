@@ -9,7 +9,8 @@ import { ArchivePanel } from "@/components/archive-panel";
 import { BackupPanel, BackupStatusLabel } from "@/components/backup-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
 import { DoriLanguageSettingField, TimeZoneSettingField, useDoriConnected } from "@/components/dori-config-panel";
-import { DoriPanel, MachinesPanel } from "@/components/dori-panel";
+import { DoriPanel } from "@/components/dori-panel";
+import { MachinesPanel } from "@/components/machines-panel";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -356,7 +357,7 @@ export function SettingsDialog({
                   ) : item.id === "dori" ? (
                     <DoriPanel active={open && shown === "dori"} />
                   ) : item.id === "machines" ? (
-                    <MachinesPanel />
+                    <MachinesPanel active={open && shown === "machines"} />
                   ) : item.id === "backups" ? (
                     <BackupPanel />
                   ) : item.id === "trash" ? (

@@ -83,7 +83,8 @@ export type LaneOps = {
   readonly status: (ref: PaneRef) => Promise<{ readonly status?: string; readonly error?: string }>;
   readonly exists: (machine: string | undefined, paths: readonly string[]) => Promise<boolean[]>;
   readonly inspect: (lane: LaneRef, want: InspectWant) => Promise<LaneInspection>;
-  readonly observeMachine: (machine?: string) => Promise<MachineObservation>;
+  /** `tools`: also hc's and omo's versions (a runner older than that field refuses the query). */
+  readonly observeMachine: (machine?: string, opts?: { readonly tools?: boolean }) => Promise<MachineObservation>;
   // effects (durable commands)
   /** Never throws: an unreachable runner and a failed result are "failed" (logged once per lane per minute); a timed-out or ambiguous result is "unconfirmed". */
   readonly send: (lane: LaneRef, text: string, opts?: SendOptions) => Promise<Delivery>;
@@ -154,7 +155,8 @@ const QUERY_GUARDS: { readonly [T in QueryType]: (v: unknown) => boolean } = {
     && (v.session === undefined || (isObj(v.session) && isStr(v.session.id) && isStr(v.session.via))),
   "q.machine.observe": (v) => isObj(v) && isStr(v.os) && isNum(v.sampledAt) && isObj(v.sample) && listOf(v.panes, isPane)
     && (v.guard === undefined || (isObj(v.guard) && Object.values(v.guard).every(isNum)))
-    && (v.profiles === undefined || listOf(v.profiles, isStr)),
+    && (v.profiles === undefined || listOf(v.profiles, isStr))
+    && (v.tools === undefined || (isObj(v.tools) && [v.tools.hc, v.tools.omo].every((t) => t === null || isStr(t)))),
 };
 
 export const RESULT_GUARDS: { readonly [T in DurableCommandType]: (v: unknown) => boolean } = {
@@ -288,7 +290,7 @@ export const laneOps = (call: RunnerCall, deps: { readonly now: () => number; re
         ...(want.sessionsDir !== undefined ? { sessionsDir: want.sessionsDir } : {}),
       });
     },
-    observeMachine: (machine) => query(machineRunner(machine), "q.machine.observe", {}),
+    observeMachine: (machine, opts = {}) => query(machineRunner(machine), "q.machine.observe", opts.tools ? { tools: true } : {}),
 
     send: async (lane, text, opts = {}) => {
       const label = runnerOf(lane);

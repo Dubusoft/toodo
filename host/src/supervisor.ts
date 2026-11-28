@@ -1,3 +1,4 @@
+import type { MachineJob, MachineReply, MachineRequest } from "../../src/lib/machines.ts";
 import type { ScheduleReply, ScheduleRequest } from "../../src/lib/supervisor-schedules.ts";
 import { HEARTBEAT_INTERVAL_MS, type HostToWorker, type WorkerToHost } from "./protocol.ts";
 
@@ -44,6 +45,8 @@ export type SupervisorTunables = {
   readonly stopDeadlineMs: number;
   /** How long a scheduled-jobs request waits for the Worker's answer. */
   readonly requestTimeoutMs: number;
+  /** How long a machines request waits: it may ask every runner, or read a worker's file over ssh. */
+  readonly machinesTimeoutMs: number;
 };
 
 export const DEFAULT_TUNABLES: SupervisorTunables = {
@@ -58,6 +61,7 @@ export const DEFAULT_TUNABLES: SupervisorTunables = {
   // Above the supervisor's own stop deadline (SUPERVISE_STOP_DEADLINE_MS, 15 s), so a clean stop is never cut short.
   stopDeadlineMs: 20_000,
   requestTimeoutMs: 10_000,
+  machinesTimeoutMs: 60_000,
 };
 
 export type SupervisorState = "idle" | "starting" | "running" | "backoff" | "open" | "stopping" | "stopped";
@@ -88,6 +92,7 @@ export class SupervisorHost {
   readonly #timers: Timers;
   readonly #tune: SupervisorTunables;
   readonly #listeners = new Set<(event: SupervisorEvent) => void>();
+  readonly #jobListeners = new Set<(job: MachineJob) => void>();
 
   #state: SupervisorState = "idle";
   #worker: WorkerHandle | undefined;
@@ -103,7 +108,7 @@ export class SupervisorHost {
   #nextStartAt: number | undefined;
   #stopping: { readonly done: Promise<void>; readonly finish: (forced: boolean) => void } | undefined;
   #lastRequest = 0;
-  readonly #requests = new Map<number, { readonly resolve: (reply: ScheduleReply) => void; readonly reject: (error: Error) => void; readonly timer: unknown }>();
+  readonly #requests = new Map<number, { readonly resolve: (reply: never) => void; readonly reject: (error: Error) => void; readonly timer: unknown }>();
 
   constructor(spawn: Spawn, options: { timers?: Timers; tunables?: Partial<SupervisorTunables> } = {}) {
     this.#spawn = spawn;
@@ -125,18 +130,33 @@ export class SupervisorHost {
     };
   }
 
+  /** Follows the state of every machines job (install, update, sign-in) the Worker runs, as it sends them. */
+  onJob(listener: (job: MachineJob) => void): () => void {
+    this.#jobListeners.add(listener);
+    return () => { this.#jobListeners.delete(listener); };
+  }
+
   /** Hands a scheduled-jobs request to the running Worker and resolves with its answer; rejects when none is running or it does not answer. */
   schedules(request: ScheduleRequest): Promise<ScheduleReply> {
+    return this.#request<ScheduleReply>((id) => ({ type: "schedules", id, request }), this.#tune.requestTimeoutMs);
+  }
+
+  /** Hands a Settings > Machines & accounts request to the running Worker, like `schedules`. */
+  machines(request: MachineRequest): Promise<MachineReply> {
+    return this.#request<MachineReply>((id) => ({ type: "machines", id, request }), this.#tune.machinesTimeoutMs);
+  }
+
+  #request<Reply>(message: (id: number) => HostToWorker, timeoutMs: number): Promise<Reply> {
     const worker = this.#worker;
     if (worker === undefined || this.#state !== "running") return Promise.reject(new Error(`the supervisor is ${this.#state}`));
     const id = ++this.#lastRequest;
-    return new Promise((resolve, reject) => {
+    return new Promise<Reply>((resolve, reject) => {
       const timer = this.#timers.setTimeout(() => {
         this.#requests.delete(id);
-        reject(new Error(`the supervisor did not answer within ${this.#tune.requestTimeoutMs} ms`));
-      }, this.#tune.requestTimeoutMs);
-      this.#requests.set(id, { resolve, reject, timer });
-      worker.post({ type: "schedules", id, request });
+        reject(new Error(`the supervisor did not answer within ${timeoutMs} ms`));
+      }, timeoutMs);
+      this.#requests.set(id, { resolve: resolve as (reply: never) => void, reject, timer });
+      worker.post(message(id));
     });
   }
 
@@ -194,12 +214,14 @@ export class SupervisorHost {
       this.#emit({ kind: "ready", start });
     } else if (message.type === "stopped" && this.#stopping) {
       this.#stopping.finish(false);
-    } else if (message.type === "schedules") {
+    } else if (message.type === "schedules" || message.type === "machines") {
       const request = this.#requests.get(message.id);
       if (request === undefined) return;
       this.#requests.delete(message.id);
       this.#timers.clearTimeout(request.timer);
-      request.resolve(message.reply);
+      request.resolve(message.reply as never);
+    } else if (message.type === "machine-job") {
+      for (const listener of this.#jobListeners) listener(message.job);
     }
   }
 

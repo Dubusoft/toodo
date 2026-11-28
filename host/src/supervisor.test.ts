@@ -87,6 +87,30 @@ describe("SupervisorHost", () => {
     expect(await answer).toEqual({ ok: true, jobs: [], timeZone: { name: "Asia/Seoul", label: "KST" } });
   });
 
+  test("relays a machines request beside a scheduled-jobs one, each answer to its own request, and hands on the jobs the Worker sends", async () => {
+    const { host, latest } = setup();
+    const jobs: unknown[] = [];
+    host.onJob((job) => { jobs.push(job); });
+    host.start();
+    latest().events.message({ type: "ready" });
+    const machines = host.machines({ op: "install", tool: "hc" });
+    const schedules = host.schedules({ op: "list" });
+    expect(latest().posted).toEqual([
+      { type: "machines", id: 1, request: { op: "install", tool: "hc" } },
+      { type: "schedules", id: 2, request: { op: "list" } },
+    ]);
+    const job = {
+      id: "job-1", kind: "install", tool: "hc", machine: "local", state: "running", command: "hc update", startedAt: 1, endedAt: null,
+      log: "$ hc update\n", exitCode: null, version: null, device: null,
+    } as const;
+    latest().events.message({ type: "schedules", id: 2, reply: { ok: true, jobs: [], timeZone: { name: "Asia/Seoul", label: "KST" } } });
+    latest().events.message({ type: "machines", id: 1, reply: { ok: true, job } });
+    latest().events.message({ type: "machine-job", job: { ...job, state: "succeeded", exitCode: 0 } });
+    expect(await machines).toEqual({ ok: true, job });
+    expect(await schedules).toEqual({ ok: true, jobs: [], timeZone: { name: "Asia/Seoul", label: "KST" } });
+    expect(jobs).toEqual([{ ...job, state: "succeeded", exitCode: 0 }]);
+  });
+
   test("a scheduled-jobs request fails when the Worker does not answer in time or dies first", async () => {
     const { host, timers, latest } = setup({ requestTimeoutMs: 5_000 });
     host.start();

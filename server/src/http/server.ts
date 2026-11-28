@@ -18,6 +18,7 @@ import type { AccessVerifier } from "./access.ts";
 import * as devices from "./devices.ts";
 import { DoriConfigRoutes } from "./dori-config.ts";
 import * as files from "./files.ts";
+import * as machines from "./machines.ts";
 import * as push from "./push.ts";
 import * as rpc from "./rpc.ts";
 import type { Services } from "./services.ts";
@@ -37,6 +38,10 @@ export type RouterOptions = {
   readonly schedules?: schedules.ScheduleBridge;
   /** Dori's config file, which the Settings page edits (the host); without it `/api/dori/config` is 404. */
   readonly doriConfig?: DoriConfigStore;
+  /** Settings > Machines & accounts, when the supervisor runs beside the core (the host). */
+  readonly machines?: machines.MachineBridge;
+  /** The machines jobs the supervisor sends; without it the job stream stays empty. */
+  readonly machineJobs?: machines.MachineJobFeed;
 };
 
 /** What the server tells a request about itself: its address, and that an event stream
@@ -109,6 +114,8 @@ export function createHandler(options: RouterOptions): Handler {
   const supervisorStatus = new SupervisorStatusFeed();
   const scheduleBridge = options.schedules ?? null;
   const doriConfig = options.doriConfig ? new DoriConfigRoutes(options.doriConfig) : null;
+  const machineBridge = options.machines ?? null;
+  const machineJobs = options.machineJobs ?? new machines.MachineJobFeed();
 
   // Routes behind the gate, by method and path pattern.
   const routes: Array<[string, RegExp, ApiRoute]> = [
@@ -131,6 +138,16 @@ export function createHandler(options: RouterOptions): Handler {
     }],
     ["GET", /^\/api\/supervisor\/schedules$/, () => schedules.list(scheduleBridge)],
     ["POST", /^\/api\/supervisor\/schedules$/, (request) => schedules.change(scheduleBridge, request)],
+    ["GET", /^\/api\/machines$/, () => machines.list(machineBridge)],
+    ["POST", /^\/api\/machines$/, (request) => machines.change(machineBridge, request)],
+    ["GET", /^\/api\/machines\/jobs$/, (_request, _caller, _params, connection) => {
+      connection.keepOpen();
+      return machineJobs.stream();
+    }],
+    ["GET", /^\/api\/machines\/([^/]+)\/config$/, (_request, _caller, [label]) => {
+      const decoded = segment(label!);
+      return decoded === null ? NOT_FOUND() : machines.config(machineBridge, decoded);
+    }],
     ["GET", /^\/api\/dori\/config$/, () => doriConfig?.get() ?? NOT_FOUND()],
     ["PUT", /^\/api\/dori\/config$/, async (request) => doriConfig ? doriConfig.put(await request.text()) : NOT_FOUND()],
     ["GET", /^\/api\/backups\/export$/, () => files.exportDatabase(services)],

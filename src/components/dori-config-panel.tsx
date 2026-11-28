@@ -180,19 +180,39 @@ export function DoriLanguageSettingField() {
 
 function EntryRow({ entry }: { entry: DoriConfigEntry }) {
   const m = useMessages();
+  const queryClient = useQueryClient();
+  const save = async (value: string) => {
+    const saved = await saveDoriConfig({ key: entry.key, value });
+    queryClient.setQueryData<DoriConfigView>(doriConfigKey, saved.view);
+    return savedNotice(saved, m);
+  };
+  return <ConfigEntryRow entry={entry} readOnlyNote={m.settings.hostOnly} save={save} />;
+}
+
+/**
+ * One config key with its value, editable when its access allows: `save` stores a new value ("" to
+ * unset it) and answers with the notice to show. Dori's config and a runner's runner-config.json
+ * both show their keys with it; `readOnlyNote` says where a key that is not editable is changed.
+ */
+export function ConfigEntryRow({ entry, save: store, readOnlyNote }: {
+  entry: DoriConfigEntry;
+  save: (value: string) => Promise<string>;
+  readOnlyNote: string;
+}) {
+  const m = useMessages();
   const [draft, setDraft] = useState(entry.value);
   const [base, setBase] = useState(entry.value);
-  const [notice, setNotice] = useState<DoriConfigSaved | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   // A saved or refetched value replaces the draft.
   if (entry.value !== base) {
     setBase(entry.value);
     setDraft(entry.value);
   }
-  const save = useSave(setNotice);
+  const save = useMutation({ mutationFn: store, onSuccess: setNotice });
   const editable = entry.access === "edit";
   const changed = draft !== entry.value;
   const describe = /[.)]$/.test(entry.describe) ? entry.describe : `${entry.describe}.`;
-  const description = [describe, editable ? hint(entry, m) : m.settings.hostOnly].filter(Boolean).join(" ");
+  const description = [describe, editable ? hint(entry, m) : readOnlyNote].filter(Boolean).join(" ");
   const field = { label: entry.key, description, value: draft, isReadOnly: !editable, isRequired: entry.required };
   const onChange = (value: string) => {
     setDraft(value);
@@ -215,7 +235,7 @@ function EntryRow({ entry }: { entry: DoriConfigEntry }) {
             variant="primary"
             label={m.settings.saveKey(entry.key)}
             isDisabled={save.isPending}
-            onClick={() => save.mutate({ key: entry.key, value: draft })}
+            onClick={() => save.mutate(draft)}
           >
             {m.common.save}
           </Button>
@@ -224,7 +244,7 @@ function EntryRow({ entry }: { entry: DoriConfigEntry }) {
           </Button>
         </div>
       )}
-      {notice && !changed && <p role="status" className="text-muted-foreground">{savedNotice(notice, m)}</p>}
+      {notice && !changed && <p role="status" className="text-muted-foreground">{notice}</p>}
       {save.error && <p role="alert" className="break-words text-destructive">{save.error.message}</p>}
     </li>
   );

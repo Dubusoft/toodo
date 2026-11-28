@@ -8,6 +8,7 @@ import type { Clock, Runner } from "../run.ts";
 import { sessionRuntime } from "../runtime/index.ts";
 import { procTable, resolveSession } from "../session-id.ts";
 import { checkDone, type SignalIo } from "../signals.ts";
+import { toolVersions } from "../tool-versions.ts";
 import { gitFacts } from "./lane-git.ts";
 import { checkQuery, type RunnerPolicy } from "./policy.ts";
 import type {
@@ -123,15 +124,17 @@ export const laneInspect = async (deps: QueryDeps, body: Body<"q.lane.inspect">)
 
 /**
  * `q.machine.observe`: this host's guard sample (its `panes` filled from the pane list, -1 when unreadable), pane list,
- * the guard thresholds its runner-config.json sets (`guard`, only when it sets any) and its agent profiles (`profiles`).
+ * the guard thresholds its runner-config.json sets (`guard`, only when it sets any), its agent profiles (`profiles`), and
+ * hc's and omo's versions when the query asks for `tools` (Settings > Machines & accounts).
  */
-export const observeMachine = async (deps: QueryDeps): Promise<MachineObservation> => {
+export const observeMachine = async (deps: QueryDeps, body: Body<"q.machine.observe"> = {}): Promise<MachineObservation> => {
   let panes: Pane[] | undefined;
   try { panes = await listPanes(deps.run); } catch { panes = undefined; }
   const listed = panes;
   const sample: HostSample = await sampleHost(deps.run, deps.dataPath ?? "/", async () => listed?.length ?? -1, deps.readMemInfo);
   const guard = deps.guard && Object.keys(deps.guard).length > 0 ? { guard: deps.guard } : {};
-  return { os: deps.os ?? platform(), sampledAt: deps.clock.now(), sample, panes: listed ?? [], ...guard, ...(deps.profiles ? { profiles: deps.profiles } : {}) };
+  const tools = body.tools ? { tools: await toolVersions(deps.run) } : {};
+  return { os: deps.os ?? platform(), sampledAt: deps.clock.now(), sample, panes: listed ?? [], ...guard, ...(deps.profiles ? { profiles: deps.profiles } : {}), ...tools };
 };
 
 /** Runs one checked query and resolves to its result. */
@@ -149,7 +152,7 @@ export const answerQuery = async (deps: QueryDeps, query: AnySupervisorControl):
       case "q.process": return queryProcess(deps, body as Body<"q.process">);
       case "q.stat": return queryStat(deps, body as Body<"q.stat">);
       case "q.lane.inspect": return laneInspect(deps, body as Body<"q.lane.inspect">);
-      case "q.machine.observe": return observeMachine(deps);
+      case "q.machine.observe": return observeMachine(deps, body as Body<"q.machine.observe">);
       default: throw new Error(`RUNNER_QUERY_UNSUPPORTED ${query.type}`);
     }
   })();

@@ -153,7 +153,8 @@ Layout:
     (`files.ts`), chat attachments (`attachments.ts`), Web Push routes (`push.ts`), the
     Dori status panel's latest snapshot and its stream (`supervisor-status.ts`), the
     scheduled jobs panel's requests, which the host hands to the supervisor
-    (`supervisor-schedules.ts`), and the
+    (`supervisor-schedules.ts`), Settings > Machines & accounts' requests and job stream, which
+    the host hands to and relays from the supervisor (`machines.ts`), and the
     web build. `services.ts` holds what the routes share and announces changes;
     `config.ts` reads the `TOODO_*` environment. `/mcp` and `/mcp/attachments` are served
     from `server/src/mcp/`, and `/oauth` and `/.well-known` from `server/src/oauth/` in

@@ -94,4 +94,6 @@ test("a read-only device may read, keep its notifications, and revoke itself", (
   expect(allows("POST", "/api/rpc/list%5Ftasks")).toBe(false);
   expect(allows("POST", "/api/backups/restore")).toBe(false);
   expect(allows("POST", "/api/stream-tickets")).toBe(false);
+  expect(allows("GET", "/api/machines")).toBe(true);
+  expect(allows("POST", "/api/machines")).toBe(false);
 });
