@@ -362,7 +362,7 @@ function Messages({ agent, messages }: { agent: ChatAgent; messages: readonly Ch
           <Message key={message.id} sender="assistant" avatar={<AgentAvatar agent={agent} />}>
             <ChatMessageBubble metadata={<ChatMessageMetadata timestamp={<Time at={message.at} />} />}>
               <Suspense fallback={<span className="whitespace-pre-wrap break-words">{message.body}</span>}>
-                <Markdown source={message.body} />
+                <Markdown source={message.body} className="text-inherit" />
               </Suspense>
               <Attachments attachments={message.attachments} />
               <Actions message={message} />
