@@ -178,9 +178,9 @@ export const app: Partial<Messages["app"]> = {
     discardNewQuestion: "작성 중인 지침을 버릴까요?",
   },
   machines: {
-    title: "머신",
     machine: (label) => `머신 ${label}`,
-    local: "이 서버",
+    local: "로컬",
+    server: "서버",
     states: { connected: "연결됨", stale: "응답 늦음", offline: "오프라인", lost: "끊김", revoked: "해지됨" },
     load: (load) => `부하 ${load}`,
     memoryFree: (percent) => `메모리 여유 ${percent}%`,

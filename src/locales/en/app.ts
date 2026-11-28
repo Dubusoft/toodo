@@ -180,9 +180,9 @@ export const app = {
     discardNewQuestion: "Discard the new guideline?",
   },
   machines: {
-    title: "Machines",
     machine: (label: string) => `Machine ${label}`,
-    local: "this server",
+    local: "Local",
+    server: "Server",
     states: { connected: "Connected", stale: "Slow to answer", offline: "Offline", lost: "Lost", revoked: "Revoked" },
     load: (load: string) => `load ${load}`,
     memoryFree: (percent: number) => `${percent}% memory free`,

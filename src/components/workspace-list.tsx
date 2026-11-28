@@ -1,10 +1,11 @@
-import { useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent } from "react";
+import { useRef, useState, useSyncExternalStore, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { Plus, X } from "lucide-react";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button, IconButton } from "@/components/button";
-import type { NewWorkspace, Workspace, WorkspaceId } from "@/lib/bindings";
+import { MachineTree } from "@/components/machine-tree";
+import type { NewWorkspace, TaskId, Workspace, WorkspaceId } from "@/lib/bindings";
 import { errorMessage } from "@/lib/error-messages";
 import { useMessages } from "@/lib/i18n";
 import { useNarrow } from "@/lib/narrow";
@@ -18,9 +19,12 @@ export const inputClass =
 type WorkspaceListProps = {
   selectedId: WorkspaceId | null;
   onSelect: (id: WorkspaceId) => void;
+  /** Shows a lane's task, from the machine tree. */
+  onShowTask: (id: TaskId) => void;
 };
 
-export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
+/** The workspaces, each under the machines whose lanes work in it (see `MachineTree`). */
+export function WorkspaceList({ selectedId, onSelect, onShowTask }: WorkspaceListProps) {
   const m = useMessages();
   const copy = m.app.workspace;
   const workspaces = useWorkspaces();
@@ -69,17 +73,16 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
       {workspaces.data?.length === 0 && !adding && (
         <p className="text-sm text-muted-foreground">{copy.empty}</p>
       )}
-      {workspaces.data && workspaces.data.length > 0 && (
-        <ul className="flex flex-col gap-1">
-          {workspaces.data.map((workspace) => (
-            <WorkspaceItem
-              key={workspace.id}
-              workspace={workspace}
-              selected={workspace.id === selectedId}
-              onSelect={onSelect}
-            />
-          ))}
-        </ul>
+      {workspaces.data && (
+        <MachineTree
+          workspaces={workspaces.data}
+          onShowTask={onShowTask}
+          renderWorkspace={(workspace, lanes) => (
+            <WorkspaceItem workspace={workspace} selected={workspace.id === selectedId} onSelect={onSelect}>
+              {lanes}
+            </WorkspaceItem>
+          )}
+        />
       )}
       {adding && (
         <NewWorkspaceDialog
@@ -98,10 +101,12 @@ type WorkspaceItemProps = {
   workspace: Workspace;
   selected: boolean;
   onSelect: (id: WorkspaceId) => void;
+  /** The workspace's lanes, shown under it. */
+  children?: ReactNode;
 };
 
 /** A workspace in the list; removing it asks for confirmation first. */
-function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
+function WorkspaceItem({ workspace, selected, onSelect, children }: WorkspaceItemProps) {
   const m = useMessages();
   const copy = m.app.workspace;
   const deleteWorkspace = useDeleteWorkspace();
@@ -177,6 +182,7 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           </div>
         </div>
       )}
+      {children}
     </li>
   );
 }

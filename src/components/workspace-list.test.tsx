@@ -10,9 +10,13 @@ let workspaces: Workspace[] = [];
 vi.mock("@/lib/queries", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/queries")>()),
   useWorkspaces: () => query(workspaces),
+  useTasks: () => query([]),
   useCreateWorkspace: () => mutation,
   useDeleteWorkspace: () => mutation,
 }));
+
+// Dori never reported, so every workspace is under the server.
+vi.mock("@/web/supervisor-status", () => ({ useSupervisorStatus: () => ({ snapshot: null, error: null }) }));
 
 beforeAll(() => {
   // jsdom has no modal dialogs; Astryx Dialog opens its <dialog> with showModal.
@@ -31,7 +35,7 @@ beforeEach(() => {
 
 /** Renders the list and opens the new workspace dialog. */
 function openNewWorkspace() {
-  render(<WorkspaceList selectedId={null} onSelect={() => {}} />);
+  render(<WorkspaceList selectedId={null} onSelect={() => {}} onShowTask={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "Add workspace" }));
   return screen.getByRole("dialog", { name: "New workspace" });
 }
@@ -84,7 +88,7 @@ describe("Workspace list", () => {
       { id: 1, name: "toodo", description: null, repository: "dev-bokdong/toodo", archivedAt: null },
       { id: 2, name: "ops", description: "Server chores", repository: null, archivedAt: null },
     ];
-    render(<WorkspaceList selectedId={1} onSelect={() => {}} />);
+    render(<WorkspaceList selectedId={1} onSelect={() => {}} onShowTask={() => {}} />);
 
     const toodo = screen.getByRole("button", { name: /^toodo/ });
     expect(toodo).toHaveAttribute("aria-current", "true");
