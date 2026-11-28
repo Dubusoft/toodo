@@ -43,15 +43,24 @@ export function supervisorNotice(
   return t.notResponding(supervisor.state, next === null ? null : Math.max(0, Math.ceil((next - now) / 60_000)));
 }
 
-/** The notice for the supervisor's state, followed while a Dori panel is `active`. */
-export function useSupervisorNotice(active: boolean): string | null {
-  const t = useMessages().settings.supervisorPanel;
-  const { data } = useQuery({
+/** Whether the supervisor is known not to run or start: the Dori panels stop waiting for it. */
+export function supervisorDown(supervisor: HostSupervisor | undefined): supervisor is HostSupervisor {
+  return supervisor !== undefined && !COMING.has(supervisor.state);
+}
+
+/** The host's supervisor state, followed while a Dori panel is `active`; undefined until known. */
+export function useHostSupervisor(active: boolean): HostSupervisor | undefined {
+  return useQuery({
     queryKey: ["host-supervisor"],
     queryFn: hostSupervisor,
     enabled: active,
     retry: false,
     refetchInterval: active ? REFRESH_MS : false,
-  });
-  return supervisorNotice(data, Date.now(), t);
+  }).data;
+}
+
+/** The notice for the supervisor's state, followed while a Dori panel is `active`. */
+export function useSupervisorNotice(active: boolean): string | null {
+  const t = useMessages().settings.supervisorPanel;
+  return supervisorNotice(useHostSupervisor(active), Date.now(), t);
 }

@@ -5,6 +5,7 @@ import { STALE_AFTER_MS, age, useNow } from "@/components/supervisor-status-pane
 import type { DoriConfigEntry } from "@/lib/dori-config";
 import { fill, useMessages } from "@/lib/i18n";
 import type { SupervisorStatusSnapshot } from "@/lib/supervisor-status";
+import { supervisorDown, useHostSupervisor } from "@/web/host-status";
 import { useSupervisorStatus } from "@/web/supervisor-status";
 
 /** How long the summary says it is checking before it says Dori has not reported. */
@@ -26,12 +27,24 @@ function StatusSummary({ active }: { active: boolean }) {
   const t = m.settings.doriPanel;
   const units = m.settings.supervisorPanel;
   const { snapshot } = useSupervisorStatus(active);
+  const supervisor = useHostSupervisor(active);
   const now = useNow();
   const [since, setSince] = useState(() => Date.now());
   useEffect(() => {
     if (active) setSince(Date.now());
   }, [active]);
 
+  // The host says Dori is not running: say so plainly; Advanced has the state and what to do.
+  if (supervisorDown(supervisor)) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <p role="status" className="font-medium text-destructive">
+          {supervisor.state === "absent" ? t.notRunning : supervisor.state === "off" ? t.off : t.unresponsive}
+        </p>
+        <p className="text-muted-foreground">{t.rawHint}</p>
+      </div>
+    );
+  }
   if (snapshot === null) {
     const silent = now - since > FIRST_REPORT_WAIT_MS;
     return (

@@ -54,7 +54,7 @@ function renderPanel(language = "ko-KR") {
 }
 
 describe("SchedulesPanel", () => {
-  it("says the supervisor is not responding instead of loading while the host restarts it", async () => {
+  it("stops loading and leaves the supervisor's refusal out while the host restarts it", async () => {
     localStorage.setItem(TOKEN_KEY, "secret");
     vi.stubGlobal("fetch", async (path: string) =>
       path === "/api/host"
@@ -62,7 +62,8 @@ describe("SchedulesPanel", () => {
         : Response.json({ ok: false, error: "the supervisor is backoff" }, { status: 503 }),
     );
     renderPanel("en-US");
-    expect(await screen.findByRole("alert")).toHaveTextContent(/^The Dori supervisor is not responding \(backoff; the host tries again in 1 min\)/);
+    // The Dori section's status says why; the jobs only say they wait for Dori.
+    expect(await screen.findByText("The scheduled jobs show once Dori is running.")).toBeInTheDocument();
     expect(screen.queryByText("Loading the scheduled jobs...")).not.toBeInTheDocument();
     expect(screen.queryByText("the supervisor is backoff")).not.toBeInTheDocument();
   });
