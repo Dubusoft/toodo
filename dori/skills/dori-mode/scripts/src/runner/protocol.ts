@@ -233,6 +233,9 @@ export type CommandResults = {
    * most 4 KiB). The same run also goes out as a `job.result` event.
    */
   readonly "job.run": { readonly exitCode: number; readonly timedOut: boolean; readonly output: string; readonly err: string };
+  /** A tool job started (or, for a replayed `job`, already running) on the runner's host: the command line it runs. */
+  readonly "tool.job": { readonly command: string };
+  readonly "tool.cancel": Record<never, never>;
 };
 /** The commands a supervisor awaits a structured result for. */
 export type DurableCommandType = keyof CommandResults;
@@ -279,6 +282,20 @@ export type MachineObservation = {
   readonly profiles?: readonly string[];
   /** hc's and omo's versions on the host (`null`: not installed), when the query asked for `tools`; absent from an older runner. */
   readonly tools?: { readonly hc: string | null; readonly omo: string | null };
+  /** With `tools`: `true` from a runner that installs, updates and signs in hc and omo (`tool.job`); absent from an older one. */
+  readonly toolJobs?: true;
+};
+
+/**
+ * A tool job as its runner holds it (`q.tool.job`): `log` is its masked output so far, `device` the device code a
+ * sign-in waits on (read before masking), `version` the tool's once it ended.
+ */
+export type ToolJobView = {
+  readonly state: "running" | "succeeded" | "failed" | "cancelled";
+  readonly log: string;
+  readonly device: { readonly url: string; readonly userCode: string; readonly matchingCode: string | null } | null;
+  readonly exitCode: number | null;
+  readonly version: string | null;
 };
 
 /** The `result` of an `ok` `q.result`, per query type. */
@@ -291,6 +308,7 @@ export type QueryResults = {
   readonly "q.machine.observe": MachineObservation;
   /** `files` is absent for a lane without a file run (a legacy lane). */
   readonly "q.lane.files": { readonly files?: LaneOutputFiles };
+  readonly "q.tool.job": ToolJobView;
 };
 
 export type RunnerEventType = keyof RunnerEventBodies;
@@ -512,6 +530,14 @@ const COMMAND_SCHEMAS = {
     opKey: req("string"), name: req("string"), command: req("string[]"), cwd: req("string"), timeoutSec: req("int"), heavy: req("bool"),
   }),
   "guard.kill": cmd({ keys: req("string[]") }),
+  /**
+   * Installs or updates hc or omo, or signs omo in, on the runner's host (Settings > Machines & accounts), as job `job`;
+   * its state and log are read with `q.tool.job`. A runner reports it can with `q.machine.observe` `toolJobs`, so no
+   * proto bump: an older runner refuses it `RUNNER_CMD_REJECTED unknown-type`.
+   */
+  "tool.job": cmd({ job: req("string"), tool: req({ enum: ["hc", "omo"] }), kind: req({ enum: ["install", "login"] }), replace: opt("bool") }),
+  /** Stops the runner's running tool job `job`. */
+  "tool.cancel": cmd({ job: req("string") }),
   "runner.rotate": cmd({}),
 } satisfies Readonly<Record<string, Shape>>;
 
@@ -584,6 +610,8 @@ const QUERY_SCHEMAS = {
   "q.machine.observe": query({ tools: opt("bool") }),
   /** Since proto 5: the runner's current DORI_LANE_OUT snapshot of lane `key`. */
   "q.lane.files": query({ key: req("string") }),
+  /** The state and log so far of the runner's tool job `job` (`tool.job`). */
+  "q.tool.job": query({ job: req("string") }),
 } satisfies Readonly<Record<string, Shape>>;
 
 const SUPERVISOR_CONTROL_SCHEMAS = {

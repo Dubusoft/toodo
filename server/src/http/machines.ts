@@ -47,9 +47,13 @@ export function parseMachineRequest(value: unknown): MachineRequest | null {
         ? { op, machine: value.machine, key: value.key, value: value.value }
         : null;
     case "install":
-      return (MACHINE_TOOLS as readonly unknown[]).includes(value.tool) ? { op, tool: value.tool as MachineTool } : null;
+      return isName(value.machine) && (MACHINE_TOOLS as readonly unknown[]).includes(value.tool)
+        ? { op, machine: value.machine, tool: value.tool as MachineTool }
+        : null;
     case "login":
-      return value.replace === undefined || typeof value.replace === "boolean" ? { op, replace: value.replace === true } : null;
+      return isName(value.machine) && (value.replace === undefined || typeof value.replace === "boolean")
+        ? { op, machine: value.machine, replace: value.replace === true }
+        : null;
     case "cancel":
       return isName(value.job) ? { op, job: value.job } : null;
     case "precheck":

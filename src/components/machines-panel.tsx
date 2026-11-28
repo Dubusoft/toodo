@@ -22,7 +22,9 @@ type Texts = Messages["settings"]["machines"];
 const STATE_VARIANTS = { connected: "success", stale: "warning", offline: "neutral", lost: "error", revoked: "error" } as const;
 const JOB_VARIANTS = { running: "info", succeeded: "success", failed: "error", cancelled: "neutral" } as const;
 
-const machineName = (row: MachineRow, t: Texts) => (row.label === HOST_MACHINE ? t.host : row.label);
+const machineName = (label: string, t: Texts) => (label === HOST_MACHINE ? t.host : label);
+/** The machine inside a sentence: "this server" or the runner's label. */
+const machineHere = (label: string, t: Texts) => (label === HOST_MACHINE ? t.here : label);
 
 function ToolVersions({ row, t }: { row: MachineRow; t: Texts }) {
   if (row.tools === null) return row.toolsError ? <p className="break-words text-muted-foreground">{t.toolsUnknown(row.toolsError)}</p> : null;
@@ -38,8 +40,8 @@ function ToolVersions({ row, t }: { row: MachineRow; t: Texts }) {
   );
 }
 
-/** Install or update one tool on the host, after a confirm step: the job runs a command there. */
-function InstallButton({ tool, installed, busy, t }: { tool: MachineTool; installed: boolean; busy: boolean; t: Texts }) {
+/** Install or update one tool on a machine, after a confirm step: the job runs a command there. */
+function InstallButton({ machine, tool, installed, busy, t }: { machine: string; tool: MachineTool; installed: boolean; busy: boolean; t: Texts }) {
   const [confirming, setConfirming] = useState(false);
   const action = useMachineJobAction();
   const label = installed ? t.update(tool) : t.install(tool);
@@ -53,7 +55,7 @@ function InstallButton({ tool, installed, busy, t }: { tool: MachineTool; instal
       className="flex basis-full flex-col gap-1 rounded-md border p-2"
       onKeyDown={escapeCloses(() => setConfirming(false), action.isPending)}
     >
-      <p>{installed ? t.confirmUpdate(tool) : t.confirmInstall(tool)}</p>
+      <p>{installed ? t.confirmUpdate(tool, machineHere(machine, t)) : t.confirmInstall(tool, machineHere(machine, t))}</p>
       <div className="flex gap-1">
         <Button
           changesData
@@ -61,7 +63,7 @@ function InstallButton({ tool, installed, busy, t }: { tool: MachineTool; instal
           variant="primary"
           label={t.run}
           isDisabled={action.isPending}
-          onClick={() => action.mutate({ op: "install", tool }, { onSuccess: () => setConfirming(false) })}
+          onClick={() => action.mutate({ op: "install", machine, tool }, { onSuccess: () => setConfirming(false) })}
         />
         <Button size="sm" variant="ghost" label={t.back} autoFocus onClick={() => setConfirming(false)} />
       </div>
@@ -70,7 +72,7 @@ function InstallButton({ tool, installed, busy, t }: { tool: MachineTool; instal
   );
 }
 
-function SignInButton({ busy, t }: { busy: boolean; t: Texts }) {
+function SignInButton({ machine, busy, t }: { machine: string; busy: boolean; t: Texts }) {
   const [replace, setReplace] = useState(false);
   const action = useMachineJobAction();
   return (
@@ -82,9 +84,9 @@ function SignInButton({ busy, t }: { busy: boolean; t: Texts }) {
           variant="secondary"
           label={t.signIn}
           isDisabled={busy || action.isPending}
-          onClick={() => action.mutate({ op: "login", replace })}
+          onClick={() => action.mutate({ op: "login", machine, replace })}
         />
-        <CheckboxInput label={t.replaceDevice} value={replace} onChange={setReplace} />
+        <CheckboxInput label={t.replaceDevice(machineHere(machine, t))} value={replace} onChange={setReplace} />
       </div>
       {action.error && <p role="alert" className="break-words text-destructive">{action.error.message}</p>}
     </div>
@@ -129,25 +131,26 @@ function RunnerConfig({ machine, t }: { machine: string; t: Texts }) {
 function MachineCard({ row, jobs, t }: { row: MachineRow; jobs: readonly MachineJob[]; t: Texts }) {
   const [configOpen, setConfigOpen] = useState(false);
   const host = row.label === HOST_MACHINE;
-  const busy = (tool: MachineTool) => jobs.some((job) => job.tool === tool && job.state === "running");
+  const busy = (tool: MachineTool) => jobs.some((job) => job.machine === row.label && job.tool === tool && job.state === "running");
   const meta = [row.os, row.version === null ? null : t.runnerVersion(row.version)].filter(Boolean).join(" \u00b7 ");
   return (
-    <li aria-label={t.machine(machineName(row, t))} className="flex flex-col gap-2 rounded-lg border p-3">
+    <li aria-label={t.machine(machineName(row.label, t))} className="flex flex-col gap-2 rounded-lg border p-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-medium">{machineName(row, t)}</span>
+        <span className="font-medium">{machineName(row.label, t)}</span>
         {host && <span className="font-mono text-xs text-muted-foreground">{row.label}</span>}
         <Badge variant={STATE_VARIANTS[row.state]} label={t.states[row.state]} />
       </div>
       {meta && <p className="text-muted-foreground">{meta}</p>}
       <ToolVersions row={row} t={t} />
-      {host && row.tools && (
+      {row.tools && row.jobsUnavailable === null && (
         <div className="flex flex-wrap gap-2">
           {MACHINE_TOOLS.map((tool) => (
-            <InstallButton key={tool} tool={tool} installed={row.tools?.[tool] != null} busy={busy(tool)} t={t} />
+            <InstallButton key={tool} machine={row.label} tool={tool} installed={row.tools?.[tool] != null} busy={busy(tool)} t={t} />
           ))}
-          {row.tools.omo !== null && <SignInButton busy={busy("omo")} t={t} />}
+          {row.tools.omo !== null && <SignInButton machine={row.label} busy={busy("omo")} t={t} />}
         </div>
       )}
+      {row.tools && row.jobsUnavailable !== null && <p className="text-muted-foreground">{t.jobsUnavailable[row.jobsUnavailable]}</p>}
       {row.config ? (
         <details onToggle={(event) => setConfigOpen(event.currentTarget.open)}>
           <summary className="cursor-pointer text-muted-foreground">{t.config}</summary>
@@ -197,6 +200,7 @@ function JobCard({ job, t }: { job: MachineJob; t: Texts }) {
     <li aria-label={title} data-state={job.state} className="flex flex-col gap-2 rounded-lg border p-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium">{title}</span>
+        {job.kind !== "runner" && <span className="text-muted-foreground">{t.jobOn(machineHere(job.machine, t))}</span>}
         <Badge variant={JOB_VARIANTS[job.state]} label={t.jobStates[job.state]} />
         {job.exitCode !== null && job.state === "failed" && <span className="text-muted-foreground">{t.exitCode(job.exitCode)}</span>}
         {job.state === "running" && (
@@ -233,8 +237,8 @@ function JobCard({ job, t }: { job: MachineJob; t: Texts }) {
 
 /**
  * Settings > Machines & accounts: the server host and every runner Dori knows, with their state
- * and hc's and omo's versions, each runner's settings, on the host the jobs that install or
- * update hc and omo and sign omo in, their logs streamed while they run, and adding another
+ * and hc's and omo's versions, each runner's settings, the jobs that install or update hc and
+ * omo and sign omo in on the host or a runner, their logs streamed while they run, and adding another
  * computer as a runner (AddMachine). On a server without Dori
  * it is the Set up Dori entry (`setup`). It asks the server only while shown (`active`).
  */

@@ -1,6 +1,6 @@
 // Settings > Machines & accounts: the server host and the runner machines Dori knows, each
-// runner's runner-config.json, the jobs that install or update hc and omo on the host or
-// sign omo in, and adding another computer as a runner: over ssh from the host, or by a
+// runner's runner-config.json, the jobs that install or update hc and omo on the host or a
+// runner or sign omo in there, and adding another computer as a runner: over ssh from the host, or by a
 // one-line command pasted on the new computer (`/runner-enroll/...`). The web app calls the core (`GET /api/machines`, `GET
 // /api/machines/<label>/config`, `POST /api/machines`, and the job stream `GET
 // /api/machines/jobs`); the core hands each request to the host and the host to the supervisor
@@ -21,6 +21,14 @@ export const HOST_MACHINE = "local";
 /** A tool's version on a machine; `null` when it is not installed there. */
 export type MachineTools = { readonly hc: string | null; readonly omo: string | null };
 
+/**
+ * Why hc and omo cannot be installed, updated or signed in on a machine from the web app:
+ * its runner predates the tool jobs (`dori update` updates it), or its OS has no installer
+ * the jobs can run (Windows).
+ */
+export const MACHINE_JOBS_UNAVAILABLE = ["runner-outdated", "unsupported-os"] as const;
+export type MachineJobsUnavailable = (typeof MACHINE_JOBS_UNAVAILABLE)[number];
+
 /** One machine as the section lists it: the server host (`local`) first, then every enrolled runner. */
 export type MachineRow = {
   readonly label: string;
@@ -31,6 +39,8 @@ export type MachineRow = {
   /** hc and omo on that machine; `null` when it could not be asked, with `toolsError` saying why. */
   readonly tools: MachineTools | null;
   readonly toolsError: string | null;
+  /** Why its tools cannot be installed or updated from here; `null` when they can (once `tools` is known). */
+  readonly jobsUnavailable: MachineJobsUnavailable | null;
   /** Whether the host can read its runner-config.json: the host's own, or a runner it reaches over ssh. */
   readonly config: boolean;
 };
@@ -116,14 +126,14 @@ export function enrollCommands(server: string, enrollment: Enrollment): Record<E
   };
 }
 
-/** One install, update, sign-in, or runner install run by the supervisor on the host. */
+/** One install, update, sign-in, or runner install, run by the supervisor on the host or through a runner on its machine. */
 export type MachineJob = {
   readonly id: string;
   /** `install` installs a missing tool or updates an installed one; `login` signs omo in; `runner` adds a computer over ssh. */
   readonly kind: "install" | "login" | "runner";
   /** The tool an install or sign-in is for; `null` for a runner install. */
   readonly tool: MachineTool | null;
-  /** Where it runs: the host, or the computer a runner install adds. */
+  /** Where it runs: the host, a runner's machine, or the computer a runner install adds. */
   readonly machine: string;
   readonly state: MachineJobState;
   /** The command line it runs, for the log's first line. */
@@ -166,9 +176,10 @@ export type MachineRequest =
   | { readonly op: "config"; readonly machine: string }
   /** One key's new value as text, "" to unset it. */
   | { readonly op: "config-set"; readonly machine: string; readonly key: string; readonly value: string }
-  | { readonly op: "install"; readonly tool: MachineTool }
-  /** `replace`: replace this computer's earlier OmO device without asking. */
-  | { readonly op: "login"; readonly replace: boolean }
+  /** `machine`: the host (`HOST_MACHINE`) or a runner's label. */
+  | { readonly op: "install"; readonly machine: string; readonly tool: MachineTool }
+  /** `replace`: replace that computer's earlier OmO device without asking. */
+  | { readonly op: "login"; readonly machine: string; readonly replace: boolean }
   | { readonly op: "cancel"; readonly job: string }
   /** `label` "" derives one from the host name. */
   | { readonly op: "precheck"; readonly target: string; readonly label: string }

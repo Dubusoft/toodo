@@ -35,6 +35,7 @@ import { runnerVersion } from "./version.ts";
 import { enrollOverStdio, enrollRunner, RunnerAuth } from "./auth.ts";
 import { GUARD_SAMPLE_MS, RunnerGuard } from "./guard.ts";
 import { jobRunEffect, waitCheckEffect } from "./jobs.ts";
+import { RunnerToolJobs } from "./tool-jobs.ts";
 import { sessionRuntime } from "../runtime/index.ts";
 import { spawnHcEvents, watchHcEvents } from "../runtime/hc-events.ts";
 import { selectPlatform } from "./platform.ts";
@@ -79,8 +80,14 @@ export const runnerEffects = (deps: {
   readonly lanes: RunnerLanes; readonly guard: Pick<RunnerGuard, "killLanes">; readonly run: Runner;
   /** Where wait.result and job.result go; a caller that never receives those commands may omit it. */
   readonly publish?: ConstructorParameters<typeof RunnerLanes>[0]["publish"];
+  /** Runs tool.job and tool.cancel; a caller that never receives those commands may omit it. */
+  readonly toolJobs?: RunnerToolJobs;
 }): DispatchDeps["effects"] => {
   const effectPublish: NonNullable<typeof deps.publish> = deps.publish ?? (() => { throw new Error("runner publish is not wired"); });
+  const toolJobs = (): RunnerToolJobs => {
+    if (!deps.toolJobs) throw new Error("runner tool jobs are not wired");
+    return deps.toolJobs;
+  };
   return {
   "guard.kill": async (command) => {
     const killed = await deps.guard.killLanes(command.body.keys);
@@ -105,6 +112,8 @@ export const runnerEffects = (deps: {
   "lane.observe": async (command) => deps.lanes.observe(command.body.key),
   "wait.check": waitCheckEffect({ run: deps.run, publish: effectPublish }),
   "job.run": jobRunEffect({ run: deps.run, publish: effectPublish }),
+  "tool.job": async (command) => toolJobs().start(command.body),
+  "tool.cancel": async (command) => toolJobs().cancel(command.body.job),
   };
 };
 
@@ -222,17 +231,18 @@ const serveMain = async (values: { label?: string; enroll?: boolean; "enroll-onl
       kill: { clock: realClock, alive: platform.pidAlive, signal: platform.signal },
       publish: (type, body) => { client?.publish(type, body); },
     });
+    const toolJobs = new RunnerToolJobs({ env: process.env, home: homedir() });
     const dispatch = commandDispatcher({
       state, policy, realpath: realpathSync, runnerDir, log,
       publish: (body) => { client?.publish("cmd.result", body); },
       effects: runnerEffects({
-        lanes: runnerLanes, guard, run, publish,
+        lanes: runnerLanes, guard, run, publish, toolJobs,
       }),
     });
     // Read-only q.* control frames: answered on this host, never queued or recorded.
     const onQuery = queryDispatcher({
       files: (key) => runnerLanes.reportFiles(key),
-      run, clock: realClock, policy, log, dataPath, os: process.platform,
+      run, clock: realClock, policy, log, dataPath, os: process.platform, toolJobs,
       lane: (key) => { const r = runnerLanes.records()[key]; return r ? { pane: r.pane, cwd: r.cwd } : undefined; },
       currentPane: async (key, panes) => { const r = runnerLanes.records()[key]; return r ? runnerLanes.currentPane(r, panes) : undefined; },
       reply: (body) => { client?.control("q.result", body); },

@@ -63,7 +63,7 @@ export const RUNNER_CONFIG_KEYS: readonly KeySpec[] = [
   spec("agents", "json", "Profile name -> argv template; only these profiles may be started", { required: true }),
   spec("allowedRoots", "list", "Directories under which every command cwd must resolve; absent: temp dir, and home only without reposRoot/worktreeRoot"),
   spec("sandbox", "enum", "Whether every lane must run sandboxed", { values: ["required", "optional"] }),
-  spec("jobs", "enum", "deny refuses job.run, wait.check, lane.git and done inspections", { values: ["allow", "deny"] }),
+  spec("jobs", "enum", "deny refuses job.run, wait.check, lane.git, tool jobs and done inspections", { values: ["allow", "deny"] }),
   spec("guard", "json", "Guard thresholds for this host"),
   spec("heavyKill", "list", "Command-line patterns killed under critical memory pressure"),
   spec("sandboxCheck", "list", "Argv run before every sandboxed lane.start; non-zero refuses it"),

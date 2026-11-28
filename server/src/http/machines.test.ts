@@ -38,16 +38,16 @@ describe("machines", () => {
 
     expect(await server.send("GET", "/api/machines", WEB, undefined)).toEqual({ status: 200, body: { ok: true, machines: [], jobs: [] } });
     expect((await server.send("GET", "/api/machines/mac-mini/config", WEB, undefined)).status).toBe(200);
-    expect(await server.send("POST", "/api/machines", WEB, { op: "install", tool: "hc" })).toEqual({ status: 200, body: { ok: true, job } });
+    expect(await server.send("POST", "/api/machines", WEB, { op: "install", machine: "local", tool: "hc" })).toEqual({ status: 200, body: { ok: true, job } });
     const refused = await server.send("POST", "/api/machines", WEB, { op: "config-set", machine: "local", key: "agents", value: "{}" });
     expect(refused).toEqual({ status: 400, body: { ok: false, error: "agents is changed only on that machine (dori runner setup)" } });
-    expect((await server.send("POST", "/api/machines", WEB, { op: "login" })).status).toBe(200);
+    expect((await server.send("POST", "/api/machines", WEB, { op: "login", machine: "mac-mini" })).status).toBe(200);
     expect(seen).toEqual([
       { op: "list" },
       { op: "config", machine: "mac-mini" },
-      { op: "install", tool: "hc" },
+      { op: "install", machine: "local", tool: "hc" },
       { op: "config-set", machine: "local", key: "agents", value: "{}" },
-      { op: "login", replace: false },
+      { op: "login", machine: "mac-mini", replace: false },
     ]);
   });
 
@@ -108,7 +108,7 @@ describe("machines", () => {
   test("answers 503 without the supervisor, or when it cannot answer", async () => {
     const without = await start();
     expect((await without.send("GET", "/api/machines", WEB, undefined)).status).toBe(503);
-    expect((await without.send("POST", "/api/machines", WEB, { op: "install", tool: "omo" })).status).toBe(503);
+    expect((await without.send("POST", "/api/machines", WEB, { op: "install", machine: "local", tool: "omo" })).status).toBe(503);
     const down = await start({ machines: async () => { throw new Error("the supervisor is backoff"); } });
     expect(await down.send("GET", "/api/machines", WEB, undefined)).toEqual({ status: 503, body: { ok: false, error: "the supervisor is backoff" } });
   });

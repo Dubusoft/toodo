@@ -93,10 +93,10 @@ describe("SupervisorHost", () => {
     host.onJob((job) => { jobs.push(job); });
     host.start();
     latest().events.message({ type: "ready" });
-    const machines = host.machines({ op: "install", tool: "hc" });
+    const machines = host.machines({ op: "install", machine: "local", tool: "hc" });
     const schedules = host.schedules({ op: "list" });
     expect(latest().posted).toEqual([
-      { type: "machines", id: 1, request: { op: "install", tool: "hc" } },
+      { type: "machines", id: 1, request: { op: "install", machine: "local", tool: "hc" } },
       { type: "schedules", id: 2, request: { op: "list" } },
     ]);
     const job = {

@@ -8,11 +8,12 @@ import type { Enrollment, MachineJob, MachineRequest, MachineRow, RunnerPrecheck
 const TOKEN_KEY = "toodo-server-token";
 
 const host: MachineRow = {
-  label: "local", state: "connected", version: "137aa4c", os: "linux", tools: { hc: "0.1.22", omo: null }, toolsError: null, config: true,
+  label: "local", state: "connected", version: "137aa4c", os: "linux", tools: { hc: "0.1.22", omo: null }, toolsError: null, jobsUnavailable: null,
+  config: true,
 };
 const mini: MachineRow = {
   label: "mac-mini", state: "connected", version: "1e37e35", os: "darwin", tools: null,
-  toolsError: "the runner does not report tool versions yet; update it (dori update)", config: false,
+  toolsError: "the runner does not report tool versions yet; update it (dori update)", jobsUnavailable: null, config: false,
 };
 const login: MachineJob = {
   id: "job-1", kind: "login", tool: "omo", machine: "local", state: "running", command: "omo login --no-browser", startedAt: 1, endedAt: null,
@@ -83,7 +84,24 @@ describe("MachinesPanel", () => {
     expect(posted).toEqual([]);
     const confirm = within(server).getByRole("alertdialog", { name: "Update hc" });
     fireEvent.click(within(confirm).getByRole("button", { name: "Run" }));
-    await vi.waitFor(() => expect(posted).toEqual([{ op: "install", tool: "hc" }]));
+    await vi.waitFor(() => expect(posted).toEqual([{ op: "install", machine: "local", tool: "hc" }]));
+  });
+
+  it("updates hc on a runner that runs tool jobs, and says why an outdated runner cannot", async () => {
+    const studio: MachineRow = { ...mini, label: "studio", tools: { hc: "0.1.20", omo: "5.1.80" }, toolsError: null, jobsUnavailable: "runner-outdated" };
+    const posted = serve([host, { ...mini, tools: { hc: "0.1.22", omo: "5.1.84" }, toolsError: null }, studio]);
+    renderPanel();
+
+    const outdated = await screen.findByRole("listitem", { name: "Machine studio" });
+    expect(within(outdated).getByText(/needs a newer runner/)).toBeInTheDocument();
+    expect(within(outdated).queryByRole("button", { name: "Update hc" })).not.toBeInTheDocument();
+    const runner = screen.getByRole("listitem", { name: "Machine mac-mini" });
+    expect(within(runner).getByRole("checkbox", { name: "Replace mac-mini's earlier OmO device" })).toBeInTheDocument();
+    fireEvent.click(within(runner).getByRole("button", { name: "Update hc" }));
+    const confirm = within(runner).getByRole("alertdialog", { name: "Update hc" });
+    expect(within(confirm).getByText(/Update hc on mac-mini to its newest release/)).toBeInTheDocument();
+    fireEvent.click(within(confirm).getByRole("button", { name: "Run" }));
+    await vi.waitFor(() => expect(posted).toEqual([{ op: "install", machine: "mac-mini", tool: "hc" }]));
   });
 
   it("shows a running sign-in's code, matching code and sign-in page, and its log", async () => {
