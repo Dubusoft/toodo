@@ -2,6 +2,7 @@
  * Devices of `toodo-server`: each browser signs in once with the shared web token and
  * then keeps a token of its own, which can be revoked without touching other devices.
  */
+import { en, type Messages } from "@/locales/en";
 import { activeServer } from "@/web/server";
 import { apiRequest, authorization, failureMessage } from "@/web/session";
 
@@ -30,11 +31,11 @@ export interface DeviceAccess {
 export const DEFAULT_ACCESS: DeviceAccess = { scope: "full", expiresInDays: 90 };
 
 /** The lifetimes the web app offers, the server's default first. */
-export const LIFETIMES: { label: string; days: number | null }[] = [
-  { label: "90 days", days: 90 },
-  { label: "30 days", days: 30 },
-  { label: "1 year", days: 365 },
-  { label: "Never expires", days: null },
+export const LIFETIMES: { label: keyof Messages["settings"]["serverAccess"]["lifetimes"]; days: number | null }[] = [
+  { label: "days90", days: 90 },
+  { label: "days30", days: 30 },
+  { label: "year", days: 365 },
+  { label: "never", days: null },
 ];
 
 function registration(label: string, access: DeviceAccess): string {
@@ -43,7 +44,7 @@ function registration(label: string, access: DeviceAccess): string {
 
 export class TokenRejected extends Error {
   constructor() {
-    super("The server did not accept this token.");
+    super(en.settings.serverAccess.tokenRejected);
   }
 }
 
@@ -95,14 +96,15 @@ export async function revokeDevice(id: number): Promise<Device> {
 }
 
 /** A name for this browser to start from, e.g. "Chrome on Android". */
-export function guessDeviceLabel(userAgent: string): string {
+export function guessDeviceLabel(userAgent: string, m: Messages = en): string {
+  const t = m.settings.devicesPanel;
   const browser =
     [
       ["Edg/", "Edge"],
       ["Firefox/", "Firefox"],
       ["Chrome/", "Chrome"],
       ["Safari/", "Safari"],
-    ].find(([marker]) => userAgent.includes(marker))?.[1] ?? "Browser";
+    ].find(([marker]) => userAgent.includes(marker))?.[1] ?? t.browser;
   const system = [
     ["Android", "Android"],
     ["iPhone", "iOS"],
@@ -111,5 +113,5 @@ export function guessDeviceLabel(userAgent: string): string {
     ["Mac OS", "macOS"],
     ["Linux", "Linux"],
   ].find(([marker]) => userAgent.includes(marker))?.[1];
-  return system ? `${browser} on ${system}` : browser;
+  return system ? t.browserOn(browser, system) : browser;
 }

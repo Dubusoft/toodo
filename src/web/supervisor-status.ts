@@ -5,6 +5,8 @@
  * the stream is open only while `active`. A dropped stream reconnects after a growing delay.
  */
 import { useEffect, useState } from "react";
+import { useMessages } from "@/lib/i18n";
+import type { Messages } from "@/locales/en";
 import { SUPERVISOR_STATUS_EVENT, type SupervisorStatusSnapshot } from "@/lib/supervisor-status";
 import { serverFetch } from "@/web/connection";
 import { parseServerSentEvents } from "@/web/event";
@@ -20,17 +22,21 @@ export type SupervisorStatusState = {
   error: string | null;
 };
 
+class StatusStreamError extends Error {
+  constructor(readonly display: (m: Messages) => string) { super(); }
+}
+
 async function follow(signal: AbortSignal, onSnapshot: (snapshot: SupervisorStatusSnapshot) => void): Promise<void> {
   const signedIn = credentials();
-  if (signedIn === null) throw new Error("No access token for the Toodo server.");
+  if (signedIn === null) throw new StatusStreamError((m) => m.settings.schedules.noToken);
   const response = await serverFetch("/api/supervisor/status", { headers: signedIn, signal });
   if (await rejectedByServer(response)) forgetToken();
-  if (!response.ok || response.body === null) throw new Error(`The status stream failed: HTTP ${response.status}`);
+  if (!response.ok || response.body === null) throw new StatusStreamError((m) => m.settings.supervisorPanel.streamFailed(response.status));
   const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";
   for (;;) {
     const { value, done } = await reader.read();
-    if (done) throw new Error("The status stream ended.");
+    if (done) throw new StatusStreamError((m) => m.settings.supervisorPanel.streamEnded);
     const parsed = parseServerSentEvents(buffer + value);
     buffer = parsed.rest;
     for (const event of parsed.events) {
@@ -40,7 +46,8 @@ async function follow(signal: AbortSignal, onSnapshot: (snapshot: SupervisorStat
 }
 
 export function useSupervisorStatus(active: boolean): SupervisorStatusState {
-  const [state, setState] = useState<SupervisorStatusState>({ snapshot: null, error: null });
+  const m = useMessages();
+  const [state, setState] = useState<Omit<SupervisorStatusState, "error"> & { error: unknown }>({ snapshot: null, error: null });
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
@@ -54,7 +61,7 @@ export function useSupervisorStatus(active: boolean): SupervisorStatusState {
           });
         } catch (error) {
           if (controller.signal.aborted) return;
-          setState((previous) => ({ ...previous, error: error instanceof Error ? error.message : String(error) }));
+          setState((previous) => ({ ...previous, error }));
         }
         await new Promise((resolve) => setTimeout(resolve, delay));
         delay = Math.min(delay * 2, MAX_RETRY_MS);
@@ -62,5 +69,6 @@ export function useSupervisorStatus(active: boolean): SupervisorStatusState {
     })();
     return () => controller.abort();
   }, [active]);
-  return state;
+  const { error, snapshot } = state;
+  return { snapshot, error: error instanceof StatusStreamError ? error.display(m) : error instanceof Error ? error.message : error === null ? null : String(error) };
 }

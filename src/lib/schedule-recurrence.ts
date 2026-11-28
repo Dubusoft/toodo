@@ -1,6 +1,7 @@
 // The scheduled jobs panel's schedule picker: the cron expressions it can show as a sentence
 // and edit with pickers (every hour, day, chosen weekdays, or day of the month at a time),
-// and the sentences, in Korean or English. A job is still stored as its cron expression.
+// and the localized sentences. A job is still stored as its cron expression.
+import { messagesFor, type Locale } from "@/lib/i18n";
 import type { ScheduledJob, ScheduleTimeZone } from "@/lib/supervisor-schedules";
 
 export type Recurrence =
@@ -8,8 +9,6 @@ export type Recurrence =
   | { readonly kind: "daily"; readonly hour: number; readonly minute: number }
   | { readonly kind: "weekly"; readonly days: readonly number[]; readonly hour: number; readonly minute: number }
   | { readonly kind: "monthly"; readonly day: number; readonly hour: number; readonly minute: number };
-
-export type Language = "ko" | "en";
 
 const ALIASES: Readonly<Record<string, string>> = {
   "@hourly": "0 * * * *",
@@ -72,66 +71,47 @@ export function recurrenceCron(recurrence: Recurrence): string {
   }
 }
 
-const WEEKDAYS: Readonly<Record<Language, readonly string[]>> = {
-  ko: ["일", "월", "화", "수", "목", "금", "토"],
-  en: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
-};
-
 export const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0] as const;
 
-export function weekdayName(day: number, language: Language): string {
-  return WEEKDAYS[language][day] ?? String(day);
+export function weekdayName(day: number, locale: Locale): string {
+  return messagesFor(locale).settings.schedules.weekdayNames[day] ?? String(day);
 }
 
-const twoDigits = (value: number): string => String(value).padStart(2, "0");
-
-/** "오전 4:00" or "4:00 AM". */
-export function clockTime(hour: number, minute: number, language: Language): string {
-  const twelve = hour % 12 || 12;
-  return language === "ko"
-    ? `${hour < 12 ? "오전" : "오후"} ${twelve}:${twoDigits(minute)}`
-    : `${twelve}:${twoDigits(minute)} ${hour < 12 ? "AM" : "PM"}`;
+export function clockTime(hour: number, minute: number, locale: Locale): string {
+  const t = messagesFor(locale).settings.schedules;
+  return t.clock(hour % 12 || 12, String(minute).padStart(2, "0"), hour < 12 ? t.am : t.pm);
 }
 
-/** "매일 오전 4:00 (KST)" or "Every day at 4:00 AM (KST)". */
-export function describeRecurrence(recurrence: Recurrence, zone: ScheduleTimeZone, language: Language): string {
-  const ko = language === "ko";
-  if (recurrence.kind === "hourly") {
-    if (ko) return recurrence.minute === 0 ? "매시간 정각" : `매시간 ${recurrence.minute}분`;
-    return `Every hour at :${twoDigits(recurrence.minute)}`;
-  }
-  const at = `${clockTime(recurrence.hour, recurrence.minute, language)} (${zone.label})`;
+export function describeRecurrence(recurrence: Recurrence, zone: ScheduleTimeZone, locale: Locale): string {
+  const t = messagesFor(locale).settings.schedules;
+  if (recurrence.kind === "hourly") return t.hourly(recurrence.minute);
+  const at = `${clockTime(recurrence.hour, recurrence.minute, locale)} (${zone.label})`;
   switch (recurrence.kind) {
     case "daily":
-      return ko ? `매일 ${at}` : `Every day at ${at}`;
+      return t.daily(at);
     case "weekly": {
-      const days = WEEK_ORDER.filter((day) => recurrence.days.includes(day)).map((day) => weekdayName(day, language));
-      return ko ? `매주 ${days.join("·")}요일 ${at}` : `Every ${days.join(", ")} at ${at}`;
+      const days = WEEK_ORDER.filter((day) => recurrence.days.includes(day)).map((day) => weekdayName(day, locale));
+      return t.weekly(days.join(t.daySeparator), at);
     }
     case "monthly":
-      return ko ? `매월 ${recurrence.day}일 ${at}` : `Every month on day ${recurrence.day} at ${at}`;
+      return t.monthly(recurrence.day, at);
   }
 }
 
-function describeInterval(seconds: number, language: Language): string {
-  const [count, unit] =
-    seconds % 3600 === 0 ? [seconds / 3600, "hour"] : seconds % 60 === 0 ? [seconds / 60, "minute"] : [seconds, "second"];
-  if (language === "ko") return `${count}${{ hour: "시간", minute: "분", second: "초" }[unit]}마다`;
-  return count === 1 ? `Every ${unit}` : `Every ${count} ${unit}s`;
+function describeInterval(seconds: number, locale: Locale): string {
+  const { interval } = messagesFor(locale).settings.schedules;
+  if (seconds % 3600 === 0) return interval.hour(seconds / 3600);
+  if (seconds % 60 === 0) return interval.minute(seconds / 60);
+  return interval.second(seconds);
 }
 
 /**
  * A job's schedule as the panel lists it: a sentence when the pickers can show it in the
  * display time zone, else its cron expression and time zone as they are (`raw`).
  */
-export function describeSchedule(job: ScheduledJob, zone: ScheduleTimeZone, language: Language): { readonly text: string; readonly raw: boolean } {
-  if (job.everySec !== null) return { text: describeInterval(job.everySec, language), raw: false };
+export function describeSchedule(job: ScheduledJob, zone: ScheduleTimeZone, locale: Locale): { readonly text: string; readonly raw: boolean } {
+  if (job.everySec !== null) return { text: describeInterval(job.everySec, locale), raw: false };
   const recurrence = job.cron !== null && job.tz === zone.name ? parseRecurrence(job.cron) : null;
-  if (recurrence !== null) return { text: describeRecurrence(recurrence, zone, language), raw: false };
+  if (recurrence !== null) return { text: describeRecurrence(recurrence, zone, locale), raw: false };
   return { text: `${job.cron ?? ""} (${job.tz})`, raw: true };
-}
-
-/** The language the panel's schedule text follows: Korean on a Korean browser, else English. */
-export function browserLanguage(): Language {
-  return navigator.language.toLowerCase().startsWith("ko") ? "ko" : "en";
 }

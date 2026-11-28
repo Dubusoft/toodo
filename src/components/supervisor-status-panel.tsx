@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
+import { useMessages } from "@/lib/i18n";
+import type { Messages } from "@/locales/en";
 import type { SupervisorLane, SupervisorStatusSnapshot } from "@/lib/supervisor-status";
 import { useSupervisorStatus } from "@/web/supervisor-status";
 
 /** A snapshot older than this means the supervisor stopped reporting: it pushes every 10 s while a panel is open. */
 const STALE_AFTER_MS = 2 * 60_000;
 
-function age(ms: number): string {
+function age(ms: number, t: Messages["settings"]["supervisorPanel"]): string {
   const seconds = Math.max(0, Math.round(ms / 1000));
-  if (seconds < 60) return `${seconds} s`;
+  if (seconds < 60) return t.seconds(seconds);
   const minutes = Math.round(seconds / 60);
-  return minutes < 120 ? `${minutes} min` : `${Math.round(minutes / 60)} h`;
+  return minutes < 120 ? t.minutes(minutes) : t.hours(Math.round(minutes / 60));
 }
 
 function useNow(): number {
@@ -28,11 +30,13 @@ const preformatted = `${monospace} overflow-x-auto whitespace-pre`;
 const wrapped = `${monospace} whitespace-pre-wrap wrap-anywhere`;
 
 function Quota({ quota }: { quota: SupervisorStatusSnapshot["quota"] }) {
-  if (quota === null) return <p className="text-muted-foreground">Reading the quota...</p>;
+  const m = useMessages();
+  const t = m.settings.supervisorPanel;
+  if (quota === null) return <p className="text-muted-foreground">{t.readingQuota}</p>;
   if ("error" in quota) {
     return (
       <p role="alert" className="break-words text-destructive">
-        Quota lookup failed: {quota.error}
+        {t.quotaFailure(quota.error)}
       </p>
     );
   }
@@ -40,27 +44,29 @@ function Quota({ quota }: { quota: SupervisorStatusSnapshot["quota"] }) {
 }
 
 function Lane({ lane }: { lane: SupervisorLane }) {
+  const m = useMessages();
+  const t = m.settings.supervisorPanel;
   return (
-    <li aria-label={`Lane ${lane.key}`} className="flex flex-col gap-1">
+    <li aria-label={t.lane(lane.key)} className="flex flex-col gap-1">
       <span className="flex flex-wrap items-baseline gap-x-2">
         <span className="font-medium break-all">{lane.key}</span>
         {lane.task !== null && <span className="text-muted-foreground">#{lane.task}</span>}
         <span className="text-muted-foreground">
           {lane.machine}
-          {lane.model !== null && ` · ${lane.model}`} · {age(lane.ageMin * 60_000)}
+          {lane.model !== null && ` · ${lane.model}`} · {age(lane.ageMin * 60_000, t)}
         </span>
       </span>
       {lane.progress !== null && <span className="break-words text-muted-foreground">{lane.progress}</span>}
       <details>
-        <summary className="cursor-pointer text-muted-foreground">Recent screen</summary>
+        <summary className="cursor-pointer text-muted-foreground">{t.screen}</summary>
         {lane.screen === null ? (
-          <p className="text-muted-foreground">Reading the screen...</p>
+          <p className="text-muted-foreground">{t.readingScreen}</p>
         ) : "error" in lane.screen ? (
           <p role="alert" className="break-words text-destructive">
-            The screen could not be read: {lane.screen.error}
+            {t.screenFailure(lane.screen.error)}
           </p>
         ) : (
-          <pre aria-label={`Recent screen of ${lane.key}`} className={preformatted}>
+          <pre aria-label={t.screenOf(lane.key)} className={preformatted}>
             {lane.screen.text}
           </pre>
         )}
@@ -75,12 +81,14 @@ function Lane({ lane }: { lane: SupervisorLane }) {
  * `active` (shown), since the supervisor reads screens and quota only for an open panel.
  */
 export function SupervisorStatusPanel({ active }: { active: boolean }) {
+  const m = useMessages();
+  const t = m.settings.supervisorPanel;
   const { snapshot, error } = useSupervisorStatus(active);
   const now = useNow();
   if (snapshot === null) {
     return (
-      <section aria-label="Dori status" className="flex flex-col gap-2 text-sm">
-        <p className="text-muted-foreground">Waiting for the supervisor's first report...</p>
+      <section aria-label={m.settings.sections.dori} className="flex flex-col gap-2 text-sm">
+        <p className="text-muted-foreground">{t.waiting}</p>
         {error !== null && (
           <p role="alert" className="break-words text-destructive">
             {error}
@@ -91,21 +99,19 @@ export function SupervisorStatusPanel({ active }: { active: boolean }) {
   }
   const stale = now - snapshot.at > STALE_AFTER_MS;
   return (
-    <section aria-label="Dori status" className="flex flex-col gap-5 text-sm">
+    <section aria-label={m.settings.sections.dori} className="flex flex-col gap-5 text-sm">
       <p role="status" className={stale ? "text-destructive" : "text-muted-foreground"}>
-        {stale ? "The supervisor has not reported for " : "Updated "}
-        {age(now - snapshot.at)}
-        {stale ? "." : " ago."}
+        {(stale ? t.stale : t.updated)(age(now - snapshot.at, t))}
         {error !== null && ` ${error}`}
       </p>
       <div className="flex flex-col gap-2">
-        <h4 className="font-medium">Quota</h4>
+        <h4 className="font-medium">{t.quota}</h4>
         <Quota quota={snapshot.quota} />
       </div>
       <div className="flex flex-col gap-2">
-        <h4 className="font-medium">Lanes ({snapshot.lanes.length})</h4>
+        <h4 className="font-medium">{t.lanes(snapshot.lanes.length)}</h4>
         {snapshot.lanes.length === 0 ? (
-          <p className="text-muted-foreground">No lane is working.</p>
+          <p className="text-muted-foreground">{t.empty}</p>
         ) : (
           <ul className="flex flex-col gap-3">
             {snapshot.lanes.map((lane) => (
@@ -115,9 +121,9 @@ export function SupervisorStatusPanel({ active }: { active: boolean }) {
         )}
       </div>
       <div className="flex flex-col gap-2">
-        <h4 className="font-medium">Status</h4>
+        <h4 className="font-medium">{t.status}</h4>
         {snapshot.status.map((page, index) => (
-          <pre key={index} aria-label={`Status page ${index + 1}`} className={wrapped}>
+          <pre key={index} aria-label={t.page(index + 1)} className={wrapped}>
             {page}
           </pre>
         ))}

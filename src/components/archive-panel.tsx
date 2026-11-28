@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { fill, useMessages } from "@/lib/i18n";
 import { Button } from "@/components/button";
 import type { TaskId, WorkspaceId } from "@/lib/bindings";
 import { useArchive, usePurgeTask, usePurgeWorkspace, useRestoreTask, useRestoreWorkspace } from "@/lib/queries";
@@ -6,6 +7,8 @@ import { useArchive, usePurgeTask, usePurgeWorkspace, useRestoreTask, useRestore
 type Purge = { kind: "workspace"; id: WorkspaceId; name: string } | { kind: "task"; id: TaskId; name: string };
 
 export function ArchivePanel() {
+  const m = useMessages();
+  const t = m.settings.archivePanel;
   const archive = useArchive();
   const restoreWorkspace = useRestoreWorkspace();
   const restoreTask = useRestoreTask();
@@ -29,32 +32,31 @@ export function ArchivePanel() {
   const tasks = archive.data?.tasks ?? [];
 
   return (
-    <section aria-label="Archive" className="flex flex-col gap-3 text-xs">
+    <section aria-label={m.settings.sections.archive} className="flex flex-col gap-3 text-xs">
       <p className="text-muted-foreground">
-        Deleted workspaces and tasks are kept here with their history and still count in reviews. Restore one to
-        bring it back, or delete it permanently.
+        {t.intro}
       </p>
       {confirming && (
         <div
           role="alertdialog"
-          aria-label="Confirm permanent delete"
+          aria-label={t.confirm}
           className="flex flex-col gap-1 rounded-md border border-destructive/40 p-2"
         >
           <p className="break-words">
-            Permanently delete <span className="font-medium">{confirming.name}</span>
-            {confirming.kind === "workspace" ? " and its tasks" : ""}? Its history, commits, and links are removed
-            and leave the reviews; this cannot be undone.
+            {fill(confirming.kind === "workspace" ? t.confirmWorkspace : t.confirmTask, {
+              name: <span className="font-medium">{confirming.name}</span>,
+            })}
           </p>
           <div className="flex gap-1">
             <Button
               changesData
               size="sm"
               variant="destructive"
-              label={purgeWorkspace.isPending || purgeTask.isPending ? "Deleting..." : "Delete permanently"}
+              label={purgeWorkspace.isPending || purgeTask.isPending ? t.deleting : t.deletePermanent}
               onClick={() => purge(confirming)}
               isDisabled={busy}
             />
-            <Button size="sm" variant="ghost" label="Cancel" autoFocus onClick={() => setConfirming(null)} isDisabled={busy} />
+            <Button size="sm" variant="ghost" label={m.common.cancel} autoFocus onClick={() => setConfirming(null)} isDisabled={busy} />
           </div>
         </div>
       )}
@@ -63,7 +65,7 @@ export function ArchivePanel() {
           {error.message}
         </p>
       )}
-      <ArchiveList label="Archived workspaces" empty="No archived workspaces.">
+      <ArchiveList label={t.workspaces} empty={t.emptyWorkspaces}>
         {workspaces.map((workspace) => (
           <ArchiveItem
             key={workspace.id}
@@ -81,7 +83,7 @@ export function ArchivePanel() {
           />
         ))}
       </ArchiveList>
-      <ArchiveList label="Archived tasks" empty="No archived tasks.">
+      <ArchiveList label={t.tasks} empty={t.emptyTasks}>
         {tasks.map((task) => (
           <ArchiveItem
             key={task.id}
@@ -128,6 +130,8 @@ function ArchiveItem({
   onRestore: () => void;
   onPurge: () => void;
 }) {
+  const m = useMessages();
+  const t = m.settings.archivePanel;
   return (
     <li className="flex flex-wrap items-center gap-x-2 gap-y-1 py-1.5 first:pt-0">
       <span className="flex min-w-0 flex-1 flex-col">
@@ -135,11 +139,11 @@ function ArchiveItem({
         <span className="truncate text-muted-foreground">{detail}</span>
       </span>
       <span className="flex gap-1">
-        <Button changesData size="sm" variant="secondary" label={`Restore ${name}`} isDisabled={busy} onClick={onRestore}>
-          Restore
+        <Button changesData size="sm" variant="secondary" label={t.restoreItem(name)} isDisabled={busy} onClick={onRestore}>
+          {t.restore}
         </Button>
-        <Button size="sm" variant="ghost" label={`Delete ${name} permanently`} isDisabled={busy} onClick={onPurge}>
-          Delete permanently
+        <Button size="sm" variant="ghost" label={t.deleteItem(name)} isDisabled={busy} onClick={onPurge}>
+          {t.deletePermanent}
         </Button>
       </span>
     </li>

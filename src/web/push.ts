@@ -3,6 +3,7 @@
  * keeps the subscription under this device's token and pushes alerts to it even while Toodo
  * is closed, and the service worker (see `vite-pwa.ts`) shows them and opens their task.
  */
+import { en, type Messages } from "@/locales/en";
 import type { ChatChannelId, ChatThreadId, TaskId } from "@/lib/bindings";
 import { isAppleMobile, runsInstalled } from "@/web/install";
 import { apiRequest } from "@/web/session";
@@ -142,46 +143,44 @@ function isServerPush(value: unknown): value is { publicKey: string; subscriptio
  * Anything else, such as a proxy's HTML page or an older server's shape, is rejected with an
  * error that says so instead of failing later on a missing field.
  */
-async function answer<T>(request: string, response: Response, expected: (value: unknown) => value is T): Promise<T> {
+type PushMessages = Messages["settings"]["pushPanel"];
+
+async function answer<T>(request: string, response: Response, expected: (value: unknown) => value is T, t: PushMessages): Promise<T> {
   const text = await response.text();
   let body: unknown;
   try {
     body = JSON.parse(text);
   } catch {
-    throw new Error(
-      `The answer to ${request} is not JSON; a proxy in front of the Toodo server may have answered instead.`,
-    );
+    throw new Error(t.notJson(request));
   }
   if (!expected(body)) {
-    throw new Error(
-      `The answer to ${request} is not the push data this app expects; the Toodo server may be older or newer than the app. Reload the app.`,
-    );
+    throw new Error(t.wrongData(request));
   }
   return body;
 }
 
-async function sendSubscription(subscription: PushSubscription): Promise<ServerSubscription> {
+async function sendSubscription(subscription: PushSubscription, t: PushMessages): Promise<ServerSubscription> {
   const response = await apiRequest("/api/push/subscription", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(subscription.toJSON()),
   });
-  return answer("PUT /api/push/subscription", response, isSubscription);
+  return answer("PUT /api/push/subscription", response, isSubscription, t);
 }
 
 /**
  * Push on this device. A subscription of this browser that the server does not have, such as
  * one the browser renewed while Toodo was closed, is sent to it again.
  */
-export async function getPushState(): Promise<PushState> {
-  const server = await answer("GET /api/push", await apiRequest("/api/push"), isServerPush);
+export async function getPushState(t: PushMessages = en.settings.pushPanel): Promise<PushState> {
+  const server = await answer("GET /api/push", await apiRequest("/api/push"), isServerPush, t);
   const browser = await browserSubscription(decodeBase64Url(server.publicKey));
   const subscription =
     browser === null
       ? null
       : browser.endpoint === server.subscription?.endpoint
         ? server.subscription
-        : await sendSubscription(browser);
+        : await sendSubscription(browser, t);
   pushed = subscription?.settings ?? null;
   return { publicKey: server.publicKey, permission: Notification.permission, subscription };
 }
@@ -193,15 +192,13 @@ const workerReadyMs = 10_000;
  * The registration once its service worker is active. A worker that never activates, such as
  * one whose install failed, would otherwise keep `navigator.serviceWorker.ready` pending forever.
  */
-async function activeWorker(): Promise<ServiceWorkerRegistration> {
+async function activeWorker(t: PushMessages): Promise<ServiceWorkerRegistration> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
       () =>
         reject(
-          new Error(
-            `The service worker did not become active within ${workerReadyMs / 1000} seconds. Reload the app and try again.`,
-          ),
+          new Error(t.workerTimeout(workerReadyMs / 1000)),
         ),
       workerReadyMs,
     );
@@ -220,20 +217,21 @@ async function activeWorker(): Promise<ServiceWorkerRegistration> {
 export async function enablePush(
   permission: Promise<NotificationPermission>,
   publicKey: string,
+  t: PushMessages = en.settings.pushPanel,
 ): Promise<ServerSubscription> {
   if ((await permission) !== "granted") {
-    throw new Error("Notifications were not allowed.");
+    throw new Error(t.notAllowed);
   }
   if ((await registration()) === undefined) {
-    throw new Error("Notifications need the service worker, which only the built app installs.");
+    throw new Error(t.needWorker);
   }
-  const { pushManager } = await activeWorker();
+  const { pushManager } = await activeWorker(t);
   const key = decodeBase64Url(publicKey);
   const subscription =
     (await browserSubscription(key)) ??
     (await pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key }));
   try {
-    const sent = await sendSubscription(subscription);
+    const sent = await sendSubscription(subscription, t);
     pushed = sent.settings;
     return sent;
   } catch (error) {
@@ -254,13 +252,13 @@ export async function disablePush(): Promise<void> {
   await apiRequest("/api/push/subscription", { method: "DELETE" });
 }
 
-export async function saveSettings(settings: PushSettings): Promise<ServerSubscription> {
+export async function saveSettings(settings: PushSettings, t: PushMessages = en.settings.pushPanel): Promise<ServerSubscription> {
   const response = await apiRequest("/api/push/settings", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(settings),
   });
-  const saved = await answer("PUT /api/push/settings", response, isSubscription);
+  const saved = await answer("PUT /api/push/settings", response, isSubscription, t);
   pushed = saved.settings;
   return saved;
 }
