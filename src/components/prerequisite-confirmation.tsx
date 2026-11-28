@@ -29,7 +29,8 @@ export function PrerequisiteConfirmation({
       className={cn("flex flex-wrap items-center gap-2 rounded-md px-2 py-1.5 text-xs", tonePanel.attention)}
       onKeyDown={escapeCloses(onCancel, pending)}
     >
-      <span className="min-w-0 flex-1">
+      {/* The buttons move below the hint before it gets too narrow to read. */}
+      <span className="min-w-0 flex-1 basis-56">
         {m.tasks.confirmPrerequisiteHint(taskId, prerequisite)}
       </span>
       <Button

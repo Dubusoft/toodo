@@ -66,7 +66,7 @@ export function ConcludeForm({
           onDiscard={guard.discard}
         />
       ) : (
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1 max-md:gap-2">
           <Button
             type="submit"
             size="sm"
@@ -142,7 +142,7 @@ export function ReopenForm({
           onDiscard={guard.discard}
         />
       ) : (
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1 max-md:gap-2">
           <Button
             changesData
             type="submit"
@@ -216,7 +216,7 @@ export function OutcomeForm({ task, onDone }: { task: Task; onDone: () => void }
           onDiscard={guard.discard}
         />
       ) : (
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1 max-md:gap-2">
           <Button
             changesData
             type="submit"
@@ -316,7 +316,7 @@ export function ShippedByForm({
           onDiscard={guard.discard}
         />
       ) : (
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1 max-md:gap-2">
           <Button
             changesData
             type="submit"
@@ -415,7 +415,7 @@ export function CompletionNote({ task, adding, onAdded }: { task: Task; adding: 
           onDiscard={guard.discard}
         />
       ) : (
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1 max-md:gap-2">
           <Button
             type="submit"
             size="sm"

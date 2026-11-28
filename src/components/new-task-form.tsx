@@ -9,6 +9,7 @@ import { MarkdownEditor } from "@/components/markdown-editor";
 import type { TaskType, Workspace } from "@/lib/bindings";
 import { useCreateTask } from "@/lib/queries";
 import { parseLabels } from "@/lib/plan";
+import { cn } from "@/lib/utils";
 import { taskTypeOptions } from "@/components/task-common";
 import { AutopilotField, type PlanDraft, planEstimate, PlanFields } from "@/components/plan-fields";
 import { type CriterionDraft, criterionInputs, targetProblem, CriteriaEditor } from "@/components/criteria-editor";
@@ -91,7 +92,8 @@ export function NewTaskForm({
 
   return (
     <CollapsibleForm label={m.tasks.newTask} expanded={expanded} onExpandedChange={setExpanded} onSubmit={submit}>
-      <div className="flex gap-2">
+      {/* Open on a phone, the title takes a line of its own so a long one stays readable. */}
+      <div className="flex flex-wrap gap-2">
         {expanded && (
           <Selector
             label={m.tasks.taskType}
@@ -106,7 +108,7 @@ export function NewTaskForm({
         <TextInput
           label={m.tasks.taskTitle}
           isLabelHidden
-          containerClassName="min-w-0 flex-1"
+          containerClassName={cn("min-w-0 flex-1", expanded && "max-md:order-first max-md:basis-full")}
           placeholder={expanded ? m.tasks.taskTitle : m.tasks.newTask}
           value={title}
           onChange={setTitle}
@@ -116,6 +118,7 @@ export function NewTaskForm({
           variant="primary"
           label={m.tasks.addTask}
           icon={<Plus />}
+          className={cn(expanded && "max-md:ml-auto")}
           isDisabled={createTask.isPending || estimate === undefined || criteriaInvalid}
         />
       </div>

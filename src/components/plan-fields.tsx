@@ -95,7 +95,8 @@ export function PlanFields({
         <DateInput
           ref={dueDate}
           size="sm"
-          width={160}
+          // Astryx sets a 180px min-width on the control; a narrower field lets it spill over the next one.
+          width={180}
           label={m.tasks.dueStates.upcoming}
           aria-label={m.tasks.dueDateField(suffix)}
           hasClear
