@@ -82,7 +82,7 @@ export const app: Partial<Messages["app"]> = {
     openChat: "관련 채팅 열기",
     tasks: "확인이 필요한 태스크",
     showTimeline: "타임라인에서 보기",
-    reasons: { blocker_note: "진행 장애", stalled: "정체" },
+    reasons: { blocker_note: "차단 요인", stalled: "정체" },
   },
   update: {
     region: "Toodo 새 버전",
