@@ -13,16 +13,27 @@ export const LOCAL_MACHINE = "local";
 /** This host holds launches while its 1-minute load exceeds its core count times this. */
 export const LOAD_PER_CORE_MAX = 4;
 
-export type PlacementInput = { readonly machine?: string; readonly cwd?: string; readonly done: string };
+/** The Toodo workspace of a launch's task: the machine it names (`local`: this host) and its repository text. */
+export type WorkspaceHome = { readonly machine: string; readonly repository: string | null };
+
+export type PlacementInput = {
+  readonly machine?: string; readonly cwd?: string; readonly done: string;
+  /** The launch task's workspace when it names a machine (launch-service's taskWorkspaceHome). */
+  readonly home?: WorkspaceHome;
+};
 
 export type Placement = {
   /** "local" or a machine label. */
   readonly machine: string;
-  /** `runner`: a runner declares the workspace; `workspace`: a workspace task while no runner declares any (this host). */
-  readonly source: "flag" | "runner" | "workspace" | "default";
-  /** source runner: the owner/repo the owning runner declares. */
+  /**
+   * `runner`: a runner declares the workspace; `workspace`: a workspace task while no runner declares any (this host);
+   * `workspace-machine`: the machine the task's Toodo workspace names, chosen among several declaring runners or, for a
+   * launch with no repo, because its connected runner declares the workspace's repository.
+   */
+  readonly source: "flag" | "runner" | "workspace" | "workspace-machine" | "default";
+  /** source runner or workspace-machine: the owner/repo the chosen runner declares. */
   readonly rule?: string;
-  /** Only a default placement may move to a fallback machine. */
+  /** Only a default or a repo-less workspace-machine placement may move to a fallback machine. */
   readonly movable: boolean;
   /** source runner: the checkout the owning runner declared for the repo. */
   readonly cwd?: string;
@@ -33,6 +44,8 @@ export type Placement = {
    * (placement.fallback order, then label); `machine`/`cwd`/`online` above are the preferred one, and planLaunch picks.
    */
   readonly candidates?: readonly PlacementCandidate[];
+  /** With `candidates`: the workspace's machine when it is one of them, preferred over defaultMachine. */
+  readonly home?: string;
 };
 
 /** One runner declaring the placed repo: its machine, the checkout it declared, and whether it is connected. */
@@ -88,17 +101,35 @@ const candidateOrder = (candidates: readonly PlacementCandidate[], placement: Pl
   return [...candidates].sort((a, b) => rank(a.machine) - rank(b.machine) || a.machine.localeCompare(b.machine));
 };
 
-/** placement.defaultMachine when it is one of `candidates`, else the first. */
-const preferred = <T extends { readonly machine: string }>(candidates: readonly T[], placement: PlacementConfig): T | undefined =>
-  candidates.find((c) => c.machine === placement.defaultMachine) ?? candidates[0];
+/** `home` (the workspace's machine) when it is one of `candidates`, else placement.defaultMachine when it is, else the first. */
+const preferred = <T extends { readonly machine: string }>(candidates: readonly T[], placement: PlacementConfig, home?: string): T | undefined =>
+  (home === undefined ? undefined : candidates.find((c) => c.machine === home))
+  ?? candidates.find((c) => c.machine === placement.defaultMachine) ?? candidates[0];
+
+/** Which rule picked `machine` among several declaring runners: the workspace's machine, else the runner rule. */
+const candidateSource = (machine: string, home: string | undefined): Placement["source"] => (machine === home ? "workspace-machine" : "runner");
+
+/**
+ * A repo-less launch's workspace machine: its runner is connected and declares the workspace's repository (the
+ * repository text names the declared owner/repo, as lane-toodo's laneWorkspace matches it); else undefined.
+ */
+const workspaceMachine = (home: WorkspaceHome | undefined, reports: readonly RunnerPlacement[]): { machine: string; repo: string } | undefined => {
+  const repository = home?.repository?.toLowerCase();
+  if (!home || !repository) return undefined;
+  const report = reports.find((r) => r.machine === home.machine && r.online);
+  const entry = report?.declared.find((e) => repository.includes(e.repo.toLowerCase()));
+  return entry ? { machine: home.machine, repo: entry.repo } : undefined;
+};
 
 const filled = (s: string | undefined): s is string => typeof s === "string" && s.trim() !== "";
 
 /**
  * --machine wins. Once any runner declares workspaces, a workspace task goes to the runner that declares it (held while
  * that runner is offline) and an undeclared one to `defaultMachine`. When several runners declare it, all are
- * `candidates` and the preferred online one (defaultMachine first, else candidate order) is placed; planLaunch picks.
- * Before that, a workspace task stays on this host. Anything else goes to `defaultMachine`.
+ * `candidates` and the preferred online one (the task's workspace machine first, then defaultMachine, else candidate
+ * order) is placed; planLaunch picks. Before that, a workspace task stays on this host. A launch with no repo goes to
+ * its task's workspace machine when that machine's runner is connected and declares the workspace's repository, else
+ * (like anything else) to `defaultMachine`.
  */
 export const resolvePlacement = (input: PlacementInput, placement: PlacementConfig, reports: readonly RunnerPlacement[] = []): Placement => {
   if (filled(input.machine)) return { machine: input.machine.trim(), source: "flag", movable: false };
@@ -108,11 +139,22 @@ export const resolvePlacement = (input: PlacementInput, placement: PlacementConf
     const owners = declaredOwners(input.cwd, repos, reports);
     if (owners) {
       const candidates = candidateOrder(owners.candidates, placement);
-      const lead = (preferred(candidates.filter((c) => c.online), placement) ?? preferred(candidates, placement))!;
-      return { machine: lead.machine, source: "runner", rule: owners.repo, movable: false, cwd: lead.cwd, online: lead.online, ...(candidates.length > 1 ? { candidates } : {}) };
+      if (candidates.length === 1) {
+        const only = candidates[0]!;
+        return { machine: only.machine, source: "runner", rule: owners.repo, movable: false, cwd: only.cwd, online: only.online };
+      }
+      const home = candidates.find((c) => c.machine === input.home?.machine)?.machine;
+      const lead = (preferred(candidates.filter((c) => c.online), placement, home) ?? preferred(candidates, placement, home))!;
+      return {
+        machine: lead.machine, source: lead.online ? candidateSource(lead.machine, home) : "runner", rule: owners.repo, movable: false,
+        cwd: lead.cwd, online: lead.online, candidates, ...(home !== undefined ? { home } : {}),
+      };
     }
   } else if (workspaceTask) {
     return { machine: LOCAL_MACHINE, source: "workspace", movable: false };
+  } else {
+    const home = workspaceMachine(input.home, reports);
+    if (home) return { machine: home.machine, source: "workspace-machine", rule: home.repo, movable: true };
   }
   return { machine: placement.defaultMachine, source: "default", movable: true };
 };
@@ -259,9 +301,9 @@ const offlineHold = (machine: string, repo: string | undefined): MachineCheck =>
  */
 const planCandidates = async (p: Placement, candidates: readonly PlacementCandidate[], placement: PlacementConfig, check: (machine: string) => Promise<MachineCheck>): Promise<LaunchPlan> => {
   const checks = await Promise.all(candidates.filter((c) => c.online).map(async (c) => ({ c, check: await check(c.machine) })));
-  const pick = preferred(checks.filter((x) => x.check.verdict.ok).map((x) => ({ ...x, machine: x.c.machine })), placement);
+  const pick = preferred(checks.filter((x) => x.check.verdict.ok).map((x) => ({ ...x, machine: x.c.machine })), placement, p.home);
   if (pick) {
-    const placed: Placement = { ...p, machine: pick.c.machine, cwd: pick.c.cwd, online: true };
+    const placed: Placement = { ...p, machine: pick.c.machine, source: candidateSource(pick.c.machine, p.home), cwd: pick.c.cwd, online: true };
     return { placement: placed, check: pick.check, lines: [placementLine(placed), candidatesLine(placed, pick.c.machine)] };
   }
   const held = candidates.filter((c) => c.machine !== p.machine)
@@ -271,17 +313,25 @@ const planCandidates = async (p: Placement, candidates: readonly PlacementCandid
 };
 
 /**
+ * The machines a movable placement moves to when its machine holds, in order: the `fallback` machines, after
+ * defaultMachine for a workspace-machine placement (it stands in for a default one), never the placed machine itself.
+ */
+const fallbackMachines = (p: Placement, placement: PlacementConfig): string[] =>
+  [...new Set([...(p.source === "workspace-machine" ? [placement.defaultMachine] : []), ...placement.fallback])].filter((m) => m !== p.machine);
+
+/**
  * The machines a launch placed at `p` may go to, in the order planLaunch tries them: none while its owning runner is
- * offline, the online candidates (defaultMachine first) when several runners declare the repo, the placed machine then
- * the `fallback` machines for a movable placement, else the placed machine alone.
+ * offline, the online candidates (the workspace's machine, then defaultMachine, first) when several runners declare
+ * the repo, the placed machine then its fallback machines for a movable placement, else the placed machine alone.
  */
 export const placementTargets = (p: Placement, placement: PlacementConfig): string[] => {
   if (p.online === false) return [];
   if (p.candidates) {
-    const online = p.candidates.filter((c) => c.online).map((c) => c.machine);
-    return online.includes(placement.defaultMachine) ? [placement.defaultMachine, ...online.filter((m) => m !== placement.defaultMachine)] : online;
+    const online = p.candidates.filter((c) => c.online);
+    const first = [p.home, placement.defaultMachine].filter((m): m is string => m !== undefined && online.some((c) => c.machine === m));
+    return [...new Set([...first, ...online.map((c) => c.machine)])];
   }
-  return p.movable ? [p.machine, ...placement.fallback.filter((m) => m !== p.machine)] : [p.machine];
+  return p.movable ? [p.machine, ...fallbackMachines(p, placement)] : [p.machine];
 };
 
 /**
@@ -296,8 +346,7 @@ export const planLaunch = async (input: PlacementInput, placement: PlacementConf
   if (p.candidates) return planCandidates(p, p.candidates, placement, check);
   const first = await check(p.machine);
   if (first.verdict.ok || !p.movable) return { placement: p, check: first, lines };
-  for (const machine of placement.fallback) {
-    if (machine === p.machine) continue;
+  for (const machine of fallbackMachines(p, placement)) {
     const next = await check(machine);
     if (next.verdict.ok) return { placement: p, check: next, lines: [...lines, `PLACEMENT_FALLBACK ${p.machine} -> ${machine} (${first.verdict.reasons.join(" | ")})`] };
   }
