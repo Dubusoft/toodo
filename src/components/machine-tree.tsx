@@ -1,5 +1,6 @@
 import { Fragment, type ReactNode } from "react";
 import { Selector } from "@astryxdesign/core/Selector";
+import { Laptop, Monitor, Server } from "lucide-react";
 import { LaneStatusBadge, machineTones } from "@/components/lane-view";
 import { STALE_AFTER_MS, useNow } from "@/components/supervisor-status-panel";
 import type { Task, TaskId, Workspace, WorkspaceId } from "@/lib/bindings";
@@ -26,6 +27,15 @@ export function onServerHost(hostname: string): boolean {
 function useServerName(): string {
   const t = useMessages().app.machines;
   return onServerHost(location.hostname) ? t.local : t.server;
+}
+
+/**
+ * The icon of the machine `label`: the server's host is a server, or a laptop when this page was
+ * opened on it (named Local), and every other machine a monitor.
+ */
+export function MachineIcon({ label, className }: { label: string; className?: string }) {
+  const Icon = label !== SERVER_RUNNER ? Monitor : onServerHost(location.hostname) ? Laptop : Server;
+  return <Icon aria-hidden className={cn("size-4 shrink-0 text-muted-foreground", className)} />;
 }
 
 /** One machine with its lanes, grouped by the workspace of each lane's task. */
@@ -159,7 +169,11 @@ export function MachineSelector({
       description={t.machineHint}
       options={[
         { value: NO_MACHINE, label: t.noMachine },
-        ...labels.map((label) => ({ value: label, label: label === SERVER_RUNNER ? serverName : label })),
+        ...labels.map((label) => ({
+          value: label,
+          label: label === SERVER_RUNNER ? serverName : label,
+          icon: <MachineIcon label={label} />,
+        })),
       ]}
       value={value ?? NO_MACHINE}
       onChange={(picked) => onChange(picked === null || picked === NO_MACHINE ? null : picked)}
@@ -210,6 +224,7 @@ export function MachineTree({
           return (
             <li key={node.label} aria-label={t.machine(name)} data-machine={node.label} className="flex flex-col gap-1">
               <div className="flex min-w-0 items-center gap-1.5 px-2.5">
+                <MachineIcon label={node.label} />
                 <span className="min-w-0 truncate text-sm font-medium">{name}</span>
                 {node.machine && (
                   <span className={cn("ml-auto shrink-0 text-xs", toneText[tone])}>{t.states[node.machine.state]}</span>
