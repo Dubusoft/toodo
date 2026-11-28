@@ -64,27 +64,10 @@ export function pushActive(): boolean {
   return pushed !== null;
 }
 
-/**
- * The titles of the alerts the page also raises, by the setting that has the server push them
- * (see `server/src/push/alerts.ts`). Every other alert only the page shows.
- */
-const pushedTitles: Record<keyof PushSettings, readonly string[]> = {
-  // The page raises no alerts for chat messages; the chat shows them.
-  important: [],
-  messages: [],
-  started: ["Task started"],
-  completion: ["Task awaiting completion"],
-  finished: ["Task done", "Task concluded without merging"],
-};
-
-/** Whether the server pushes the alert titled `title` to this device, so the page need not show it as well. */
-export function pushCovers(title: string): boolean {
-  return (
-    pushed !== null &&
-    (Object.keys(pushedTitles) as (keyof PushSettings)[]).some(
-      (kind) => pushed?.[kind] === true && pushedTitles[kind].includes(title),
-    )
-  );
+/** Whether the server pushes the alerts of setting `kind` to this device (see
+ * `server/src/push/alerts.ts`), so the page need not show them as well. */
+export function pushCovers(kind: keyof PushSettings): boolean {
+  return pushed?.[kind] === true;
 }
 
 export function decodeBase64Url(text: string): Uint8Array<ArrayBuffer> {

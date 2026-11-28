@@ -26,17 +26,24 @@ describe("sendNotification", () => {
   it("shows the alert while the server does not push it to this device", () => {
     vi.mocked(pushCovers).mockReturnValue(false);
 
-    sendNotification({ title: "Agent finished", body: "#1 Add login" });
+    sendNotification({ title: "Task started", body: "#1 Add login", pushedAs: "started" });
 
-    expect(shown).toHaveBeenCalledWith("Agent finished", { body: "#1 Add login" });
+    expect(shown).toHaveBeenCalledWith("Task started", { body: "#1 Add login" });
+  });
+
+  it("shows an alert the server never pushes without asking", () => {
+    sendNotification({ title: "Task paused", body: "#1 Add login", pushedAs: null });
+
+    expect(shown).toHaveBeenCalledWith("Task paused", { body: "#1 Add login" });
+    expect(pushCovers).not.toHaveBeenCalled();
   });
 
   it("leaves the alert to the server's push when it pushes that alert", () => {
     vi.mocked(pushCovers).mockReturnValue(true);
 
-    sendNotification({ title: "Agent finished", body: "#1 Add login" });
+    sendNotification({ title: "태스크 시작됨", body: "#1 Add login", pushedAs: "started" });
 
     expect(shown).not.toHaveBeenCalled();
-    expect(pushCovers).toHaveBeenCalledWith("Agent finished");
+    expect(pushCovers).toHaveBeenCalledWith("started");
   });
 });

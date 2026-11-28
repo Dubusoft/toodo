@@ -2,8 +2,18 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@/web/
 import type { Task, TaskStatus } from "@/lib/bindings";
 import { currentMessages } from "@/lib/i18n";
 import type { Messages } from "@/locales/en";
+import type { PushSettings } from "@/web/push";
 
-export type TaskAlert = { title: string; body: string };
+/** `pushedAs`: the setting under which the server also pushes the change, if any. */
+export type TaskAlert = { title: string; body: string; pushedAs: keyof PushSettings | null };
+
+/** The setting under which the server pushes a task's move to `status` (see `server/src/push/alerts.ts`). */
+const pushedAs: Record<TaskStatus, keyof PushSettings | null> = {
+  planned: null,
+  in_progress: "started",
+  in_review: "completion",
+  done: "finished",
+};
 
 type Words = Messages["alerts"];
 
@@ -45,6 +55,7 @@ export function taskStatusAlerts(
       {
         title: statusTitle(was, task, words),
         body: `#${task.id} ${task.title}: ${words.statuses[was]} -> ${statusName(task, words)}`,
+        pushedAs: pushedAs[task.status],
       },
     ];
   });

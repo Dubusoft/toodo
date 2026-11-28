@@ -15,24 +15,24 @@ describe("taskStatusAlerts", () => {
         [{ ...login, status: "in_progress" }, { ...logout, status: "done", resolution: "merged" }, task(3, "Add search", "planned")],
       ),
     ).toEqual([
-      { title: "Task started", body: "#1 Add login: Planned -> In progress" },
-      { title: "Task done", body: "#2 Add logout: Awaiting completion -> Done" },
+      { title: "Task started", body: "#1 Add login: Planned -> In progress", pushedAs: "started" },
+      { title: "Task done", body: "#2 Add logout: Awaiting completion -> Done", pushedAs: "finished" },
     ]);
   });
 
   it("words the review, not adopted, and pause transitions", () => {
     const started = { ...login, status: "in_progress" } as Task;
     expect(taskStatusAlerts([started], [{ ...started, status: "in_review" }])).toEqual([
-      { title: "Task awaiting completion", body: "#1 Add login: In progress -> Awaiting completion" },
+      { title: "Task awaiting completion", body: "#1 Add login: In progress -> Awaiting completion", pushedAs: "completion" },
     ]);
     expect(taskStatusAlerts([started], [{ ...started, status: "done", resolution: "not_adopted" }])).toEqual([
-      { title: "Task concluded without merging", body: "#1 Add login: In progress -> Not adopted" },
+      { title: "Task concluded without merging", body: "#1 Add login: In progress -> Not adopted", pushedAs: "finished" },
     ]);
     expect(taskStatusAlerts([started], [{ ...started, status: "done", resolution: "completed" }])).toEqual([
-      { title: "Task done", body: "#1 Add login: In progress -> Completed" },
+      { title: "Task done", body: "#1 Add login: In progress -> Completed", pushedAs: "finished" },
     ]);
     expect(taskStatusAlerts([started], [login])).toEqual([
-      { title: "Task paused", body: "#1 Add login: In progress -> Planned" },
+      { title: "Task paused", body: "#1 Add login: In progress -> Planned", pushedAs: null },
     ]);
   });
 

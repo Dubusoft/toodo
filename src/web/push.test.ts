@@ -239,16 +239,16 @@ describe("push on this device", () => {
       "DELETE /api/push/subscription": () => json(null),
     });
     const push = await freshPush();
-    const covered = (...titles: string[]) => titles.map((title) => push.pushCovers(title));
-    const titles = ["Agent needs input", "CI failed", "Task awaiting completion", "Task paused by a new prerequisite", "Task done"];
+    const kinds = ["important", "messages", "started", "completion", "finished"] as const;
+    const covered = () => kinds.map((kind) => push.pushCovers(kind));
 
-    expect(covered(...titles)).toEqual([false, false, false, false, false]);
+    expect(covered()).toEqual([false, false, false, false, false]);
     await push.getPushState();
-    expect(covered(...titles)).toEqual([false, false, true, false, false]);
+    expect(covered()).toEqual([true, true, false, true, false]);
     await push.saveSettings(off);
-    expect(covered(...titles)).toEqual([false, false, false, false, true]);
+    expect(covered()).toEqual([true, true, false, false, true]);
     await push.disablePush();
-    expect(covered(...titles)).toEqual([false, false, false, false, false]);
+    expect(covered()).toEqual([false, false, false, false, false]);
   });
 
   it("saves the settings of this device", async () => {
