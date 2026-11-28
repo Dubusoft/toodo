@@ -27,6 +27,7 @@ import { InstallBanner } from "@/components/install-banner";
 import { LoneLane, type DetailLane } from "@/components/lane-view";
 import { NeedsAttention } from "@/components/needs-attention";
 import { EmptyState, TaskList, type TaskDraft, type ShownTask } from "@/components/task-list";
+import { useServerDown } from "@/components/task-common";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { Button, IconButton } from "@/components/button";
 import { NewWorkspaceDialog, WorkspaceList } from "@/components/workspace-list";
@@ -146,6 +147,7 @@ export default function App() {
   // attention, or at an address with `?chat`; the place named is shown until the chat takes it.
   const [chatOpen, setChatOpen] = useState(() => new URLSearchParams(location.search).has("chat"));
   const narrow = useNarrow();
+  const serverDown = useServerDown();
   const [chatTarget, setChatTarget] = useState<ChatTarget | null>(() => chatTargetAt(location.search));
   useEffect(
     () =>
@@ -275,6 +277,8 @@ export default function App() {
           "flex min-h-0 w-64 shrink-0 flex-col gap-4 overflow-y-auto border-r bg-sidebar p-3 text-sidebar-foreground print:hidden",
           "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-40 max-md:shadow-lg",
           !menuOpen && "max-md:hidden",
+          // The offline banner floats over the drawer's foot, so Settings scrolls up out from under it.
+          serverDown && "max-md:pb-40",
         )}
       >
         <div className="flex items-center gap-2">
