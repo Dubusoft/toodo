@@ -5,7 +5,7 @@ import type { Ran } from "./run.ts";
 import type { RunnerCall } from "./runner/call.ts";
 import type {
   CommandResults, DurableCommandType, JsonValue, LaneInspection, LaneStatus, MachineObservation, QueryBodies, QueryResults, QueryType,
-  SupervisorCommandBodies, TurnEvidence,
+  SupervisorCommandBodies, ToolJobView, TurnEvidence,
 } from "./runner/protocol.ts";
 import { LOCAL_RUNNER } from "./runner/serve.ts";
 import { isLaneOutputFiles } from "./lane-files.ts";
@@ -85,7 +85,12 @@ export type LaneOps = {
   readonly inspect: (lane: LaneRef, want: InspectWant) => Promise<LaneInspection>;
   /** `tools`: also hc's and omo's versions (a runner older than that field refuses the query). */
   readonly observeMachine: (machine?: string, opts?: { readonly tools?: boolean }) => Promise<MachineObservation>;
+  /** The state and log so far of tool job `job` on that machine's runner. */
+  readonly toolJobState: (machine: string, job: string) => Promise<ToolJobView>;
   // effects (durable commands)
+  /** Starts tool job `body.job` on that machine's runner; throws like `start` (an older runner: RUNNER_CMD_REJECTED unknown-type). */
+  readonly toolJob: (machine: string, body: Omit<SupervisorCommandBodies["tool.job"], "cmdId">) => Promise<CommandResults["tool.job"]>;
+  readonly toolCancel: (machine: string, job: string) => Promise<void>;
   /** Never throws: an unreachable runner and a failed result are "failed" (logged once per lane per minute); a timed-out or ambiguous result is "unconfirmed". */
   readonly send: (lane: LaneRef, text: string, opts?: SendOptions) => Promise<Delivery>;
   readonly pause: (lane: LaneRef, step?: "goal" | "stop" | "both") => Promise<CommandResults["lane.pause"]>;
@@ -156,7 +161,11 @@ const QUERY_GUARDS: { readonly [T in QueryType]: (v: unknown) => boolean } = {
   "q.machine.observe": (v) => isObj(v) && isStr(v.os) && isNum(v.sampledAt) && isObj(v.sample) && listOf(v.panes, isPane)
     && (v.guard === undefined || (isObj(v.guard) && Object.values(v.guard).every(isNum)))
     && (v.profiles === undefined || listOf(v.profiles, isStr))
-    && (v.tools === undefined || (isObj(v.tools) && [v.tools.hc, v.tools.omo].every((t) => t === null || isStr(t)))),
+    && (v.tools === undefined || (isObj(v.tools) && [v.tools.hc, v.tools.omo].every((t) => t === null || isStr(t))))
+    && (v.toolJobs === undefined || v.toolJobs === true),
+  "q.tool.job": (v) => isObj(v) && oneOf(["running", "succeeded", "failed", "cancelled"])(v.state) && isStr(v.log)
+    && (v.exitCode === null || isNum(v.exitCode)) && (v.version === null || isStr(v.version))
+    && (v.device === null || (isObj(v.device) && isStr(v.device.url) && isStr(v.device.userCode) && (v.device.matchingCode === null || isStr(v.device.matchingCode)))),
 };
 
 export const RESULT_GUARDS: { readonly [T in DurableCommandType]: (v: unknown) => boolean } = {
@@ -175,6 +184,8 @@ export const RESULT_GUARDS: { readonly [T in DurableCommandType]: (v: unknown) =
   "guard.kill": (v) => isObj(v) && listOf(v.killed, (k) => isObj(k) && isNum(k.pid) && isStr(k.comm) && isNum(k.rssKb) && optStr(k.lane)),
   "wait.check": (v) => isObj(v) && isBool(v.met) && optStr(v.error),
   "job.run": (v) => isObj(v) && isNum(v.exitCode) && isBool(v.timedOut) && isStr(v.output) && isStr(v.err),
+  "tool.job": (v) => isObj(v) && isStr(v.command),
+  "tool.cancel": (v) => v === undefined || isObj(v),
 };
 
 /** A RunnerUnavailable from call.ts (or rebuilt by the CLI relay): matched by shape, not class identity. */
@@ -291,6 +302,9 @@ export const laneOps = (call: RunnerCall, deps: { readonly now: () => number; re
       });
     },
     observeMachine: (machine, opts = {}) => query(machineRunner(machine), "q.machine.observe", opts.tools ? { tools: true } : {}),
+    toolJobState: (machine, job) => query(machine, "q.tool.job", { job }),
+    toolJob: (machine, body) => effect(machine, "tool.job", body),
+    toolCancel: async (machine, job) => { await effect(machine, "tool.cancel", { job }); },
 
     send: async (lane, text, opts = {}) => {
       const label = runnerOf(lane);

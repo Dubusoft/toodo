@@ -340,7 +340,7 @@ describe("proto 3 frames", () => {
   });
 
   test("queries are supervisor control frames without cmdSeq, answered by the runner's q.result", () => {
-    expect(QUERY_TYPES).toEqual(["q.panes", "q.screen", "q.process", "q.stat", "q.lane.inspect", "q.machine.observe", "q.lane.files"]);
+    expect(QUERY_TYPES).toEqual(["q.panes", "q.screen", "q.process", "q.stat", "q.lane.inspect", "q.machine.observe", "q.lane.files", "q.tool.job"]);
     for (const type of QUERY_TYPES) expect(SUPERVISOR_CONTROL_TYPES).toContain(type);
     expect(isQueryType("q.panes")).toBe(true);
     expect(isQueryType("ack")).toBe(false);

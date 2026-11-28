@@ -54,10 +54,10 @@ Runner events are defined for `lane.started`, `lane.state`, `lane.report`, `lane
 `lane.ack`, `wait.result`, `job.result`, `guard.sample`, `guard.alert`, `guard.critical`, `heavy.state` and `cmd.result`. Today
 a runner publishes `lane.state`, `lane.progress`, `cmd.result`, `wait.result` and `job.result` and, on a worker, `lane.started`, `lane.report` and
 the three `guard.*` events. Supervisor commands (`lane.start`, `lane.stop`, `lane.pause`, `lane.resume`,
-`lane.recover`, `lane.send`, `lane.close`, `lane.observe`, `wait.check`, `job.run`, `guard.kill`, `runner.rotate`)
-are part of the schema. A worker's runner carries out `lane.start`, `lane.stop`, `lane.close`, `lane.send`,
+`lane.recover`, `lane.send`, `lane.close`, `lane.observe`, `wait.check`, `job.run`, `tool.job`, `tool.cancel`, `guard.kill`,
+`runner.rotate`) are part of the schema. A worker's runner carries out `lane.start`, `lane.stop`, `lane.close`, `lane.send`,
 `lane.recover`, `lane.observe` and `guard.kill` (see [Runner-owned lanes](#runner-owned-lanes)); every runner, the local one
-included, carries out `wait.check` and `job.run` (see [Runner-owned waits and jobs](#runner-owned-waits-and-jobs)); `runner.rotate` is
+included, carries out `wait.check`, `job.run`, `tool.job` and `tool.cancel` (see [Runner-owned waits and jobs](#runner-owned-waits-and-jobs)); `runner.rotate` is
 handled by the connection itself. Every command the runner receives goes through the command policy (below): a refused one is
 answered `cmd.result failed RUNNER_CMD_REJECTED <rule>`, a carried-out one `cmd.result verified <detail>`, and an
 accepted one that this release cannot carry out yet `cmd.result failed RUNNER_CMD_UNSUPPORTED <type>`. Both get an
@@ -108,7 +108,8 @@ all, and an answer whose connection has closed is dropped: the caller times out 
 | `q.process` | `{qid, pane}` | `{info?, error?}`: hc's process info |
 | `q.stat` | `{qid, paths}` | `{exists}`, one boolean per path |
 | `q.lane.inspect` | `{qid, key, cwd?, git?, roots?, branches?, done?, doneCwd?, session?, sessionsDir?}` | `{status, pane?, process?, cwd, cwdExists, git?, done?, session?}` |
-| `q.machine.observe` | `{qid}` | `{os, sampledAt, sample, panes}` |
+| `q.machine.observe` | `{qid, tools?}` | `{os, sampledAt, sample, panes, guard?, profiles?}`; with `tools`, also `tools {hc, omo}` (`null`: not installed) and `toolJobs: true` from a runner that carries out `tool.job` |
+| `q.tool.job` | `{qid, job}` | `{state: running\|succeeded\|failed\|cancelled, log, device, exitCode, version}` of tool job `job` |
 
 A `q.result` must fit one frame (1 MiB). `ok: false` carries the reason in `detail`.
 
@@ -198,7 +199,7 @@ or validate keeps the last good policy: `RUNNER_CONFIG_INVALID <why>` (state `in
 | `allowedRoots` | directories every `cwd` must be under, besides the lanes directory, `reposRoot` and the effective worktree root, which are always added; optional, see [Derived allowed roots](#derived-allowed-roots) | derived |
 | `sandbox` | `required` refuses `lane.start` with `sandbox: false` | `optional` |
 | `sandboxCheck` | argv run before a `lane.start` with `sandbox: true`; a non-zero exit refuses it with `sandbox-unavailable` and its stderr. `dori runner install` sets it to `lane-sandbox --check` on Linux and macOS, where it also ships the wrapper (bubblewrap on Linux, Seatbelt `sandbox-exec` on macOS) and sets `sandbox: required`; Windows has no lane sandbox, so it gets `sandbox: optional`, only the `default` profile and no `sandboxCheck` (an older install's `lane-sandbox` profile and check are removed); the lead starts its lanes unsandboxed with `SANDBOX_SKIPPED` | none |
-| `jobs` | `deny` refuses `job.run`, `wait.check`, `lane.git` and a `q.lane.inspect` with `done` | `allow` |
+| `jobs` | `deny` refuses `job.run`, `wait.check`, `lane.git`, `tool.job` and a `q.lane.inspect` with `done` | `allow` |
 | `guard` | this host's guard thresholds (`loadAlert`, `loadOk`, `memFreeMinPct`, `memFreeCritPct`, `swapFreeCritPct`, `diskFreeMinGb`, `panesMax`), each optional | the config's `guard` |
 | `heavyKill` | command-line patterns killed under critical memory | the config's `heavyKill` |
 | `reposRoot` | the directory whose direct children are this host's repos for placement, absolute or `~/...`; see [Workspace placement](#workspace-placement) | none |
@@ -331,6 +332,8 @@ answers `cmd.result failed RUNNER_CMD_UNSUPPORTED <type>`. Under `jobs: deny` bo
 | --- | --- | --- |
 | `wait.check` | `{cmdId, waitId, signal, cwd}` | `{met, error?}` |
 | `job.run` | `{cmdId, opKey, name, command: string[], cwd, timeoutSec, heavy}` | `{exitCode, timedOut, output, err}` |
+| `tool.job` | `{cmdId, job, tool: hc\|omo, kind: install\|login, replace?}` | `{command}` |
+| `tool.cancel` | `{cmdId, job}` | `{}` |
 
 - `wait.check` runs the `Done =` signal once in `cwd`, bounded by 10 s. A met check also publishes
   `wait.result {waitId, outcome: WAIT_DONE, detail}` (detail at most 500 characters), which the supervisor settles as
@@ -340,6 +343,15 @@ answers `cmd.result failed RUNNER_CMD_UNSUPPORTED <type>`. Under `jobs: deny` bo
   verified|failed, exitCode, output}` per run (journal only). `output` is capped at 64 KiB and `err` at 4 KiB, cut on
   a UTF-8 character boundary. `heavy: true` is not supported on a runner and fails before anything runs. The
   supervisor allows 30 s past `timeoutSec`; a failed or malformed answer is `RUNNER_JOB_REFUSED runner=<label>`.
+- `tool.job` installs or updates hc or omo, or signs omo in (`login`, `omo login --no-browser`), on the runner's host for
+  Settings > Machines & accounts, with the commands the supervisor runs on its own host (`src/tool-jobs.ts`: hc's
+  installer or `hc update`, omo's installer or `omo update`), `~/.local/bin` on the PATH. It answers once the job has
+  started; the supervisor names the job and reads its state with `q.tool.job` while it runs: `log` is its output so far
+  (credentials masked, last 32 KB), `device` the device code of a sign-in (read before masking), `version` the tool's
+  version once it ended. A `tool.job` for a job the runner already holds answers it again. Jobs are kept in memory (the
+  last ten), so a restarted runner answers `no tool job` and the supervisor ends it failed. A runner on Windows refuses
+  it; one older than it refuses it `RUNNER_CMD_REJECTED unknown-type`, and reports no `toolJobs` in `q.machine.observe`,
+  so no protocol bump is needed. `tool.cancel` stops a running job.
 
 ## Fencing
 

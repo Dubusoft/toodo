@@ -27,7 +27,7 @@ export type RunnerPolicy = {
    * the start `sandbox-unavailable` with its stderr, so a host whose wrapper cannot sandbox never opens the lane's pane.
    */
   readonly sandboxCheck?: readonly string[];
-  /** `deny` refuses `job.run`, `wait.check`, `lane.git` and a `q.lane.inspect` with a `done` section. */
+  /** `deny` refuses `job.run`, `wait.check`, `lane.git`, `tool.job` and a `q.lane.inspect` with a `done` section. */
   readonly jobs: "allow" | "deny";
   /** Guard thresholds for this host; each one absent falls back to the runner's config defaults. */
   readonly guard?: Readonly<Partial<Record<GuardKey, number>>>;
@@ -403,7 +403,9 @@ export function checkCommand(policy: RunnerPolicy, command: unknown, realpath: (
     frame = { ...frame, body: { ...frame.body, cwd: laneDir } };
   }
   const body = frame.body as Record<string, unknown>;
-  if ((frame.type === "job.run" || frame.type === "wait.check" || frame.type === "lane.git") && policy.jobs === "deny") return reject("jobs-denied", frame.type);
+  if ((frame.type === "job.run" || frame.type === "wait.check" || frame.type === "lane.git" || frame.type === "tool.job") && policy.jobs === "deny") {
+    return reject("jobs-denied", frame.type);
+  }
   if (frame.type === "lane.start") {
     if (!Object.hasOwn(policy.agents, body.agentProfile as string)) return reject("agent-profile", String(body.agentProfile));
     if (body.sandbox === false && policy.sandbox === "required") return reject("sandbox-required", "sandbox:false");

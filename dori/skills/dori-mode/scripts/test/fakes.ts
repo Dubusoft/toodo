@@ -268,6 +268,9 @@ export const fakeLaneOps = (w: World): LaneOps => {
       const panes = w.panes.map((p) => ({ ...p }));
       return { os: "linux", sampledAt: 0, sample: { load1: 0, memFreePct: 100, diskFreeGb: 100, swapFreeGb: 0, swapTotalGb: 0, panes: panes.length }, panes };
     },
+    toolJobState: async (machine, job) => { record("toolJobState", undefined, { machine, job }); down(machine); throw new LaneOpsError("LANE_OP_FAILED", machine, "no tool jobs in the fake World"); },
+    toolJob: async (machine, body) => { record("toolJob", undefined, { machine, body }); down(machine); throw new LaneOpsError("LANE_OP_FAILED", machine, "no tool jobs in the fake World"); },
+    toolCancel: async (machine, job) => { record("toolCancel", undefined, { machine, job }); down(machine); throw new LaneOpsError("LANE_OP_FAILED", machine, "no tool jobs in the fake World"); },
     send: async (lane, text, opts) => {
       record("send", lane.key, { text, ...(opts ? { opts } : {}) });
       if (w.runnerDown) return "failed";

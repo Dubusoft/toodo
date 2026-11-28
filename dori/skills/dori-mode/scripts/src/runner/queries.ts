@@ -15,6 +15,7 @@ import type {
   AnySupervisorControl, JsonValue, LaneInspection, MachineObservation, QueryBodies, QueryResults, QueryType, RunnerControlBodies,
 } from "./protocol.ts";
 import { laneStatus } from "./serve.ts";
+import type { RunnerToolJobs } from "./tool-jobs.ts";
 import { checkLaneFilesBody, LaneFileError } from "../lane-file-contract.ts";
 import type { LaneOutputFiles } from "./protocol.ts";
 
@@ -51,6 +52,8 @@ export type QueryDeps = {
   readonly guard?: RunnerPolicy["guard"];
   /** The agent profiles the runner's policy can start, reported by `q.machine.observe` (review placement reads `review`). */
   readonly profiles?: readonly string[];
+  /** The runner's tool jobs, read by `q.tool.job`; with them `q.machine.observe` with `tools` reports `toolJobs`. */
+  readonly toolJobs?: Pick<RunnerToolJobs, "read">;
 };
 
 /** Default agent session directory on a host (omo's own). */
@@ -125,7 +128,8 @@ export const laneInspect = async (deps: QueryDeps, body: Body<"q.lane.inspect">)
 /**
  * `q.machine.observe`: this host's guard sample (its `panes` filled from the pane list, -1 when unreadable), pane list,
  * the guard thresholds its runner-config.json sets (`guard`, only when it sets any), its agent profiles (`profiles`), and
- * hc's and omo's versions when the query asks for `tools` (Settings > Machines & accounts).
+ * hc's and omo's versions when the query asks for `tools` (Settings > Machines & accounts), with `toolJobs` when this
+ * runner can install and update them (`tool.job`).
  */
 export const observeMachine = async (deps: QueryDeps, body: Body<"q.machine.observe"> = {}): Promise<MachineObservation> => {
   let panes: Pane[] | undefined;
@@ -133,7 +137,7 @@ export const observeMachine = async (deps: QueryDeps, body: Body<"q.machine.obse
   const listed = panes;
   const sample: HostSample = await sampleHost(deps.run, deps.dataPath ?? "/", async () => listed?.length ?? -1, deps.readMemInfo);
   const guard = deps.guard && Object.keys(deps.guard).length > 0 ? { guard: deps.guard } : {};
-  const tools = body.tools ? { tools: await toolVersions(deps.run) } : {};
+  const tools = body.tools ? { tools: await toolVersions(deps.run), ...(deps.toolJobs ? { toolJobs: true as const } : {}) } : {};
   return { os: deps.os ?? platform(), sampledAt: deps.clock.now(), sample, panes: listed ?? [], ...guard, ...(deps.profiles ? { profiles: deps.profiles } : {}), ...tools };
 };
 
@@ -153,6 +157,10 @@ export const answerQuery = async (deps: QueryDeps, query: AnySupervisorControl):
       case "q.stat": return queryStat(deps, body as Body<"q.stat">);
       case "q.lane.inspect": return laneInspect(deps, body as Body<"q.lane.inspect">);
       case "q.machine.observe": return observeMachine(deps, body as Body<"q.machine.observe">);
+      case "q.tool.job": {
+        if (!deps.toolJobs) throw new Error("RUNNER_QUERY_UNSUPPORTED q.tool.job");
+        return deps.toolJobs.read((body as Body<"q.tool.job">).job);
+      }
       default: throw new Error(`RUNNER_QUERY_UNSUPPORTED ${query.type}`);
     }
   })();
