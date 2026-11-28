@@ -302,7 +302,7 @@ export function SettingsDialog({
                     >
                       {item.icon}
                       <span>{sectionLabel(item.id, m)}</span>
-                      {item.status && <span className="ml-auto text-xs text-muted-foreground">{item.status}</span>}
+                      {item.status && <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-muted-foreground">{item.status}</span>}
                       <ChevronRight aria-hidden className={cn("md:hidden", !item.status && "ml-auto")} />
                     </button>
                   );
