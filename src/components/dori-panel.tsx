@@ -3,7 +3,7 @@ import { ChoiceSetting, useDoriConfig } from "@/components/dori-config-panel";
 import { SchedulesPanel } from "@/components/schedules-panel";
 import { STALE_AFTER_MS, age, useNow } from "@/components/supervisor-status-panel";
 import type { DoriConfigEntry } from "@/lib/dori-config";
-import { fill, useMessages } from "@/lib/i18n";
+import { useMessages } from "@/lib/i18n";
 import type { SupervisorStatusSnapshot } from "@/lib/supervisor-status";
 import { supervisorDown, useHostSupervisor } from "@/web/host-status";
 import { useSupervisorStatus, workingLanes } from "@/web/supervisor-status";
@@ -164,38 +164,6 @@ export function DoriPanel({ active }: { active: boolean }) {
         <SchedulesPanel active={active} />
       </div>
       <BehaviorSettings />
-    </section>
-  );
-}
-
-/**
- * Machines & accounts, the place setting up hosts and agent accounts from the app will take.
- * For now it says how Dori is set up on the host and shows the machine settings it reads. On a
- * server without Dori it is the Set up Dori entry (`setup`).
- */
-export function MachinesPanel({ setup = false }: { setup?: boolean }) {
-  const m = useMessages();
-  const t = m.settings.machines;
-  const runners = useDoriConfig().data?.entries.find((e) => e.key === "runners");
-  return (
-    <section aria-label={m.settings.sections[setup ? "dori-setup" : "machines"]} className="flex flex-col gap-3 text-sm">
-      <p className="text-muted-foreground">{setup ? t.setupIntro : t.intro}</p>
-      <details open={setup}>
-        <summary className="cursor-pointer text-muted-foreground">{m.settings.showHow}</summary>
-        <p className="pt-2">{fill(t.how, { setup: <code>dori setup</code>, runner: <code>dori runner setup</code> })}</p>
-      </details>
-      {!setup && (
-        <div className="flex flex-col gap-1">
-          <h4 className="font-medium">{t.runners}</h4>
-          {runners?.value ? (
-            <pre className="overflow-x-auto rounded-md bg-muted px-2 py-1.5 font-mono text-xs whitespace-pre-wrap wrap-anywhere">
-              {runners.value}
-            </pre>
-          ) : (
-            <p className="text-muted-foreground">{t.runnersEmpty}</p>
-          )}
-        </div>
-      )}
     </section>
   );
 }
