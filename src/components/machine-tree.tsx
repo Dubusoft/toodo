@@ -1,4 +1,5 @@
 import { Fragment, type ReactNode } from "react";
+import { Selector } from "@astryxdesign/core/Selector";
 import { LaneStatusBadge, machineTones } from "@/components/lane-view";
 import { STALE_AFTER_MS, useNow } from "@/components/supervisor-status-panel";
 import type { Task, TaskId, Workspace, WorkspaceId } from "@/lib/bindings";
@@ -21,12 +22,24 @@ export function onServerHost(hostname: string): boolean {
   return host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
 }
 
+/** The server machine's name: Local when this page was opened on its host, Server otherwise. */
+function useServerName(): string {
+  const t = useMessages().app.machines;
+  return onServerHost(location.hostname) ? t.local : t.server;
+}
+
 /** One machine with its lanes, grouped by the workspace of each lane's task. */
 export type MachineNode = {
   readonly label: string;
-  /** `null` for a machine only a lane names, which Dori has no runner for, and for the server before Dori reports. */
+  /**
+   * `null` for a machine only a lane or a workspace names, which Dori has no runner for, and
+   * for the server before Dori reports.
+   */
   readonly machine: SupervisorMachine | null;
-  /** The server's node also holds every workspace no lane works in, with no lanes. */
+  /**
+   * The workspaces set to live on the machine, and those its lanes work in; the server's node
+   * also holds every workspace with no machine set that no lane works in.
+   */
   readonly workspaces: readonly { readonly workspace: Workspace; readonly lanes: readonly SupervisorLane[] }[];
   /** Lanes with no task, or whose task is in no workspace listed. */
   readonly loose: readonly SupervisorLane[];
@@ -34,9 +47,10 @@ export type MachineNode = {
 
 /**
  * The snapshot's machines in Dori's order (the server first), then any other machine a lane runs
- * on; under each, its lanes by workspace in the workspace list's order, and the lanes of no
- * workspace. The server is always there, so a workspace no lane works in, or every workspace
- * when Dori never reported (`snapshot` `null`), sits under it.
+ * on or a workspace is set to; under each, in the workspace list's order, the workspaces set to
+ * live there and those its lanes work in, each with its lanes on that machine, then the lanes of
+ * no workspace. The server is always there, so a workspace with no machine set that no lane
+ * works in, or every such workspace when Dori never reported (`snapshot` `null`), sits under it.
  */
 export function machineTree(
   snapshot: SupervisorStatusSnapshot | null,
@@ -47,6 +61,7 @@ export function machineTree(
   const allLanes = snapshot?.lanes ?? [];
   const labels = machines.map((machine) => machine.label);
   for (const lane of allLanes) if (!labels.includes(lane.machine)) labels.push(lane.machine);
+  for (const { machine } of workspaces) if (machine !== null && !labels.includes(machine)) labels.push(machine);
   if (!labels.includes(SERVER_RUNNER)) labels.unshift(SERVER_RUNNER);
   const workspaceOf = (lane: SupervisorLane): WorkspaceId | undefined => {
     const task = lane.task === null ? undefined : tasks.get(lane.task as TaskId);
@@ -60,7 +75,10 @@ export function machineTree(
       machine: machines.find((machine) => machine.label === label) ?? null,
       workspaces: workspaces
         .map((workspace) => ({ workspace, lanes: lanes.filter((lane) => workspaceOf(lane) === workspace.id) }))
-        .filter((group) => group.lanes.length > 0 || (label === SERVER_RUNNER && !worked.has(group.workspace.id))),
+        .filter(({ workspace, lanes }) =>
+          lanes.length > 0 ||
+          workspace.machine === label ||
+          (workspace.machine === null && label === SERVER_RUNNER && !worked.has(workspace.id))),
       loose: lanes.filter((lane) => workspaceOf(lane) === undefined),
     };
   });
@@ -111,11 +129,50 @@ function LaneList({ name, lanes, onShowLane }: { name: string; lanes: readonly S
   );
 }
 
+/** The option of a workspace with no machine set; no runner label starts with a colon. */
+const NO_MACHINE = ":none";
+
+/**
+ * Picks the machine a workspace lives on: the server and each runner Dori knows, plus `value`
+ * when Dori no longer knows it, or none, which leaves the navigation to place the workspace by
+ * its lanes. Like the navigation, it follows the Dori status without making Dori read anything.
+ */
+export function MachineSelector({
+  value,
+  onChange,
+  size,
+}: {
+  value: string | null;
+  onChange: (machine: string | null) => void;
+  size?: "sm" | "md";
+}) {
+  const t = useMessages().app.workspace;
+  const serverName = useServerName();
+  const { snapshot } = useSupervisorStatus(true, { watch: false });
+  const labels = [SERVER_RUNNER];
+  for (const { label } of snapshot?.machines ?? []) if (!labels.includes(label)) labels.push(label);
+  if (value !== null && !labels.includes(value)) labels.push(value);
+  return (
+    <Selector
+      size={size}
+      label={t.machine}
+      description={t.machineHint}
+      options={[
+        { value: NO_MACHINE, label: t.noMachine },
+        ...labels.map((label) => ({ value: label, label: label === SERVER_RUNNER ? serverName : label })),
+      ]}
+      value={value ?? NO_MACHINE}
+      onChange={(picked) => onChange(picked === null || picked === NO_MACHINE ? null : picked)}
+    />
+  );
+}
+
 /**
  * The navigation's workspaces by machine: the server and each runner Dori knows with its state
- * and last reading, and under each the workspaces its lanes work in, each lane with a chip of its
- * live status; lanes of no workspace come last. Workspaces no lane works in sit under the server,
- * which is named Local when this page was opened on its host and Server otherwise. It follows
+ * and last reading, and under each the workspaces set to live on it and those its lanes work in,
+ * each lane with a chip of its live status; lanes of no workspace come last. Workspaces with no
+ * machine set that no lane works in sit under the server, which is named Local when this page
+ * was opened on its host and Server otherwise. It follows
  * the Dori status without counting as a status panel, so it makes Dori read no lane screens or
  * quota; on a server Dori never reported to, it is the server with every workspace. A lane opens
  * its lane view, with its task's details beside it when it has a task.
@@ -134,10 +191,10 @@ export function MachineTree({
   const { snapshot } = useSupervisorStatus(true, { watch: false });
   const tasks = useTasks(snapshot?.lanes.map((lane) => lane.task as TaskId | null) ?? []);
   const now = useNow();
+  const serverName = useServerName();
   if (snapshot === null && workspaces.length === 0) return null;
   const byId = new Map((tasks.data ?? []).map((task) => [task.id, task]));
   const tree = machineTree(snapshot, byId, workspaces);
-  const serverName = onServerHost(location.hostname) ? t.local : t.server;
 
   return (
     <>

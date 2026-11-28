@@ -4,6 +4,7 @@ import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button } from "@/components/button";
 import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
+import { MachineSelector } from "@/components/machine-tree";
 import { Markdown } from "@/components/task-common";
 import type { Workspace } from "@/lib/bindings";
 import { useMessages } from "@/lib/i18n";
@@ -17,8 +18,8 @@ export function repositoryUrl(repository: string): string | null {
 }
 
 /**
- * The description and repository reference of a workspace, with a form that edits them and
- * its name.
+ * The description and repository reference of a workspace, with a form that edits them, its
+ * name, and the machine it lives on.
  */
 export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
   const m = useMessages();
@@ -30,10 +31,12 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
   const [name, setName] = useState(workspace.name);
   const [description, setDescription] = useState(workspace.description ?? "");
   const [repository, setRepository] = useState(workspace.repository ?? "");
+  const [machine, setMachine] = useState(workspace.machine);
   const changed =
     name !== workspace.name ||
     description !== (workspace.description ?? "") ||
-    repository !== (workspace.repository ?? "");
+    repository !== (workspace.repository ?? "") ||
+    machine !== workspace.machine;
   const guard = useDiscardGuard(changed, () => setEditing(false), updateWorkspace.isPending);
 
   function open(focus: "name" | "repository") {
@@ -41,6 +44,7 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
     setName(workspace.name);
     setDescription(workspace.description ?? "");
     setRepository(workspace.repository ?? "");
+    setMachine(workspace.machine);
     setEditing(focus);
   }
 
@@ -52,6 +56,7 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
         name: name.trim(),
         description: description.trim() || null,
         repository: repository.trim() || null,
+        machine,
       },
       { onSuccess: () => setEditing(false) },
     );
@@ -118,6 +123,7 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
         value={repository}
         onChange={setRepository}
       />
+      <MachineSelector size="sm" value={machine} onChange={setMachine} />
       {guard.asking ? (
         <DiscardConfirm
           label={copy.discardLabel}

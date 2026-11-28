@@ -148,6 +148,9 @@ export const app = {
     optionalRepository: "Repository (optional, e.g. owner/repo or a URL)",
     discardLabel: "Discard workspace changes",
     discardQuestion: "Discard the changes to the workspace?",
+    machine: "Machine",
+    machineHint: "Where the workspace lives; the navigation shows it under this machine.",
+    noMachine: "Not set (by its lanes)",
   },
   guidelines: {
     title: "Guidelines",

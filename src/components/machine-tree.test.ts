@@ -3,7 +3,7 @@ import { machineTree, onServerHost } from "@/components/machine-tree";
 import type { Task, TaskId, Workspace } from "@/lib/bindings";
 import type { SupervisorLane, SupervisorStatusSnapshot } from "@/lib/supervisor-status";
 
-const workspace = (id: number, name: string) => ({ id, name }) as Workspace;
+const workspace = (id: number, name: string, machine: string | null = null) => ({ id, name, machine }) as Workspace;
 const task = (id: number, workspaceId: number) => ({ id, workspaceId }) as Task;
 const lane = (key: string, machine: string, taskId: number | null): SupervisorLane => ({
   key,
@@ -64,6 +64,25 @@ describe("machineTree", () => {
       ["local", ["dori"]],
       ["mac-mini", ["toodo"]],
     ]);
+  });
+
+  it("puts a workspace under the machine it is set to, also one Dori does not know, and under its lanes' machines", () => {
+    const workspaces = [workspace(1, "toodo", "mac-mini"), workspace(2, "dori", "gone"), workspace(3, "site"), workspace(4, "notes", "local")];
+    const tree = machineTree(
+      snapshot([lane("a", "local", 10)], [
+        { label: "local", state: "connected", version: null, sample: null },
+        { label: "mac-mini", state: "connected", version: null, sample: null },
+      ]),
+      new Map([[10 as TaskId, task(10, 1)]]),
+      workspaces,
+    );
+    expect(tree.map((node) => [node.label, node.workspaces.map((group) => [group.workspace.name, group.lanes.map((l) => l.key)])])).toEqual([
+      // Its lane keeps toodo under the server too; site has no machine set and no lane.
+      ["local", [["toodo", ["a"]], ["site", []], ["notes", []]]],
+      ["mac-mini", [["toodo", []]]],
+      ["gone", [["dori", []]]],
+    ]);
+    expect(tree[2]!.machine).toBeNull();
   });
 
   it("puts every workspace under the server when Dori never reported", () => {

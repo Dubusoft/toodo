@@ -1100,7 +1100,8 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   links (`https` only), and the working lanes' recent screens, and the runner machines with
   their last reading, typed in `src/lib/supervisor-status.ts`), then each new one; before the
   supervisor's first snapshot the stream starts with `ready`. The navigation's workspace list,
-  grouped by machine, and a task's details follow it with `?watch=0`, which is not counted as an
+  grouped by machine, the machine picker of the workspace forms, and a task's details follow it
+  with `?watch=0`, which is not counted as an
   open panel; a lane opened from the navigation (the Lane tab of its task's details, or the lane
   alone without a task) follows it without, as a panel, while it is shown. The server keeps only the latest snapshot, in
   memory. The supervisor pushes it with `PUT /mcp/supervisor-status` and asks how many

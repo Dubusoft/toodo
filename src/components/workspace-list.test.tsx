@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkspaceList } from "@/components/workspace-list";
 import type { Workspace } from "@/lib/bindings";
+import type { SupervisorStatusSnapshot } from "@/lib/supervisor-status";
 
 const mutation = { mutate: vi.fn(), isPending: false, isError: false };
 const query = <T,>(data: T) => ({ data, isPending: false, isError: false });
@@ -15,8 +16,9 @@ vi.mock("@/lib/queries", async (importOriginal) => ({
   useDeleteWorkspace: () => mutation,
 }));
 
-// Dori never reported, so every workspace is under the server.
-vi.mock("@/web/supervisor-status", () => ({ useSupervisorStatus: () => ({ snapshot: null, error: null }) }));
+// Dori never reported unless a test sets a snapshot, so every workspace is under the server.
+let snapshot: SupervisorStatusSnapshot | null = null;
+vi.mock("@/web/supervisor-status", () => ({ useSupervisorStatus: () => ({ snapshot, error: null }) }));
 
 beforeAll(() => {
   // jsdom has no modal dialogs; Astryx Dialog opens its <dialog> with showModal.
@@ -30,6 +32,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   workspaces = [];
+  snapshot = null;
   mutation.mutate.mockClear();
 });
 
@@ -51,7 +54,7 @@ describe("New workspace", () => {
     fireEvent.click(add);
 
     expect(mutation.mutate).toHaveBeenCalledWith(
-      { name: "notes", description: null, repository: null },
+      { name: "notes", description: null, repository: null, machine: null },
       expect.anything(),
     );
   });
@@ -64,7 +67,36 @@ describe("New workspace", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Add workspace" }));
 
     expect(mutation.mutate).toHaveBeenCalledWith(
-      { name: "site", description: "The **website**", repository: "o/site" },
+      { name: "site", description: "The **website**", repository: "o/site", machine: null },
+      expect.anything(),
+    );
+  });
+
+  it("offers the server and each runner Dori knows as the machine, and adds the workspace on the one picked", async () => {
+    snapshot = {
+      at: Date.now(),
+      status: [],
+      quota: null,
+      lanes: [],
+      machines: [
+        { label: "local", state: "connected", version: null, sample: null },
+        { label: "mac-mini", state: "connected", version: null, sample: null },
+      ],
+    };
+    const dialog = openNewWorkspace();
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "site" } });
+    fireEvent.click(within(dialog).getByRole("combobox", { name: /Machine/ }));
+    expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual([
+      "Not set (by its lanes)",
+      // jsdom opens the page at localhost, the server's own host.
+      "Local",
+      "mac-mini",
+    ]);
+    fireEvent.click(screen.getByRole("option", { name: "mac-mini" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add workspace" }));
+
+    expect(mutation.mutate).toHaveBeenCalledWith(
+      { name: "site", description: null, repository: null, machine: "mac-mini" },
       expect.anything(),
     );
   });
