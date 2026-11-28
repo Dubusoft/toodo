@@ -3,6 +3,7 @@
 
 import { existsSync } from "node:fs";
 import type { DoriConfigStore } from "../../src/lib/dori-config.ts";
+import type { MachineJob } from "../../src/lib/machines.ts";
 import type { Server } from "bun";
 import { join } from "node:path";
 import { Backups, importFile, startAutomaticBackups } from "./commands/backup.ts";
@@ -12,6 +13,7 @@ import { AccessVerifier, httpKeySource } from "./http/access.ts";
 import { type Config, configFromEnv, type Listen } from "./http/config.ts";
 import { EventLog } from "./http/event-log.ts";
 import { peerAddress } from "./http/auth.ts";
+import { type MachineBridge, MachineJobFeed } from "./http/machines.ts";
 import { createHandler } from "./http/server.ts";
 import type { ScheduleBridge } from "./http/supervisor-schedules.ts";
 import { Services } from "./http/services.ts";
@@ -110,6 +112,8 @@ export type Core = {
   readonly listening: (port: number) => void;
   /** Stops the background work and closes the database; the server has stopped serving. */
   readonly close: () => Promise<void>;
+  /** Streams a machines job's latest state, as the supervisor sent it, to the open Machines & accounts sections. */
+  readonly machineJob: (job: MachineJob) => void;
 };
 
 /** Stops `server`, letting open requests finish for {@link SHUTDOWN_DEADLINE_MS}. */
@@ -128,8 +132,11 @@ export async function stopServing(server: Server<undefined>, name: string): Prom
   }
 }
 
-/** What the host adds to the core it serves: the supervisor's scheduled jobs, and Dori's config file for the Settings page. */
-export type CoreOptions = { readonly schedules?: ScheduleBridge; readonly doriConfig?: DoriConfigStore };
+/**
+ * What the host adds to the core it serves: the supervisor's scheduled jobs and its Machines & accounts requests, and
+ * Dori's config file for the Settings page.
+ */
+export type CoreOptions = { readonly schedules?: ScheduleBridge; readonly machines?: MachineBridge; readonly doriConfig?: DoriConfigStore };
 
 export async function openCore(config: Config, options: CoreOptions = {}): Promise<Core> {
   createPrivateDir(config.dataDir);
@@ -173,8 +180,10 @@ export async function openCore(config: Config, options: CoreOptions = {}): Promi
     console.log(`toodo-server: /api accepts Cloudflare Access sign-ins from ${config.access.issuer}`);
     access = new AccessVerifier(config.access, httpKeySource());
   }
+  const machineJobs = new MachineJobFeed();
   const handle = createHandler({
     services,
+    machineJobs,
     webToken,
     mcpToken,
     access,
@@ -182,8 +191,10 @@ export async function openCore(config: Config, options: CoreOptions = {}): Promi
     clientMetadata: httpClientMetadataFetcher(),
     ...(options.schedules ? { schedules: options.schedules } : {}),
     ...(options.doriConfig ? { doriConfig: options.doriConfig } : {}),
+    ...(options.machines ? { machines: options.machines } : {}),
   });
   return {
+    machineJob: (job) => { machineJobs.push(job); },
     fetch: (request, server) =>
       handle(request, {
         peer: peerAddress(server.requestIP(request)?.address ?? null),

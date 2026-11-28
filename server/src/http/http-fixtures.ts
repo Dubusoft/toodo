@@ -18,6 +18,7 @@ import { peerAddress } from "./auth.ts";
 import { EventLog } from "./event-log.ts";
 import { createHandler } from "./server.ts";
 import { Services } from "./services.ts";
+import type { MachineBridge, MachineJobFeed } from "./machines.ts";
 import type { ScheduleBridge } from "./supervisor-schedules.ts";
 
 export const WEB = "web";
@@ -46,6 +47,9 @@ export type TestServerOptions = {
   /** The supervisor's scheduled jobs, as the host hands them over. */
   schedules?: ScheduleBridge;
   doriConfig?: DoriConfigStore;
+  /** Settings > Machines & accounts, as the host hands it over, and the jobs the supervisor sends. */
+  machines?: MachineBridge;
+  machineJobs?: MachineJobFeed;
 };
 
 const noClientMetadata: ClientMetadataFetcher = async (url) => {
@@ -81,6 +85,8 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     clientMetadata: options.clientMetadata ?? noClientMetadata,
     ...(options.schedules ? { schedules: options.schedules } : {}),
     ...(options.doriConfig ? { doriConfig: options.doriConfig } : {}),
+    ...(options.machines ? { machines: options.machines } : {}),
+    ...(options.machineJobs ? { machineJobs: options.machineJobs } : {}),
   });
   const server = Bun.serve({
     hostname: "127.0.0.1",

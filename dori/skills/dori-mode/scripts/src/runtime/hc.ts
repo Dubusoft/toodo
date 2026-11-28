@@ -55,6 +55,13 @@ export const hcVersion = async (run: Runner): Promise<string | undefined> => {
 };
 
 /**
+ * The POSIX argv that updates an installed hc to its newest release in place (terminals keep running), or installs a
+ * missing one with the release installer into ~/.local/bin.
+ */
+export const hcInstallCommand = (installed: boolean): string[] =>
+  installed ? ["hc", "update"] : ["sh", "-c", `curl -fsSL ${HC_INSTALL_URL} | sh`];
+
+/**
  * On Windows, puts hc's install folder on this process's PATH: the installer adds it to the user's PATH in the
  * registry, which a runner started before the install (or the install it just ran) does not see.
  */
@@ -78,7 +85,7 @@ export const ensureHc = async (run: Runner, platform: NodeJS.Platform = process.
   if (version === undefined) {
     await run(windows
       ? ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `irm ${HC_WINDOWS_INSTALL_URL} | iex`]
-      : ["sh", "-c", `curl -fsSL ${HC_INSTALL_URL} | sh`], { timeoutMs: INSTALL_TIMEOUT_MS });
+      : hcInstallCommand(false), { timeoutMs: INSTALL_TIMEOUT_MS });
   } else if (!versionAtLeast(version, HC_MIN_VERSION)) {
     await run(["hc", "update", "--version", HC_MIN_VERSION], { timeoutMs: INSTALL_TIMEOUT_MS });
   } else return version;

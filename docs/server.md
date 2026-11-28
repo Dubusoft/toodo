@@ -1125,6 +1125,26 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   `400`, and `503` when no supervisor runs beside the server (`toodo-server`, or the host
   in safe mode) or it does not answer within 10 seconds. A read-only device may list the
   jobs but not change them.
+- `GET /api/machines`, `GET /api/machines/{label}/config`, `POST /api/machines` and
+  `GET /api/machines/jobs`: Settings > Machines & accounts (typed in `src/lib/machines.ts`).
+  `GET /api/machines` answers `{ "ok": true, "machines": [...], "jobs": [...] }`: the server
+  host (runner `local`) and every runner the supervisor knows, each with its state, runner
+  version, OS and hc's and omo's versions (a worker's through its runner, `null` with the
+  reason while it cannot be asked), and the latest jobs. `GET .../config` answers a runner's
+  `runner-config.json` as config entries: the host's own file, or a worker's over ssh when the
+  host has its target. `POST` takes one request: `config-set` of a key (only the placement keys
+  `workspaces`, `detectWorkspaces`, `reposRoot` and `worktreeRoot`; every other key runs a
+  command or moves the sandbox and is changed on that machine), `install` of `hc` or `omo` on
+  the host (an update when it is installed), `login` (`omo login --no-browser`, with
+  `replace` for `--replace`), or `cancel` of a running job. The runner applies a saved key
+  itself, without a restart. `GET /api/machines/jobs` streams `job` events, each a job's
+  latest state with the last 32 KB of its output (credentials masked) and, for a sign-in,
+  its device URL, user code and matching code; a new stream first gets the updates kept in
+  memory. The server runs none of these commands: the host hands each request to the
+  supervisor Worker, which runs it and sends each job's state back. A refused request is
+  `400` with its `error`, a body that is no request `400`, and `503` when no supervisor runs
+  beside the server or it does not answer within 60 seconds. A read-only device may read
+  but not change anything.
 - `GET /api/backups/export`: a consistent snapshot of the database, as an
   `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
 - `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
