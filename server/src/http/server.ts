@@ -19,6 +19,7 @@ import * as devices from "./devices.ts";
 import { DoriConfigRoutes } from "./dori-config.ts";
 import * as files from "./files.ts";
 import * as machines from "./machines.ts";
+import * as runnerEnroll from "./runner-enroll.ts";
 import * as push from "./push.ts";
 import * as rpc from "./rpc.ts";
 import type { Services } from "./services.ts";
@@ -235,6 +236,7 @@ export function createHandler(options: RouterOptions): Handler {
     const { pathname } = new URL(request.url);
     if (pathname.startsWith("/api/")) return api(request, pathname, connection);
     if (pathname === "/mcp" || pathname.startsWith("/mcp/")) return agent(request, pathname, connection);
+    if (pathname.startsWith(runnerEnroll.ENROLL_PREFIX)) return runnerEnroll.route(machineBridge, request, pathname);
     if (oauth === null) {
       if (pathname.startsWith("/oauth/") || pathname.startsWith("/.well-known/")) return NOT_FOUND();
     } else {

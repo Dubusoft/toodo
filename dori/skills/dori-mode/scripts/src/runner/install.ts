@@ -684,7 +684,7 @@ export const windowsInstallScript = (
 
 const NOT_POSIX = /not recognized|is not recognized as|CommandNotFoundException/i;
 
-type InstallKind = "posix" | "windows";
+export type InstallKind = "posix" | "windows";
 
 const installResult = (kind: InstallKind, r: Ran, bundle: string): InstallResult => {
   // PowerShell over a non-tty ssh appends its progress stream to stderr as CLIXML, which hides the real error line.
@@ -711,7 +711,7 @@ const installResult = (kind: InstallKind, r: Ran, bundle: string): InstallResult
  * The supervisor's `enroll.ok` reply (base64) to the `RUNNER_ENROLL_REQUEST` line a first install pass printed on `out`,
  * accepted with the installer's SupervisorAuth; throws when the request is missing, malformed or refused.
  */
-const enrollReply = (out: string, req: InstallRequest, where: string): string => {
+export const enrollReply = (out: string, req: Pick<InstallRequest, "label" | "enroll">, where: string): string => {
   const line = /^RUNNER_ENROLL_REQUEST (.+)$/m.exec(out)?.[1];
   if (!line) throw new Error(`missing enrollment request on ${where}`);
   const frame = decodeFrame(line, "runner");
@@ -932,6 +932,24 @@ export const installRunner = async (deps: InstallDeps, req: InstallRequest): Pro
   writeRunnerEndpoint(req.stateDir, req.label, req.listenAddress);
   step("verify", "done", `remote pass exited 0, version=${result.version}, endpoint ${req.listenAddress} recorded`);
   return result;
+};
+
+/**
+ * The install script a computer enrolled by a pasted command downloads (runner/paste-enroll.ts) and runs itself: the
+ * same POSIX or Windows script an ssh install sends, with the default templates, for `bundle`, `label`, `listenAddress`
+ * and `issue` (its `reply` set on the pass after the enrollment exchange).
+ */
+export const pasteInstallScript = (
+  kind: InstallKind, bundle: string, label: string, listenAddress: string, issue: EnrollIssue, agentCommand: readonly string[],
+): string => {
+  if (!LABEL.test(label)) throw new Error(`bad label ${label}`);
+  if (!isPrivateListen(listenAddress)) throw new Error(`RUNNER_LISTEN_REFUSED ${listenAddress} is not a private host:port`);
+  if (!ENROLL_VALUE.test(issue.code) || !ENROLL_VALUE.test(issue.fingerprint) || (issue.reply !== undefined && !ENROLL_VALUE.test(issue.reply))) {
+    throw new Error("bad enrollment code, fingerprint or reply");
+  }
+  if (kind === "windows") return windowsInstallScript(bundle, label, listenAddress, issue, agentCommand);
+  const unit = remoteUnit(readFileSync(RUNNER_REMOTE_UNIT_TEMPLATE, "utf8"), label, listenAddress);
+  return installScript(bundle, unit, label, listenAddress, issue, undefined, agentCommand);
 };
 
 /**

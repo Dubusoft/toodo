@@ -402,7 +402,7 @@ export const settings: Partial<Messages["settings"]> = {
     signIn: "OmO 로그인",
     replaceDevice: "이 서버의 이전 OmO 기기를 교체",
     jobs: "최근 작업",
-    jobTitle: { install: (tool: string) => `${tool} 설치 또는 업데이트`, login: "OmO 로그인" },
+    jobTitle: { install: (tool: string) => `${tool} 설치 또는 업데이트`, login: "OmO 로그인", runner: (label: string) => `${label} 추가` },
     jobStates: { running: "실행 중", succeeded: "완료", failed: "실패", cancelled: "중지됨" },
     jobLog: (title: string) => `${title} 로그`,
     stop: "중지",
@@ -420,6 +420,7 @@ export const settings: Partial<Messages["settings"]> = {
     savedApplied: "저장했습니다. 러너가 재시작 없이 바로 적용합니다.",
     machineOnly: "그 머신에서 dori runner setup으로만 바꿉니다.",
     machineOnlyKeys: (count: number) => `그 머신에서만 바꾸는 키 (${count})`,
+    runnerAdded: (label: string) => `${label}에 러너를 설치했습니다. 이 서버가 연결하면 목록에 나타납니다.`,
   },
   about: {
     upToDate: "최신 버전입니다.",

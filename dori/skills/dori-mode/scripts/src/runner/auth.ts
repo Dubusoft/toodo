@@ -354,6 +354,15 @@ export class SupervisorAuth {
     return { code, expiresAt };
   }
 
+  /**
+   * The label's codes that have not expired, used or not: a pasted enrollment (runner/paste-enroll.ts) matches its
+   * download token against them, and may fetch its installer again after the enrollment used the code.
+   */
+  liveCodes(label: string): string[] {
+    const rows = this.db.query("SELECT code FROM enroll_codes WHERE label = ? AND expiresAt > ?").all(label, this.options.now()) as { code: string }[];
+    return rows.map((row) => row.code);
+  }
+
   /** Accepts an `enroll` body when a code of its label matches and is unused and unexpired; the code is then used up. */
   enroll(body: RunnerControlBodies["enroll"]): { readonly ok: true; readonly reply: SupervisorControlBodies["enroll.ok"] } | AuthRefusal {
     const refuse = (detail: string) => refusal("RUNNER_ENROLL_REFUSED", detail);

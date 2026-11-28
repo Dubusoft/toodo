@@ -185,7 +185,7 @@ function DeviceCodeBox({ job, t }: { job: MachineJob; t: Texts }) {
 }
 
 function JobCard({ job, t }: { job: MachineJob; t: Texts }) {
-  const title = job.kind === "login" ? t.jobTitle.login : t.jobTitle.install(job.tool);
+  const title = job.kind === "login" ? t.jobTitle.login : job.kind === "runner" ? t.jobTitle.runner(job.machine) : t.jobTitle.install(job.tool ?? "");
   const cancel = useMachineJobAction();
   const log = useRef<HTMLPreElement>(null);
   // The newest output is at the bottom: follow it while the job runs.
@@ -211,7 +211,8 @@ function JobCard({ job, t }: { job: MachineJob; t: Texts }) {
         )}
       </div>
       {job.state === "running" && job.device && <DeviceCodeBox job={job} t={t} />}
-      {job.state === "succeeded" && job.version && <p role="status">{t.nowVersion(job.tool, job.version)}</p>}
+      {job.state === "succeeded" && job.tool && job.version && <p role="status">{t.nowVersion(job.tool, job.version)}</p>}
+      {job.state === "succeeded" && job.kind === "runner" && <p role="status">{t.runnerAdded(job.machine)}</p>}
       <pre
         ref={log}
         aria-label={t.jobLog(title)}

@@ -17,7 +17,7 @@ const mini: MachineRow = {
 const login: MachineJob = {
   id: "job-1", kind: "login", tool: "omo", machine: "local", state: "running", command: "omo login --no-browser", startedAt: 1, endedAt: null,
   log: "$ omo login --no-browser\nOpen https://signin.omo.dev/device?code=TWJM-QTWV\n", exitCode: null, version: null,
-  device: { url: "https://signin.omo.dev/device?code=TWJM-QTWV", userCode: "TWJM-QTWV", matchingCode: "932 514" },
+  device: { url: "https://signin.omo.dev/device?code=TWJM-QTWV", userCode: "TWJM-QTWV", matchingCode: "932 514" }, problem: null,
 };
 
 afterEach(() => {

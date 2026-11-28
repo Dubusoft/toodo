@@ -44,7 +44,7 @@ setDefaultRunTimeout(config.runTimeoutMs);
 const { deps } = leadContext(config, new Registry(config.stateDir), "supervise", [], { values: {}, positionals: [] });
 machinesReady.resolve(new MachineAdmin({
   stateDir: config.stateDir, guardMachines: config.guardMachines, runnerDir: defaultRunnerDir(), home: process.env.HOME || homedir(),
-  env: process.env, run, now: realClock.now,
+  env: process.env, run, now: realClock.now, agentCommand: config.agentCommand,
   observeTools: async (label) => (await deps.ops.observeMachine(label, { tools: true })).tools,
   publish: (job) => { post({ type: "machine-job", job }); },
 }));

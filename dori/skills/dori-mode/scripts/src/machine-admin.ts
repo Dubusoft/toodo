@@ -2,7 +2,9 @@
 // Toodo web app here, so every command runs on this thread and none on the core's. It lists the server host and the
 // runners the hub knows with hc's and omo's versions, reads and edits a runner's runner-config.json (the local one, or
 // a worker's over ssh; the runner's own file watch applies a saved change without a restart), and runs the jobs that
-// install or update hc and omo on the host and sign omo in, publishing each job's state as its output arrives.
+// install or update hc and omo on the host and sign omo in, publishing each job's state as its output arrives. It adds
+// another computer as a runner: over ssh, after the checks of runner/precheck.ts, as a job running `dori runner install`;
+// or by a pasted command, whose enrollment code, installer download and enrollment exchange runner/paste-enroll.ts answers.
 
 import { join } from "node:path";
 
@@ -15,8 +17,14 @@ import { ConfigKeyError, formatValue, type Json, parseValue, RUNNER_CONFIG_KEYS 
 import { redactSecrets } from "./redact.ts";
 import { listGuardMachines, machineKind } from "./remote-guard.ts";
 import type { Ran, Runner } from "./run.ts";
+import { SupervisorAuth } from "./runner/auth.ts";
 import { readRunnerRows } from "./runner/hub.ts";
+import { buildBundle } from "./runner/install.ts";
 import { PLACEMENT_ONLY_KEYS } from "./runner/local-policy.ts";
+import { labelFromHost, parseInstallTarget } from "./runner/machines.ts";
+import { bootstrapScript, EnrollRefused, PasteEnrollments } from "./runner/paste-enroll.ts";
+import { installProblem, precheckRunner } from "./runner/precheck.ts";
+import { LABEL_PATTERN } from "./runner/protocol.ts";
 import { localRunnerConfigIO, remoteRunnerConfigIO, type RunnerConfigIO, runRunnerSetup } from "./runner/runner-setup.ts";
 import { hcInstallCommand } from "./runtime/hc.ts";
 import { defaultsPrompter } from "./setup-cli.ts";
@@ -35,6 +43,10 @@ export const OMO_INSTALL_URL = "https://get.omo.dev/install.sh";
 export const EDITABLE_RUNNER_KEYS: ReadonlySet<string> = new Set(PLACEMENT_ONLY_KEYS);
 
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
+/** `dori runner install`: bundling, then up to three ssh passes of INSTALL_TIMEOUT_MS (Windows: longer) each. */
+const RUNNER_INSTALL_TIMEOUT_MS = 30 * 60_000;
+/** The `dori` CLI a runner install job runs, with the Worker's own bun. */
+const CLI_ENTRY = join(import.meta.dir, "cli.ts");
 /** A device code is approved within its lifetime (minutes) or the sign-in ends. */
 const LOGIN_TIMEOUT_MS = 15 * 60_000;
 const VERSION_TIMEOUT_MS = 10_000;
@@ -49,8 +61,10 @@ export type MachineAdminDeps = {
   readonly home: string;
   /** The environment the jobs and version reads run in; ~/.local/bin, where hc and omo install, is put on its PATH. */
   readonly env: Readonly<Record<string, string | undefined>>;
-  /** Runs the ssh commands that read and write a worker's runner-config.json. */
+  /** Runs the ssh commands that read and write a worker's runner-config.json and pre-check a new one. */
   readonly run: Runner;
+  /** The lead's agent command, for the starter runner-config.json a pasted enrollment writes. */
+  readonly agentCommand: readonly string[];
   readonly now: () => number;
   /** hc's and omo's versions on a connected worker, through its runner (`q.machine.observe` with `tools`). */
   readonly observeTools: (label: string) => Promise<ToolVersions | undefined>;
@@ -97,12 +111,31 @@ export class MachineAdmin {
   readonly #env: Record<string, string>;
   readonly #run: Runner;
   readonly #jobs = new Map<string, Running>();
+  readonly #enrollments: PasteEnrollments;
   #lastId = 0;
+  #auth: SupervisorAuth | undefined;
+  #bundle: Promise<string> | undefined;
 
   constructor(deps: MachineAdminDeps) {
     this.#deps = deps;
     this.#env = withLocalBin(deps.env, deps.home);
     this.#run = envRunner(this.#env);
+    this.#enrollments = new PasteEnrollments({
+      auth: () => (this.#auth ??= new SupervisorAuth(deps.stateDir, { now: deps.now })),
+      bundle: () => this.#runnerBundle(),
+      agentCommand: deps.agentCommand,
+      stateDir: deps.stateDir,
+      now: deps.now,
+    });
+  }
+
+  /** The runner bundle a pasted enrollment downloads, built once per Worker; a failed build is tried again next time. */
+  #runnerBundle(): Promise<string> {
+    this.#bundle ??= buildBundle(this.#run, undefined, this.#deps.stateDir)().catch((e: unknown) => {
+      this.#bundle = undefined;
+      throw e;
+    });
+    return this.#bundle;
   }
 
   async handle<R extends MachineRequest>(request: R): Promise<MachineReply<R["op"]>> {
@@ -118,9 +151,15 @@ export class MachineAdmin {
         case "install": return { ok: true, job: await this.#install(request.tool) };
         case "login": return { ok: true, job: this.#login(request.replace) };
         case "cancel": return { ok: true, job: this.#cancel(request.job) };
+        case "precheck": return { ok: true, precheck: await precheckRunner(this.#deps, request) };
+        case "add-ssh": return { ok: true, job: this.#addRunner(request.target, request.label) };
+        case "enroll-code": return { ok: true, enrollment: this.#enrollments.issue(request.label, request.address) };
+        case "enroll-bootstrap": return { ok: true, script: bootstrapScript(request.shell) };
+        case "enroll-script": return { ok: true, script: await this.#enrollments.script(request.label, request.shell, request.token) };
+        case "enroll-exchange": return { ok: true, enrolled: this.#enrollments.exchange(request.label, request.token, request.request) };
       }
     } catch (e) {
-      return { ok: false, error: errorText(e) };
+      return e instanceof EnrollRefused ? { ok: false, error: e.message, refused: true } : { ok: false, error: errorText(e) };
     }
   }
 
@@ -213,6 +252,17 @@ export class MachineAdmin {
     return [...this.#jobs.values()].find((r) => r.job.tool === tool && r.job.state === "running");
   }
 
+  /** Installs a runner on `target` over ssh: the same `dori runner install` an operator runs, as a job. */
+  #addRunner(target: string, label: string): MachineJob {
+    const host = parseInstallTarget(target.trim()).host;
+    const name = label.trim() || labelFromHost(host);
+    if (!LABEL_PATTERN.test(name) || name === HOST_MACHINE) throw new Error(`${name} is not a label for another computer`);
+    const busy = [...this.#jobs.values()].find((r) => r.job.kind === "runner" && r.job.machine === name && r.job.state === "running");
+    if (busy) throw new Error(`${name} is already being installed (${busy.job.id})`);
+    const args = ["runner", "install", target.trim(), "--label", name, "--yes"];
+    return this.#start("runner", null, name, [process.execPath, CLI_ENTRY, ...args], `dori ${args.join(" ")}`, RUNNER_INSTALL_TIMEOUT_MS);
+  }
+
   async #install(tool: MachineTool): Promise<MachineJob> {
     const installed = (await toolVersions(this.#run))[tool] !== null;
     // Checked after the version read, so two requests that arrive together cannot both start.
@@ -221,13 +271,14 @@ export class MachineAdmin {
     const argv = tool === "hc"
       ? hcInstallCommand(installed)
       : installed ? ["omo", "update"] : ["sh", "-c", `curl -fsSL ${OMO_INSTALL_URL} | bash`];
-    return this.#start("install", tool, argv, INSTALL_TIMEOUT_MS);
+    return this.#start("install", tool, HOST_MACHINE, argv, argv[0] === "sh" ? argv[2]! : argv.join(" "), INSTALL_TIMEOUT_MS);
   }
 
   #login(replace: boolean): MachineJob {
     const busy = this.#runningFor("omo");
     if (busy) throw new Error(`an omo job is already running (${busy.job.id})`);
-    return this.#start("login", "omo", ["omo", "login", "--no-browser", ...(replace ? ["--replace"] : [])], LOGIN_TIMEOUT_MS);
+    const argv = ["omo", "login", "--no-browser", ...(replace ? ["--replace"] : [])];
+    return this.#start("login", "omo", HOST_MACHINE, argv, argv.join(" "), LOGIN_TIMEOUT_MS);
   }
 
   #cancel(id: string): MachineJob {
@@ -237,16 +288,17 @@ export class MachineAdmin {
     return running.job;
   }
 
-  #start(kind: MachineJob["kind"], tool: MachineTool, argv: readonly string[], timeoutMs: number): MachineJob {
+  #start(
+    kind: MachineJob["kind"], tool: MachineTool | null, machine: string, argv: readonly string[], command: string, timeoutMs: number,
+  ): MachineJob {
     const id = `job-${this.#deps.now()}-${++this.#lastId}`;
-    const command = argv[0] === "sh" ? argv[2]! : argv.join(" ");
     const proc = Bun.spawn([...argv], { env: this.#env, cwd: this.#deps.home, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     let cancelled = false;
     let output = "";
     const running: Running = {
       job: {
-        id, kind, tool, machine: HOST_MACHINE, state: "running", command, startedAt: this.#deps.now(), endedAt: null,
-        log: `$ ${command}\n`, exitCode: null, version: null, device: null,
+        id, kind, tool, machine, state: "running", command, startedAt: this.#deps.now(), endedAt: null,
+        log: `$ ${command}\n`, exitCode: null, version: null, device: null, problem: null,
       },
       kill: () => { cancelled = true; proc.kill(); },
     };
@@ -284,9 +336,10 @@ export class MachineAdmin {
       for (const r of reads) if (r.status === "rejected") output += `\n${errorText(r.reason)}\n`;
       const log = redactSecrets(`$ ${command}\n${output}`);
       running.job = { ...running.job, log: log.length > MACHINE_JOB_LOG_LIMIT ? log.slice(-MACHINE_JOB_LOG_LIMIT) : log };
-      const version = (await toolVersions(this.#run).catch(() => undefined))?.[tool] ?? null;
+      const version = tool === null ? null : (await toolVersions(this.#run).catch(() => undefined))?.[tool] ?? null;
       const state = cancelled ? "cancelled" : exitCode === 0 ? "succeeded" : "failed";
-      update({ state, exitCode, version, endedAt: this.#deps.now() }, true);
+      const problem = kind === "runner" && state === "failed" ? installProblem(output) : null;
+      update({ state, exitCode, version, problem, endedAt: this.#deps.now() }, true);
     })();
     return running.job;
   }

@@ -1,6 +1,7 @@
 // Settings > Machines & accounts: the server host and the runner machines Dori knows, each
-// runner's runner-config.json, and the jobs that install or update hc and omo on the host or
-// sign omo in. The web app calls the core (`GET /api/machines`, `GET
+// runner's runner-config.json, the jobs that install or update hc and omo on the host or
+// sign omo in, and adding another computer as a runner: over ssh from the host, or by a
+// one-line command pasted on the new computer (`/runner-enroll/...`). The web app calls the core (`GET /api/machines`, `GET
 // /api/machines/<label>/config`, `POST /api/machines`, and the job stream `GET
 // /api/machines/jobs`); the core hands each request to the host and the host to the supervisor
 // Worker, which runs every command. The core runs none and keeps only the latest jobs in memory.
@@ -48,12 +49,81 @@ export type MachineJobState = "running" | "succeeded" | "failed" | "cancelled";
 /** The device code `omo login` prints, approved on another device. */
 export type DeviceCode = { readonly url: string; readonly userCode: string; readonly matchingCode: string | null };
 
-/** One install, update, or sign-in run by the supervisor on the host. */
+/**
+ * Why a computer cannot be added as a runner, as the pre-check or a failed install found it;
+ * the web app explains each in plain words.
+ */
+export const RUNNER_PROBLEMS = [
+  "target-invalid",
+  "label-invalid",
+  "label-taken",
+  "unreachable",
+  "unsupported",
+  "no-bun",
+  "no-hc",
+  "not-private",
+  "enroll-failed",
+  "install-failed",
+] as const;
+export type RunnerProblemCode = (typeof RUNNER_PROBLEMS)[number];
+export type RunnerProblem = { readonly code: RunnerProblemCode; readonly detail: string };
+
+/** What the host found out about an ssh target before installing a runner there. */
+export type RunnerPrecheck = {
+  readonly target: string;
+  /** The runner's label: the one asked for, or one derived from the host name. */
+  readonly label: string;
+  /** `linux`, `darwin` or `windows` once the host reached it. */
+  readonly os: string | null;
+  /** The private host:port the supervisor dials the runner on, once the target resolved to one. */
+  readonly listen: string | null;
+  /** Empty when the install can start. */
+  readonly problems: readonly RunnerProblem[];
+};
+
+/** The shells a pasted enrollment command is written for. */
+export const ENROLL_SHELLS = ["posix", "windows"] as const;
+export type EnrollShell = (typeof ENROLL_SHELLS)[number];
+
+/** A one-time enrollment code for a computer without ssh access, valid until `expiresAt`. */
+export type Enrollment = {
+  readonly label: string;
+  readonly code: string;
+  /** The supervisor key's fingerprint, which the new computer checks the installer against. */
+  readonly fingerprint: string;
+  /** The private host:port the supervisor will dial the runner on. */
+  readonly listen: string;
+  readonly expiresAt: number;
+};
+
+/** The header that carries a pasted enrollment's download token (`/runner-enroll/script`, `/exchange`). */
+export const ENROLL_TOKEN_HEADER = "x-dori-enroll";
+
+const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`;
+const psQuote = (value: string): string => `'${value.replace(/'/g, "''")}'`;
+
+/**
+ * The one-line commands that enroll the new computer: the code and the fingerprint go in its
+ * environment (not an argv), and the script it downloads from `server` does the rest.
+ */
+export function enrollCommands(server: string, enrollment: Enrollment): Record<EnrollShell, string> {
+  const base = server.replace(/\/+$/, "");
+  const vars = { DORI_SERVER: base, DORI_LABEL: enrollment.label, DORI_CODE: enrollment.code, DORI_FINGERPRINT: enrollment.fingerprint };
+  const entries = Object.entries(vars);
+  return {
+    posix: `curl -fsSL ${shellQuote(`${base}/runner-enroll/install.sh`)} | ${entries.map(([k, v]) => `${k}=${shellQuote(v)}`).join(" ")} sh`,
+    windows: `${entries.map(([k, v]) => `$env:${k}=${psQuote(v)}`).join("; ")}; irm ${psQuote(`${base}/runner-enroll/install.ps1`)} | iex`,
+  };
+}
+
+/** One install, update, sign-in, or runner install run by the supervisor on the host. */
 export type MachineJob = {
   readonly id: string;
-  /** `install` installs a missing tool or updates an installed one; `login` signs omo in. */
-  readonly kind: "install" | "login";
-  readonly tool: MachineTool;
+  /** `install` installs a missing tool or updates an installed one; `login` signs omo in; `runner` adds a computer over ssh. */
+  readonly kind: "install" | "login" | "runner";
+  /** The tool an install or sign-in is for; `null` for a runner install. */
+  readonly tool: MachineTool | null;
+  /** Where it runs: the host, or the computer a runner install adds. */
   readonly machine: string;
   readonly state: MachineJobState;
   /** The command line it runs, for the log's first line. */
@@ -66,6 +136,8 @@ export type MachineJob = {
   /** The tool's version once the job ended; `null` while it runs or when it is not installed. */
   readonly version: string | null;
   readonly device: DeviceCode | null;
+  /** Why a failed runner install failed, read from its output. */
+  readonly problem: RunnerProblemCode | null;
 };
 
 /** The output a job keeps, in characters. */
@@ -74,9 +146,22 @@ export const MACHINE_JOB_LOG_LIMIT = 32 * 1024;
 /** The event the job stream sends with each job's latest state. */
 export const MACHINE_JOB_EVENT = "job";
 
-export const MACHINE_OPS = ["list", "config", "config-set", "install", "login", "cancel"] as const;
+/** The requests the web app makes (`POST /api/machines`). */
+export const MACHINE_OPS = ["list", "config", "config-set", "install", "login", "cancel", "precheck", "add-ssh", "enroll-code"] as const;
+
+/**
+ * The requests a computer being enrolled makes through the core's `/runner-enroll/` routes:
+ * the bootstrap script, the installer (its download token proves it holds the code), and
+ * the enrollment exchange. They never come from `POST /api/machines`.
+ */
+export type EnrollRequest =
+  | { readonly op: "enroll-bootstrap"; readonly shell: EnrollShell }
+  | { readonly op: "enroll-script"; readonly label: string; readonly shell: EnrollShell; readonly token: string }
+  /** `request`: the `RUNNER_ENROLL_REQUEST` frame the installer's first pass printed. */
+  | { readonly op: "enroll-exchange"; readonly label: string; readonly token: string; readonly request: string };
 
 export type MachineRequest =
+  | EnrollRequest
   | { readonly op: "list" }
   | { readonly op: "config"; readonly machine: string }
   /** One key's new value as text, "" to unset it. */
@@ -84,7 +169,12 @@ export type MachineRequest =
   | { readonly op: "install"; readonly tool: MachineTool }
   /** `replace`: replace this computer's earlier OmO device without asking. */
   | { readonly op: "login"; readonly replace: boolean }
-  | { readonly op: "cancel"; readonly job: string };
+  | { readonly op: "cancel"; readonly job: string }
+  /** `label` "" derives one from the host name. */
+  | { readonly op: "precheck"; readonly target: string; readonly label: string }
+  | { readonly op: "add-ssh"; readonly target: string; readonly label: string }
+  /** `address`: the new computer's private IP address on the LAN or Tailscale. */
+  | { readonly op: "enroll-code"; readonly label: string; readonly address: string };
 
 export type MachineOp = MachineRequest["op"];
 
@@ -96,9 +186,15 @@ export type MachineResults = {
   readonly install: { readonly job: MachineJob };
   readonly login: { readonly job: MachineJob };
   readonly cancel: { readonly job: MachineJob };
+  readonly precheck: { readonly precheck: RunnerPrecheck };
+  readonly "add-ssh": { readonly job: MachineJob };
+  readonly "enroll-code": { readonly enrollment: Enrollment };
+  readonly "enroll-bootstrap": { readonly script: string };
+  readonly "enroll-script": { readonly script: string };
+  readonly "enroll-exchange": { readonly enrolled: string };
 };
 
-/** The answer to a request, or why it was refused. */
+/** The answer to a request, or why it was refused; `refused` when a download token or code did not match. */
 export type MachineReply<O extends MachineOp = MachineOp> =
   | ({ readonly ok: true } & MachineResults[O])
-  | { readonly ok: false; readonly error: string };
+  | { readonly ok: false; readonly error: string; readonly refused?: boolean };

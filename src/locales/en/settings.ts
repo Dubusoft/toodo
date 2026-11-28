@@ -402,7 +402,7 @@ export const settings = {
     signIn: "Sign in to OmO",
     replaceDevice: "Replace this server's earlier OmO device",
     jobs: "Recent jobs",
-    jobTitle: { install: (tool: string) => `Install or update ${tool}`, login: "OmO sign-in" },
+    jobTitle: { install: (tool: string) => `Install or update ${tool}`, login: "OmO sign-in", runner: (label: string) => `Add ${label}` },
     jobStates: { running: "Running", succeeded: "Done", failed: "Failed", cancelled: "Stopped" },
     jobLog: (title: string) => `Log of ${title}`,
     stop: "Stop",
@@ -420,6 +420,7 @@ export const settings = {
     savedApplied: "Saved. The runner applies it now, without a restart.",
     machineOnly: "Changed only on that machine, with dori runner setup.",
     machineOnlyKeys: (count: number) => `Changed only on that machine (${count})`,
+    runnerAdded: (label: string) => `${label} is installed. It shows in the list once this server reaches it.`,
   },
   about: {
     upToDate: "This is the latest version.",
