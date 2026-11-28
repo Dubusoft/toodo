@@ -32,11 +32,13 @@ const unnamed: ConnectedApp = {
 };
 
 function renderPanel() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider client={client}>
       <ChatAppsCard />
     </QueryClientProvider>,
   );
+  return client;
 }
 
 describe("ChatAppsCard", () => {
@@ -58,17 +60,24 @@ describe("ChatAppsCard", () => {
     expect(writeText).toHaveBeenCalledWith(publicMcpUrl);
   });
 
-  it("names TOODO_PUBLIC_URL when the server is not public and shows that no app is connected", async () => {
+  it("shows no card when the server is not public and no app is connected", async () => {
     mocked.listConnectedApps.mockResolvedValue({ status: "ok", data: { publicMcpUrl: null, apps: [] } });
+    const client = renderPanel();
+
+    await waitFor(() => expect(client.getQueryState(["connected-apps"])?.status).toBe("success"));
+    expect(screen.queryByRole("region", { name: "Chat apps" })).toBeNull();
+    expect(screen.queryByText("TOODO_PUBLIC_URL")).toBeNull();
+  });
+
+  it("keeps apps from an earlier public setup revocable and names TOODO_PUBLIC_URL", async () => {
+    mocked.listConnectedApps.mockResolvedValue({ status: "ok", data: { publicMcpUrl: null, apps: [chatgpt] } });
     renderPanel();
 
-    expect(await screen.findByText("No apps connected yet.")).toBeInTheDocument();
-    const panel = screen.getByRole("region", { name: "Chat apps" });
+    const panel = await screen.findByRole("region", { name: "Chat apps" });
     expect(panel).toHaveTextContent("TOODO_PUBLIC_URL");
-    expect(panel).toHaveTextContent("docs/server.md");
+    expect(within(panel).getByRole("button", { name: "Revoke ChatGPT" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Public MCP URL")).toBeNull();
     expect(screen.queryByRole("button", { name: "Copy connector address" })).toBeNull();
-    expect(screen.queryByRole("list", { name: "Apps with access" })).toBeNull();
   });
 
   it("lists connected apps with their access and last use", async () => {

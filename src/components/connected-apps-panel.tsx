@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Card } from "@astryxdesign/core/Card";
 import { fill, useI18n, useMessages } from "@/lib/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/button";
@@ -122,35 +123,43 @@ function AppRow({ app }: { app: ConnectedApp }) {
   );
 }
 
-/** Chat apps in AI app connections: ChatGPT, Claude, and others the owner approved over OAuth, and where they connect. */
+/**
+ * Chat apps in AI app connections: ChatGPT, Claude, and others the owner approved over OAuth, and
+ * where they connect. They connect only in public mode, so a server without it shows no card,
+ * unless grants from an earlier public setup are still there to revoke.
+ */
 export function ChatAppsCard() {
   const m = useMessages();
   const t = m.settings.connectedApps;
   const connected = useQuery({ queryKey: connectedAppsKey, queryFn: () => unwrap(commands.listConnectedApps()) });
+  const unusable = connected.data?.publicMcpUrl === null && connected.data.apps.length === 0;
+  if (connected.isPending || unusable) return null;
 
   return (
-    <section aria-label={m.settings.connections.chatApps} className="flex flex-col gap-2">
-      <h4 className="font-medium">{m.settings.connections.chatApps}</h4>
-      <p className="text-muted-foreground">{m.settings.connections.chatAppsIntro}</p>
-      {connected.error && (
-        <p role="alert" className="break-words text-destructive">
-          {connected.error.message}
-        </p>
-      )}
-      {connected.data && (
-        <>
-          <PublicMcpUrl url={connected.data.publicMcpUrl} />
-          {connected.data.apps.length === 0 ? (
-            <p className="text-muted-foreground">{t.empty}</p>
-          ) : (
-            <ul aria-label={t.list} className="flex flex-col gap-2">
-              {connected.data.apps.map((app) => (
-                <AppRow key={app.grantId} app={app} />
-              ))}
-            </ul>
-          )}
-        </>
-      )}
-    </section>
+    <Card>
+      <section aria-label={m.settings.connections.chatApps} className="flex flex-col gap-2">
+        <h4 className="font-medium">{m.settings.connections.chatApps}</h4>
+        <p className="text-muted-foreground">{m.settings.connections.chatAppsIntro}</p>
+        {connected.error && (
+          <p role="alert" className="break-words text-destructive">
+            {connected.error.message}
+          </p>
+        )}
+        {connected.data && (
+          <>
+            <PublicMcpUrl url={connected.data.publicMcpUrl} />
+            {connected.data.apps.length === 0 ? (
+              <p className="text-muted-foreground">{t.empty}</p>
+            ) : (
+              <ul aria-label={t.list} className="flex flex-col gap-2">
+                {connected.data.apps.map((app) => (
+                  <AppRow key={app.grantId} app={app} />
+                ))}
+              </ul>
+            )}
+          </>
+        )}
+      </section>
+    </Card>
   );
 }
