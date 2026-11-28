@@ -47,8 +47,6 @@ export const details = {
     dueDate: "Due date",
     pastDue: "Past due",
     unplaced: "Not on the timeline",
-    legendHint: "Tasks not started yet wait at the current time, after their prerequisites, or at the end of their wait. A paused task that waits gets a box there too.",
-    legendKeys: "Drag from a task's right handle to another task to make it a prerequisite. With a task selected, use the arrow keys to move between rows.",
     removeFailed: (source: string, target: string, error: string) => `Could not remove #${source} → #${target}: ${error}`,
     edgeLabel: (source: number, target: number) => `Edge from ${source} to ${target}`,
     nodeRole: "node",
