@@ -29,6 +29,25 @@ export function commandErrorMessage(error: CommandError, m: Messages): string {
       return copy.guidelineMissing;
     case "storageFailed":
       return copy.storageFailed(error.message);
+    case "notFound":
+    case "workspaceNotFound":
+    case "taskNotFound":
+    case "criterionNotFound":
+    case "dependencyNotFound":
+    case "relationNotFound":
+    case "runNotFound":
+    case "chatMessageNotFound":
+    case "chatChannelNotFound":
+    case "chatThreadNotFound":
+      return copy.notFound;
+    case "dependencyCycle":
+      return copy.dependencyCycle;
+    case "dependenciesNotDone":
+      return copy.dependenciesNotDone;
+    case "invalidTransition":
+      return copy.invalidTransition;
+    case "notPermitted":
+      return copy.notPermitted;
     default:
       return error.message;
   }

@@ -104,7 +104,7 @@ describe("NotificationsPanel", () => {
     renderPanel();
 
     const note = await screen.findByRole("note", { name: "Last delivery failure" });
-    expect(note).toHaveTextContent(failure.message);
+    expect(note).toHaveTextContent("The push service refused the notification (403): nope");
     expect(note).toHaveTextContent("Send a test notification to check again");
 
     fireEvent.click(screen.getByRole("button", { name: "Send test notification" }));

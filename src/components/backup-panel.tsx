@@ -5,6 +5,7 @@ import { NumberInput } from "@astryxdesign/core/NumberInput";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button } from "@/components/button";
 import type { BackupEntry, BackupSettings } from "@/lib/bindings";
+import { serverText } from "@/lib/server-text";
 import { formatFull, formatWhen } from "@/lib/timeline";
 import {
   useBackupSettings,
@@ -42,7 +43,7 @@ function BackupFailureAlert() {
   if (!failure) return null;
   return (
     <p role="alert" aria-label={t.autoFailed} className="break-words text-destructive">
-      {fill(t.failure, { at: <time dateTime={new Date(failure.at * 1000).toISOString()} title={formatFull(failure.at, locale)}>{formatWhen(failure.at, undefined, locale, m)}</time>, message: failure.message })}
+      {fill(t.failure, { at: <time dateTime={new Date(failure.at * 1000).toISOString()} title={formatFull(failure.at, locale)}>{formatWhen(failure.at, undefined, locale, m)}</time>, message: serverText(failure.message, m, locale) })}
     </p>
   );
 }

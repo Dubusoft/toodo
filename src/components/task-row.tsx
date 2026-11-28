@@ -1,4 +1,5 @@
 import { useI18n } from "@/lib/i18n";
+import { serverText } from "@/lib/server-text";
 import { lazy, Suspense, useState } from "react";
 import { AlarmClock, AlarmClockOff, Check, CircleSlash, Flag, GitMerge, PanelRight, Pause, Pencil, Play, RotateCcw, StickyNote, Trash2, X } from "lucide-react";
 import { Selector } from "@astryxdesign/core/Selector";
@@ -388,8 +389,8 @@ export function TaskRow({
             {blocker && (
               <span
                 role="note"
-                aria-label={m.tasks.blockerOnTask(task.id, blocker.body)}
-                title={blocker.body}
+                aria-label={m.tasks.blockerOnTask(task.id, serverText(blocker.body, m, locale))}
+                title={serverText(blocker.body, m, locale)}
                 className={cn("shrink-0 rounded-md px-1.5 text-xs font-medium", toneChip.attention)}
               >
                 {m.tasks.blocker}
