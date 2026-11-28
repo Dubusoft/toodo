@@ -756,7 +756,8 @@ copied token stops working once either side uses it. Only SHA-256 hashes of toke
 client secrets are stored. To disconnect an app, revoke it in the chat apps card under
 **AI app connections** in Settings, which also shows the public MCP URL, or disconnect it in the app itself; either
 ends its access and refresh tokens at once, and the app connects again through the consent
-page.
+page. The card shows only in public mode, or while apps approved in an earlier public setup
+still hold a grant; a server without either shows none, since no chat app can connect to it.
 
 The endpoints, all under `TOODO_PUBLIC_URL`:
 
