@@ -3,6 +3,7 @@ import {
   useDeferredValue,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -41,13 +42,14 @@ import {
   ChatMessageList,
   ChatMessageMetadata,
   ChatSystemMessage,
+  type ChatComposerTrigger,
   type ChatMessageStatus,
 } from "@astryxdesign/core/Chat";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button, IconButton } from "@/components/button";
 import { detailsSheet } from "@/components/details-sheet";
 import { ResizeHandle } from "@/components/resize-handle";
-import { Markdown } from "@/components/task-common";
+import { Markdown, StatusBadge } from "@/components/task-common";
 import doriAvatar from "@/web/dori-avatar.png";
 import {
   events,
@@ -76,6 +78,7 @@ import {
 } from "@/lib/chat-outbox";
 import {
   chatMessages,
+  listTasks,
   queryKeys,
   uploadChatAttachment,
   useChat,
@@ -370,6 +373,69 @@ function hasTouchKeyboard(): boolean {
   return window.matchMedia?.("(pointer: coarse)").matches ?? false;
 }
 
+/** How many tasks the composer's `#` menu lists at most. */
+const suggestedTaskCount = 10;
+
+/**
+ * The tasks the composer's `#` menu suggests for `query`, the text after the `#`, newest first:
+ * for digits, those whose number starts with them, that number itself first; otherwise those
+ * whose title holds the text, so a bare `#` lists the latest tasks.
+ */
+export function suggestedTasks(tasks: readonly Task[], query: string): Task[] {
+  const newestFirst = [...tasks].sort((a, b) => b.id - a.id);
+  if (/^\d+$/.test(query)) {
+    const matching = newestFirst.filter((task) => String(task.id).startsWith(query));
+    const exact = matching.filter((task) => String(task.id) === query);
+    return [...exact, ...matching.filter((task) => String(task.id) !== query)].slice(0, suggestedTaskCount);
+  }
+  const text = query.toLocaleLowerCase();
+  return newestFirst.filter((task) => task.title.toLocaleLowerCase().includes(text)).slice(0, suggestedTaskCount);
+}
+
+/**
+ * The composer's `#` menu, which completes a task's number from the tasks `loaded` returns, or
+ * from the server for a whole number that is not loaded, such as a task finished long ago.
+ */
+function taskTrigger(loaded: () => readonly Task[]): ChatComposerTrigger {
+  // The tasks the menu lists, by item ID, with the tasks their status is judged against.
+  const listed = new Map<string, { task: Task; byId: ReadonlyMap<TaskId, Task> }>();
+  const items = (query: string, tasks: readonly Task[]) => {
+    const byId = new Map(tasks.map((task) => [task.id, task]));
+    listed.clear();
+    return suggestedTasks(tasks, query).map((task) => {
+      listed.set(String(task.id), { task, byId });
+      return { id: String(task.id), label: taskName(task) };
+    });
+  };
+  return {
+    character: "#",
+    menuLabel: "Tasks",
+    emptySearchText: "No matching tasks",
+    searchSource: {
+      bootstrap: () => items("", loaded()),
+      search: async (query) => {
+        const known = loaded();
+        if (!/^[1-9]\d*$/.test(query) || known.some((task) => String(task.id) === query)) return items(query, known);
+        // While the server is unreachable the menu still suggests from the loaded tasks.
+        const found = await listTasks({ ids: [Number(query)] }).catch(() => []);
+        return items(query, [...known, ...found]);
+      },
+    },
+    renderItem: (item) => {
+      const entry = listed.get(item.id);
+      if (entry === undefined) return item.label;
+      return (
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          <span className="shrink-0 tabular-nums text-muted-foreground">#{entry.task.id}</span>
+          <span className="min-w-0 flex-1 truncate">{entry.task.title}</span>
+          <StatusBadge task={entry.task} byId={entry.byId} />
+        </span>
+      );
+    },
+    onSelect: (item) => `#${item.id} `,
+  };
+}
+
 /** A file picked for the next message: uploading, uploaded, or failed. */
 type Upload = { key: string; file: File; preview: string | null; attachment: ChatAttachment | null; error: string | null };
 
@@ -407,6 +473,10 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
   const outbox = useSyncExternalStore(subscribeChatOutbox, chatOutbox);
   const [draft, setDraft] = useState("");
   const voice = useVoiceInput(setDraft);
+  const tasks = useTasks();
+  const loadedTasks = useRef<readonly Task[]>([]);
+  loadedTasks.current = tasks.data ?? [];
+  const triggers = useMemo(() => [taskTrigger(() => loadedTasks.current)], []);
   const [uploads, setUploads] = useState<readonly Upload[]>([]);
   const picker = useRef<HTMLInputElement>(null);
   const messages = chat.data === undefined ? [] : chatMessages(chat.data);
@@ -593,6 +663,7 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
                   navigator.language.toLowerCase().startsWith("ko") ? `${agent.name}에게 메시지 보내기` : `Message ${agent.name}`
                 }
                 maxRows={6}
+                triggers={triggers}
                 value={draft}
                 onChange={setDraft}
                 onSubmit={sendDraft}

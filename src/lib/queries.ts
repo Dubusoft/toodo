@@ -432,7 +432,7 @@ const openStatuses: TaskStatus[] = ["planned", "in_progress", "in_review"];
 /** Loaded tasks, and the ID to load older finished tasks below; null when there are none. */
 export type TasksPage = { tasks: Task[]; olderBefore: TaskId | null };
 
-function listTasks(filter: TaskListFilter): Promise<Task[]> {
+export function listTasks(filter: TaskListFilter): Promise<Task[]> {
   return unwrap(commands.listTasks(filter));
 }
 

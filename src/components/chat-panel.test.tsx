@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { Chat, receipt, totalUnread } from "@/components/chat-panel";
+import { Chat, receipt, suggestedTasks, totalUnread } from "@/components/chat-panel";
 import { commands, events, type ChatChannel, type ChatMessage, type ChatThread, type ChatTyping, type Task } from "@/lib/bindings";
 import { flushChatOutbox } from "@/lib/chat-outbox";
 
@@ -160,7 +160,7 @@ describe("voice input", () => {
     serve([]);
     renderChat();
     fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
-    await screen.findByRole("textbox");
+    await screen.findByRole("combobox");
     expect(screen.queryByRole("button", { name: "Voice input" })).not.toBeInTheDocument();
   });
 
@@ -169,7 +169,7 @@ describe("voice input", () => {
     serve([]);
     renderChat();
     fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
-    const input = await screen.findByRole("textbox");
+    const input = await screen.findByRole("combobox");
 
     fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
     const recognition = FakeRecognition.started[0];
@@ -190,7 +190,7 @@ describe("voice input", () => {
     serve([]);
     renderChat();
     fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
-    const input = await screen.findByRole("textbox");
+    const input = await screen.findByRole("combobox");
     expect(screen.getByRole("button", { name: "Voice input" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
 
@@ -211,7 +211,7 @@ describe("voice input", () => {
     serve([]);
     renderChat();
     fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
-    await screen.findByRole("textbox");
+    await screen.findByRole("combobox");
 
     fireEvent.click(screen.getByRole("button", { name: "Voice input" }));
     expect(FakeRecognition.started).toHaveLength(1);
@@ -230,6 +230,28 @@ describe("receipts", () => {
       status: "read",
       note: null,
     });
+  });
+});
+
+describe("suggested tasks", () => {
+  const titled = (id: number, title: string) => ({ ...task(id, "planned"), title });
+  const tasks = [titled(7, "Fix login"), titled(17, "Tune search"), titled(170, "Fix search"), titled(171, "Docs"), titled(1700, "Ship")];
+  const ids = (query: string) => suggestedTasks(tasks, query).map((suggested) => suggested.id);
+
+  it("list the latest tasks, newest first, for a bare #", () => {
+    expect(ids("")).toEqual([1700, 171, 170, 17, 7]);
+    const many = Array.from({ length: 12 }, (_, index) => titled(index + 1, `Task ${index + 1}`));
+    expect(suggestedTasks(many, "").map((suggested) => suggested.id)).toEqual([12, 11, 10, 9, 8, 7, 6, 5, 4, 3]);
+  });
+
+  it("match digits against the start of the number, the exact number first, then newest first", () => {
+    expect(ids("17")).toEqual([17, 1700, 171, 170]);
+    expect(ids("170")).toEqual([170, 1700]);
+    expect(ids("9")).toEqual([]);
+  });
+
+  it("match other text against the title, ignoring case", () => {
+    expect(ids("fix")).toEqual([170, 7]);
   });
 });
 
@@ -340,7 +362,7 @@ describe("Chat", () => {
 
     expect(await screen.findByText("Ship it?")).toBeInTheDocument();
     expect(screen.queryByText("Handled")).not.toBeInTheDocument();
-    const input = await screen.findByRole("textbox");
+    const input = await screen.findByRole("combobox");
     fireEvent.input(input, { target: { textContent: "Thanks" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -391,7 +413,7 @@ describe("Chat", () => {
     mocked.sendChatMessage.mockResolvedValue({ status: "ok", data: message(1, "user", "Line one") });
     renderChat();
     fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
-    const input = await screen.findByRole("textbox");
+    const input = await screen.findByRole("combobox");
     expect(input).toHaveAttribute("enterkeyhint", "enter");
 
     fireEvent.input(input, { target: { textContent: "Line one" } });
@@ -410,7 +432,7 @@ describe("Chat", () => {
     mocked.sendChatMessage.mockImplementationOnce(() => new Promise(() => {}));
     const queryClient = renderChat();
     fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
-    const input = await screen.findByRole("textbox");
+    const input = await screen.findByRole("combobox");
     fireEvent.input(input, { target: { textContent: "Thanks" } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(await screen.findByText("Sending")).toBeInTheDocument();
@@ -429,7 +451,7 @@ describe("Chat", () => {
     mocked.sendChatMessage.mockRejectedValueOnce(new TypeError("Failed to fetch"));
     renderChat();
     fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
-    const input = await screen.findByRole("textbox");
+    const input = await screen.findByRole("combobox");
     fireEvent.input(input, { target: { textContent: "Offline hello" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
@@ -585,6 +607,6 @@ describe("Chat", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Close thread" }));
     await waitFor(() => expect(mocked.updateChatThread).toHaveBeenCalledWith(5, { status: "closed" }));
     expect(await screen.findByText("This thread is closed. Reopen it to write in it.")).toBeInTheDocument();
-    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
 });
