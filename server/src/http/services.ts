@@ -144,16 +144,16 @@ export class Services implements Notifier {
   }
 
   agentPosted(message: B.ChatMessage, notice: ChatNotice | null): void {
-    this.agentTyping(false);
+    this.agentTyping(message.threadId !== null ? { thread: message.threadId } : { channel: message.channelId }, false);
     this.chatChanged();
     if (notice !== null) {
       this.pushWorker?.alert(agentMessageAlert(this.chat.agent.name, notice, message.id, message.body));
     }
   }
 
-  agentTyping(typing: boolean): void {
-    const until = this.chat.setTyping(typing, this.storage.now());
-    this.emit(EVENT_NAMES.chatTyping, { until } satisfies B.ChatTyping);
+  agentTyping(at: B.ChatPlace, typing: boolean): void {
+    const until = this.chat.setTyping(at, typing, this.storage.now());
+    this.emit(EVENT_NAMES.chatTyping, { place: at, until } satisfies B.ChatTyping);
   }
 
   actionChosen(chosen: B.ChatActionChosen): void {

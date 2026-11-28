@@ -283,7 +283,11 @@ export const listChat = struct("ListChat", {
   limit: optional(usize),
 });
 
-export const setTyping = struct("SetTyping", { typing: required(bool) });
+export const setTyping = struct("SetTyping", {
+  typing: required(bool),
+  channel_id: optional(i64),
+  thread_id: optional(i64),
+});
 
 export const createChannel = struct("CreateChannel", { name: required(string) });
 

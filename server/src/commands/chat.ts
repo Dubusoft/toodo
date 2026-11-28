@@ -41,24 +41,35 @@ export const PAGE = 50;
  * again or posts. */
 export const TYPING_FOR = 30;
 
+/** The key of `at` among the places the agent writes in. */
+function placeKey(at: B.ChatPlace): string {
+  return at.thread !== undefined ? `thread/${at.thread}` : `channel/${at.channel}`;
+}
+
 /** What the server keeps about the chat besides its messages: how the app shows the agent,
- * and until when the agent said it is writing. */
+ * and until when the agent said it is writing in each place. */
 export class ChatState {
   readonly agent: B.ChatAgent;
-  #typingUntil: number | null = null;
+  readonly #typingUntil = new Map<string, number>();
 
   constructor(agent: B.ChatAgent) {
     this.agent = agent;
   }
 
-  /** Records whether the agent is writing, as of `now`, and returns until when. */
-  setTyping(typing: boolean, now: number): number | null {
-    this.#typingUntil = typing ? now + TYPING_FOR : null;
-    return this.#typingUntil;
+  /** Records whether the agent is writing in `at`, as of `now`, and returns until when. */
+  setTyping(at: B.ChatPlace, typing: boolean, now: number): number | null {
+    if (!typing) {
+      this.#typingUntil.delete(placeKey(at));
+      return null;
+    }
+    const until = now + TYPING_FOR;
+    this.#typingUntil.set(placeKey(at), until);
+    return until;
   }
 
-  typingUntil(now: number): number | null {
-    return this.#typingUntil !== null && this.#typingUntil > now ? this.#typingUntil : null;
+  typingUntil(at: B.ChatPlace, now: number): number | null {
+    const until = this.#typingUntil.get(placeKey(at));
+    return until !== undefined && until > now ? until : null;
   }
 }
 
@@ -79,7 +90,7 @@ export const listChat: (storage: Storage, chat: ChatState, ...args: Args<"listCh
       agent: chat.agent,
       messages: messages.map((m) => message(m, now)),
       hasEarlier,
-      typingUntil: chat.typingUntil(now),
+      typingUntil: chat.typingUntil(at, now),
     };
   },
 );

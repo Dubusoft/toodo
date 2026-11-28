@@ -38,7 +38,7 @@ function endpoint(storage: Storage, publicUrl: string | null = null) {
     guidelinesChanged: (id) => guidelines.push(id),
     chatChanged: () => chat.push("changed"),
     agentPosted: (message: B.ChatMessage, notice) => chat.push(`posted ${message.body} in ${notice?.channel ?? "quiet"}`),
-    agentTyping: (typing) => chat.push(`typing ${typing}`),
+    agentTyping: (at, typing) => chat.push(`typing ${typing} in ${JSON.stringify(at)}`),
     actionChosen: (chosen) => chat.push(`chose ${chosen.key}`),
     onChange: (listener) => {
       listeners.add(listener);
@@ -234,13 +234,23 @@ test("Chat tools take, acknowledge, and answer messages and announce each step",
   const acked = await value(served, "ack_chat", { ids: [hi.id] });
   expect(acked[0].ackedAt).not.toBeNull();
   await value(served, "set_typing", { typing: true });
+  await value(served, "set_typing", { typing: true, thread_id: 4 });
+  const both = await call(served, "set_typing", { typing: true, channel_id: 1, thread_id: 4 });
+  expect(both.structuredContent.error.code).toBe("invalidInput");
   const reply = await value(served, "reply_in_chat", { body: "Hello", handles: [hi.id] });
   expect(reply.author).toBe("agent");
   const handled = await value(served, "mark_chat_handled", { id: later.id, reply_id: reply.id });
   expect(handled.handledReplyId).toBe(reply.id);
   const listed = await value(served, "list_chat", {});
   expect(listed[0].handledReplyId).toBe(reply.id);
-  expect(chat).toEqual(["changed", "changed", "typing true", "posted Hello in general", "changed"]);
+  expect(chat).toEqual([
+    "changed",
+    "changed",
+    'typing true in {"channel":1}',
+    'typing true in {"thread":4}',
+    "posted Hello in general",
+    "changed",
+  ]);
   const refused = await call(served, "ack_chat", { ids: [reply.id] });
   expect(refused.isError).toBe(true);
   expect(refused.structuredContent.error.code).toBe("rejected");

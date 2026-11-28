@@ -528,10 +528,11 @@ export type ChatThreadId = number;
 export type ChatThreadStatus = "open" | "closed" | "archived";
 
 /**
- *  The agent started or stopped writing a message: `until` is when it counts as stopped
- *  unless it says so again, unset once it stopped or posted.
+ *  The agent started or stopped writing a message in `place`: `until` is when it counts as
+ *  stopped unless it says so again, unset once it stopped or posted there.
  */
 export type ChatTyping = {
+	place: ChatPlace,
 	until: Timestamp | null,
 };
 
@@ -542,7 +543,10 @@ export type ChatView = {
 	messages: ChatMessage[],
 	/**  Whether messages before the first one remain. */
 	hasEarlier: boolean,
-	/**  Until when the agent said it is writing; unset when it posted since or never said. */
+	/**
+	 *  Until when the agent said it is writing in this place; unset when it posted here since
+	 *  or never said.
+	 */
 	typingUntil: Timestamp | null,
 };
 

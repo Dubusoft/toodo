@@ -1964,11 +1964,31 @@
   },
   {
     "name": "set_typing",
-    "description": "Show the people in the Toodo app chat that you are writing a reply (typing true), or stop showing it (false). It lapses after 30 seconds unless you send it again, and posting a reply ends it.",
+    "description": "Show the people in the Toodo app chat that you are writing a reply (typing true), or stop showing it (false), in channel_id or thread_id: where the reply goes, the first channel when neither is given. It shows only there, lapses after 30 seconds unless you send it again, and posting a reply there ends it.",
     "inputSchema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "channel_id": {
+          "default": null,
+          "description": "The channel the reply goes to. Give this or thread_id, or neither for the first\nchannel.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
+        "thread_id": {
+          "default": null,
+          "description": "The thread the reply goes to.",
+          "pattern": "^[0-9]+$",
+          "type": [
+            "integer",
+            "string",
+            "null"
+          ]
+        },
         "typing": {
           "description": "true while writing a reply (it lapses after 30 seconds unless sent again), false to stop.",
           "type": "boolean"

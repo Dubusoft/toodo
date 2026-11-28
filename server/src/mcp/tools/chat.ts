@@ -61,6 +61,13 @@ export function replyInChat(
   return { message: message(posted, now), notice };
 }
 
+/** Where the agent says it is writing: `channel_id` or `thread_id`, else the first channel. */
+export function typingPlace(request: ReturnType<typeof R.setTyping>): B.ChatPlace {
+  const place = placeOf(request.channel_id, request.thread_id);
+  if (place === null) return { channel: FIRST_CHANNEL };
+  return place.kind === "channel" ? { channel: place.id } : { thread: place.id };
+}
+
 export function ackChat(storage: Storage, request: ReturnType<typeof R.ackChat>): B.ChatMessage[] {
   const now = storage.now();
   return posts.ackChatMessages(storage.db, request.ids.map(chatMessageId), now).map((m) => message(m, now));

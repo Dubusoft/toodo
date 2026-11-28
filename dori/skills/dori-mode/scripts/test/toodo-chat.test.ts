@@ -53,6 +53,14 @@ test("a message posted between the peek and the take is journaled from the take"
   expect([...journal.keys()]).toEqual(["toodo-chat:4", "toodo-chat:5"]);
 });
 
+test("the typing dots are set at the place the reply goes", async () => {
+  const calls: unknown[] = [];
+  const chat = new ToodoChat(mcp(async (name: string, args: unknown) => { calls.push([name, args]); return { typing: true }; }));
+  await chat.typing(parseToodoRef("toodo:thread/9"), true);
+  await chat.typing(parseToodoRef("toodo"), false);
+  expect(calls).toEqual([["set_typing", { typing: true, thread_id: 9 }], ["set_typing", { typing: false, channel_id: 1 }]]);
+});
+
 test("nothing is taken when journaling fails, so the messages stay pending", async () => {
   const calls: string[] = [];
   const chat = new ToodoChat(mcp(async (name: string) => { calls.push(name); return [message(4, "hello")]; }));
