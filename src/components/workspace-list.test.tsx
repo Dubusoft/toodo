@@ -85,8 +85,8 @@ describe("New workspace", () => {
 describe("Workspace list", () => {
   it("shows each workspace with its repository reference", () => {
     workspaces = [
-      { id: 1, name: "toodo", description: null, repository: "dev-bokdong/toodo", archivedAt: null },
-      { id: 2, name: "ops", description: "Server chores", repository: null, archivedAt: null },
+      { id: 1, name: "toodo", description: null, repository: "dev-bokdong/toodo", machine: null, archivedAt: null },
+      { id: 2, name: "ops", description: "Server chores", repository: null, machine: null, archivedAt: null },
     ];
     render(<WorkspaceList selectedId={1} onSelect={() => {}} onShowLane={() => {}} />);
 

@@ -78,6 +78,7 @@ export const createWorkspace = struct("CreateWorkspace", {
   name: required(string),
   description: optional(string),
   repository: optional(string),
+  machine: optional(string),
 });
 
 export const updateWorkspace = struct("UpdateWorkspace", {
@@ -85,6 +86,7 @@ export const updateWorkspace = struct("UpdateWorkspace", {
   name: optional(string),
   description: present(string),
   repository: present(string),
+  machine: present(string),
 });
 
 export const archiveWorkspace = struct("ArchiveWorkspace", { id: required(i64), confirm: flag });

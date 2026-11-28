@@ -12,19 +12,24 @@ import {
 test("Workspace metadata updates keep omitted fields and clear nulls", () => {
   const storage = memoryStorage();
   const created = createWorkspace(storage, R.createWorkspace({
-    name: "Planning", description: "# Notes", repository: "discord:tasks",
+    name: "Planning", description: "# Notes", repository: "discord:tasks", machine: "mac-mini",
   }));
+  expect(created.machine).toBe("mac-mini");
   const updated = updateWorkspace(storage, R.updateWorkspace({ id: created.id, name: "Renamed" }));
   expect(updated.description).toBe("# Notes");
   expect(updated.repository).toBe("discord:tasks");
+  expect(updated.machine).toBe("mac-mini");
+  expect(updateWorkspace(storage, R.updateWorkspace({ id: created.id, machine: "local" })).machine).toBe("local");
+  expect(listWorkspaces(storage)[0]!.machine).toBe("local");
 
   const cleared = updateWorkspace(storage, R.updateWorkspace({
-    id: created.id, description: null, repository: null,
+    id: created.id, description: null, repository: null, machine: null,
   }));
   expect(cleared.name).toBe("Renamed");
   expect(cleared.description).toBeNull();
   expect(cleared.repository).toBeNull();
-  expect(Object.keys(cleared).sort()).toEqual(["archivedAt", "description", "id", "name", "repository"]);
+  expect(cleared.machine).toBeNull();
+  expect(Object.keys(cleared).sort()).toEqual(["archivedAt", "description", "id", "machine", "name", "repository"]);
 });
 
 test("Archiving a workspace requires confirmation and no active work", () => {

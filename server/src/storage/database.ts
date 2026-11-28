@@ -58,6 +58,9 @@ export const MIGRATIONS: readonly string[] = [
   // channels were made.
   `ALTER TABLE chat_channels ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
    UPDATE chat_channels SET position = id;`,
+  // 61: the machine a workspace lives on, as Dori names its runner (`local` for the server's
+  // host); unset leaves the navigation to place the workspace by its lanes.
+  "ALTER TABLE workspaces ADD COLUMN machine TEXT",
 ];
 
 /** The schema version this server reads and writes. */

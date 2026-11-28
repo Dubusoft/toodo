@@ -58,6 +58,7 @@ export function workspace(w: Workspace): B.Workspace {
     name: w.name,
     description: w.description,
     repository: w.repository,
+    machine: w.machine,
     archivedAt: w.archivedAt,
   };
 }

@@ -6,9 +6,9 @@ import type { Storage } from "./storage.ts";
 import { ensureAcyclic } from "./task-query.ts";
 import { LIVE_TASK } from "./task-sql.ts";
 
-export type NewWorkspace = Pick<Workspace, "name" | "description" | "repository">;
+export type NewWorkspace = Pick<Workspace, "name" | "description" | "repository"> & { readonly machine?: string | null };
 
-const COLUMNS = "id, name, description, repository, archived_at AS archivedAt";
+const COLUMNS = "id, name, description, repository, machine, archived_at AS archivedAt";
 
 function ensureArchived(db: Database, id: WorkspaceId): void {
   const row = db.query<Pick<Workspace, "archivedAt">, [WorkspaceId]>(
@@ -26,8 +26,8 @@ function requireWorkspace(storage: Storage, id: WorkspaceId): Workspace {
 
 export function createWorkspace(storage: Storage, input: NewWorkspace): Workspace {
   const result = storage.db.run(
-    "INSERT INTO workspaces (name, description, repository) VALUES (?1, ?2, ?3)",
-    [input.name, input.description, input.repository],
+    "INSERT INTO workspaces (name, description, repository, machine) VALUES (?1, ?2, ?3, ?4)",
+    [input.name, input.description, input.repository, input.machine ?? null],
   );
   return requireWorkspace(storage, workspaceId(Number(result.lastInsertRowid)));
 }
@@ -52,9 +52,9 @@ export function archivedWorkspaces(storage: Storage): Workspace[] {
 
 export function updateWorkspace(storage: Storage, workspace: Workspace): void {
   const result = storage.db.run(`
-    UPDATE workspaces SET name = ?2, description = ?3, repository = ?4
+    UPDATE workspaces SET name = ?2, description = ?3, repository = ?4, machine = ?5
     WHERE id = ?1 AND archived_at IS NULL
-  `, [workspace.id, workspace.name, workspace.description, workspace.repository]);
+  `, [workspace.id, workspace.name, workspace.description, workspace.repository, workspace.machine]);
   if (result.changes === 0) throw new StorageError({ kind: "workspace_not_found", workspace: workspace.id });
 }
 

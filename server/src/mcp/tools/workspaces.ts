@@ -76,6 +76,7 @@ export function updateWorkspace(storage: Storage, request: ReturnType<typeof R.u
     name: request.name ?? current.name,
     description: request.description === undefined ? current.description : request.description,
     repository: request.repository === undefined ? current.repository : request.repository,
+    machine: request.machine === undefined ? current.machine : request.machine,
   });
 }
 

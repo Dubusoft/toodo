@@ -35,6 +35,7 @@ directory or a repository; a channel or a project fits too.
 | `name` | Display name. |
 | `description` | Optional Markdown about the workspace. |
 | `repository` | Optional free text naming where the work lives, such as `Dubusoft/toodo` or `discord:<channel>`. Toodo doesn't interpret it; a GitHub `owner/repo` form is shown as a link. |
+| `machine` | Optional machine the workspace lives on, as Dori labels its runner (`local` for the server's host). The navigation shows the workspace under it; unset, the workspace sits under the machines its lanes run on, else under the server. Dori's lane placement doesn't read it. |
 | `archivedAt` | Set when the workspace is archived (removed from the app); `null` otherwise. |
 
 MCP tools: `list_workspaces`, `create_workspace`, `update_workspace`,

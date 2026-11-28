@@ -21,6 +21,7 @@ const workspace: Workspace = {
   name: "herdr",
   description: null,
   repository: "dev-bokdong/herdr",
+  machine: null,
   archivedAt: null,
 };
 

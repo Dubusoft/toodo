@@ -25,6 +25,7 @@ const app: Workspace = {
   name: "app",
   description: "The **web** app",
   repository: "acme/app",
+  machine: null,
   archivedAt: null,
 };
 

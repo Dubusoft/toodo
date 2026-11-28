@@ -26,6 +26,8 @@ export type Workspace = {
   readonly name: string;
   readonly description: string | null;
   readonly repository: string | null;
+  /** The Dori runner the workspace lives on (`local` for the server's host), `null` when unset. */
+  readonly machine: string | null;
   readonly archivedAt: number | null;
 };
 
