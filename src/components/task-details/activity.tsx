@@ -1,3 +1,4 @@
+import { useI18n, useMessages } from "@/lib/i18n";
 import { Suspense } from "react";
 import type { NoteKind, Task } from "@/lib/bindings";
 import { formatFull } from "@/lib/timeline";
@@ -6,7 +7,6 @@ import { markdownPreview } from "@/lib/markdown";
 import { Badge, type BadgeProps } from "@astryxdesign/core/Badge";
 import { DetailField, Markdown } from "@/components/task-common";
 
-const noteKindLabels: Record<NoteKind, string> = { progress: "Progress", blocker: "Blocker", decision: "Decision" };
 const noteKindVariants: Record<NoteKind, BadgeProps["variant"]> = {
   progress: "neutral",
   blocker: "warning",
@@ -14,8 +14,9 @@ const noteKindVariants: Record<NoteKind, BadgeProps["variant"]> = {
 };
 
 function NoteKindBadge({ kind }: { kind: NoteKind }) {
+  const m = useMessages();
   return (
-    <Badge data-note-kind={kind} className="shrink-0" variant={noteKindVariants[kind]} label={noteKindLabels[kind]} />
+    <Badge data-note-kind={kind} className="shrink-0" variant={noteKindVariants[kind]} label={m.details.noteKinds[kind]} />
   );
 }
 
@@ -24,6 +25,7 @@ function NoteKindBadge({ kind }: { kind: NoteKind }) {
  * the latest one in a list row.
  */
 export function TaskNotes({ task, detailed }: { task: Task; detailed: boolean }) {
+  const { locale, m } = useI18n();
   const notes = task.notes;
   if (notes.length === 0) {
     return null;
@@ -32,21 +34,21 @@ export function TaskNotes({ task, detailed }: { task: Task; detailed: boolean })
     const latest = notes[notes.length - 1];
     return (
       <p
-        aria-label={`Latest note of #${task.id}`}
+        aria-label={m.details.notes.latest(task.id)}
         className="flex min-w-0 items-center gap-1.5 text-xs"
-        title={formatFull(latest.at)}
+        title={formatFull(latest.at, locale)}
       >
         <NoteKindBadge kind={latest.kind} />
         <span className="min-w-0 truncate text-muted-foreground">{markdownPreview(latest.body)}</span>
         {notes.length > 1 && (
-          <span className="shrink-0 text-muted-foreground">{`+${notes.length - 1} more`}</span>
+          <span className="shrink-0 text-muted-foreground">{m.details.notes.more(notes.length - 1)}</span>
         )}
       </p>
     );
   }
   return (
-    <DetailField label={`Notes (${notes.length})`}>
-      <ol aria-label={`Notes of #${task.id}`} className="flex flex-col gap-2">
+    <DetailField label={m.details.notes.count(notes.length)}>
+      <ol aria-label={m.details.notes.ofTask(task.id)} className="flex flex-col gap-2">
         {notes.map((note, index) => (
           <li key={index} className="flex flex-col gap-0.5">
             <div className="flex items-center gap-1.5">

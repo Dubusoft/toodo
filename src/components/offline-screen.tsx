@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { WifiOff } from "lucide-react";
 import { Button } from "@/components/button";
 import { When } from "@/components/when";
+import { fill, useMessages } from "@/lib/i18n";
 import { queryKeys } from "@/lib/queries";
 import { reachability, retryNow, signInExpired, subscribeReachability, unreachableCause } from "@/web/connection";
 
@@ -27,7 +28,9 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 }
 
 function OfflineBanner({ retrying }: { retrying: boolean }) {
-  const reason = navigator.onLine ? unreachableCause() : "This device is offline.";
+  const m = useMessages();
+  const copy = m.app.offline;
+  const reason = navigator.onLine ? unreachableCause(m) : copy.deviceOffline;
   // Only a reload signs in to the proxy again, so waiting for an answer would never end.
   const signIn = navigator.onLine && signInExpired();
   const loadedAt = useQueryClient().getQueryState(queryKeys.tasks)?.dataUpdatedAt;
@@ -39,29 +42,21 @@ function OfflineBanner({ retrying }: { retrying: boolean }) {
       <WifiOff aria-hidden className="size-4 shrink-0" />
       <div className="min-w-0 flex-1">
         <p className="font-medium">
-          {signIn ? "Sign in to the Toodo server again" : "Can't reach the Toodo server"}
+          {signIn ? copy.signIn : copy.unreachable}
         </p>
         <p className="text-xs">
           {reason}{" "}
-          {loadedAt ? (
-            <>
-              Read-only: the tasks shown were loaded <When at={Math.floor(loadedAt / 1000)} /> and may be out of date.
-            </>
-          ) : (
-            "What you see may be out of date."
-          )}{" "}
-          {signIn
-            ? "Changes are paused until you sign in again."
-            : "Changes are paused. Toodo reconnects on its own as soon as the server answers."}
+          {loadedAt ? fill(copy.readOnly, { when: <When at={Math.floor(loadedAt / 1000)} /> }) : copy.stale}{" "}
+          {signIn ? copy.pausedSignIn : copy.paused}
         </p>
       </div>
       {signIn ? (
-        <Button size="sm" variant="secondary" label="Reload" onClick={() => location.reload()} />
+        <Button size="sm" variant="secondary" label={m.app.reload} onClick={() => location.reload()} />
       ) : (
         <Button
           size="sm"
           variant="secondary"
-          label={retrying ? "Trying..." : "Retry now"}
+          label={retrying ? copy.trying : m.app.retryNow}
           isDisabled={retrying}
           onClick={retryNow}
         />

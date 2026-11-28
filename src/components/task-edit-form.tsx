@@ -1,3 +1,4 @@
+import { useMessages } from "@/lib/i18n";
 import { useState, type FormEvent } from "react";
 import { Selector } from "@astryxdesign/core/Selector";
 import { TextInput } from "@astryxdesign/core/TextInput";
@@ -7,7 +8,7 @@ import { MarkdownEditor } from "@/components/markdown-editor";
 import type { Task, TaskType } from "@/lib/bindings";
 import { useUpdateTask } from "@/lib/queries";
 import { formatLabels, type MissingPlanField, parseLabels } from "@/lib/plan";
-import { taskTypes } from "@/components/task-common";
+import { taskTypeOptions } from "@/components/task-common";
 import { AutopilotField, type PlanDraft, planEstimate, PlanFields } from "@/components/plan-fields";
 import {
   type CriterionDraft,
@@ -29,6 +30,7 @@ export function TaskEditForm({
   onDone: () => void;
 }) {
   const updateTask = useUpdateTask();
+  const m = useMessages();
   const [taskType, setTaskType] = useState<TaskType>(task.taskType);
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
@@ -47,7 +49,7 @@ export function TaskEditForm({
   // Unchanged criteria are not sent, so a save never touches the ones checked so far.
   const criteriaChanged =
     JSON.stringify(criterionInputs(criteria)) !== JSON.stringify(criterionInputs(initialCriteria));
-  const criteriaInvalid = criteria.some((draft) => targetProblem(draft) !== null);
+  const criteriaInvalid = criteria.some((draft) => targetProblem(draft, m) !== null);
   // The timeline asks before closing a details sheet whose edit form is marked dirty.
   const dirty =
     taskType !== task.taskType ||
@@ -87,23 +89,23 @@ export function TaskEditForm({
   return (
     <form
       onSubmit={submit}
-      aria-label={`Edit task #${task.id}`}
+      aria-label={m.details.edit.form(task.id)}
       data-dirty={dirty || undefined}
       className="flex flex-col gap-1 max-md:gap-2"
       onKeyDown={guard.onKeyDown}
     >
       <div className="flex gap-2">
         <Selector
-          label={`Type of #${task.id}`}
+          label={m.details.edit.type(task.id)}
           isLabelHidden
           width={112}
-          options={taskTypes}
+          options={taskTypeOptions(m)}
           value={taskType}
           onChange={(type) => setTaskType(type as TaskType)}
         />
         <TextInput
           containerClassName="flex-1"
-          label={`Title of #${task.id}`}
+          label={m.details.edit.title(task.id)}
           isLabelHidden
           value={title}
           onChange={setTitle}
@@ -111,25 +113,25 @@ export function TaskEditForm({
         />
       </div>
       <MarkdownEditor
-        label={`Description of #${task.id}`}
-        placeholder="Description (optional, Markdown)"
+        label={m.details.edit.description(task.id)}
+        placeholder={m.details.edit.descriptionHint}
         value={description}
         onChange={setDescription}
       />
-      <PlanFields suffix={` of #${task.id}`} plan={plan} onChange={setPlan} autoFocus={focusPlan} />
-      <AutopilotField suffix={` of #${task.id}`} checked={autopilot} onChange={setAutopilot} />
+      <PlanFields suffix={m.details.edit.taskSuffix(task.id)} plan={plan} onChange={setPlan} autoFocus={focusPlan} />
+      <AutopilotField suffix={m.details.edit.taskSuffix(task.id)} checked={autopilot} onChange={setAutopilot} />
       {task.status !== "done" && (
         <div className="flex flex-col gap-1">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-            <span className="font-medium text-muted-foreground">Completion criteria</span>
+            <span className="font-medium text-muted-foreground">{m.details.edit.criteria}</span>
           </div>
           <CriteriaEditor taskId={task.id} criteria={criteria} onChange={setCriteria} />
         </div>
       )}
       {guard.asking ? (
         <DiscardConfirm
-          label={`Discard changes to #${task.id}`}
-          question={`Discard your changes to #${task.id}?`}
+          label={m.details.edit.discard(task.id)}
+          question={m.details.edit.discardQuestion(task.id)}
           onKeep={guard.keep}
           onDiscard={guard.discard}
         />
@@ -139,10 +141,10 @@ export function TaskEditForm({
             type="submit"
             size="sm"
             variant="primary"
-            label={updateTask.isPending ? "Saving..." : "Save"}
+            label={updateTask.isPending ? m.details.actions.saving : m.common.save}
             isDisabled={updateTask.isPending || estimate === undefined || criteriaInvalid || title.trim() === ""}
           />
-          <Button type="button" size="sm" variant="ghost" label="Discard" onClick={guard.request} />
+          <Button type="button" size="sm" variant="ghost" label={m.details.actions.discard} onClick={guard.request} />
         </div>
       )}
       {updateTask.isError && (

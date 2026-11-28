@@ -1,6 +1,8 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { RotateCcw, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/button";
+import { errorMessage } from "@/lib/error-messages";
+import { useMessages } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -36,38 +38,39 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     const { error } = this.state;
     if (error === null) return this.props.children;
-    const Element = this.props.as ?? "div";
     return (
-      <Element
-        role="alert"
-        className={cn(
-          "flex flex-col items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm",
-          this.props.className,
-        )}
-      >
-        <p className="flex items-center gap-2 font-medium">
-          <TriangleAlert aria-hidden className="size-4 shrink-0 text-destructive" />
-          {capitalize(this.props.label)} could not be shown.
-        </p>
-        <p className="text-muted-foreground">
-          Something went wrong while showing it. Try again, or reload the page if it keeps happening.
-        </p>
-        {error.message && <p className="font-mono text-xs break-all text-muted-foreground">{error.message}</p>}
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            variant="secondary"
-            label="Try again"
-            icon={<RotateCcw />}
-            onClick={() => this.setState({ error: null })}
-          />
-          <Button size="sm" variant="ghost" label="Reload page" onClick={() => window.location.reload()} />
-        </div>
-      </Element>
+      <ErrorFallback boundary={this.props} error={error} retry={() => this.setState({ error: null })} />
     );
   }
 }
 
-function capitalize(text: string) {
-  return text.charAt(0).toUpperCase() + text.slice(1);
+function ErrorFallback({ boundary, error, retry }: {
+  boundary: Pick<Props, "as" | "className" | "label">;
+  error: Error;
+  retry: () => void;
+}) {
+  const m = useMessages();
+  const Element = boundary.as ?? "div";
+  const copy = m.app.errorBoundary;
+  const detail = errorMessage(error, m);
+  return (
+    <Element
+      role="alert"
+      className={cn(
+        "flex flex-col items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 p-4 text-sm",
+        boundary.className,
+      )}
+    >
+      <p className="flex items-center gap-2 font-medium">
+        <TriangleAlert aria-hidden className="size-4 shrink-0 text-destructive" />
+        {copy.title(boundary.label)}
+      </p>
+      <p className="text-muted-foreground">{copy.description}</p>
+      {detail && <p className="font-mono text-xs break-all text-muted-foreground">{detail}</p>}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="secondary" label={copy.tryAgain} icon={<RotateCcw />} onClick={retry} />
+        <Button size="sm" variant="ghost" label={copy.reload} onClick={() => window.location.reload()} />
+      </div>
+    </Element>
+  );
 }

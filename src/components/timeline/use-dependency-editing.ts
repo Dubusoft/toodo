@@ -1,3 +1,4 @@
+import { useMessages } from "@/lib/i18n";
 import { useState } from "react";
 import type { Connection, EdgeChange } from "@xyflow/react";
 import type { Task, TaskId } from "@/lib/bindings";
@@ -6,12 +7,17 @@ import { dependencyEditableStatuses, edgeId, type DependencyEdge } from "@/lib/t
 
 export type Dependency = { id: TaskId; dependsOn: TaskId };
 
+type DependencyError =
+  | { readonly kind: "command"; readonly message: string }
+  | { readonly kind: "removal"; readonly source: string; readonly target: string; readonly message: string };
+
 /**
  * Dependencies drawn and removed on the timeline: the lines selected for removal, the lines
  * drawn onto started tasks that they would pause, held until the user confirms each, and why
  * the latest changes failed.
  */
 export function useDependencyEditing(tasks: Task[], dependencies: DependencyEdge[]) {
+  const m = useMessages();
   const addDependency = useAddDependency();
   const removeDependency = useRemoveDependency();
   const [selectedEdgeIds, setSelectedEdgeIds] = useState<ReadonlySet<string>>(new Set());
@@ -19,10 +25,10 @@ export function useDependencyEditing(tasks: Task[], dependencies: DependencyEdge
   // order they were drawn.
   const [confirmingEdges, setConfirmingEdges] = useState<Dependency[]>([]);
   // Why the latest dependency changes failed, one message per failed change.
-  const [errors, setErrors] = useState<string[]>([]);
+  const [errors, setErrors] = useState<DependencyError[]>([]);
   const editable = (target: TaskId) =>
     dependencyEditableStatuses.includes(tasks.find((task) => task.id === target)?.status ?? "done");
-  const failed = (error: Error) => setErrors((current) => [...current, error.message]);
+  const failed = (error: Error) => setErrors((current) => [...current, { kind: "command", message: error.message }]);
 
   function connect({ source, target }: Connection) {
     const edge = { id: Number(target), dependsOn: Number(source) };
@@ -71,7 +77,7 @@ export function useDependencyEditing(tasks: Task[], dependencies: DependencyEdge
       results.flatMap((result, index) =>
         result.status === "rejected"
           ? [
-              `Could not remove #${removed[index].source} \u2192 #${removed[index].target}: ${(result.reason as Error).message}`,
+              { kind: "removal", ...removed[index], message: (result.reason as Error).message },
             ]
           : [],
       ),
@@ -100,7 +106,12 @@ export function useDependencyEditing(tasks: Task[], dependencies: DependencyEdge
     /** The selected lines that can be removed. */
     removable: dependencies.filter((edge) => selectedEdgeIds.has(edge.id) && editable(edge.target)),
     changing: addDependency.isPending || removeDependency.isPending,
-    errors,
+    errors: errors.map((error) => {
+      switch (error.kind) {
+        case "command": return error.message;
+        case "removal": return m.details.graph.removeFailed(error.source, error.target, error.message);
+      }
+    }),
     connect,
     removeEdges,
     selectEdges,

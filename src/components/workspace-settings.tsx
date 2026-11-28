@@ -6,6 +6,8 @@ import { Button } from "@/components/button";
 import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
 import { Markdown } from "@/components/task-common";
 import type { Workspace } from "@/lib/bindings";
+import { useMessages } from "@/lib/i18n";
+import { errorMessage } from "@/lib/error-messages";
 import { useUpdateWorkspace } from "@/lib/queries";
 
 /** The link a repository reference points to: a URL as it is, `owner/repo` on GitHub; `null` for anything else. */
@@ -19,6 +21,8 @@ export function repositoryUrl(repository: string): string | null {
  * its name.
  */
 export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
+  const m = useMessages();
+  const copy = m.app.workspace;
   const updateWorkspace = useUpdateWorkspace();
   // Which field the open form focuses first: the name, or the repository when the form was
   // opened to set a missing one.
@@ -64,18 +68,18 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
             <Button
               size="sm"
               variant="secondary"
-              label="Set repository"
+              label={copy.setRepository}
               icon={<FolderGit2 />}
-              tooltip="Link this workspace to a repository, e.g. owner/repo or a URL"
+              tooltip={copy.linkRepository}
               onClick={() => open("repository")}
             />
           ) : link === null ? (
-              <code aria-label="Repository" className="truncate text-foreground">
+              <code aria-label={copy.repository} className="truncate text-foreground">
                 {workspace.repository}
               </code>
             ) : (
               <a
-                aria-label="Repository"
+                aria-label={copy.repository}
                 href={link}
                 target="_blank"
                 rel="noreferrer"
@@ -84,11 +88,11 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
                 {workspace.repository}
               </a>
           )}
-          <Button size="sm" variant="ghost" label="Edit workspace" icon={<Pencil />} onClick={() => open("name")} />
+          <Button size="sm" variant="ghost" label={copy.edit} icon={<Pencil />} onClick={() => open("name")} />
         </p>
         {workspace.description !== null && (
           <Suspense fallback={<p className="whitespace-pre-wrap">{workspace.description}</p>}>
-            <div aria-label="Workspace description" className="text-sm">
+            <div aria-label={copy.workspaceDescription} className="text-sm">
               <Markdown source={workspace.description} />
             </div>
           </Suspense>
@@ -100,15 +104,15 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
   return (
     <form
       onSubmit={submit}
-      aria-label="Workspace details"
+      aria-label={copy.details}
       className="flex flex-col gap-1.5"
       onKeyDown={guard.onKeyDown}
     >
-      <TextInput size="sm" label="Name" value={name} onChange={setName} hasAutoFocus={editing === "name"} />
-      <TextArea size="sm" label="Description (optional, Markdown)" rows={4} value={description} onChange={setDescription} />
+      <TextInput size="sm" label={copy.name} value={name} onChange={setName} hasAutoFocus={editing === "name"} />
+      <TextArea size="sm" label={copy.optionalDescription} rows={4} value={description} onChange={setDescription} />
       <TextInput
         size="sm"
-        label="Repository (optional, e.g. owner/repo or a URL)"
+        label={copy.optionalRepository}
         hasSpellCheck={false}
         hasAutoFocus={editing === "repository"}
         value={repository}
@@ -116,8 +120,8 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
       />
       {guard.asking ? (
         <DiscardConfirm
-          label="Discard workspace changes"
-          question="Discard the changes to the workspace?"
+          label={copy.discardLabel}
+          question={copy.discardQuestion}
           onKeep={guard.keep}
           onDiscard={guard.discard}
         />
@@ -127,15 +131,15 @@ export function WorkspaceDetails({ workspace }: { workspace: Workspace }) {
             type="submit"
             size="sm"
             variant="secondary"
-            label="Save"
+            label={m.common.save}
             isDisabled={updateWorkspace.isPending || name.trim() === ""}
           />
-          <Button type="button" size="sm" variant="ghost" label="Discard" onClick={guard.request} />
+          <Button type="button" size="sm" variant="ghost" label={m.app.discard} onClick={guard.request} />
         </div>
       )}
       {updateWorkspace.isError && (
         <p role="alert" className="text-xs text-destructive">
-          {updateWorkspace.error.message}
+          {errorMessage(updateWorkspace.error, m)}
         </p>
       )}
     </form>

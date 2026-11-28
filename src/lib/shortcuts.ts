@@ -1,16 +1,20 @@
+import type { Messages } from "@/locales/en";
+
 /** A keyboard shortcut as listed in the shortcuts help: key names to press, and what they do. */
 export type Shortcut = { keys: string[]; description: string };
 
 /** The web app's keyboard shortcuts, shown by `?` and listed in the README. */
-export const shortcuts: Shortcut[] = [
-  { keys: ["Ctrl+K", "Cmd+K"], description: "Open the command palette: jump to a task or run an action" },
-  { keys: ["j", "k"], description: "Select the next or previous task in the list or on the timeline" },
-  { keys: ["Enter"], description: "Open the details of the selected task" },
-  { keys: ["Esc"], description: "Close the details, the palette, or a dialog" },
-  { keys: ["/"], description: "Search tasks" },
-  { keys: ["?"], description: "Show these shortcuts" },
-  { keys: ["Up", "Down", "Home", "End"], description: "On a timeline bar, move the selection between rows" },
-];
+export function shortcuts(m: Messages): Shortcut[] {
+  return [
+    { keys: ["Ctrl+K", "Cmd+K"], description: m.app.shortcuts.palette },
+    { keys: ["j", "k"], description: m.app.shortcuts.selectTask },
+    { keys: ["Enter"], description: m.app.shortcuts.openTask },
+    { keys: ["Esc"], description: m.app.shortcuts.closeOverlay },
+    { keys: ["/"], description: m.app.searchTasks },
+    { keys: ["?"], description: m.app.shortcuts.showHelp },
+    { keys: ["Up", "Down", "Home", "End"], description: m.app.shortcuts.timelineRows },
+  ];
+}
 
 /** Whether `target` takes typed text, so letters typed there must stay text. */
 export function isTypingTarget(target: EventTarget | null): boolean {

@@ -5,6 +5,8 @@ import { TextArea } from "@astryxdesign/core/TextArea";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button, IconButton } from "@/components/button";
 import type { NewWorkspace, Workspace, WorkspaceId } from "@/lib/bindings";
+import { errorMessage } from "@/lib/error-messages";
+import { useMessages } from "@/lib/i18n";
 import { useNarrow } from "@/lib/narrow";
 import { useCreateWorkspace, useDeleteWorkspace, useWorkspaces } from "@/lib/queries";
 import { cn } from "@/lib/utils";
@@ -19,6 +21,8 @@ type WorkspaceListProps = {
 };
 
 export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
+  const m = useMessages();
+  const copy = m.app.workspace;
   const workspaces = useWorkspaces();
   const reach = useSyncExternalStore(subscribeReachability, reachability);
   const serverDown = reach === "unreachable" || reach === "retrying";
@@ -34,15 +38,15 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
     <section aria-labelledby="workspaces-heading" className="flex shrink-0 flex-col gap-2">
       <div className="flex items-center gap-1">
         <h2 id="workspaces-heading" className="min-w-0 flex-1 text-xs font-medium uppercase text-muted-foreground">
-          Workspaces
+          {copy.title}
         </h2>
         <Button
           size="sm"
           variant="secondary"
-          label="Add"
+          label={m.app.add}
           icon={<Plus />}
-          aria-label="Add workspace"
-          tooltip="Add a workspace"
+          aria-label={copy.add}
+          tooltip={copy.addTooltip}
           aria-haspopup="dialog"
           aria-expanded={adding}
           onClick={(event) => {
@@ -52,19 +56,18 @@ export function WorkspaceList({ selectedId, onSelect }: WorkspaceListProps) {
         />
       </div>
       {workspaces.isPending && !serverDown && (
-        <p className="text-sm text-muted-foreground">Loading workspaces...</p>
+        <p className="text-sm text-muted-foreground">{copy.loading}</p>
       )}
       {(workspaces.isError || (workspaces.isPending && serverDown)) && (
         <div role="alert" className="flex flex-col items-start gap-2 text-sm text-destructive">
           <p>
-            Failed to load workspaces:{" "}
-            {workspaces.error?.message ?? (unreachableCause() || "The Toodo server does not answer.")}
+            {copy.loadFailed(workspaces.error ? errorMessage(workspaces.error, m) : unreachableCause(m) || copy.noReply)}
           </p>
-          <Button size="sm" variant="secondary" label="Retry now" onClick={() => void workspaces.refetch()} />
+          <Button size="sm" variant="secondary" label={m.app.retryNow} onClick={() => void workspaces.refetch()} />
         </div>
       )}
       {workspaces.data?.length === 0 && !adding && (
-        <p className="text-sm text-muted-foreground">No workspaces yet.</p>
+        <p className="text-sm text-muted-foreground">{copy.empty}</p>
       )}
       {workspaces.data && workspaces.data.length > 0 && (
         <ul className="flex flex-col gap-1">
@@ -99,6 +102,8 @@ type WorkspaceItemProps = {
 
 /** A workspace in the list; removing it asks for confirmation first. */
 function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
+  const m = useMessages();
+  const copy = m.app.workspace;
   const deleteWorkspace = useDeleteWorkspace();
   const [confirming, setConfirming] = useState(false);
 
@@ -127,8 +132,8 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           <IconButton
             size="sm"
             variant="ghost"
-            label={`Remove ${workspace.name}`}
-            tooltip="Move the workspace and its tasks to the archive"
+            label={copy.removeName(workspace.name)}
+            tooltip={copy.archiveTooltip}
             icon={<X />}
             className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
             onClick={() => {
@@ -141,7 +146,7 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
       {confirming && (
         <div
           role="group"
-          aria-label={`Remove ${workspace.name}`}
+          aria-label={copy.removeName(workspace.name)}
           className="flex flex-col gap-1.5 rounded-lg border p-2"
           onKeyDown={(event) => {
             if (event.key === "Escape" && !deleteWorkspace.isPending) {
@@ -151,12 +156,11 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
           }}
         >
           <p className="text-xs text-muted-foreground">
-            Remove {workspace.name} and its tasks from Toodo? They move to Settings &gt; Archive, where they can be
-            restored.
+            {copy.removeQuestion(workspace.name)}
           </p>
           {deleteWorkspace.isError && (
             <p role="alert" className="text-xs text-destructive">
-              {deleteWorkspace.error.message}
+              {errorMessage(deleteWorkspace.error, m)}
             </p>
           )}
           <div className="flex gap-1">
@@ -164,12 +168,12 @@ function WorkspaceItem({ workspace, selected, onSelect }: WorkspaceItemProps) {
               changesData
               size="sm"
               variant="destructive"
-              label={deleteWorkspace.isPending ? "Removing..." : "Remove"}
-              aria-label={`Confirm remove ${workspace.name}`}
+              label={deleteWorkspace.isPending ? copy.removing : copy.remove}
+              aria-label={copy.confirmRemove(workspace.name)}
               isDisabled={deleteWorkspace.isPending}
               onClick={() => deleteWorkspace.mutate(workspace.id)}
             />
-            <Button size="sm" variant="ghost" label="Back" autoFocus onClick={() => setConfirming(false)} />
+            <Button size="sm" variant="ghost" label={m.app.back} autoFocus onClick={() => setConfirming(false)} />
           </div>
         </div>
       )}
@@ -194,6 +198,8 @@ type NewWorkspaceDialogProps = {
 
 /** Adds a workspace: a name, an optional Markdown description, and an optional repository reference. */
 export function NewWorkspaceDialog({ onCreated, onClose }: NewWorkspaceDialogProps) {
+  const m = useMessages();
+  const copy = m.app.workspace;
   const createWorkspace = useCreateWorkspace();
   const narrow = useNarrow();
   const [name, setName] = useState("");
@@ -224,32 +230,32 @@ export function NewWorkspaceDialog({ onCreated, onClose }: NewWorkspaceDialogPro
       width={576}
       maxHeight="min(40rem, calc(100dvh - 4rem))"
     >
-      <DialogHeader title="New workspace" onOpenChange={busy ? undefined : (open) => !open && close()} />
+      <DialogHeader title={copy.newWorkspace} onOpenChange={busy ? undefined : (open) => !open && close()} />
       {/* Escape is handled here too, so it closes the dialog (unless busy) wherever the focus is in it. */}
       <form onSubmit={submit} onKeyDown={escapeCloses(onClose, busy)} className="flex min-h-0 flex-1 flex-col">
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overscroll-contain py-4">
-          <TextInput label="Name" value={name} onChange={setName} hasAutoFocus />
-          <TextArea label="Description" description="Optional, Markdown." rows={4} value={description} onChange={setDescription} />
+          <TextInput label={copy.name} value={name} onChange={setName} hasAutoFocus />
+          <TextArea label={copy.description} description={copy.descriptionHint} rows={4} value={description} onChange={setDescription} />
           <TextInput
-            label="Repository"
-            description="Optional, e.g. owner/repo or a URL. Toodo only shows it."
+            label={copy.repository}
+            description={copy.repositoryHint}
             value={repository}
             onChange={setRepository}
           />
           {createWorkspace.isError && (
             <p role="alert" className="text-xs break-words text-destructive">
-              {createWorkspace.error.message}
+              {errorMessage(createWorkspace.error, m)}
             </p>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2 border-t pt-3">
-          <Button variant="ghost" label="Cancel" isDisabled={busy} onClick={close} />
+          <Button variant="ghost" label={m.common.cancel} isDisabled={busy} onClick={close} />
           <Button
             type="submit"
             variant="primary"
             className="ml-auto"
             changesData
-            label={busy ? "Adding..." : "Add workspace"}
+            label={busy ? copy.adding : copy.add}
             isDisabled={busy || name.trim() === ""}
           />
         </div>

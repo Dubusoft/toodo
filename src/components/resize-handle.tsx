@@ -1,4 +1,5 @@
 import { useState, type KeyboardEvent, type PointerEvent } from "react";
+import { useMessages } from "@/lib/i18n";
 import { savePanelSize, showPanelSize, type PanelSize } from "@/lib/panel-sizes";
 import { cn } from "@/lib/utils";
 
@@ -22,6 +23,7 @@ export function ResizeHandle({
   height?: PanelSize;
   label: string;
 }) {
+  const m = useMessages();
   const [shown, setShown] = useState<Partial<Record<Axis, number>>>({});
   const sizes = () => {
     const found: { axis: Axis; name: PanelSize }[] = [];
@@ -95,12 +97,12 @@ export function ResizeHandle({
       aria-valuenow={edge === "top-left" ? undefined : shown[edge === "left" ? "width" : "height"]}
       aria-valuetext={
         edge === "top-left" && shown.width !== undefined && shown.height !== undefined
-          ? `${shown.width} by ${shown.height} pixels`
+          ? m.app.pixelDimensions(shown.width, shown.height)
           : undefined
       }
       tabIndex={0}
       data-resize-handle={edge}
-      title={`${label} (double-click to reset)`}
+      title={m.app.resizeReset(label)}
       onPointerDown={onPointerDown}
       onKeyDown={onKeyDown}
       onFocus={(event) => {

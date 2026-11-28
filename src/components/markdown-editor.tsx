@@ -1,6 +1,7 @@
 import { lazy, Suspense, useId, useState } from "react";
 import { SegmentedControl, SegmentedControlItem } from "@astryxdesign/core/SegmentedControl";
 import { TextArea } from "@astryxdesign/core/TextArea";
+import { useMessages } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 const Markdown = lazy(() => import("@/components/markdown"));
@@ -19,24 +20,25 @@ export function MarkdownEditor({
   placeholder?: string;
   className?: string;
 }) {
+  const { app: { markdownEditor: copy } } = useMessages();
   const [previewing, setPreviewing] = useState(false);
   const hint = useId();
 
   return (
     <div className={cn("flex min-w-0 flex-col gap-1 max-md:gap-2", className)}>
       <SegmentedControl
-        label={`Mode of ${label}`}
+        label={copy.mode(label)}
         size="sm"
         value={previewing ? "preview" : "write"}
         onChange={(mode) => setPreviewing(mode === "preview")}
       >
-        <SegmentedControlItem value="write" label="Write" />
-        <SegmentedControlItem value="preview" label="Preview" />
+        <SegmentedControlItem value="write" label={copy.write} />
+        <SegmentedControlItem value="preview" label={copy.preview} />
       </SegmentedControl>
       {previewing ? (
         <div
           role="region"
-          aria-label={`Preview of ${label}`}
+          aria-label={copy.previewOf(label)}
           className="min-h-16 rounded-lg border border-input px-2.5 py-1.5"
         >
           {value.trim() ? (
@@ -44,7 +46,7 @@ export function MarkdownEditor({
               <Markdown source={value} />
             </Suspense>
           ) : (
-            <p className="text-sm text-muted-foreground">Nothing to preview</p>
+            <p className="text-sm text-muted-foreground">{copy.empty}</p>
           )}
         </div>
       ) : (
@@ -59,7 +61,7 @@ export function MarkdownEditor({
         />
       )}
       <p id={hint} className="text-xs text-muted-foreground">
-        Markdown supported
+        {copy.hint}
       </p>
     </div>
   );

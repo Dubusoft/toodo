@@ -6,12 +6,13 @@ import {
 } from "@astryxdesign/core/CommandPalette";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
 import type { SearchableItem, SearchSource } from "@astryxdesign/core/Typeahead";
+import { useMessages } from "@/lib/i18n";
 import { shortcuts } from "@/lib/shortcuts";
 
 /** An entry of the command palette: an action, or a task to jump to. */
 export type PaletteCommand = {
   id: string;
-  group: "Actions" | "Tasks";
+  kind?: "task";
   label: string;
   /** Words matched besides the label, such as a task's workspace. */
   keywords?: string;
@@ -60,7 +61,7 @@ function useModal(onClose: () => void) {
 }
 
 /** Astryx groups the results by `auxiliaryData.group`. */
-type PaletteItem = SearchableItem<PaletteCommand> & { auxiliaryData: PaletteCommand };
+type PaletteItem = SearchableItem<PaletteCommand> & { auxiliaryData: PaletteCommand & { group: string } };
 
 /** Highlights the first match whenever the matches change, so Enter runs it right away. */
 function HighlightFirstMatch() {
@@ -78,13 +79,18 @@ function HighlightFirstMatch() {
  * the highlighted entry and closes it.
  */
 export function CommandPalette({ commands, onClose }: { commands: PaletteCommand[]; onClose: () => void }) {
+  const m = useMessages();
   useModal(onClose);
-  const items = commands.map((command): PaletteItem => ({ id: command.id, label: command.label, auxiliaryData: command }));
-  const byId = new Map(items.map((item) => [item.id, item.auxiliaryData]));
+  const items = commands.map((command): PaletteItem => ({
+    id: command.id,
+    label: command.label,
+    auxiliaryData: { ...command, group: command.kind === "task" ? m.app.palette.tasks : m.app.palette.actions },
+  }));
+  const byId = new Map(commands.map((command) => [command.id, command]));
   const source: SearchSource<PaletteItem> = {
     search: (query) => {
-      const matched = new Set(matchCommands(commands, query));
-      return items.filter((item) => matched.has(item.auxiliaryData));
+      const matched = new Set(matchCommands(commands, query).map((command) => command.id));
+      return items.filter((item) => matched.has(item.id));
     },
     bootstrap: () => items,
   };
@@ -100,13 +106,13 @@ export function CommandPalette({ commands, onClose }: { commands: PaletteCommand
     <AstryxCommandPalette<PaletteItem>
       isOpen
       onOpenChange={(open) => !open && onClose()}
-      label="Command palette"
+      label={m.app.palette.title}
       searchSource={source}
       onValueChange={run}
-      emptySearchText="No actions or tasks match."
+      emptySearchText={m.app.palette.noMatches}
       input={
         <>
-          <CommandPaletteInput label="Search actions and tasks" placeholder="Jump to a task or run an action..." />
+          <CommandPaletteInput label={m.app.palette.search} placeholder={m.app.palette.placeholder} />
           <HighlightFirstMatch />
         </>
       }
@@ -123,13 +129,14 @@ export function CommandPalette({ commands, onClose }: { commands: PaletteCommand
 
 /** The list of keyboard shortcuts, opened with `?` or from the command palette. */
 export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
+  const m = useMessages();
   useModal(onClose);
   return (
     <Dialog isOpen onOpenChange={(open) => !open && onClose()} width={448}>
-      <DialogHeader title="Keyboard shortcuts" onOpenChange={(open) => !open && onClose()} />
+      <DialogHeader title={m.app.shortcuts.title} onOpenChange={(open) => !open && onClose()} />
       <dl className="flex min-h-0 flex-col gap-2 overflow-y-auto py-4 text-sm">
-        {shortcuts.map((shortcut) => (
-          <div key={shortcut.description} className="flex items-baseline gap-3">
+        {shortcuts(m).map((shortcut) => (
+          <div key={shortcut.keys[0]} className="flex items-baseline gap-3">
             <dt className="flex w-32 shrink-0 flex-wrap gap-1">
               {shortcut.keys.map((key) => (
                 <kbd key={key} className="rounded border bg-muted px-1.5 font-mono text-xs">
@@ -141,7 +148,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
           </div>
         ))}
       </dl>
-      <p className="border-t pt-2 text-xs text-muted-foreground">Letter shortcuts do nothing while you type in a field.</p>
+      <p className="border-t pt-2 text-xs text-muted-foreground">{m.app.shortcuts.typingHint}</p>
     </Dialog>
   );
 }

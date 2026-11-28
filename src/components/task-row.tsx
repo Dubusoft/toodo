@@ -1,3 +1,4 @@
+import { useI18n } from "@/lib/i18n";
 import { lazy, Suspense, useState } from "react";
 import { AlarmClock, AlarmClockOff, Check, CircleSlash, Flag, GitMerge, PanelRight, Pause, Pencil, Play, RotateCcw, StickyNote, Trash2, X } from "lucide-react";
 import { Selector } from "@astryxdesign/core/Selector";
@@ -27,8 +28,8 @@ import {
 } from "@/lib/task-graph";
 import { openBlocker } from "@/lib/attention";
 import { reachedMilestones } from "@/lib/timeline";
-import type { MissingPlanField } from "@/lib/plan";
 import { When } from "@/components/when";
+import type { MissingPlanField } from "@/lib/plan";
 import { firstParagraph } from "@/lib/markdown";
 import { toneChip, toneOutline, toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
@@ -82,6 +83,7 @@ export function TaskRow({
   /** Opens the details sheet of the task; rows show only a summary. */
   onShowDetails?: () => void;
 }) {
+  const { m, locale } = useI18n();
   const startTask = useStartTask();
   const completeTask = useCompleteTask();
   const pauseTask = usePauseTask();
@@ -142,14 +144,14 @@ export function TaskRow({
     task.status === "planned"
       ? {
           key: "start", changesData: true,
-          label: startTask.isPending ? "Starting..." : paused ? "Resume" : "Start",
-          ariaLabel: `${paused ? "Resume" : "Start"} #${task.id}`,
+          label: startTask.isPending ? m.tasks.starting : paused ? m.tasks.resume : m.tasks.start,
+          ariaLabel: paused ? m.tasks.resumeTask(task.id) : m.tasks.startTask(task.id),
           icon: <Play />,
           title: startable
             ? undefined
             : notAdopted.length > 0
-              ? "A dependency was not adopted; remove it to start"
-              : "Waits until all its dependencies are done",
+              ? m.tasks.startNotAdopted
+              : m.tasks.startBlocked,
           disabled: !startable || startTask.isPending,
           onSelect: () => startTask.mutate(task.id),
         }
@@ -158,12 +160,12 @@ export function TaskRow({
     completable
       ? {
           key: "complete", changesData: true,
-          label: completeTask.isPending ? "Completing..." : "Complete",
-          ariaLabel: `Complete #${task.id}`,
+          label: completeTask.isPending ? m.tasks.completing : m.tasks.complete,
+          ariaLabel: m.tasks.completeTask(task.id),
           icon: <Check />,
           className: completeStyle,
           title: !criteriaMet
-            ? `${unmetCriteria} of ${task.criteria.length} criteria not met yet; check the manual ones under Criteria`
+            ? m.tasks.criteriaUnmet(unmetCriteria, task.criteria.length)
             : undefined,
           disabled: finishing || !criteriaMet,
           onSelect: () => completeTask.mutate(task.id),
@@ -173,10 +175,10 @@ export function TaskRow({
   const conclude: Action | null = active || task.status === "planned"
     ? {
         key: "conclude",
-        label: "Conclude",
-        ariaLabel: `Conclude #${task.id} without completing`,
+        label: m.tasks.conclude,
+        ariaLabel: m.tasks.concludeTask(task.id),
         icon: <CircleSlash />,
-        title: "Finish without completing, e.g. research whose result is not adopted",
+        title: m.tasks.concludeHint,
         disabled: finishing,
         onSelect: () => setConcluding(true),
       }
@@ -190,8 +192,8 @@ export function TaskRow({
     !final
       ? {
           key: "edit",
-          label: "Edit",
-          ariaLabel: `Edit #${task.id}`,
+          label: m.common.edit,
+          ariaLabel: m.tasks.editTask(task.id),
           icon: <Pencil />,
           onSelect: () => {
             setFocusPlan(undefined);
@@ -202,10 +204,10 @@ export function TaskRow({
     active
       ? {
           key: "pause", changesData: true,
-          label: "Pause",
-          ariaLabel: `Pause #${task.id}`,
+          label: m.tasks.pause,
+          ariaLabel: m.tasks.pauseTask(task.id),
           icon: <Pause />,
-          title: "Pause: stop working on the task; it can be resumed",
+          title: m.tasks.pauseHint,
           disabled: pauseTask.isPending,
           onSelect: () => pauseTask.mutate(task.id),
         }
@@ -213,20 +215,20 @@ export function TaskRow({
     !final
       ? {
           key: "wait",
-          label: task.wait === null ? "Wait until..." : "Change wait",
-          ariaLabel: `${task.wait === null ? "Wait" : "Change wait of"} #${task.id}`,
+          label: task.wait === null ? m.tasks.waitUntil : m.tasks.changeWait,
+          ariaLabel: task.wait === null ? m.tasks.waitTask(task.id) : m.tasks.changeTaskWait(task.id),
           icon: <AlarmClock />,
-          title: "Pause the task until a time; it then returns to its status on its own",
+          title: m.tasks.waitHint,
           onSelect: () => setWaiting(true),
         }
       : null,
     task.wait !== null
       ? {
           key: "end-wait", changesData: true,
-          label: "End wait",
-          ariaLabel: `End wait of #${task.id}`,
+          label: m.tasks.endWait,
+          ariaLabel: m.tasks.endTaskWait(task.id),
           icon: <AlarmClockOff />,
-          title: "Return the task to its status now",
+          title: m.tasks.endWaitHint,
           disabled: endWait.isPending,
           onSelect: () => endWait.mutate(task.id),
         }
@@ -234,38 +236,38 @@ export function TaskRow({
     final && isNotAdopted(task)
       ? {
           key: "shipped",
-          label: "Complete as shipped by...",
-          ariaLabel: `Complete #${task.id} as shipped by another task`,
+          label: m.tasks.completeAsShipped,
+          ariaLabel: m.tasks.completeTaskAsShipped(task.id),
           icon: <GitMerge />,
-          title: "The work did ship, through another task: mark it done as shipped with that one",
+          title: m.tasks.shippedHint,
           onSelect: () => setCorrecting("shipped"),
         }
       : null,
     final
       ? {
           key: "outcome",
-          label: "Change outcome",
-          ariaLabel: `Change outcome of #${task.id}`,
+          label: m.tasks.changeOutcome,
+          ariaLabel: m.tasks.changeTaskOutcome(task.id),
           icon: <Flag />,
-          title: "Correct how the task ended, e.g. merged work that was reverted; the change is kept as a note",
+          title: m.tasks.changeOutcomeHint,
           onSelect: () => setCorrecting("outcome"),
         }
       : null,
     final
       ? {
           key: "reopen",
-          label: "Reopen",
-          ariaLabel: `Reopen #${task.id}`,
+          label: m.tasks.reopen,
+          ariaLabel: m.tasks.reopenTask(task.id),
           icon: <RotateCcw />,
-          title: "Reopen a task completed or concluded by mistake; it is paused and can be resumed",
+          title: m.tasks.reopenHint,
           onSelect: () => setCorrecting("reopen"),
         }
       : null,
     final && task.completionNote === null && !addingNote
       ? {
           key: "add-note",
-          label: "Add note",
-          ariaLabel: `Add completion note to #${task.id}`,
+          label: m.tasks.addNote,
+          ariaLabel: m.tasks.addCompletionNote(task.id),
           icon: <StickyNote />,
           onSelect: () => setAddingNote(true),
         }
@@ -273,10 +275,10 @@ export function TaskRow({
     deletableStatuses.includes(task.status)
       ? {
           key: "delete",
-          label: "Delete",
-          ariaLabel: `Delete #${task.id}`,
+          label: m.common.delete,
+          ariaLabel: m.tasks.deleteTask(task.id),
           icon: <Trash2 />,
-          title: "Delete",
+          title: m.common.delete,
           destructive: true,
           onSelect: () => setConfirming(true),
         }
@@ -286,15 +288,16 @@ export function TaskRow({
   const details: Action | null = onShowDetails
     ? {
         key: "details",
-        label: "Details",
-        ariaLabel: `Show details of #${task.id}`,
+        label: m.tasks.details,
+        ariaLabel: m.tasks.showDetails(task.id),
         icon: <PanelRight />,
         onSelect: onShowDetails,
       }
     : null;
   // In the details sheet the main actions are buttons; in a row only the next action is.
   const menu = detailed ? secondary : [...(details ? [details] : []), ...others, ...secondary];
-  const latest = reachedMilestones(task.milestones).at(-1);
+  const waitText = waitLabel(task, locale, m);
+  const latest = reachedMilestones(task.milestones, m).at(-1);
   const metCriteria = task.criteria.filter((criterion) => criterion.state === "met").length;
   const failedCriteria = task.criteria.filter((criterion) => criterion.state === "failed").length;
   const preview = detailed ? "" : firstParagraph(task.description);
@@ -327,7 +330,7 @@ export function TaskRow({
           <div className="flex min-w-0 items-center gap-2">
             <StatusBadge task={task} byId={context.byId} />
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
-            <span className="text-xs text-muted-foreground">Editing</span>
+            <span className="text-xs text-muted-foreground">{m.tasks.editing}</span>
           </div>
           <TaskEditForm
             task={task}
@@ -359,11 +362,11 @@ export function TaskRow({
             {!detailed && task.autopilot && (
               <span
                 role="note"
-                aria-label={`#${task.id} is marked for autopilot`}
-                title="Marked for autopilot: an executor may take it up on its own once it is ready"
+                aria-label={m.tasks.autopilotMarked(task.id)}
+                title={m.tasks.autopilotMarkedHint}
                 className={cn("shrink-0 rounded-md px-1.5 text-xs font-medium", toneChip.info)}
               >
-                Autopilot
+                {m.tasks.autopilot}
               </span>
             )}
             {!detailed && (
@@ -381,11 +384,11 @@ export function TaskRow({
             {blocker && (
               <span
                 role="note"
-                aria-label={`Blocker on #${task.id}: ${blocker.body}`}
+                aria-label={m.tasks.blockerOnTask(task.id, blocker.body)}
                 title={blocker.body}
                 className={cn("shrink-0 rounded-md px-1.5 text-xs font-medium", toneChip.attention)}
               >
-                Blocker
+                {m.tasks.blocker}
               </span>
             )}
           </div>
@@ -401,18 +404,18 @@ export function TaskRow({
           {!detailed && (
             <p className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground empty:hidden">
               {notAdopted.length > 0 && (
-                <span role="note" aria-label={`Blocked prerequisites of #${task.id}`} className={toneText.attention}>
-                  {notAdopted.map((id) => taskRef(id, task.workspaceId, context)).join(", ")} not adopted
+                <span role="note" aria-label={m.tasks.blockedPrerequisites(task.id)} className={toneText.attention}>
+                  {m.tasks.prerequisitesNotAdopted(notAdopted.map((id) => taskRef(id, task.workspaceId, context)).join(", "))}
                 </span>
               )}
               {waitingOn.length > 0 && (
-                <span role="note" aria-label={`Waiting prerequisites of #${task.id}`} className={toneText.neutral}>
-                  Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
+                <span role="note" aria-label={m.tasks.waitingPrerequisites(task.id)} className={toneText.neutral}>
+                  {m.tasks.waitingOn(waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", "))}
                 </span>
               )}
               {task.wait !== null && (
-                <span role="note" aria-label={`Wait of #${task.id}`} className={toneText.neutral}>
-                  {waitLabel(task)}
+                <span role="note" aria-label={m.tasks.taskWait(task.id)} className={toneText.neutral}>
+                  {waitText}
                 </span>
               )}
               {task.dueDate !== null && <DueDate task={task} />}
@@ -425,11 +428,11 @@ export function TaskRow({
               />
               {!final && task.criteria.length > 0 && (
                 <span>
-                  {metCriteria}/{task.criteria.length} criteria met
+                  {m.tasks.criteriaMet(metCriteria, task.criteria.length)}
                 </span>
               )}
               {!final && failedCriteria > 0 && (
-                <span className={cn("font-medium", toneText.danger)}>{failedCriteria} failed</span>
+                <span className={cn("font-medium", toneText.danger)}>{m.tasks.criteriaFailed(failedCriteria)}</span>
               )}
               {latest && (
                 <When at={latest.at} prefix={`${latest.label} `} />
@@ -457,10 +460,10 @@ export function TaskRow({
         detailed && (task.dependsOn.length > 0 || (dependenciesEditable && candidates.length > 0)) && (
         <div
           role="group"
-          aria-label={`Dependencies of #${task.id}`}
+          aria-label={m.tasks.dependencies(task.id)}
           className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground max-md:gap-2"
         >
-          {task.dependsOn.length > 0 && <span>Depends on</span>}
+          {task.dependsOn.length > 0 && <span>{m.tasks.dependsOn}</span>}
           {task.dependsOn.map((id) => (
             <span
               key={id}
@@ -471,7 +474,7 @@ export function TaskRow({
               )}
               title={
                 notAdopted.includes(id)
-                  ? `${context.byId.get(id)?.title} (not adopted)`
+                  ? m.tasks.notAdoptedTitle(context.byId.get(id)?.title)
                   : context.byId.get(id)?.title
               }
             >
@@ -480,8 +483,8 @@ export function TaskRow({
                 <IconButton
                   size="sm"
                   variant="ghost"
-                  label={`Remove dependency #${id} from #${task.id}`}
-                  tooltip="Remove dependency"
+                  label={m.tasks.removeTaskDependency(id, task.id)}
+                  tooltip={m.tasks.removeDependency}
                   icon={<X />}
                   isDisabled={changingDependencies}
                   onClick={() => removeDependency.mutate({ id: task.id, dependsOn: id })}
@@ -491,13 +494,13 @@ export function TaskRow({
           ))}
           {dependenciesEditable && candidates.length > 0 && (
             // Selector takes no title, so the hint about pausing sits on a wrapper.
-            <span title={task.status !== "in_progress" ? undefined : "A prerequisite that is not done pauses this task"}>
+            <span title={task.status !== "in_progress" ? undefined : m.tasks.dependencyPauses}>
               <Selector
-                label={`Add dependency to #${task.id}`}
+                label={m.tasks.addTaskDependency(task.id)}
                 isLabelHidden
                 size="sm"
                 width={192}
-                placeholder="Add dependency..."
+                placeholder={m.tasks.addDependency}
                 // Nothing stays chosen: picking a task adds it and the picker resets.
                 value=""
                 isDisabled={changingDependencies || serverDown}
@@ -523,26 +526,24 @@ export function TaskRow({
       {detailed && notAdopted.length > 0 && (
         <p
           role="note"
-          aria-label={`Blocked prerequisites of #${task.id}`}
+          aria-label={m.tasks.blockedPrerequisites(task.id)}
           className={cn("text-xs", toneText.attention)}
         >
-          {notAdopted.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}{" "}
-          {notAdopted.length === 1 ? "was" : "were"} not adopted. Remove the dependency or change the plan to
-          start this task.
+          {m.tasks.prerequisitesNotAdoptedHint(notAdopted.map((id) => taskRef(id, task.workspaceId, context)).join(", "), notAdopted.length)}
         </p>
       )}
       {detailed && waitingOn.length > 0 && (
         <p
           role="note"
-          aria-label={`Waiting prerequisites of #${task.id}`}
+          aria-label={m.tasks.waitingPrerequisites(task.id)}
           className={cn("text-xs", toneText.neutral)}
         >
-          Waiting on {waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", ")}
+          {m.tasks.waitingOn(waitingOn.map((id) => taskRef(id, task.workspaceId, context)).join(", "))}
         </p>
       )}
       {detailed && task.wait !== null && (
-        <p role="note" aria-label={`Wait of #${task.id}`} className={cn("text-xs", toneText.neutral)}>
-          {waitLabel(task)}
+        <p role="note" aria-label={m.tasks.taskWait(task.id)} className={cn("text-xs", toneText.neutral)}>
+          {waitText}
         </p>
       )}
       {detailed && <Suspense fallback={null}><TaskPlan task={task} /></Suspense>}
@@ -583,7 +584,7 @@ export function TaskRow({
           {detailed && others.map((action) => actionButton(action, "secondary"))}
           <div
             role={confirming ? "group" : undefined}
-            aria-label={confirming ? `Delete #${task.id}?` : undefined}
+            aria-label={confirming ? m.tasks.deleteTaskQuestion(task.id) : undefined}
             className={cn(
               "ml-auto flex items-center gap-1 max-md:gap-2",
               confirming && "basis-full flex-wrap justify-end",
@@ -593,22 +594,22 @@ export function TaskRow({
             {confirming ? (
               <>
                 <span className="min-w-0 flex-1 basis-48 text-xs">
-                  Delete #{task.id}? It moves to Settings &gt; Archive with its history, where it can be restored.
+                  {m.tasks.deleteTaskDescription(task.id)}
                 </span>
                 <Button
                   size="sm"
                   variant="destructive"
-                  label={deleteTask.isPending ? "Deleting..." : "Confirm delete"}
+                  label={deleteTask.isPending ? m.tasks.deleting : m.tasks.confirmDelete}
                   icon={<Trash2 />}
-                  aria-label={`Confirm delete #${task.id}`}
+                  aria-label={m.tasks.confirmDeleteTask(task.id)}
                   isDisabled={deleteTask.isPending}
                   onClick={() => deleteTask.mutate(task.id, { onSettled: () => setConfirming(false) })}
                 />
                 {/* Focus lands on Back, under the pointer, so a double click cannot delete. */}
-                <Button key="back" size="sm" variant="ghost" label="Back" autoFocus onClick={() => setConfirming(false)} />
+                <Button key="back" size="sm" variant="ghost" label={m.tasks.back} autoFocus onClick={() => setConfirming(false)} />
               </>
             ) : (
-              menu.length > 0 && <MoreMenu label={`More actions for #${task.id}`} actions={menu} />
+              menu.length > 0 && <MoreMenu label={m.tasks.moreTaskActions(task.id)} actions={menu} />
             )}
           </div>
         </div>
@@ -616,4 +617,3 @@ export function TaskRow({
     </li>
   );
 }
-

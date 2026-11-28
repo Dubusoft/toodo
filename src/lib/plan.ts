@@ -1,14 +1,18 @@
+import type { Locale } from "@/lib/i18n";
+import { en, type Messages } from "@/locales/en";
 import type { Estimate, EstimateUnit, Task, Timestamp } from "@/lib/bindings";
 
 /** Where a task with a due date stands against it. */
 export type DueState = "on_time" | "late" | "overdue" | "upcoming";
 
-export const dueStateLabels: Record<DueState, string> = {
-  on_time: "On time",
-  late: "Late",
-  overdue: "Overdue",
-  upcoming: "Due",
-};
+export const dueStateLabels: Record<DueState, string> = en.tasks.dueStates;
+
+/** Formats a local calendar date without interpreting it as UTC. */
+export function formatDueDate(day: string, locale: Locale): string {
+  if (locale === "en") return day;
+  const [year, month, date] = day.split("-").map(Number);
+  return new Date(year, month - 1, date).toLocaleDateString(locale, { dateStyle: "medium" });
+}
 
 /** The end of local day `day` (`YYYY-MM-DD`): a task completed before it is on time. */
 export function dueEnd(day: string): Timestamp {
@@ -56,16 +60,14 @@ export function missingPlan(task: Task): MissingPlanField[] {
 }
 
 /** What a task lacks, e.g. `No estimate or due date`; null when it lacks nothing. */
-export function missingPlanLabel(missing: readonly MissingPlanField[]): string | null {
+export function missingPlanLabel(missing: readonly MissingPlanField[], m: Messages = en): string | null {
   if (missing.length === 0) return null;
-  return `No ${missing.map((field) => (field === "estimate" ? "estimate" : "due date")).join(" or ")}`;
+  return m.tasks.missingPlan[missing.length === 1 ? missing[0] : "both"];
 }
 
 function formatAmount(amount: number): string {
   return String(Math.round(amount * 100) / 100);
 }
-
-const unitSuffixes: Record<EstimateUnit, string> = { hours: "h", days: "d", weeks: "w", months: "mo" };
 
 /** Seconds in one estimate unit: a day is 24 hours, a week 7 days, a month 30 days. */
 const unitSeconds: Record<EstimateUnit, number> = {
@@ -75,8 +77,8 @@ const unitSeconds: Record<EstimateUnit, number> = {
   months: 30 * 24 * 3600,
 };
 
-export function formatEstimate(estimate: Estimate): string {
-  return `${formatAmount(estimate.amount)}${unitSuffixes[estimate.unit]}`;
+export function formatEstimate(estimate: Estimate, m: Messages = en): string {
+  return `${formatAmount(estimate.amount)}${m.tasks.estimateUnitSuffixes[estimate.unit]}`;
 }
 
 /** The estimate in seconds of active work; null without an estimate. */

@@ -1,14 +1,8 @@
 import type { TaskEvent, TaskMilestones, Timestamp } from "@/lib/bindings";
-import { statusNames } from "@/lib/status-styles";
+import type { Locale } from "@/lib/i18n";
+import { en, type Messages } from "@/locales/en";
 
-const milestoneLabels: [keyof TaskMilestones, string][] = [
-  ["plannedAt", "Planned"],
-  ["startedAt", "Started"],
-  ["reviewAt", statusNames.in_review],
-  ["completedAt", "Completed"],
-  ["reopenedAt", "Reopened"],
-  ["pausedAt", statusNames.paused],
-];
+const milestoneKeys = ["plannedAt", "startedAt", "reviewAt", "completedAt", "reopenedAt", "pausedAt"] as const satisfies readonly (keyof TaskMilestones)[];
 
 /** Calendar date of `at` in the local time zone, as `YYYY-MM-DD`. */
 export function formatDate(at: Timestamp): string {
@@ -17,7 +11,7 @@ export function formatDate(at: Timestamp): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-const relativeFormat = new Intl.RelativeTimeFormat("en", { numeric: "auto", style: "short" });
+
 const WEEK_SECONDS = 7 * 24 * 3600;
 
 /**
@@ -25,18 +19,18 @@ const WEEK_SECONDS = 7 * 24 * 3600;
  * ("Oct 12", with the year when it is not this one) otherwise. Never shows seconds; pair it
  * with `formatFull` in a tooltip.
  */
-export function formatWhen(at: Timestamp, now: Timestamp = Date.now() / 1000): string {
+export function formatWhen(at: Timestamp, now: Timestamp = Date.now() / 1000, locale: Locale = "en", m: Messages = en): string {
   const diff = at - now;
   const age = Math.abs(diff);
-  if (age < 60) return "just now";
+  if (age < 60) return m.details.time.justNow;
   if (age < WEEK_SECONDS) {
     const [value, unit]: [number, Intl.RelativeTimeFormatUnit] =
       age < 3600 ? [Math.trunc(diff / 60), "minute"] : age < 86400 ? [Math.trunc(diff / 3600), "hour"] : [Math.trunc(diff / 86400), "day"];
-    return relativeFormat.format(value, unit);
+    return new Intl.RelativeTimeFormat(locale, { numeric: "auto", style: "short" }).format(value, unit);
   }
   const date = new Date(at * 1000);
   const sameYear = date.getFullYear() === new Date(now * 1000).getFullYear();
-  return date.toLocaleDateString("en", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
+  return date.toLocaleDateString(locale, { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
 }
 
 /**
@@ -44,20 +38,21 @@ export function formatWhen(at: Timestamp, now: Timestamp = Date.now() / 1000): s
  * under a day (`1.5h`, `12h`), days under two weeks (`7d`), then whole weeks (`3w`), months of 30
  * days (`5mo`), and years of 365 days (`2y`). `0m` once `at` has passed.
  */
-export function formatRemaining(at: Timestamp, now: Timestamp = Date.now() / 1000): string {
+export function formatRemaining(at: Timestamp, now: Timestamp = Date.now() / 1000, m: Messages = en): string {
+  const units = m.details.time;
   const minutes = Math.max(0, Math.floor((at - now) / 60));
-  if (minutes < 60) return `${minutes}m`;
-  if (minutes < 24 * 60) return `${Math.floor(minutes / 30) / 2}h`;
+  if (minutes < 60) return units.minutes(minutes);
+  if (minutes < 24 * 60) return units.hours(Math.floor(minutes / 30) / 2);
   const days = Math.floor(minutes / (24 * 60));
-  if (days < 14) return `${days}d`;
-  if (days < 60) return `${Math.floor(days / 7)}w`;
-  if (days < 365) return `${Math.floor(days / 30)}mo`;
-  return `${Math.floor(days / 365)}y`;
+  if (days < 14) return units.days(days);
+  if (days < 60) return units.weeks(Math.floor(days / 7));
+  if (days < 365) return units.months(Math.floor(days / 30));
+  return units.years(Math.floor(days / 365));
 }
 
 /** The full local date and time of `at` without seconds, for tooltips and detail views. */
-export function formatFull(at: Timestamp): string {
-  return new Date(at * 1000).toLocaleString("en", { dateStyle: "medium", timeStyle: "short" });
+export function formatFull(at: Timestamp, locale: Locale = "en"): string {
+  return new Date(at * 1000).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
 }
 
 export type WorkState = "in_progress" | "in_review" | "paused";
@@ -122,11 +117,11 @@ function secondsIn(timeline: TaskEvent[], now: Timestamp, counts: (state: WorkSt
 }
 
 /** The milestones a task reached, oldest first, e.g. Completed after Reopened once it is done again. */
-export function reachedMilestones(milestones: TaskMilestones): { label: string; at: Timestamp }[] {
-  return milestoneLabels
-    .flatMap(([key, label]) => {
+export function reachedMilestones(milestones: TaskMilestones, m: Messages = en): { label: string; at: Timestamp }[] {
+  return milestoneKeys
+    .flatMap((key) => {
       const at = milestones[key];
-      return at === null ? [] : [{ label, at }];
+      return at === null ? [] : [{ label: m.details.milestones[key], at }];
     })
     .sort((a, b) => a.at - b.at);
 }

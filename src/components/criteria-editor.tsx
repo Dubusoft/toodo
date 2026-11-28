@@ -1,3 +1,5 @@
+import { en, type Messages } from "@/locales/en";
+import { useMessages } from "@/lib/i18n";
 import { useState } from "react";
 import { Plus, X } from "lucide-react";
 import { Selector } from "@astryxdesign/core/Selector";
@@ -5,11 +7,6 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button, IconButton } from "@/components/button";
 import type { CheckKind, Criterion, CriterionId, CriterionInput, TaskId } from "@/lib/bindings";
 
-
-export const criterionKindLabels: Record<CheckKind, string> = {
-  manual: "Manual",
-  url: "URL responds",
-};
 
 /** The kinds a criterion can have, in the order the editor offers them. */
 const criterionKinds: CheckKind[] = ["manual", "url"];
@@ -48,10 +45,10 @@ export function criterionInputs(drafts: CriterionDraft[]): CriterionInput[] {
 }
 
 /** Why the backend would reject the target of a row, or null when it takes it. */
-export function targetProblem(draft: CriterionDraft): string | null {
+export function targetProblem(draft: CriterionDraft, m: Messages = en): string | null {
   if (draft.text.trim() === "") return null;
   const target = draft.target.trim();
-  if (draft.kind === "url" && !/^https?:\/\/\S*$/.test(target)) return "Enter an http:// or https:// URL";
+  if (draft.kind === "url" && !/^https?:\/\/\S*$/.test(target)) return m.details.criteria.invalidUrl;
   return null;
 }
 
@@ -69,9 +66,9 @@ export function CriteriaEditor({
   onChange: (criteria: CriterionDraft[]) => void;
   taskId?: TaskId;
 }) {
+  const m = useMessages();
   // The row just added gets the focus.
   const [addedKey, setAddedKey] = useState<number | null>(null);
-  const of = taskId === undefined ? "" : ` of #${taskId}`;
   const update = (key: number, change: Partial<CriterionDraft>) =>
     onChange(criteria.map((draft) => (draft.key === key ? { ...draft, ...change } : draft)));
 
@@ -87,7 +84,7 @@ export function CriteriaEditor({
         <ol className="flex flex-col gap-1 max-md:gap-2">
           {criteria.map((draft, index) => {
             const n = index + 1;
-            const problem = targetProblem(draft);
+            const problem = targetProblem(draft, m);
             return (
               // Below md each criterion is a block: its text on the first line, kind and remove on the next.
               <li
@@ -100,36 +97,36 @@ export function CriteriaEditor({
                 <TextInput
                   size="sm"
                   containerClassName="flex-1 basis-48 max-md:col-span-2"
-                  label={`Criterion ${n} text${of}`}
+                  label={m.details.criteria.text(n, taskId)}
                   isLabelHidden
-                  placeholder="What has to hold, e.g. Docs updated"
+                  placeholder={m.details.criteria.textPlaceholder}
                   value={draft.text}
                   onChange={(text) => update(draft.key, { text })}
                   hasAutoFocus={draft.key === addedKey}
                 />
-                <span className="max-md:col-start-2 max-md:row-start-2" title="How the criterion is checked">
+                <span className="max-md:col-start-2 max-md:row-start-2" title={m.details.criteria.kindHint}>
                   <Selector
                     size="sm"
-                    label={`Criterion ${n} kind${of}`}
+                    label={m.details.criteria.kind(n, taskId)}
                     isLabelHidden
                     value={draft.kind}
-                    options={criterionKinds.map((kind) => ({ value: kind, label: criterionKindLabels[kind] }))}
+                    options={criterionKinds.map((kind) => ({ value: kind, label: m.details.criterionKind[kind] }))}
                     onChange={(kind) => update(draft.key, { kind: kind as CheckKind })}
                   />
                 </span>
                 {takesTarget(draft.kind) && (
                   <span
                     className="flex-1 basis-40 max-md:col-span-2 max-md:col-start-2 max-md:row-start-3"
-                    title={problem ?? "Toodo checks that a GET of this URL succeeds"}
+                    title={problem ?? m.details.criteria.urlHint}
                   >
                     <TextInput
                       size="sm"
                       controlClassName="font-mono"
-                      label={`Criterion ${n} target${of}`}
+                      label={m.details.criteria.target(n, taskId)}
                       isLabelHidden
                       status={problem === null ? undefined : { type: "error", message: problem }}
                       statusVariant="tooltip"
-                      placeholder="https://example.com/health"
+                      placeholder={m.details.criteria.urlPlaceholder}
                       value={draft.target}
                       onChange={(target) => update(draft.key, { target })}
                     />
@@ -138,8 +135,8 @@ export function CriteriaEditor({
                 <IconButton
                   size="sm"
                   variant="ghost"
-                  label={`Remove criterion ${n}${of}`}
-                  tooltip="Remove criterion"
+                  label={m.details.criteria.remove(n, taskId)}
+                  tooltip={m.details.criteria.removeTooltip}
                   icon={<X />}
                   className="max-md:col-start-3 max-md:row-start-2"
                   onClick={() => onChange(criteria.filter((other) => other.key !== draft.key))}
@@ -154,9 +151,9 @@ export function CriteriaEditor({
         size="sm"
         variant="ghost"
         className="self-start"
-        label="Add criterion"
+        label={m.details.criteria.add}
         icon={<Plus />}
-        aria-label={taskId === undefined ? undefined : `Add criterion to #${taskId}`}
+        aria-label={taskId === undefined ? undefined : m.details.criteria.addTo(taskId)}
         onClick={add}
       />
     </div>

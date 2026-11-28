@@ -1,3 +1,4 @@
+import { useI18n, useMessages } from "@/lib/i18n";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Bot, ChevronLeft, ChevronsLeft, TriangleAlert } from "lucide-react";
 import { Badge } from "@astryxdesign/core/Badge";
@@ -64,13 +65,11 @@ import { useThemePreference } from "@/lib/theme";
 import { formatDuration } from "@/lib/review";
 import { When } from "@/components/when";
 import { activeSeconds, reachedMilestones, waitingSeconds } from "@/lib/timeline";
-import { dueState as dueStateOf, dueStateLabels, formatEstimate } from "@/lib/plan";
+import { dueState as dueStateOf, formatDueDate, formatEstimate } from "@/lib/plan";
 import {
   barStyles,
   nowLabel,
   nowLine,
-  plannedOnName,
-  statusNames,
   toneFill,
   toneMark,
   toneText,
@@ -112,18 +111,10 @@ const pinnedLabelInset = 2;
 /** Width of the hover card of a bar. */
 const tooltipWidth = 288;
 
-const scaleLabels: Record<TimelineScale, string> = { hour: "Hour", day: "Day", week: "Week", month: "Month" };
-
 const phaseStyles: Record<TimelinePhase, string> = {
   in_progress: toneFill.progress,
   in_review: toneFill.review,
 };
-
-const phaseLabels: Record<TimelinePhase, string> = {
-  in_progress: statusNames.in_progress,
-  in_review: statusNames.in_review,
-};
-
 
 const pad = (value: number) => String(value).padStart(2, "0");
 
@@ -188,6 +179,7 @@ export function TaskGraph({
   /** Details of the task selected on the timeline, with its actions. */
   renderDetail: (task: Task, navigation: SheetNavigation) => ReactNode;
 }) {
+  const m = useMessages();
   // The legend starts closed on a phone, where it would push the chart below the first screen.
   const [legendOpen, setLegendOpen] = useState(
     () => typeof window.matchMedia !== "function" || window.matchMedia("(min-width: 768px)").matches,
@@ -224,6 +216,7 @@ export function TaskGraph({
   const nodes: BarNode[] = layout.bars.map((bar) => ({
     id: String(bar.task.id),
     type: "bar",
+    domAttributes: { "aria-roledescription": m.details.graph.nodeRole },
     position: { x: bar.x, y: rowsTop + bar.row * rowHeight + (rowHeight - barHeight) / 2 },
     data: {
       bar,
@@ -250,6 +243,8 @@ export function TaskGraph({
       source: String(edge.source),
       target: String(edge.target),
       type: "timeline",
+      ariaLabel: m.details.graph.edgeLabel(edge.source, edge.target),
+      domAttributes: { "aria-roledescription": m.details.graph.edgeRole },
       selected: edits.selectedEdgeIds.has(edge.id),
       deletable: edits.editable(edge.target),
       markerEnd: highlighted
@@ -292,7 +287,7 @@ export function TaskGraph({
   const { removable, confirmingEdge } = edits;
 
   return (
-    <section aria-label="Task timeline" className="flex flex-1 flex-col gap-2">
+    <section aria-label={m.details.graph.timeline} className="flex flex-1 flex-col gap-2">
       {/* On a phone the controls stay on one line that scrolls sideways, until the legend opens below them. */}
       <div
         className={cn(
@@ -301,46 +296,46 @@ export function TaskGraph({
         )}
       >
         <ToggleButtonGroup
-          label="Timeline scale"
+          label={m.details.graph.scale}
           size="sm"
           value={scale}
           onChange={(next) => typeof next === "string" && onScaleChange(next as TimelineScale)}
         >
           {timelineScales.map((option) => (
-            <ToggleButton key={option} value={option} label={scaleLabels[option]} />
+            <ToggleButton key={option} value={option} label={m.details.scales[option]} />
           ))}
         </ToggleButtonGroup>
         <Selector
-          label="Timeline period"
+          label={m.details.graph.period}
           isLabelHidden
           size="sm"
           options={[
-            { value: "all", label: "All time" },
+            { value: "all", label: m.details.graph.allTime },
             ...timelineYears(tasks, now).map((option) => ({ value: String(option), label: String(option) })),
           ]}
           value={year === null ? "all" : String(year)}
           onChange={(value) => setYear(value === "all" ? null : Number(value))}
         />
         {layout.bars.length > 0 && (
-          <div role="group" aria-label="Timeline position" className="flex gap-1">
+          <div role="group" aria-label={m.details.graph.position} className="flex gap-1">
             <Button
               size="sm"
               variant="secondary"
               icon={<ChevronsLeft />}
-              label="Earliest task"
+              label={m.details.graph.earliest}
               onClick={viewport.showEarliest}
             />
             <Button
               size="sm"
               variant="secondary"
-              label="Today"
+              label={m.details.graph.today}
               isDisabled={layout.nowX === null}
               onClick={viewport.showToday}
             />
           </div>
         )}
         <Collapsible
-          trigger="Legend"
+          trigger={m.details.graph.legend}
           chevronPosition="start"
           isOpen={legendOpen}
           onOpenChange={setLegendOpen}
@@ -354,7 +349,7 @@ export function TaskGraph({
           <Button
             size="sm"
             variant="secondary"
-            label={`Remove ${removable.map((edge) => `#${edge.source} \u2192 #${edge.target}`).join(", ")}`}
+            label={m.details.graph.remove(removable.map((edge) => `#${edge.source} \u2192 #${edge.target}`).join(", "))}
             isDisabled={edits.changing}
             onClick={() =>
               edits.removeEdges(removable.map((edge) => ({ source: String(edge.source), target: String(edge.target) })))
@@ -397,15 +392,15 @@ export function TaskGraph({
         >
           {layout.bars.length === 0 ? (
             <EmptyState
-              title={year === null ? "No planned tasks yet." : `No tasks in ${year}.`}
+              title={year === null ? m.details.graph.empty : m.details.graph.emptyYear(year)}
               hint={
                 year === null
-                  ? "Add a task in a workspace and it appears here on the timeline."
-                  : "Show every year to see the tasks planned or finished in other years."
+                  ? m.details.graph.hint
+                  : m.details.graph.hintYear
               }
               action={
                 year === null ? undefined : (
-                  <Button size="sm" variant="secondary" label="Show all years" onClick={() => setYear(null)} />
+                  <Button size="sm" variant="secondary" label={m.details.graph.allYears} onClick={() => setYear(null)} />
                 )
               }
             />
@@ -416,6 +411,7 @@ export function TaskGraph({
               edges={edges}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
+              ariaLabelConfig={m.details.flow}
               // Arrowheads take the line color (`--xy-edge-stroke`) instead of a fixed light gray.
               defaultMarkerColor={null}
               onInit={viewport.showLatest}
@@ -495,54 +491,53 @@ export function TaskGraph({
 
 /** What the marks on the timeline mean, and how to work it. */
 function TimelineLegend() {
+  const m = useMessages();
   return (
     <>
-      <ul aria-label="Phases" className="flex flex-wrap gap-x-2 gap-y-1 pb-1 [&>li]:whitespace-nowrap">
+      <ul aria-label={m.details.graph.phases} className="flex flex-wrap gap-x-2 gap-y-1 pb-1 [&>li]:whitespace-nowrap">
         <li className="flex items-center gap-1">
           <span className="size-2 rotate-45 border border-muted-foreground" />
-          {plannedOnName}
+          {m.details.graph.plannedOn}
         </li>
         <li className="flex items-center gap-1">
           <span className={cn("h-2 border-l-2", toneMark.attention)} />
-          Became ready
+          {m.details.graph.becameReady}
         </li>
         <li className="flex items-center gap-1">
           <span className="w-3 border-t border-dashed border-muted-foreground" />
-          Waiting or paused
+          {m.details.graph.waitingOrPaused}
         </li>
         <li className="flex items-center gap-1">
           <span className={cn("h-2 w-3 rounded-sm border", barStyles.blocked)} />
-          {statusNames.planned}
+          {m.details.status.planned}
         </li>
         <li className="flex items-center gap-1">
           <span className={cn("h-2 w-3 rounded-sm border", barStyles.ready)} />
-          {statusNames.ready}
+          {m.details.status.ready}
         </li>
-        {(Object.keys(phaseLabels) as TimelinePhase[]).map((phase) => (
+        {(Object.keys(phaseStyles) as TimelinePhase[]).map((phase) => (
           <li key={phase} className="flex items-center gap-1">
             <span className={cn("h-1.5 w-3 rounded-full", phaseStyles[phase])} />
-            {phaseLabels[phase]}
+            {m.details.status[phase]}
           </li>
         ))}
         <li className="flex items-center gap-1">
           <span className={cn("h-2 w-3 rounded-sm border", barStyles.done)} />
-          {statusNames.done}
+          {m.details.status.done}
         </li>
         <li className="flex items-center gap-1">
           <span className="h-3 border-l-2 border-muted-foreground" />
-          Due date
+          {m.details.graph.dueDate}
         </li>
         <li className="flex items-center gap-1">
           <span className={cn("h-2 w-3 rounded-sm", barStyles.behindDue)} />
-          Past due
+          {m.details.graph.pastDue}
         </li>
       </ul>
       <p className="pb-1">
-        Tasks not started yet wait at the current time, after their prerequisites, or at the end of their wait.
-        A paused task that waits gets a box there too.
+        {m.details.graph.legendHint}
         <span className="[@media(pointer:coarse)]:hidden">
-          {" "}Drag from a task's right handle to another task to make it a prerequisite. With a task selected, use the
-          arrow keys to move between rows.
+          {" "}{m.details.graph.legendKeys}
         </span>
       </p>
     </>
@@ -551,15 +546,16 @@ function TimelineLegend() {
 
 /** Asks whether to drop the unsaved changes in the details sheet before the selection changes. */
 function DiscardBanner({ id, onKeep, onDiscard }: { id: TaskId; onKeep: () => void; onDiscard: () => void }) {
+  const m = useMessages();
   return (
     <div
       role="group"
-      aria-label="Unsaved changes"
+      aria-label={m.details.actions.unsaved}
       className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted px-4 py-2 text-xs"
     >
-      <span className="min-w-0 flex-1">Discard your unsaved changes to #{id}?</span>
-      <Button size="sm" variant="secondary" label="Keep editing" autoFocus onClick={onKeep} />
-      <Button size="sm" variant="destructive" label="Discard changes" onClick={onDiscard} />
+      <span className="min-w-0 flex-1">{m.details.actions.discardTask(id)}</span>
+      <Button size="sm" variant="secondary" label={m.details.actions.keepEditing} autoFocus onClick={onKeep} />
+      <Button size="sm" variant="destructive" label={m.details.actions.discardChanges} onClick={onDiscard} />
     </div>
   );
 }
@@ -574,9 +570,10 @@ function UnplacedTasks({
   statusLabel: (task: Task) => string;
   statusStyle: (task: Task) => string;
 }) {
+  const m = useMessages();
   return (
-    <aside aria-label="Tasks without a planned date" className="flex w-56 shrink-0 flex-col gap-1 text-xs">
-      <h3 className="font-medium text-muted-foreground">Not on the timeline</h3>
+    <aside aria-label={m.details.graph.unplacedLabel} className="flex w-56 shrink-0 flex-col gap-1 text-xs">
+      <h3 className="font-medium text-muted-foreground">{m.details.graph.unplaced}</h3>
       <ul className="flex flex-col gap-1">
         {tasks.map((task) => (
           <li key={task.id} className="flex items-center gap-1.5 rounded-md border px-2 py-1">
@@ -629,9 +626,12 @@ function TimelineGrid({ layout }: { layout: TimelineLayout }) {
 function TimelineHeader({ layout, now }: { layout: TimelineLayout; now: Timestamp }) {
   const { x } = useViewport();
   const { from, to } = useVisibleRange();
-  const { ticks, majorTicks } = timelineAxis(layout, from, to);
+  const { locale, m } = useI18n();
+  const { ticks, majorTicks } = timelineAxis(layout, from, to, locale);
   const date = new Date(now * 1000);
-  const nowText = `Now ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const nowText = m.details.graph.now(locale === "en"
+    ? `${pad(date.getHours())}:${pad(date.getMinutes())}`
+    : date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" }));
   const nowLabelBox = layout.nowX === null ? null : { x: layout.nowX, width: axisLabelWidth(nowText) };
   return (
     <div
@@ -707,7 +707,8 @@ function TimelineTooltip({
   onMouseEnter: () => void;
   onMouseLeave: () => void;
 }) {
-  const milestones = reachedMilestones(task.milestones);
+  const { locale, m } = useI18n();
+  const milestones = reachedMilestones(task.milestones, m);
   const active = activeSeconds(task.timeline, now);
   const waiting = waitingSeconds(task.timeline, now);
   const dueState = dueStateOf(task, now);
@@ -720,7 +721,7 @@ function TimelineTooltip({
   return (
     <div
       role="tooltip"
-      aria-label={`Summary of #${task.id}`}
+      aria-label={m.details.graph.summary(task.id)}
       className="fixed z-50 flex flex-col gap-1.5 rounded-lg border bg-popover p-2.5 text-xs text-popover-foreground shadow-lg"
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
@@ -749,14 +750,14 @@ function TimelineTooltip({
           ))}
           {active !== null && (
             <>
-              <dt className="text-muted-foreground">Active</dt>
-              <dd className="tabular-nums">{formatDuration(active)}</dd>
+              <dt className="text-muted-foreground">{m.details.graph.active}</dt>
+              <dd className="tabular-nums">{formatDuration(active, m)}</dd>
             </>
           )}
           {waiting !== null && waiting > 0 && (
             <>
-              <dt className="text-muted-foreground">Waiting</dt>
-              <dd className="tabular-nums">{formatDuration(waiting)}</dd>
+              <dt className="text-muted-foreground">{m.details.graph.waiting}</dt>
+              <dd className="tabular-nums">{formatDuration(waiting, m)}</dd>
             </>
           )}
         </dl>
@@ -765,26 +766,26 @@ function TimelineTooltip({
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
           {task.estimate !== null && (
             <>
-              <dt className="text-muted-foreground">Estimate</dt>
-              <dd className="tabular-nums">{formatEstimate(task.estimate)}</dd>
+              <dt className="text-muted-foreground">{m.details.graph.estimate}</dt>
+              <dd className="tabular-nums">{formatEstimate(task.estimate, m)}</dd>
             </>
           )}
           {task.dueDate !== null && (
             <>
-              <dt className="text-muted-foreground">{dueState === null ? "Due" : dueStateLabels[dueState]}</dt>
+              <dt className="text-muted-foreground">{m.details.due[dueState ?? "upcoming"]}</dt>
               <dd
                 className={cn(
                   "tabular-nums",
                   (dueState === "late" || dueState === "overdue") && toneText.danger,
                 )}
               >
-                {task.dueDate}
+                {formatDueDate(task.dueDate, locale)}
               </dd>
             </>
           )}
         </dl>
       )}
-      <p className="text-muted-foreground">Click for details</p>
+      <p className="text-muted-foreground">{m.details.graph.clickDetails}</p>
     </div>
   );
 }
@@ -806,14 +807,15 @@ function TimelineBarView({
   selected,
   positionAbsoluteX,
 }: NodeProps<BarNode>) {
+  const { locale, m } = useI18n();
   const { task, phases, blocks, pauses, resume, pending, lead, dueX, dueState } = bar;
   // How far the bar reaches left of the panel's edge; it changes, and re-renders the bar, only
   // while the bar starts off screen.
   const offScreen = useStore((state) => Math.max(0, pinnedLabelInset - positionAbsoluteX - state.transform[0]));
   const refs = (ids: TaskId[]) => ids.map((id) => `#${id}`).join(", ");
   const warnings = [
-    notAdopted.length > 0 && `${refs(notAdopted)} not adopted`,
-    waitingOn.length > 0 && `Waiting on ${refs(waitingOn)}`,
+    notAdopted.length > 0 && m.details.graph.notAdopted(refs(notAdopted)),
+    waitingOn.length > 0 && m.details.graph.waitingOn(refs(waitingOn)),
   ].filter((warning): warning is string => typeof warning === "string");
   const severe = notAdopted.length > 0;
   // Waiting alone is nothing to act on, so it stays neutral.
@@ -923,8 +925,8 @@ function TimelineBarView({
         // before the label so the label's chips cover it. Its hit area is wider than the line,
         // so its own tooltip can be reached.
         <span
-          aria-label={`Due date of #${task.id}`}
-          title={`Due ${task.dueDate}`}
+          aria-label={m.details.graph.dueOf(task.id)}
+          title={m.details.graph.dueAt(task.dueDate === null ? null : formatDueDate(task.dueDate, locale))}
           data-due-mark
           className="absolute inset-y-0 flex w-2 justify-center"
           style={{ left: dueX - 4 }}
@@ -946,7 +948,7 @@ function TimelineBarView({
         {pinned && (
           <ChevronLeft
             role="img"
-            aria-label={`#${task.id} starts earlier`}
+            aria-label={m.details.graph.earlier(task.id)}
             className="-ml-1 size-3.5 shrink-0 text-muted-foreground"
           />
         )}
@@ -958,7 +960,7 @@ function TimelineBarView({
         {warnings.length > 0 && (
           <TriangleAlert
             role="img"
-            aria-label={`Warnings of #${task.id}: ${warnings.join("; ")}`}
+            aria-label={m.details.graph.warnings(task.id, warnings.join("; "))}
             data-severe={severe || undefined}
             data-tone={warningTone}
             className={cn("size-3.5 shrink-0", toneText[warningTone])}
@@ -978,13 +980,14 @@ function TimelineBarView({
  * in that chip's `info` tone so it stands apart from the neutral and danger warning icons.
  */
 function AutopilotIcon({ id }: { id: TaskId }) {
+  const m = useMessages();
   return (
     <Bot
       role="img"
-      aria-label={`#${id} is marked for autopilot`}
+      aria-label={m.details.graph.autopilotOf(id)}
       className={cn("size-3.5 shrink-0", toneText.info)}
     >
-      <title>Marked for autopilot</title>
+      <title>{m.details.graph.autopilotMark}</title>
     </Bot>
   );
 }

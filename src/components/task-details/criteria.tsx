@@ -1,3 +1,4 @@
+import { fill, useI18n, useMessages } from "@/lib/i18n";
 import { useState, type FormEvent } from "react";
 import { Circle, CircleCheck, CircleX } from "lucide-react";
 import { Badge } from "@astryxdesign/core/Badge";
@@ -5,17 +6,16 @@ import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button } from "@/components/button";
 import { DiscardConfirm, useDiscardGuard } from "@/components/discard-guard";
-import type { CheckedBy, Criterion, CriterionState, Task } from "@/lib/bindings";
+import type { Criterion, CriterionState, Task } from "@/lib/bindings";
 import { useCheckCriterion } from "@/lib/queries";
 import { formatWhen } from "@/lib/timeline";
 import { When } from "@/components/when";
 import { toneText } from "@/lib/status-styles";
 import { cn } from "@/lib/utils";
 import { DetailField, useServerDown } from "@/components/task-common";
-import { criterionKindLabels, takesTarget } from "@/components/criteria-editor";
+import { takesTarget } from "@/components/criteria-editor";
 
 
-const criterionStateLabels: Record<CriterionState, string> = { pending: "Pending", met: "Met", failed: "Failed" };
 
 /** Green once met, rose only when the last check failed. */
 const criterionStateStyles: Record<CriterionState, string> = {
@@ -24,14 +24,14 @@ const criterionStateStyles: Record<CriterionState, string> = {
   failed: toneText.danger,
 };
 
-const checkedByLabels: Record<CheckedBy, string> = { user: "you", agent: "an agent", toodo: "Toodo" };
 
 function CriterionMarker({ state }: { state: CriterionState }) {
+  const m = useMessages();
   const Icon = state === "met" ? CircleCheck : state === "failed" ? CircleX : Circle;
   return (
     <span
       role="img"
-      aria-label={criterionStateLabels[state]}
+      aria-label={m.details.criterionState[state]}
       className={cn("flex size-4 shrink-0 items-center justify-center", criterionStateStyles[state])}
     >
       <Icon aria-hidden className="size-3.5" />
@@ -39,24 +39,18 @@ function CriterionMarker({ state }: { state: CriterionState }) {
   );
 }
 
-/** Who checked a criterion last and when, or null when nobody has. */
-function checkedByText(criterion: Criterion): string | null {
-  if (criterion.checkedBy === null) return null;
-  const at = criterion.checkedAt === null ? "" : ` ${formatWhen(criterion.checkedAt)}`;
-  return `Checked by ${checkedByLabels[criterion.checkedBy]}${at}`;
-}
-
 /**
  * What has to hold for the task to be done, each criterion with its state. A list row keeps
  * every criterion to one line; the details sheet adds targets, evidence, and who checked.
  */
 export function TaskCriteria({ task, detailed }: { task: Task; detailed: boolean }) {
+  const m = useMessages();
   const criteria = task.criteria;
   if (criteria.length === 0) {
     return null;
   }
   const list = (
-    <ul aria-label={`Criteria of #${task.id}`} className="flex flex-col gap-0.5">
+    <ul aria-label={m.details.criteria.ofTask(task.id)} className="flex flex-col gap-0.5">
       {criteria.map((criterion) => (
         <CriterionItem key={criterion.id} task={task} criterion={criterion} detailed={detailed} />
       ))}
@@ -66,17 +60,20 @@ export function TaskCriteria({ task, detailed }: { task: Task; detailed: boolean
     return list;
   }
   const met = criteria.filter((criterion) => criterion.state === "met").length;
-  return <DetailField label={`Criteria (${met} of ${criteria.length} met)`}>{list}</DetailField>;
+  return <DetailField label={m.details.criteria.count(met, criteria.length)}>{list}</DetailField>;
 }
 
 function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: Criterion; detailed: boolean }) {
+  const { locale, m } = useI18n();
   const checkCriterion = useCheckCriterion();
   const serverDown = useServerDown();
   // The evidence form of a check that is not saved yet.
   const [writing, setWriting] = useState(false);
   const [evidence, setEvidence] = useState("");
   const checkable = criterion.kind === "manual" && task.status !== "done";
-  const checkedBy = checkedByText(criterion);
+  const who = criterion.checkedBy === null ? null : m.details.checkedBy[criterion.checkedBy];
+  const when = criterion.checkedAt === null ? "" : ` ${formatWhen(criterion.checkedAt, undefined, locale, m)}`;
+  const checkedBy = who === null ? null : m.details.criteria.checkedBy.replace("{who}", who).replace("{when}", when);
   const target = takesTarget(criterion.kind) ? criterion.target : null;
 
   function cancel() {
@@ -115,7 +112,7 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
             <CheckboxInput
               size="sm"
               className="shrink-0"
-              label={`Check criterion ${criterion.id} of #${task.id}`}
+              label={m.details.criteria.check(criterion.id, task.id)}
               isLabelHidden
               value={criterion.state === "met" || writing}
               isDisabled={checkCriterion.isPending || serverDown}
@@ -135,7 +132,7 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
           )}
         >{criterion.text}</span>
         {criterion.kind !== "manual" && (
-          <Badge className="shrink-0" label={criterionKindLabels[criterion.kind]} />
+          <Badge className="shrink-0" label={m.details.criterionKind[criterion.kind]} />
         )}
         {!detailed && criterion.evidence && (
           <span className="min-w-0 flex-1 truncate text-muted-foreground">{criterion.evidence}</span>
@@ -146,17 +143,10 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
         <p className="ml-5.5 whitespace-pre-line break-words-keep text-muted-foreground">
           {criterion.evidence}
           {criterion.evidence && checkedBy && " \u00b7 "}
-          {criterion.checkedBy !== null && (
-            <>
-              Checked by {checkedByLabels[criterion.checkedBy]}
-              {criterion.checkedAt !== null && (
-                <>
-                  {" "}
-                  <When at={criterion.checkedAt} />
-                </>
-              )}
-            </>
-          )}
+          {who !== null && fill(m.details.criteria.checkedBy, {
+            who,
+            when: criterion.checkedAt === null ? null : <> <When at={criterion.checkedAt} /></>,
+          })}
         </p>
       )}
       {writing && (
@@ -168,17 +158,17 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
           <TextInput
             size="sm"
             containerClassName="flex-1 basis-48"
-            label={`Evidence for criterion ${criterion.id}`}
+            label={m.details.criteria.evidence(criterion.id)}
             isLabelHidden
-            placeholder="Evidence (optional), e.g. a link or what you checked"
+            placeholder={m.details.criteria.evidenceHint}
             value={evidence}
             onChange={setEvidence}
             hasAutoFocus
           />
           {guard.asking ? (
             <DiscardConfirm
-              label={`Discard evidence for criterion ${criterion.id}`}
-              question="Discard the evidence?"
+              label={m.details.criteria.discardEvidence(criterion.id)}
+              question={m.details.criteria.discardEvidenceQuestion}
               onKeep={guard.keep}
               onDiscard={guard.discard}
             />
@@ -188,10 +178,10 @@ function CriterionItem({ task, criterion, detailed }: { task: Task; criterion: C
                 type="submit"
                 size="sm"
                 variant="primary"
-                label={checkCriterion.isPending ? "Saving..." : "Save"}
+                label={checkCriterion.isPending ? m.details.actions.saving : m.common.save}
                 isDisabled={checkCriterion.isPending}
               />
-              <Button type="button" size="sm" variant="ghost" label="Cancel" onClick={guard.request} />
+              <Button type="button" size="sm" variant="ghost" label={m.common.cancel} onClick={guard.request} />
             </>
           )}
         </form>

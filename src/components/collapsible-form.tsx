@@ -2,6 +2,7 @@ import { useEffect, useRef, type FormEvent, type KeyboardEvent, type ReactNode }
 import { X } from "lucide-react";
 
 import { IconButton } from "@/components/button";
+import { useMessages } from "@/lib/i18n";
 import { useNarrow } from "@/lib/narrow";
 import { cn } from "@/lib/utils";
 
@@ -23,6 +24,7 @@ export function CollapsibleForm({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   children: ReactNode;
 }) {
+  const m = useMessages();
   const form = useRef<HTMLFormElement>(null);
   // Focus handed back to the one-line form on closing must not open it again.
   const refocusing = useRef(false);
@@ -77,6 +79,7 @@ export function CollapsibleForm({
         <form
           ref={form}
           aria-label={label}
+          data-collapsible-form
           data-expanded={expanded || undefined}
           onSubmit={onSubmit}
           onFocus={open}
@@ -87,7 +90,7 @@ export function CollapsibleForm({
           {expanded && (
             <div className="flex items-center gap-2">
               <h3 className="min-w-0 flex-1 text-sm font-medium">{label}</h3>
-              <IconButton size="sm" variant="ghost" label={`Close ${label}`} tooltip="Close (Esc)" icon={<X />} onClick={close} />
+              <IconButton size="sm" variant="ghost" label={m.app.closeForm(label)} tooltip={m.app.closeEsc} icon={<X />} onClick={close} />
             </div>
           )}
           {children}

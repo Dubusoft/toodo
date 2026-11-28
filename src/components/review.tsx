@@ -6,12 +6,15 @@ import { DateInput } from "@astryxdesign/core/DateInput";
 import { DropdownMenu, type DropdownMenuOption } from "@astryxdesign/core/DropdownMenu";
 import { Selector } from "@astryxdesign/core/Selector";
 import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton";
+import { InternationalizationProvider } from "@astryxdesign/core/i18n";
+import koKR from "@astryxdesign/core/locales/ko-KR.generated.js";
 import { TaskTypeBadge } from "@/components/task-type-badge";
 import { Button, IconButton } from "@/components/button";
 import { EmptyState } from "@/components/task-list";
 import { MissingPlanMark, TaskLabels } from "@/components/task-common";
 import { TaskEditForm } from "@/components/task-edit-form";
 import { inputClass } from "@/components/workspace-list";
+import { When } from "@/components/when";
 import {
   commands,
   type ReportFormat,
@@ -39,21 +42,19 @@ import {
 import {
   commitSubject,
   durationKeys,
-  durationLabels,
   filterEntries,
   formatChanges,
   formatDuration,
   formatDueRate,
   formatEstimateAccuracy,
+  formatReviewDay,
+  formatReviewMonth,
   formatReviews,
   groupByOutcome,
   lateDetails,
   noReviewFilter,
-  outcomeLabels,
   periodContaining,
   periodLabel,
-  periodNouns,
-  periodTitles,
   planVsActual,
   pullRequestNumber,
   pullRequestRef,
@@ -69,7 +70,8 @@ import {
 } from "@/lib/review";
 import { type MissingPlanField, missingPlan } from "@/lib/plan";
 import { toneFill, toneText } from "@/lib/status-styles";
-import { When } from "@/components/when";
+import { useI18n, useMessages } from "@/lib/i18n";
+import type { Messages } from "@/locales/en";
 import { activeSeconds, formatDate, formatFull, waitingSeconds, workSegments } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 import { saveFile } from "@/web/files";
@@ -88,34 +90,27 @@ const liveReview = "live";
 const allWorkspaces = "all";
 const anyLabel = "any";
 
-const periodKinds: { kind: PeriodKind; label: string }[] = [
-  { kind: "week", label: "Week" },
-  { kind: "month", label: "Month" },
-  { kind: "quarter", label: "Quarter" },
-  { kind: "year", label: "Year" },
-  { kind: "custom", label: "Custom" },
-];
+const periodKinds = ["week", "month", "quarter", "year", "custom"] as const satisfies readonly PeriodKind[];
+const controlMessages = { "ko-KR": koKR };
 
 /** Report actions in one menu, so the controls fit a phone in two rows. */
 function ExportMenu({ disabled, items }: { disabled: boolean; items: DropdownMenuOption[] }) {
+  const m = useMessages();
   return (
     <DropdownMenu
       items={items}
       alignment="end"
       menuWidth={192}
       renderTrigger={(trigger) => (
-        <Button {...trigger} size="sm" variant="primary" icon={<Download />} label="Export" isDisabled={disabled} />
+        <Button {...trigger} size="sm" variant="primary" icon={<Download />} label={m.review.export} isDisabled={disabled} />
       )}
     />
   );
 }
 
-function plural(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
-}
-
 /** The time zone reviewed periods are judged in, and a form to change it. */
 function TimeZoneControl() {
+  const m = useMessages();
   const timeZone = useReviewTimeZone();
   const setTimeZone = useSetReviewTimeZone();
   const [editing, setEditing] = useState(false);
@@ -136,12 +131,11 @@ function TimeZoneControl() {
   if (!editing) {
     return (
       <span>
-        Days are in {current}
-        {configured === null && " (the server's time zone)"}.{" "}
+        {configured === null ? m.review.serverDaysIn(current) : m.review.daysIn(current)}{" "}
         <Button
           size="sm"
           variant="ghost"
-          label="Change time zone"
+          label={m.review.changeTimeZone}
           className="print:hidden"
           onClick={() => {
             setDraft(configured ?? current);
@@ -153,7 +147,7 @@ function TimeZoneControl() {
   }
   return (
     <form
-      aria-label="Review time zone"
+      aria-label={m.review.timeZone}
       className="flex flex-wrap items-center gap-2 print:hidden"
       onSubmit={(event) => {
         event.preventDefault();
@@ -161,7 +155,7 @@ function TimeZoneControl() {
       }}
     >
       <label htmlFor="review-time-zone" className="text-xs">
-        Time zone for every device
+        {m.review.timeZoneForEveryDevice}
       </label>
       <input
         id="review-time-zone"
@@ -176,11 +170,11 @@ function TimeZoneControl() {
           <option key={zone} value={zone} />
         ))}
       </datalist>
-      <Button size="sm" variant="primary" type="submit" label="Save" isDisabled={setTimeZone.isPending} />
+      <Button size="sm" variant="primary" type="submit" label={m.common.save} isDisabled={setTimeZone.isPending} />
       {configured !== null && (
-        <Button size="sm" variant="secondary" label="Use the server's" onClick={() => void save(null)} />
+        <Button size="sm" variant="secondary" label={m.review.useServerTimeZone} onClick={() => void save(null)} />
       )}
-      <Button size="sm" variant="ghost" label="Cancel" onClick={() => setEditing(false)} />
+      <Button size="sm" variant="ghost" label={m.common.cancel} onClick={() => setEditing(false)} />
       {error && (
         <span role="alert" className="w-full text-xs text-destructive">
           {error}
@@ -203,8 +197,9 @@ interface Shown {
 }
 
 export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
+  const { m, locale } = useI18n();
   const [period, setPeriod] = useState<ReviewPeriod>(() => periodContaining("week", formatDate(Date.now() / 1000)));
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<((messages: Messages["review"]) => string) | null>(null);
   const [filter, setFilter] = useState<ReviewFilter>(noReviewFilter);
   // The task whose edit form a missing-plan mark opened, and the field it focuses.
   const [editingPlan, setEditingPlan] = useState<{ id: TaskId; field: MissingPlanField } | null>(null);
@@ -249,13 +244,13 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   if (filter.label !== null && !labels.includes(filter.label)) labels.push(filter.label);
   const scope = [
     filter.workspaceId === null
-      ? "across all workspaces"
-      : `in ${names.get(filter.workspaceId) ?? `workspace ${filter.workspaceId}`}`,
-    filter.label !== null && `labelled ${filter.label}`,
+      ? m.review.acrossWorkspaces
+      : m.review.inWorkspace(names.get(filter.workspaceId) ?? m.review.unnamedWorkspace(filter.workspaceId)),
+    filter.label !== null && m.review.labelled(filter.label),
   ]
     .filter(Boolean)
     .join(", ");
-  const noun = periodNouns[shownPeriod.kind];
+  const noun = m.review.periodNouns[shownPeriod.kind];
 
   function moveTo(next: ReviewPeriod) {
     setNotice(null);
@@ -278,9 +273,9 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
         label: filter.label,
         title: null,
       });
-      setNotice(`Saved "${saved.title}" with ${plural(saved.entryCount, "task")}; reopen it from Saved reviews.`);
+      setNotice(() => (messages: Messages["review"]) => messages.snapshotSaved(saved.title, saved.entryCount));
     } catch (error) {
-      setNotice(`Could not save the review: ${error instanceof Error ? error.message : String(error)}`);
+      setNotice(() => (messages: Messages["review"]) => messages.snapshotSaveFailed(error instanceof Error ? error.message : String(error)));
     }
   }
 
@@ -288,9 +283,9 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
     try {
       await deleteSnapshot.mutateAsync(id);
       openSnapshot(null);
-      setNotice("Deleted the saved review.");
+      setNotice(() => (messages: Messages["review"]) => messages.snapshotDeleted);
     } catch (error) {
-      setNotice(`Could not delete the saved review: ${error instanceof Error ? error.message : String(error)}`);
+      setNotice(() => (messages: Messages["review"]) => messages.snapshotDeleteFailed(error instanceof Error ? error.message : String(error)));
     }
   }
 
@@ -304,7 +299,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
   // a saved review keeps the report rendered when it was saved.
   function renderReport(format: ReportFormat): Promise<ReviewReport> {
     if (viewing) {
-      if (!snapshot.data) return Promise.reject(new Error("the saved review is still loading"));
+      if (!snapshot.data) return Promise.reject(new Error(m.review.snapshotLoading));
       return Promise.resolve(format === "csv" ? snapshot.data.csv : snapshot.data.markdown);
     }
     return unwrap(
@@ -331,9 +326,9 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
         const text = report.then(({ contents }) => new Blob([contents], { type: "text/plain" }));
         await navigator.clipboard.write([new ClipboardItem({ "text/plain": text })]);
       }
-      setNotice("Copied as Markdown.");
+      setNotice(() => (messages: Messages["review"]) => messages.markdownCopied);
     } catch (error) {
-      setNotice(`Could not copy: ${error instanceof Error ? error.message : String(error)}`);
+      setNotice(() => (messages: Messages["review"]) => messages.copyFailed(error instanceof Error ? error.message : String(error)));
     }
   }
 
@@ -342,9 +337,9 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
       const report = await renderReport(format);
       // The report is for the user, not the server: the browser downloads it.
       saveFile(report.fileName, new Blob([report.contents], { type: `${report.mediaType};charset=utf-8` }));
-      setNotice(`Downloaded ${report.fileName}`);
+      setNotice(() => (messages: Messages["review"]) => messages.downloaded(report.fileName));
     } catch (error) {
-      setNotice(`Could not export: ${error instanceof Error ? error.message : String(error)}`);
+      setNotice(() => (messages: Messages["review"]) => messages.exportFailed(error instanceof Error ? error.message : String(error)));
     }
   }
 
@@ -352,15 +347,14 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
     <section aria-labelledby="review-heading" className="flex flex-col gap-4">
       <header className="flex flex-col gap-1">
         <h2 id="review-heading" className="text-xl font-semibold tracking-tight">
-          {viewing && snapshot.data ? snapshot.data.summary.title : periodTitles[shownPeriod.kind]}
+          {viewing && snapshot.data ? snapshot.data.summary.title : m.review.periodTitles[shownPeriod.kind]}
         </h2>
         <p className="text-sm text-muted-foreground">
-          Work recorded from {shownPeriod.from} to {shownPeriod.to} {scope}.{" "}
+          {m.review.workRecorded(formatReviewDay(shownPeriod.from, locale), formatReviewDay(shownPeriod.to, locale), scope)}{" "}
           {viewing ? (
             snapshot.data && (
               <span>
-                Saved {formatFull(snapshot.data.summary.savedAt)}, with days in {snapshot.data.summary.timeZone}; it
-                stays as it was when saved.
+                {m.review.snapshotDetails(formatFull(snapshot.data.summary.savedAt, locale), snapshot.data.summary.timeZone)}
               </span>
             )
           ) : (
@@ -372,14 +366,14 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
       {(viewing || (snapshots.data?.length ?? 0) > 0) && (
         <div className="flex flex-wrap items-center gap-2 print:hidden">
           <Selector
-            label="Saved reviews"
+            label={m.review.savedReviews}
             isLabelHidden
             size="sm"
             options={[
-              { value: liveReview, label: "Live review" },
+              { value: liveReview, label: m.review.liveReview },
               ...(snapshots.data ?? []).map((saved) => ({
                 value: String(saved.id),
-                label: `${saved.title} (saved ${formatDate(saved.savedAt)})`,
+                label: m.review.savedOption(saved.title, formatReviewDay(formatDate(saved.savedAt), locale)),
               })),
             ]}
             value={snapshotId === null ? liveReview : String(snapshotId)}
@@ -387,11 +381,11 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           />
           {snapshotId !== null && (
             <>
-              <Button size="sm" variant="secondary" label="Back to the live review" onClick={() => openSnapshot(null)} />
+              <Button size="sm" variant="secondary" label={m.review.backToLiveReview} onClick={() => openSnapshot(null)} />
               <Button
                 size="sm"
                 variant="ghost"
-                label="Delete saved review"
+                label={m.review.deleteSavedReview}
                 isDisabled={deleteSnapshot.isPending}
                 onClick={() => void removeSnapshot(snapshotId)}
               />
@@ -402,20 +396,20 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
 
       <div className="flex flex-wrap items-end gap-2 print:hidden">
         {!viewing && (
-          <>
+          <InternationalizationProvider locale={locale === "ko" ? "ko-KR" : locale} messages={controlMessages}>
             <ToggleButtonGroup
-              label="Review period"
+              label={m.review.period}
               size="sm"
               value={period.kind}
               onChange={(next) => typeof next === "string" && switchKind(next as PeriodKind)}
             >
-              {periodKinds.map(({ kind, label }) => (
-                <ToggleButton key={kind} value={kind} label={label} />
+              {periodKinds.map((kind) => (
+                <ToggleButton key={kind} value={kind} label={m.review.periodKinds[kind]} />
               ))}
             </ToggleButtonGroup>
             {period.kind === "week" && (
               <DateInput
-                label="Week starting"
+                label={m.review.weekStarting}
                 size="sm"
                 format="system_date"
                 value={period.from as ISODateString}
@@ -425,7 +419,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
             {period.kind === "custom" && (
               <>
                 <DateInput
-                  label="From"
+                  label={m.review.from}
                   size="sm"
                   format="system_date"
                   max={period.to as ISODateString}
@@ -433,7 +427,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                   onChange={(value) => value && value <= period.to && moveTo({ ...period, from: value })}
                 />
                 <DateInput
-                  label="To"
+                  label={m.review.to}
                   size="sm"
                   format="system_date"
                   min={period.from as ISODateString}
@@ -443,66 +437,66 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
               </>
             )}
             {period.kind !== "week" && period.kind !== "custom" && (
-              <span className="px-1 text-sm font-medium">{periodLabel(period)}</span>
+              <span className="px-1 text-sm font-medium">{periodLabel(period, { m, locale })}</span>
             )}
             <IconButton
               size="sm"
               variant="secondary"
               icon={<ChevronLeft />}
-              label={`Previous ${noun}`}
-              tooltip={`Previous ${noun}`}
+              label={m.review.previousPeriod(noun)}
+              tooltip={m.review.previousPeriod(noun)}
               onClick={() => moveTo(shiftPeriod(period, -1))}
             />
             <IconButton
               size="sm"
               variant="secondary"
               icon={<ChevronRight />}
-              label={`Next ${noun}`}
-              tooltip={`Next ${noun}`}
+              label={m.review.nextPeriod(noun)}
+              tooltip={m.review.nextPeriod(noun)}
               onClick={() => moveTo(shiftPeriod(period, 1))}
             />
             {period.kind !== "custom" && (
               <Button
                 size="sm"
                 variant="ghost"
-                label={`This ${noun}`}
+                label={m.review.thisPeriod(noun)}
                 onClick={() => moveTo(periodContaining(period.kind, formatDate(Date.now() / 1000)))}
               />
             )}
-          </>
+          </InternationalizationProvider>
         )}
         <div className="ml-auto">
           <ExportMenu
             disabled={!entries}
             items={[
-              ...(viewing ? [] : [{ label: "Save as snapshot", onClick: () => void saveAsSnapshot() }]),
-              { label: "Copy as Markdown", onClick: () => void copyMarkdown() },
-              { label: "Save as Markdown", onClick: () => void saveAs("markdown") },
-              { label: "Save as CSV", onClick: () => void saveAs("csv") },
-              { label: "Print or save as PDF", onClick: () => window.print() },
+              ...(viewing ? [] : [{ label: m.review.saveSnapshot, onClick: () => void saveAsSnapshot() }]),
+              { label: m.review.copyMarkdown, onClick: () => void copyMarkdown() },
+              { label: m.review.saveMarkdown, onClick: () => void saveAs("markdown") },
+              { label: m.review.saveCsv, onClick: () => void saveAs("csv") },
+              { label: m.review.printOrSavePdf, onClick: () => window.print() },
             ]}
           />
         </div>
       </div>
 
-      <div role="group" aria-label="Review filters" className="flex flex-wrap items-center gap-2 print:hidden">
+      <div role="group" aria-label={m.review.filters} className="flex flex-wrap items-center gap-2 print:hidden">
         <Selector
-          label="Workspace"
+          label={m.review.workspace}
           isLabelHidden
           size="sm"
           options={[
-            { value: allWorkspaces, label: "All workspaces" },
+            { value: allWorkspaces, label: m.review.allWorkspaces },
             ...workspaceList.map((workspace) => ({ value: String(workspace.id), label: workspace.name })),
           ]}
           value={filter.workspaceId === null ? allWorkspaces : String(filter.workspaceId)}
           onChange={(value) => setFilter({ ...filter, workspaceId: value === allWorkspaces ? null : Number(value) })}
         />
         <Selector
-          label="Label"
+          label={m.review.label}
           isLabelHidden
           size="sm"
           options={[
-            { value: anyLabel, label: labels.length === 0 ? "No labels in this period" : "Any label" },
+            { value: anyLabel, label: labels.length === 0 ? m.review.noLabels : m.review.anyLabel },
             ...labels.map((label) => ({ value: `label:${label}`, label })),
           ]}
           value={filter.label === null ? anyLabel : `label:${filter.label}`}
@@ -511,42 +505,42 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
           }
         />
         {(filter.workspaceId !== null || filter.label !== null) && (
-          <Button size="sm" variant="ghost" label="Clear filters" onClick={() => setFilter(noReviewFilter)} />
+          <Button size="sm" variant="ghost" label={m.review.clearFilters} onClick={() => setFilter(noReviewFilter)} />
         )}
       </div>
 
       {notice && (
         <p role="status" className="text-xs text-muted-foreground print:hidden">
-          {notice}
+          {notice(m.review)}
         </p>
       )}
 
       {/* Stays mounted so screen readers hear loading start and finish for each period. */}
       <p role="status" className={cn("text-sm text-muted-foreground", !review.isPending && "sr-only")}>
         {review.isPending
-          ? "Loading the review..."
+          ? m.review.loading
           : entries
-            ? `Showing ${entries.length} ${entries.length === 1 ? "task" : "tasks"} with activity in this ${noun}.`
+            ? m.review.showingActivity(entries.length, noun)
             : ""}
       </p>
       {review.isError && (
         <p role="alert" className="text-sm text-destructive">
-          Failed to load the review: {review.error.message}
+          {m.review.loadFailed(review.error.message)}
         </p>
       )}
       {entries?.length === 0 && (
         <EmptyState
           title={
             shown?.entries.length === 0
-              ? `No recorded activity in this ${noun}.`
-              : `No recorded activity in this ${noun} matches the filters.`
+              ? m.review.noActivity(noun)
+              : m.review.noMatchingActivity(noun)
           }
           hint={
             viewing
-              ? "This saved review keeps the tasks it had when it was saved."
+              ? m.review.savedEmptyHint
               : shown?.entries.length === 0
-              ? "Toodo records each task as it is planned, started, moved to review, and completed, so reviews fill up as you work."
-              : "Pick another period or change the filters to look at other work."
+              ? m.review.emptyHint
+              : m.review.filteredEmptyHint
           }
           action={
             viewing ? undefined : (
@@ -554,7 +548,7 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
               <Button
                 size="sm"
                 variant="secondary"
-                label={`Show the ${noun} before`}
+                label={m.review.showPeriodBefore(noun)}
                 onClick={() => moveTo(shiftPeriod(period, -1))}
               />
             </div>
@@ -569,9 +563,9 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
       {shownPeriod.kind === "year" && entries && <YearInReviewPanel entries={entries} />}
       {entries &&
         groupByOutcome(entries).map((group) => (
-          <section key={group.outcome} aria-label={outcomeLabels[group.outcome]} className="flex flex-col gap-2">
+          <section key={group.outcome} aria-label={m.review.outcomes[group.outcome]} className="flex flex-col gap-2">
             <h3 className={cn("text-sm font-semibold", outcomeStyles[group.outcome])}>
-              {outcomeLabels[group.outcome]}{" "}
+              {m.review.outcomes[group.outcome]}{" "}
               <span className="font-normal text-muted-foreground">({group.entries.length})</span>
             </h3>
             <ul className="flex flex-col divide-y rounded-lg border">
@@ -582,19 +576,19 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                     <span className="shrink-0 text-xs text-muted-foreground">#{task.id}</span>
                     <button
                       type="button"
-                      aria-label={`Open #${task.id} ${task.title}`}
+                      aria-label={m.review.openTask(task.id, task.title)}
                       title={task.title}
                       onClick={() => onShowTask?.(task.id)}
                       className="min-w-0 flex-1 truncate text-left text-sm font-medium hover:underline max-md:min-h-11"
                     >
                       {task.title}
                     </button>
-                    {task.resolution === "not_adopted" && <Badge className="shrink-0" label="Not adopted" />}
-                    {archived && <Badge className="shrink-0" label="Archived" />}
-                    {task.resolution === "completed" && <Badge className="shrink-0" variant="green" label="Completed" />}
+                    {task.resolution === "not_adopted" && <Badge className="shrink-0" label={m.review.notAdopted} />}
+                    {archived && <Badge className="shrink-0" label={m.review.archived} />}
+                    {task.resolution === "completed" && <Badge className="shrink-0" variant="green" label={m.review.outcomes.completed} />}
                     {pullRequestRef(task) && <PullRequestLink url={pullRequestRef(task)!} stats={pullRequest} />}
                     <span className="shrink-0 text-xs text-muted-foreground max-md:hidden print:inline">
-                      {names.get(task.workspaceId) ?? `Workspace ${task.workspaceId}`} &middot; <When at={at} />
+                      {names.get(task.workspaceId) ?? m.review.unnamedWorkspaceTitle(task.workspaceId)} &middot; <When at={at} />
                     </span>
                   </div>
                   <TaskLabels task={task} />
@@ -610,13 +604,13 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
                     </p>
                   )}
                   {task.completionNote && (
-                    <p aria-label={`Completion note of #${task.id}`} className="whitespace-pre-line break-words-keep text-xs">
+                    <p aria-label={m.review.completionNote(task.id)} className="whitespace-pre-line break-words-keep text-xs">
                       {task.completionNote}
                     </p>
                   )}
                   {shown && <TaskTime task={task} shown={shown} />}
                   {commits.length > 0 && (
-                    <ul aria-label={`Commits of #${task.id} this ${noun}`} className="flex flex-col gap-0.5">
+                    <ul aria-label={m.review.taskCommits(task.id, noun)} className="flex flex-col gap-0.5">
                       {commits.map((commit) => (
                         <li key={commit.sha} className="flex gap-2 text-xs" title={commit.author}>
                           <code className="shrink-0 text-muted-foreground">{commit.sha.slice(0, 7)}</code>
@@ -635,8 +629,8 @@ export function Review({ onShowTask }: { onShowTask?: (id: TaskId) => void }) {
 }
 
 /** `formatDuration`, with no time at all as `0h` rather than `<1h`. */
-function formatSpan(seconds: number): string {
-  return seconds === 0 ? "0h" : formatDuration(seconds);
+function formatSpan(seconds: number, m: Messages): string {
+  return seconds === 0 ? m.review.hours(0) : formatDuration(seconds, m);
 }
 
 /**
@@ -645,6 +639,7 @@ function formatSpan(seconds: number): string {
  * never started.
  */
 function TaskTime({ task, shown }: { task: Task; shown: Shown }) {
+  const { m, locale } = useI18n();
   const { start, end, now } = shown;
   const active = activeSeconds(task.timeline, now);
   const waiting = waitingSeconds(task.timeline, now);
@@ -653,16 +648,19 @@ function TaskTime({ task, shown }: { task: Task; shown: Shown }) {
     (segment) => segment.state === "paused" && segment.start < end && (segment.end ?? now) > start,
   );
   return (
-    <div aria-label={`Time of #${task.id}`} className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+    <div aria-label={m.review.taskTime(task.id)} className="flex flex-col gap-0.5 text-xs text-muted-foreground">
       <p>
-        {formatSpan(active)} active, {formatSpan(waiting)} waiting
+        {m.review.activeAndWaiting(formatSpan(active, m), formatSpan(waiting, m))}
       </p>
       {waits.length > 0 && (
-        <ul aria-label={`Waits of #${task.id}`} className="flex flex-col gap-0.5">
+        <ul aria-label={m.review.taskWaits(task.id)} className="flex flex-col gap-0.5">
           {waits.map((wait) => (
             <li key={wait.start} className="break-words-keep">
-              Waiting {formatSpan(Math.max((wait.end ?? now) - wait.start, 0))} from {formatDate(wait.start)}
-              {wait.end === null && ", still waiting"}: {wait.reason ?? "no reason recorded"}
+              {(wait.end === null ? m.review.ongoingWait : m.review.endedWait)(
+                formatSpan(Math.max((wait.end ?? now) - wait.start, 0), m),
+                formatReviewDay(formatDate(wait.start), locale),
+                wait.reason ?? m.review.noWaitReason,
+              )}
             </li>
           ))}
         </ul>
@@ -672,6 +670,7 @@ function TaskTime({ task, shown }: { task: Task; shown: Shown }) {
 }
 
 function PullRequestLink({ url, stats }: { url: string; stats: ReviewEntry["pullRequest"] }) {
+  const m = useMessages();
   const number = pullRequestNumber(url);
   const open = (event: { preventDefault: () => void }) => {
     event.preventDefault();
@@ -680,33 +679,34 @@ function PullRequestLink({ url, stats }: { url: string; stats: ReviewEntry["pull
   return (
     <a
       href={url}
-      title={stats ? `${url} \u00b7 ${pullRequestStats(stats)}` : url}
-      aria-label={number ? `Pull request #${number}` : "Pull request"}
+      title={stats ? `${url} \u00b7 ${pullRequestStats(stats, m)}` : url}
+      aria-label={number ? m.review.numberedPullRequest(number) : m.review.pullRequest}
       onClick={open}
       onAuxClick={open}
       className="shrink-0 text-xs text-primary underline underline-offset-2 hover:no-underline max-md:inline-flex max-md:min-h-11 max-md:items-center"
     >
-      {number ? `#${number}` : "PR"}
+      {number ? `#${number}` : m.review.pullRequestShort}
     </a>
   );
 }
 
 function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
+  const m = useMessages();
   const year = yearInReview(entries);
   if (year === null) return null;
   return (
     <section aria-labelledby="year-in-review-heading" className="flex flex-col gap-3 rounded-lg border p-3">
       <h3 id="year-in-review-heading" className="text-sm font-semibold">
-        Year in review
+        {m.review.yearInReview}
       </h3>
       {year.pullRequests && (
         <dl className="flex flex-wrap gap-x-6 gap-y-2">
           <div className="flex flex-col">
-            <dt className="text-xs text-muted-foreground">Merged pull requests</dt>
+            <dt className="text-xs text-muted-foreground">{m.review.mergedPullRequests}</dt>
             <dd className="text-lg font-semibold">{year.pullRequests.pullRequests}</dd>
           </div>
           <div className="flex flex-col">
-            <dt className="text-xs text-muted-foreground">Lines changed</dt>
+            <dt className="text-xs text-muted-foreground">{m.review.linesChanged}</dt>
             <dd className="text-lg font-semibold">
               <span>+{year.pullRequests.additions}</span>
               <span className="text-muted-foreground"> / </span>
@@ -714,15 +714,15 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
             </dd>
           </div>
           <div className="flex flex-col">
-            <dt className="text-xs text-muted-foreground">Files changed</dt>
+            <dt className="text-xs text-muted-foreground">{m.review.filesChanged}</dt>
             <dd className="text-lg font-semibold">{year.pullRequests.changedFiles}</dd>
           </div>
           <div className="flex flex-col">
-            <dt className="text-xs text-muted-foreground">Reviews</dt>
-            <dd className="text-lg font-semibold" title={formatReviews(year.pullRequests)}>
+            <dt className="text-xs text-muted-foreground">{m.review.reviews}</dt>
+            <dd className="text-lg font-semibold" title={formatReviews(year.pullRequests, m)}>
               {year.pullRequests.reviews}
               <span className="ml-1 text-xs font-normal text-muted-foreground">
-                on {year.pullRequests.reviewed} of {year.pullRequests.pullRequests}
+                {m.review.reviewedPullRequests(year.pullRequests.reviewed, year.pullRequests.pullRequests)}
               </span>
             </dd>
           </div>
@@ -730,13 +730,13 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
       )}
       {year.largest.length > 0 && (
         <div className="flex flex-col gap-1">
-          <h4 className="text-xs text-muted-foreground">Largest pull requests</h4>
-          <ol aria-label="Largest pull requests" className="flex flex-col gap-1">
+          <h4 className="text-xs text-muted-foreground">{m.review.largestPullRequests}</h4>
+          <ol aria-label={m.review.largestPullRequests} className="flex flex-col gap-1">
             {year.largest.map(({ task, pullRequest }) => (
               <li key={task.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
                 <TaskTypeBadge type={task.taskType} />
                 <span className="truncate font-medium">{task.title}</span>
-                <span className="ml-auto shrink-0 text-xs text-muted-foreground">{pullRequestStats(pullRequest)}</span>
+                <span className="ml-auto shrink-0 text-xs text-muted-foreground">{pullRequestStats(pullRequest, m)}</span>
               </li>
             ))}
           </ol>
@@ -744,17 +744,17 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
       )}
       {year.research.length > 0 && (
         <div className="flex flex-col gap-1">
-          <h4 className="text-xs text-muted-foreground">Research conclusions</h4>
-          <ul aria-label="Research conclusions" className="flex flex-col divide-y rounded-md border">
+          <h4 className="text-xs text-muted-foreground">{m.review.researchConclusions}</h4>
+          <ul aria-label={m.review.researchConclusions} className="flex flex-col divide-y rounded-md border">
             {year.research.map(({ task, at, adopted }) => (
               <li key={task.id} className="flex flex-col gap-1 px-2 py-1.5">
                 <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
                   <span className="truncate font-medium">{task.title}</span>
-                  <Badge className="shrink-0" variant={adopted ? "green" : "neutral"} label={adopted ? "Adopted" : "Not adopted"} />
+                  <Badge className="shrink-0" variant={adopted ? "green" : "neutral"} label={adopted ? m.review.adopted : m.review.notAdopted} />
                   <When className="ml-auto shrink-0 text-xs text-muted-foreground" at={at} />
                 </div>
-                <p aria-label={`Research conclusion of #${task.id}`} className="whitespace-pre-line break-words-keep text-xs">
-                  {task.completionNote ?? <span className="text-muted-foreground">No conclusion written.</span>}
+                <p aria-label={m.review.researchConclusion(task.id)} className="whitespace-pre-line break-words-keep text-xs">
+                  {task.completionNote ?? <span className="text-muted-foreground">{m.review.noConclusion}</span>}
                 </p>
               </li>
             ))}
@@ -763,14 +763,14 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
       )}
       {year.overruns.length > 0 && (
         <div className="flex flex-col gap-1">
-          <h4 className="text-xs text-muted-foreground">Largest estimate overruns</h4>
-          <ol aria-label="Largest estimate overruns" className="flex flex-col gap-1">
+          <h4 className="text-xs text-muted-foreground">{m.review.largestOverruns}</h4>
+          <ol aria-label={m.review.largestOverruns} className="flex flex-col gap-1">
             {year.overruns.map(({ task, estimated, actual }) => (
               <li key={task.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
                 <TaskTypeBadge type={task.taskType} />
                 <span className="truncate font-medium">{task.title}</span>
                 <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-                  estimated {formatDuration(estimated)}, {formatDuration(actual)} active
+                  {m.review.overrun(formatDuration(estimated, m), formatDuration(actual, m))}
                 </span>
               </li>
             ))}
@@ -783,6 +783,7 @@ function YearInReviewPanel({ entries }: { entries: ReviewEntry[] }) {
 
 /** Estimates and due dates of the reviewed tasks against what happened. */
 function PlanPanel({ shown, entries, editable }: { shown: Shown; entries: ReviewEntry[]; editable: boolean }) {
+  const { m, locale } = useI18n();
   const plan = planVsActual(shown.end, entries, shown.now);
   // Archived tasks and saved reviews cannot be edited, so only live tasks count as missing a plan.
   const missing = editable ? entries.filter(({ archived }) => !archived).map(({ task }) => missingPlan(task)) : [];
@@ -791,52 +792,44 @@ function PlanPanel({ shown, entries, editable }: { shown: Shown; entries: Review
   if (plan === null && withoutEstimate + withoutDueDate === 0) return null;
   const missingSummary = (
     <div className="contents">
-      <dt className="text-muted-foreground">Missing plan</dt>
-      <dd>
-        {[
-          withoutEstimate > 0 && `${plural(withoutEstimate, "task")} without an estimate`,
-          withoutDueDate > 0 && `${plural(withoutDueDate, "task")} without a due date`,
-        ]
-          .filter(Boolean)
-          .join(", ")}
-        ; add them from the marks on the tasks below
-      </dd>
+      <dt className="text-muted-foreground">{m.review.missingPlan}</dt>
+      <dd>{m.review.missingPlanDetails(withoutEstimate, withoutDueDate)}</dd>
     </div>
   );
   return (
     <section aria-labelledby="plan-heading" className="flex flex-col gap-3 rounded-lg border p-3">
       <h3 id="plan-heading" className="text-sm font-semibold">
-        Plan vs actual
+        {m.review.planVsActual}
       </h3>
       {plan === null ? (
         <>
-          <p className="text-sm">No reviewed task has an estimate or a due date, so there is nothing to compare yet.</p>
+          <p className="text-sm">{m.review.noPlanToCompare}</p>
           <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">{missingSummary}</dl>
         </>
       ) : (
       <dl className="grid gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
         <div className="contents">
-          <dt className="text-muted-foreground">Estimate vs active time</dt>
-          <dd>{plan.time ? formatEstimateAccuracy(plan.time) : "No completed task had an estimate"}</dd>
+          <dt className="text-muted-foreground">{m.review.estimateVsActive}</dt>
+          <dd>{plan.time ? formatEstimateAccuracy(plan.time, m) : m.review.noCompletedEstimate}</dd>
         </div>
         <div className="contents">
-          <dt className="text-muted-foreground">Due dates met</dt>
-          <dd>{plan.dueDates ? formatDueRate(plan.dueDates) : "No completed task had a due date"}</dd>
+          <dt className="text-muted-foreground">{m.review.dueDatesMet}</dt>
+          <dd>{plan.dueDates ? formatDueRate(plan.dueDates, m) : m.review.noCompletedDueDate}</dd>
         </div>
         {withoutEstimate + withoutDueDate > 0 && missingSummary}
       </dl>
       )}
       {plan !== null && plan.late.length > 0 && (
         <div className="flex flex-col gap-1">
-          <h4 className="text-xs text-muted-foreground">Late tasks</h4>
-          <ul aria-label="Late tasks" className="flex flex-col gap-1">
+          <h4 className="text-xs text-muted-foreground">{m.review.lateTasks}</h4>
+          <ul aria-label={m.review.lateTasks} className="flex flex-col gap-1">
             {plan.late.map((late) => (
               <li key={late.task.id} className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
                 <span className="flex min-w-0 max-w-full items-center gap-2">
                   <TaskTypeBadge type={late.task.taskType} />
                   <span className="truncate font-medium">{late.task.title}</span>
                 </span>
-                <span className={cn("ml-auto shrink-0 text-xs", toneText.danger)}>{lateDetails(late)}</span>
+                <span className={cn("ml-auto shrink-0 text-xs", toneText.danger)}>{lateDetails(late, m, locale)}</span>
               </li>
             ))}
           </ul>
@@ -855,25 +848,26 @@ function ReviewSummaryPanel({
   entries: ReviewEntry[];
   workspaces: Pick<Workspace, "id" | "name">[];
 }) {
-  const summary = summarize(shown.period, entries, workspaces, shown.timeZone);
+  const { m, locale } = useI18n();
+  const summary = summarize(shown.period, entries, workspaces, shown.timeZone, m);
   const busiestMonth = Math.max(1, ...(summary.completedPerMonth ?? []).map(({ count }) => count));
   return (
-    <section aria-label="Summary" className="flex flex-col gap-3 rounded-lg border p-3">
+    <section aria-label={m.review.summary} className="flex flex-col gap-3 rounded-lg border p-3">
       <dl className="flex flex-wrap gap-x-6 gap-y-2">
         {summary.outcomes.map(({ outcome, count }) => (
           <div key={outcome} className="flex flex-col">
-            <dt className="text-xs text-muted-foreground">{outcomeLabels[outcome]}</dt>
+            <dt className="text-xs text-muted-foreground">{m.review.outcomes[outcome]}</dt>
             <dd className="text-lg font-semibold">{count}</dd>
           </div>
         ))}
         {summary.notAdopted > 0 && (
           <div className="flex flex-col">
-            <dt className="text-xs text-muted-foreground">Not adopted</dt>
+            <dt className="text-xs text-muted-foreground">{m.review.notAdopted}</dt>
             <dd className="text-lg font-semibold">{summary.notAdopted}</dd>
           </div>
         )}
         <div className="flex flex-col">
-          <dt className="text-xs text-muted-foreground">Commits</dt>
+          <dt className="text-xs text-muted-foreground">{m.review.commits}</dt>
           <dd className="text-lg font-semibold">{summary.commits}</dd>
         </div>
       </dl>
@@ -882,41 +876,41 @@ function ReviewSummaryPanel({
           const stat = summary[key];
           return (
             <div key={key} className="contents">
-              <dt className="text-muted-foreground">{durationLabels[key]}</dt>
+              <dt className="text-muted-foreground">{m.review.durationLabels[key]}</dt>
               <dd>
                 {stat === null
-                  ? "No data"
-                  : `${formatDuration(stat.median)} (${stat.tasks} ${stat.tasks === 1 ? "task" : "tasks"})`}
+                  ? m.review.noData
+                  : m.review.medianDuration(formatDuration(stat.median, m), stat.tasks)}
               </dd>
             </div>
           );
         })}
         {summary.changes && (
           <div className="contents">
-            <dt className="text-muted-foreground">Changes in completed pull requests</dt>
-            <dd>{formatChanges(summary.changes)}</dd>
+            <dt className="text-muted-foreground">{m.review.completedPullRequestChanges}</dt>
+            <dd>{formatChanges(summary.changes, m)}</dd>
           </div>
         )}
         {summary.completedByType.length > 0 && (
           <div className="contents">
-            <dt className="text-muted-foreground">Completed by type</dt>
-            <dd>{summary.completedByType.map(({ taskType, count }) => `${taskType} ${count}`).join(", ")}</dd>
+            <dt className="text-muted-foreground">{m.review.completedByType}</dt>
+            <dd>{summary.completedByType.map(({ taskType, count }) => m.review.completedCount(m.tasks.types[taskType], count)).join(", ")}</dd>
           </div>
         )}
         {summary.completedByWorkspace.length > 0 && (
           <div className="contents">
-            <dt className="text-muted-foreground">Completed by workspace</dt>
-            <dd>{summary.completedByWorkspace.map(({ workspace, count }) => `${workspace} ${count}`).join(", ")}</dd>
+            <dt className="text-muted-foreground">{m.review.completedByWorkspace}</dt>
+            <dd>{summary.completedByWorkspace.map(({ workspace, count }) => m.review.completedCount(workspace, count)).join(", ")}</dd>
           </div>
         )}
       </dl>
       {summary.completedPerMonth && (
         <div className="flex flex-col gap-1">
-          <h3 className="text-xs text-muted-foreground">Completed per month</h3>
-          <ul aria-label="Completed per month" className="flex flex-col gap-0.5">
+          <h3 className="text-xs text-muted-foreground">{m.review.completedPerMonth}</h3>
+          <ul aria-label={m.review.completedPerMonth} className="flex flex-col gap-0.5">
             {summary.completedPerMonth.map(({ month, count }) => (
               <li key={month} className="flex items-center gap-2 text-xs">
-                <span className="w-16 shrink-0 font-mono text-muted-foreground">{month}</span>
+                <span className="w-16 shrink-0 font-mono text-muted-foreground">{formatReviewMonth(month, locale)}</span>
                 <span
                   aria-hidden
                   className={cn("h-2 rounded-sm", toneFill.success)}

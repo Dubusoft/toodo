@@ -1,3 +1,4 @@
+import { useMessages } from "@/lib/i18n";
 import { useState, type FormEvent } from "react";
 import { Plus } from "lucide-react";
 import { Selector } from "@astryxdesign/core/Selector";
@@ -8,7 +9,7 @@ import { MarkdownEditor } from "@/components/markdown-editor";
 import type { TaskType, Workspace } from "@/lib/bindings";
 import { useCreateTask } from "@/lib/queries";
 import { parseLabels } from "@/lib/plan";
-import { taskTypes } from "@/components/task-common";
+import { taskTypeOptions } from "@/components/task-common";
 import { AutopilotField, type PlanDraft, planEstimate, PlanFields } from "@/components/plan-fields";
 import { type CriterionDraft, criterionInputs, targetProblem, CriteriaEditor } from "@/components/criteria-editor";
 
@@ -44,6 +45,7 @@ export function NewTaskForm({
   draft: TaskDraft;
   onChange: (draft: TaskDraft) => void;
 }) {
+  const m = useMessages();
   const createTask = useCreateTask();
   const [expanded, setExpanded] = useState(false);
   const { taskType, title, description } = draft;
@@ -88,31 +90,31 @@ export function NewTaskForm({
   }
 
   return (
-    <CollapsibleForm label="New task" expanded={expanded} onExpandedChange={setExpanded} onSubmit={submit}>
+    <CollapsibleForm label={m.tasks.newTask} expanded={expanded} onExpandedChange={setExpanded} onSubmit={submit}>
       <div className="flex gap-2">
         {expanded && (
           <Selector
-            label="Task type"
+            label={m.tasks.taskType}
             isLabelHidden
             width={112}
             containerClassName="shrink-0 font-mono"
-            options={taskTypes}
+            options={taskTypeOptions(m)}
             value={taskType}
             onChange={(value) => setTaskType(value as TaskType)}
           />
         )}
         <TextInput
-          label="Task title"
+          label={m.tasks.taskTitle}
           isLabelHidden
           containerClassName="min-w-0 flex-1"
-          placeholder={expanded ? "Task title" : "New task"}
+          placeholder={expanded ? m.tasks.taskTitle : m.tasks.newTask}
           value={title}
           onChange={setTitle}
         />
         <Button
           type="submit"
           variant="primary"
-          label="Add task"
+          label={m.tasks.addTask}
           icon={<Plus />}
           isDisabled={createTask.isPending || estimate === undefined || criteriaInvalid}
         />
@@ -120,8 +122,8 @@ export function NewTaskForm({
       {expanded && (
         <>
           <MarkdownEditor
-            label="Description"
-            placeholder="Description (optional, Markdown)"
+            label={m.tasks.description}
+            placeholder={m.tasks.descriptionHint}
             value={description}
             onChange={setDescription}
             className="flex-1"
@@ -138,7 +140,7 @@ export function NewTaskForm({
           />
           <div className="flex flex-col gap-1 border-t pt-2">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-              <span className="font-medium text-muted-foreground">Completion criteria</span>
+              <span className="font-medium text-muted-foreground">{m.tasks.completionCriteria}</span>
             </div>
             <CriteriaEditor
               criteria={draft.criteria}

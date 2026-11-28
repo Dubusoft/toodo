@@ -1,3 +1,6 @@
+import { en, type Messages } from "@/locales/en";
+import { useMessages, type Locale } from "@/lib/i18n";
+import { formatFull } from "@/lib/timeline";
 import { useState, type FormEvent } from "react";
 import { AlarmClock } from "lucide-react";
 import { TextInput } from "@astryxdesign/core/TextInput";
@@ -5,8 +8,6 @@ import { Button } from "@/components/button";
 import { inputClass } from "@/components/workspace-list";
 import type { Task, TaskWait, Timestamp } from "@/lib/bindings";
 import { useWaitTask } from "@/lib/queries";
-import { statusNames } from "@/lib/status-styles";
-import { formatFull } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
 /** `at` as the value of a `datetime-local` input, in local time. */
@@ -28,14 +29,14 @@ function tomorrowMorning(): Timestamp {
  * The status a wait returns a task to, by name: "planned" rather than "blocked" for a planned
  * one, since whether it is blocked or ready then depends on its prerequisites.
  */
-function returnName(status: TaskWait["status"]): string {
-  return (status === "planned" ? statusNames.waiting : statusNames[status]).toLowerCase();
+function returnName(status: TaskWait["status"], m: Messages): string {
+  return (status === "planned" ? m.details.status.waiting : m.details.status[status]).toLowerCase();
 }
 
 /** What a waiting task shows: until when it waits and the status it returns to. */
-export function waitLabel(task: Task): string | null {
+export function waitLabel(task: Task, locale: Locale = "en", m: Messages = en): string | null {
   if (task.wait === null) return null;
-  return `Waiting until ${formatFull(task.wait.until)}, then ${returnName(task.wait.status)}`;
+  return m.details.wait.waitingUntil(formatFull(task.wait.until, locale), returnName(task.wait.status, m));
 }
 
 /**
@@ -43,6 +44,7 @@ export function waitLabel(task: Task): string | null {
  * waiting task. The task is paused until then and returns to its status on its own.
  */
 export function WaitForm({ task, onDone }: { task: Task; onDone: () => void }) {
+  const m = useMessages();
   const waitTask = useWaitTask();
   const [until, setUntil] = useState(localInput(task.wait?.until ?? tomorrowMorning()));
   const [reason, setReason] = useState("");
@@ -61,23 +63,23 @@ export function WaitForm({ task, onDone }: { task: Task; onDone: () => void }) {
   return (
     <form
       onSubmit={submit}
-      aria-label={`Wait #${task.id}`}
+      aria-label={m.details.wait.form(task.id)}
       className="flex flex-col gap-1"
       onKeyDown={(event) => event.key === "Escape" && !waitTask.isPending && onDone()}
     >
       <p className="text-xs text-muted-foreground">
         {task.wait === null
           ? task.status === "planned"
-            ? `#${task.id} waits until then and stays planned.`
-            : `#${task.id} is paused until then, then returns to ${statusNames[task.status].toLowerCase()} on its own.`
-          : `Move the end of the wait; #${task.id} then returns to ${returnName(task.wait.status)}.`}
+            ? m.details.wait.planned(task.id)
+            : m.details.wait.paused(task.id, m.details.status[task.status].toLowerCase())
+          : m.details.wait.reschedule(task.id, returnName(task.wait.status, m))}
       </p>
       <div className="flex flex-wrap gap-1 max-md:gap-2">
         {/* Native: Astryx DateInput picks a date only, and this needs a date and a time. */}
         <input
           type="datetime-local"
           className={cn(inputClass, "w-auto")}
-          aria-label={`Wait #${task.id} until`}
+          aria-label={m.details.wait.until(task.id)}
           value={until}
           onChange={(e) => setUntil(e.target.value)}
           required
@@ -85,9 +87,9 @@ export function WaitForm({ task, onDone }: { task: Task; onDone: () => void }) {
         />
         <TextInput
           containerClassName="min-w-0 flex-1 basis-48"
-          label={`Reason #${task.id} waits`}
+          label={m.details.wait.reason(task.id)}
           isLabelHidden
-          placeholder="Why it waits (optional)"
+          placeholder={m.details.wait.reasonHint}
           value={reason}
           onChange={setReason}
         />
@@ -99,10 +101,10 @@ export function WaitForm({ task, onDone }: { task: Task; onDone: () => void }) {
           size="sm"
           variant="primary"
           icon={<AlarmClock />}
-          label={waitTask.isPending ? "Saving..." : task.wait === null ? "Wait" : "Change wait"}
+          label={waitTask.isPending ? m.details.actions.saving : task.wait === null ? m.details.wait.submit : m.details.wait.change}
           isDisabled={waitTask.isPending || !valid}
         />
-        <Button type="button" size="sm" variant="ghost" label="Back" onClick={onDone} />
+        <Button type="button" size="sm" variant="ghost" label={m.details.actions.back} onClick={onDone} />
       </div>
       {waitTask.isError && (
         <p role="alert" className="text-xs text-destructive">
