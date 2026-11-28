@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Badge } from "@astryxdesign/core/Badge";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
+import { AddMachine, ProblemText } from "@/components/add-machine";
 import { Button } from "@/components/button";
 import { ConfigEntryRow } from "@/components/dori-config-panel";
 import { escapeCloses } from "@/components/workspace-list";
@@ -185,7 +186,7 @@ function DeviceCodeBox({ job, t }: { job: MachineJob; t: Texts }) {
 }
 
 function JobCard({ job, t }: { job: MachineJob; t: Texts }) {
-  const title = job.kind === "login" ? t.jobTitle.login : t.jobTitle.install(job.tool);
+  const title = job.kind === "login" ? t.jobTitle.login : job.kind === "runner" ? t.jobTitle.runner(job.machine) : t.jobTitle.install(job.tool ?? "");
   const cancel = useMachineJobAction();
   const log = useRef<HTMLPreElement>(null);
   // The newest output is at the bottom: follow it while the job runs.
@@ -211,7 +212,13 @@ function JobCard({ job, t }: { job: MachineJob; t: Texts }) {
         )}
       </div>
       {job.state === "running" && job.device && <DeviceCodeBox job={job} t={t} />}
-      {job.state === "succeeded" && job.version && <p role="status">{t.nowVersion(job.tool, job.version)}</p>}
+      {job.state === "succeeded" && job.tool && job.version && <p role="status">{t.nowVersion(job.tool, job.version)}</p>}
+      {job.state === "succeeded" && job.kind === "runner" && <p role="status">{t.runnerAdded(job.machine)}</p>}
+      {job.state === "failed" && job.problem && (
+        <div role="alert" className="flex flex-col gap-1 rounded-md border border-destructive/50 p-2">
+          <ProblemText problem={{ code: job.problem }} t={t} />
+        </div>
+      )}
       <pre
         ref={log}
         aria-label={t.jobLog(title)}
@@ -226,8 +233,9 @@ function JobCard({ job, t }: { job: MachineJob; t: Texts }) {
 
 /**
  * Settings > Machines & accounts: the server host and every runner Dori knows, with their state
- * and hc's and omo's versions, each runner's settings, and on the host the jobs that install or
- * update hc and omo and sign omo in, their logs streamed while they run. On a server without Dori
+ * and hc's and omo's versions, each runner's settings, on the host the jobs that install or
+ * update hc and omo and sign omo in, their logs streamed while they run, and adding another
+ * computer as a runner (AddMachine). On a server without Dori
  * it is the Set up Dori entry (`setup`). It asks the server only while shown (`active`).
  */
 export function MachinesPanel({ setup = false, active = false }: { setup?: boolean; active?: boolean }) {
@@ -259,10 +267,17 @@ export function MachinesPanel({ setup = false, active = false }: { setup?: boole
           )}
         </>
       )}
-      <details open={setup}>
-        <summary className="cursor-pointer text-muted-foreground">{setup ? m.settings.showHow : t.addMachine}</summary>
-        <p className="pt-2">{fill(t.how, { setup: <code>dori setup</code>, runner: <code>dori runner setup</code> })}</p>
-      </details>
+      {setup ? (
+        <details open>
+          <summary className="cursor-pointer text-muted-foreground">{m.settings.showHow}</summary>
+          <p className="pt-2">{fill(t.how, { setup: <code>dori setup</code>, runner: <code>dori runner setup</code> })}</p>
+        </details>
+      ) : (
+        <details>
+          <summary className="cursor-pointer font-medium">{t.addMachine}</summary>
+          <AddMachine />
+        </details>
+      )}
     </section>
   );
 }

@@ -3,7 +3,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/lib/i18n";
 import { MachinesPanel } from "@/components/machines-panel";
-import type { MachineJob, MachineRequest, MachineRow } from "@/lib/machines";
+import type { Enrollment, MachineJob, MachineRequest, MachineRow, RunnerPrecheck } from "@/lib/machines";
 
 const TOKEN_KEY = "toodo-server-token";
 
@@ -17,17 +17,25 @@ const mini: MachineRow = {
 const login: MachineJob = {
   id: "job-1", kind: "login", tool: "omo", machine: "local", state: "running", command: "omo login --no-browser", startedAt: 1, endedAt: null,
   log: "$ omo login --no-browser\nOpen https://signin.omo.dev/device?code=TWJM-QTWV\n", exitCode: null, version: null,
-  device: { url: "https://signin.omo.dev/device?code=TWJM-QTWV", userCode: "TWJM-QTWV", matchingCode: "932 514" },
+  device: { url: "https://signin.omo.dev/device?code=TWJM-QTWV", userCode: "TWJM-QTWV", matchingCode: "932 514" }, problem: null,
 };
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   localStorage.clear();
 });
 
-/** The server: lists `machines` and `jobs`; a POST is recorded and answered with a started job. The job stream stays open and quiet. */
-function serve(machines: readonly MachineRow[], jobs: readonly MachineJob[] = []) {
+/**
+ * The server: lists `machines` and `jobs`; a POST is recorded and answered with a started job, or with `answers` for a
+ * pre-check or an enrollment code. The job stream stays open and quiet.
+ */
+function serve(
+  machines: readonly MachineRow[],
+  jobs: readonly MachineJob[] = [],
+  answers: { precheck?: RunnerPrecheck; enrollment?: Enrollment } = {},
+) {
   localStorage.setItem(TOKEN_KEY, "secret");
   const posted: MachineRequest[] = [];
   vi.stubGlobal("fetch", vi.fn(async (path: string, init?: RequestInit) => {
@@ -35,7 +43,10 @@ function serve(machines: readonly MachineRow[], jobs: readonly MachineJob[] = []
     if (path === "/api/machines/jobs") return new Response(new ReadableStream(), { headers: { "content-type": "text/event-stream" } });
     expect(path).toBe("/api/machines");
     if (init?.method !== "POST") return Response.json({ ok: true, machines, jobs });
-    posted.push(JSON.parse(String(init.body)) as MachineRequest);
+    const request = JSON.parse(String(init.body)) as MachineRequest;
+    posted.push(request);
+    if (request.op === "precheck") return Response.json({ ok: true, precheck: answers.precheck });
+    if (request.op === "enroll-code") return Response.json({ ok: true, enrollment: answers.enrollment });
     return Response.json({ ok: true, job: { ...login, id: "job-2", kind: "install", tool: "hc", command: "hc update", device: null } });
   }));
   return posted;
@@ -86,5 +97,57 @@ describe("MachinesPanel", () => {
     expect(within(job).getByLabelText("Log of OmO sign-in")).toHaveTextContent("$ omo login --no-browser");
     expect(within(job).getByRole("button", { name: "Stop" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign in to OmO" })).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("explains each failed pre-check of an ssh target, and installs only once the checks pass", async () => {
+    const failed: RunnerPrecheck = {
+      target: "me@studio", label: "studio", os: "linux", listen: "192.168.1.20:7411",
+      problems: [{ code: "no-hc", detail: "hc is not on the login PATH there" }, { code: "no-bun", detail: "bun is not on the PATH there" }],
+    };
+    const posted = serve([host], [], { precheck: failed });
+    renderPanel();
+
+    fireEvent.click(await screen.findByText("Add a computer"));
+    const form = screen.getByRole("form", { name: "Over ssh from this server" });
+    fireEvent.change(within(form).getByLabelText("ssh target"), { target: { value: "me@studio" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Check" }));
+    const problems = await screen.findByRole("alert");
+    expect(within(problems).getByText(/hc is missing there/)).toBeInTheDocument();
+    expect(within(problems).getByText("curl -fsSL https://releases.herdr.dev/core/install.sh | sh")).toBeInTheDocument();
+    expect(within(problems).getByText(/Bun is missing there/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Install the runner on studio" })).not.toBeInTheDocument();
+    expect(posted).toEqual([{ op: "precheck", target: "me@studio", label: "" }]);
+  });
+
+  it("shows the one-line command of a pasted enrollment for macOS or Linux and for PowerShell, and how long it still works", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    const opened = Date.now();
+    const enrollment: Enrollment = {
+      label: "studio", code: "Q29kZS1mb3ItdGVzdHMtb25seS0zMi1ieXRlcy1sb25nIQ", fingerprint: "sha256:ab12", listen: "100.70.1.2:7411",
+      expiresAt: opened + 60_000 + 10 * 60_000,
+    };
+    const posted = serve([host], [], { enrollment });
+    renderPanel();
+    // The command is made a minute after the section opened: its countdown starts from then.
+    vi.setSystemTime(opened + 60_000);
+
+    fireEvent.click(await screen.findByText("Add a computer"));
+    fireEvent.click(screen.getByRole("radio", { name: "Paste a command" }));
+    const form = screen.getByRole("form", { name: "Paste a command" });
+    fireEvent.change(within(form).getByLabelText("Name"), { target: { value: "studio" } });
+    fireEvent.change(within(form).getByLabelText("Its private address"), { target: { value: "100.70.1.2" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Make the command" }));
+    const command = await within(form).findByLabelText("Command");
+    expect(posted).toEqual([{ op: "enroll-code", label: "studio", address: "100.70.1.2" }]);
+    expect(command.textContent).toBe(
+      `curl -fsSL '${location.origin}/runner-enroll/install.sh' | DORI_SERVER='${location.origin}' DORI_LABEL='studio' DORI_CODE='${enrollment.code}' DORI_FINGERPRINT='sha256:ab12' sh`,
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Windows (PowerShell)" }));
+    expect(command.textContent).toContain(`irm '${location.origin}/runner-enroll/install.ps1' | iex`);
+    expect(screen.getByText("Waiting for studio to connect...")).toBeInTheDocument();
+    expect(await screen.findByText("It works once, for 10:00 more.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "Over ssh from this server" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Paste a command" }));
+    expect(within(screen.getByRole("form", { name: "Paste a command" })).getByLabelText("Command")).toBe(command);
   });
 });

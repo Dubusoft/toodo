@@ -1,8 +1,9 @@
 /**
  * Settings > Machines & accounts' calls: `GET /api/machines` lists the machines and the latest
  * jobs, `GET /api/machines/<label>/config` reads a runner's runner-config.json, `POST
- * /api/machines` changes a key or starts a job, and `GET /api/machines/jobs` streams each job's
- * state while it runs, so its log grows on screen as the supervisor reads it.
+ * /api/machines` changes a key, starts a job, pre-checks a computer to add or makes its enrollment
+ * command, and `GET /api/machines/jobs` streams each job's state while it runs, so its log grows on
+ * screen as the supervisor reads it.
  */
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -25,6 +26,8 @@ const machinesKey = ["machines"] as const;
 const configKey = (machine: string) => ["machines", machine, "config"] as const;
 /** Runner states and versions move on their own while the section is open. */
 const REFRESH_MS = 30_000;
+/** While a pasted enrollment waits for its computer to connect. */
+const WAITING_REFRESH_MS = 5_000;
 const FIRST_RETRY_MS = 1000;
 const MAX_RETRY_MS = 30_000;
 
@@ -49,14 +52,33 @@ async function call<O extends MachineOp>(t: Texts, path: string, request?: Machi
   throw new Error(t.requestFailed(response.status, message));
 }
 
-/** Every machine with hc's and omo's versions, and the latest jobs, fetched while `active`. */
-export function useMachines(active: boolean) {
+/**
+ * Every machine with hc's and omo's versions, and the latest jobs, fetched while `active`, and
+ * more often while `waiting` for a new computer to connect.
+ */
+export function useMachines(active: boolean, waiting = false) {
   const t = useMessages().settings.machines;
   return useQuery({
     queryKey: machinesKey,
     queryFn: () => call<"list">(t, MACHINES_PATH),
     enabled: active,
-    refetchInterval: active ? REFRESH_MS : false,
+    refetchInterval: active ? (waiting ? WAITING_REFRESH_MS : REFRESH_MS) : false,
+  });
+}
+
+/** Checks an ssh target before a runner is installed there. */
+export function usePrecheck() {
+  const t = useMessages().settings.machines;
+  return useMutation({
+    mutationFn: async (request: MachineRequest & { op: "precheck" }) => (await call<"precheck">(t, MACHINES_PATH, request)).precheck,
+  });
+}
+
+/** Issues a one-time enrollment code for a computer that pastes the command. */
+export function useEnrollCode() {
+  const t = useMessages().settings.machines;
+  return useMutation({
+    mutationFn: async (request: MachineRequest & { op: "enroll-code" }) => (await call<"enroll-code">(t, MACHINES_PATH, request)).enrollment,
   });
 }
 
@@ -82,12 +104,12 @@ export function useSaveRunnerConfig(machine: string) {
   };
 }
 
-/** Starts an install or a sign-in, or cancels a job; the answer is the job as it stands. */
+/** Starts an install, a sign-in or a runner install over ssh, or cancels a job; the answer is the job as it stands. */
 export function useMachineJobAction() {
   const t = useMessages().settings.machines;
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (request: MachineRequest & { op: "install" | "login" | "cancel" }) =>
+    mutationFn: async (request: MachineRequest & { op: "install" | "login" | "cancel" | "add-ssh" }) =>
       (await call<typeof request.op>(t, MACHINES_PATH, request)).job,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: machinesKey }),
   });

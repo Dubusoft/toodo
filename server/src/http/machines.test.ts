@@ -19,7 +19,7 @@ afterEach(() => {
 
 const job: MachineJob = {
   id: "job-1", kind: "install", tool: "hc", machine: "local", state: "running", command: "hc update", startedAt: 1, endedAt: null,
-  log: "$ hc update\n", exitCode: null, version: null, device: null,
+  log: "$ hc update\n", exitCode: null, version: null, device: null, problem: null,
 };
 
 describe("machines", () => {
@@ -62,12 +62,47 @@ describe("machines", () => {
       { op: "config", machine: "" },
       { op: "login", replace: "yes" },
       { op: "cancel" },
+      { op: "precheck", target: "" },
+      { op: "enroll-code", label: "studio" },
+      { op: "enroll-script", label: "studio", shell: "posix", token: "a".repeat(64) },
       [],
     ]) {
       const answer = await server.send("POST", "/api/machines", WEB, body);
       expect(answer).toEqual({ status: 400, body: { ok: false, error: "the request is not a machines request" } });
     }
     expect(asked).toBe(0);
+  });
+
+  test("serves a pasted enrollment's scripts and exchange outside the web token, behind the download token", async () => {
+    const seen: MachineRequest[] = [];
+    const token = "c".repeat(64);
+    const server = await start({
+      machines: async (request): Promise<MachineReply> => {
+        seen.push(request);
+        if (request.op === "enroll-bootstrap") return { ok: true, script: `#!/bin/sh\necho ${request.shell}\n` };
+        if ("token" in request && request.token !== token) return { ok: false, error: "no live enrollment code of studio matches", refused: true };
+        if (request.op === "enroll-script") return { ok: true, script: "F='sha256:ab'\n" };
+        return { ok: true, enrolled: "studio" };
+      },
+    });
+    const bootstrap = await server.fetch("GET", "/runner-enroll/install.sh");
+    expect(bootstrap.status).toBe(200);
+    expect(await bootstrap.text()).toBe("#!/bin/sh\necho posix\n");
+    expect((await server.fetch("GET", "/runner-enroll/script?label=studio&shell=posix")).status).toBe(401);
+    const wrong = await fetch(`${server.url}/runner-enroll/script?label=studio&shell=posix`, { headers: { "x-dori-enroll": "d".repeat(64) } });
+    expect(wrong.status).toBe(403);
+    const script = await fetch(`${server.url}/runner-enroll/script?label=studio&shell=posix`, { headers: { "x-dori-enroll": token } });
+    expect(script.status).toBe(200);
+    expect(await script.text()).toBe("F='sha256:ab'\n");
+    const exchange = await fetch(`${server.url}/runner-enroll/exchange?label=studio`, { method: "POST", headers: { "x-dori-enroll": token }, body: "FRAME" });
+    expect(await exchange.json()).toEqual({ ok: true, enrolled: "studio" });
+    expect((await fetch(`${server.url}/runner-enroll/exchange?label=studio`, { headers: { "x-dori-enroll": token } })).status).toBe(405);
+    expect(seen).toEqual([
+      { op: "enroll-bootstrap", shell: "posix" },
+      { op: "enroll-script", label: "studio", shell: "posix", token: "d".repeat(64) },
+      { op: "enroll-script", label: "studio", shell: "posix", token },
+      { op: "enroll-exchange", label: "studio", token, request: "FRAME" },
+    ]);
   });
 
   test("answers 503 without the supervisor, or when it cannot answer", async () => {

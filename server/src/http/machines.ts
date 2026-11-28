@@ -36,7 +36,7 @@ const isName = (value: unknown): value is string => typeof value === "string" &&
  * which machines exist is the supervisor's to check: it answers why it refused. */
 export function parseMachineRequest(value: unknown): MachineRequest | null {
   if (!isObject(value) || !(MACHINE_OPS as readonly unknown[]).includes(value.op)) return null;
-  const op = value.op as MachineRequest["op"];
+  const op = value.op as (typeof MACHINE_OPS)[number];
   switch (op) {
     case "list":
       return { op };
@@ -52,20 +52,34 @@ export function parseMachineRequest(value: unknown): MachineRequest | null {
       return value.replace === undefined || typeof value.replace === "boolean" ? { op, replace: value.replace === true } : null;
     case "cancel":
       return isName(value.job) ? { op, job: value.job } : null;
+    case "precheck":
+    case "add-ssh":
+      return isName(value.target) && typeof value.label === "string" && value.label.length <= 64
+        ? { op, target: value.target, label: value.label }
+        : null;
+    case "enroll-code":
+      return isName(value.label) && isName(value.address) ? { op, label: value.label, address: value.address } : null;
   }
 }
 
-async function relay(bridge: MachineBridge | null, request: MachineRequest): Promise<Response> {
+/** The supervisor's answer to `request`, or the 503 answer when there is no supervisor or it cannot answer. */
+export async function ask(bridge: MachineBridge | null, request: MachineRequest): Promise<MachineReply | Response> {
   if (bridge === null) {
     return json(503, { ok: false, error: "the Dori supervisor does not run in this server" } satisfies MachineReply);
   }
-  let reply: MachineReply;
   try {
-    reply = await bridge(request);
+    return await bridge(request);
   } catch (error) {
     return json(503, { ok: false, error: error instanceof Error ? error.message : String(error) } satisfies MachineReply);
   }
-  return json(reply.ok ? 200 : 400, reply);
+}
+
+/** A refused reply is 403: a pasted enrollment's token or code did not match. */
+export const replyStatus = (reply: MachineReply): number => (reply.ok ? 200 : reply.refused ? 403 : 400);
+
+async function relay(bridge: MachineBridge | null, request: MachineRequest): Promise<Response> {
+  const reply = await ask(bridge, request);
+  return reply instanceof Response ? reply : json(replyStatus(reply), reply);
 }
 
 /** `GET /api/machines`: every machine with its tools, and the latest jobs. */

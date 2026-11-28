@@ -35,7 +35,7 @@ const world = (omo: { readonly login?: string; readonly update?: string } = {}) 
   const waiters: { readonly match: (job: MachineJob) => boolean; readonly resolve: (job: MachineJob) => void }[] = [];
   const admin = new MachineAdmin({
     stateDir: join(root, "state"), guardMachines: {}, runnerDir, home: root, env: { PATH: `${bin}:/usr/bin:/bin` },
-    run: async () => ({ code: 1, out: "", err: "no ssh in this test" }), now: () => Date.now(),
+    run: async () => ({ code: 1, out: "", err: "no ssh in this test" }), now: () => Date.now(), agentCommand: [],
     observeTools: async () => { throw new Error("no worker in this test"); },
     publish: (job) => {
       published.push(job);

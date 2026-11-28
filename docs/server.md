@@ -1137,8 +1137,13 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   `workspaces`, `detectWorkspaces`, `reposRoot` and `worktreeRoot`; every other key runs a
   command or moves the sandbox and is changed on that machine), `install` of `hc` or `omo` on
   the host (an update when it is installed), `login` (`omo login --no-browser`, with
-  `replace` for `--replace`), or `cancel` of a running job. The runner applies a saved key
-  itself, without a restart. `GET /api/machines/jobs` streams `job` events, each a job's
+  `replace` for `--replace`), `cancel` of a running job, or adding another computer as a
+  runner: `precheck` of an ssh `target` and `label` (whether the target resolves to a private
+  address, ssh reaches it, and hc and bun are there; it answers the problems found),
+  `add-ssh` (a job that runs `dori runner install <target> --label <label>`), or
+  `enroll-code` of a `label` and the computer's private `address` (a one-time code valid for
+  10 minutes, for the command pasted on a computer without ssh access; see
+  `/runner-enroll/` below). The runner applies a saved key itself, without a restart. `GET /api/machines/jobs` streams `job` events, each a job's
   latest state with the last 32 KB of its output (credentials masked) and, for a sign-in,
   its device URL, user code and matching code; a new stream first gets the updates kept in
   memory. The server runs none of these commands: the host hands each request to the
@@ -1146,6 +1151,18 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   `400` with its `error`, a body that is no request `400`, and `503` when no supervisor runs
   beside the server or it does not answer within 60 seconds. A read-only device may read
   but not change anything.
+- `GET /runner-enroll/install.sh`, `GET /runner-enroll/install.ps1`,
+  `GET /runner-enroll/script?label=&shell=posix|windows` and
+  `POST /runner-enroll/exchange?label=`: what a computer enrolled by a pasted command
+  downloads and sends. These are outside the `/api` gate, since that computer has no token:
+  the two bootstrap scripts hold no secret, and the installer and the enrollment exchange
+  need the download token in `X-Dori-Enroll` (hex sha256 of a tag, the label and the
+  one-time code), which the supervisor matches against its live codes. A missing token is
+  `401`, one that matches no live code `403`. The bootstrap checks that the installer pins
+  the supervisor key fingerprint from the command, runs it, posts its enrollment request to
+  `exchange` (which uses up the code and records the runner's private endpoint), and runs
+  the installer again with the supervisor's reply. The server runs nothing here either: the
+  host hands each request to the supervisor Worker.
 - `GET /api/backups/export`: a consistent snapshot of the database, as an
   `application/vnd.sqlite3` attachment named `toodo-backup-<date>.sqlite3`.
 - `GET /api/backups/{name}`: the backup named `name` from the backup directory, by the
