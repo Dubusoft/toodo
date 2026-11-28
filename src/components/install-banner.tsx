@@ -26,8 +26,8 @@ export function InstallBanner() {
       className={cn("mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg px-3 py-2", tonePanel.info)}
     >
       <div className="flex min-w-0 flex-1 basis-56 flex-col gap-0.5">
-        <p className="text-sm font-medium">{copy.title}</p>
-        <p className="text-xs break-words">
+        <p className="break-words-keep text-sm font-medium">{copy.title}</p>
+        <p className="break-words-keep text-xs">
           {offer === "prompt" ? copy.prompt : fill(copy.homeScreen, {
             share: <Share aria-label={copy.share} className="inline size-3.5 align-text-bottom" />,
             add: <span className="font-medium">{copy.addToHomeScreen}</span>,

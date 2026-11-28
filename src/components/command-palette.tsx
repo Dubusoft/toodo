@@ -5,8 +5,9 @@ import {
   useCommandPaletteContext,
 } from "@astryxdesign/core/CommandPalette";
 import { Dialog, DialogHeader } from "@astryxdesign/core/Dialog";
+import { InternationalizationProvider } from "@astryxdesign/core/i18n";
 import type { SearchableItem, SearchSource } from "@astryxdesign/core/Typeahead";
-import { useMessages } from "@/lib/i18n";
+import { useI18n, useMessages } from "@/lib/i18n";
 import { shortcuts } from "@/lib/shortcuts";
 
 /** An entry of the command palette: an action, or a task to jump to. */
@@ -79,7 +80,7 @@ function HighlightFirstMatch() {
  * the highlighted entry and closes it.
  */
 export function CommandPalette({ commands, onClose }: { commands: PaletteCommand[]; onClose: () => void }) {
-  const m = useMessages();
+  const { locale, m } = useI18n();
   useModal(onClose);
   const items = commands.map((command): PaletteItem => ({
     id: command.id,
@@ -102,28 +103,32 @@ export function CommandPalette({ commands, onClose }: { commands: PaletteCommand
     command.run();
   };
 
+  // The palette's own text, such as its keyboard hints, follows the app's language.
   return (
-    <AstryxCommandPalette<PaletteItem>
-      isOpen
-      onOpenChange={(open) => !open && onClose()}
-      label={m.app.palette.title}
-      searchSource={source}
-      onValueChange={run}
-      emptySearchText={m.app.palette.noMatches}
-      input={
-        <>
-          <CommandPaletteInput label={m.app.palette.search} placeholder={m.app.palette.placeholder} />
-          <HighlightFirstMatch />
-        </>
-      }
-      renderItem={({ auxiliaryData: command }) => (
-        <span className="flex min-w-0 flex-1 items-center gap-2 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground">
-          {command.icon}
-          <span className="min-w-0 flex-1 truncate">{command.label}</span>
-          {command.hint && <span className="shrink-0 text-xs text-muted-foreground">{command.hint}</span>}
-        </span>
-      )}
-    />
+    <InternationalizationProvider locale={locale} overrides={{ [locale]: m.app.palette.astryx }}>
+      <AstryxCommandPalette<PaletteItem>
+        isOpen
+        onOpenChange={(open) => !open && onClose()}
+        label={m.app.palette.title}
+        searchSource={source}
+        onValueChange={run}
+        emptySearchText={m.app.palette.noMatches}
+        input={
+          <>
+            <CommandPaletteInput label={m.app.palette.search} placeholder={m.app.palette.placeholder} />
+            <HighlightFirstMatch />
+          </>
+        }
+        renderItem={({ auxiliaryData: command }) => (
+          <span className="flex min-w-0 flex-1 items-center gap-2 [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground">
+            {command.icon}
+            <span className="min-w-0 flex-1 truncate">{command.label}</span>
+            {/* A long workspace name gives way to the label it hints at. */}
+            {command.hint && <span className="max-w-2/5 shrink-0 truncate text-xs text-muted-foreground">{command.hint}</span>}
+          </span>
+        )}
+      />
+    </InternationalizationProvider>
   );
 }
 
@@ -144,11 +149,11 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
                 </kbd>
               ))}
             </dt>
-            <dd className="text-muted-foreground">{shortcut.description}</dd>
+            <dd className="break-words-keep text-muted-foreground">{shortcut.description}</dd>
           </div>
         ))}
       </dl>
-      <p className="border-t pt-2 text-xs text-muted-foreground">{m.app.shortcuts.typingHint}</p>
+      <p className="break-words-keep border-t pt-2 text-xs text-muted-foreground">{m.app.shortcuts.typingHint}</p>
     </Dialog>
   );
 }

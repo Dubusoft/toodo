@@ -61,11 +61,11 @@ function ErrorFallback({ boundary, error, retry }: {
         boundary.className,
       )}
     >
-      <p className="flex items-center gap-2 font-medium">
+      <p className="break-words-keep flex items-center gap-2 font-medium">
         <TriangleAlert aria-hidden className="size-4 shrink-0 text-destructive" />
         {copy.title(boundary.label)}
       </p>
-      <p className="text-muted-foreground">{copy.description}</p>
+      <p className="break-words-keep text-muted-foreground">{copy.description}</p>
       {detail && <p className="font-mono text-xs break-all text-muted-foreground">{detail}</p>}
       <div className="flex flex-wrap gap-2">
         <Button size="sm" variant="secondary" label={copy.tryAgain} icon={<RotateCcw />} onClick={retry} />

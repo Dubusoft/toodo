@@ -48,6 +48,7 @@ export function WorkspaceList({ selectedId, onSelect, onShowLane }: WorkspaceLis
         <Button
           size="sm"
           variant="secondary"
+          className="max-md:min-h-11"
           label={m.app.add}
           icon={<Plus />}
           aria-label={copy.add}
@@ -65,7 +66,7 @@ export function WorkspaceList({ selectedId, onSelect, onShowLane }: WorkspaceLis
       )}
       {(workspaces.isError || (workspaces.isPending && serverDown)) && (
         <div role="alert" className="flex flex-col items-start gap-2 text-sm text-destructive">
-          <p>
+          <p className="break-words-keep">
             {copy.loadFailed(workspaces.error ? errorMessage(workspaces.error, m) : unreachableCause(m) || copy.noReply)}
           </p>
           <Button size="sm" variant="secondary" label={m.app.retryNow} onClick={() => void workspaces.refetch()} />
@@ -125,9 +126,11 @@ function WorkspaceItem({ workspace, selected, onSelect, children }: WorkspaceIte
           type="button"
           aria-current={selected ? "true" : undefined}
           onClick={() => onSelect(workspace.id)}
-          className="flex min-w-0 flex-1 flex-col px-2.5 py-1.5 text-left"
+          className="flex min-w-0 flex-1 flex-col px-2.5 py-1.5 text-left max-md:min-h-11 max-md:justify-center"
         >
-          <span className="truncate text-sm font-medium">{workspace.name}</span>
+          <span className="truncate text-sm font-medium" title={workspace.name}>
+            {workspace.name}
+          </span>
           {workspace.repository && (
             <span className="truncate text-xs text-muted-foreground" title={workspace.repository}>
               {workspace.repository}
@@ -141,7 +144,7 @@ function WorkspaceItem({ workspace, selected, onSelect, children }: WorkspaceIte
             label={copy.removeName(workspace.name)}
             tooltip={copy.archiveTooltip}
             icon={<X />}
-            className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+            className="mr-1 shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 max-md:min-h-11 max-md:min-w-11 [@media(hover:none)]:opacity-100"
             onClick={() => {
               deleteWorkspace.reset();
               setConfirming(true);
@@ -161,7 +164,7 @@ function WorkspaceItem({ workspace, selected, onSelect, children }: WorkspaceIte
             }
           }}
         >
-          <p className="text-xs text-muted-foreground">
+          <p className="break-words-keep text-xs text-muted-foreground">
             {copy.removeQuestion(workspace.name)}
           </p>
           {deleteWorkspace.isError && (
@@ -174,12 +177,20 @@ function WorkspaceItem({ workspace, selected, onSelect, children }: WorkspaceIte
               changesData
               size="sm"
               variant="destructive"
+              className="max-md:min-h-11"
               label={deleteWorkspace.isPending ? copy.removing : copy.remove}
               aria-label={copy.confirmRemove(workspace.name)}
               isDisabled={deleteWorkspace.isPending}
               onClick={() => deleteWorkspace.mutate(workspace.id)}
             />
-            <Button size="sm" variant="ghost" label={m.app.back} autoFocus onClick={() => setConfirming(false)} />
+            <Button
+              size="sm"
+              variant="ghost"
+              className="max-md:min-h-11"
+              label={m.app.back}
+              autoFocus
+              onClick={() => setConfirming(false)}
+            />
           </div>
         </div>
       )}

@@ -40,6 +40,11 @@ export const app: Partial<Messages["app"]> = {
     dark: "다크 테마 사용",
     system: "시스템 테마 사용",
     openWorkspace: (name) => `${name} 워크스페이스 열기`,
+    astryx: {
+      "@astryx.commandPalette.footer.navigate": "이동",
+      "@astryx.commandPalette.footer.select": "선택",
+      "@astryx.commandPalette.footer.close": "닫기",
+    },
   },
   shortcuts: {
     title: "키보드 단축키",

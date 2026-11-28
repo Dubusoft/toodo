@@ -22,7 +22,15 @@ export function ThemeToggle() {
       onChange={(value) => typeof value === "string" && setThemePreference(value as ThemePreference)}
     >
       {options.map(({ value, Icon }) => (
-        <ToggleButton key={value} value={value} label={m.settings.themes[value]} icon={<Icon />} isIconOnly />
+        <ToggleButton
+          key={value}
+          value={value}
+          label={m.settings.themes[value]}
+          icon={<Icon />}
+          isIconOnly
+          // A phone gets buttons big enough to tap.
+          className="max-md:min-h-11 max-md:min-w-11"
+        />
       ))}
     </ToggleButtonGroup>
   );

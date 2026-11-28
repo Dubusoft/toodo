@@ -105,7 +105,17 @@ function MachineFacts({ machine }: { machine: SupervisorMachine | null }) {
         sample.memFreePct === undefined ? undefined : t.memoryFree(sample.memFreePct),
         sample.diskFreeGb === undefined ? undefined : t.diskFree(sample.diskFreeGb.toFixed(0)),
       ].filter((fact) => fact !== undefined);
-  return <p className="px-2.5 text-xs text-muted-foreground">{facts.join(" · ")}</p>;
+  // Each fact stays on one line, so a narrow sidebar wraps between facts, never inside one.
+  return (
+    <p className="px-2.5 text-xs text-muted-foreground">
+      {facts.map((fact, index) => (
+        <Fragment key={index}>
+          {index > 0 && " · "}
+          <span className="whitespace-nowrap">{fact}</span>
+        </Fragment>
+      ))}
+    </p>
+  );
 }
 
 function LaneItem({ lane, onShowLane }: { lane: SupervisorLane; onShowLane: (lane: SupervisorLane) => void }) {
@@ -118,7 +128,7 @@ function LaneItem({ lane, onShowLane }: { lane: SupervisorLane; onShowLane: (lan
         type="button"
         aria-label={t.showLane(lane.key)}
         title={title}
-        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent"
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent max-md:min-h-11"
         onClick={() => onShowLane(lane)}
       >
         <span className="min-w-0 flex-1 truncate">{lane.task === null ? lane.key : `#${lane.task}`}</span>
@@ -213,7 +223,7 @@ export function MachineTree({
   return (
     <>
       {snapshot !== null && now - snapshot.at > STALE_AFTER_MS && (
-        <p role="status" className="px-2.5 text-xs text-destructive">
+        <p role="status" className="break-words-keep px-2.5 text-xs text-destructive">
           {t.stale}
         </p>
       )}
@@ -225,7 +235,9 @@ export function MachineTree({
             <li key={node.label} aria-label={t.machine(name)} data-machine={node.label} className="flex flex-col gap-1">
               <div className="flex min-w-0 items-center gap-1.5 px-2.5">
                 <MachineIcon label={node.label} />
-                <span className="min-w-0 truncate text-sm font-medium">{name}</span>
+                <span className="min-w-0 truncate text-sm font-medium" title={name}>
+                  {name}
+                </span>
                 {node.machine && (
                   <span className={cn("ml-auto shrink-0 text-xs", toneText[tone])}>{t.states[node.machine.state]}</span>
                 )}
@@ -245,7 +257,7 @@ export function MachineTree({
                   ))}
                   {node.loose.length > 0 && (
                     <li className="flex flex-col">
-                      <span className="block w-full truncate px-2 py-1 text-sm text-muted-foreground">{t.noWorkspace}</span>
+                      <span className="block w-full truncate px-2.5 py-1 text-sm text-muted-foreground">{t.noWorkspace}</span>
                       <LaneList name={t.noWorkspace} lanes={node.loose} onShowLane={onShowLane} />
                     </li>
                   )}
