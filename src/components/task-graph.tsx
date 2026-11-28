@@ -489,58 +489,50 @@ export function TaskGraph({
   );
 }
 
-/** What the marks on the timeline mean, and how to work it. */
+/** What the marks on the timeline mean. */
 function TimelineLegend() {
   const m = useMessages();
   return (
-    <>
-      <ul aria-label={m.details.graph.phases} className="flex flex-wrap gap-x-2 gap-y-1 pb-1 [&>li]:whitespace-nowrap">
-        <li className="flex items-center gap-1">
-          <span className="size-2 rotate-45 border border-muted-foreground" />
-          {m.details.graph.plannedOn}
+    <ul aria-label={m.details.graph.phases} className="flex flex-wrap gap-x-2 gap-y-1 pb-1 [&>li]:whitespace-nowrap">
+      <li className="flex items-center gap-1">
+        <span className="size-2 rotate-45 border border-muted-foreground" />
+        {m.details.graph.plannedOn}
+      </li>
+      <li className="flex items-center gap-1">
+        <span className={cn("h-2 border-l-2", toneMark.attention)} />
+        {m.details.graph.becameReady}
+      </li>
+      <li className="flex items-center gap-1">
+        <span className="w-3 border-t border-dashed border-muted-foreground" />
+        {m.details.graph.waitingOrPaused}
+      </li>
+      <li className="flex items-center gap-1">
+        <span className={cn("h-2 w-3 rounded-sm border", barStyles.blocked)} />
+        {m.details.status.planned}
+      </li>
+      <li className="flex items-center gap-1">
+        <span className={cn("h-2 w-3 rounded-sm border", barStyles.ready)} />
+        {m.details.status.ready}
+      </li>
+      {(Object.keys(phaseStyles) as TimelinePhase[]).map((phase) => (
+        <li key={phase} className="flex items-center gap-1">
+          <span className={cn("h-1.5 w-3 rounded-full", phaseStyles[phase])} />
+          {m.details.status[phase]}
         </li>
-        <li className="flex items-center gap-1">
-          <span className={cn("h-2 border-l-2", toneMark.attention)} />
-          {m.details.graph.becameReady}
-        </li>
-        <li className="flex items-center gap-1">
-          <span className="w-3 border-t border-dashed border-muted-foreground" />
-          {m.details.graph.waitingOrPaused}
-        </li>
-        <li className="flex items-center gap-1">
-          <span className={cn("h-2 w-3 rounded-sm border", barStyles.blocked)} />
-          {m.details.status.planned}
-        </li>
-        <li className="flex items-center gap-1">
-          <span className={cn("h-2 w-3 rounded-sm border", barStyles.ready)} />
-          {m.details.status.ready}
-        </li>
-        {(Object.keys(phaseStyles) as TimelinePhase[]).map((phase) => (
-          <li key={phase} className="flex items-center gap-1">
-            <span className={cn("h-1.5 w-3 rounded-full", phaseStyles[phase])} />
-            {m.details.status[phase]}
-          </li>
-        ))}
-        <li className="flex items-center gap-1">
-          <span className={cn("h-2 w-3 rounded-sm border", barStyles.done)} />
-          {m.details.status.done}
-        </li>
-        <li className="flex items-center gap-1">
-          <span className="h-3 border-l-2 border-muted-foreground" />
-          {m.details.graph.dueDate}
-        </li>
-        <li className="flex items-center gap-1">
-          <span className={cn("h-2 w-3 rounded-sm", barStyles.behindDue)} />
-          {m.details.graph.pastDue}
-        </li>
-      </ul>
-      <p className="pb-1">
-        {m.details.graph.legendHint}
-        <span className="[@media(pointer:coarse)]:hidden">
-          {" "}{m.details.graph.legendKeys}
-        </span>
-      </p>
-    </>
+      ))}
+      <li className="flex items-center gap-1">
+        <span className={cn("h-2 w-3 rounded-sm border", barStyles.done)} />
+        {m.details.status.done}
+      </li>
+      <li className="flex items-center gap-1">
+        <span className="h-3 border-l-2 border-muted-foreground" />
+        {m.details.graph.dueDate}
+      </li>
+      <li className="flex items-center gap-1">
+        <span className={cn("h-2 w-3 rounded-sm", barStyles.behindDue)} />
+        {m.details.graph.pastDue}
+      </li>
+    </ul>
   );
 }
 

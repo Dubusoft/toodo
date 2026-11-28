@@ -48,8 +48,6 @@ export const details: Partial<Messages["details"]> = {
     dueDate: "마감일",
     pastDue: "마감일 초과",
     unplaced: "타임라인에 표시되지 않음",
-    legendHint: "시작하지 않은 태스크는 현재 시점, 선행 태스크가 끝나는 시점 또는 대기가 끝나는 시점에 표시됩니다. 일시 중지된 태스크도 대기 종료 시점에 상자로 표시됩니다.",
-    legendKeys: "태스크 오른쪽 핸들을 다른 태스크로 끌면 선행 태스크로 연결됩니다. 태스크를 선택한 상태에서 화살표 키로 행을 이동할 수 있습니다.",
     removeFailed: (source: string, target: string, error: string) => `#${source} → #${target} 의존성을 제거할 수 없습니다: ${error}`,
     edgeLabel: (source: number, target: number) => `#${source}에서 #${target}(으)로 이어지는 연결선`,
     nodeRole: "노드",
