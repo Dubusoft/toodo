@@ -104,7 +104,7 @@ export function BackupPanel() {
     downloadExport.error ?? downloadBackup.error ?? restoreBackup.error ?? uploadRestore.error ?? backups.error;
 
   return (
-    <section aria-label={m.settings.sections.backups} className="flex flex-col gap-2 text-sm">
+    <section aria-label={m.settings.sections.backups} className="break-words-keep flex flex-col gap-2 text-sm">
       <div className="flex gap-1">
         <Button
           size="sm"

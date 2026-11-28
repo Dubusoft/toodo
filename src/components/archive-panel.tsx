@@ -32,7 +32,7 @@ export function ArchivePanel() {
   const tasks = archive.data?.tasks ?? [];
 
   return (
-    <section aria-label={m.settings.sections.trash} className="flex flex-col gap-3 text-sm">
+    <section aria-label={m.settings.sections.trash} className="break-words-keep flex flex-col gap-3 text-sm">
       <p className="text-muted-foreground">
         {t.intro}
       </p>
@@ -88,7 +88,7 @@ export function ArchivePanel() {
           <ArchiveItem
             key={task.id}
             name={`#${task.id} ${task.title}`}
-            detail={task.status.replace("_", " ")}
+            detail={m.alerts.statuses[task.status]}
             busy={busy}
             onRestore={() => {
               reset();
@@ -134,7 +134,7 @@ function ArchiveItem({
   const t = m.settings.archivePanel;
   return (
     <li className="flex flex-wrap items-center gap-x-2 gap-y-1 py-1.5 first:pt-0">
-      <span className="flex min-w-0 flex-1 flex-col">
+      <span className="flex min-w-0 flex-1 basis-48 flex-col">
         <span className="truncate font-medium">{name}</span>
         <span className="truncate text-muted-foreground">{detail}</span>
       </span>

@@ -168,7 +168,7 @@ export function NotificationsPanel() {
   const { support, state } = usePushState();
 
   return (
-    <section aria-label={m.settings.sections.notifications} className="flex flex-col gap-2 text-sm">
+    <section aria-label={m.settings.sections.notifications} className="break-words-keep flex flex-col gap-2 text-sm">
       <p className="text-muted-foreground">
         {support === "supported" ? t.supported : t.unavailable[support]}
       </p>

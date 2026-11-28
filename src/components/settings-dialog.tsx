@@ -84,7 +84,7 @@ function GeneralSettings({ update, onShowAbout }: { update: UpdateCheck | undefi
   const m = useMessages();
   const voiceAutoSend = useVoiceAutoSend();
   return (
-    <section aria-label={m.settings.sections.general} className="flex flex-col gap-5 text-sm">
+    <section aria-label={m.settings.sections.general} className="break-words-keep flex flex-col gap-5 text-sm">
       <AppLanguageSettingField />
       <DoriLanguageSettingField />
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -114,7 +114,7 @@ function AboutSettings({ update }: { update: UpdateCheck | undefined }) {
   const m = useMessages();
   const appInfo = useQuery({ queryKey: ["app-info"], queryFn: () => commands.appInfo() });
   return (
-    <section aria-label={m.settings.sections.about} className="flex flex-col gap-3 text-sm">
+    <section aria-label={m.settings.sections.about} className="break-words-keep flex flex-col gap-3 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium">{m.settings.version}</span>
         <span className="ml-auto text-muted-foreground">
@@ -302,7 +302,7 @@ export function SettingsDialog({
                     >
                       {item.icon}
                       <span>{sectionLabel(item.id, m)}</span>
-                      {item.status && <span className="ml-auto text-xs text-muted-foreground">{item.status}</span>}
+                      {item.status && <span className="ml-auto shrink-0 whitespace-nowrap text-xs text-muted-foreground">{item.status}</span>}
                       <ChevronRight aria-hidden className={cn("md:hidden", !item.status && "ml-auto")} />
                     </button>
                   );
