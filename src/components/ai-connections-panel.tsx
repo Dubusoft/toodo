@@ -7,7 +7,7 @@ import { useMessages } from "@/lib/i18n";
 export function AiConnectionsPanel() {
   const m = useMessages();
   return (
-    <section aria-label={m.settings.sections.connections} className="flex flex-col gap-4 text-sm">
+    <section aria-label={m.settings.sections.connections} className="flex flex-col gap-4 text-sm break-words-keep">
       <p className="text-muted-foreground">{m.settings.connections.intro}</p>
       <Card>
         <ChatAppsCard />

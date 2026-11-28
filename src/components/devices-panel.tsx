@@ -24,7 +24,7 @@ function ThisBrowser({ devices }: { devices: Device[] }) {
   const current = devices.find((device) => device.current);
 
   return (
-    <div role="group" aria-label={t.thisBrowser} className="flex flex-col gap-1 rounded-md bg-muted px-2 py-1.5">
+    <div role="group" aria-label={t.thisBrowser} className="flex flex-col gap-1 rounded-md bg-muted px-2 py-1.5 dark:bg-card">
       <p>
         <span className="text-muted-foreground">{t.thisBrowserPrefix}</span>
         <span className="font-medium break-words">{current ? current.label : t.shared}</span>
@@ -69,12 +69,12 @@ function DeviceRow({ device }: { device: Device }) {
 
   return (
     <li aria-label={t.device(device.label)} data-revoked={revoked} className="flex flex-col gap-0.5">
-      <span className="flex items-center gap-1.5">
-        <span className={revoked ? "truncate text-muted-foreground line-through" : "truncate font-medium"}>
+      <span className="flex items-baseline gap-1.5">
+        <span className={revoked ? "min-w-0 break-words text-muted-foreground line-through" : "min-w-0 break-words font-medium"}>
           {device.label}
         </span>
-        {device.current && <span className="text-muted-foreground">{t.current}</span>}
-        {device.scope === "read" && <span className="text-muted-foreground">{t.readOnly}</span>}
+        {device.current && <span className="shrink-0 text-muted-foreground">{t.current}</span>}
+        {device.scope === "read" && <span className="shrink-0 text-muted-foreground">{t.readOnly}</span>}
       </span>
       <span className="text-muted-foreground">
         {device.revokedAt !== null ? (
@@ -158,7 +158,7 @@ export function DevicesPanel() {
   const devices = useQuery({ queryKey: devicesKey, queryFn: listDevices });
 
   return (
-    <section aria-label={m.settings.sections.devices} className="flex flex-col gap-2 text-sm">
+    <section aria-label={m.settings.sections.devices} className="flex flex-col gap-2 text-sm break-words-keep">
       <p className="text-muted-foreground">
         {t.intro}
       </p>
