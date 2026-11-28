@@ -4,25 +4,65 @@
 import type { DeviceId } from "./device.ts";
 import { byteLength, isControl, isWhitespace } from "./rust.ts";
 
-/** The kinds of notification a device can turn on and off: a task is awaiting
- * `completion`, or the agent connected over MCP posted a chat message (`agent_message`). */
-export type PushKind = "completion" | "agent_message";
+/**
+ * The kinds of notification the settings turn on and off.
+ *
+ * Chat, from the agent connected over MCP:
+ * - `important_message`: a message that waits on the people: it offers choices, or its
+ *   thread waits on their answer. Sent when either `important` or `messages` is on.
+ * - `agent_message`: any other message. Sent when `messages` is on.
+ * - `awaiting_answer`: a thread started waiting on the people's answer, e.g. the agent
+ *   asked for something without offering choices. Sent when `important` is on.
+ *
+ * Tasks, as their status changes: `task_started` (in progress), `completion` (awaiting
+ * completion), and `task_finished` (done: completed or concluded).
+ */
+export type PushKind =
+  | "completion"
+  | "agent_message"
+  | "important_message"
+  | "awaiting_answer"
+  | "task_started"
+  | "task_finished";
 
 /** Which kinds of notification a device receives. */
 export type PushSettings = {
-  readonly completion: boolean;
+  /** Chat: messages that wait on the people (see `important_message`). */
+  readonly important: boolean;
+  /** Chat: every message of the agent. */
   readonly messages: boolean;
+  /** Tasks: a task started. */
+  readonly started: boolean;
+  /** Tasks: a task is awaiting completion. */
+  readonly completion: boolean;
+  /** Tasks: a task was completed or concluded. */
+  readonly finished: boolean;
 };
 
-/** New subscriptions receive every kind. */
-export const DEFAULT_PUSH_SETTINGS: PushSettings = { completion: true, messages: true };
+/** What a new subscription receives: what devices got before the settings were split,
+ * every chat message and tasks awaiting completion, and no other task changes. */
+export const DEFAULT_PUSH_SETTINGS: PushSettings = {
+  important: true,
+  messages: true,
+  started: false,
+  completion: true,
+  finished: false,
+};
 
 export function allows(settings: PushSettings, kind: PushKind): boolean {
   switch (kind) {
-    case "completion":
-      return settings.completion;
+    case "important_message":
+      return settings.important || settings.messages;
     case "agent_message":
       return settings.messages;
+    case "awaiting_answer":
+      return settings.important;
+    case "task_started":
+      return settings.started;
+    case "completion":
+      return settings.completion;
+    case "task_finished":
+      return settings.finished;
   }
 }
 

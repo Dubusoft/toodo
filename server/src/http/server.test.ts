@@ -448,12 +448,22 @@ test("devices subscribe to push notifications and get a test one", async () => {
   expect(saved.status).toBe(200);
   expect(saved.body).toEqual({
     endpoint: "https://push.example/send/1",
-    settings: { completion: true, messages: true },
+    settings: { completion: true, messages: true, important: true, started: false, finished: false },
     lastFailure: null,
   });
-  // A web app from before agent messages leaves them out; they stay on for it.
+  const chosen = await server.send("PUT", "/api/push/settings", token, {
+    completion: true,
+    messages: false,
+    important: true,
+    started: true,
+    finished: true,
+  });
+  expect(chosen.body.settings).toEqual({ completion: true, messages: false, important: true, started: true, finished: true });
+  // A web app from before agent messages leaves them out; they stay on for it. One from
+  // before the chat and task settings were split keeps the newer settings as saved.
   const legacy = await server.send("PUT", "/api/push/settings", token, { completion: false });
-  expect(legacy.body.settings).toEqual({ completion: false, messages: true });
+  expect(legacy.body.settings).toEqual({ completion: false, messages: true, important: true, started: true, finished: true });
+  expect((await server.send("PUT", "/api/push/settings", token, { completion: false, started: "yes" })).status).toBe(400);
   expect((await server.send("PUT", "/api/push/settings", token, { completion: false, other: 1 })).status).toBe(400);
 
   expect((await server.send("POST", "/api/push/test", token, {})).status).toBe(200);

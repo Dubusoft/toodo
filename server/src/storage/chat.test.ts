@@ -360,12 +360,16 @@ describe("chat channels and threads", () => {
       channel: "general",
       threadId: thread.id,
       thread: "Deploy",
+      awaiting: false,
     });
+    updateChatThread(db, thread.id, { awaiting: true }, 101);
+    expect(chatNotice(db, FIRST_CHANNEL, thread.id)?.awaiting).toBe(true);
     expect(chatNotice(db, FIRST_CHANNEL, null)).toEqual({
       channelId: FIRST_CHANNEL,
       channel: "general",
       threadId: null,
       thread: null,
+      awaiting: false,
     });
     updateChatChannel(db, FIRST_CHANNEL, { push: false });
     expect(chatNotice(db, FIRST_CHANNEL, thread.id)).toBeNull();

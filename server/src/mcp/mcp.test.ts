@@ -38,6 +38,7 @@ function endpoint(storage: Storage, publicUrl: string | null = null) {
     guidelinesChanged: (id) => guidelines.push(id),
     chatChanged: () => chat.push("changed"),
     agentPosted: (message: B.ChatMessage, notice) => chat.push(`posted ${message.body} in ${notice?.channel ?? "quiet"}`),
+    agentAwaiting: (notice, latest) => chat.push(`awaiting in ${notice.thread} after ${latest?.body ?? "nothing"}`),
     agentTyping: (at, typing) => chat.push(`typing ${typing} in ${JSON.stringify(at)}`),
     actionChosen: (chosen) => chat.push(`chose ${chosen.key}`),
     onChange: (listener) => {
@@ -288,10 +289,12 @@ test("Thread tools set, list, and clear the waiting mark and announce both chang
   const marked = await value(served, "update_thread", { id: created.id, awaiting: true });
   expect(marked.awaitingAt).toBe(storage.now());
   expect(await value(served, "list_threads")).toEqual([marked]);
+  // Marking a thread that already waits announces no new wait.
+  expect((await value(served, "update_thread", { id: created.id, awaiting: true })).awaitingAt).toBe(marked.awaitingAt);
 
   const cleared = await value(served, "update_thread", { id: created.id, title: "Deploy approved", awaiting: false });
   expect(cleared).toMatchObject({ title: "Deploy approved", awaitingAt: null });
-  expect(chat).toEqual(["changed", "changed", "changed"]);
+  expect(chat).toEqual(["changed", "awaiting in Deploy after nothing", "changed", "changed", "changed"]);
 });
 
 test("A task id sent as a string reaches the tool", async () => {

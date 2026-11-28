@@ -7,7 +7,7 @@ import type { Backups } from "../commands/backup.ts";
 import type { ChatState } from "../commands/chat.ts";
 import { EVENT_NAMES, type Notifier } from "../commands/events.ts";
 import type { WorkspaceId } from "../domain/model.ts";
-import { agentMessageAlert } from "../push/alerts.ts";
+import { type LatestMessage, agentMessageAlert, awaitingAlert } from "../push/alerts.ts";
 import type { Push, PushWorker } from "../push/push.ts";
 import type { ChatNotice } from "../storage/chat-channels.ts";
 import type { Storage } from "../storage/storage.ts";
@@ -147,8 +147,13 @@ export class Services implements Notifier {
     this.agentTyping(message.threadId !== null ? { thread: message.threadId } : { channel: message.channelId }, false);
     this.chatChanged();
     if (notice !== null) {
-      this.pushWorker?.alert(agentMessageAlert(this.chat.agent.name, notice, message.id, message.body));
+      const important = message.actions.length > 0 || notice.awaiting;
+      this.pushWorker?.alert(agentMessageAlert(this.chat.agent.name, notice, message.id, message.body, important));
     }
+  }
+
+  agentAwaiting(notice: ChatNotice, latest: LatestMessage | null): void {
+    this.pushWorker?.alert(awaitingAlert(this.chat.agent.name, notice, latest));
   }
 
   agentTyping(at: B.ChatPlace, typing: boolean): void {

@@ -3,7 +3,8 @@
 // - `GET /api/push`: the server's public key and the asking device's subscription.
 // - `PUT /api/push/subscription` with a browser's `PushSubscription` subscribes the device;
 //   `DELETE` unsubscribes it.
-// - `PUT /api/push/settings` with `{ completion, messages? }` chooses what it is told about.
+// - `PUT /api/push/settings` with `{ completion, messages?, important?, started?, finished? }`
+//   chooses what it is told about.
 // - `POST /api/push/test` sends it a test notification.
 //
 // Notifications are per device: a browser signed in with the shared token or Cloudflare
@@ -11,7 +12,7 @@
 
 import { CommandError, commandError, invalidInput, notFound, rejected } from "../commands/errors.ts";
 import type { DeviceId } from "../domain/device.ts";
-import type { PushSubscription } from "../domain/push.ts";
+import { DEFAULT_PUSH_SETTINGS, type PushSettings, type PushSubscription } from "../domain/push.ts";
 import { parseSubscription, PushInputError, PushTestError, sendTest, type SubscriptionInput } from "../push/push.ts";
 import { deletePushSubscription, pushSubscription, savePushSubscription, setPushSettings } from "../storage/push.ts";
 import { type Caller, failed, json } from "./auth.ts";
@@ -21,7 +22,13 @@ import type { Services } from "./services.ts";
 function subscriptionView(subscription: PushSubscription) {
   return {
     endpoint: subscription.endpoint.url,
-    settings: { completion: subscription.settings.completion, messages: subscription.settings.messages },
+    settings: {
+      completion: subscription.settings.completion,
+      messages: subscription.settings.messages,
+      important: subscription.settings.important,
+      started: subscription.settings.started,
+      finished: subscription.settings.finished,
+    },
     lastFailure:
       subscription.lastFailure === null
         ? null
@@ -104,9 +111,16 @@ export function unsubscribe(services: Services, caller: Caller): Response {
   });
 }
 
-/** `{ completion, messages? }` as serde reads it, with unknown fields refused; a web app
- * from before agent messages leaves `messages` out, and they stay on for it. */
-function settingsInput(body: string): { completion: boolean; messages: boolean } | string {
+const SETTINGS_FIELDS = ["completion", "messages", "important", "started", "finished"] as const;
+
+/** The settings a request sets: `completion` and `messages` always, the rest when given. */
+type SettingsInput = Pick<PushSettings, "completion" | "messages"> & Partial<PushSettings>;
+
+/** `{ completion, messages?, important?, started?, finished? }` as serde reads it, with
+ * unknown fields refused. A web app from before agent messages leaves `messages` out, and
+ * they stay on for it; one from before the chat and task settings were split leaves the
+ * newer fields out, and they keep their saved values. */
+function settingsInput(body: string): SettingsInput | string {
   let value: unknown;
   try {
     value = JSON.parse(body);
@@ -116,12 +130,20 @@ function settingsInput(body: string): { completion: boolean; messages: boolean }
   if (value === null || typeof value !== "object" || Array.isArray(value)) return "invalid type, expected struct SettingsView";
   const fields = value as Record<string, unknown>;
   for (const key of Object.keys(fields)) {
-    if (key !== "completion" && key !== "messages") return `unknown field \`${key}\`, expected \`completion\` or \`messages\``;
+    if (!(SETTINGS_FIELDS as readonly string[]).includes(key)) {
+      return `unknown field \`${key}\`, expected one of ${SETTINGS_FIELDS.map((field) => `\`${field}\``).join(", ")}`;
+    }
   }
-  const { completion, messages = true } = fields;
+  const { completion, messages = true, important, started, finished } = fields;
   if (completion === undefined) return "missing field `completion`";
-  if (typeof completion !== "boolean" || typeof messages !== "boolean") return "invalid type, expected a boolean";
-  return { completion, messages };
+  const given = { completion, messages, important, started, finished };
+  const input: Record<string, boolean> = {};
+  for (const [key, value] of Object.entries(given)) {
+    if (value === undefined) continue;
+    if (typeof value !== "boolean") return "invalid type, expected a boolean";
+    input[key] = value;
+  }
+  return input as SettingsInput;
 }
 
 export function saveSettings(services: Services, caller: Caller, body: string): Response {
@@ -129,7 +151,10 @@ export function saveSettings(services: Services, caller: Caller, body: string): 
   if (id instanceof Response) return id;
   const settings = settingsInput(body);
   if (typeof settings === "string") return badArguments(settings);
-  return answer(() => subscriptionView(setPushSettings(services.storage.db, id, settings)));
+  return answer(() => {
+    const saved = pushSubscription(services.storage.db, id)?.settings ?? DEFAULT_PUSH_SETTINGS;
+    return subscriptionView(setPushSettings(services.storage.db, id, { ...saved, ...settings }));
+  });
 }
 
 export async function test(services: Services, caller: Caller): Promise<Response> {

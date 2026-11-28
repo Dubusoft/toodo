@@ -209,6 +209,9 @@ export const TOOLS: Readonly<Record<string, Tool>> = {
   list_threads: tool(R.listThreads, ({ reader }, args) => chat.listThreads(reader, args)),
   create_thread: tool(R.createThread, (context, args) =>
     chatChanged(context, chat.createThread(context.storage, args))),
-  update_thread: tool(R.updateThread, (context, args) =>
-    chatChanged(context, chat.updateThread(context.storage, args))),
+  update_thread: tool(R.updateThread, (context, args) => {
+    const { thread, awaiting } = chat.updateThread(context.storage, args);
+    if (awaiting !== null) context.notifier.agentAwaiting(awaiting.notice, awaiting.latest);
+    return chatChanged(context, thread);
+  }),
 };

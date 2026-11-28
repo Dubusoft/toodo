@@ -55,10 +55,15 @@ describe("push", () => {
   });
 
   test("settings filter their kind", () => {
-    expect(allows(DEFAULT_PUSH_SETTINGS, "completion")).toBe(true);
-    expect(allows(DEFAULT_PUSH_SETTINGS, "agent_message")).toBe(true);
-    const settings = { completion: false, messages: true };
-    expect(allows(settings, "completion")).toBe(false);
-    expect(allows(settings, "agent_message")).toBe(true);
+    const kinds = ["important_message", "agent_message", "awaiting_answer", "task_started", "completion", "task_finished"] as const;
+    const allowed = (settings: typeof DEFAULT_PUSH_SETTINGS) => kinds.filter((kind) => allows(settings, kind));
+    expect(allowed(DEFAULT_PUSH_SETTINGS)).toEqual(["important_message", "agent_message", "awaiting_answer", "completion"]);
+    const none = { important: false, messages: false, started: false, completion: false, finished: false };
+    expect(allowed(none)).toEqual([]);
+    expect(allowed({ ...none, important: true })).toEqual(["important_message", "awaiting_answer"]);
+    expect(allowed({ ...none, messages: true })).toEqual(["important_message", "agent_message"]);
+    expect(allowed({ ...none, started: true })).toEqual(["task_started"]);
+    expect(allowed({ ...none, completion: true })).toEqual(["completion"]);
+    expect(allowed({ ...none, finished: true })).toEqual(["task_finished"]);
   });
 });
