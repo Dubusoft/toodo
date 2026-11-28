@@ -7,6 +7,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button } from "@/components/button";
 import {
   DORI_LANGUAGE_KEY,
+  DORI_TIME_ZONE_KEY,
   type DoriConfigEdit,
   type DoriConfigEntry,
   type DoriConfigSaved,
@@ -73,11 +74,13 @@ export function ChoiceSetting({
   label,
   description,
   options,
+  searchable = false,
 }: {
   entry: DoriConfigEntry;
   label: string;
   description: string;
   options: readonly ChoiceOption[];
+  searchable?: boolean;
 }) {
   const m = useMessages();
   // The save itself is kept, not its text: saving the language changes the language of the text.
@@ -90,6 +93,7 @@ export function ChoiceSetting({
         label={label}
         description={description}
         options={listed ? [...options] : [...options, { value: entry.value, label: entry.value }]}
+        hasSearch={searchable}
         value={entry.value}
         isDisabled={save.isPending || entry.access !== "edit"}
         onChange={(value) => {
@@ -110,6 +114,26 @@ function LanguageSetting({ entry }: { entry: DoriConfigEntry }) {
     ...LANGUAGES.map((l) => ({ value: l, label: m.settings.languageNames[l] })),
   ];
   return <ChoiceSetting entry={entry} label={m.settings.language} description={m.settings.languageDescription} options={options} />;
+}
+
+/**
+ * The Time zone setting of the General section: the time zone the app shows dates in and Dori
+ * writes times to its owner in. A server without Dori has no such setting, so nothing shows.
+ */
+export function TimeZoneSettingField() {
+  const m = useMessages();
+  const entry = useDoriConfig().data?.entries.find((e) => e.key === DORI_TIME_ZONE_KEY);
+  if (!entry) return null;
+  const zones = Intl.supportedValuesOf("timeZone").map((zone) => ({ value: zone, label: zone.replaceAll("_", " ") }));
+  return (
+    <ChoiceSetting
+      entry={entry}
+      label={m.settings.timeZone}
+      description={m.settings.timeZoneDescription}
+      options={[{ value: UNSET, label: m.settings.timeZoneUnset }, ...zones]}
+      searchable
+    />
+  );
 }
 
 function hint(entry: DoriConfigEntry, m: Messages): string {
@@ -183,10 +207,10 @@ function EntryRow({ entry }: { entry: DoriConfigEntry }) {
 }
 
 /**
- * The keys other settings show in plain words: the language in General, how Dori works in the
- * Dori section. The raw config leaves them out.
+ * The keys other settings show in plain words: the language and time zone in General, how Dori
+ * works in the Dori section. The raw config leaves them out.
  */
-export const DORI_KEYS_SHOWN_ELSEWHERE: readonly string[] = [DORI_LANGUAGE_KEY, "platforms", "autoReport", "threadCloseAfterHours"];
+export const DORI_KEYS_SHOWN_ELSEWHERE: readonly string[] = [DORI_LANGUAGE_KEY, DORI_TIME_ZONE_KEY, "platforms", "autoReport", "threadCloseAfterHours"];
 
 function EntryList({ label, entries }: { label: string; entries: readonly DoriConfigEntry[] }) {
   return (

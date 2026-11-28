@@ -6,7 +6,7 @@ import { AiConnectionsPanel } from "@/components/ai-connections-panel";
 import { ArchivePanel } from "@/components/archive-panel";
 import { BackupPanel, BackupStatusLabel } from "@/components/backup-panel";
 import { DevicesPanel, DevicesStatus } from "@/components/devices-panel";
-import { LanguageSettingField, useDoriConnected } from "@/components/dori-config-panel";
+import { LanguageSettingField, TimeZoneSettingField, useDoriConnected } from "@/components/dori-config-panel";
 import { DoriPanel, MachinesPanel } from "@/components/dori-panel";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { NotificationsPanel, NotificationsStatus } from "@/components/notifications-panel";
@@ -85,6 +85,7 @@ function GeneralSettings({ update, onShowAbout }: { update: UpdateCheck | undefi
         <span className="font-medium">{m.settings.theme}</span>
         <ThemeToggle />
       </div>
+      <TimeZoneSettingField />
       {update?.newer && (
         <div className="flex flex-wrap items-center gap-2 rounded-lg border p-3">
           <span role="status" className="font-medium">{m.settings.newVersion(`v${update.latest}`)}</span>

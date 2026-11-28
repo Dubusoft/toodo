@@ -6,7 +6,8 @@ import { createContext, Fragment, useContext, useEffect, useMemo, useState, type
 import { useQuery } from "@tanstack/react-query";
 import { en, type Messages } from "@/locales/en";
 import { ko, nativeNames as koNames } from "@/locales/ko";
-import { DORI_LANGUAGE_KEY } from "@/lib/dori-config";
+import { DORI_LANGUAGE_KEY, DORI_TIME_ZONE_KEY } from "@/lib/dori-config";
+import { setDisplayTimeZone } from "@/lib/timeline";
 import { fetchDoriConfig } from "@/web/dori-config";
 
 export type Locale = "en" | "ko";
@@ -57,10 +58,17 @@ export function currentMessages(): Messages {
   return messagesFor(storedLocale());
 }
 
-type I18n = { locale: Locale; messages: Messages; setLocale: (locale: Locale) => void };
+type I18n = {
+  locale: Locale;
+  messages: Messages;
+  /** The Time zone setting, so that a change shows every date again in it; null is this device's. */
+  timeZone: string | null;
+  setLocale: (locale: Locale) => void;
+  setTimeZone: (zone: string | null) => void;
+};
 
-// Without a provider (as in component tests) the app is in English.
-const I18nContext = createContext<I18n>({ locale: "en", messages: en, setLocale: () => {} });
+// Without a provider (as in component tests) the app is in English, in this device's time zone.
+const I18nContext = createContext<I18n>({ locale: "en", messages: en, timeZone: null, setLocale: () => {}, setTimeZone: () => {} });
 
 /**
  * Holds the UI language. It starts with the one this browser last used, so a reload does not
@@ -68,10 +76,16 @@ const I18nContext = createContext<I18n>({ locale: "en", messages: en, setLocale:
  */
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(storedLocale);
+  const [timeZone, setTimeZoneState] = useState<string | null>(null);
   const value = useMemo<I18n>(
     () => ({
       locale,
       messages: messagesFor(locale),
+      timeZone,
+      setTimeZone: (zone) => {
+        setDisplayTimeZone(zone);
+        setTimeZoneState(zone);
+      },
       setLocale: (next) => {
         setLocaleState(next);
         try {
@@ -81,7 +95,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
         }
       },
     }),
-    [locale],
+    [locale, timeZone],
   );
   useEffect(() => {
     document.documentElement.lang = locale;
@@ -103,14 +117,19 @@ export function useMessages(): Messages {
 export const doriConfigKey = ["dori-config"];
 
 /**
- * Follows the language setting: reads it once signed in and again whenever the Settings page
- * saves or refetches it. A server without Dori has no setting, so the language stays as it is.
+ * Follows the language and time zone settings: reads them once signed in and again whenever the
+ * Settings page saves or refetches them. A server without Dori has neither, so the language stays
+ * as it is and dates stay in this device's time zone.
  */
 export function useLocaleFromSettings(): void {
-  const { setLocale } = useContext(I18nContext);
+  const { setLocale, setTimeZone } = useContext(I18nContext);
   const config = useQuery({ queryKey: doriConfigKey, queryFn: fetchDoriConfig, retry: false, staleTime: Infinity });
   const language = config.data?.entries.find((entry) => entry.key === DORI_LANGUAGE_KEY)?.value;
+  const timeZone = config.data?.entries.find((entry) => entry.key === DORI_TIME_ZONE_KEY)?.value;
   useEffect(() => {
     if (language !== undefined) setLocale(localeOf(language));
   }, [language]);
+  useEffect(() => {
+    if (timeZone !== undefined) setTimeZone(timeZone || null);
+  }, [timeZone]);
 }
