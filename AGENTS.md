@@ -91,11 +91,12 @@ Layout:
     in Settings > General (Dori's `ownerLanguage`, `src/lib/dori-config.ts`) picks it: Korean
     shows `src/locales/ko/`, any other language or none shows `src/locales/en/`, and a key the
     Korean catalog lacks shows its English text. Each catalog has one module per area
-    (`common`, `app`, `tasks`, `details`, `chat`, `settings`, `review`); `en` defines the
+    (`common`, `app`, `tasks`, `details`, `chat`, `settings`, `review`, `alerts`); `en` defines the
     keys and their types (a message with values is a function of them), `ko` is a
     `Partial` of each area. Components read them with `useMessages()` (or `useI18n()` for
     the locale of dates), and a sentence with elements in it is a catalog string with
-    `{name}` placeholders rendered by `fill`. Write UI strings there, never inline, and add
+    `{name}` placeholders rendered by `fill`; text built outside React, such as browser
+    notifications, reads `currentMessages()`. Write UI strings there, never inline, and add
     the Korean text with each new key.
   - `src/lib/astryx-theme.ts`: the Astryx theme (defaults with the brand accent);
     `src/index.css` points the app's Tailwind color names at its tokens.

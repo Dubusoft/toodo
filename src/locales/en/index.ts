@@ -7,7 +7,8 @@ import { details } from "@/locales/en/details";
 import { chat } from "@/locales/en/chat";
 import { settings } from "@/locales/en/settings";
 import { review } from "@/locales/en/review";
+import { alerts } from "@/locales/en/alerts";
 
-export const en = { common, app, tasks, details, chat, settings, review };
+export const en = { common, app, tasks, details, chat, settings, review, alerts };
 
 export type Messages = typeof en;

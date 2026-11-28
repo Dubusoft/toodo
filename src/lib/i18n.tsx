@@ -52,6 +52,11 @@ function storedLocale(): Locale {
   }
 }
 
+/** The messages of the UI language, for text built outside React, such as browser notifications. */
+export function currentMessages(): Messages {
+  return messagesFor(storedLocale());
+}
+
 type I18n = { locale: Locale; messages: Messages; setLocale: (locale: Locale) => void };
 
 // Without a provider (as in component tests) the app is in English.

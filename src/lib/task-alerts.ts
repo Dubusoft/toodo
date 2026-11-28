@@ -1,38 +1,40 @@
 import { isPermissionGranted, requestPermission, sendNotification } from "@/web/notification";
 import type { Task, TaskStatus } from "@/lib/bindings";
+import { currentMessages } from "@/lib/i18n";
+import type { Messages } from "@/locales/en";
 
 export type TaskAlert = { title: string; body: string };
 
-const statusNames: Record<TaskStatus, string> = {
-  planned: "Planned",
-  in_progress: "In progress",
-  in_review: "Awaiting completion",
-  done: "Done",
-};
+type Words = Messages["alerts"];
 
-function statusName(task: Task): string {
-  if (task.status === "done" && task.resolution === "completed") return "Completed";
-  return task.status === "done" && task.resolution === "not_adopted" ? "Not adopted" : statusNames[task.status];
+function statusName(task: Task, words: Words): string {
+  if (task.status === "done" && task.resolution === "completed") return words.statuses.completed;
+  return task.status === "done" && task.resolution === "not_adopted" ? words.statuses.not_adopted : words.statuses[task.status];
 }
 
-function statusTitle(was: TaskStatus, task: Task): string {
+function statusTitle(was: TaskStatus, task: Task, words: Words): string {
   switch (task.status) {
     case "in_progress":
-      return "Task started";
+      return words.started;
     case "in_review":
-      return "Task awaiting completion";
+      return words.awaitingCompletion;
     case "done":
-      return task.resolution === "not_adopted" ? "Task concluded without merging" : "Task done";
+      return task.resolution === "not_adopted" ? words.concluded : words.done;
     case "planned":
-      return was === "in_progress" ? "Task paused" : "Task status changed";
+      return was === "in_progress" ? words.paused : words.changed;
   }
 }
 
 /**
  * One alert per task whose status changed between two snapshots. A task that is new in
- * `next` or gone from it raises none, so loading the list or creating a task is silent.
+ * `next` or gone from it raises none, so loading the list or creating a task is silent. They are
+ * in the UI language at the time they are raised.
  */
-export function taskStatusAlerts(previous: readonly Task[], next: readonly Task[]): TaskAlert[] {
+export function taskStatusAlerts(
+  previous: readonly Task[],
+  next: readonly Task[],
+  words: Words = currentMessages().alerts,
+): TaskAlert[] {
   const before = new Map(previous.map((task) => [task.id, task.status]));
   return next.flatMap((task) => {
     const was = before.get(task.id);
@@ -41,8 +43,8 @@ export function taskStatusAlerts(previous: readonly Task[], next: readonly Task[
     }
     return [
       {
-        title: statusTitle(was, task),
-        body: `#${task.id} ${task.title}: ${statusNames[was]} -> ${statusName(task)}`,
+        title: statusTitle(was, task, words),
+        body: `#${task.id} ${task.title}: ${words.statuses[was]} -> ${statusName(task, words)}`,
       },
     ];
   });
