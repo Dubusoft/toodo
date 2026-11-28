@@ -9,11 +9,14 @@
 import {
   MACHINE_JOB_EVENT,
   MACHINE_OPS,
+  MACHINE_PROVIDERS,
   MACHINE_TOOLS,
   type MachineJob,
+  type MachineProvider,
   type MachineReply,
   type MachineRequest,
   type MachineTool,
+  SIGN_IN_ANSWER_LIMIT,
 } from "../../../src/lib/machines.ts";
 import { json } from "./auth.ts";
 import { EventLog } from "./event-log.ts";
@@ -51,8 +54,12 @@ export function parseMachineRequest(value: unknown): MachineRequest | null {
         ? { op, machine: value.machine, tool: value.tool as MachineTool }
         : null;
     case "login":
-      return isName(value.machine) && (value.replace === undefined || typeof value.replace === "boolean")
-        ? { op, machine: value.machine, replace: value.replace === true }
+      return isName(value.machine) && (MACHINE_PROVIDERS as readonly unknown[]).includes(value.provider)
+        ? { op, machine: value.machine, provider: value.provider as MachineProvider }
+        : null;
+    case "login-answer":
+      return isName(value.job) && typeof value.value === "string" && value.value.trim() !== "" && value.value.length <= SIGN_IN_ANSWER_LIMIT
+        ? { op, job: value.job, value: value.value }
         : null;
     case "cancel":
       return isName(value.job) ? { op, job: value.job } : null;

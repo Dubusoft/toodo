@@ -9,16 +9,19 @@ const TOKEN_KEY = "toodo-server-token";
 
 const host: MachineRow = {
   label: "local", state: "connected", version: "137aa4c", os: "linux", tools: { hc: "0.1.22", omo: null }, toolsError: null, jobsUnavailable: null,
-  config: true,
+  logins: null, config: true,
 };
 const mini: MachineRow = {
   label: "mac-mini", state: "connected", version: "1e37e35", os: "darwin", tools: null,
-  toolsError: "the runner does not report tool versions yet; update it (dori update)", jobsUnavailable: null, config: false,
+  toolsError: "the runner does not report tool versions yet; update it (dori update)", jobsUnavailable: null, logins: null, config: false,
 };
+const logins = { claude: { signedIn: true, accounts: 2 }, codex: { signedIn: false, accounts: 0 } };
 const login: MachineJob = {
-  id: "job-1", kind: "login", tool: "omo", machine: "local", state: "running", command: "omo login --no-browser", startedAt: 1, endedAt: null,
-  log: "$ omo login --no-browser\nOpen https://signin.omo.dev/device?code=TWJM-QTWV\n", exitCode: null, version: null,
-  device: { url: "https://signin.omo.dev/device?code=TWJM-QTWV", userCode: "TWJM-QTWV", matchingCode: "932 514" }, problem: null,
+  id: "job-1", kind: "login", tool: "omo", provider: "claude", machine: "local", state: "running",
+  command: "omo --mode rpc (sign in anthropic-subscription)", startedAt: 1, endedAt: null,
+  log: "$ omo --mode rpc (sign in anthropic-subscription)\nSign-in page: https://claude.com/cai/oauth/authorize?code=true\n", exitCode: null,
+  version: null, signIn: { url: "https://claude.com/cai/oauth/authorize?code=true", ask: "Paste the code Anthropic shows after you sign in:" },
+  problem: null,
 };
 
 afterEach(() => {
@@ -48,7 +51,7 @@ function serve(
     posted.push(request);
     if (request.op === "precheck") return Response.json({ ok: true, precheck: answers.precheck });
     if (request.op === "enroll-code") return Response.json({ ok: true, enrollment: answers.enrollment });
-    return Response.json({ ok: true, job: { ...login, id: "job-2", kind: "install", tool: "hc", command: "hc update", device: null } });
+    return Response.json({ ok: true, job: { ...login, id: "job-2", kind: "install", tool: "hc", provider: null, command: "hc update", signIn: null } });
   }));
   return posted;
 }
@@ -74,7 +77,7 @@ describe("MachinesPanel", () => {
     expect(within(server).getByText("hc 0.1.22")).toBeInTheDocument();
     expect(within(server).getByText("omo not installed")).toBeInTheDocument();
     expect(within(server).getByText("linux · runner 137aa4c")).toBeInTheDocument();
-    expect(within(server).queryByRole("button", { name: "Sign in to OmO" })).not.toBeInTheDocument();
+    expect(within(server).queryByRole("button", { name: "Sign in to Claude" })).not.toBeInTheDocument();
     const runner = screen.getByRole("listitem", { name: "Machine mac-mini" });
     expect(within(runner).getByText(/the runner does not report tool versions yet/)).toBeInTheDocument();
     expect(within(runner).getByText("This runner's settings are changed on that machine, with dori runner setup.")).toBeInTheDocument();
@@ -96,7 +99,7 @@ describe("MachinesPanel", () => {
     expect(within(outdated).getByText(/needs a newer runner/)).toBeInTheDocument();
     expect(within(outdated).queryByRole("button", { name: "Update hc" })).not.toBeInTheDocument();
     const runner = screen.getByRole("listitem", { name: "Machine mac-mini" });
-    expect(within(runner).getByRole("checkbox", { name: "Replace mac-mini's earlier OmO device" })).toBeInTheDocument();
+    expect(within(runner).getByText(/Claude and Codex sign-ins here are unknown/)).toBeInTheDocument();
     fireEvent.click(within(runner).getByRole("button", { name: "Update hc" }));
     const confirm = within(runner).getByRole("alertdialog", { name: "Update hc" });
     expect(within(confirm).getByText(/Update hc on mac-mini to its newest release/)).toBeInTheDocument();
@@ -104,17 +107,34 @@ describe("MachinesPanel", () => {
     await vi.waitFor(() => expect(posted).toEqual([{ op: "install", machine: "mac-mini", tool: "hc" }]));
   });
 
-  it("shows a running sign-in's code, matching code and sign-in page, and its log", async () => {
-    serve([{ ...host, tools: { hc: "0.1.22", omo: "5.1.84" } }], [login]);
+  it("shows each machine's Claude and Codex sign-in and starts a sign-in for one", async () => {
+    const posted = serve([{ ...host, tools: { hc: "0.1.22", omo: "5.1.84" }, logins }]);
     renderPanel();
 
-    const job = await screen.findByRole("listitem", { name: "OmO sign-in" });
-    expect(within(job).getByLabelText("Code")).toHaveTextContent("TWJM-QTWV");
-    expect(within(job).getByLabelText("Matching code")).toHaveTextContent("932 514");
-    expect(within(job).getByRole("link", { name: "Open the sign-in page" })).toHaveAttribute("href", "https://signin.omo.dev/device?code=TWJM-QTWV");
-    expect(within(job).getByLabelText("Log of OmO sign-in")).toHaveTextContent("$ omo login --no-browser");
+    const accounts = await screen.findByRole("list", { name: "Agent accounts on This server" });
+    const claude = within(accounts).getByRole("listitem", { name: "Claude" });
+    expect(within(claude).getByText("Signed in (2 accounts)")).toBeInTheDocument();
+    const codex = within(accounts).getByRole("listitem", { name: "Codex (ChatGPT)" });
+    expect(within(codex).getByText("Not signed in")).toBeInTheDocument();
+    expect(within(claude).getByRole("button", { name: "Sign in to Claude again" })).toBeInTheDocument();
+    fireEvent.click(within(codex).getByRole("button", { name: "Sign in to Codex (ChatGPT)" }));
+    await vi.waitFor(() => expect(posted).toEqual([{ op: "login", machine: "local", provider: "codex" }]));
+  });
+
+  it("shows a running sign-in's page and sends the code pasted from it, with its log", async () => {
+    const posted = serve([{ ...host, tools: { hc: "0.1.22", omo: "5.1.84" }, logins }], [login]);
+    renderPanel();
+
+    const job = await screen.findByRole("listitem", { name: "Claude sign-in" });
+    expect(within(job).getByRole("link", { name: "Open the sign-in page" })).toHaveAttribute("href", "https://claude.com/cai/oauth/authorize?code=true");
+    expect(within(job).getByLabelText("Log of Claude sign-in")).toHaveTextContent("Sign-in page: https://claude.com/cai/oauth/authorize");
     expect(within(job).getByRole("button", { name: "Stop" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sign in to OmO" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("button", { name: "Sign in to Codex (ChatGPT)" })).toHaveAttribute("aria-disabled", "true");
+    const form = within(job).getByRole("form", { name: "Finish the sign-in" });
+    expect(within(form).getByRole("button", { name: "Send" })).toHaveAttribute("aria-disabled", "true");
+    fireEvent.change(within(form).getByLabelText("Code from Claude"), { target: { value: "abc#def" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Send" }));
+    await vi.waitFor(() => expect(posted).toEqual([{ op: "login-answer", job: "job-1", value: "abc#def" }]));
   });
 
   it("explains each failed pre-check of an ssh target, and installs only once the checks pass", async () => {

@@ -108,8 +108,8 @@ all, and an answer whose connection has closed is dropped: the caller times out 
 | `q.process` | `{qid, pane}` | `{info?, error?}`: hc's process info |
 | `q.stat` | `{qid, paths}` | `{exists}`, one boolean per path |
 | `q.lane.inspect` | `{qid, key, cwd?, git?, roots?, branches?, done?, doneCwd?, session?, sessionsDir?}` | `{status, pane?, process?, cwd, cwdExists, git?, done?, session?}` |
-| `q.machine.observe` | `{qid, tools?}` | `{os, sampledAt, sample, panes, guard?, profiles?}`; with `tools`, also `tools {hc, omo}` (`null`: not installed) and `toolJobs: true` from a runner that carries out `tool.job` |
-| `q.tool.job` | `{qid, job}` | `{state: running\|succeeded\|failed\|cancelled, log, device, exitCode, version}` of tool job `job` |
+| `q.machine.observe` | `{qid, tools?}` | `{os, sampledAt, sample, panes, guard?, profiles?}`; with `tools`, also `tools {hc, omo}` (`null`: not installed), and `toolJobs: true` and `logins {claude, codex}` (`{signedIn, accounts}` each, `null` when omo cannot be asked) from a runner that carries out `tool.job` |
+| `q.tool.job` | `{qid, job}` | `{state: running\|succeeded\|failed\|cancelled, log, signIn, exitCode, version}` of tool job `job` |
 
 A `q.result` must fit one frame (1 MiB). `ok: false` carries the reason in `detail`.
 
@@ -343,15 +343,19 @@ answers `cmd.result failed RUNNER_CMD_UNSUPPORTED <type>`. Under `jobs: deny` bo
   verified|failed, exitCode, output}` per run (journal only). `output` is capped at 64 KiB and `err` at 4 KiB, cut on
   a UTF-8 character boundary. `heavy: true` is not supported on a runner and fails before anything runs. The
   supervisor allows 30 s past `timeoutSec`; a failed or malformed answer is `RUNNER_JOB_REFUSED runner=<label>`.
-- `tool.job` installs or updates hc or omo, or signs omo in (`login`, `omo login --no-browser`), on the runner's host for
-  Settings > Machines & accounts, with the commands the supervisor runs on its own host (`src/tool-jobs.ts`: hc's
-  installer or `hc update`, omo's installer or `omo update`), `~/.local/bin` on the PATH. It answers once the job has
-  started; the supervisor names the job and reads its state with `q.tool.job` while it runs: `log` is its output so far
-  (credentials masked, last 32 KB), `device` the device code of a sign-in (read before masking), `version` the tool's
-  version once it ended. A `tool.job` for a job the runner already holds answers it again. Jobs are kept in memory (the
+- `tool.job` installs or updates hc or omo (`install`), or signs omo's `provider` account in (`login` with `provider`
+  `claude` or `codex`, tool `omo`), on the runner's host for Settings > Machines & accounts, the same way the supervisor
+  does on its own host (`src/tool-jobs.ts`: hc's installer or `hc update`, omo's installer or `omo update`;
+  `src/provider-login.ts`: `omo --mode rpc` driven through its headless sign-in route), `~/.local/bin` on the PATH. It
+  answers once the job has started; the supervisor names the job and reads its state with `q.tool.job` while it runs:
+  `log` is its output so far (credentials masked, last 32 KB), `signIn` `{url, ask}` the sign-in page and question a
+  running sign-in waits on (`null` for an install), `version` the tool's version once it ended. `tool.answer {job,
+  value}` passes the owner's answer (the code or address the sign-in page gave back) to omo; its detail never carries
+  the value, and the runner records no command body. A `tool.job` for a job the runner already holds answers it again. Jobs are kept in memory (the
   last ten), so a restarted runner answers `no tool job` and the supervisor ends it failed. A runner on Windows refuses
-  it; one older than it refuses it `RUNNER_CMD_REJECTED unknown-type`, and reports no `toolJobs` in `q.machine.observe`,
-  so no protocol bump is needed. `tool.cancel` stops a running job.
+  it; one older than it refuses it `RUNNER_CMD_REJECTED unknown-type`, and reports no `toolJobs` (or, before sign-in, no
+  `logins`) in `q.machine.observe`, so no protocol bump is needed: the supervisor starts a sign-in only on a runner that
+  reports `logins`. `tool.cancel` stops a running job.
 
 ## Fencing
 

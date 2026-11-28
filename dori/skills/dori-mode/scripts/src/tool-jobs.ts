@@ -1,6 +1,6 @@
-// The jobs that install or update the tools a Dori host needs (hc, omo) and sign omo in, as Settings > Machines &
-// accounts starts them: the command each one runs, and the process that runs it with its output masked and kept as it
-// arrives. The supervisor runs them on its own host (machine-admin.ts) and a runner on its host (runner/tool-jobs.ts,
+// The jobs that install or update the tools a Dori host needs (hc, omo), as Settings > Machines & accounts starts
+// them: the command each one runs, and the process that runs it with its output masked and kept as it arrives (the
+// sign-in of omo's agent accounts is provider-login.ts). The supervisor runs them on its own host (machine-admin.ts) and a runner on its host (runner/tool-jobs.ts,
 // `tool.job`), so both run the same commands the same way. omo is updated only by its own `omo update`.
 import { join } from "node:path";
 
@@ -9,7 +9,7 @@ import type { Ran, Runner } from "./run.ts";
 import { hcInstallCommand } from "./runtime/hc.ts";
 
 export type Tool = "hc" | "omo";
-/** `install` installs a missing tool or updates an installed one; `login` signs omo in with a device code. */
+/** `install` installs a missing tool or updates an installed one; `login` signs an agent account in inside omo (provider-login.ts). */
 export type ToolJobKind = "install" | "login";
 export type ToolJobState = "running" | "succeeded" | "failed" | "cancelled";
 
@@ -17,8 +17,6 @@ export type ToolJobState = "running" | "succeeded" | "failed" | "cancelled";
 export const OMO_INSTALL_URL = "https://get.omo.dev/install.sh";
 
 export const TOOL_INSTALL_TIMEOUT_MS = 10 * 60_000;
-/** A device code is approved within its lifetime (minutes) or the sign-in ends. */
-export const TOOL_LOGIN_TIMEOUT_MS = 15 * 60_000;
 const VERSION_TIMEOUT_MS = 10_000;
 
 /** `env` with ~/.local/bin, where hc and omo install, on its PATH and HOME set to `home`. */
@@ -44,19 +42,11 @@ export const envRunner = (env: Record<string, string>): Runner => async (argv, o
   }
 };
 
-/** What a tool job runs: its argv, the command line its log opens with, and how long it may take. */
+/** What an install job runs: its argv, the command line its log opens with, and how long it may take. */
 export type ToolCommand = { readonly argv: readonly string[]; readonly command: string; readonly timeoutMs: number };
 
-/**
- * The command of a tool job: hc's installer or `hc update`, omo's installer or `omo update`, or `omo login --no-browser`
- * (`replace`: replace this computer's earlier OmO device without asking). Signing in is omo's only.
- */
-export const toolJobCommand = (tool: Tool, kind: ToolJobKind, installed: boolean, replace = false): ToolCommand => {
-  if (kind === "login") {
-    if (tool !== "omo") throw new Error(`${tool} has no sign-in`);
-    const argv = ["omo", "login", "--no-browser", ...(replace ? ["--replace"] : [])];
-    return { argv, command: argv.join(" "), timeoutMs: TOOL_LOGIN_TIMEOUT_MS };
-  }
+/** The command of an install job: hc's installer or `hc update`, omo's installer or `omo update`. */
+export const installCommand = (tool: Tool, installed: boolean): ToolCommand => {
   const argv = tool === "hc"
     ? hcInstallCommand(installed)
     : installed ? ["omo", "update"] : ["sh", "-c", `curl -fsSL ${OMO_INSTALL_URL} | bash`];
@@ -66,20 +56,6 @@ export const toolJobCommand = (tool: Tool, kind: ToolJobKind, installed: boolean
 /** Why a host cannot run tool jobs, or undefined when it can: the installers are POSIX shell scripts. */
 export const toolJobsUnsupported = (platform: NodeJS.Platform): string | undefined =>
   platform === "win32" ? "hc and omo are installed and updated on a Windows computer itself, not from Toodo" : undefined;
-
-/** The device code `omo login` prints, approved on another device (src/lib/machines.ts DeviceCode). */
-export type DeviceCode = { readonly url: string; readonly userCode: string; readonly matchingCode: string | null };
-
-/**
- * The device code in `omo login`'s raw output (`Open <url>`, `User code: <code>`, `Matching code: <digits>`): read
- * before masking, which hides the code.
- */
-export const parseDeviceCode = (output: string): DeviceCode | null => {
-  const url = /^Open (https:\/\/\S+)\s*$/m.exec(output)?.[1];
-  const userCode = /^User code: (\S+)\s*$/m.exec(output)?.[1];
-  if (url === undefined || userCode === undefined) return null;
-  return { url, userCode, matchingCode: /^Matching code: (.+?)\s*$/m.exec(output)?.[1] ?? null };
-};
 
 /** A job's log so far: its command line and its output, credentials masked, cut to its last `limit` characters. */
 export const jobLog = (command: string, output: string, limit: number): string => {

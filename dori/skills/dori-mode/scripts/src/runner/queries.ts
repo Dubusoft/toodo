@@ -4,6 +4,7 @@ import { platform } from "node:os";
 import { omoSessionsDir } from "../config.ts";
 import { type HostSample, sampleHost } from "../host-guard.ts";
 import { listPanes, type Pane, readScreen } from "../panes.ts";
+import { readProviderLogins } from "../provider-login.ts";
 import type { Clock, Runner } from "../run.ts";
 import { sessionRuntime } from "../runtime/index.ts";
 import { procTable, resolveSession } from "../session-id.ts";
@@ -128,8 +129,8 @@ export const laneInspect = async (deps: QueryDeps, body: Body<"q.lane.inspect">)
 /**
  * `q.machine.observe`: this host's guard sample (its `panes` filled from the pane list, -1 when unreadable), pane list,
  * the guard thresholds its runner-config.json sets (`guard`, only when it sets any), its agent profiles (`profiles`), and
- * hc's and omo's versions when the query asks for `tools` (Settings > Machines & accounts), with `toolJobs` when this
- * runner can install and update them (`tool.job`).
+ * hc's and omo's versions when the query asks for `tools` (Settings > Machines & accounts), with `toolJobs` and omo's
+ * Claude and Codex sign-ins (`logins`) when this runner can install, update and sign in through `tool.job`.
  */
 export const observeMachine = async (deps: QueryDeps, body: Body<"q.machine.observe"> = {}): Promise<MachineObservation> => {
   let panes: Pane[] | undefined;
@@ -137,7 +138,12 @@ export const observeMachine = async (deps: QueryDeps, body: Body<"q.machine.obse
   const listed = panes;
   const sample: HostSample = await sampleHost(deps.run, deps.dataPath ?? "/", async () => listed?.length ?? -1, deps.readMemInfo);
   const guard = deps.guard && Object.keys(deps.guard).length > 0 ? { guard: deps.guard } : {};
-  const tools = body.tools ? { tools: await toolVersions(deps.run), ...(deps.toolJobs ? { toolJobs: true as const } : {}) } : {};
+  const tools = body.tools
+    ? {
+      tools: await toolVersions(deps.run),
+      ...(deps.toolJobs ? { toolJobs: true as const, logins: await readProviderLogins(deps.run) } : {}),
+    }
+    : {};
   return { os: deps.os ?? platform(), sampledAt: deps.clock.now(), sample, panes: listed ?? [], ...guard, ...(deps.profiles ? { profiles: deps.profiles } : {}), ...tools };
 };
 

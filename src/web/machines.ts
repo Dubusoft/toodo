@@ -104,12 +104,15 @@ export function useSaveRunnerConfig(machine: string) {
   };
 }
 
-/** Starts an install, a sign-in or a runner install over ssh, or cancels a job; the answer is the job as it stands. */
+/**
+ * Starts an install, a sign-in or a runner install over ssh, answers a sign-in, or cancels a
+ * job; the answer is the job as it stands.
+ */
 export function useMachineJobAction() {
   const t = useMessages().settings.machines;
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (request: MachineRequest & { op: "install" | "login" | "cancel" | "add-ssh" }) =>
+    mutationFn: async (request: MachineRequest & { op: "install" | "login" | "login-answer" | "cancel" | "add-ssh" }) =>
       (await call<typeof request.op>(t, MACHINES_PATH, request)).job,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: machinesKey }),
   });
