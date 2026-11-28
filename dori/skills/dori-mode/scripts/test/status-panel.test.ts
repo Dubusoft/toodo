@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { SupervisorStatusSnapshot } from "../../../../../src/lib/supervisor-status.ts";
-import { quotaReport, type UsageLookup } from "../src/claude-quota.ts";
+import { quotaReportText, type UsageLookup } from "../src/claude-quota.ts";
 import { collectPanel, STATUS_PANEL_IDLE_MS, STATUS_PANEL_WATCHED_MS, type StatusPanelDeps, statusPanelPass } from "../src/status-panel.ts";
 import { type Status, statusPages } from "../src/status.ts";
 
@@ -22,7 +22,6 @@ const status: Status = {
   waits: [],
   github: { repos: [], failures: [], issueAuthors: [], issueRepos: [] },
   gateway: { state: "live", text: "live" },
-  unacked: 0,
   events: { hours: 24, wakes: 0, sources: { owner: 0, lane: 0, noise: 0 }, measured: 0, calls: 0, kinds: [] },
 };
 
@@ -54,7 +53,7 @@ test("a watched snapshot holds the /status pages and the /quota text of the same
   const snapshot = await collectPanel(deps(), true);
   expect(snapshot.at).toBe(AT);
   expect(snapshot.status).toEqual(statusPages(status));
-  expect(snapshot.quota).toEqual({ text: await quotaReport(quota, "Asia/Seoul", () => AT)(AbortSignal.timeout(1000)), fetchedAt: AT - 40_000 });
+  expect(snapshot.quota).toEqual({ text: quotaReportText(await quota(AbortSignal.timeout(1000)), AT, "Asia/Seoul"), fetchedAt: AT - 40_000 });
   expect(snapshot.quota).toMatchObject({ text: expect.stringContaining("QUOTA | cached read from 40s ago") });
   expect(snapshot.lanes).toEqual([
     { key: "ap-1-1", status: "working", task: 1, machine: "local", model: "anthropic-subscription/claude-opus-5-5", ageMin: 27, progress: "porting the panel", screen: { text: "screen of ap-1-1" } },
@@ -89,19 +88,19 @@ test("every open lane comes with its status, only working lanes' screens are rea
   ]);
 });
 
-test("a lane links its thread and, with an owner/name repo, its pull request", async () => {
+test("only a lane with an owner/name repo links its pull request", async () => {
   const snapshot = await collectPanel(deps({
     status: async () => ({
       ...status,
       lanes: [
-        { key: "ap-1-1", ageMin: 1, machine: "local", threadUrl: "https://discord.com/channels/9/2", repo: "o/r", pr: 7 },
+        { key: "ap-1-1", ageMin: 1, machine: "local", repo: "o/r", pr: 7 },
         { key: "ap-2-1", ageMin: 1, machine: "local", repo: "some-worktree", pr: 8 },
       ],
     }),
   }), false);
-  expect(snapshot.lanes.map((lane) => [lane.key, lane.threadUrl, lane.prUrl])).toEqual([
-    ["ap-1-1", "https://discord.com/channels/9/2", "https://github.com/o/r/pull/7"],
-    ["ap-2-1", undefined, undefined],
+  expect(snapshot.lanes.map((lane) => [lane.key, lane.prUrl])).toEqual([
+    ["ap-1-1", "https://github.com/o/r/pull/7"],
+    ["ap-2-1", undefined],
   ]);
 });
 

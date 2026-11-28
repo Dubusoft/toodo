@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { alertsChannelOf, CONFIG_FILE_KEYS, defaultConfig, discordOn, fill, leadCommand, leadModels, loadConfig, providerOf } from "../src/config.ts";
+import { CONFIG_FILE_KEYS, defaultConfig, fill, leadCommand, leadModels, loadConfig, providerOf } from "../src/config.ts";
 import { CONFIG_SCHEMA_VERSION, migrateConfigSchema } from "../src/config-schema.ts";
 import { reviewEnabledFor } from "../src/review-gate.ts";
 import { withState } from "./fakes.ts";
@@ -157,7 +157,7 @@ test("a retired leadRuntime loads without error and is not read; schema 9 drops 
   expect(loaded.defaultModel).toBe("a/b");
   expect(loaded).not.toHaveProperty("leadRuntime");
   expect(CONFIG_FILE_KEYS as readonly string[]).not.toContain("leadRuntime");
-  expect(CONFIG_SCHEMA_VERSION).toBe(9);
+  expect(CONFIG_SCHEMA_VERSION).toBeGreaterThanOrEqual(9);
   const migrated = migrateConfigSchema({ schemaVersion: 8, leadRuntime: "hc", defaultModel: "a/b" });
   expect(migrated.next).toEqual({ defaultModel: "a/b" });
   expect(migrated.dropped).toEqual([["leadRuntime", "hc is the only terminal runtime; the lead's pane always opens on hc"]]);
@@ -279,30 +279,16 @@ test("placement.maxLanes maps trimmed machines to positive integers and refuses 
   }
 });
 
-test("alertsChannel routes system notices when set; unset or blank falls back to the first discordChannels entry", async () => {
-  const path = join(state.dir, "alerts.json");
-  const load = async (raw: Record<string, unknown>) => { await Bun.write(path, JSON.stringify(raw)); return loadConfig(path, "/home/ana"); };
-  expect(alertsChannelOf(await load({ discordChannels: ["111", "222"], alertsChannel: " 222 " }))).toBe("222");
-  expect(alertsChannelOf(await load({ discordChannels: ["111", "222"] }))).toBe("111");
-  expect(alertsChannelOf(await load({ discordChannels: ["111"], alertsChannel: " " }))).toBe("111");
-  expect(alertsChannelOf(await load({}))).toBeUndefined();
-  await expect(load({ alertsChannel: 222 })).rejects.toThrow("alertsChannel must be a Discord channel id string");
-});
-
-test("platforms switches Discord: absent is Discord alone, toodo alone turns it off and sends system notices to the Toodo chat; an empty or unknown list is refused", async () => {
-  const path = join(state.dir, "platforms.json");
-  const load = async (raw: Record<string, unknown>) => { await Bun.write(path, JSON.stringify(raw)); return loadConfig(path, "/home/ana"); };
-  const absent = await load({ discordChannels: ["111"] });
-  expect(absent.platforms).toEqual(["discord"]);
-  expect(discordOn(absent)).toBe(true);
-  const off = await load({ platforms: ["toodo"], discordChannels: ["111"], alertsChannel: "222" });
-  expect(discordOn(off)).toBe(false);
-  expect(alertsChannelOf(off)).toBe("toodo");
-  const both = await load({ platforms: ["toodo", "discord", "toodo"], discordChannels: ["111"] });
-  expect(both.platforms).toEqual(["toodo", "discord"]);
-  expect(alertsChannelOf(both)).toBe("111");
-  await expect(load({ platforms: [] })).rejects.toThrow("platforms must name at least one of discord, toodo");
-  await expect(load({ platforms: ["slack"] })).rejects.toBeInstanceOf(TypeError);
+test("a config written for Discord still loads: its Discord keys are ignored", async () => {
+  const path = join(state.dir, "discord.json");
+  await Bun.write(path, JSON.stringify({
+    discord: { applicationId: "1", guildId: "2", ownerId: "3" }, discordChannels: ["111"], alertsChannel: "222", decisionsChannel: "333",
+    platforms: ["discord", "toodo"], buttonHooks: { deploy: ["x"] }, threadCloseAfterHours: 24, autopilot: { threadChannel: "444" }, ownerLanguage: "Korean",
+  }));
+  const config = await loadConfig(path, "/home/ana");
+  expect(config.ownerLanguage).toBe("Korean");
+  for (const key of ["discord", "discordChannels", "alertsChannel", "decisionsChannel", "platforms", "buttonHooks", "threadCloseAfterHours"]) expect(key in config).toBe(false);
+  expect("threadChannel" in config.autopilot).toBe(false);
 });
 
 test("guard thresholds and heavyKill are built in: file values, even malformed ones, are ignored", async () => {

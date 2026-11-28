@@ -12,8 +12,7 @@ import { type Durability, type JournalStore, openStore, RETENTION, StoreError } 
 
 /**
  * The supervisor journal: its types, the durable store behind it, the delivery log (lead-events.log) and the in-memory
- * indexes over both (delivered ids, journaled ids, closed owner tombstones). Owner tracking, the lead lifecycle and
- * delivery (supervise-*.ts) all read and write the journal through one JournalCore.
+ * indexes over both (delivered ids and journaled ids). The supervisor components share one JournalCore.
  */
 
 /** Structured context of an event: the lane it concerns, that lane's thread and checkout. */
@@ -37,48 +36,6 @@ export type Restart = {
   /** Stop the lead even while it is working/blocked (a stuck lead). */
   readonly force?: true;
 };
-/**
- * An owner message retained until explicit coverage handles all declared tasks. `since` is when the lead could
- * read it, reset at LEAD_RESTARTED so a cold start's boot never counts against the new lead.
- */
-export type AwaitingAck = {
-  readonly id: string;
-  /** Absent while journaled for a busy lead, or while its cold start is unconfirmed. */
-  readonly since?: number;
-  readonly reminded?: true;
-  readonly noticed?: true;
-  readonly ackedAt?: number;
-  readonly tasks?: number;
-  readonly lanes?: readonly string[];
-  readonly reply?: boolean;
-  readonly handledAt?: number;
-  readonly handlingSince?: number;
-  readonly unhandledRemindedAt?: number;
-  /**
-   * `dori handled --awaiting`: the lead answered and now waits on the owner (a go-ahead, a choice), so nothing is owed
-   * until the owner answers. A later `--lane`, `--reply` or `--all` closes the message.
-   */
-  readonly awaitingOwnerAt?: number;
-  readonly awaitingNote?: string;
-  /** The event id of the owner's latest edit (INBOUND_EDIT); reminders and cold handoffs carry its text. */
-  readonly revision?: string;
-  /** Every edit/delete event id already applied, so a replay at startup changes nothing. */
-  readonly revisions?: readonly string[];
-  /** The owner deleted the message: it counts as handled and is never handed to a new lead. */
-  readonly deleted?: true;
-  /**
-   * Found at startup in the event history with neither a tracking row nor a tombstone (tracking was reset, or the
-   * journal predates tracking). Listed once to the lead in one OWNER_QUARANTINED digest; never reminded, never noticed
-   * to the owner and never handed to a new lead. An ack, a live edit or a delete makes it an ordinary message again.
-   */
-  readonly quarantined?: true;
-};
-/**
- * Whether the lead still owes work on an owner message: neither handled nor parked waiting on the owner. Every reminder,
- * escalation and cold-start handoff of owner work asks this one question.
- */
-export const leadOwes = (entry: Pick<AwaitingAck, "handledAt" | "awaitingOwnerAt">): boolean =>
-  entry.handledAt === undefined && entry.awaitingOwnerAt === undefined;
 /**
  * One report obligation per claimed or finished lane (lane-outcomes.ts): opened by its first LANE_DONE_CLAIMED,
  * LANE_CLOSED or CI_MERGED, joined by later ones, closed by `dori reported <key>`. `since` is the first outcome's enqueue
@@ -111,9 +68,6 @@ export type LaneOutcome = {
   readonly woke?: true;
   /** Events that joined with nothing new for the lead: they wake no one (lane-outcomes.ts). */
   readonly quiet?: readonly string[];
-  /** The lane's thread id and its latest report there, from `dori reported` receipts: the automatic thread close reads them. */
-  readonly thread?: string;
-  readonly lastReportAt?: number;
 };
 /**
  * One decision obligation per decision event (decision-obligations.ts), keyed by its event id: opened by that event,
@@ -131,22 +85,10 @@ export type Obligation = {
   /** The first push pointer that carried it: its push escalation clock starts there at the earliest. */
   readonly pushedAt?: number;
 };
-export type OwnerNoticeKind = "delay" | "ack" | "unhandled";
-export type Notice = { readonly attempts: number; readonly sent?: true };
 export type Journal = {
   readonly events: readonly Event[];
-  readonly awaitingAck?: readonly AwaitingAck[];
-  readonly notifications?: Readonly<Record<string, Notice>>;
   readonly restart?: Restart;
-  /** Owner messages that already got the "not taken yet" notice. */
-  readonly noticed?: readonly string[];
   readonly models?: LeadRestartRequest["models"];
-  /** When the lead was first seen busy while owner messages handed to it were unread (leadStuckRestartMin). */
-  readonly leadBusySince?: number;
-  /** The working lead's screen (hash) and when it last changed: a working lead counts as stuck only while it is frozen. */
-  readonly leadScreen?: { readonly hash: string; readonly since: number };
-  /** Owner tracking compacted away once handled for ACK_KEEP_MS: never tracked again from the replayed inbox. */
-  readonly closedOwners?: readonly string[];
   /** Owner announcements not yet confirmed posted; retried until they are, so a crash or a failed post loses none. */
   readonly outbox?: readonly OutboxItem[];
   /** The lead's take cursor and the outstanding push (supervise-push.ts). */
@@ -189,7 +131,7 @@ export class TransientSuperviseError extends SuperviseError {}
 /** The window of the restart cap (delivery.restartMaxPerHour). */
 export const RESTART_CAP_WINDOW_MS = 60 * 60_000;
 
-/** How often retention runs (from ackTick, once per loop pass at most). */
+/** How often retention runs (from reportTick, once per loop pass at most). */
 export const RETAIN_EVERY_MS = 60 * 60_000;
 
 /** The bytes of `path` from `from` to `to`. */
@@ -228,7 +170,6 @@ export class JournalCore {
   readonly eventIds = new Set<string>();
   readonly wakes: WakeMeter;
   private nextRetain = 0;
-  private closed?: { readonly list: readonly string[]; readonly set: ReadonlySet<string> };
 
   constructor(public deps: FlowDeps) {
     mkdirSync(deps.config.stateDir, { recursive: true });
@@ -328,7 +269,7 @@ export class JournalCore {
   /**
    * Take receipts move the cursor forward only, in a crash-safe order: the store is persisted, then the cursor file is
    * written, and only then are the receipts dropped. A crash at any point leaves `max(cursor file, receipts)` at or past
-   * the new cursor, so a take never reprints. A moved cursor clears the push only when no owner work remains.
+   * the new cursor, so a take never reprints. A moved cursor clears the push.
    * Before a receipt is dropped, its ids are recorded taken with its time and session (event-trace.ts).
    */
   consumeTakes(): void {
@@ -343,8 +284,7 @@ export class JournalCore {
       takenOffset = size;
     }
     if (takenOffset !== inbox.takenOffset) {
-      const ownerOpen = this.journal.awaitingAck?.some((entry) => !entry.quarantined && leadOwes(entry));
-      this.journal = { ...this.journal, inbox: { ...inbox, takenOffset, push: ownerOpen ? inbox.push : undefined } };
+      this.journal = { ...this.journal, inbox: { ...inbox, takenOffset, push: undefined } };
       this.persist();
     }
     writeCursorFile(this.deps.config.stateDir, takenOffset);
@@ -368,13 +308,6 @@ export class JournalCore {
     this.persist();
   }
 
-  /** closedOwners as a set, rebuilt only when the list changes: it holds up to 90 days of tombstones. */
-  closedSet(): ReadonlySet<string> {
-    const list = this.journal.closedOwners ?? [];
-    if (this.closed?.list !== list) this.closed = { list, set: new Set(list) };
-    return this.closed.set;
-  }
-
   /** Journaled now, or pruned with its dedupe tombstone still kept. */
   known(id: string): boolean {
     return this.eventIds.has(id) || this.store.tombstoned(id);
@@ -382,14 +315,13 @@ export class JournalCore {
 
   /**
    * Retention (RETENTION, sqlite store only), at most once per RETAIN_EVERY_MS: delivered events older than
-   * eventBodyMs leave the journal for dedupe tombstones, unless a tracked owner message, a pending restart or an open
+   * eventBodyMs leave the journal for dedupe tombstones, unless a pending restart or an open
    * decision obligation still needs them; undelivered events are never pruned. Tombstones expire after tombstoneMs.
    */
   retain(now: number): void {
     if (!this.store.retains || now < this.nextRetain) return;
     this.nextRetain = now + RETAIN_EVERY_MS;
     const needed = new Set(this.journal.restart?.events.map((event) => event.id) ?? []);
-    for (const entry of this.journal.awaitingAck ?? []) for (const id of [entry.id, ...(entry.revisions ?? [])]) needed.add(id);
     for (const item of this.journal.pending ?? []) if (item.resolvedAt === undefined) needed.add(item.id);
     const cutoff = now - RETENTION.eventBodyMs;
     // Events are appended in time order: only the prefix up to the first newer one is looked at (one that came out of
@@ -406,13 +338,8 @@ export class JournalCore {
       this.delivered.delete(event.id);
     }
     this.store.pruneWakes(now - RETENTION.statusHistoryMs);
-    const expired = new Set(this.store.expireTombstones(now - RETENTION.tombstoneMs));
-    if (kept.length === i && !expired.size) return;
-    const events = kept.length === i ? all : [...kept, ...all.slice(i)];
-    this.journal = {
-      ...this.journal, events,
-      ...(expired.size ? { closedOwners: (this.journal.closedOwners ?? []).filter((id) => !expired.has(id)) } : {}),
-    };
+    this.store.expireTombstones(now - RETENTION.tombstoneMs);
+    if (kept.length !== i) this.journal = { ...this.journal, events: [...kept, ...all.slice(i)] };
   }
 
   /** Appends the events not yet delivered to the delivery log (fsynced) and records them as delivered in the store. */

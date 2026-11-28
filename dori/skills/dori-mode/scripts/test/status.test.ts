@@ -8,14 +8,13 @@ import { writeGatewayStatus } from "../src/gateway-status.ts";
 import { pendingLeadRestart } from "../src/lead-restart.ts";
 import { Registry } from "../src/registry.ts";
 import type { Ran } from "../src/run.ts";
-import { quotaMessage } from "../src/messenger/discord-commands.ts";
 import { resolveEventPolicy } from "../src/event-policy.ts";
 import { SqliteLaneReports } from "../src/lane-report-store.ts";
 import { convertJsonStore } from "../src/store-import.ts";
 import { HUB_FILE, RunnerHub } from "../src/runner/hub.ts";
 import { healthPath } from "../src/runner/health.ts";
 import { displayTime } from "../src/display-time.ts";
-import { collectStatus, discordThreadUrl, lookupStatus, machineLines, renderStatus, runnerViews, shortModel, STATUS_MAX_CHARS, statusPages, waitFireMs, type Status, type StatusDeps } from "../src/status.ts";
+import { collectStatus, machineLines, renderStatus, runnerViews, shortModel, STATUS_MAX_CHARS, statusPage, statusPages, waitFireMs, type Status, type StatusDeps } from "../src/status.ts";
 import { unsandboxedReason } from "../src/runner-sandbox.ts";
 import { fakeClock, storePath, withState, writeJournal, writeWakes } from "./fakes.ts";
 import { builtInTunables } from "../src/tunables.ts";
@@ -52,7 +51,7 @@ const fixture = async (panes: FakePane[] = [{ pane_id: "hc:t1" }]) => {
   const deps: StatusDeps = { run, clock: fakeClock(NOW), registry, config: { ...defaultConfig("/home/test"), stateDir: state.dir, leadPane: "hc:t1", displayTimeZone: "Asia/Seoul" }, tunables: builtInTunables("/home/test") };
   return { deps, registry, calls, dir: state.dir };
 };
-const lane = (key: string, extra: Record<string, unknown> = {}) => ({ key, title: key, thread: "discord:1/2", brief: "/b", done: "d", openedAt: OPENED, ...extra });
+const lane = (key: string, extra: Record<string, unknown> = {}) => ({ key, title: key, thread: "none", brief: "/b", done: "d", openedAt: OPENED, ...extra });
 
 test("a lane's Toodo task shows in status --json and on its status line; a lane without one shows none", async () => {
   const f = await fixture();
@@ -108,17 +107,17 @@ test("status lists hc-core and the supervisor, and never reads a herdr unit", as
   expect(f.calls.some((c) => c.includes("herdr"))).toBe(false);
 });
 
-test("status shows services, pending waits, watched repos with poll time and failures, and the gateway", async () => {
+test("status shows services, pending waits, watched repos with poll time and failures, and the supervisor heartbeat", async () => {
   const f = await fixture();
   writeFileSync(join(f.dir, "waits.json"), JSON.stringify([{ key: "ci-pr-7", until: "merged o/r#7", note: "n", deadline: NOW + 1 }]));
   writeFileSync(join(f.dir, "github-repos.json"), JSON.stringify(["o/r"]));
   writeFileSync(join(f.dir, "github-events.json"), JSON.stringify({ repos: { "o/r": { cache: {}, pulls: {}, issues: {} } }, failures: { "o/r": NOW - 20 * 60_000 }, polledAt: NOW - 2 * 60_000 }));
   convertJsonStore(f.dir, NOW, () => () => {});
-  writeGatewayStatus(f.dir, { pid: 1, at: NOW - 4_000, connected: true, messageContent: true });
+  writeGatewayStatus(f.dir, { pid: 1, at: NOW - 4_000 });
   const s = await collectStatus(f.deps);
   const text = renderStatus(s);
   expect(text).toContain("\n■ 서비스\n- hc-core: 실행 중\n- dori-supervisor: 실행 중\n");
-  expect(text).toContain("\n- Discord 게이트웨이: 연결됨\n- GitHub: 저장소 1개 감시, 마지막 폴링 2분 전, 1개 실패\n");
+  expect(text).toContain("\n- 수퍼바이저 하트비트: 정상 (하트비트 4초 전)\n- GitHub: 저장소 1개 감시, 마지막 폴링 2분 전, 1개 실패\n");
   expect(text).toContain("\n■ 대기 (1)\n- ci-pr-7: 신호 대기, 10-19 10:30 KST 시한 (0분 후) - n");
   expect(text).toContain("\n■ 문제\n- GitHub 폴링 실패: o/r 20분 전\n");
   expect(text).toContain("- 신뢰하는 이슈 작성자 없음 (githubIssueAuthors)");
@@ -131,18 +130,12 @@ test("status shows services, pending waits, watched repos with poll time and fai
   expect(trusted).toContain("- 이슈: 저장소 1개 감시");
 });
 
-test("with Discord off a fresh heartbeat shows the gateway as off, not a problem; a stale one still is", async () => {
+test("a stale or missing heartbeat is a problem: the supervisor stopped", async () => {
   const f = await fixture();
-  const off = { ...f.deps, config: { ...f.deps.config, platforms: ["toodo"] as const } };
-  writeGatewayStatus(f.dir, { pid: 1, at: NOW - 4_000, connected: false, messageContent: false });
-  const s = await collectStatus(off);
-  expect(s.gateway.state).toBe("off");
-  const text = renderStatus(s);
-  expect(text).toContain("\n- Discord 게이트웨이: 꺼짐\n");
-  expect(text).not.toContain("게이트웨이 연결 안 됨");
-  expect((await collectStatus(f.deps)).gateway.state).toBe("disconnected");
-  writeGatewayStatus(f.dir, { pid: 1, at: NOW - 5 * 60_000, connected: false, messageContent: false });
-  expect(renderStatus(await collectStatus(off))).toContain("게이트웨이 응답 끊김");
+  writeGatewayStatus(f.dir, { pid: 1, at: NOW - 5 * 60_000 });
+  const s = await collectStatus(f.deps);
+  expect(s.gateway.state).toBe("stale");
+  expect(renderStatus(s)).toContain("하트비트 응답 끊김");
 });
 
 test("status shows open owner decisions and answered decisions awaiting close", async () => {
@@ -192,36 +185,33 @@ test("status exposes a pending lead restart when requested and leaves it queued"
   expect(f.calls.every((c) => c.startsWith("hc --json ") || c.startsWith("systemctl --user is-"))).toBe(true);
 });
 
-test("the /status text stays far under Discord's limit even with many lanes", async () => {
+test("the status text stays under STATUS_MAX_CHARS even with many lanes", async () => {
   const f = await fixture();
   mkdirSync(f.registry.dir, { recursive: true });
   for (let i = 0; i < 30; i++) await f.registry.write(lane(`lane-${i}`, { model: "provider/very-long-model-name-for-testing", lastProgressPost: "x".repeat(300) }));
-  const text = await lookupStatus(f.deps)();
+  const text = statusPage(await collectStatus(f.deps), 1);
   expect(text).toMatch(/- 외 \d+개/);
   expect(text.length).toBeLessThanOrEqual(STATUS_MAX_CHARS);
-  expect(quotaMessage(text, "No status available.").length).toBeLessThan(2000);
 });
 
-test("/status pages through 100 lanes: every page fits Discord, every lane is listed once, page 1 names the rest", async () => {
+test("the status pages through 100 lanes: every page fits, every lane is listed once, page 1 names the rest", async () => {
   const f = await fixture();
   mkdirSync(f.registry.dir, { recursive: true });
   const keys = Array.from({ length: 100 }, (_, i) => `scale-lane-${i}-${"k".repeat(40)}`);
   for (const key of keys) await f.registry.write(lane(key, { model: "provider/very-long-model-name-for-testing", lastProgressPost: "x".repeat(300), worktrees: ["/data/repos/worktrees/some-long-repository-name/branch"] }));
-  const pages = statusPages(await collectStatus(f.deps));
+  const status = await collectStatus(f.deps);
+  const pages = statusPages(status);
   expect(pages.length).toBeGreaterThan(2);
-  for (const page of pages) {
-    expect(page.length).toBeLessThanOrEqual(STATUS_MAX_CHARS);
-    expect(quotaMessage(page, "No status available.").length).toBeLessThan(2000);
-  }
+  for (const page of pages) expect(page.length).toBeLessThanOrEqual(STATUS_MAX_CHARS);
   const listed = pages.flatMap((page) => page.split("\n").filter((line) => line.startsWith("- scale-lane-")).map((line) => line.slice(2).split(" ")[0]));
   expect(listed.sort()).toEqual([...keys].sort());
   expect(pages[0]).toContain(`개 (2-${pages.length}쪽)`);
   expect(pages[1]!.split("\n").slice(0, 3)).toEqual([`도리 레인 · 2/${pages.length}쪽 · ${displayTime(NOW, "Asia/Seoul", "short")}`, "", "■ 레인 (100) 이어서"]);
-  expect(pages[1]).toEndWith("\n\n다음: /status page:3");
-  expect(pages.at(-1)).not.toContain("다음: /status");
-  // The slash command's page option picks the page; past the end it says how many there are.
-  expect(await lookupStatus(f.deps)(AbortSignal.timeout(5_000), 2)).toBe(pages[1]!);
-  expect(await lookupStatus(f.deps)(AbortSignal.timeout(5_000), 999)).toBe(`도리 상태는 ${pages.length}쪽까지 있습니다. 999쪽은 없습니다.`);
+  expect(pages[1]).toEndWith("\n\n다음: 3쪽");
+  expect(pages.at(-1)).not.toContain("다음: ");
+  // `dori status --page N` picks the page; past the end it says how many there are.
+  expect(statusPage(status, 2)).toBe(pages[1]!);
+  expect(statusPage(status, 999)).toBe(`도리 상태는 ${pages.length}쪽까지 있습니다. 999쪽은 없습니다.`);
 });
 
 test("few lanes stay one page, the same text as renderStatus", async () => {
@@ -294,7 +284,7 @@ test("status splits wakes into owner, lane and noise by their triggers; a wake a
   const at = NOW - 60 * 60_000;
   writeJournal(f.dir, { events: [{ id: "a", line: "HOST_GUARD OFFLINE mac", at }] });
   writeWakes(f.dir, [
-    ["INBOUND", "HOST_GUARD OFFLINE"], ["UNHANDLED"], ["LANE_REPORT", "HOST_GUARD OFFLINE"], ["GH_PR * closed"], ["UNREPORTED"],
+    ["INBOUND", "HOST_GUARD OFFLINE"], ["INBOUND"], ["LANE_REPORT", "HOST_GUARD OFFLINE"], ["GH_PR * closed"], ["UNREPORTED"],
     ["HOST_GUARD OFFLINE"], ["HOST_GUARD OFFLINE"], ["RUNNER_FORGED_EVENT"],
   ].map((trigger, i) => ({ at: at + i, session: "s", trigger, kinds: {} })));
   const s = await collectStatus(f.deps);
@@ -315,16 +305,9 @@ const base: Status = {
   lanes: [],
   waits: [],
   github: { repos: ["a/b", "c/d", "e/f"], lastPollAt: "2026-10-21T00:52:36.000Z", failures: [], issueAuthors: ["octo-owner"], issueRepos: ["a/b"] },
-  gateway: { state: "live", text: "live, Message Content on (heartbeat 1s ago)" },
-  unacked: 0,
+  gateway: { state: "live", text: "supervisor heartbeat 1s ago" },
   events: { hours: 24, wakes: 0, sources: { owner: 0, lane: 0, noise: 0 }, measured: 0, calls: 0, kinds: [] },
 };
-
-test("owner messages still unacked after the ack window make the status a problem", () => {
-  const text = renderStatus({ ...base, unacked: 2 });
-  expect(text.split("\n")[1]).toBe("⚠️ 확인 필요: 미확인 메시지 2 · 작업 중 레인 0개 · 대기 없음");
-  expect(text).toContain("\n■ 문제\n- 리드에 넘긴 오너 메시지 2개가 확인 시간이 지나도 ack 안 됨 (dori ack)\n");
-});
 
 test("healthy status reads as titled sections with one line per item, in KST", () => {
   const text = renderStatus({ ...base, lanes: [{ key: "ops", model: "anthropic-subscription/claude-opus-5-5", ageMin: 27, repo: "dori-mode", pr: 55, progress: "Full run\nthen  the docs" }] });
@@ -347,7 +330,7 @@ test("healthy status reads as titled sections with one line per item, in KST", (
     "- 없음",
     "",
     "■ 연결",
-    "- Discord 게이트웨이: 연결됨",
+    "- 수퍼바이저 하트비트: 정상 (하트비트 1초 전)",
     "- GitHub: 저장소 3개 감시, 마지막 폴링 1분 전",
     "- 이슈: 저장소 1개 감시",
   ].join("\n"));
@@ -433,17 +416,6 @@ test("a lane's PR is the first one its done claim recorded, ahead of any Done-si
   await f.registry.write(lane("claimed", { status: "done-claimed", done: "see https://github.com/o/guess/pull/1", claim: { at: OPENED, evidence: "e", pulls: [{ repo: "o/r", number: 7, sha: "abc" }] } }));
   const s = await collectStatus(f.deps);
   expect(s.otherLanes?.find((l) => l.key === "claimed")).toMatchObject({ repo: "o/r", pr: 7 });
-});
-
-test("a lane's Discord thread is linked in the configured guild, and not without a guild or off Discord", async () => {
-  expect(discordThreadUrl("discord:1560508306567602259/1576059404787257384", "42")).toBe("https://discord.com/channels/42/1576059404787257384");
-  expect(discordThreadUrl("discord:1576059404787257384", "42")).toBe("https://discord.com/channels/42/1576059404787257384");
-  expect(discordThreadUrl("discord:1/2", undefined)).toBeUndefined();
-  expect(discordThreadUrl("none", "42")).toBeUndefined();
-  const f = await fixture();
-  f.deps = { ...f.deps, config: { ...f.deps.config, discord: { applicationId: "1", guildId: "42", ownerId: "3" } } };
-  await f.registry.write(lane("threaded"));
-  expect((await collectStatus(f.deps)).lanes.find((l) => l.key === "threaded")?.threadUrl).toBe("https://discord.com/channels/42/2");
 });
 
 test("item 6: lanes pending or exhausted on recovery are a status problem and marked in the lane list", async () => {

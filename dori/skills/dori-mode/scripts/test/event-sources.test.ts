@@ -48,7 +48,7 @@ const fixture = (kinds: Record<string, string>, run: Runner = async () => ok()) 
   });
   cleanups.push(() => { sources.close(); });
   const events = (): { id: string; line: string }[] => readJournal(state.dir).events;
-  const settled = async () => { await supervisor.reactionsSettled(); return posted; };
+  const settled = async () => { await supervisor.announcementsSettled(); return posted; };
   return { dir: state.dir, clock, deps, supervisor, sources, events, settled, logs };
 };
 
@@ -245,7 +245,7 @@ test("a failing source is isolated: the others keep delivering, it is reported o
   const status = await collectStatus({ ...f.deps, run: async () => ok("active") });
   const text = renderStatus(status);
   expect(text).toContain("- 소스 bad 실패 (방금부터): bad exited 2: boom: no such host");
-  expect(text).toContain("- 이벤트 소스: discord 이벤트 없음, github 이벤트 없음, sweeps 이벤트 없음, waits 이벤트 없음, emit 이벤트 없음, toodo 이벤트 없음, bad (poll) 이벤트 없음 실패, good (poll) GOOD 방금, missing (file) 이벤트 없음 실패");
+  expect(text).toContain("- 이벤트 소스: github 이벤트 없음, sweeps 이벤트 없음, waits 이벤트 없음, emit 이벤트 없음, toodo 이벤트 없음, bad (poll) 이벤트 없음 실패, good (poll) GOOD 방금, missing (file) 이벤트 없음 실패");
   // Recovered: no longer failing, and its last error stays visible.
   broken = false;
   f.clock.at += 5_000;
@@ -320,7 +320,7 @@ test("the real supervisor runs the built-ins and the user sources through the re
   const world = newWorld();
   world.panes.push({ pane_id: "hc:t1", workspace_id: "test", agent: "omo", agent_status: "working" });
   const base = depsFor(world, clock, state.dir, {
-    discord: { applicationId: "100", guildId: "200", ownerId: "123456789012345" }, discordChannels: ["11"], defaultModel: "test/model",
+    defaultModel: "test/model",
   });
   const deps = {
     ...base,
@@ -342,16 +342,7 @@ test("the real supervisor runs the built-ins and the user sources through the re
     return parked;
   };
   const controller = new AbortController();
-  const running = supervise(deps, controller.signal, {
-    token: `event-sources-test-${state.dir}`, spawnRunner: idleRunner, gatewayLockDir: join(state.dir, "gateway-locks"),
-    http: async (request) => ({ status: 200, headers: {}, body: request.url.endsWith("/threads/active") ? JSON.stringify({ threads: [] }) : "[]" }),
-    lookup: async () => "", statusLookup: async () => "",
-    open: () => {
-      let closed = (_code: number) => {};
-      return { send: () => {}, close: () => { closed(1000); }, onMessage: () => {}, onError: () => {}, onClose: (callback) => { closed = callback; } };
-    },
-    timers: { setInterval: () => 0, clearInterval: () => {} },
-  }, async () => true, undefined, pause);
+  const running = supervise(deps, controller.signal, { spawnRunner: idleRunner }, async () => true, undefined, pause);
   const done = () => {
     const s = readSourceStatus(state.dir)?.sources;
     return s?.waits?.lastKind === "WAIT_DONE" && s.emit?.lastKind === "DEPLOY" && s.broken?.failing === true;

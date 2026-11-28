@@ -60,23 +60,3 @@ export const loadEnvFile = (env: Record<string, string | undefined>, path: strin
   }
   return names;
 };
-
-/** The first non-blank value of `name` in env-file text; blank counts as unset. */
-export const envFileValue = (text: string, name: string): string | undefined =>
-  parseEnvFile(text).find(([key, value]) => key === name && value)?.[1];
-
-/**
- * Resolves a messenger credential the way the supervisor sees it: the process environment first, then the
- * private env file. A process that did not inherit the unit's environment (a restarted lead's tool calls)
- * still finds it there. Callers must never print the returned value.
- */
-export const resolveCredential = (name: string, env: Readonly<Record<string, string | undefined>> = process.env, home = env.HOME || homedir()): string | undefined => {
-  const fromEnv = env[name]?.trim();
-  if (fromEnv) return fromEnv;
-  const path = envFilePath(home);
-  try {
-    return envFileValue(readFileSync(path, "utf8"), name);
-  } catch {
-    return undefined;
-  }
-};

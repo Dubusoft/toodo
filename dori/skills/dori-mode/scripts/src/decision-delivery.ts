@@ -2,12 +2,11 @@ import { createHash } from "node:crypto";
 
 import {
   type AnswerDelivery, type AnswerRevision, type DecisionTarget, type DecisionsFile, decisionTargetOf, type DeliveryState, type OwnerDecision,
-  OwnerDecisionError, patchOne, readDecisions, sameTarget, type TargetLane, updateDecisions,
+  OwnerDecisionError, readDecisions, sameTarget, type TargetLane, updateDecisions,
 } from "./decision-store.ts";
 import { type LaneMessage, type LaneMessageStore, queueLaneMessage, updateLaneMessage } from "./lane-messages.ts";
-import { isToodoRef } from "./messenger/toodo-chat.ts";
 import { RUNNER_LANE_CLI } from "./launch-footer.ts";
-import { choiceLabel, closeOwnerDecision, short, syncDecisionButtons, type TickDeps } from "./owner-decisions.ts";
+import { choiceLabel, closeOwnerDecision, short, type TickDeps } from "./owner-decisions.ts";
 import { LOCAL_RUNNER } from "./runner/serve.ts";
 import { errLine } from "./line-text.ts";
 
@@ -252,29 +251,13 @@ export const decisionDeliveryRefusal = (stateDir: string, message: Pick<LaneMess
   return undefined;
 };
 
-/**
- * The owner's `[System]` status line for newest revision `r` of `d` (references/messaging.md, Owner-facing notices), or
- * undefined when there is none to show (a close or a newer revision took over). `m` is its lane message; `corrects`
- * says an older revision may have reached the lane.
- */
-export const decisionNoticeText = (d: OwnerDecision, r: AnswerRevision, m: LaneMessage | undefined, corrects: boolean): string | undefined => {
-  const head = `[System] ${d.id}:`;
-  const lane = r.target.lane;
-  switch (r.delivery.state) {
-    case "acked": return r.choice === undefined ? `${head} 레인 ${lane}이 답 취소를 받았습니다. 질문은 다시 열려 있습니다.` : `${head} 레인 ${lane}이 ${r.choice}번을 받았습니다.`;
-    case "undelivered": return `${head} 레인 ${lane}이 종료되거나 바뀌어 전달하지 못했습니다. 리드가 이어받습니다.`;
-    case "cancelled": return `${head} 답을 취소했습니다. 질문은 다시 열려 있습니다.`;
-    case "superseded": return undefined;
-    default: break;
-  }
-  if (r.choice === undefined) return `${head} 답을 취소했다고 레인 ${lane}에 알렸습니다.`;
-  if (corrects) return `${head} 레인 ${lane}에 정정(${r.choice}번)을 보냈습니다.`;
-  if (m?.state === "delivered") return `${head} ${r.choice}번을 레인 ${lane}에 전달했습니다. 레인의 수신 확인을 기다립니다.`;
-  const recorded = `${head} ${r.choice}번으로 ${r.rev > 1 ? "바꿔 " : ""}기록했습니다.`;
-  return m?.blocked ? `${recorded} 레인 ${lane}이 받을 수 있게 되면 전달합니다.` : `${recorded} 레인 ${lane}에 전달하는 중입니다.`;
+/** Owner-facing status when a direct answer is first recorded by inbound routing. */
+export const decisionNoticeText = (d: OwnerDecision, r: AnswerRevision): string | undefined => {
+  if (r.choice === undefined) return undefined;
+  return `[System] ${d.id}: ${r.choice}번으로 ${r.rev > 1 ? "바꿔 " : ""}기록했습니다. 레인 ${r.target.lane}에 전달하는 중입니다.`;
 };
 
-/** The owner "message" of an answer-button click (decision-inbound.ts routeDecisionClick): one per interaction. */
+/** The owner "message" of an answer-button click (decision-inbound.ts routeDecisionClick): one per choice message. */
 export const clickMessageId = (interaction: string): string => `click:${interaction}`;
 
 /** ` via button` when revision `r` came from an answer button, else nothing. */
@@ -284,21 +267,10 @@ export const viaButton = (r: Pick<AnswerRevision, "message">): string => (r.mess
 export const ackedLine = (d: OwnerDecision, r: AnswerRevision): string =>
   `DECISION_ANSWER_ACKED ${r.target.lane} ${d.id} r${r.rev} ${r.choice === undefined ? "choice=-" : choiceLabel(d, r.choice)} ${r.delivery.id}${viaButton(r)}: the lane confirmed it received the answer; the decision closes, nothing to do`;
 
-/** A revision that still moves (its notice may change, its ack may close the decision). */
+/** A decision with a direct answer that may settle. */
 const live = (d: OwnerDecision): boolean => d.state !== "closed" && d.state !== "posting" && !!d.revisions?.length;
 
-/**
- * The supervisor's pass over direct answers, every delivery round (decision-inbound.ts queues them, ci-follow.ts types
- * them). In order: reconcileDecisionDeliveries against the open lanes (a lane message the lane acked marks its revision
- * acked; one superseded because its lane closed or changed marks it undelivered), each change logged, and one
- * DECISION_ANSWER_UNDELIVERED for a newest revision it just found undelivered; the owner's `[System]` status message per
- * decision, posted once (stable id `decision-notice:<id>`) and edited as the answer moves; its answer buttons edited to
- * show the chosen option, all disabled once the answer is acked or undelivered (syncDecisionButtons); then a newest revision
- * acked with a choice closes its decision as `dori decision close` would (choice, confirmation, archive, link line),
- * after DECISION_ANSWER_ACKED (digest) under a stable id. Every step reads its state back from decisions.json and the
- * lane message store, so a pass cut short by a crash or a failed post is finished by a later one. `lanes` is read only
- * when a direct answer is still moving.
- */
+/** Reconciles direct answer deliveries and closes a decision when the lane acknowledges its choice. */
 export const decisionDeliveryTick = async (deps: TickDeps, store: LaneMessageStore, lanes: () => Promise<readonly TargetLane[]>): Promise<void> => {
   const { stateDir } = deps.config;
   const log = deps.log ?? console.error;
@@ -312,26 +284,13 @@ export const decisionDeliveryTick = async (deps: TickDeps, store: LaneMessageSto
     if (d && d.state !== "closed" && d.revisions?.at(-1)?.rev === a.rev) await deps.enqueue(`decision-undelivered:${a.decision}:r${a.rev}`, undeliveredLine(a));
   }
   for (const d of readDecisions(stateDir).decisions.filter(live)) {
-    const revisions = d.revisions ?? [];
-    const r = revisions.at(-1);
-    if (!r || !d.thread) continue;
-    const corrects = revisions.slice(0, -1).some((o) => reachedLane(store.get(o.delivery.id)));
-    // On the Toodo chat the answer's routing posted its status line, and a message cannot be edited there.
-    const text = isToodoRef(d.thread) ? undefined : decisionNoticeText(d, r, store.get(r.delivery.id), corrects);
-    if (text && text !== d.notice?.text) {
-      try {
-        if (d.notice) await deps.transport.edit(d.thread, d.notice.message, text);
-        const message = d.notice?.message ?? await deps.transport.send(d.thread, text, `decision-notice:${d.id}`);
-        patchOne(stateDir, d.id, (x) => ({ ...x, notice: { message, text } }));
-      } catch (e) { log(`DECISION_NOTICE_FAILED ${d.id} r${r.rev}: ${errLine(e)}; retried next round`); }
-    }
-    try { await syncDecisionButtons(deps, d); }
-    catch (e) { log(`DECISION_BUTTONS_FAILED ${d.id} r${r.rev}: ${errLine(e)}; retried next round`); }
+    const r = d.revisions?.at(-1);
+    if (!r) continue;
     if (r.delivery.state !== "acked" || r.choice === undefined) continue;
     await deps.enqueue(`decision-acked:${d.id}:r${r.rev}`, ackedLine(d, r));
     try {
       const received = `레인 ${r.target.lane}이 ${r.choice}번을 받았습니다`;
-      await closeOwnerDecision(deps, d.id, { text: received, ownerText: received, choice: r.choice, force: true });
+      await closeOwnerDecision(deps, d.id, { text: received, ownerText: received, choice: r.choice });
       log(`DECISION_CLOSED_ON_ACK ${d.id} r${r.rev} ${r.delivery.id}`);
     } catch (e) {
       if (!(e instanceof OwnerDecisionError && e.code === "DECISION_ALREADY_CLOSED")) log(`DECISION_CLOSE_ON_ACK_FAILED ${d.id} r${r.rev}: ${errLine(e)}; retried next round`);

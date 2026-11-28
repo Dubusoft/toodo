@@ -10,12 +10,11 @@ const state = withState();
 const stops: (() => void)[] = [];
 afterEach(() => { for (const stop of stops.splice(0)) stop(); });
 
-const discord = { applicationId: "1", guildId: "2", ownerId: "300" };
 const write = (path: string, value: unknown): void => { writeFileSync(path, typeof value === "string" ? value : JSON.stringify(value)); };
 
 const fixture = async (file: Record<string, unknown> = {}) => {
   const path = join(state.dir, "config.json");
-  write(path, { discord, discordChannels: ["100"], stateDir: state.dir, ...file });
+  write(path, { ignorePanes: ["100"], stateDir: state.dir, ...file });
   const config = await loadConfig(path, "/home/ana");
   const events: [string, string][] = [];
   const logs: string[] = [];
@@ -30,43 +29,28 @@ const fixture = async (file: Record<string, unknown> = {}) => {
 test("a valid edit applies live keys in place and reports restart-only keys without applying them", async () => {
   const f = await fixture();
   const held: DoriConfig = f.config;
-  write(f.path, { discord: { ...discord, guildId: "9" }, discordChannels: ["100", "200"], stateDir: state.dir, githubIssueAuthors: ["ana"] });
+  write(f.path, { ignorePanes: ["100", "200"], stateDir: join(state.dir, "moved"), githubIssueAuthors: ["ana"] });
   const result = await f.reload();
-  expect(result).toEqual({ state: "applied", live: ["discordChannels", "githubIssueAuthors"], restart: ["discord"] });
-  expect(held.discordChannels).toEqual(["100", "200"]);
+  expect(result).toEqual({ state: "applied", live: ["githubIssueAuthors", "ignorePanes"], restart: ["stateDir"] });
+  expect(held.ignorePanes).toEqual(["100", "200"]);
   expect(held.githubIssueAuthors).toEqual(["ana"]);
-  expect(held.discord?.guildId).toBe("2");
+  expect(held.stateDir).toBe(state.dir);
   expect(f.events.map(([, line]) => line.split(" ")[0])).toEqual(["CONFIG_RELOADED", "CONFIG_RELOAD_RESTART_NEEDED"]);
-  expect(f.events[1]?.[1]).toContain("discord changed");
+  expect(f.events[1]?.[1]).toContain("stateDir changed");
 });
 
 test("an ownerLanguage change applies live and its reload line gives the lead the new language rule", async () => {
   const f = await fixture({ ownerLanguage: "Korean" });
-  write(f.path, { discord, discordChannels: ["100"], stateDir: state.dir, ownerLanguage: "English" });
+  write(f.path, { ignorePanes: ["100"], stateDir: state.dir, ownerLanguage: "English" });
   expect(await f.reload()).toEqual({ state: "applied", live: ["ownerLanguage"], restart: [] });
   expect(f.config.ownerLanguage).toBe("English");
   expect(f.events.at(-1)?.[1]).toEndWith("; The owner's language is English (config ownerLanguage): write every reply, report and question to the owner in English, whatever language their message is in.");
-  write(f.path, { discord, discordChannels: ["100"], stateDir: state.dir });
+  write(f.path, { ignorePanes: ["100"], stateDir: state.dir });
   await f.reload();
   expect(f.events.at(-1)?.[1]).toEndWith("; ownerLanguage is unset now: reply in the language the owner wrote in");
-  write(f.path, { discord, discordChannels: ["100", "200"], stateDir: state.dir });
+  write(f.path, { ignorePanes: ["100", "200"], stateDir: state.dir });
   await f.reload();
   expect(f.events.at(-1)?.[1]).toEndWith(`from ${f.path}`);
-});
-
-test("platforms: the Toodo chat switches live, while switching Discord waits for a restart and never leaves the owner without a chat", async () => {
-  const f = await fixture();
-  const edit = (platforms: string[]) => { write(f.path, { discord, discordChannels: ["100"], stateDir: state.dir, platforms }); return f.reload(); };
-  expect(await edit(["discord", "toodo"])).toEqual({ state: "applied", live: ["platforms"], restart: [] });
-  expect(f.config.platforms).toEqual(["discord", "toodo"]);
-  expect(await edit(["toodo"])).toEqual({ state: "applied", live: [], restart: ["platforms (discord)"] });
-  expect(f.config.platforms).toEqual(["discord", "toodo"]);
-  expect(await edit(["discord"])).toEqual({ state: "applied", live: ["platforms"], restart: [] });
-  expect(f.config.platforms).toEqual(["discord"]);
-  const off = await fixture({ platforms: ["toodo"] });
-  write(off.path, { discord, discordChannels: ["100"], stateDir: state.dir, platforms: ["discord"] });
-  expect(await off.reload()).toEqual({ state: "applied", live: [], restart: ["platforms (discord)"] });
-  expect(off.config.platforms).toEqual(["toodo"]);
 });
 
 test("an unchanged file reports nothing, and the same content is reported under the same event id", async () => {
@@ -84,9 +68,9 @@ test("an invalid edit keeps the last good config and warns: bad JSON, a wrong ty
   const f = await fixture();
   const before = structuredClone(f.config);
   const cases: [() => void, string][] = [
-    [() => { write(f.path, '{ "discordChannels": ["100", '); }, "JSON"],
-    [() => { write(f.path, { discord, discordChannels: "100", stateDir: state.dir }); }, "discordChannels must be an array of strings"],
-    [() => { write(f.path, { discord, discordChannels: ["100"], stateDir: state.dir, laneRules: "x" }); }, "laneRules must be an array of strings"],
+    [() => { write(f.path, '{ "ignorePanes": ["100", '); }, "JSON"],
+    [() => { write(f.path, { ignorePanes: "100", stateDir: state.dir }); }, "ignorePanes must be an array of strings"],
+    [() => { write(f.path, { ignorePanes: ["100"], stateDir: state.dir, laneRules: "x" }); }, "laneRules must be an array of strings"],
     [() => { rmSync(f.path); }, "missing or empty"],
   ];
   for (const [edit, why] of cases) {
@@ -104,13 +88,13 @@ test("the watcher reloads after an in-place write and after an atomic rename", a
   const f = await fixture();
   let next = Promise.withResolvers<ConfigReload>();
   stops.push(watchConfigFiles([f.path], async () => { const r = await f.reload(); next.resolve(r); }, { debounceMs: 20, pollMs: 60_000 }));
-  write(f.path, { discord, discordChannels: ["100", "200"], stateDir: state.dir });
-  expect(await next.promise).toEqual({ state: "applied", live: ["discordChannels"], restart: [] });
+  write(f.path, { ignorePanes: ["100", "200"], stateDir: state.dir });
+  expect(await next.promise).toEqual({ state: "applied", live: ["ignorePanes"], restart: [] });
   next = Promise.withResolvers<ConfigReload>();
-  write(`${f.path}.tmp`, { discord, discordChannels: ["300"], stateDir: state.dir });
+  write(`${f.path}.tmp`, { ignorePanes: ["300"], stateDir: state.dir });
   renameSync(`${f.path}.tmp`, f.path);
   expect((await next.promise).state).toBe("applied");
-  expect(f.config.discordChannels).toEqual(["300"]);
+  expect(f.config.ignorePanes).toEqual(["300"]);
 });
 
 test("a file whose directory cannot be watched is still picked up by the periodic check", async () => {

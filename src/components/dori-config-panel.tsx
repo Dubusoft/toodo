@@ -254,7 +254,7 @@ export function ConfigEntryRow({ entry, save: store, readOnlyNote }: {
  * The keys other settings show in plain words: the language and time zone in General, how Dori
  * works in the Dori section. The raw config leaves them out.
  */
-export const DORI_KEYS_SHOWN_ELSEWHERE: readonly string[] = [DORI_LANGUAGE_KEY, DORI_TIME_ZONE_KEY, "platforms", "autoReport", "threadCloseAfterHours"];
+export const DORI_KEYS_SHOWN_ELSEWHERE: readonly string[] = [DORI_LANGUAGE_KEY, DORI_TIME_ZONE_KEY, "autoReport"];
 
 function EntryList({ label, entries }: { label: string; entries: readonly DoriConfigEntry[] }) {
   return (

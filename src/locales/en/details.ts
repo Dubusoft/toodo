@@ -155,7 +155,6 @@ export const details = {
     ago: (age: string) => `${age} ago`,
     progress: "Progress",
     links: "Links",
-    thread: "Thread",
     pullRequest: "Pull request",
     screen: "Live screen",
     noScreen: "Dori reads the screens of working lanes only.",

@@ -239,14 +239,6 @@ test("config validation still exits the supervisor", async () => {
   expect(existsSync(join(state.dir, "supervisor-lock.sqlite"))).toBe(false);
 });
 
-test("a non-positive handledTimeoutMin exits the supervisor before it takes the lock", async () => {
-  const state = withState();
-  cleanups.push(state.done);
-  const deps = depsFor(newWorld(), fakeClock(T0), state.dir, { handledTimeoutMin: 0 });
-  await expect(supervise(deps, new AbortController().signal)).rejects.toThrow("handledTimeoutMin must be positive");
-  expect(existsSync(join(state.dir, "supervisor-lock.sqlite"))).toBe(false);
-});
-
 test("a non-positive leadStuckRestartMin exits the supervisor before it takes the lock", async () => {
   const state = withState();
   cleanups.push(state.done);

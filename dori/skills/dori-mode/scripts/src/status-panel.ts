@@ -1,9 +1,9 @@
-// The Toodo app's status panel, which stands in for Discord `/status` and `/quota`: the supervisor pushes a snapshot to
+// The Toodo app's status panel: the supervisor pushes a snapshot to
 // the core over loopback (`PUT <url>/mcp/supervisor-status` with the server's mcp-token, the url and token file of
 // tunables.toodoWriter). The core keeps the latest one and streams it to the open panels.
 //
-// The snapshot holds the `/status` pages and the `/quota` text made by the same functions as the slash commands, so the
-// panel and Discord read the same at the same time. Lane screens and the quota read (which may call the usage
+// The snapshot holds the status pages and the quota text made by the same functions as `dori status` and `dori quota`.
+// Lane screens and the quota read (which may call the usage
 // endpoints once the shared cache is older than quotaCacheSec) are taken only while a panel is open: the core answers
 // every push with how many panels follow it, and between pushes the pass asks it (`GET`), so a panel that opens gets
 // a full snapshot within one pass.
@@ -17,7 +17,7 @@ import { readToken, TOODO_TIMEOUT_MS, type ToodoClientConfig, type ToodoFetch } 
 export const STATUS_PANEL_PASS_MS = 5_000;
 /** A push this often while a panel is open. */
 export const STATUS_PANEL_WATCHED_MS = 10_000;
-/** A push this often while none is, so a panel that opens shows a recent `/status` at once. */
+/** A push this often while none is, so a panel that opens shows a recent status at once. */
 export const STATUS_PANEL_IDLE_MS = 30_000;
 /** The lines of a lane's terminal the panel shows. */
 export const STATUS_PANEL_SCREEN_LINES = 40;
@@ -27,9 +27,9 @@ export type StatusPanelDeps = {
   readonly endpoint: ToodoClientConfig;
   readonly now: () => number;
   readonly timeZone?: string;
-  /** What `/status` reads (status.ts collectStatus, with the live lead pane). */
+  /** What the status pages read (status.ts collectStatus, with the live lead pane). */
   readonly status: () => Promise<Status>;
-  /** The shared quota read of `/quota` (quota-cache.ts sharedQuotaLookup). */
+  /** The shared quota read of `dori quota` (quota-cache.ts sharedQuotaLookup). */
   readonly quota: UsageLookup;
   /** The last STATUS_PANEL_SCREEN_LINES lines of a working lane's terminal. */
   readonly screen: (key: string) => Promise<string>;
@@ -59,7 +59,7 @@ const panelMachine = (runner: RunnerView): SupervisorMachine => {
 };
 
 /**
- * The snapshot of now: the `/status` pages, every open lane with its status, and the runner machines always; the quota
+ * The snapshot of now: the status pages, every open lane with its status, and the runner machines always; the quota
  * and the working lanes' screens only when `watched`.
  */
 export const collectPanel = async (deps: StatusPanelDeps, watched: boolean): Promise<SupervisorStatusSnapshot> => {
@@ -78,7 +78,6 @@ export const collectPanel = async (deps: StatusPanelDeps, watched: boolean): Pro
     model: lane.model ?? null,
     ageMin: lane.ageMin,
     progress: lane.progress ?? null,
-    ...(lane.threadUrl ? { threadUrl: lane.threadUrl } : {}),
     // A repo guessed from a worktree directory is no owner/name, so it makes no link.
     ...(lane.repo?.includes("/") && lane.pr !== undefined ? { prUrl: `https://github.com/${lane.repo}/pull/${lane.pr}` } : {}),
     screen: !watched || lane.status !== "working" ? null : await deps.screen(lane.key).then((text) => ({ text }), (e: unknown) => ({ error: message(e) })),

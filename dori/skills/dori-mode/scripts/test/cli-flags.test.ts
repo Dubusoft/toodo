@@ -35,7 +35,7 @@ test("an unknown flag is refused before the command runs, a known one is not", (
 }));
 
 test("a command with its own flag parser keeps its flags", () => inState(async (dir) => {
-  const r = await cli(dir, ["handled", "1", "2", "--tasks", "3"]);
+  const r = await cli(dir, ["handled", "toodo", "2", "--reply", "x"]);
   expect(r.err).not.toContain("unknown option");
-  expect(r.err).toContain("handled needs --lane <key>");
+  expect(r.err).toContain("usage: dori handled REF ID (--reply ID | --task ID)");
 }));

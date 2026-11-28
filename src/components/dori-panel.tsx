@@ -101,51 +101,21 @@ function BehaviorSettings() {
   const t = m.settings.doriPanel;
   const entries = useDoriConfig().data?.entries ?? [];
   const entry = (key: string) => entries.find((e) => e.key === key);
-  const platforms = entry("platforms");
   const autoReport = entry("autoReport");
-  const threadClose = entry("threadCloseAfterHours");
-  if (!platforms && !autoReport && !threadClose) return null;
-  // Both platforms, in whichever order the host wrote them.
-  const both = platforms && platforms.value.split(",").map((p) => p.trim()).sort().join(",") === "discord,toodo" ? platforms.value : "discord,toodo";
+  if (!autoReport) return null;
   return (
     <div className="flex flex-col gap-3">
       <h4 className="font-medium">{t.behavior}</h4>
-      {platforms && (
-        <ChoiceSetting
-          entry={platforms}
-          label={t.platforms}
-          description={t.platformsDescription}
-          options={[
-            // Without platforms, Dori talks on Discord alone.
-            { value: defaultValue(platforms, "discord"), label: t.platformOptions.discord },
-            { value: "toodo", label: t.platformOptions.toodo },
-            { value: both, label: t.platformOptions.both },
-          ]}
-        />
-      )}
-      {autoReport && (
-        <ChoiceSetting
-          entry={autoReport}
-          label={t.autoReport}
-          description={t.autoReportDescription}
-          options={[
-            { value: "off", label: t.autoReportOptions.off },
-            { value: "autopilot", label: t.autoReportOptions.autopilot },
-            { value: defaultValue(autoReport, "all"), label: t.autoReportOptions.all },
-          ]}
-        />
-      )}
-      {threadClose && (
-        <ChoiceSetting
-          entry={threadClose}
-          label={t.threadClose}
-          description={t.threadCloseDescription}
-          options={[6, 12, 24, 48, 72, 168].map((hours) => ({
-            value: hours === 24 ? defaultValue(threadClose, "24") : String(hours),
-            label: t.afterHours(hours),
-          }))}
-        />
-      )}
+      <ChoiceSetting
+        entry={autoReport}
+        label={t.autoReport}
+        description={t.autoReportDescription}
+        options={[
+          { value: "off", label: t.autoReportOptions.off },
+          { value: "autopilot", label: t.autoReportOptions.autopilot },
+          { value: defaultValue(autoReport, "all"), label: t.autoReportOptions.all },
+        ]}
+      />
     </div>
   );
 }

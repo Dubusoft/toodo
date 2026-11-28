@@ -33,7 +33,7 @@ export const RESTART_TRIGGER = "(restart)";
  */
 export type WakeSource = "owner" | "lane" | "noise";
 export const WAKE_SOURCES: readonly WakeSource[] = ["owner", "lane", "noise"];
-const OWNER_EVENTS = new Set(["INBOUND", "INBOUND_EDIT", "INBOUND_DELETE", "VISITOR", "UNHANDLED", RESTART_TRIGGER]);
+const OWNER_EVENTS = new Set(["INBOUND", RESTART_TRIGGER]);
 const LANE_EVENTS = new Set([
   "DEAD_PANE", "UNRECOGNISED_PANE", "NO-PROGRESS", "IDLE-ESCALATE", "NUDGED", "LAUNCH_READY", "WORKING-WHILE-PAUSED",
   "WAIT_DONE", "WAIT_DONE_DIGEST", "WAIT_TIMEOUT", "WAIT_FAILED", "UNREPORTED", "UNRESOLVED", "CI_MERGED", "CI_CONFLICT", "GH_PR",

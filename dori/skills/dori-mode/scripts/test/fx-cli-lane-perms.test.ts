@@ -79,9 +79,8 @@ test("dori report from the lead is refused: a report is a lane's own, sent throu
   expect(r.err).toContain("DORI_CLI_LANE_COMMAND dori report runs only inside a lane");
 });
 
-test("typing discord refuses --off with the usage text before any token lookup", async () => {
+test("typing refuses a Discord channel with the usage text before any Toodo call", async () => {
   const r = await cli(["typing", "discord", "123", "--off"]);
   expect(r.code).toBe(1);
-  expect(r.err).toContain("usage: dori typing [discord] <channel>");
-  expect(r.err).not.toContain("DORI_DISCORD_TOKEN");
+  expect(r.err).toContain("usage: dori typing REF [--off] (REF a Toodo chat ref)");
 });

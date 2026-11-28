@@ -6,7 +6,7 @@
 
 # omo-dori-mode-experimental
 
-Dori 모드는 코딩 에이전트 세션 하나를 늘 켜져 있는 메신저 에이전트로 바꿉니다. 사용자는 디스코드에서 봇 하나와 이야기합니다. Dori는 일마다 hc 터미널에 에이전트 세션을 따로 띄워 맡기고, 자기가 띄운 세션을 모두 기억하며, 일이 정말 끝났을 때만 닫습니다. PR이 머지되고, 이슈가 닫히고, 버전이 배포된 다음에요.
+Dori 모드는 코딩 에이전트 세션 하나를 늘 켜져 있는 메신저 에이전트로 바꿉니다. 사용자는 Toodo 웹 앱의 Toodo 채팅에서 Dori와 이야기합니다. Dori는 일마다 hc 터미널에 에이전트 세션을 따로 띄워 맡기고, 자기가 띄운 세션을 모두 기억하며, 일이 정말 끝났을 때만 닫습니다. PR이 머지되고, 이슈가 닫히고, 버전이 배포된 다음에요.
 
 스킬(`skills/dori-mode/SKILL.md`와 references)과 bun + TypeScript로 만든 작은 CLI `dori`로 구성됩니다. 아직 실험 단계라 거친 부분이 남아 있어요.
 
@@ -18,7 +18,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/Dubusoft/toodo/main/dori
 
 공개 저장소 Dubusoft/toodo(Dori는 그 `dori/` 디렉터리에 있습니다)를 로그인 없이 `~/.dori/src`에 받고, 스킬을 `~/.agents/skills/dori-mode`에 링크하고, `bun link`로 `dori`를 PATH에 올린 뒤 `dori setup`을 실행합니다. 에이전트가 다른 곳에서 스킬을 읽는다면 `SKILLS_DIR`를 지정하세요.
 
-`dori setup`은 디스코드 봇 토큰(`~/.dori/env`에 권한 600으로 저장하고 화면에 보여 주지 않습니다), 메인 채널 ID(토큰으로 읽기 권한을 확인합니다), 기본 모델, 작업 디렉터리, 상태 디렉터리를 묻고니다. 원하면 부팅 때 hc 코어, 슈퍼바이저, 프레즌스가 뜨도록 systemd 사용자 유닛도 설치하는데, 시스템 단계마다 먼저 묻습니다. 언제든 다시 실행해도 됩니다. 현재 값이 기본값으로 나오고 Enter를 누르면 그대로 둡니다. 파이프로 bash에 넘기면 물어볼 터미널이 없어서 안내만 출력하니 `dori setup`을 직접 실행하세요. 스크립트용: `dori setup --yes --token-file FILE --channel ID [--autostart]`.
+`dori setup`은 새 GitHub 이슈로 일을 시작할지를 묻고, 원하면 부팅 때 hc 코어와 슈퍼바이저가 뜨도록 systemd 사용자 유닛도 설치합니다(`--advanced`는 모델, 폴더, 나머지 키도 묻습니다). 시스템 단계마다 먼저 묻습니다. 언제든 다시 실행해도 됩니다. 현재 값이 기본값으로 나오고 Enter를 누르면 그대로 둡니다. 파이프로 bash에 넘기면 물어볼 터미널이 없어서 안내만 출력하니 `dori setup`을 직접 실행하세요. 스크립트용: `dori setup --yes [--autostart]`.
 
 그다음 에이전트를 열고 "Dori mode"라고 말하면 됩니다.
 
@@ -28,7 +28,6 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/Dubusoft/toodo/main/dori
 - hc(herdr-core): 리드와 레인이 돌아가는 헤드리스 터미널 런타임 (`curl -fsSL https://releases.herdr.dev/core/install.sh | sh`)
 - 스킬을 읽는 코딩 에이전트 ([OmO](https://github.com/code-yeongyu/oh-my-openagent) 기준으로 만들었고, 에이전트 실행 명령은 설정으로 바꿀 수 있습니다)
 - PR 머지와 이슈 종료 확인용 `gh`(GitHub CLI), 배포 버전 확인용 `npm`
-- 봇 자체를 위한 [agent-messenger](https://github.com/agent-messenger/agent-messenger)
 
 호스트 감시는 macOS에서 전부 동작합니다. 리눅스에서는 부하와 디스크만 보고, 메모리와 스왑은 알 수 없음으로 나옵니다.
 
@@ -36,17 +35,17 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/Dubusoft/toodo/main/dori
 
 아무것도 없는 상태에서 첫 작업이 끝날 때까지:
 
-1. **디스코드 봇 만들기.** [Discord Developer Portal](https://discord.com/developers/applications)에서 애플리케이션을 만들고, **Bot** 페이지에서 **Message Content Intent**를 켜고 토큰을 복사합니다. 봇을 서버에 초대하고(OAuth2 URL generator, `bot` scope), 봇과 대화할 채널의 ID를 복사합니다(개발자 모드를 켠 뒤 채널 우클릭, 채널 ID 복사).
-2. **hc를 설치**하고 위의 한 줄 설치를 실행합니다. `dori setup`이 그 토큰과 채널 ID, 모델과 폴더를 묻습니다.
+1. **toodo-server 실행하기.** 호스트에서 toodo-server를 띄우고 웹 앱을 엽니다. 그 안의 Toodo 채팅이 Dori와 이야기하는 곳입니다.
+2. **hc를 설치**하고 위의 한 줄 설치를 실행합니다.
 3. **설치 확인**: `dori doctor`가 항목마다 OK, WARN, FAIL을 보여 주고, 실패한 항목에는 정확한 해결 방법을 알려 줍니다.
-4. **켜기**: `dori-lead` 패인에서 코딩 에이전트를 열고 "Dori mode"라고 말합니다. Dori가 자기 이름을 묻고, 봇으로 인사한 뒤 온보딩을 제안합니다.
-5. **일 맡기기**: 채널에서 봇에게 예를 들어 "acme/app README 오타 고치고 PR 올려 줘"라고 씁니다. hc에 레인을 열고, 스레드에 진행 상황을 올리고, PR이 머지되면 레인을 닫습니다.
+4. **켜기**: `dori-lead` 패인에서 코딩 에이전트를 열고 "Dori mode"라고 말합니다. Dori가 자기 이름을 묻고, Toodo 채팅으로 인사한 뒤 온보딩을 제안합니다.
+5. **일 맡기기**: Toodo 채팅에 예를 들어 "acme/app README 오타 고치고 PR 올려 줘"라고 씁니다. hc에 레인을 열고, 태스크 스레드에 진행 상황을 올리고, PR이 머지되면 레인을 닫습니다.
 
-슬래시 명령, 모니터, 자동 시작까지 포함한 전체 설정 안내는 [`references/setup.md`](skills/dori-mode/references/setup.md)에 있습니다.
+모니터와 자동 시작까지 포함한 전체 설정 안내는 [`references/setup.md`](skills/dori-mode/references/setup.md)에 있습니다.
 
 ## Dori 이름 짓기
 
-Dori는 맨 처음에 자기를 뭐라고 부를지 묻습니다. 그냥 "Dori"도 되고, ShipDori나 WorkDori처럼 끝이 Dori로 끝나는 이름도 됩니다. 여러 개를 함께 돌릴 때 구분하기 좋습니다. 정한 이름은 봇 이름과 메시지 끝 서명, 모드 이름에 그대로 쓰입니다. 다음부터는 "ShipDori mode"라고만 하면 다시 켜집니다.
+Dori는 맨 처음에 자기를 뭐라고 부를지 묻습니다. 그냥 "Dori"도 되고, ShipDori나 WorkDori처럼 끝이 Dori로 끝나는 이름도 됩니다. 여러 개를 함께 돌릴 때 구분하기 좋습니다. 정한 이름은 메시지 끝 서명과 모드 이름에 그대로 쓰입니다. 다음부터는 "ShipDori mode"라고만 하면 다시 켜집니다.
 
 ## Dori의 말투
 
@@ -140,16 +139,13 @@ CLI에는 Dori에게 필요한 메신저 기능도 들어 있습니다. `scripts
 
 | 명령 | 하는 일 |
 |---|---|
-| `dori send discord --to T --text X [--thread ID] [--edit ID]` | 메시지 보내기와 수정. rate limit은 기다렸다 다시 보내고, `$(`가 들어간 글은 거부합니다 |
-| `dori presence discord` | 디스코드 게이트웨이로 봇을 온라인으로 유지합니다 |
+| `dori send --to REF\|alerts --text X [--file PATH ...]` | Toodo 채팅에 글을 올립니다(`--to alerts`는 기본 방). `$(`가 들어간 글은 거부합니다 |
+| `dori typing REF [--off]` | Toodo 채팅 채널이나 스레드에 입력 중 표시를 켜거나 끕니다 |
 | `dori transcribe <file>` | `hooks.transcribe` 명령으로 음성 메시지를 글로 변환 |
 | `dori can-launch` | 레인을 하나 더 열 여유가 있는지 확인 |
 
 명령은 없지만 모듈로 제공되는 기능도 있습니다.
-- 디스코드: 스레드 만들기, 이름 바꾸기, 보관
 - `typingWhile`: 작업이 도는 동안 입력 중 표시를 띄워 둡니다
-
-토큰은 `DORI_DISCORD_TOKEN`에서 읽습니다.
 
 ## 테스트
 
@@ -178,8 +174,7 @@ Toodo [기여자 라이선스 동의서](../CLA.md)를 따르며, 자세한 내�
 예전 gist로 OmOMeow 모드를 쓰고 있었다면 봇은 그대로 동작합니다. 네 가지만 바꾸면 Dori가 됩니다.
 
 1. **Dori 이름 정하기.** 그냥 "Dori"나 ShipDori, WorkDori처럼 Dori로 끝나는 이름이면 됩니다. 에이전트에게 "이제부터 네 이름은 ShipDori고, 이건 ShipDori mode야"라고 말하세요. 그다음부터는 "OmOMeow mode" 대신 "ShipDori mode"가 모드를 켜는 말이 됩니다.
-2. **봇 이름과 프로필 사진 바꾸기.**
-   - 디스코드: Developer Portal에서 애플리케이션을 엽니다. **Bot** 페이지에서 사용자 이름과 아이콘을, **General Information**에서 앱 이름과 아이콘을 바꾸고(같은 기본 그림을 쓰면 됩니다) 저장합니다.
+2. **대화를 Toodo 채팅으로 옮기기.** Dori는 Toodo 채팅에서만 이야기합니다. 예전 봇과 서버는 그대로 두며, Dori는 더 이상 읽지 않습니다.
 3. **이 저장소 설치하기.** 위의 한 줄 설치를 실행하고 에이전트에게 "ShipDori mode"라고 말하면, 예전에 붙여 넣던 프롬프트 대신 스킬과 `dori` CLI를 씁니다.
 4. **온보딩 하기.** OmOMeow 때 한 적이 없다면 "온보딩 해 줘"라고 하면 됩니다.
 

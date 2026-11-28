@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
-import { envFilePath, envFileValue } from "./credentials.ts";
-import { alertsChannelOf, autopilotThreadChannelOf, CONFIG_FILE_KEYS, configPath, defaultConfig, discordOn, loadConfig, type DoriConfig } from "./config.ts";
+import { envFilePath } from "./credentials.ts";
+import { CONFIG_FILE_KEYS, configPath, defaultConfig, loadConfig, type DoriConfig } from "./config.ts";
+import { CONFIG_SCHEMA_KEY } from "./config-schema.ts";
 import { gatewayView, readGatewayStatus } from "./gateway-status.ts";
 import { githubSummary } from "./github-events.ts";
 import { pendingLeadRestart } from "./lead-restart.ts";
@@ -12,7 +13,6 @@ import { wakeSource } from "./lead-wakes.ts";
 import { readWakes } from "./store.ts";
 import { legacyPaneKeys, managedPanesPath } from "./managed-panes.ts";
 import { MEMORY_FILE, resolveMemoryRepo } from "./memory-check.ts";
-import { fetchHttp, type Http } from "./messenger/http.ts";
 import { toodoChat, toodoErrorText } from "./messenger/toodo-chat.ts";
 import { BUILT_IN } from "./tunables.ts";
 import { listPanes, paneRow } from "./panes.ts";
@@ -39,14 +39,11 @@ export type Check = { readonly id: string; readonly level: Level; readonly detai
 
 export type DoctorDeps = {
   readonly run: Runner;
-  readonly http: Http;
   readonly clock: Clock;
   readonly config: DoriConfig;
   readonly configPath: string;
   readonly configError?: string;
   readonly envPath: string;
-  readonly token?: string;
-  readonly tokenSource?: "file" | "env";
   readonly exists: (path: string) => boolean;
   /** Where omo memory is looked for when memoryCheck.repo is blank. */
   readonly home: string;
@@ -60,7 +57,7 @@ export type DoctorDeps = {
   readonly modeOf?: (path: string) => number | undefined;
   /** The unit that runs the supervisor (host-runtimes.ts supervisorUnit); dori-supervisor.service when unset. */
   readonly unit?: string;
-  /** With toodo in platforms: the owner's messages waiting on the Toodo chat (read, not taken); throws when it cannot be read. No check when unset. */
+  /** The owner's messages waiting on the Toodo chat (read, not taken); throws when it cannot be read. No check when unset. */
   readonly toodoChat?: () => Promise<number>;
 };
 
@@ -69,9 +66,6 @@ const warn = (id: string, detail: string, fix: string): Check => ({ id, level: "
 const fail = (id: string, detail: string, fix: string): Check => ({ id, level: "FAIL", detail, fix });
 
 const T = { timeoutMs: 5_000 };
-const API = "https://discord.com/api/v10";
-const MESSAGE_CONTENT = 1 << 18;
-const MESSAGE_CONTENT_LIMITED = 1 << 19;
 const restart = (d: DoctorDeps): string => `systemctl --user restart ${d.unit ?? SUPERVISOR_UNIT}`;
 const LEAD_WAKE_WARNING_THRESHOLD = 20;
 
@@ -379,17 +373,12 @@ const managedPanes = async (d: DoctorDeps): Promise<Check[]> => {
   return checks;
 };
 
-/** Discord is checked only while config platforms has it; a Discord switched off is no problem to report. */
-const isDiscord = (d: DoctorDeps): boolean => discordOn(d.config) && (Boolean(d.config.discord) || d.config.discordChannels.length > 0 || d.token !== undefined);
-
 const config = async (d: DoctorDeps): Promise<Check[]> => {
   if (d.configError) return [fail("config", `${d.configPath} does not load: ${d.configError}`, "fix the JSON, or dori setup")];
   if (!d.exists(d.configPath)) return [fail("config", `${d.configPath} is missing`, "dori setup")];
   const c = d.config;
   const missing = [
     ...(c.defaultModel ? [] : ["defaultModel"]),
-    ...(c.discordChannels.length || !discordOn(c) ? [] : ["discordChannels"]),
-    ...(isDiscord(d) ? (["applicationId", "guildId", "ownerId"] as const).filter((k) => !/^\d+$/.test(c.discord?.[k] ?? "")).map((k) => `discord.${k}`) : []),
   ];
   const checks: Check[] = [missing.length
     ? fail("config", `missing or invalid: ${missing.join(", ")}`, "dori setup")
@@ -434,91 +423,33 @@ export const configSources = (d: Pick<DoctorDeps, "config" | "configPath" | "con
   for (const key of CONFIG_FILE_KEYS) {
     const inFile = raw[key] !== undefined && raw[key] !== null;
     if (key === "stateDir" && env.DORI_STATE_DIR) checks.push(line(key, "env DORI_STATE_DIR", c.stateDir));
-    else if (key === "alertsChannel" && !c.alertsChannel) checks.push(line(key, discordOn(c) ? "derived from discordChannels[0]" : "Discord off: the Toodo chat's default room", alertsChannelOf(c)));
-    else if (key === "decisionsChannel" && !c.decisionsChannel && !discordOn(c)) checks.push(line(key, "Discord off: decisions go to the Toodo chat", undefined));
-    else if (key === "decisionsChannel" && !c.decisionsChannel) checks.push(warn(`config.${key}`, "decisionsChannel: unset (decisions go to the requesting channel)", `add "decisionsChannel": "<channel id>" to ${d.configPath}`));
     else if (key === "leadModel" && !inFile) checks.push(line(key, "derived from defaultModel", c.defaultModel));
     else checks.push(line(key, inFile ? "file" : values[key] === undefined ? "unset" : "default", values[key]));
   }
   checks.push(
-    discordOn(c)
-      ? line("autopilot.threadChannel", c.autopilot.threadChannel ? "file" : "derived from discordChannels[0]", autopilotThreadChannelOf(c))
-      : line("autopilot.threadChannel", "Discord off: lanes start with no Discord thread", undefined),
     line("leadPane", env.DORI_LEAD_PANE ? "env DORI_LEAD_PANE" : "derived from the managed panes state", c.leadPane),
   );
   const kept = CONFIG_FILE_KEYS as readonly string[];
-  const ignored = Object.keys(raw).filter((key) => !kept.includes(key) && !legacyPaneKeys(raw).includes(key));
+  const ignored = Object.keys(raw).filter((key) => !kept.includes(key) && key !== CONFIG_SCHEMA_KEY && !legacyPaneKeys(raw).includes(key));
   if (ignored.length) checks.push(warn("config ignored keys", `${ignored.join(", ")} in ${d.configPath}: not read from config.json, the built-in values apply`, `delete ${ignored.join(", ")} from ${d.configPath} (dori setup --migrate)`));
   return checks;
 };
 
-const discord = async (d: DoctorDeps): Promise<Check[]> => {
-  if (!discordOn(d.config)) return [ok("discord", `off (platforms: ${d.config.platforms.join(", ")}); not checked`)];
-  if (!isDiscord(d)) return [ok("discord", "not configured; skipped")];
-  if (!d.token) return [fail("discord token", `DORI_DISCORD_TOKEN is not in ${d.envPath}`, "dori setup --token-file FILE")];
-  const get = (path: string) => d.http({ method: "GET", url: `${API}${path}`, headers: { Authorization: `Bot ${d.token}` }, signal: AbortSignal.timeout(10_000) })
-    .catch(() => ({ status: 0, headers: {}, body: "" }));
-  const json = (body: string): unknown => { try { return JSON.parse(body); } catch { return undefined; } };
-  const checks: Check[] = [];
-  const me = await get("/users/@me");
-  if (me.status !== 200) {
-    const why = me.status === 0 ? "Discord API unreachable" : me.status === 401 ? "token rejected (401)" : `HTTP ${me.status}`;
-    return [fail("discord token", why, me.status === 0 ? "check the network, then rerun dori doctor" : "dori setup --token-file FILE (reset the token in the Developer Portal if needed)")];
-  }
-  const name = (json(me.body) as { username?: unknown } | undefined)?.username;
-  checks.push(d.tokenSource === "env"
-    ? warn("discord token", "works, but only from the shell environment; the units read the env file", `add DORI_DISCORD_TOKEN to ${d.envPath} (dori setup --token-file FILE)`)
-    : ok("discord token", `works${typeof name === "string" ? ` (bot ${name})` : ""}`));
-  const dc = d.config.discord;
-  const [guilds, app, chans] = await Promise.all([
-    get("/users/@me/guilds"), get("/applications/@me"),
-    Promise.all(d.config.discordChannels.map(async (id) => [id, (await get(`/channels/${id}/messages?limit=1`)).status] as const)),
-  ]);
-  if (dc) {
-    const list = json(guilds.body);
-    checks.push(guilds.status === 200 && Array.isArray(list) && list.some((g) => (g as { id?: unknown }).id === dc.guildId)
-      ? ok("bot in guild", dc.guildId)
-      : fail("bot in guild", guilds.status === 200 ? `bot is not in guild ${dc.guildId}` : `guild list HTTP ${guilds.status}`, "invite the bot: Developer Portal > OAuth2 > URL Generator (bot + applications.commands)"));
-  }
-  const bad = chans.filter(([, status]) => status !== 200);
-  checks.push(bad.length
-    ? fail("channels", bad.map(([id, s]) => `${id}: ${s === 403 ? "no access" : s === 404 ? "unknown channel" : `HTTP ${s}`}`).join("; "), "give the bot View Channel + Read Message History on each channel, or fix discordChannels")
-    : ok("channels", `${chans.length} readable`));
-  const flags = (json(app.body) as { flags?: unknown } | undefined)?.flags;
-  checks.push(app.status !== 200 || typeof flags !== "number"
-    ? warn("message content intent", `cannot read application flags (HTTP ${app.status})`, "check in the Developer Portal > Bot > Message Content Intent")
-    : flags & (MESSAGE_CONTENT | MESSAGE_CONTENT_LIMITED)
-      ? ok("message content intent", "enabled")
-      : warn("message content intent", "not enabled; inbound text falls back to REST and can be empty", `Developer Portal > your application > Bot > enable Message Content Intent, then ${restart(d)}`));
-  if (dc) {
-    const cmds = await get(`/applications/${dc.applicationId}/guilds/${dc.guildId}/commands`);
-    const names = Array.isArray(json(cmds.body)) ? (json(cmds.body) as { name?: unknown }[]).map((c) => c.name) : [];
-    const gone = ["quota", "status"].filter((n) => !names.includes(n));
-    checks.push(cmds.status !== 200
-      ? warn("slash commands", `cannot list guild commands (HTTP ${cmds.status})`, restart(d))
-      : gone.length ? warn("slash commands", `not registered: ${gone.map((n) => `/${n}`).join(", ")}`, restart(d)) : ok("slash commands", "/quota and /status registered"));
-  }
-  return checks;
-};
-
-/** The Toodo chat, with toodo in platforms: toodo-server answers the chat tools with the mcp-token. */
+/** The Toodo chat: toodo-server answers the chat tools with the mcp-token. */
 const toodoChatCheck = async (d: DoctorDeps): Promise<Check[]> => {
-  if (!d.config.platforms.includes("toodo") || !d.toodoChat) return [];
+  if (!d.toodoChat) return [];
   const fix = `start toodo-server (toodo.service) and check its mcp-token in ${BUILT_IN.toodoWriter.tokenFile}`;
   try {
     const waiting = await d.toodoChat();
     return [ok("toodo chat", `reachable; ${waiting} owner message${waiting === 1 ? "" : "s"} waiting`)];
   } catch (e) {
-    return [discordOn(d.config) ? warn("toodo chat", toodoErrorText(e), fix) : fail("toodo chat", `${toodoErrorText(e)}; with Discord off the owner reaches dori only here`, fix)];
+    return [fail("toodo chat", `${toodoErrorText(e)}; the owner reaches dori only here`, fix)];
   }
 };
 
-const gateway = (d: DoctorDeps): Check[] => {
-  if (!discordOn(d.config)) return [ok("gateway", "Discord off: no gateway")];
+const heartbeat = (d: DoctorDeps): Check[] => {
   const v = gatewayView(readGatewayStatus(d.config.stateDir), d.clock.now());
-  if (v.state === "live") return [ok("gateway", v.text)];
-  if (v.state === "no-content") return [warn("gateway", v.text, "enable Message Content Intent in the Developer Portal, then " + restart(d))];
-  return [fail("gateway", v.text, restart(d))];
+  return [v.state === "live" ? ok("heartbeat", v.text) : fail("heartbeat", v.text, restart(d))];
 };
 
 const issues = (d: DoctorDeps): Check[] => {
@@ -689,7 +620,7 @@ export const secretStoreChecks = async (d: Pick<DoctorDeps, "config" | "home" | 
 };
 
 export const runDoctor = async (d: DoctorDeps): Promise<Check[]> => {
-  return (await Promise.all([units(d), hc(d), paths(d), config(d), Promise.resolve(configSources(d)), discord(d), toodoChatCheck(d), Promise.resolve(gateway(d)), Promise.resolve(issues(d)), Promise.resolve(leadWakes(d)), Promise.resolve(memory(d)), tools(d), recovery(d), Promise.resolve(runnerChecks(d)), sandbox(d), Promise.resolve(homeEntries(d)), secretStoreChecks(d)])).flat();
+  return (await Promise.all([units(d), hc(d), paths(d), config(d), Promise.resolve(configSources(d)), toodoChatCheck(d), Promise.resolve(heartbeat(d)), Promise.resolve(issues(d)), Promise.resolve(leadWakes(d)), Promise.resolve(memory(d)), tools(d), recovery(d), Promise.resolve(runnerChecks(d)), sandbox(d), Promise.resolve(homeEntries(d)), secretStoreChecks(d)])).flat();
 };
 
 export const doctorExit = (checks: readonly Check[]): number => (checks.some((c) => c.level === "FAIL") ? 1 : 0);
@@ -707,12 +638,9 @@ export const realDoctorDeps = async (): Promise<DoctorDeps> => {
   let cfg = defaultConfig();
   let configError: string | undefined;
   try { cfg = await loadConfig(path); } catch (e) { configError = e instanceof Error ? e.message : String(e); }
-  const envPath = envFilePath();
-  const fromFile = existsSync(envPath) ? envFileValue(readFileSync(envPath, "utf8"), "DORI_DISCORD_TOKEN") : undefined;
-  const token = fromFile ?? process.env.DORI_DISCORD_TOKEN;
   return {
-    run, http: fetchHttp, clock: realClock, config: cfg, configPath: path, ...(configError ? { configError } : {}), envPath, unit: await supervisorUnit(run),
-    ...(token ? { token, tokenSource: fromFile ? "file" as const : "env" as const } : {}), exists: existsSync, home: homedir(),
+    run, clock: realClock, config: cfg, configPath: path, ...(configError ? { configError } : {}), envPath: envFilePath(), unit: await supervisorUnit(run),
+    exists: existsSync, home: homedir(),
     toodoChat: async () => (await toodoChat(BUILT_IN.toodoWriter).pending(false)).length,
   };
 };

@@ -10,13 +10,11 @@ import { type ToodoFile, ToodoMcp, ToodoWriter } from "./toodo-client.ts";
 import type { AppendOutcome } from "./task-finish.ts";
 
 /*
- * A lane on the Toodo chat (config platforms has toodo): every lane works on one task, and its output goes to that task's
- * thread beside its Discord thread (alone with Discord off). Toodo failures never fail a launch: they come back as one line.
+ * A lane on the Toodo chat: every lane works on one task, and its output goes to that task's thread. Toodo failures never
+ * fail a launch: they come back as one line.
  */
 
 type LaneToodoDeps = Pick<FlowDeps, "config" | "tunables" | "registry">;
-
-const toodoOn = (deps: Pick<FlowDeps, "config">): boolean => deps.config.platforms.includes("toodo");
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -46,10 +44,9 @@ export const laneWorkspace = async (deps: Pick<FlowDeps, "tunables">, done: stri
  * Links a freshly launched lane to its task: a lane launched without one gets a new task titled like the lane (recorded
  * on the lane with `taskCreated`, so its close completes it), the task is started with the `lane:<key>` ref (nothing is written when it already is), and its thread is
  * found or opened. The task is created in laneWorkspace (`workspace` is `--workspace`); when it refuses, no task is made.
- * Returns the note line for the launch output, or undefined with the Toodo chat off.
+ * Returns the note line for the launch output.
  */
 export const linkLaneTask = async (deps: LaneToodoDeps, lane: Lane, workspace?: number): Promise<string | undefined> => {
-  if (!toodoOn(deps)) return undefined;
   try {
     let task = lane.task;
     if (task === undefined) {
@@ -76,13 +73,13 @@ export type ToodoPosted = { readonly message: string; readonly target: string };
 /**
  * Posts `text` from lane `lane` into its task's thread, headed by `label` (the report kind), with `files` attached (at
  * most TOODO_FILES_MAX; the rest, and any whose upload fails, are named under the text instead), and returns where it
- * landed. Undefined with the Toodo chat off, for a lane without a task, and on a failure, which is logged as
+ * landed. Undefined for a lane without a task, and on a failure, which is logged as
  * TOODO_CHAT_POST_FAILED and never thrown.
  */
 export const postLaneToodo = async (
   deps: Pick<FlowDeps, "config" | "tunables">, lane: Lane, label: string, text: string, files: readonly ToodoFile[] = [],
 ): Promise<ToodoPosted | undefined> => {
-  if (!toodoOn(deps) || lane.task === undefined) return undefined;
+  if (lane.task === undefined) return undefined;
   try {
     const chat = toodoChat(deps.tunables.toodoWriter);
     const ids: number[] = [], unsent: string[] = files.slice(TOODO_FILES_MAX).map((f) => f.name);
@@ -116,15 +113,14 @@ export const laneOutputFiles = (stateDir: string, key: string): ToodoFile[] => {
 };
 
 /**
- * A follow-up to a lane's report with Discord off (a merge or finished-task fact line, `dori reported --append`): there
- * is no Discord message to edit, so the text goes into the lane's task thread as its own post, whatever thread the lane
- * was bound to before Discord was turned off. Skipped (`appended: false`) with the Toodo chat off or a lane without a
- * task; throws when the post fails (postLaneToodo logs TOODO_CHAT_POST_FAILED).
+ * A follow-up to a lane's report (a merge or finished-task fact line, `dori reported --append`): the text goes into the
+ * lane's task thread as its own post, whatever thread the lane was bound to at launch (a lane bound to a Discord thread
+ * before Dori's Discord code was removed included). Skipped (`appended: false`) for a lane without a task; throws when
+ * the post fails (postLaneToodo logs TOODO_CHAT_POST_FAILED).
  */
 export const appendLaneToodo = async (
   deps: Pick<FlowDeps, "config" | "tunables">, lane: Lane, text: string,
 ): Promise<AppendOutcome & { readonly target?: string }> => {
-  if (!toodoOn(deps)) return { appended: false, why: "Discord and the Toodo chat are both off" };
   if (lane.task === undefined) return { appended: false, why: "the lane has no Toodo task" };
   const posted = await postLaneToodo(deps, lane, "follow-up", text);
   if (!posted) throw new Error(`the follow-up did not reach Toodo task #${lane.task}'s thread`);
@@ -133,4 +129,4 @@ export const appendLaneToodo = async (
 
 /** A lane's outcome report (report-post.ts) into its task thread, with the files of its output attached. */
 export const postLaneReportToodo = (deps: Pick<FlowDeps, "config" | "tunables">, lane: Lane, text: string): Promise<ToodoPosted | undefined> =>
-  postLaneToodo(deps, lane, "report", text, toodoOn(deps) && lane.task !== undefined ? laneOutputFiles(deps.config.stateDir, lane.key) : []);
+  postLaneToodo(deps, lane, "report", text, lane.task !== undefined ? laneOutputFiles(deps.config.stateDir, lane.key) : []);

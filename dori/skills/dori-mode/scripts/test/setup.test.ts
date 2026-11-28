@@ -3,21 +3,14 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { join } from "node:path";
 
 import { readManagedPanes } from "../src/managed-panes.ts";
-import type { Http, HttpRequest } from "../src/messenger/http.ts";
 import type { Ran, Runner } from "../src/run.ts";
 import { Repos, ReposError } from "../src/repos.ts";
 import { DORI_CONFIG_KEYS } from "../src/config-keys.ts";
-import { envFileValue } from "../src/credentials.ts";
-import { CONFIG_REMOVALS_FILE, envSet, mergeConfig, type Prompter, renderTemplate, runSetup, saveConfig, type SetupDeps, SetupError, SETUP_KEYS_FILE, NOTIFY_UNIT, FAILURE_NOTIFY, BOOT_PREP } from "../src/setup.ts";
+import { CONFIG_REMOVALS_FILE, mergeConfig, type Prompter, renderTemplate, runSetup, saveConfig, type SetupDeps, SetupError, SETUP_KEYS_FILE, NOTIFY_UNIT, FAILURE_NOTIFY, BOOT_PREP } from "../src/setup.ts";
 import { hostServices } from "../src/host-runtimes.ts";
 import { CONFIG_SCHEMA_VERSION } from "../src/config-schema.ts";
 import { withState } from "./fakes.ts";
 
-const TOKEN = "MTIz.fake-token_value";
-const CHANNEL = "1100000000000000259";
-const APPLICATION = "1100000000000000201";
-const GUILD = "1100000000000000202";
-const OWNER = "1100000000000000203";
 const TEMPLATES = join(import.meta.dir, "..", "templates");
 
 type Host = { calls: string[][]; linger: boolean; presence?: { enabled: boolean; active: boolean } };
@@ -41,24 +34,14 @@ const fakeHost = (h: Host): Runner => async (argv) => {
   return { code: 127, out: "", err: `unexpected ${argv.join(" ")}` };
 };
 
-const fakeDiscord = (readable: readonly string[], seen: HttpRequest[]): Http => async (req) => {
-  seen.push(req);
-  const id = req.url.split("/").pop() ?? "";
-  if (req.headers?.Authorization !== `Bot ${TOKEN}`) return { status: 401, headers: {}, body: "{}" };
-  if (req.url.endsWith("/oauth2/applications/@me")) return { status: 200, headers: {}, body: JSON.stringify({ id: APPLICATION, owner: { id: OWNER } }) };
-  return readable.includes(id) ? { status: 200, headers: {}, body: JSON.stringify({ id, name: "dori", guild_id: GUILD }) } : { status: 403, headers: {}, body: '{"message":"Missing Access"}' };
-};
-
 const defaults: Prompter = { ask: async (_, c) => c, secret: async () => "", confirm: async (_, f) => f };
 
 let state: ReturnType<typeof withState>;
 let host: Host;
 let log: string[];
-let requests: HttpRequest[];
 
 const deps = (patch: Partial<SetupDeps> = {}): SetupDeps => ({
   run: fakeHost(host),
-  http: fakeDiscord([CHANNEL], requests),
   prompt: defaults,
   log: (l) => log.push(l),
   interactive: false,
@@ -76,7 +59,6 @@ beforeEach(() => {
   state = withState();
   host = { calls: [], linger: false };
   log = [];
-  requests = [];
 });
 afterEach(() => state.done());
 
@@ -87,21 +69,13 @@ test("mergeConfig keeps unknown keys and their order, and saveConfig skips a wri
   const path = join(state.dir, "config.json");
   const existing = { custom: { x: 1 }, defaultModel: "a/b", hooks: { threadReply: ["x"] } };
   writeFileSync(path, JSON.stringify(existing));
-  const next = mergeConfig(existing, { defaultModel: "c/d", discordChannels: ["1"], stateDir: undefined });
-  expect(Object.keys(next)).toEqual(["custom", "defaultModel", "hooks", "discordChannels"]);
+  const next = mergeConfig(existing, { defaultModel: "c/d", ignorePanes: ["p1"], stateDir: undefined });
+  expect(Object.keys(next)).toEqual(["custom", "defaultModel", "hooks", "ignorePanes"]);
   expect(next.custom).toEqual({ x: 1 });
   expect(saveConfig(path, existing, next)).toBe(true);
   expect(mode(path)).toBe(0o600);
   expect(saveConfig(path, next, mergeConfig(next, { defaultModel: "c/d" }))).toBe(false);
   expect(readJson(path)).toEqual(next);
-});
-
-test("envSet replaces the token line in place and keeps every other line", () => {
-  const text = "A=1\nexport DORI_DISCORD_TOKEN='old'\nB=2\n";
-  const next = envSet(text, "DORI_DISCORD_TOKEN", "new");
-  expect(next).toBe("A=1\nDORI_DISCORD_TOKEN=new\nB=2\n");
-  expect(envFileValue(text, "DORI_DISCORD_TOKEN")).toBe("old");
-  expect(envSet("", "K", "v")).toBe("K=v\n");
 });
 
 test("templates render with no placeholder left and no host-specific path, and a missing value is an error", () => {
@@ -127,12 +101,12 @@ test("the supervisor unit has a watchdog, a start limit and an OnFailure owner a
   expect(notify).toContain("ExecStart=/home/ana/.dori/dori-failure-notify.sh %i\n");
   expect(notify).not.toContain("[Install]");
   const script = renderTemplate(readFileSync(join(TEMPLATES, FAILURE_NOTIFY), "utf8"), values);
-  expect(script).toContain('"/x/dori" send discord --to "$channel" --text "$text"');
+  expect(script.trimEnd().split("\n").at(-1)).toBe('exec timeout 60 "/x/dori" send --to alerts --text "$text"');
 });
 
 test("autostart writes the notify unit and an executable notify script but enables only the main units", async () => {
   const d = deps();
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL], autostart: true })).toBe(0);
+  expect(await runSetup(d, { autostart: true })).toBe(0);
   expect(mode(join(d.home, ".dori", FAILURE_NOTIFY))).toBe(0o755);
   expect(existsSync(join(d.unitDir, NOTIFY_UNIT))).toBe(true);
   const enable = host.calls.find((c) => c[0] === "systemctl" && c[2] === "enable");
@@ -142,7 +116,7 @@ test("autostart writes the notify unit and an executable notify script but enabl
 test("autostart installs and starts hc-core, writes the boot prep from its template and leaves a leftover herdr unit untouched", async () => {
   const d = deps();
   await Bun.write(join(d.unitDir, "herdr-server.service"), "old unit\n");
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL], autostart: true })).toBe(0);
+  expect(await runSetup(d, { autostart: true })).toBe(0);
   expect(readdirSync(d.unitDir).sort()).toEqual(["dori-failure-notify@.service", "dori-supervisor.service", "hc-core.service", "herdr-server.service"]);
   expect(readFileSync(join(d.unitDir, "herdr-server.service"), "utf8")).toBe("old unit\n");
   const unit = readFileSync(join(d.unitDir, "hc-core.service"), "utf8");
@@ -160,32 +134,25 @@ test("autostart installs and starts hc-core, writes the boot prep from its templ
 
 test("autostart without hc on PATH stops before writing any unit", async () => {
   const d = deps({ bins: { dori: "/opt/bun/bin/dori", shell: "/bin/zsh" } });
-  await expect(runSetup(d, { token: TOKEN, channels: [CHANNEL], autostart: true })).rejects.toThrow("hc is not on PATH");
+  await expect(runSetup(d, { autostart: true })).rejects.toThrow("hc is not on PATH");
   expect(existsSync(d.unitDir)).toBe(false);
 });
 
-test("non-interactive setup writes env 600, config and units, never logs the token, and a second run changes nothing", async () => {
+test("non-interactive setup writes config and units, and a second run leaves the config unchanged", async () => {
   const d = deps();
   await Bun.write(d.configPath, JSON.stringify({ custom: "keep me", hooks: { threadReply: ["notify", "{text}"] } }));
   await Bun.write(join(d.home, ".dori", "state", CONFIG_REMOVALS_FILE), JSON.stringify(["custom"]));
-  const code = await runSetup(d, { token: TOKEN, channels: [CHANNEL], cwd: "~/code", autostart: true });
+  const code = await runSetup(d, { cwd: "~/code", autostart: true });
   expect(code).toBe(0);
 
-  expect(mode(d.envPath)).toBe(0o600);
-  expect(envFileValue(readFileSync(d.envPath, "utf8"), "DORI_DISCORD_TOKEN")).toBe(TOKEN);
+  expect(existsSync(d.envPath)).toBe(false);
   const cfg = readJson(d.configPath);
   expect(cfg).not.toHaveProperty("custom");
-  expect(cfg).toMatchObject({ hooks: { threadReply: ["notify", "{text}"] }, discordChannels: [CHANNEL], leadCwd: "~/code", stateDir: "~/.dori/state" });
+  expect(cfg).toMatchObject({ hooks: { threadReply: ["notify", "{text}"] }, leadCwd: "~/code", stateDir: "~/.dori/state" });
   expect(cfg).not.toHaveProperty("leadPane");
   expect(cfg).not.toHaveProperty("laneWorkspace");
   // The supervisor creates and records the lead's hc terminal; setup opens none.
   expect(readManagedPanes(join(d.home, ".dori", "state"))).toEqual({});
-  expect(requests.map((r) => r.url)).toEqual([
-    `https://discord.com/api/v10/channels/${CHANNEL}`,
-    "https://discord.com/api/v10/oauth2/applications/@me",
-    `https://discord.com/api/v10/channels/${CHANNEL}`,
-  ]);
-  expect(cfg.discord).toEqual({ applicationId: APPLICATION, guildId: GUILD, ownerId: OWNER });
 
   expect(readdirSync(d.unitDir).sort()).toEqual(["dori-failure-notify@.service", "dori-supervisor.service", "hc-core.service"]);
   const boot = join(d.home, ".dori", "dori-boot-prep.sh");
@@ -193,19 +160,17 @@ test("non-interactive setup writes env 600, config and units, never logs the tok
   expect(readFileSync(join(d.unitDir, "dori-supervisor.service"), "utf8")).toContain(`EnvironmentFile=${d.envPath}`);
   const system = host.calls.map((c) => c.join(" "));
   expect(system).toEqual(["loginctl show-user ana --property=Linger", "loginctl enable-linger ana", "systemctl --user daemon-reload", "systemctl --user list-unit-files dori-presence.service --no-legend --no-pager", "systemctl --user enable hc-core.service dori-supervisor.service", "systemctl --user start hc-core.service"]);
-  expect(log.join("\n")).not.toContain(TOKEN);
   expect(log.at(-1)).toBe("SETUP_DONE");
 
-  const before = { cfg: readFileSync(d.configPath, "utf8"), env: readFileSync(d.envPath, "utf8"), envMtime: statSync(d.envPath).mtimeMs, cfgMtime: statSync(d.configPath).mtimeMs };
+  const before = { cfg: readFileSync(d.configPath, "utf8"), cfgMtime: statSync(d.configPath).mtimeMs };
   host.calls = [];
   log = [];
   expect(await runSetup(d, { autostart: true })).toBe(0);
   expect(readFileSync(d.configPath, "utf8")).toBe(before.cfg);
   expect(statSync(d.configPath).mtimeMs).toBe(before.cfgMtime);
-  expect(statSync(d.envPath).mtimeMs).toBe(before.envMtime);
+  expect(existsSync(d.envPath)).toBe(false);
   expect(host.calls.some((c) => c[1] === "enable-linger")).toBe(false);
   expect(log).toContain("SETUP config unchanged: " + d.configPath);
-  expect(log.join("\n")).not.toContain(TOKEN);
 });
 
 test("a leadModel fallback chain in the config is kept by setup and never asked about", async () => {
@@ -214,8 +179,9 @@ test("a leadModel fallback chain in the config is kept by setup and never asked 
   await Bun.write(d.configPath, JSON.stringify({ leadModel: chain }));
   const asked: string[] = [];
   const ask = d.prompt.ask;
-  expect(await runSetup({ ...d, prompt: { ...d.prompt, ask: async (q, def) => { asked.push(q); return ask(q, def); } } }, { token: TOKEN, channels: [CHANNEL], cwd: "~/code" })).toBe(0);
+  expect(await runSetup({ ...d, interactive: true, prompt: { ...d.prompt, ask: async (q, def) => { asked.push(q); return ask(q, def); } } }, { advanced: true, cwd: "~/code" })).toBe(0);
   expect(readJson(d.configPath).leadModel).toEqual(chain);
+  expect(asked).toContain("State directory [required]");
   expect(asked.some((q) => q.startsWith("Lead model"))).toBe(false);
 });
 
@@ -223,7 +189,7 @@ test("a missing leadCwd, stateDir and unit dir are created, the rendered files h
   const d = deps();
   const cwd = join(state.dir, "home", "work", "deep");
   const stateDir = join(state.dir, "home", "st");
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL], cwd, stateDir, autostart: true })).toBe(0);
+  expect(await runSetup(d, { cwd, stateDir, autostart: true })).toBe(0);
   for (const dir of [cwd, stateDir, d.unitDir]) {
     expect(statSync(dir).isDirectory()).toBe(true);
     expect(log).toContain(`SETUP created ${dir}`);
@@ -233,15 +199,6 @@ test("a missing leadCwd, stateDir and unit dir are created, the rendered files h
   log = [];
   expect(await runSetup(d, { autostart: true })).toBe(0);
   expect(log.some((l) => l.startsWith("SETUP created"))).toBe(false);
-});
-
-test("a channel the bot cannot read stops a non-interactive run before anything is written", async () => {
-  const d = deps();
-  const run = runSetup(d, { token: TOKEN, channels: [CHANNEL, "1111111111111111111"] });
-  await expect(run).rejects.toThrow(SetupError);
-  expect(existsSync(d.envPath)).toBe(false);
-  expect(existsSync(d.configPath)).toBe(false);
-  expect(log.join("\n")).toContain("1111111111111111111 FAILED: the bot cannot see this channel (403 Missing Access)");
 });
 
 test("setup persists optional repo answers and rereads the chosen state directory on rerun", async () => {
@@ -257,7 +214,7 @@ test("setup persists optional repo answers and rereads the chosen state director
   };
   const d = deps({ prompt, interactive: true });
   const stateDir = "~/custom-state";
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL], stateDir, advanced: true })).toBe(0);
+  expect(await runSetup(d, { stateDir, advanced: true })).toBe(0);
   const repos = new Repos(join(d.home, "custom-state"));
   expect(repos.list()).toEqual(["owner/repo", "other/repo"]);
   repos.add("external/change");
@@ -269,7 +226,7 @@ test("setup persists optional repo answers and rereads the chosen state director
 
 test("a blank optional repo answer persists an empty list", async () => {
   const d = deps();
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL] })).toBe(0);
+  expect(await runSetup(d, { advanced: true })).toBe(0);
   const dir = join(d.home, ".dori", "state");
   expect(existsSync(join(dir, "github-repos.json"))).toBe(true);
   expect(new Repos(dir).list()).toEqual([]);
@@ -277,7 +234,7 @@ test("a blank optional repo answer persists an empty list", async () => {
 
 test("invalid setup repo input leaves the stored list and config intact", async () => {
   const d = deps();
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL] })).toBe(0);
+  expect(await runSetup(d)).toBe(0);
   const repos = new Repos(join(d.home, ".dori", "state"));
   repos.add("keep/repo");
   const before = readFileSync(d.configPath, "utf8");
@@ -289,7 +246,7 @@ test("invalid setup repo input leaves the stored list and config intact", async 
 
 test("issue authors are optional, saved lowercased as githubIssueAuthors, kept on rerun, and validated", async () => {
   const d = deps();
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL] })).toBe(0);
+  expect(await runSetup(d)).toBe(0);
   expect("githubIssueAuthors" in readJson(d.configPath)).toBe(false);
   expect(await runSetup(d, { issueAuthors: ["Octo-Owner", "octo-alt"] })).toBe(0);
   expect(readJson(d.configPath).githubIssueAuthors).toEqual(["octo-owner", "octo-alt"]);
@@ -311,7 +268,7 @@ test("with --advanced each system step asks first: declining linger and enable r
     },
   };
   const d = deps({ prompt, interactive: true });
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL], advanced: true })).toBe(0);
+  expect(await runSetup(d, { advanced: true })).toBe(0);
   expect(answers).toEqual({ linger: false, enable: false });
   const system = host.calls.map((c) => c.join(" "));
   expect(system).toEqual(["loginctl show-user ana --property=Linger", "systemctl --user daemon-reload", "systemctl --user list-unit-files dori-presence.service --no-legend --no-pager", "systemctl --user start hc-core.service"]);
@@ -328,7 +285,8 @@ test.each([true, false])("legacy presence migration accepted=%s respects confirm
     prompt: {
       ...defaults,
       confirm: async (q, fallback) => {
-        if (!q.includes(migration.join(" "))) return fallback;
+        if (!q.startsWith("Disable and stop the legacy presence unit?")) return fallback;
+        expect(q).toContain(migration.join(" "));
         confirmations.push(accepted);
         return accepted;
       },
@@ -343,7 +301,7 @@ test.each([true, false])("legacy presence migration accepted=%s respects confirm
   await Bun.write(legacyPath, legacyContent);
 
   // When setup migrates this installation.
-  const code = await runSetup(d, { token: TOKEN, channels: [CHANNEL], autostart: true, advanced: true });
+  const code = await runSetup(d, { autostart: true, advanced: true });
 
   // Then only an accepted migration disables and stops presence, without deleting it.
   expect(code).toBe(0);
@@ -361,7 +319,7 @@ test("non-interactive autostart migrates a legacy unit found outside the output 
   expect(existsSync(join(d.unitDir, "dori-presence.service"))).toBe(false);
 
   // When autostart is explicitly requested.
-  const code = await runSetup(d, { token: TOKEN, channels: [CHANNEL], autostart: true });
+  const code = await runSetup(d, { autostart: true });
 
   // Then the legacy process stops and only the supervised units are installed.
   expect(code).toBe(0);
@@ -386,7 +344,7 @@ test.each(["list-unit-files", "disable", "daemon-reload", "enable"])("autostart 
   });
 
   // When setup attempts autostart.
-  const code = await runSetup(d, { token: TOKEN, channels: [CHANNEL], autostart: true });
+  const code = await runSetup(d, { autostart: true });
 
   // Then it reports the failed command and returns the existing partial-failure code.
   expect(code).toBe(2);
@@ -400,43 +358,6 @@ test.each(["list-unit-files", "disable", "daemon-reload", "enable"])("autostart 
   if (failedStep === "list-unit-files") expect(host.calls.some((c) => c[2] === "enable")).toBe(false);
 });
 
-test("Discord setup discovers metadata, asks the owner with the application owner default and keeps configured ids", async () => {
-  const asked: string[] = [];
-  const chosen = "1100000000000000299";
-  const d = deps({
-    prompt: {
-      ...defaults,
-      ask: async (q, current) => {
-        if (q.startsWith("Discord owner")) { asked.push(current); return chosen; }
-        return current;
-      },
-    },
-  });
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL] })).toBe(0);
-  expect(asked).toEqual([OWNER]);
-  expect(readJson(d.configPath).discord).toEqual({ applicationId: APPLICATION, guildId: GUILD, ownerId: chosen });
-  const before = readFileSync(d.configPath, "utf8");
-  const idempotent = deps({
-    http: async (req) => req.url.endsWith("/oauth2/applications/@me")
-      ? { status: 200, headers: {}, body: JSON.stringify({ id: "1100000000000000288", owner: { id: "1100000000000000277" } }) }
-      : { status: 200, headers: {}, body: JSON.stringify({ id: CHANNEL, guild_id: "1100000000000000266" }) },
-    prompt: { ...defaults, ask: async (q, current) => { if (q.startsWith("Discord owner")) asked.push(current); return current; } },
-  });
-  expect(await runSetup(idempotent, {})).toBe(0);
-  expect(asked).toEqual([OWNER, chosen]);
-  expect(readFileSync(d.configPath, "utf8")).toBe(before);
-  expect(log.join("\n")).not.toContain(TOKEN);
-});
-
-test.each([401, 403, 500])("Discord application discovery HTTP %s writes no config or secret", async (status) => {
-  const normal = fakeDiscord([CHANNEL], requests);
-  const d = deps({ http: async (req) => req.url.endsWith("/oauth2/applications/@me") ? { status, headers: {}, body: TOKEN } : normal(req) });
-  await expect(runSetup(d, { token: TOKEN, channels: [CHANNEL] })).rejects.toThrow(`HTTP ${status}`);
-  expect(existsSync(d.configPath)).toBe(false);
-  expect(existsSync(d.envPath)).toBe(false);
-  expect(log.join("\n")).not.toContain(TOKEN);
-});
-
 const recording = (answers: Record<string, string> = {}): { prompt: Prompter; asked: string[] } => {
   const asked: string[] = [];
   return {
@@ -448,12 +369,12 @@ const recording = (answers: Record<string, string> = {}): { prompt: Prompter; as
 test("--set values are applied as given and never asked", async () => {
   const { prompt, asked } = recording();
   const d = deps({ prompt, interactive: true });
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL], advanced: true, patch: { defaultModel: "x/y", alertsChannel: "1100000000000000300" } })).toBe(0);
-  expect(readJson(d.configPath)).toMatchObject({ defaultModel: "x/y", alertsChannel: "1100000000000000300" });
-  expect(asked.some((q) => q.startsWith("Default model") || q.startsWith("alertsChannel"))).toBe(false);
+  expect(await runSetup(d, { advanced: true, patch: { defaultModel: "x/y", leadThinking: "high" } })).toBe(0);
+  expect(readJson(d.configPath)).toMatchObject({ defaultModel: "x/y", leadThinking: "high" });
+  expect(asked.some((q) => q.startsWith("Default model") || q.startsWith("leadThinking"))).toBe(false);
   expect(asked).toContain("State directory [required]");
   expect(log).toContain("SETUP_KEY_SET defaultModel");
-  expect(log).toContain("SETUP_KEY_SET alertsChannel");
+  expect(log).toContain("SETUP_KEY_SET leadThinking");
 });
 
 const everyQuestion = (): { prompt: Prompter; asked: string[] } => {
@@ -462,20 +383,16 @@ const everyQuestion = (): { prompt: Prompter; asked: string[] } => {
     asked,
     prompt: {
       ask: async (q, current) => { asked.push(q.split(" (")[0] ?? q); return current; },
-      secret: async (q) => { asked.push(q); return TOKEN; },
+      secret: async (q) => { asked.push(q); return ""; },
       confirm: async (q, fallback) => { asked.push(q.split("\n")[0] ?? q); return fallback; },
     },
   };
 };
 
-test("a first interactive setup asks five questions, records every key as settled, and --advanced asks the rest", async () => {
+test("a first interactive setup asks two questions, records every key as settled, and --advanced asks the rest", async () => {
   const fresh = everyQuestion();
-  const prompt: Prompter = { ...fresh.prompt, ask: async (q, current) => { const a = await fresh.prompt.ask(q, current); return q.startsWith("Main Discord") ? CHANNEL : a; } };
-  expect(await runSetup(deps({ prompt, interactive: true }), {})).toBe(0);
+  expect(await runSetup(deps({ prompt: fresh.prompt, interactive: true }))).toBe(0);
   expect(fresh.asked).toEqual([
-    "Discord bot token [required]",
-    "Main Discord channel id(s), comma separated [required]",
-    "Discord owner user id for slash commands [required]",
     "Start work automatically when a watched GitHub repo gets a new issue?",
     "Start hc and the supervisor automatically at boot (systemd user units)?",
   ]);
@@ -491,7 +408,7 @@ test("a first interactive setup asks five questions, records every key as settle
 
 test("answering yes to issue auto-start asks the logins and repos; no clears the logins", async () => {
   const d = deps({ interactive: true, prompt: { ...defaults, confirm: async (q, f) => q.startsWith("Start work automatically") ? true : f, ask: async (q, current) => q.startsWith("GitHub accounts") ? "Octo" : q.startsWith("GitHub repos") ? "o/r" : current } });
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL] })).toBe(0);
+  expect(await runSetup(d)).toBe(0);
   expect(readJson(d.configPath).githubIssueAuthors).toEqual(["octo"]);
   expect(new Repos(join(d.home, ".dori", "state")).list()).toEqual(["o/r"]);
   const off = deps({ interactive: true, prompt: { ...defaults, confirm: async (q, f) => q.startsWith("Start work automatically") ? false : f } });
@@ -511,7 +428,7 @@ test("keys config.json no longer reads are warned about and kept once, then remo
   const before = JSON.stringify({ memoryCheck: true, hooks: { threadReply: ["x"], threadDone: ["y"] }, laneSandbox: { default: ["sb"] }, placement: { defaultMachine: "mini", workspaces: { "*": "mini" } } });
   await Bun.write(d.configPath, before);
   const obsolete = ["memoryCheck", "hooks.threadDone", "laneSandbox.default", "placement.workspaces"];
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL] })).toBe(0);
+  expect(await runSetup(d)).toBe(0);
   const first = readJson(d.configPath);
   expect(first).toMatchObject({ schemaVersion: CONFIG_SCHEMA_VERSION, memoryCheck: true, hooks: { threadReply: ["x"], threadDone: ["y"] }, laneSandbox: { default: ["sb"] }, placement: { defaultMachine: "mini", workspaces: { "*": "mini" } } });
   for (const key of obsolete) expect(log.some((l) => l.startsWith(`SETUP_KEY_REMOVAL_PENDING ${key} (`))).toBe(true);
@@ -523,7 +440,7 @@ test("keys config.json no longer reads are warned about and kept once, then remo
 
   log = [];
   const warned = readFileSync(d.configPath, "utf8");
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL] })).toBe(0);
+  expect(await runSetup(d)).toBe(0);
   const cfg = readJson(d.configPath);
   expect(cfg).not.toHaveProperty("memoryCheck");
   expect(cfg.hooks).toEqual({ threadReply: ["x"] });
@@ -541,7 +458,7 @@ test("a config with a newer schemaVersion is refused before anything is written"
   const d = deps();
   const before = JSON.stringify({ schemaVersion: CONFIG_SCHEMA_VERSION + 1, futureKey: { a: 1 }, defaultModel: "a/b" });
   await Bun.write(d.configPath, before);
-  for (const input of [{ migrate: true }, { token: TOKEN, channels: [CHANNEL] }]) {
+  for (const input of [{ migrate: true }, {}]) {
     await expect(runSetup(d, input)).rejects.toThrow(SetupError);
     expect(readFileSync(d.configPath, "utf8")).toBe(before);
   }
@@ -549,8 +466,37 @@ test("a config with a newer schemaVersion is refused before anything is written"
   expect(existsSync(join(d.home, ".dori", "state", CONFIG_REMOVALS_FILE))).toBe(false);
 });
 
+test("migrate from schema 9 removes every Discord setting in one run and does not report it again", async () => {
+  const d = deps();
+  const retained = { defaultModel: "a/b", leadCwd: "~", stateDir: "~/.dori/state", ownerLanguage: "English" };
+  const discordSettings = {
+    discord: { ownerId: "legacy-owner" },
+    discordChannels: ["legacy-main"],
+    alertsChannel: "legacy-alerts",
+    decisionsChannel: "legacy-decisions",
+    platforms: ["discord"],
+    buttonHooks: {},
+    threadCloseAfterHours: 24,
+  };
+  const retiredKeys = [...Object.keys(discordSettings), "autopilot.threadChannel"].sort();
+  const before = JSON.stringify({
+    schemaVersion: 9, ...retained, ...discordSettings, autopilot: { threadChannel: "legacy-threads", tickSec: 120 },
+  });
+  await Bun.write(d.configPath, before);
+
+  expect(await runSetup(d, { migrate: true })).toBe(0);
+  expect(readJson(d.configPath)).toEqual({ schemaVersion: 10, ...retained, autopilot: { tickSec: 120 } });
+  expect(log.flatMap((line) => /^SETUP_KEY_REMOVED (\S+) \(/.exec(line)?.[1] ?? []).sort()).toEqual(retiredKeys);
+  expect(log.filter((line) => line.startsWith("SETUP_KEY_REMOVAL_PENDING "))).toEqual([]);
+  expect(backups(d.configPath).map((path) => readFileSync(path, "utf8"))).toEqual([before]);
+
+  log = [];
+  expect(await runSetup(d, { migrate: true })).toBe(0);
+  expect(log).toEqual([`SETUP config unchanged: ${d.configPath}`, "SETUP_MIGRATE_DONE"]);
+});
+
 test("migrate removes autopilot.mode (any value) at once with one warning; a second migrate says nothing of it", async () => {
-  const core = { discord: { applicationId: APPLICATION, guildId: GUILD, ownerId: OWNER }, discordChannels: [CHANNEL], defaultModel: "a/b", leadCwd: "~", stateDir: "~/.dori/state" };
+  const core = { defaultModel: "a/b", leadCwd: "~", stateDir: "~/.dori/state" };
   for (const mode of ["on", "shadow", "off"]) {
     const d = deps({ home: join(state.dir, mode), configPath: join(state.dir, mode, "config.json") });
     log = [];
@@ -569,7 +515,7 @@ test("migrate removes autopilot.mode (any value) at once with one warning; a sec
 
 test("a pre-v2 config without worktreeRoot gets its old default written; a set value and a new file are left alone", async () => {
   const d = deps();
-  const core = { discord: { applicationId: APPLICATION, guildId: GUILD, ownerId: OWNER }, discordChannels: [CHANNEL], defaultModel: "a/b", defaultCwd: "~", stateDir: "~/.dori/state" };
+  const core = { defaultModel: "a/b", defaultCwd: "~", stateDir: "~/.dori/state" };
   await Bun.write(d.configPath, JSON.stringify({ schemaVersion: 1, ...core }));
   expect(await runSetup(d, { migrate: true })).toBe(0);
   expect(readJson(d.configPath)).toMatchObject({ schemaVersion: CONFIG_SCHEMA_VERSION, worktreeRoot: "/data/repos/worktrees" });
@@ -580,13 +526,13 @@ test("a pre-v2 config without worktreeRoot gets its old default written; a set v
   expect(readJson(d.configPath).worktreeRoot).toBe("");
 
   const fresh = deps({ home: join(state.dir, "fresh"), configPath: join(state.dir, "fresh", "config.json") });
-  expect(await runSetup(fresh, { token: TOKEN, channels: [CHANNEL] })).toBe(0);
+  expect(await runSetup(fresh)).toBe(0);
   expect(readJson(fresh.configPath)).not.toHaveProperty("worktreeRoot");
 });
 
 test("a current config that needs no change is neither written nor backed up", async () => {
   const d = deps();
-  const text = `${JSON.stringify({ schemaVersion: CONFIG_SCHEMA_VERSION, discord: { applicationId: APPLICATION, guildId: GUILD, ownerId: OWNER }, discordChannels: [CHANNEL], defaultModel: "a/b", leadCwd: "~", stateDir: "~/.dori/state" }, null, 2)}\n`;
+  const text = `${JSON.stringify({ schemaVersion: CONFIG_SCHEMA_VERSION, defaultModel: "a/b", leadCwd: "~", stateDir: "~/.dori/state" }, null, 2)}\n`;
   await Bun.write(d.configPath, text);
   expect(await runSetup(d, { migrate: true })).toBe(0);
   expect(readFileSync(d.configPath, "utf8")).toBe(text);
@@ -597,7 +543,7 @@ test("a current config that needs no change is neither written nor backed up", a
 test("legacy pane keys are migrated into state before they are removed from the config", async () => {
   const d = deps();
   await Bun.write(d.configPath, JSON.stringify({ leadPane: "p9", laneWorkspace: "w9" }));
-  expect(await runSetup(d, { token: TOKEN, channels: [CHANNEL] })).toBe(0);
+  expect(await runSetup(d)).toBe(0);
   expect(readManagedPanes(join(d.home, ".dori", "state"))).toEqual({ leadPane: "p9", migrated: true });
   expect(readJson(d.configPath)).not.toHaveProperty("leadPane");
   expect(log).toContain("SETUP_KEY_REMOVED leadPane (no longer read from config.json)");
@@ -605,20 +551,19 @@ test("legacy pane keys are migrated into state before they are removed from the 
 
 test("migrate removes a retired laneRuntime from the local runner's runner-config.json, keeping a backup", async () => {
   const d = deps();
-  await Bun.write(d.configPath, JSON.stringify({ discordChannels: [CHANNEL] }));
+  await Bun.write(d.configPath, JSON.stringify({ defaultModel: "a/b", leadCwd: "~", stateDir: "~/.dori/state" }));
   const runnerConfig = join(d.home, ".dori", "runner", "runner-config.json");
   await Bun.write(runnerConfig, JSON.stringify({ laneRuntime: "hc", grants: {} }));
-  // Exit 2 only for the required config keys this minimal config lacks; the runner-config pass runs regardless.
-  await runSetup(d, { migrate: true });
+  expect(await runSetup(d, { migrate: true })).toBe(0);
   expect(readJson(runnerConfig)).not.toHaveProperty("laneRuntime");
   expect(existsSync(`${runnerConfig}.bak`)).toBe(true);
   expect(log.some((line) => line.startsWith("SETUP_RUNNER_KEY_REMOVED laneRuntime (hc is the only terminal runtime; every lane opens on hc) from "))).toBe(true);
 });
 
-test("migrate prunes, asks only keys never shown before, records them, and touches neither Discord nor any unit", async () => {
+test("migrate prunes, asks only keys never shown before, records them, and touches no unit", async () => {
   const d = deps();
   const stateDir = join(d.home, ".dori", "state");
-  await Bun.write(d.configPath, JSON.stringify({ discord: { applicationId: APPLICATION, guildId: GUILD, ownerId: OWNER }, discordChannels: [CHANNEL], defaultModel: "a/b", leadCwd: "~", stateDir: "~/.dori/state", memoryCheck: true }));
+  await Bun.write(d.configPath, JSON.stringify({ defaultModel: "a/b", leadCwd: "~", stateDir: "~/.dori/state", memoryCheck: true }));
   const seen = DORI_CONFIG_KEYS.map((s) => s.key).filter((k) => k !== "ownerLanguage" && k !== "ciMergeBase");
   await Bun.write(join(stateDir, SETUP_KEYS_FILE), JSON.stringify(seen));
   const { prompt, asked } = recording({ ownerLanguage: "Korean" });
@@ -630,21 +575,20 @@ test("migrate prunes, asks only keys never shown before, records them, and touch
   expect(log.some((l) => l.startsWith("SETUP_KEY_REMOVAL_PENDING memoryCheck ("))).toBe(true);
   expect(backups(d.configPath)).toHaveLength(1);
   expect(JSON.parse(readFileSync(join(stateDir, SETUP_KEYS_FILE), "utf8"))).toEqual(DORI_CONFIG_KEYS.map((s) => s.key).sort());
-  expect(requests).toEqual([]);
   expect(host.calls).toEqual([]);
   expect(log.at(-1)).toBe("SETUP_MIGRATE_DONE");
 });
 
 test("the lead directory defaults to ~/.dori/lead, which setup creates; a legacy defaultCwd keeps its value as leadCwd", async () => {
   const fresh = deps();
-  expect(await runSetup(fresh, { token: TOKEN, channels: [CHANNEL] })).toBe(0);
+  expect(await runSetup(fresh)).toBe(0);
   expect(readJson(fresh.configPath).leadCwd).toBe("~/.dori/lead");
   expect(existsSync(join(fresh.home, ".dori", "lead"))).toBe(true);
 
-  for (const input of [{ token: TOKEN, channels: [CHANNEL] }, { migrate: true }]) {
+  for (const input of [{}, { migrate: true }]) {
     const d = deps();
     log = [];
-    await Bun.write(d.configPath, JSON.stringify({ discord: { applicationId: APPLICATION, guildId: GUILD, ownerId: OWNER }, discordChannels: [CHANNEL], defaultModel: "a/b", defaultCwd: "~/work", stateDir: "~/.dori/state" }));
+    await Bun.write(d.configPath, JSON.stringify({ defaultModel: "a/b", defaultCwd: "~/work", stateDir: "~/.dori/state" }));
     expect(await runSetup(d, input)).toBe(0);
     const cfg = readJson(d.configPath);
     expect(cfg.leadCwd).toBe("~/work");
@@ -653,9 +597,9 @@ test("the lead directory defaults to ~/.dori/lead, which setup creates; a legacy
   }
 
   // An existing file from before the new default, with neither key, keeps the home directory it ran the lead in.
-  for (const input of [{ token: TOKEN, channels: [CHANNEL] }, { migrate: true }]) {
+  for (const input of [{}, { migrate: true }]) {
     const d = deps();
-    await Bun.write(d.configPath, JSON.stringify({ discord: { applicationId: APPLICATION, guildId: GUILD, ownerId: OWNER }, discordChannels: [CHANNEL], defaultModel: "a/b", stateDir: "~/.dori/state" }));
+    await Bun.write(d.configPath, JSON.stringify({ defaultModel: "a/b", stateDir: "~/.dori/state" }));
     expect(await runSetup(d, input)).toBe(0);
     expect(readJson(d.configPath)).toMatchObject({ schemaVersion: CONFIG_SCHEMA_VERSION, leadCwd: "~" });
   }
@@ -670,11 +614,16 @@ test("migrate without a config creates nothing", async () => {
 
 test("a required key left without a value is reported as a config problem", async () => {
   const d = deps();
-  expect(await runSetup(d, {})).toBe(2);
-  expect(log).toContain("SETUP_KEY_MISSING discord [required]");
-  expect(log).toContain("SETUP_KEY_MISSING discordChannels [required]");
+  expect(await runSetup(d, { unset: ["defaultModel", "leadCwd", "stateDir"] })).toBe(2);
+  const missing = [
+    "SETUP_KEY_MISSING stateDir [required]",
+    "SETUP_KEY_MISSING leadCwd [required]",
+    "SETUP_KEY_MISSING defaultModel [required]",
+  ];
+  expect(log.filter((line) => line.startsWith("SETUP_KEY_MISSING "))).toEqual(missing);
   expect(log.at(-1)).toBe("SETUP_DONE with problems: config");
   log = [];
   expect(await runSetup(d, { migrate: true })).toBe(2);
+  expect(log.filter((line) => line.startsWith("SETUP_KEY_MISSING "))).toEqual(missing);
   expect(log.at(-1)).toBe("SETUP_MIGRATE_DONE with problems: config");
 });

@@ -39,8 +39,10 @@ test("the default table classifies every line as the hard-coded list did, except
   const differ = corpus.filter((line) => eventPriority(line) !== legacyPriority(line));
   // CI follow-up messages the lane about failing checks and conflicts first, and a merged PR is read back by the
   // supervisor: for the lead these are digest. The done claim and the lane close are urgent like LEGACY_URGENT.
-  // ACK_MISSING is no longer enqueued (push delivery re-pushes unacked owner messages): an old journal's line is digest.
-  expect(differ).toEqual(corpus.filter((line) => /^GH_PR \S+ (checks_failing|conflicting|merged)(?: |$)/.test(line) || /^ACK_MISSING( |$)/.test(line)));
+  // ACK_MISSING is no longer enqueued (push delivery re-pushes unacked owner messages), and the Discord-only owner events
+  // (an edit, a delete, a visitor, an unhandled reminder) no longer arrive: an old journal's line is digest.
+  expect(differ).toEqual(corpus.filter((line) => /^GH_PR \S+ (checks_failing|conflicting|merged)(?: |$)/.test(line)
+    || /^(ACK_MISSING|INBOUND_EDIT|INBOUND_DELETE|VISITOR|UNHANDLED)( |$)/.test(line)));
   expect(differ.every((line) => eventPriority(line) === "digest")).toBe(true);
   expect(corpus.filter((line) => eventPriority(line) === "urgent").length).toBeGreaterThan(LEGACY_URGENT.length);
 });
@@ -64,14 +66,13 @@ test("a seen-claim close with no task left to finish is digest; one whose task i
   ]) expect([line, eventClass(line)]).toEqual([line, "lead-urgent"]);
 });
 
-test("routine PR states, runner link states, a delivered nudge, the owner's thread close and queueing Toodo moves are engine-only", () => {
+test("routine PR states, runner link states, a delivered nudge and queueing Toodo moves are engine-only", () => {
   for (const line of [
     "GH_PR acme/app#7 opened sha=abc https://x", "GH_PR acme/app#7 updated sha=abc https://x", "GH_PR acme/app#7 checks_green sha=abc https://x",
     "GH_PR acme/app#7 merged sha=abc https://x", "MERGE_VERIFIED acme/app#7 into dev lane=alpha merge=def https://x",
     "RUNNER_STALE machine=mac no heartbeat for 60 s", "RUNNER_UNREACHABLE machine=mac the runner is alive",
     "RUNNER_UNAVAILABLE runner=mac no admitted connection", "RUNNER_OFFLINE machine=mac runner heartbeat missing for 180 s",
     "NUDGED alpha 16 min silent, delivery delivered", "NUDGED alpha 16 min silent, delivery unconfirmed",
-    "THREAD_CLOSED_BY_OWNER 777 lane alpha channel=#work/alpha",
     "TOODO_TASK_STATUS #14 new->planned workspace=2", "TOODO_TASK_STATUS #14 planned->in_progress workspace=2",
   ]) expect([line, eventClass(line)]).toEqual([line, "engine-only"]);
   // The outcomes the lead still acts on keep their class.

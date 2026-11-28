@@ -29,7 +29,6 @@ const snapshot = (): SupervisorStatusSnapshot => ({
       model: "claude-opus",
       ageMin: 12,
       progress: "writing the view",
-      threadUrl: "https://discord.com/channels/1/2",
       prUrl: "https://github.com/o/r/pull/9",
       screen: { text: "$ npm test" },
     },
@@ -92,7 +91,6 @@ describe("TaskLaneTabs", () => {
     expect(within(lane).getByText("Working")).toBeInTheDocument();
     expect(within(lane).getByText("mac-mini")).toBeInTheDocument();
     expect(within(lane).getByText("writing the view")).toBeInTheDocument();
-    expect(within(lane).getByRole("link", { name: "Thread" })).toHaveAttribute("href", "https://discord.com/channels/1/2");
     expect(within(lane).getByRole("link", { name: "Pull request" })).toHaveAttribute("href", "https://github.com/o/r/pull/9");
     expect(within(lane).getByLabelText("Recent screen of ap-7-1")).toHaveTextContent("$ npm test");
 

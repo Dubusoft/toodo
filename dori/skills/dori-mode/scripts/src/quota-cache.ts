@@ -7,7 +7,7 @@ import { acquireStateLock, StateLockError } from "./state-lock.ts";
 import type { QuotaCacheNote } from "./quota-presentation.ts";
 
 /**
- * One quota read shared by every caller (the autopilot judge, `dori quota`, Discord `/quota`) through a file in the
+ * One quota read shared by every caller (the autopilot judge, `dori quota`, the status panel) through a file in the
  * state dir, so the supervisor and CLI invocations together stay well under the usage endpoints' rate limit:
  *
  * - A read younger than the TTL is served from the file without calling the endpoints.

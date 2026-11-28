@@ -11,9 +11,7 @@ import { runnerWorktreeRoot } from "./runner/hub.ts";
 import { runnerOs } from "./runner-sandbox.ts";
 import type { StartupVerdict } from "./runner/protocol.ts";
 import { doneRepos, doneSyntaxErrors } from "./signals.ts";
-import { normalizeThreadRef } from "./messenger/target.ts";
 import { acquireStateLock } from "./state-lock.ts";
-import { threadIdOf } from "./thread-finality.ts";
 import { githubRepoFromRemote } from "./git-remote.ts";
 import { briefBody, FILE_FOOTER_HEADING, prepareLaneAttachment, prepareLaneBrief, readLaneAttachmentPin, writeLaneAttachmentPin } from "./lane-files.ts";
 import { LaneFileError } from "./lane-file-contract.ts";
@@ -115,9 +113,9 @@ const sandboxedCwdInDoriHome = (deps: FlowDeps, input: LaunchInput): string | un
   return within(cwd, home) ? home : undefined;
 };
 
-/** Open lanes on the input's thread, by thread id: `discord:<thread>` and `discord:<channel>/<thread>` are the same thread. */
+/** Open lanes on the input's thread. */
 const threadSharers = async (deps: FlowDeps, input: LaunchInput): Promise<string[]> =>
-  !input.thread || input.thread === "none" ? [] : (await deps.registry.open()).filter((l) => l.key !== input.key && l.thread !== "none" && threadIdOf(l.thread) === threadIdOf(input.thread ?? "")).map((l) => l.key);
+  !input.thread || input.thread === "none" ? [] : (await deps.registry.open()).filter((l) => l.key !== input.key && l.thread === input.thread).map((l) => l.key);
 
 /** owner/repo from a git remote URL (https, ssh or scp form), lowercased. */
 export const remoteRepo = (url: string): string | undefined =>
@@ -272,7 +270,7 @@ const laneDirs = (machine: string | undefined, dir: string | undefined, leadCwd:
 
 /** The lane fields a launch and an adoption both record; a relaunch (`existing`) keeps its other fields and its recorded times. */
 const baseDraft = (deps: FlowDeps, input: LaunchInput, dir: string | undefined, existing?: Lane): Lane => ({
-  ...(existing ?? {}), key: input.key, title: input.title, thread: normalizeThreadRef(input.thread ?? "none"), ...(input.machine ? { machine: input.machine } : {}),
+  ...(existing ?? {}), key: input.key, title: input.title, thread: input.thread ?? "none", ...(input.machine ? { machine: input.machine } : {}),
   runner: machineRunner(input.machine), runnerAdoptedAt: existing?.runnerAdoptedAt ?? deps.clock.now(),
   brief: input.brief, done: input.done, ...laneDirs(input.machine, dir, deps.config.leadCwd), openedAt: existing?.openedAt ?? iso(deps.clock),
 });
@@ -412,7 +410,7 @@ export const launchLane = async (deps: FlowDeps, input: LaunchInput, existing?: 
   if (input.grants?.length && !sandbox) throw new LaunchError(`LAUNCH_GRANT_REFUSED ${input.key}: --grant needs a sandboxed lane (${choice.skipped ?? "no sandbox"})`);
   // All attachment reads and declaration validation precede reservations and brief writes.
   const prepared = await prepareLeadLaneBrief(deps, {
-    ...(existing ?? {}), key: input.key, title: input.title, thread: normalizeThreadRef(input.thread ?? "none"),
+    ...(existing ?? {}), key: input.key, title: input.title, thread: input.thread ?? "none",
     brief: input.brief, done: input.done, openedAt: existing?.openedAt ?? iso(deps.clock), ...(input.machine ? { machine: input.machine } : {}),
     ...(sandbox ? { sandbox: true as const } : {}), ...(input.grants?.length ? { grants: input.grants } : {}),
   }, undefined, Boolean(existing));

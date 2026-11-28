@@ -1,13 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { GitHubEvents, PRE_SQLITE_GITHUB_FILE } from "../src/github-events.ts";
 import type { Runner } from "../src/run.ts";
 import { RETENTION, SCHEMA_VERSION, SQLITE_FILE, SqliteStore } from "../src/store.ts";
 import { convertJsonStore } from "../src/store-import.ts";
-import { ACK_KEEP_MS, Supervisor } from "../src/supervise.ts";
+import { Supervisor } from "../src/supervise.ts";
 import { depsFor, fakeClock, fakeRunner, newWorld, withState } from "./fakes.ts";
 
 const cleanups: (() => void)[] = [];
@@ -43,34 +43,25 @@ const fixture = (gh?: Runner, root?: string) => {
     return store;
   };
   const logIds = (): string[] => readFileSync(join(state.dir, "lead-events.log"), "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line).id);
-  /** What `dori ack` and `dori handled --reply` leave for the supervisor (without their fsyncs, which only cost time here). */
-  const receipt = (message: number, at: number, reply: boolean) => {
-    mkdirSync(join(state.dir, "acks"), { recursive: true });
-    writeFileSync(join(state.dir, "acks", `11-${message}.json`), JSON.stringify({ channel: "11", message: String(message), at, ...(reply ? { reply } : {}) }));
-  };
-  const acked = (message: number, at: number) => receipt(message, at, false);
-  const handled = (message: number, at: number) => receipt(message, at, true);
-  return { state, clock, deps, open, db, logIds, acked, handled };
+  return { state, clock, deps, open, db, logIds };
 };
 
 test("a delivered event body leaves after 7 days for a tombstone that dedupes it until day 90; unresolved events stay", async () => {
   const f = fixture();
   const supervisor = f.open();
-  // Given a delivered lane report, a delivered owner message the lead read but never handled, and a report it never got.
+  // One report is delivered; another still waits in the journal.
   supervisor.enqueue("report:a", "LANE_REPORT alpha milestone");
-  supervisor.enqueue("discord:11:1", "INBOUND 11 1 owner hello");
+  supervisor.enqueue("toodo:chat:1", "INBOUND room 1 hello");
   await supervisor.flush();
-  f.acked(1, f.clock.now());
-  supervisor.ackTick(60_000);
   supervisor.enqueue("report:b", "LANE_REPORT beta question");
   // When 7 days pass and the loop runs retention.
   f.clock.at += RETENTION.eventBodyMs + HOUR;
-  supervisor.ackTick(60_000);
+  await supervisor.reportTick();
   // Then only the delivered, unneeded body is gone, leaving its tombstone; its delivery row goes with it.
   const store = f.db();
   const ids = store.read(false).events.map((event) => event.id);
   expect(ids).not.toContain("report:a");
-  expect(ids).toEqual(expect.arrayContaining(["discord:11:1", "report:b"]));
+  expect(ids).toEqual(["report:b"]);
   expect(store.tombstoned("report:a")).toBe(true);
   expect(store.deliveredIds().has("report:a")).toBe(false);
   store.close();
@@ -84,35 +75,9 @@ test("a delivered event body leaves after 7 days for a tombstone that dedupes it
   expect(f.logIds().filter((id) => id === "report:a")).toHaveLength(1);
   // And once its tombstone expires at day 90, the same id is a new event again.
   f.clock.at += RETENTION.tombstoneMs;
-  after.ackTick(60_000);
+  await after.reportTick();
   after.enqueue("report:a", "LANE_REPORT alpha again");
   expect(f.db().read(false).events.map((event) => event.line)).toContain("LANE_REPORT alpha again");
-});
-
-test("a handled owner message's tombstone outlives its body and expires at day 90", async () => {
-  const f = fixture();
-  const supervisor = f.open();
-  // Given an owner message the lead handled.
-  supervisor.enqueue("discord:11:5", "INBOUND 11 5 owner please");
-  await supervisor.flush();
-  f.handled(5, f.clock.now());
-  supervisor.ackTick(60_000);
-  // When its tracking is compacted after a day and its body pruned after 7.
-  f.clock.at += ACK_KEEP_MS + HOUR;
-  supervisor.ackTick(60_000);
-  f.clock.at += RETENTION.eventBodyMs;
-  supervisor.ackTick(60_000);
-  // Then only the tombstones remain, and a replayed copy of the message is not tracked again.
-  let journal = f.db().read(false);
-  expect(journal.closedOwners).toEqual(["discord:11:5"]);
-  expect(journal.events.map((event) => event.id)).not.toContain("discord:11:5");
-  supervisor.enqueue("discord:11:5", "INBOUND 11 5 owner please");
-  expect(f.db().read(false).awaitingAck).toEqual([]);
-  // And at day 90 the owner tombstone expires too.
-  f.clock.at += RETENTION.tombstoneMs;
-  supervisor.ackTick(60_000);
-  journal = f.db().read(false);
-  expect(journal.closedOwners).toEqual([]);
 });
 
 test("a version 1 database migrates to the current version and keeps its journal", () => {

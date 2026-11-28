@@ -2,8 +2,7 @@ import { existsSync, type FSWatcher, mkdirSync, watch } from "node:fs";
 import { replaceKnownSecrets } from "./redact.ts";
 import { SecretStore } from "./secret-store.ts";
 import { homedir } from "node:os";
-import { resolveCredential } from "./credentials.ts";
-import { alertsChannelOf, deliveryConfigError, discordOn, laneLanguageChange } from "./config.ts";
+import { deliveryConfigError, laneLanguageChange, TOODO_DEFAULT_ROOM_REF } from "./config.ts";
 import { applyConfigPatch, configReloader, watchConfigFiles } from "./config-watch.ts";
 import { saveLeadPane } from "./managed-panes.ts";
 import { readRunnerRows } from "./runner/hub.ts";
@@ -22,7 +21,6 @@ import { type Emit, watchTick, type FlowDeps } from "./done-flow.ts";
 import { newPendingCleanup } from "./closed-cleanup.ts";
 import { resumeAnsweredGoals } from "./decision-resume.ts";
 import { freshnessTick, scrubForThread, sweepActLine } from "./freshness.ts";
-import { quotaReport } from "./claude-quota.ts";
 import { sharedQuotaLookup } from "./quota-cache.ts";
 import { recoverLanes, type RecoveryEnqueue } from "./recover.ts";
 import { memorySizeTrigger, memorySweep } from "./memory-check.ts";
@@ -34,30 +32,23 @@ import { type GuardMachine, listGuardMachines, loadMachineGuardState, machineGua
 import { run, type Runner, setDefaultRunTimeout } from "./run.ts";
 import { canLaunch, clearLaunchHold, launchHeld } from "./routing.ts";
 import { machineVerdict, summaryOf } from "./placement.ts";
-import { Discord, discordOff } from "./messenger/discord.ts";
-import { acquireDiscordGateway } from "./messenger/discord-lock.ts";
-import { supervisorDiscord, type SupervisorDiscordOptions } from "./messenger/discord-supervisor.ts";
-import { closeThreadButton } from "./messenger/discord-commands.ts";
-import { fetchHttp } from "./messenger/http.ts";
 import { isToodoRef, parseToodoRef, supervisorToodoChat, TOODO_CHAT_POLL_MS, TOODO_CHAT_WAKE_EVENTS, TOODO_DEFAULT_ROOM, toodoChat, toodoErrorText } from "./messenger/toodo-chat.ts";
-import { postOwnerLine } from "./lane-finish.ts";
-import { appendFollowUp, pruneThreadFollowups, redirectIfClosed } from "./thread-followup.ts";
 import { autoReportPoster } from "./auto-report.ts";
 import { appendLaneToodo, postLaneReportToodo } from "./lane-toodo.ts";
 import { routeToodoOwnerMessage, toodoDecisionTick } from "./decision-toodo-cards.ts";
 import type { DirectRouting } from "./decision-inbound.ts";
-import { type AppendOutcome, taskBlocker, taskFinisher } from "./task-finish.ts";
+import { taskBlocker, taskFinisher } from "./task-finish.ts";
 import { ToodoWriter } from "./toodo-client.ts";
 import { writeGatewayStatus } from "./gateway-status.ts";
-import { collectStatus, lookupStatus, type StatusDeps } from "./status.ts";
+import { collectStatus, type StatusDeps } from "./status.ts";
 import { STATUS_PANEL_PASS_MS, STATUS_PANEL_SCREEN_LINES, statusPanelPass } from "./status-panel.ts";
-import { OWNER_NOTICE_AFTER_MS, RetryingDelivery, SuperviseError, Supervisor } from "./supervise.ts";
+import { RetryingDelivery, SuperviseError, Supervisor } from "./supervise.ts";
 import { Waits } from "./waits.ts";
 import { GitHubEvents, type OpenPull } from "./github-events.ts";
 import { driftTick, pullOwners } from "./drift.ts";
 import { CiFollowUp, defaultCiIo } from "./ci-follow.ts";
 import { ReviewGate } from "./review-gate.ts";
-import { reviewSectionOf, reviewStatusTick } from "./review-status.ts";
+import { reviewStatusTick } from "./review-status.ts";
 import { mergePauseHolds } from "./merge-pause.ts";
 import { newSweepCache, passthroughView, type SweepView, sweepRound } from "./sweep-view.ts";
 import { StartupProbe } from "./startup-probe.ts";
@@ -71,18 +62,16 @@ import { ToodoEvents } from "./toodo-events.ts";
 import { openOperations, type OperationStore } from "./operations.ts";
 import { routeReports } from "./lane-reports.ts";
 import { type LaneReportStore, openLaneReports } from "./lane-report-store.ts";
-import { firstStatusTick, type LaneStatusTransport, statusTransportOf } from "./lane-status.ts";
 import { criticalTick, guardAlertDetail, laneMemoryOf, MACHINE_GUARD_STATE_FILE, type PressureIo, pressureIo, warnMachineLanes } from "./supervise-guard.ts";
 import { runnerCallsOf, SupervisorRunners } from "./supervise-runners.ts";
 import { decisionDeliveryTick, reconcileDecisionsAtStart } from "./decision-delivery.ts";
 import { type DecisionContext, openLaneDecision, ownerDecisionTick } from "./owner-decisions.ts";
-import { routedDecisionTransport } from "./decision-toodo.ts";
 import { relayLine, retryDecisionRelays } from "./decision-relay.ts";
 import { errLine } from "./line-text.ts";
 
 export { RUNNER_HUB_RETRY_MS } from "./supervise-runners.ts";
 
-/** Every text the supervisor itself posts to Discord starts with this, so readers can tell it from the lead. */
+/** Every text the supervisor itself posts to the owner starts with this, so readers can tell it from the lead. */
 export const SYSTEM_PREFIX = "[System] ";
 export const systemText = (text: string): string => text.startsWith(SYSTEM_PREFIX) ? text : `${SYSTEM_PREFIX}${text}`;
 
@@ -127,8 +116,8 @@ export const WATCHDOG_PET_MS = 60_000;
 export const TASK_ALERT_MS = 5 * 60_000;
 /**
  * The supervisor's independent tasks. `delivery` hands queued events to the lead and nothing else; `notices` (the owner
- * notices and the lead-side checks, several of which post to Discord) runs beside it, so a slow or failing Discord never
- * holds back lead delivery. `reports` routes lane reports apart from `polling`, so a slow GitHub poll never holds a
+ * notices and the lead-side checks, several of which post to the Toodo chat) runs beside it, so a slow or failing
+ * toodo-server never holds back lead delivery. `reports` routes lane reports apart from `polling`, so a slow GitHub poll never holds a
  * lane question back.
  */
 export const SUPERVISOR_TASKS = ["inbound", "delivery", "notices", "sweeps", "polling", "reports"] as const;
@@ -495,12 +484,11 @@ const checkSuperviseConfig = (deps: FlowDeps): void => {
   const bounds: readonly (readonly [Record<string, unknown>, string, string])[] = [
     [deps.tunables, "cacheTtlMin", "positive"], [deps.tunables, "leadContextCapTokens", "positive"],
     [deps.tunables, "githubPollSeconds", "positive"], [deps.tunables, "githubTimeoutMs", "positive"],
-    [deps.tunables, "discordSafetyPollSeconds", "positive"], [deps.tunables, "digestMaxDelayMin", "positive"],
-    [deps.tunables, "ackTimeoutSec", "positive"], [deps.config, "runTimeoutMs", "zero or positive"],
-    [deps.tunables, "handledTimeoutMin", "positive"], [deps.tunables, "reportTimeoutMin", "positive"],
+    [deps.tunables, "digestMaxDelayMin", "positive"], [deps.config, "runTimeoutMs", "zero or positive"],
+    [deps.tunables, "reportTimeoutMin", "positive"],
     [deps.tunables, "resolveTimeoutMin", "positive"], [deps.config, "leadStuckRestartMin", "positive"],
     [deps.config, "leadChildWaitMaxMin", "positive"], [deps.tunables, "idleEscalateMin", "positive"],
-    [deps.tunables, "waitMaxFailures", "a positive integer"], [deps.config, "threadCloseAfterHours", "positive"],
+    [deps.tunables, "waitMaxFailures", "a positive integer"],
   ];
   for (const [source, key, rule] of bounds) {
     const value = source[key] as number;
@@ -603,7 +591,6 @@ const githubPolling = (deps: FlowDeps, probe: StartupProbe, enqueue: SourceEnque
 type SweepTaskParts = {
   readonly deps: FlowDeps;
   readonly supervisor: Supervisor;
-  readonly discord: Discord;
   readonly review: ReviewGate;
   readonly registry: EventSources;
   readonly enqueue: SourceEnqueue;
@@ -627,14 +614,12 @@ const sweepTask = (p: SweepTaskParts): (() => Promise<void>) => {
   // The supervisor finishes a merged lane's Toodo task and appends the merge to its report (task-finish.ts).
   // An autopilot task it cannot finish, or whose lane closed cancelled, gets a blocker note instead.
   const toodoWriter = new ToodoWriter(deps.tunables.toodoWriter);
-  // With Discord off there is no report message to edit: the fact line goes into the lane's Toodo task thread instead,
-  // also for a lane bound to a Discord thread before Discord was turned off.
-  const append = (lane: Lane, text: string): Promise<AppendOutcome> =>
-    discordOn(deps.config) ? appendFollowUp(deps.config.stateDir, p.discord, lane, text) : appendLaneToodo(deps, lane, text);
+  // The fact line goes into the lane's Toodo task thread, whatever thread the lane was bound to at launch.
+  const append = (lane: Lane, text: string) => appendLaneToodo(deps, lane, text);
   const finishTask = taskFinisher({ writer: toodoWriter, append, language: () => deps.config.ownerLanguage });
   // A clean done claim of a lane config autoReport covers is posted as its report by the supervisor (auto-report.ts).
   const autoReport = autoReportPoster({
-    config: deps.config, discord: p.discord, now: deps.clock.now, home: home || homedir(), language: () => deps.config.ownerLanguage,
+    config: deps.config, now: deps.clock.now, home: home || homedir(), language: () => deps.config.ownerLanguage,
     toodo: (lane, text) => postLaneReportToodo(deps, lane, text),
   });
   // The watch sweep holds a lane whose review is pending through the same gate CI follow-up merges with (D11).
@@ -670,18 +655,15 @@ const leadDelivery = (deps: FlowDeps, supervisor: Supervisor, systemPost: (chann
     repair: () => supervisor.repairLeadPane(),
     enqueue: (id, line) => supervisor.enqueue(id, line),
     notify: async (text) => {
-      const channel = alertsChannelOf(deps.config);
-      if (!channel) throw new Error("no discordChannels configured");
-      await systemPost(channel, `수퍼바이저가 리드에게 이벤트를 계속 전달하지 못하고 있습니다. 이벤트는 보관 중이며 계속 재시도합니다. (${text})`);
+      await systemPost(TOODO_DEFAULT_ROOM_REF, `수퍼바이저가 리드에게 이벤트를 계속 전달하지 못하고 있습니다. 이벤트는 보관 중이며 계속 재시도합니다. (${text})`);
     },
     log: (line) => { console.error(line); },
   }, boot);
 
-/** Records whether the Discord gateway is connected, for `dori status`; a failure is logged, never thrown. */
-const writeHeartbeat = (deps: FlowDeps, inbound: ReturnType<typeof supervisorDiscord> | undefined): void => {
+/** Records the supervisor's heartbeat, for `dori status`, doctor and the host's healthcheck; a failure is logged, never thrown. */
+const writeHeartbeat = (deps: FlowDeps): void => {
   try {
-    const gateway = inbound?.state() ?? { connected: false, messageContent: false };
-    writeGatewayStatus(deps.config.stateDir, { pid: process.pid, at: deps.clock.now(), ...gateway });
+    writeGatewayStatus(deps.config.stateDir, { pid: process.pid, at: deps.clock.now() });
   } catch (e) {
     console.error(`GATEWAY_STATUS_ERROR ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -692,8 +674,6 @@ type LaneReportParts = {
   readonly ops: OperationStore;
   readonly reports: LaneReportStore;
   readonly review: ReviewGate;
-  /** Null with Discord off: no lane status message is written, whatever thread a lane is bound to. */
-  readonly transport: LaneStatusTransport | null;
   readonly decisions: DecisionContext;
   readonly home: string;
   readonly enqueue: SourceEnqueue;
@@ -706,7 +686,7 @@ type LaneReportParts = {
  * thread; failures are logged, never thrown.
  */
 const laneReportsPass = (p: LaneReportParts): (() => Promise<void>) => {
-  const { deps, reports, transport, decisions, home, enqueue } = p;
+  const { deps, reports, decisions, home, enqueue } = p;
   let nextHistoryPrune = 0;
   return () => p.watchdog.track("reports", (async () => {
     const now = deps.clock.now();
@@ -715,15 +695,13 @@ const laneReportsPass = (p: LaneReportParts): (() => Promise<void>) => {
       reports.prune(now);
       nextHistoryPrune = now + 60 * 60_000;
     }
-    const lines = await routeReports(deps, reports, enqueue, home, transport, (lane, report) => openLaneDecision(decisions, lane, report),
-      reviewSectionOf(deps, p.review));
-    // Review status in each author lane's status message and the owner decision of a reached review limit
-    // (review-status.ts), right after the reports so the two never write one status message at once.
+    const lines = await routeReports(deps, reports, enqueue, home, (lane, report) => openLaneDecision(decisions, lane, report));
+    // The owner decision of a reached review limit (review-status.ts), right after the reports.
     lines.push(...await reviewStatusTick({
-      flow: deps, stores: p.review, reports, transport, decisions, home,
+      flow: deps, stores: p.review, decisions, home,
       emit: (id, line) => { enqueue(id, line); },
     }));
-    return [...lines, ...transport ? await firstStatusTick(deps, transport, reports, home) : []];
+    return lines;
   })())
     .then((lines) => { for (const line of lines) console.log(line); })
     .catch((e: unknown) => { console.error(`LANE_REPORTS_ERROR ${e instanceof Error ? e.message : String(e)}`); });
@@ -732,38 +710,17 @@ const laneReportsPass = (p: LaneReportParts): (() => Promise<void>) => {
 type NoticeParts = {
   readonly deps: FlowDeps;
   readonly supervisor: Supervisor;
-  readonly discord: Discord;
   readonly decisions: DecisionContext;
   readonly laneMessages: () => LaneMessageStore;
-  /** An owner notice goes where the message came from: its Discord channel or thread. */
-  readonly ownerNotice: (channel: string, text: string, id: string) => Promise<void>;
 };
 
-/** The notices task's pass: the owner notices, then the report, decision and thread checks, each failing on its own. */
+/** Run the report and decision checks independently of lead delivery. */
 const ownerNotices = (p: NoticeParts): (() => Promise<void>) => {
   const { deps, supervisor, decisions, laneMessages } = p;
-  // One plain line to the owner per message a lead-side check found due; each notice is attempted once per round.
-  const noticeDue = async (
-    kind: "delay" | "ack" | "unhandled", text: string, checkCode: string, failCode: string,
-    findDue: () => ReturnType<typeof supervisor.overdueOwnerMessages>, announce?: string,
-  ): Promise<void> => {
-    let due: ReturnType<typeof supervisor.overdueOwnerMessages>;
-    try { due = findDue(); }
-    catch (e) { console.error(`${checkCode} ${e instanceof Error ? e.message : String(e)}`); return; }
-    for (const { channel, message } of due) {
-      if (announce) console.log(`${announce} ${channel}/${message}`);
-      try {
-        supervisor.noticeAttempt(kind, channel, message);
-        await p.ownerNotice(channel, text, `${kind}:${channel}:${message}`);
-        supervisor.noticeSent(kind, channel, message);
-      }
-      catch (e) { console.error(`${failCode} ${channel}/${message}: ${e instanceof Error ? e.message : String(e)}`); }
-    }
-  };
   // A finished lane the lead did not report to the owner (dori reported) in time: UNREPORTED wakes the lead. The
   // supervisor never tells the owner itself.
   let decisionsReconciled = false;
-  const checkReported = async (): Promise<void> => {
+  return async () => {
     await isolate("REPORT_CHECK_ERROR", () => supervisor.reportTick());
     // A decision event the lead did not close (dori resolved) in time: UNRESOLVED wakes the lead.
     await isolate("RESOLVE_CHECK_ERROR", () => supervisor.resolveTick());
@@ -786,34 +743,12 @@ const ownerNotices = (p: NoticeParts): (() => Promise<void>) => {
     });
     // Owner decisions: a stuck post, a missing link line, a pending archive, a queued secret request.
     await isolate("OWNER_DECISION_CHECK_ERROR", () => ownerDecisionTick({ ...decisions, enqueue: (id, line) => supervisor.enqueue(id, line), log: (line) => { console.error(line); } }));
-    // With the Toodo chat on: each decision's card there, its close line, and its thread's waiting mark.
-    if (deps.config.platforms.includes("toodo")) {
-      await isolate("TOODO_DECISION_ERROR", () => toodoDecisionTick({
-        stateDir: deps.config.stateDir, chat: () => toodoChat(deps.tunables.toodoWriter), home: decisions.home, log: (line) => { console.error(line); },
-        threadTitle: async (d) => (await deps.registry.list()).find((lane) => lane.key === d.lane)?.title ?? `#${d.task ?? ""}`,
-      }));
-    }
-    // Owner-closed records and closed lanes' last reports past THREAD_FOLLOWUP_KEEP_MS are dropped.
-    await isolate("THREAD_FOLLOWUP_PRUNE_ERROR", async () => { pruneThreadFollowups(deps.config.stateDir, deps.clock.now(), await deps.registry.open()); });
-    // A thread whose work is all finished and reported gets the owner's close button on its last report, and is closed
-    // (archived) once threadCloseAfterHours pass with no click. With Discord off there is no button to show or thread to
-    // archive: the pass is skipped, and a thread's pending wait resumes once Discord is back on.
-    if (discordOn(deps.config)) await isolate("THREAD_AUTO_CLOSE_CHECK_ERROR", () => supervisor.autoCloseTick({
-      button: (thread, message, state) => p.discord.editComponents(thread, message, state === "none" ? [] : closeThreadButton(thread, state === "closed")),
-      archive: (thread) => p.discord.setThread(thread, { archived: true }),
+    // Each decision's card on the Toodo chat, its close line, and its thread's waiting mark.
+    await isolate("TOODO_DECISION_ERROR", () => toodoDecisionTick({
+      stateDir: deps.config.stateDir, chat: () => toodoChat(deps.tunables.toodoWriter), home: decisions.home, log: (line) => { console.error(line); },
+      threadTitle: async (d) => (await deps.registry.list()).find((lane) => lane.key === d.lane)?.title ?? `#${d.task ?? ""}`,
     }));
-  };
-  return async () => {
-    // An owner message the lead has not taken within a minute gets one plain line in its own channel or thread.
-    await noticeDue("delay", deps.tunables.ownerDelayNotice, "OWNER_NOTICE_ERROR", "OWNER_NOTICE_FAILED",
-      () => supervisor.overdueOwnerMessages(OWNER_NOTICE_AFTER_MS));
-    // A message the lead was handed but never acked is re-pushed, and after a second window the owner gets one line.
-    await noticeDue("ack", deps.tunables.ackMissingNotice, "ACK_CHECK_ERROR", "ACK_NOTICE_FAILED",
-      () => supervisor.ackTick(deps.tunables.ackTimeoutSec * 1_000), "ACK_MISSING_NOTICE");
-    // A message the lead acked but never linked to lanes or a reply: UNHANDLED wakes it, then the owner gets one line.
-    await noticeDue("unhandled", deps.tunables.unhandledNotice, "HANDLED_CHECK_ERROR", "UNHANDLED_NOTICE_FAILED",
-      () => supervisor.handledTick(deps.tunables.handledTimeoutMin * 60_000), "UNHANDLED_NOTICE");
-    await checkReported();
+
   };
 };
 
@@ -898,12 +833,11 @@ const watchTasks = async (
       const id = `task-stalled:${boot}:${which}:${deps.clock.now() - ms}`;
       console.error(line);
       try { supervisor.enqueue(id, line); } catch (e) { console.error(`TASK_STALLED_ENQUEUE_FAILED ${which} ${e instanceof Error ? e.message : String(e)}`); }
-      // A stuck delivery task cannot hand the line to the lead, so the owner hears it in the alerts channel (else the
-      // main channel). Not awaited: a hung post must not stop this loop.
-      const channel = alertsChannelOf(deps.config);
-      if (which === "delivery" && channel) {
+      // A stuck delivery task cannot hand the line to the lead, so the owner hears it in the Toodo chat's default room.
+      // Not awaited: a hung post must not stop this loop.
+      if (which === "delivery") {
         const notice = `도리 경고: 수퍼바이저의 전달 작업이 ${Math.round(ms / 60_000)}분째 끝나지 않고 있습니다. 다른 작업은 계속 돌아가며, ${Math.round(WATCHDOG_STALL_MS / 60_000)}분까지 멈춰 있으면 수퍼바이저가 재시작됩니다. (TASK_STALLED ${which})`;
-        void systemPost(channel, scrubForThread(notice, homedir()), id)
+        void systemPost(TOODO_DEFAULT_ROOM_REF, scrubForThread(notice, homedir()), id)
           .catch((e: unknown) => { console.error(`TASK_STALLED_NOTIFY_FAILED ${which} ${e instanceof Error ? e.message : String(e)}`); });
       }
     }
@@ -922,8 +856,7 @@ const watchTasks = async (
  */
 export const supervise = async (
   deps: FlowDeps, signal: AbortSignal,
-  options: Partial<Omit<SupervisorDiscordOptions, "emit">> & {
-    readonly gatewayLockDir?: string;
+  options: {
     /** Starts the local runner child (default Bun.spawn); tests inject one that starts nothing. */
     readonly spawnRunner?: LocalChildDeps["spawn"];
     /** The config.json to hot-reload (cli.ts: configPath()); without it nothing is watched. */
@@ -931,13 +864,11 @@ export const supervise = async (
   } = {},
   notify: (state: string) => Promise<boolean> = sdNotify, probe = new StartupProbe(), wait: Pause = pause,
 ): Promise<void> => {
-  const { gatewayLockDir, spawnRunner, configFile, ...discordOptions } = options;
+  const { spawnRunner, configFile } = options;
   checkSuperviseConfig(deps);
   setDefaultRunTimeout(deps.config.runTimeoutMs);
   let release: (() => void) | undefined;
   let ready = false;
-  let releaseGateway: (() => void) | undefined;
-  let inbound: ReturnType<typeof supervisorDiscord> | undefined;
   let sources: EventSources | undefined;
   let scheduleOps: OperationStore | undefined;
   let reports: LaneReportStore | undefined;
@@ -954,46 +885,17 @@ export const supervise = async (
   let ci: CiFollowUp | undefined;
   try {
     release = probe.step("lock", () => acquireSupervisor(deps.config.stateDir));
-    // Discord is switched at start (config platforms): off, the supervisor needs no token, holds no gateway and reads no
-    // Discord inbound, its Discord client refuses every call, and what it tells the owner goes to the Toodo chat.
-    const onDiscord = discordOn(deps.config);
-    const token = onDiscord ? discordOptions.token ?? probe.step("credential", () => resolveCredential("DORI_DISCORD_TOKEN")) : undefined;
-    if (onDiscord && !token) throw new SuperviseError("supervise requires DORI_DISCORD_TOKEN for lossless paginated Discord polling (or drop discord from config platforms)");
-    if (token) releaseGateway = probe.step("gateway-lock", () => acquireDiscordGateway(token, gatewayLockDir));
-    const discord = token ? new Discord(fetchHttp, deps.clock, token) : discordOff(deps.clock);
-    if (!onDiscord) console.log(`DISCORD_OFF platforms=${deps.config.platforms.join(",")}: no Discord gateway or inbound; owner notices and decisions go to the Toodo chat`);
     const stateDir = deps.config.stateDir;
     const chat = () => toodoChat(deps.tunables.toodoWriter);
-    // A line on the Toodo chat: at its ref, else (Discord off) in the default room.
-    const toodoPost = async (channel: string | undefined, body: string): Promise<void> => {
-      await chat().reply(channel && isToodoRef(channel) ? parseToodoRef(channel) : TOODO_DEFAULT_ROOM, body);
-    };
-    // A [System] post of the supervisor's own into `channel`; a thread the owner closed gets nothing (a post would reopen
-    // it): one line linking it goes to its parent channel, else the owner channel (redirectIfClosed). A Toodo chat ref,
-    // and any channel with Discord off, is posted on the Toodo chat.
-    const systemPost = async (channel: string, text: string, id?: string): Promise<void> => {
-      const body = systemText(text);
-      if (!onDiscord || isToodoRef(channel)) return toodoPost(channel, body);
-      const redirected = await redirectIfClosed(stateDir, discord, channel, body, deps.config.discordChannels[0], (target, line) => discord.send(target, line, id));
-      if (redirected) console.log(`SYSTEM_POST_REDIRECTED ${channel}: closed by the owner, one line went to ${redirected}`);
-      else await discord.send(channel, body, id);
+    // A [System] post of the supervisor's own on the Toodo chat: at `channel` when it is a Toodo chat ref, else in the
+    // default room.
+    const systemPost = async (channel: string | undefined, text: string): Promise<void> => {
+      await chat().reply(channel && isToodoRef(channel) ? parseToodoRef(channel) : TOODO_DEFAULT_ROOM, systemText(text));
     };
     const supervisor = probe.step("supervisor", () => new Supervisor(deps, {
-      // The Toodo chat has no reactions: its messages carry their read and handled receipts instead.
-      react: async (op, channel, message, emoji) => {
-        if (isToodoRef(channel)) return;
-        await (op === "add" ? discord.react(channel, message, emoji) : discord.unreact(channel, message, emoji));
-      },
       persistLeadPane: (pane) => { saveLeadPane(stateDir, pane); },
-      // A line into a lane thread is appended to its last report (or status message), never a new post into a thread the owner closed.
-      // A line with no thread (lead stuck, restarts capped) is a system notice: config alertsChannel, else the main channel.
-      announce: async (text, id, thread) => {
-        if (!onDiscord) return toodoPost(undefined, systemText(text));
-        await postOwnerLine(discord, thread ? deps.config.discordChannels[0] : alertsChannelOf(deps.config), thread, systemText(text), id, {
-          stateDir,
-          statusMessage: async (threadId) => (await deps.registry.open()).find((lane) => lane.thread.endsWith(`/${threadId}`))?.statusMessageId,
-        });
-      },
+      // A line about the lead (stuck, restarts capped) is a system notice in the Toodo chat's default room.
+      announce: (text) => systemPost(undefined, text),
     }));
     deps = await ensureLeadPane(deps, supervisor);
     const ops = scheduleOps = probe.step("schedules", () => openOperations(deps.config));
@@ -1001,12 +903,9 @@ export const supervise = async (
     const registry = sources = openEventSources(deps, supervisor, ops, hubCall, home);
     const enqueueSweep = registry.enqueueFor("sweeps");
     const enqueueWait = registry.enqueueFor("waits");
-    const enqueueDiscord = registry.enqueueFor("discord");
-    // The Toodo chat beside Discord (config platforms has toodo): read on every pass, so a config reload switches it live.
-    const toodoChatOn = (): boolean => deps.config.platforms.includes("toodo");
     const laneMessageStore = (): LaneMessageStore => (laneMessages ??= openLaneMessages(deps.config));
     const enqueueToodo = registry.enqueueFor("toodo");
-    // An owner's answer to a decision card goes the decision's way (decision-toodo-cards.ts), like an answer in Discord.
+    // An owner's answer to a decision card goes the decision's way (decision-toodo-cards.ts).
     const toodoRouting: DirectRouting = {
       stateDir: deps.config.stateDir, store: laneMessageStore, now: () => deps.clock.now(), log: (line) => { console.error(line); },
       lanes: async () => (await deps.registry.open()).filter((lane) => statusOf(lane) !== "closed"),
@@ -1018,46 +917,34 @@ export const supervise = async (
       pollMs: TOODO_CHAT_POLL_MS, log: (line) => { console.error(line); },
       route: (m) => routeToodoOwnerMessage(toodoRouting, chat, m),
     });
-    const autopilot = autopilotTask(deps, ops, registry, (event) => { if (toodoChatOn() && TOODO_CHAT_WAKE_EVENTS.has(event)) toodoChatInbound.wake(); });
+    const autopilot = autopilotTask(deps, ops, registry, (event) => { if (TOODO_CHAT_WAKE_EVENTS.has(event)) toodoChatInbound.wake(); });
     const waits = probe.step("waits", () => new Waits(deps.config.stateDir, deps.tunables.waitMaxFailures, hubCall));
     const { github, review, follow, poll: pollGithub } = githubPolling(deps, probe, registry.enqueueFor("github"));
     ci = follow;
     const boot = randomUUID();
     const sweep = sweepTask({
-      deps, supervisor, discord, review, registry, enqueue: enqueueSweep, home, boot, watchdog, probe,
+      deps, supervisor, review, registry, enqueue: enqueueSweep, home, boot, watchdog, probe,
       reports: () => reports, runnerGuard: () => runners?.guard, openPulls: () => github.openPulls(),
     });
     const retry = leadDelivery(deps, supervisor, systemPost, boot);
     let deliveryError: unknown;
     // The lead pane is read per request: a pane recreated after startup is in the supervisor, not in deps.
     const liveStatusDeps = (): StatusDeps => ({ ...deps, config: { ...deps.config, leadPane: supervisor.leadPane } });
-    const discordInbound = inbound = token === undefined ? undefined : probe.step("inbound", () => supervisorDiscord(deps, {
-      ...discordOptions, token, emit: async (id, line) => { enqueueDiscord(id, line); }, laneMessages: laneMessageStore,
-      http: discordOptions.http ?? ((request) => fetchHttp({
-        ...request, signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
-      })),
-      lookup: discordOptions.lookup ?? quotaReport(sharedQuotaLookup(deps.config), deps.config.displayTimeZone),
-      statusLookup: discordOptions.statusLookup ?? ((lookupSignal, page) => lookupStatus(liveStatusDeps())(lookupSignal, page)),
-    }));
     const reportStore = reports = probe.step("lane-reports", () => openLaneReports(deps.config));
-    // The status message rides the supervisor's own Discord client, so a token from ~/.dori/env works as well as the environment.
-    // With Discord off it is null, so a lane bound to a Discord thread before the switch gets no status message calls.
-    const statusTransport = onDiscord ? statusTransportOf(discord) : null;
-    // Owner decision threads ride the same client: a lane question with choices opens one (owner-approved exception to
-    // the supervisor never talking to the owner), and the decision tick runs with the report checks.
-    // With Discord off a decision goes to the Toodo chat (decision-toodo.ts): the transport sends its refs there.
-    const decisionCtx: DecisionContext = { config: deps.config, transport: routedDecisionTransport(() => discord, chat), toodo: chat, now: deps.clock.now, home };
+    // A lane question with choices opens an owner decision on the Toodo chat (owner-approved exception to the supervisor
+    // never talking to the owner), and the decision tick runs with the report checks.
+    const decisionCtx: DecisionContext = { config: deps.config, toodo: chat, now: deps.clock.now, home };
     const routeLaneReports = laneReportsPass({
-      deps, ops, reports: reportStore, review, transport: statusTransport, decisions: decisionCtx, home, enqueue: enqueueSweep, watchdog,
+      deps, ops, reports: reportStore, review, decisions: decisionCtx, home, enqueue: enqueueSweep, watchdog,
     });
-    const notices = ownerNotices({ deps, supervisor, discord, decisions: decisionCtx, laneMessages: laneMessageStore, ownerNotice: systemPost });
+    const notices = ownerNotices({ deps, supervisor, decisions: decisionCtx, laneMessages: laneMessageStore });
     const hub = runners = new SupervisorRunners({
       deps, home, operations: ops, boot, emit: (id, line) => { enqueueSweep(id, line); }, reports: () => reports, laneMessages: laneMessageStore,
       settleWait: (label, waitId) => { waits.settleRemote(label, waitId, enqueueWait); }, systemPost, spawnRunner, signal: AbortSignal.any([signal, stop.signal]),
     });
     await hub.tryOpen((name, work) => probe.step(name, work));
     // config.json edits apply without a restart: the live keys are written into the config objects every part holds
-    // (this loop's and the supervisor core's), so in-flight events, waits, lanes and the gateway are untouched.
+    // (this loop's and the supervisor core's), so in-flight events, waits and lanes are untouched.
     const tellLanesLanguage = async (language: string | undefined): Promise<void> => {
       for (const lane of await deps.registry.open()) {
         try {
@@ -1090,21 +977,18 @@ export const supervise = async (
       // A long-lived stream, not a pass: it reconnects on its own and is not tracked by the watchdog.
       autopilot.events.run(halted),
       task("inbound", 5_000, async () => {
-        if (discordInbound) {
-          try { await registry.guard("discord", discordInbound.tick()); } catch (e) { console.error(`INBOUND_ERROR ${e instanceof Error ? e.message : String(e)}`); }
-        }
-        // The Toodo chat's safety poll rides beside it, not awaited: a slow toodo-server never holds Discord inbound back,
-        // and a tick while one runs joins it.
-        if (toodoChatOn()) void registry.guard("toodo", toodoChatInbound.tick()).catch((e: unknown) => { console.error(`TOODO_CHAT_ERROR ${toodoErrorText(e)}`); });
-        writeHeartbeat(deps, inbound);
+        // The Toodo chat's safety poll, not awaited: a slow toodo-server never holds the heartbeat back, and a tick while
+        // one runs joins it.
+        void registry.guard("toodo", toodoChatInbound.tick()).catch((e: unknown) => { console.error(`TOODO_CHAT_ERROR ${toodoErrorText(e)}`); });
+        writeHeartbeat(deps);
       }),
       task("delivery", 5_000, async () => {
         if (!retry.due) return;
         // A fatal delivery error ends the supervisor, as in the loop.
         try { await watchdog.track("delivery", retry.tick()); } catch (e) { deliveryError = e; stop.abort(); }
       }),
-      // Owner notices and the lead-side checks post to Discord (each post can take minutes against a failing Discord), so
-      // they run beside lead delivery, never in front of it.
+      // Owner notices and the lead-side checks post to the Toodo chat (each post can take minutes against a failing
+      // toodo-server), so they run beside lead delivery, never in front of it.
       task("notices", 5_000, notices),
       task("sweeps", 30_000, sweep),
       task("polling", 5_000, pollingPass({ deps, registry, waits, enqueueWait, enqueueSweep, pollGithub, follow, watchdog })),
@@ -1140,15 +1024,12 @@ export const supervise = async (
     stopConfigWatch?.();
     stop.abort();
     await settle(tasks);
-    await inbound?.close();
-    if (inbound) writeGatewayStatus(deps.config.stateDir, { pid: process.pid, at: deps.clock.now(), connected: false, messageContent: false });
     reports?.close();
     await runners?.close();
     laneMessages?.close();
     sources?.close();
     scheduleOps?.close();
     ci?.close();
-    releaseGateway?.();
     release?.();
   }
 };

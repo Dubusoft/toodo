@@ -4,12 +4,10 @@ import { join } from "node:path";
 
 import * as quota from "../src/claude-quota.ts";
 import { STARTUP_STEP_BUDGET_MS, StartupProbe } from "../src/startup-probe.ts";
-import type { Http } from "../src/messenger/http.ts";
 import { cliRunnerCall, cliSocketPath } from "../src/runner/cli-relay.ts";
 import { defaultRunnerDir } from "../src/runner/fs-safety.ts";
 import { localRunnerArgv } from "../src/runner/local-child.ts";
 import { acquireSupervisor, supervise } from "../src/supervise-loop.ts";
-import { readCloseTimers, recordCloseTimer } from "../src/thread-finality.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 
 type Spawn = (argv: readonly string[], env: Record<string, string>) => { readonly pid: number; readonly exited: Promise<number>; kill(sig: "SIGTERM" | "SIGKILL"): void };
@@ -21,15 +19,14 @@ const idleRunner: Spawn = () => {
   return { pid: 4242, exited, kill: () => { exit(0); } };
 };
 
-/** The real supervise() with fake hc, Discord and gateway (as fixtures/startup-supervise.ts) and an injected local runner spawn. */
+/** The real supervise() with fake hc (as fixtures/startup-supervise.ts) and an injected local runner spawn. */
 const superviseWith = (
   stateDir: string, probe: StartupProbe, signal: AbortSignal, notify: (state: string) => Promise<boolean>, spawnRunner: Spawn = idleRunner,
-  config: { readonly platforms?: readonly ("discord" | "toodo")[] } = {}, discordCalls: string[] = [],
 ): Promise<void> => {
   const world = newWorld();
   world.panes.push({ pane_id: "hc:t1", workspace_id: "test", agent: "omo", agent_status: "working" });
   const base = depsFor(world, fakeClock(1_800_000_000_000), stateDir, {
-    discord: { applicationId: "100", guildId: "200", ownerId: "123456789012345" }, discordChannels: ["11"], defaultModel: "test/model", ...config,
+    defaultModel: "test/model",
   });
   const deps = {
     ...base,
@@ -37,22 +34,7 @@ const superviseWith = (
       ? { code: 0, out: "Filesystem 1K-blocks Used Available\n/dev/x 1 1 209715200", err: "" }
       : base.run(argv),
   };
-  const http: Http = async (request) => {
-    discordCalls.push(request.url);
-    return { status: 200, headers: {}, body: request.url.endsWith("/threads/active") ? JSON.stringify({ threads: [] }) : "[]" };
-  };
-  return supervise(deps, signal, {
-    token: `startup-test-${stateDir}`, gatewayLockDir: `${stateDir}/gateway-locks`, http, lookup: async () => "", statusLookup: async () => "",
-    open: () => {
-      let closed = (_code: number) => {};
-      return {
-        send: () => {}, close: () => { closed(1000); },
-        onMessage: () => {}, onError: () => {}, onClose: (callback) => { closed = callback; },
-      };
-    },
-    timers: { setInterval: () => 0, clearInterval: () => {} },
-    spawnRunner,
-  }, notify, probe);
+  return supervise(deps, signal, { spawnRunner }, notify, probe);
 };
 
 const cleanups: (() => void)[] = [];
@@ -141,7 +123,7 @@ test("a normal start logs one STARTUP_TIMINGS line for the steps up to READY=1 a
   const label = (name: string) => lines.find((line) => line.startsWith(`STARTUP_TIMINGS ${name} `));
   expect(lines.map((line) => line.split(" ")[1]).sort()).toEqual([...FIRSTS, "ready"].sort());
   expect(lines[0]?.startsWith("STARTUP_TIMINGS ready ")).toBe(true);
-  expect(steps(label("ready"))).toEqual(["lock", "gateway-lock", "supervisor", "schedules", "waits", "github", "review-gate", "ci-follow", "inbound", "lane-reports", "runners", "ready"]);
+  expect(steps(label("ready"))).toEqual(["lock", "supervisor", "schedules", "waits", "github", "review-gate", "ci-follow", "lane-reports", "runners", "ready"]);
   for (const task of ["inbound", "delivery", "notices", "polling", "reports", "runners"]) expect(steps(label(`first-${task}`))).toEqual([`task:${task}`]);
   expect(steps(label("first-sweep"))).toEqual([
     "loop:sweep:snapshot", "loop:sweep:watch", "loop:sweep:guard", "loop:sweep:dead-panes", "loop:sweep:recover", "loop:sweep:decision-resume", "loop:sweep:freshness",
@@ -150,45 +132,6 @@ test("a normal start logs one STARTUP_TIMINGS line for the steps up to READY=1 a
   expect(lines.every((line) => /^STARTUP_TIMINGS \S+ \d+ms( \S+=\d+ms)+$/.test(line))).toBe(true);
   expect(notified[0]).toBe("READY=1");
   expect(probe.active).toBe(false);
-});
-
-test("with Discord off (platforms toodo) supervise reaches READY=1 with no gateway lock, no Discord inbound and no Discord request", async () => {
-  // Given the real supervise() on fakes whose config turns Discord off; the token it is handed must go unused.
-  const state = withState();
-  cleanups.push(state.done);
-  const home = process.env.HOME;
-  const socket = process.env.NOTIFY_SOCKET;
-  process.env.HOME = state.dir;
-  delete process.env.NOTIFY_SOCKET;
-  cleanups.push(() => {
-    if (home === undefined) delete process.env.HOME; else process.env.HOME = home;
-    if (socket === undefined) delete process.env.NOTIFY_SOCKET; else process.env.NOTIFY_SOCKET = socket;
-  });
-  spyOn(quota, "lookupQuotaResults").mockReturnValue(async () => ({ results: [], text: "" }));
-  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async () => new Response("[]", { status: 404 }), { preconnect: fetch.preconnect }));
-  const controller = new AbortController();
-  const lines: string[] = [];
-  const probe = new StartupProbe(STARTUP_STEP_BUDGET_MS, (line) => {
-    lines.push(line);
-    if (FIRSTS.every((name) => lines.some((l) => l.startsWith(`STARTUP_TIMINGS ${name} `)))) controller.abort();
-  });
-  const notified: string[] = [];
-  const discordCalls: string[] = [];
-  // A Discord thread whose close button waited past threadCloseAfterHours before Discord was turned off.
-  const before = 1_800_000_000_000 - 25 * 3_600_000;
-  recordCloseTimer(state.dir, "200", { message: "m-1", reportAt: before, since: before });
-  const errors: string[] = [];
-  spyOn(console, "error").mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(" ")); });
-  // When it starts and every task runs one pass.
-  await superviseWith(state.dir, probe, controller.signal, async (s) => { notified.push(s); return true; }, idleRunner, { platforms: ["toodo"] }, discordCalls);
-  // Then it got ready without the Discord steps, and nothing reached Discord.
-  expect(notified[0]).toBe("READY=1");
-  expect(steps(lines.find((line) => line.startsWith("STARTUP_TIMINGS ready ")))).toEqual(["lock", "supervisor", "schedules", "waits", "github", "review-gate", "ci-follow", "lane-reports", "runners", "ready"]);
-  expect(discordCalls).toEqual([]);
-  expect(existsSync(join(state.dir, "gateway-locks"))).toBe(false);
-  // The close-button pass is skipped (its refused Discord client would fail every pass); the wait resumes once Discord is on.
-  expect(errors.filter((line) => line.includes("Discord is off"))).toEqual([]);
-  expect(readCloseTimers(state.dir)["200"]).toMatchObject({ message: "m-1" });
 });
 
 test("a startup that fails still logs how far it got", async () => {

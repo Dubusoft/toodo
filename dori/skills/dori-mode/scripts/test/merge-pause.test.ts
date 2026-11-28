@@ -7,7 +7,6 @@ import type { OpenPull } from "../src/github-events.ts";
 import { MERGE_PAUSE_FILE, mergePauseHolds, mergePauseMain, readMergePause } from "../src/merge-pause.ts";
 import type { Lane } from "../src/registry.ts";
 import { type PrInfo, ReviewGate, type ReviewGateIo } from "../src/review-gate.ts";
-import { readReviewStatus, reviewStatusLines } from "../src/review-status.ts";
 import type { Ran, Runner } from "../src/run.ts";
 import { withReviewHold } from "../src/supervise-loop.ts";
 import { depsFor, fakeClock, fakeRunner, newWorld, withState } from "./fakes.ts";
@@ -142,8 +141,7 @@ const harness = async () => {
   const cli = (...args: string[]): number => mergePauseMain(args, {
     stateDir: dir, now: clock.now, who: "lead (test)", out: (l) => { out.push(l); }, err: (l) => { out.push(`ERR ${l}`); },
   });
-  const statusLines = async (lane: Lane = author()): Promise<string[]> => reviewStatusLines(lane, await readReviewStatus(deps, gate));
-  return { dir, clock, deps, prs, views, gh, merges, launches, gate, ci, author, pull, events, lines, poll, pass, approve, cli, out, statusLines };
+  return { dir, clock, deps, prs, views, gh, merges, launches, gate, ci, author, pull, events, lines, poll, pass, approve, cli, out };
 };
 
 type Harness = Awaited<ReturnType<typeof harness>>;
@@ -157,7 +155,7 @@ const docsOnly = (h: Harness): void => {
 
 const MERGED_AT_H7 = ["gh", "pr", "merge", "7", "-R", REPO, "--merge", "--match-head-commit", H7];
 
-test("paused: the review runs and its pass receipt is stored, but no gh pr merge; the lane stays held and its status shows the pause", async () => {
+test("paused: the review runs and its pass receipt is stored, but no gh pr merge; the lane stays held", async () => {
   const h = await harness();
   expect(h.cli("pause", "--reason", REASON)).toBe(0);
   const jobId = await h.approve();
@@ -175,12 +173,9 @@ test("paused: the review runs and its pass receipt is stored, but no gh pr merge
   // The pass releases the review gate's own hold, the pause keeps the lane open (no close, no objection).
   expect(await h.gate.holdsLane(h.author())).toBe(false);
   expect(await withReviewHold(h.deps, h.gate).reviewHold!(h.author())).toBe(true);
-  const status = await h.statusLines();
-  expect(status[0]).toStartWith(`merge paused: ${REASON}`);
-  expect(status.some((l) => l.includes("리뷰 통과"))).toBe(true);
 });
 
-test("resume: the next poll merges through the full gate at the approved head, and the pause line leaves the status", async () => {
+test("resume: the next poll merges through the full gate at the approved head", async () => {
   const h = await harness();
   h.cli("pause", "--reason", REASON);
   await h.approve();
@@ -189,7 +184,6 @@ test("resume: the next poll merges through the full gate at the approved head, a
   expect(h.cli("resume")).toBe(0);
   // Read fresh: no restart, no new CiFollowUp or ReviewGate.
   expect(await withReviewHold(h.deps, h.gate).reviewHold!(h.author())).toBe(false);
-  expect((await h.statusLines()).some((l) => l.includes("merge paused"))).toBe(false);
   await h.poll();
   expect(h.merges).toEqual([MERGED_AT_H7]);
   expect(h.lines("CI_MERGED")).toHaveLength(1);
@@ -246,7 +240,6 @@ test("a docs-exempt PR is held while paused too, and merges on its exemption aft
   expect(h.gate.exemptions.list().map((d) => d.kind)).toEqual(["exempt"]);
   expect(h.lines("MERGE_PAUSED")).toHaveLength(1);
   expect(await withReviewHold(h.deps, h.gate).reviewHold!(h.author())).toBe(true);
-  expect((await h.statusLines())[0]).toStartWith(`merge paused: ${REASON}`);
   h.cli("resume");
   await h.poll();
   expect(h.merges).toEqual([MERGED_AT_H7]);

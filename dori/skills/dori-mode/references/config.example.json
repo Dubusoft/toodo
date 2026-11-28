@@ -13,18 +13,9 @@
   "leadArgs": [],
   "leadStuckRestartMin": 30,
   "leadChildWaitMaxMin": 60,
-  "threadCloseAfterHours": 24,
-  "discordChannels": [
-    "123456789012345678"
-  ],
   "githubIssueAuthors": [
     "your-github-login"
   ],
-  "discord": {
-    "applicationId": "1100000000000000001",
-    "guildId": "1100000000000000002",
-    "ownerId": "<owner Discord user id>"
-  },
   "drift": { "enabled": true, "milestoneOverdueMin": 90, "ciFailStreak": 3 },
   "worktreeRoot": "/data/repos/worktrees",
   "ownerLanguage": "Korean",

@@ -1,11 +1,10 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, watch } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import * as quota from "../src/claude-quota.ts";
 import * as memoryCheck from "../src/memory-check.ts";
-import { gatewayStatusPath } from "../src/gateway-status.ts";
-import type { Http } from "../src/messenger/http.ts";
+import { gatewayStatusPath, readGatewayStatus } from "../src/gateway-status.ts";
 import { Repos } from "../src/repos.ts";
 import type { Ran } from "../src/run.ts";
 import { defaultRunnerDir } from "../src/runner/fs-safety.ts";
@@ -31,8 +30,6 @@ afterEach(() => {
 });
 
 const T0 = 1_800_000_000_000;
-const OWNER = "123456789012345";
-const MESSAGE = "1900000000000000001";
 const REPORT = "LANE_REPORT demo-lane journaled before the supervisor started";
 
 /** Resolves once `check` holds, re-checked on each `subscribe` signal; rejects after `ms`. */
@@ -46,8 +43,8 @@ const until = (subscribe: (signal: () => void) => () => void, check: () => boole
   });
 
 /**
- * The real supervise(), where the work of `stalled` hangs until the test ends: the inbound Discord
- * catch-up, the delivery task's lead delivery pass, every Discord post (the notices task hangs on its owner delay notice), the memory sweep (the host guard reads the
+ * The real supervise(), where the work of `stalled` hangs until the test ends: the Toodo inbox
+ * poll, the delivery task's lead delivery pass, the notice task's report check, the memory sweep (the host guard reads the
  * local runner's sample and runs nothing), or the GitHub poll's gh api call (a wait check
  * has its own 10 s budget, so it cannot hold the polling task).
  */
@@ -85,24 +82,29 @@ const setup = (stalled: SupervisorTask, before?: (home: string) => void) => {
   const clock = fakeClock(T0);
   const world = newWorld();
   world.panes.push({ pane_id: "hc:t1", workspace_id: "test", agent: "omo", agent_status: "working" });
-  const base = depsFor(world, clock, state.dir, {
-    discord: { applicationId: "100", guildId: "200", ownerId: OWNER }, discordChannels: ["11"], defaultModel: "test/model",
-  });
-  // Outbound Discord posts are accepted, except that with the notices task stalled Discord never answers a post.
-  const posts: string[] = [];
-  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (_url: unknown, init?: RequestInit) => {
-    const body = typeof init?.body === "string" ? init.body : "";
-    posts.push(body);
-    changed();
-    const ok = new Response(JSON.stringify({ id: "33" }), { status: 200 });
-    return stalled === "notices" ? hang(ok) : ok;
+  const tokenFile = join(state.dir, "mcp-token");
+  writeFileSync(tokenFile, "test-token\n");
+  const base = depsFor(world, clock, state.dir, { toodoWriter: { url: "http://127.0.0.1:47616", tokenFile }, defaultModel: "test/model" });
+  const posts: { channelId: number; body: string }[] = [];
+  spyOn(globalThis, "fetch").mockImplementation(Object.assign(async (_input: unknown, init?: RequestInit) => {
+    const rpc = JSON.parse(String(init?.body));
+    const args = rpc.params?.arguments;
+    let result: unknown = [];
+    if (rpc.params?.name === "reply_in_chat") {
+      posts.push({ channelId: args.channel_id, body: args.body });
+      changed();
+      result = { id: 33, channelId: args.channel_id, author: "agent", body: args.body, attachments: [] };
+    }
+    const response = Response.json({ jsonrpc: "2.0", id: rpc.id, result: { content: [{ type: "text", text: JSON.stringify(result) }] } });
+    return stalled === "inbound" && rpc.params?.name === "peek_pending" ? hang(response) : response;
   }, { preconnect: fetch.preconnect }));
   const flush = Supervisor.prototype.flush;
   spyOn(Supervisor.prototype, "flush").mockImplementation(function (this: Supervisor) { return stalled === "delivery" ? hang(undefined) : flush.call(this); });
-  // The notices task ends each pass with the report check.
+  // Hold the notices task at its report check.
   let reportTicks = 0;
   const reportTick = Supervisor.prototype.reportTick;
   spyOn(Supervisor.prototype, "reportTick").mockImplementation(async function (this: Supervisor) {
+    if (stalled === "notices") return hang(undefined);
     await reportTick.call(this);
     reportTicks++;
     changed();
@@ -138,37 +140,19 @@ const setup = (stalled: SupervisorTask, before?: (home: string) => void) => {
       return base.run(argv);
     },
   };
-  // Journaled before the start: an urgent lane report for delivery, an owner message (overdue once the clock moves, so
-  // the notices task owes its delay notice), and a wait the polling task checks with gh.
+  // Journaled before the start: an urgent lane report for delivery.
   const seed = new Supervisor(base);
   seed.enqueue("seed:report", REPORT);
-  if (stalled === "notices") seed.enqueue(`discord:11:${MESSAGE}`, `INBOUND 11 ${MESSAGE} owner: status?`);
   seed.close();
   new Waits(state.dir).register({ key: "pr-1", until: "merged acme/app#1", note: "watch the PR", cwd: state.dir }, T0);
   // Only the stalled polling task has a repository to poll on GitHub.
   if (stalled === "polling") new Repos(state.dir).add("acme/app");
   clock.at += 120_000;
-  const http: Http = async (request) => {
-    const reply = request.url.endsWith("/threads/active")
-      ? { status: 200, headers: {}, body: JSON.stringify({ threads: [] }) }
-      : { status: 200, headers: {}, body: "[]" };
-    return stalled === "inbound" ? hang(reply) : reply;
-  };
   // Each loop's next pass waits for the test, not for real time.
   const pauses = manualPause();
   const pause = (ms: number, signal: AbortSignal) => { const parked = pauses.pause(ms, signal); changed(); return parked; };
   const controller = new AbortController();
-  const running = supervise(deps, controller.signal, {
-    token: `supervise-tasks-test-${state.dir}`, spawnRunner: idleRunner, gatewayLockDir: join(state.dir, "gateway-locks"), http, lookup: async () => "", statusLookup: async () => "",
-    open: () => {
-      let closed = (_code: number) => {};
-      return {
-        send: () => {}, close: () => { closed(1000); },
-        onMessage: () => {}, onError: () => {}, onClose: (callback) => { closed = callback; },
-      };
-    },
-    timers: { setInterval: () => 0, clearInterval: () => {} },
-  }, async () => true, undefined, pause);
+  const running = supervise(deps, controller.signal, { spawnRunner: idleRunner }, async () => true, undefined, pause);
   const log = join(state.dir, "lead-events.log");
   const working: Record<SupervisorTask, () => boolean> = {
     // The inbound pass ends with the gateway heartbeat.
@@ -187,10 +171,10 @@ const setup = (stalled: SupervisorTask, before?: (home: string) => void) => {
   const stop = async () => { controller.abort(); release(); await running; };
   // Once the five working tasks, the runners, autopilot and status panel tasks (the hub always opens) and the stall check are parked, each takes its next pass.
   const next = async () => {
-    await until(subscribe, () => pauses.parked() === 9, 10_000, "the five working tasks, the runners, autopilot and status panel tasks and the stall check parked");
+    await until(subscribe, () => pauses.parked() === (stalled === "inbound" ? 10 : 9), 10_000, "the five working tasks, the runners, autopilot and status panel tasks and the stall check parked");
     pauses.tick();
   };
-  return { clock, errors, posts, hung, working, subscribe, stop, next, reportPasses: () => reportPasses };
+  return { stateDir: state.dir, clock, errors, posts, hung, working, subscribe, stop, next, reportPasses: () => reportPasses };
 };
 
 const others = (stalled: SupervisorTask): SupervisorTask[] => SUPERVISOR_TASKS.filter((task) => task !== stalled);
@@ -198,7 +182,7 @@ const others = (stalled: SupervisorTask): SupervisorTask[] => SUPERVISOR_TASKS.f
 test("the report polling path prunes operation and report history at startup and once per hour", async () => {
   const operations = spyOn(SqliteOperations.prototype, "prune");
   const reports = spyOn(SqliteLaneReports.prototype, "prune");
-  const s = setup("inbound");
+  const s = setup("sweeps");
   try {
     await until(s.subscribe, () => operations.mock.calls.length === 1 && reports.mock.calls.length === 1, 10_000, "initial history pruning");
     await s.next();
@@ -263,12 +247,20 @@ test("a runner hub that cannot open at startup wakes the lead, and the runners t
   }
 }, 60_000);
 
-stallTest("inbound");
-// A stalled delivery task cannot hand TASK_STALLED to the lead, so the owner is told in the main channel.
-// The notice is posted without being awaited, so the test waits for the post itself.
-stallTest("delivery", (s) => until(s.subscribe, () => s.posts.some((body) => body.includes("TASK_STALLED delivery")), 10_000, "the TASK_STALLED delivery notice"));
-// Discord never answers a post: the owner delay notice hangs, yet the queued report reaches the lead in the delivery
-// task's first pass (the stall test above waits for it before any second pass).
+test("a pending Toodo inbox poll does not hold up the next supervisor heartbeat", async () => {
+  const s = setup("inbound");
+  try {
+    await until(s.subscribe, () => s.hung.length === 1 && s.working.inbound(), 10_000, "the inbox poll and initial heartbeat");
+    s.clock.at += WATCHDOG_STALL_MS;
+    await s.next();
+    await until(s.subscribe, () => readGatewayStatus(s.stateDir)?.at === s.clock.now(), 10_000, "the next heartbeat");
+    expect(s.hung).toHaveLength(1);
+    expect(s.errors.filter((line) => line.startsWith("WATCHDOG_WITHHELD task:inbound ") || line.startsWith("TASK_STALLED inbound "))).toEqual([]);
+  } finally { await s.stop(); }
+}, 30_000);
+
+// A stalled delivery task cannot hand TASK_STALLED to the lead, so the owner is told in the Toodo default room.
+stallTest("delivery", (s) => until(s.subscribe, () => s.posts.some(({ channelId, body }) => channelId === 1 && body.startsWith("[System] ") && body.includes("TASK_STALLED delivery")), 10_000, "the TASK_STALLED delivery notice"));
 stallTest("notices");
 stallTest("sweeps");
 stallTest("polling");

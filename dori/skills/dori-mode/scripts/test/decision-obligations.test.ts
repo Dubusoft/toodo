@@ -160,7 +160,7 @@ test("retention keeps the body of an open decision event and prunes it once reso
   recordResolved(f.state.dir, "wait:go", f.clock.now());
   supervisor.resolveTick();
   f.clock.at += RETENTION.eventBodyMs + 60 * MIN;
-  supervisor.ackTick(60_000);
+  await supervisor.reportTick();
   const store = new SqliteStore(join(f.state.dir, SQLITE_FILE));
   cleanups.unshift(() => store.close());
   const ids = store.read(false).events.map((event) => event.id);

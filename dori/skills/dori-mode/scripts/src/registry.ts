@@ -1,7 +1,6 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
-import { normalizeThreadRef } from "./messenger/target.ts";
 import { acquireStateLock } from "./state-lock.ts";
 import { replaceFileDurable } from "./durable-write.ts";
 import type { LaneFileRun } from "./runner/protocol.ts";
@@ -110,7 +109,7 @@ export type Lane = {
   readonly lastProgressAt?: number;
   /** @deprecated No longer written; kept so old registries load. */
   readonly lastProgressError?: string;
-  /** The id of the one `[System]` status message the supervisor keeps in the lane's thread and edits on each progress or milestone report. */
+  /** @deprecated No longer written; kept so old registries load. */
   readonly statusMessageId?: string;
   /** @deprecated No longer written; kept so old registries load. */
   readonly lastRemoteReport?: string;
@@ -167,14 +166,10 @@ export const withStatus = (lane: Lane, status: LaneStatus, note: string, at: str
 
 const missing = (e: unknown): boolean => e instanceof Error && "code" in e && e.code === "ENOENT";
 
-/**
- * The parsed lane file, or null when there is none (a lane moved to the archive meanwhile reads as missing here). A bare
- * thread id from an older launch reads as `discord:<id>`, and the next write of that lane stores it so.
- */
+/** The parsed lane file, or null when there is none (a lane moved to the archive meanwhile reads as missing here). */
 const readLaneFile = (path: string): Lane | null => {
   try {
-    const lane = JSON.parse(readFileSync(path, "utf8")) as Lane;
-    return typeof lane.thread === "string" ? { ...lane, thread: normalizeThreadRef(lane.thread) } : lane;
+    return JSON.parse(readFileSync(path, "utf8")) as Lane;
   }
   catch (e) { if (missing(e)) return null; throw e; }
 };

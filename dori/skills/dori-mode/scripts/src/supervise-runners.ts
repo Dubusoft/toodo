@@ -4,7 +4,7 @@ import { addKnownSecrets } from "./redact.ts";
 import { SecretStore } from "./secret-store.ts";
 import { ToodoClient } from "./toodo-client.ts";
 import { laneToodoReader } from "./toodo-lane-read.ts";
-import { alertsChannelOf, loadConfig } from "./config.ts";
+import { loadConfig, TOODO_DEFAULT_ROOM_REF } from "./config.ts";
 import { defaultRunnerDir } from "./runner/fs-safety.ts";
 import { readRunnerRows } from "./runner/hub.ts";
 import { fileOutageStore, LivenessMonitor, livenessIo } from "./runner/liveness.ts";
@@ -260,12 +260,10 @@ export class SupervisorRunners {
         },
         ownedLanes: async (label) => (await deps.registry.open()).filter((l) => l.runner === label).map((l) => l.key),
         emit: (line) => { emit(`runner-liveness:${deps.clock.now()}:${++livenessSeq}`, line); },
-        // A runner outage the lead is woken for is also a system notice in the alerts channel. Not awaited: a hung post
-        // must not stop the liveness tick.
+        // A runner outage the lead is woken for is also a system notice in the Toodo chat's default room. Not awaited: a
+        // hung post must not stop the liveness tick.
         alert: (text) => {
-          const channel = alertsChannelOf(deps.config);
-          if (!channel) return;
-          void systemPost(channel, scrubForThread(text, homedir()), `runner-liveness-alert:${boot}:${++livenessSeq}`)
+          void systemPost(TOODO_DEFAULT_ROOM_REF, scrubForThread(text, homedir()), `runner-liveness-alert:${boot}:${++livenessSeq}`)
             .catch((e: unknown) => { console.error(`RUNNER_ALERT_NOTIFY_FAILED ${e instanceof Error ? e.message : String(e)}`); });
         },
         // Escalated outages outlive this process: a restart neither wakes the lead again nor loses the ONLINE.

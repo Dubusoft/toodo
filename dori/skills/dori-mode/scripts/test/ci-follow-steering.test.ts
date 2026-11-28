@@ -230,7 +230,7 @@ const closedDecision = (stateDir: string, key: string, extra: Record<string, unk
 
 const tickDeps = (t: Awaited<ReturnType<typeof setup>>, enqueued: string[]): TickDeps => ({
   config: t.deps.config, now: t.clock.now, home: "/home/x", enqueue: (_id, line) => { enqueued.push(line); },
-  transport: new Proxy({}, { get: () => { throw new Error("no Discord in this test"); } }) as TickDeps["transport"],
+  toodo: () => { throw new Error("unexpected chat post during lane relay"); },
 });
 
 test("closing a lane's decision types the close text into that lane once and prints DECISION_RELAYED", async () => {

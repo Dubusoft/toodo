@@ -4,14 +4,10 @@ import { basename, dirname, join, sep } from "node:path";
 import { autopilotLaneKey, depSatisfied, isRecord, laneKeyOf, LAUNCH_ACTION, ledgerRows, ledgerState, OWNER_REF, rearmedThrough } from "./autopilot.ts";
 import { type AutopilotDeps, EXECUTE_ACTION as EXECUTE, liveJudgeDeps, readPause, reserveAutopilot } from "./autopilot-cli.ts";
 import { type AutopilotContract, planTask } from "./autopilot-plan.ts";
-import { autopilotThreadChannelOf, discordOn } from "./config.ts";
-import { resolveCredential } from "./credentials.ts";
 import type { FlowDeps } from "./done-flow.ts";
 import { type LaunchInput, SandboxRefusal, validateLaunch } from "./launch.ts";
 import { laneReportFile, missingLaneFiles } from "./lane-files.ts";
 import { admitLaunch, type LaunchOutcome, placeLaunch, type PlacedLaunch } from "./launch-service.ts";
-import { Discord, type ThreadMember } from "./messenger/discord.ts";
-import { fetchHttp } from "./messenger/http.ts";
 import { type Observed, type Operation, type OperationSpec, type OperationStore, perform, plan, reconcile, settleOperation } from "./operations.ts";
 import type { Lane } from "./registry.ts";
 import { dequeueLaunch, launchQueue, type QueuedLaunch } from "./routing.ts";
@@ -55,21 +51,12 @@ export type ExecutorResult = {
   readonly reasons?: readonly string[];
 };
 
-/** Thread identity recorded before creating it; a returned id is durable even when adding the owner failed. */
-export type ExecutorThread = { readonly parent: string; readonly title: string; readonly id?: string; readonly member?: ThreadMember };
-
 /** All world reads and effects are injected. notify must durably deduplicate its stable id (the supervisor journal). */
 export type ExecutorDeps = Omit<AutopilotDeps, "toodo"> & {
   readonly stateDir: string;
   readonly ciMergeBase: string;
   readonly toodo: () => Pick<ToodoClient, "task" | "tasksByIds" | "flaggedTasks" | "guidelines" | "workspaceRepository">;
   readonly writer: Pick<ToodoWriter, "startTask" | "read" | "reportBlocker">;
-  readonly parentChannel: string;
-  /** False with Discord off (config platforms): a lane starts with no Discord thread (`none`), so no parent channel is needed. */
-  readonly discordThreads?: boolean;
-  readonly createThread: (thread: ExecutorThread) => Promise<{ readonly id: string; readonly member: ThreadMember }>;
-  /** Find a thread after a lost create reply. Undefined means unknown, never permission to create it again. */
-  readonly findThread: (thread: ExecutorThread) => Promise<string | undefined>;
   readonly readLane: (key: string) => Promise<Lane | null | undefined>;
   /** done requires STARTUP_OK evidence; not-done requires positive evidence nothing started, not registry absence. */
   readonly observeLaunch: (input: LaunchInput) => Promise<Observed>;
@@ -93,7 +80,6 @@ type Execution = {
   readonly title: string;
   readonly contract: AutopilotContract;
   readonly brief: string;
-  readonly thread: ExecutorThread;
   readonly input?: LaunchInput;
   readonly placed?: PlacedLaunch;
   readonly startup?: string;
@@ -141,7 +127,6 @@ const prepare = async (deps: ExecutorDeps, taskId: number, attempt: number) => {
   });
   if (planned.kind === "review") return planned;
   const reasons: string[] = [];
-  if (deps.discordThreads !== false && !deps.parentChannel) reasons.push("thread-channel-missing");
   if (planned.contract.base !== deps.ciMergeBase) reasons.push("merge-base-mismatch");
   if (!task.autopilot) reasons.push("not-flagged");
   if (!task.refs.some((ref) => OWNER_REF.test(ref))) reasons.push("owner-ref-missing");
@@ -276,29 +261,10 @@ const resume = async (deps: ExecutorDeps, row: Operation, prepared = false): Pro
     if (started.op.state === "ambiguous") return stop(deps, row, "ambiguous", [`at start-task, before any lane launched: ${started.op.detail}`]);
     return resultOf(data, "held");
   }
-  const beforeThread = await guard(deps, row);
-  if (beforeThread) return beforeThread;
-  if (readPause(deps.pauseFile)) return resultOf(data, "paused");
-  const threaded = deps.discordThreads === false ? undefined : await perform(deps.store, deps.now, step(row, "thread", data.thread),
-    async () => {
-      const created = await deps.createThread(data.thread);
-      save(deps, row, { thread: { ...data.thread, ...created } });
-      return { ok: true, detail: typeof created.member === "object" ? `thread exists; owner add failed: ${created.member.failed}` : "created thread" };
-    },
-    async () => {
-      const thread = dataOf(deps.store.get(row.id)!).thread;
-      if (thread.id) return "done";
-      const id = await deps.findThread(thread);
-      if (!id) return "unknown";
-      save(deps, row, { thread: { ...thread, id } });
-      return "done";
-    });
-  if (threaded && threaded.op.state !== "verified") return stop(deps, row, "ambiguous", [threaded.op.detail]);
-  data = dataOf(deps.store.get(row.id)!);
   const input: LaunchInput = data.input ?? {
     key: data.laneKey, title: data.title, brief: join(deps.stateDir, "autopilot", data.laneKey, "brief.md"),
     done: data.contract.done, mode: data.contract.mode, ...(data.contract.model ? { model: data.contract.model } : {}),
-    task: data.taskId, thread: threaded ? `discord:${data.thread.parent}/${data.thread.id}` : "none",
+    task: data.taskId, thread: "none",
   };
   const written = await perform(deps.store, deps.now, step(row, "brief", { path: input.brief, base: data.contract.base, version: data.contract.version }),
     async () => { await deps.writeBrief(input.brief, data.brief); return { ok: true, detail: "brief written" }; },
@@ -390,7 +356,6 @@ export const runExecutor = async (deps: ExecutorDeps, taskIds: readonly number[]
       const laneKey = autopilotLaneKey(taskId, attempt);
       const data: Execution = {
         taskId, laneKey, title: ready.task.title, contract: ready.contract, brief: ready.brief,
-        thread: { parent: deps.parentChannel, title: `${laneKey}: ${ready.task.title}`.slice(0, 100) },
       };
       row = plan(deps.store, deps.now(), { lane: `toodo:${taskId}`, action: EXECUTE, target: String(attempt), data: JSON.stringify(data) });
       results.push(await resume(deps, row, true));
@@ -455,20 +420,11 @@ export const reconcileExecutions = async (deps: ExecutorDeps): Promise<ExecutorR
 export const liveExecutorDeps = (
   flow: FlowDeps, store: OperationStore, notify: ExecutorDeps["notify"], log: (line: string) => void = console.log,
 ): ExecutorDeps => {
-  let discord: Discord | undefined;
-  const transport = (): Discord => {
-    const token = resolveCredential("DORI_DISCORD_TOKEN");
-    if (!token) throw new Error("DORI_DISCORD_TOKEN is not configured");
-    return discord ??= new Discord(fetchHttp, flow.clock, token);
-  };
   return {
     ...liveJudgeDeps(flow, store), stateDir: flow.config.stateDir, ciMergeBase: flow.config.ciMergeBase,
     toodo: () => new ToodoClient(flow.tunables.toodoEvents), writer: new ToodoWriter(flow.tunables.toodoWriter),
-    parentChannel: autopilotThreadChannelOf(flow.config) ?? "", discordThreads: discordOn(flow.config), now: flow.clock.now, out: log, err: log, notify,
+    now: flow.clock.now, out: log, err: log, notify,
     lock: () => acquireStateLock(join(flow.config.stateDir, "autopilot-launch.lock.sqlite")),
-    createThread: (thread) => transport().startThread(thread.parent, undefined, thread.title, flow.config.discord?.ownerId),
-    // A lost Discord create reply has no durable remote id. Stop ambiguous rather than creating a duplicate.
-    findThread: async (thread) => thread.id,
     readLane: (key) => flow.registry.read(key),
     observeLaunch: async (input) => {
       const lane = await flow.registry.read(input.key);

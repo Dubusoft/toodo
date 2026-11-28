@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 
-import { closeOwnerDecision, type DecisionContext, type DecisionTransport, openLaneDecision, openOwnerDecision } from "../src/owner-decisions.ts";
-import { routedDecisionTransport } from "../src/decision-toodo.ts";
+import { closeOwnerDecision, type DecisionContext, openLaneDecision, openOwnerDecision } from "../src/owner-decisions.ts";
 import { type DirectRouting } from "../src/decision-inbound.ts";
 import { readDecisions, type TargetLane } from "../src/decision-store.ts";
 import { SqliteLaneMessages } from "../src/lane-messages.ts";
@@ -46,23 +45,20 @@ const fakeToodo = () => {
   return { chat, threads, posts, awaiting, receipts };
 };
 
-/** Lane decisions opened as the supervisor opens them, with the Toodo chat on beside Discord. */
+/** Lane decisions opened as the supervisor opens them. */
 const world = () => {
   const state = withState();
   cleanups.push(state.done);
   const toodo = fakeToodo();
-  let threads = 0;
-  const transport: DecisionTransport = {
-    send: async () => `q${++threads}`, edit: async () => {}, editComponents: async () => {}, content: async () => "", deleteMessage: async () => {},
-    messagesAfter: async () => [], startThread: async () => ({ id: `t${++threads}` }), setThread: async () => {},
-    threadState: async () => ({ archived: false, parent: "555" }), threadArchived: async () => true,
+  let report = 0;
+  const ctx: DecisionContext = {
+    config: { stateDir: state.dir, displayTimeZone: "UTC" }, toodo: () => toodo.chat, now: () => 1_000, home: "/home/test",
   };
-  const ctx: DecisionContext = { config: { stateDir: state.dir, discordChannels: ["100"], decisionsChannel: "555", alertsChannel: undefined, displayTimeZone: "UTC" }, transport, now: () => 1_000, home: "/home/test" };
   const lanes: TargetLane[] = [];
   const ask = async (key: string, task: number, text = serializeDecisionText(choices)) => {
-    const lane = { key, task, thread: "discord:100/222", runner: "mini", lastRecoveryAt: 5, openedAt: "2026-11-13T00:00:00.000Z" };
+    const lane = { key, task, thread: "toodo:thread/99", runner: "mini", lastRecoveryAt: 5, openedAt: "2026-11-13T00:00:00.000Z" };
     if (!lanes.some((l) => l.key === key)) lanes.push(lane);
-    const opened = await openLaneDecision(ctx, lane, { id: `row-${key}-${threads}`, text });
+    const opened = await openLaneDecision(ctx, lane, { id: `row-${key}-${++report}`, text });
     if (!opened) throw new Error("not a decision text");
     return opened.decision;
   };
@@ -102,7 +98,7 @@ test("each open decision gets one card in its task's thread: a question's number
 test("a decision without a task gets its card in the Toodo thread it was asked from, and only one with neither goes to the default room", async () => {
   const w = world();
   await openOwnerDecision(w.ctx, { ...choices, source: "lead", origin: "toodo:thread/7" });
-  await openOwnerDecision(w.ctx, { ...choices, question: "Which name?", source: "lead", origin: "discord:100/222" });
+  await openOwnerDecision(w.ctx, { ...choices, question: "Which name?", source: "lead" });
   await w.tick();
   expect(w.toodo.posts.map((p) => p.threadId)).toEqual([7, null]);
   expect(w.decision("d1")?.toodo?.place).toBe("toodo:thread/7");
@@ -157,7 +153,7 @@ test("a reply on the card: a bare number answers the lane directly, any other te
   const text = w.say(1, "let me think about it");
   expect(await w.route(text)).toBe("lead");
   expect(w.emitted).toHaveLength(1);
-  expect(w.emitted[0]).toStartWith("OWNER_DECISION_ANSWERED ap-1731-1 d1 blocking discord:555/t1: Which path?; run dori decision close d1 --text");
+  expect(w.emitted[0]).toStartWith("OWNER_DECISION_ANSWERED ap-1731-1 d1 blocking toodo:thread/1: Which path?; run dori decision close d1 --text");
   expect(w.decision("d1")?.answers).toEqual([{ channel: "toodo:thread/1", message: String(text.id), at: 2_000 }]);
   await w.tick();
   expect(w.toodo.awaiting.get(1)).toBe(false);
@@ -176,11 +172,11 @@ test("a request answered by a reply reaches the lead with its value; the close s
   await w.tick();
   const value = w.say(1, "482913");
   expect(await w.route(value)).toBe("lead");
-  expect(w.emitted[0]).toStartWith(`OWNER_DECISION_ANSWERED ap-1731-1 d1 blocking discord:555/t1: [request] the 2FA code; the owner's reply is message toodo:thread/1/${value.id}`);
+  expect(w.emitted[0]).toStartWith(`OWNER_DECISION_ANSWERED ap-1731-1 d1 blocking toodo:thread/1: [request] the 2FA code; the owner's reply is message toodo:thread/1/${value.id}`);
   const toodo = toodoAnswerReceipts(w.dir, () => w.toodo.chat);
   await closeOwnerDecision({
     ...w.ctx,
-    receipts: { unseen: () => ({ count: 0, lines: [] }), acked: () => false, ack: async (_c, m) => { await toodo.ack(m); }, handled: async (c, m) => { await toodo.handled(c, m); } },
+    receipts: { ack: async (_c, m) => { await toodo.ack(m); }, handled: async (c, m) => { await toodo.handled(c, m); } },
   }, d.id, { text: "code 482913" });
   expect(w.toodo.receipts).toEqual([`ack ${value.id}`, `handled ${value.id} reply ${w.toodo.posts[0]?.id}`]);
   await w.tick();
@@ -196,7 +192,7 @@ test("a close's --from can name an owner reply in the Toodo chat that no decisio
   const toodo = toodoAnswerReceipts(w.dir, () => w.toodo.chat);
   await closeOwnerDecision({
     ...w.ctx,
-    receipts: { unseen: () => ({ count: 0, lines: [] }), acked: () => false, ack: async (_c, m) => { await toodo.ack(m); }, handled: async (c, m) => { await toodo.handled(c, m); } },
+    receipts: { ack: async (_c, m) => { await toodo.ack(m); }, handled: async (c, m) => { await toodo.handled(c, m); } },
   }, d.id, { text: "Keep.", choice: 1, from: `toodo:thread/1/${reply.id}` });
   expect(w.toodo.receipts).toEqual([`ack ${reply.id}`, `handled ${reply.id} reply ${w.toodo.posts[0]?.id}`]);
   await w.tick();
@@ -204,23 +200,41 @@ test("a close's --from can name an owner reply in the Toodo chat that no decisio
   expect(w.toodo.posts.slice(1).map((p) => p.body)).toEqual(["[System] d1 결정 반영: 1번(Keep). 레인 ap-1731-1에 전달합니다."]);
 });
 
-test("with Discord off the decision's own message is its card: the pass posts no second card and no second close line", async () => {
-  const state = withState();
-  cleanups.push(state.done);
-  const toodo = fakeToodo();
-  const transport = routedDecisionTransport(() => { throw new Error("Discord is off"); }, () => toodo.chat);
-  const ctx: DecisionContext = {
-    config: { stateDir: state.dir, discordChannels: [], decisionsChannel: undefined, alertsChannel: undefined, displayTimeZone: "UTC", platforms: ["toodo"] },
-    transport, toodo: () => toodo.chat, now: () => 1_000, home: "/home/test",
-  };
-  const { decision } = await openOwnerDecision(ctx, { ...choices, source: "lead", task: 7 });
-  const tick = () => toodoDecisionTick({ stateDir: state.dir, chat: () => toodo.chat, home: "/home/test", threadTitle: async () => "lane", log: () => {} });
-  await tick();
-  expect(toodo.posts.map((p) => [p.threadId, p.actions.map((a) => a.key)])).toEqual([[1, ["d1:1", "d1:2", "d1:3"]]]);
-  expect(toodo.awaiting.get(1)).toBe(true);
-  await closeOwnerDecision(ctx, decision.id, { text: "Go with the replacement.", choice: 2 });
-  await tick();
-  await tick();
-  expect(toodo.posts.map((p) => p.threadId)).toEqual([1, 1]);
-  expect(toodo.awaiting.get(1)).toBe(false);
+test("closing a card clears its thread's waiting mark and the tick does not repost the close", async () => {
+  const w = world();
+  const { decision } = await openOwnerDecision(w.ctx, { ...choices, source: "lead", task: 7 });
+  await w.tick();
+  expect(w.toodo.awaiting.get(1)).toBe(true);
+  await closeOwnerDecision(w.ctx, decision.id, { text: "Go with the replacement.", choice: 2 });
+  await w.tick();
+  await w.tick();
+  expect(w.toodo.posts.map((p) => p.threadId)).toEqual([1, 1]);
+  expect(w.toodo.awaiting.get(1)).toBe(false);
+});
+
+test("a second Toodo card choice supersedes the queued answer until the lane acknowledges", async () => {
+  const w = world();
+  const d = await w.ask("ap-1731-1", 1731);
+  const card = w.toodo.posts[0];
+  if (!card) throw new Error("missing decision card");
+  await w.route(w.say(1, "2. Replace", { message: card.id, key: `${d.id}:2` }));
+
+  await w.route(w.say(1, "3. Drop", { message: card.id, key: `${d.id}:3` }));
+
+  expect(w.store.get("decision-d1-r1")?.state).toBe("superseded");
+  expect(w.store.get("decision-d1-r2")?.text).toContain("3. Drop. Revision r2.");
+});
+
+test("a Toodo card choice on a lead decision raises the answer without queueing a lane message", async () => {
+  const w = world();
+  const { decision } = await openOwnerDecision(w.ctx, { ...choices, source: "lead", task: 7 });
+  const card = w.toodo.posts[0];
+  if (!card) throw new Error("missing decision card");
+
+  await w.route(w.say(1, "2. Replace", { message: card.id, key: `${decision.id}:2` }));
+
+  expect(w.store.list()).toEqual([]);
+  expect(w.emitted).toHaveLength(1);
+  expect(w.emitted[0]).toContain('choice=2 "Replace" via button');
+  expect(w.emitted[0]).toContain(`dori decision close ${decision.id} --choice 2`);
 });

@@ -99,7 +99,7 @@ calls it. Done tasks keep their criteria as a record.
 
 A workspace is a group of tasks. It has a name, an optional Markdown description, and an
 optional repository reference: a free string such as `Dubusoft/toodo` or
-`discord:<channel>`. Toodo doesn't interpret it. A GitHub `owner/repo` value is shown as a
+`slack:<channel>`. Toodo doesn't interpret it. A GitHub `owner/repo` value is shown as a
 link. There's no directory or branch, so work that has no repository fits too. A workspace
 can also name the machine it lives on (the server's host or a Dori runner), which the
 navigation shows it under; without one it sits under the machines its lanes run on.
@@ -121,7 +121,7 @@ Each task has a type (`feat`, `fix`, `modify`, `refactor`, `docs`, `test`, `chor
 reference (`link_issue` stores it; Toodo creates no issues), and refs.
 
 Refs are an ordered list of strings without duplicates, by convention
-`<kind>:<value>`: `lane:<key>`, `discord:<thread>`, `pr:<url or number>`,
+`<kind>:<value>`: `lane:<key>`, `slack:<thread>`, `pr:<url or number>`,
 `branch:<name>`, or a plain `http(s)://` URL, which is shown as a link. Toodo stores them
 as given. `create_task`, `update_task`, `start_task`, and `complete_task` append refs,
 `update_task` with `remove_refs` removes them, and `search_tasks` searches them.

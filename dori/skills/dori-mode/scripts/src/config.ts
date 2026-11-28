@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
@@ -6,7 +5,6 @@ import { type AutopilotConfig, DEFAULT_AUTOPILOT, parseAutopilotConfig } from ".
 import { DEFAULT_DISPLAY_TIME_ZONE, validTimeZone } from "./display-time.ts";
 import { legacyPaneKeys, managedPanesPath, resolveManagedPanes } from "./managed-panes.ts";
 import { CONFIG_SCHEMA_KEY } from "./config-schema.ts";
-import { type Platform, PLATFORMS } from "./messenger/target.ts";
 import { redactSecrets } from "./redact.ts";
 import { SECRET_NAME } from "./secret-name.ts";
 
@@ -150,20 +148,7 @@ export type PlacementConfig = {
   readonly maxLanes?: Readonly<Record<string, number>>;
 };
 
-export type DiscordConfig = {
-  readonly applicationId: string;
-  readonly guildId: string;
-  readonly ownerId: string;
-};
-
 export type DoriConfig = {
-  readonly discord?: DiscordConfig;
-  /**
-   * The chat platforms dori talks to the owner on (config key `platforms`, default `["discord"]`): `discord`, `toodo`
-   * (the Toodo chat), or both. Without `discord` nothing reaches Discord and the Toodo chat carries everything (discordOn).
-   * Read where it is used, so a config reload switches the Toodo chat live; Discord itself is switched at supervisor start.
-   */
-  readonly platforms: readonly Platform[];
   readonly stateDir: string;
   readonly ignorePanes: readonly string[];
   /**
@@ -181,19 +166,6 @@ export type DoriConfig = {
   readonly leadThinking?: string;
   /** Extra argv for the lead session only (after the executable), e.g. ["--approve"]. */
   readonly leadArgs: ArgvTemplate;
-  readonly discordChannels: readonly string[];
-  /**
-   * The Discord channel for the supervisor's system notices (alertsChannelOf). Absent: those go to `discordChannels[0]`.
-   * Read where it is used, so a config reload applies it live.
-   */
-  readonly alertsChannel?: string;
-  /**
-   * The Discord channel where each owner decision (owner-decisions.ts) opens one thread. Absent: a decision goes to the
-   * channel it was asked from, else `discordChannels[0]`. Watched like a configured channel; read where it is used.
-   */
-  readonly decisionsChannel?: string;
-  /** Owner-only Discord button hooks: name ([a-z0-9-]{1,20}) -> argv run on a `dori:hook:<name>:...` click. */
-  readonly buttonHooks?: Readonly<Record<string, ArgvTemplate>>;
   /** GitHub logins whose new or reopened issues wake the lead as GH_ISSUE; anyone else is digest only. */
   readonly githubIssueAuthors: readonly string[];
   /**
@@ -270,12 +242,6 @@ export type DoriConfig = {
    * or empty: none.
    */
   readonly reportQuietLanes: readonly string[];
-  /**
-   * Hours a finished work thread stays open after the owner's close button lands on its last report before the
-   * supervisor archives it (lane-outcomes.ts autoCloseTick); a newer report or the owner writing in the thread restarts
-   * the wait. Positive; absent is 24.
-   */
-  readonly threadCloseAfterHours: number;
 };
 
 export type ReviewConfig = { readonly repos?: readonly string[] };
@@ -312,8 +278,6 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   agentCommand: ["omo", "--model", "{model}", "{prompt}"],
   defaultModel: "anthropic-subscription/claude-opus-5-5",
   leadArgs: [],
-  platforms: ["discord"],
-  discordChannels: [],
   githubIssueAuthors: [],
   secretCommands: {},
   worktreeRoot: "",
@@ -335,15 +299,7 @@ export const defaultConfig = (home = homedir()): DoriConfig => ({
   autopilot: DEFAULT_AUTOPILOT,
   autoReport: "all",
   reportQuietLanes: [],
-  threadCloseAfterHours: 24,
 });
-
-/** The config's `threadCloseAfterHours`; absent is 24. Throws TypeError unless it is a positive number. */
-const threadCloseAfterHours = (raw: unknown): number => {
-  if (raw == null) return 24;
-  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) throw new TypeError(`threadCloseAfterHours must be a positive number of hours, not ${JSON.stringify(raw)}`);
-  return raw;
-};
 
 /** The one-line instruction that lanes write their reports and todo items in the owner's language; "" when none is configured. */
 export const languageInstruction = (ownerLanguage: string | undefined): string => {
@@ -520,19 +476,6 @@ const stringRecord = (v: unknown): Record<string, string> =>
   typeof v !== "object" || v === null || Array.isArray(v) ? {}
     : Object.fromEntries(Object.entries(v).filter((e): e is [string, string] => typeof e[1] === "string" && e[1].trim() !== ""));
 
-/** The config's `buttonHooks`: entries with a valid name and a non-empty string argv; the rest dropped with one warning. */
-const buttonHooks = (raw: unknown, path: string): Readonly<Record<string, ArgvTemplate>> | undefined => {
-  if (raw === undefined) return undefined;
-  const object = typeof raw === "object" && raw !== null && !Array.isArray(raw);
-  const entries = object ? Object.entries(raw) : [];
-  const valid = entries.filter(([name, argv]) => /^[a-z0-9-]{1,20}$/.test(name) && Array.isArray(argv) && argv.length > 0 && argv.every((part) => typeof part === "string") && String(argv[0]).trim() !== "");
-  const invalid = object ? entries.filter((entry) => !valid.includes(entry)).map(([name]) => `buttonHooks.${name}`) : ["buttonHooks"];
-  if (invalid.length) {
-    console.error(`CONFIG_BUTTON_HOOKS_INVALID ${invalid.join(", ")} in ${path}: buttonHooks must map names of 1-20 lowercase letters, digits or dashes to non-empty argv arrays of strings; these entries are ignored`);
-  }
-  return Object.fromEntries(valid) as Record<string, string[]>;
-};
-
 /** The config's `placement` (absent: the default); throws TypeError on a non-object or a malformed `fallback` or `maxLanes`. */
 const placement = (raw: unknown): PlacementConfig => {
   if (raw === undefined) return { defaultMachine: "local", fallback: [] };
@@ -556,10 +499,10 @@ const placement = (raw: unknown): PlacementConfig => {
  * tunable is a built-in constant (BUILT_IN in tunables.ts), so a config written by any dori version loads on any other.
  */
 export const CONFIG_FILE_KEYS = [
-  "discord", "stateDir", "leadCwd", "worktreeRoot", "agentCommand", "defaultModel", "leadModel", "leadThinking",
-  "leadArgs", "discordChannels", "alertsChannel", "decisionsChannel", "platforms", "githubIssueAuthors", "ownerLanguage", "displayTimeZone", "laneRules", "laneSandbox", "guardMachines",
-  "runners", "secretCommands", "placement", "buttonHooks", "hooks", "ciMergeBase", "ignorePanes", "autopilot", "review",
-  "memoryLimits", "autoReport", "reportQuietLanes", "threadCloseAfterHours",
+  "stateDir", "leadCwd", "worktreeRoot", "agentCommand", "defaultModel", "leadModel", "leadThinking",
+  "leadArgs", "githubIssueAuthors", "ownerLanguage", "displayTimeZone", "laneRules", "laneSandbox", "guardMachines",
+  "runners", "secretCommands", "placement", "hooks", "ciMergeBase", "ignorePanes", "autopilot", "review",
+  "memoryLimits", "autoReport", "reportQuietLanes",
 ] as const;
 
 /** The config's `displayTimeZone`, trimmed; absent or blank is UTC. Throws TypeError unless it is a zone name `Intl` knows. */
@@ -569,41 +512,12 @@ const displayTimeZone = (raw: unknown): string => {
   return raw.trim();
 };
 
-/** The config's `platforms`, each named once; absent is Discord alone. Throws TypeError on an unknown name or an empty list. */
-const platforms = (raw: unknown): readonly Platform[] => {
-  if (raw === undefined || raw === null) return ["discord"];
-  if (!Array.isArray(raw) || !raw.every((p): p is Platform => (PLATFORMS as readonly unknown[]).includes(p))) {
-    throw new TypeError(`platforms must be a list of ${PLATFORMS.join(", ")}, not ${JSON.stringify(raw)}`);
-  }
-  if (!raw.length) throw new TypeError(`platforms must name at least one of ${PLATFORMS.join(", ")}: the owner needs a chat to reach dori on`);
-  return [...new Set(raw)];
-};
-
-/** Whether Discord is on (config `platforms`; a config without the key is Discord alone). */
-export const discordOn = (config: { readonly platforms?: readonly Platform[] }): boolean => config.platforms?.includes("discord") ?? true;
-
-/** The Toodo chat's default room as a chat ref (messenger/toodo-chat.ts): where owner notices go with Discord off. */
-export const TOODO_DEFAULT_ROOM_REF = "toodo";
-
-/** The config's `alertsChannel`: a trimmed channel id, undefined when absent or blank; throws TypeError on a non-string. */
-const optionalChannel = (name: string, raw: unknown): string | undefined => {
-  if (raw === undefined || raw === null) return undefined;
-  if (typeof raw !== "string") throw new TypeError(`${name} must be a Discord channel id string`);
-  return raw.trim() || undefined;
-};
-
 /**
- * Where the supervisor's system notices go (lead stuck or restart-capped, SUPERVISOR_STUCK, TASK_STALLED, a failed
- * unit, and what the lead posts with `dori send --to alerts`): `alertsChannel` when set, else `discordChannels[0]`; with
- * Discord off, the Toodo chat's default room. Lane reports, owner replies and closed-thread redirects keep using
- * `discordChannels[0]`.
+ * The Toodo chat's default room as a chat ref (messenger/toodo-chat.ts): where the supervisor's system notices go (lead
+ * stuck or restart-capped, SUPERVISOR_STUCK, TASK_STALLED, a failed unit, and what the lead posts with
+ * `dori send --to alerts`).
  */
-export const alertsChannelOf = (config: Pick<DoriConfig, "alertsChannel" | "discordChannels"> & { readonly platforms?: readonly Platform[] }): string | undefined =>
-  discordOn(config) ? config.alertsChannel?.trim() || config.discordChannels[0] : TOODO_DEFAULT_ROOM_REF;
-
-/** Where the autopilot executor opens lane threads: `autopilot.threadChannel` when set, else `discordChannels[0]`. */
-export const autopilotThreadChannelOf = (config: Pick<DoriConfig, "autopilot" | "discordChannels">): string | undefined =>
-  config.autopilot.threadChannel || config.discordChannels[0];
+export const TOODO_DEFAULT_ROOM_REF = "toodo";
 
 /** `hooks` entries that are read; any other (e.g. the removed threadDone) is ignored. */
 export const HOOK_KEYS = ["threadReply", "transcribe"] as const;
@@ -653,20 +567,13 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
   }
   const { runners: rawRunners, ...rest } = fromFile;
   const machineRunners = runners(rawRunners);
-  const { alertsChannel: rawAlerts, decisionsChannel: rawDecisions, ...fileValues } = rest;
-  const alerts = optionalChannel("alertsChannel", rawAlerts);
-  const decisions = optionalChannel("decisionsChannel", rawDecisions);
-  const merged: DoriConfig = { ...base, ...fileValues, ...(machineRunners ? { runners: machineRunners } : {}), hooks: { ...base.hooks, ...hooks } };
+  const merged: DoriConfig = { ...base, ...rest, ...(machineRunners ? { runners: machineRunners } : {}), hooks: { ...base.hooks, ...hooks } };
   return {
     ...merged,
-    ...(alerts ? { alertsChannel: alerts } : {}),
-    ...(decisions ? { decisionsChannel: decisions } : {}),
-    platforms: platforms(raw.platforms),
     laneRules: laneRules(raw.laneRules),
     review: reviewConfig(raw.review),
     autoReport: autoReport(raw.autoReport),
     reportQuietLanes: reportQuietLanes(raw.reportQuietLanes),
-    threadCloseAfterHours: threadCloseAfterHours(raw.threadCloseAfterHours),
     memoryLimits: memoryLimits(raw.memoryLimits),
     secretCommands: secretCommands(raw.secretCommands),
     displayTimeZone: displayTimeZone(raw.displayTimeZone),
@@ -676,7 +583,6 @@ export const loadConfig = async (path = configPath(), home = homedir()): Promise
     autopilot: parseAutopilotConfig(raw.autopilot, (line) => {
       warnOnce("autopilot", `CONFIG_AUTOPILOT_KEYS_IGNORED ${line} in ${path}`);
     }),
-    buttonHooks: buttonHooks(raw.buttonHooks, path),
     stateDir,
     leadCwd: expandHome(merged.leadCwd, home),
     leadPane: process.env.DORI_LEAD_PANE ?? panes.leadPane,

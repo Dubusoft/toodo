@@ -9,19 +9,13 @@ import { writeFileAtomic } from "./setup.ts";
 
 export type Json = Record<string, unknown>;
 export type KeyKind = "string" | "list" | "json" | "enum" | "bool";
-/** `whenDiscord`: required only while the config's platforms have discord (absent platforms is Discord alone). */
-export type KeySpec = { readonly key: string; readonly required: boolean; readonly whenDiscord?: boolean; readonly kind: KeyKind; readonly values?: readonly string[]; readonly describe: string };
+export type KeySpec = { readonly key: string; readonly required: boolean; readonly kind: KeyKind; readonly values?: readonly string[]; readonly describe: string };
 
-const spec = (key: string, kind: KeyKind, describe: string, extra: { readonly required?: boolean; readonly whenDiscord?: boolean; readonly values?: readonly string[] } = {}): KeySpec =>
-  ({ key, required: extra.required ?? false, kind, describe, ...(extra.whenDiscord ? { whenDiscord: true } : {}), ...(extra.values ? { values: extra.values } : {}) });
-
-/** Whether `spec` needs a value in a config holding `values`: always, or (whenDiscord) while its platforms have discord. */
-export const isRequired = (spec: KeySpec, values: Json = {}): boolean =>
-  spec.required || (spec.whenDiscord === true && (!Array.isArray(values.platforms) || values.platforms.includes("discord")));
+const spec = (key: string, kind: KeyKind, describe: string, extra: { readonly required?: boolean; readonly values?: readonly string[] } = {}): KeySpec =>
+  ({ key, required: extra.required ?? false, kind, describe, ...(extra.values ? { values: extra.values } : {}) });
 
 /** One entry per CONFIG_FILE_KEYS member, same order. */
 export const DORI_CONFIG_KEYS: readonly KeySpec[] = [
-  spec("discord", "json", "Discord applicationId, guildId and ownerId", { whenDiscord: true }),
   spec("stateDir", "string", "Where dori keeps its state", { required: true }),
   spec("leadCwd", "string", "Working directory of the lead session; local lanes started without --cwd start here too", { required: true }),
   spec("worktreeRoot", "string", "Only worktrees under this directory are removed by the closed-lane cleanup; empty uses the local runner's reported root, and with none the cleanup is off"),
@@ -30,10 +24,6 @@ export const DORI_CONFIG_KEYS: readonly KeySpec[] = [
   spec("leadModel", "string", "Model for the lead only; blank means defaultModel"),
   spec("leadThinking", "string", "--thinking level for the lead session only"),
   spec("leadArgs", "list", "Extra argv for the lead session only"),
-  spec("discordChannels", "list", "Discord channel ids dori listens and reports in", { whenDiscord: true }),
-  spec("alertsChannel", "string", "Discord channel for system notices; blank means the first discordChannels entry"),
-  spec("decisionsChannel", "string", "Discord channel where owner decisions open one thread each; blank posts them in the requesting channel"),
-  spec("platforms", "list", "Chat platforms dori talks to the owner on: discord, toodo (the Toodo chat) or both; without discord nothing reaches Discord"),
   spec("githubIssueAuthors", "list", "GitHub logins whose new or reopened issues wake the lead"),
   spec("ownerLanguage", "string", "Language the owner reads (e.g. Korean)"),
   spec("displayTimeZone", "string", "IANA time zone owner-facing system messages show times in (e.g. Asia/Seoul, shown as KST)"),
@@ -43,7 +33,6 @@ export const DORI_CONFIG_KEYS: readonly KeySpec[] = [
   spec("runners", "json", "Per-runner (machine label) lead-side settings"),
   spec("secretCommands", "json", "Proxy-execution ops for dori secret run: name -> argv, secrets, lanes, repos"),
   spec("placement", "json", "Which machine a launch runs on"),
-  spec("buttonHooks", "json", "Owner-only Discord button hooks: name -> argv"),
   spec("hooks", "json", "Hook commands (threadReply, transcribe)"),
   spec("ciMergeBase", "string", "The only base branch the supervisor merges lane PRs into"),
   spec("ignorePanes", "list", "Panes the sweeps ignore"),
@@ -52,7 +41,6 @@ export const DORI_CONFIG_KEYS: readonly KeySpec[] = [
   spec("memoryLimits", "json", "Lead memory limits: humanMaxKb (15), systemMaxTokens (omo's advisory, 30000), triggerPct (80: past it the lead is woken at once)"),
   spec("autoReport", "enum", "Whose clean done claims the supervisor reports to the owner itself instead of waking the lead (off restores the lead's report)", { values: [...AUTO_REPORT_SCOPES] }),
   spec("reportQuietLanes", "list", "Lane key patterns (* wildcard) whose lanes post their own results: their done claims are recorded reported with no post and no lead report"),
-  spec("threadCloseAfterHours", "json", "Hours a finished work thread waits, with the owner's close button on its last report, before the supervisor closes it (a number; default 24)"),
 ];
 
 /** Runner-config keys `dori runner setup` never asks; `--set`/`--unset` still take them. */
@@ -210,7 +198,7 @@ export const formatValue = (spec: KeySpec, value: unknown): string => {
   return JSON.stringify(value);
 };
 
-export const keyLabel = (spec: KeySpec, values?: Json): "[required]" | "[optional]" => (isRequired(spec, values) ? "[required]" : "[optional]");
+export const keyLabel = (spec: KeySpec): "[required]" | "[optional]" => (spec.required ? "[required]" : "[optional]");
 
 /** Shown once before the questions: how to keep, fall back to the default, and clear. */
 export const KEY_INPUT_HINT = "Enter keeps the value in [brackets] (none shown: the default applies); type - to clear an optional key";
@@ -224,10 +212,7 @@ export const doriConfigDefault = (home: string): KeyDefault => {
   return (key, next) => {
     const s = DORI_CONFIG_KEYS.find((k) => k.key === key);
     if (!s) return undefined;
-    const first = (v: unknown): unknown => (Array.isArray(v) ? v[0] : undefined);
     const value = key === "leadModel" ? (hasValue(next.defaultModel) ? next.defaultModel : base.defaultModel)
-      : key === "alertsChannel" ? first(next.discordChannels)
-      : key === "decisionsChannel" ? undefined
       : key === "laneSandbox" ? DEFAULT_LANE_SANDBOX
       : base[key];
     return hasValue(value) ? formatValue(s, value) : undefined;
@@ -290,9 +275,9 @@ const hasValue = (v: unknown): boolean =>
 
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
 
-const question = (spec: KeySpec, fallback: string | undefined, values: Json): string => {
+const question = (spec: KeySpec, fallback: string | undefined): string => {
   const hint = spec.kind === "enum" ? ` (one of ${(spec.values ?? []).join("|")})` : spec.kind === "list" ? " (comma separated)" : spec.kind === "json" ? " (JSON)" : "";
-  return `${spec.key} ${keyLabel(spec, values)} ${spec.describe}${hint}${fallback ? ` (default: ${fallback})` : ""}`;
+  return `${spec.key} ${keyLabel(spec)} ${spec.describe}${hint}${fallback ? ` (default: ${fallback})` : ""}`;
 };
 
 /** Applies the patch and unset list, then asks the keys `mode` selects (see ConfigureOptions); never asks patch/unset keys. */
@@ -322,10 +307,10 @@ export const configureKeys = async (o: ConfigureOptions): Promise<Configured> =>
     for (;;) {
       const shown = formatValue(spec, next[spec.key]);
       const fallback = hasValue(next[spec.key]) ? undefined : o.defaults?.(spec.key, next);
-      const answer = (await o.prompt.ask(question(spec, fallback, next), shown)).trim();
+      const answer = (await o.prompt.ask(question(spec, fallback), shown)).trim();
       if (answer === shown.trim()) return;
       if (answer === "-") {
-        if (!isRequired(spec, next)) return remove(spec.key);
+        if (!spec.required) return remove(spec.key);
         o.log(`SETUP_KEY_REQUIRED ${spec.key}: it cannot be cleared`);
         continue;
       }
@@ -342,9 +327,9 @@ export const configureKeys = async (o: ConfigureOptions): Promise<Configured> =>
     const excluded = new Set([...(o.skip ?? []), ...Object.keys(o.patch), ...o.unset]);
     const eligible = o.specs.filter((s) => !excluded.has(s.key));
     if (o.mode === "new") {
-      for (const s of eligible) if (!o.seen.has(s.key) || (isRequired(s, next) && !hasValue(next[s.key]))) await ask(s);
+      for (const s of eligible) if (!o.seen.has(s.key) || (s.required && !hasValue(next[s.key]))) await ask(s);
     } else {
-      const first = eligible.filter((s) => (isRequired(s, next) && !hasValue(next[s.key])) || !o.seen.has(s.key));
+      const first = eligible.filter((s) => (s.required && !hasValue(next[s.key])) || !o.seen.has(s.key));
       for (const s of first) await ask(s);
       const rest = eligible.filter((s) => !first.includes(s));
       if (rest.length && (await o.prompt.confirm("Edit the other optional keys too?", false))) for (const s of rest) await ask(s);
@@ -352,6 +337,6 @@ export const configureKeys = async (o: ConfigureOptions): Promise<Configured> =>
   }
 
   const shown = [...new Set([...asked, ...Object.keys(o.patch), ...o.unset])];
-  const missingRequired = o.specs.filter((s) => isRequired(s, next) && !hasValue(next[s.key])).map((s) => s.key);
+  const missingRequired = o.specs.filter((s) => s.required && !hasValue(next[s.key])).map((s) => s.key);
   return { next, shown, missingRequired };
 };

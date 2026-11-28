@@ -25,7 +25,7 @@ export type SourceStatus = {
   readonly events: number;
   readonly duplicates: number;
   readonly lastEventAt?: number;
-  /** The policy kind of the last new event (never its text: dori status is posted to Discord). */
+  /** The policy kind of the last new event (never its text: dori status is shown in the status panel). */
   readonly lastKind?: string;
   readonly failing?: true;
   readonly lastError?: string;

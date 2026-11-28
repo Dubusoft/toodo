@@ -19,7 +19,7 @@ or another agent records their work over MCP the same way.
 - **Planning**: create tasks per workspace; express ordering as dependencies (a DAG). A
   planned task is ready once every task it depends on is done; cycles are rejected.
 - **Work memory**: progress, decision, and blocker notes on each task, a completion note,
-  and references (`refs`) such as `lane:<key>`, `discord:<thread>`, `pr:<url>`, or a URL.
+  and references (`refs`) such as `lane:<key>`, `slack:<thread>`, `pr:<url>`, or a URL.
 - **Reasons**: starting, pausing, and completing a task record why, next to the status
   change in its history.
 - **Completion criteria**: `manual` items checked with evidence, and `url` items Toodo

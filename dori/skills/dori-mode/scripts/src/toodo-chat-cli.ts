@@ -5,14 +5,6 @@ import { parseArgs } from "node:util";
 import type { FlowDeps } from "./done-flow.ts";
 import { isToodoRef, parseToodoRef, TOODO_FILES_MAX, toodoChat, toodoRef } from "./messenger/toodo-chat.ts";
 
-/**
- * Whether `dori <command> ...` addresses the Toodo chat: `dori send toodo` or `dori send --to <toodo ref>`, and for ack,
- * handled and typing a Toodo ref (or `toodo`) as the first argument.
- */
-export const toodoChatCommand = (command: string, rest: readonly string[], key: string | undefined, to: string | undefined): boolean =>
-  command === "send" ? key === "toodo" || (to !== undefined && isToodoRef(to))
-    : ["ack", "handled", "typing"].includes(command) && rest[0] !== undefined && isToodoRef(rest[0]);
-
 const ids = (values: readonly string[], die: (message: string) => never, usage: string): number[] =>
   values.map((v) => (/^[1-9]\d*$/.test(v) ? Number(v) : die(usage)));
 
@@ -32,12 +24,10 @@ export const toodoChatMain = async (
   d: { readonly flow: FlowDeps; readonly die: (message: string, code?: number) => never; readonly opt: (name: string) => string | undefined; readonly need: (name: string) => string },
 ): Promise<number> => {
   const { flow, die } = d;
-  if (!flow.config.platforms.includes("toodo")) die("TOODO_CHAT_OFF the Toodo chat is off: add \"toodo\" to platforms in the dori config");
   const chat = toodoChat(flow.tunables.toodoWriter);
   switch (command) {
     case "send": {
-      const usage = "usage: dori send toodo --to REF --text TEXT [--handles ID,...] [--file PATH ...] (no --edit, --buttons or --thread on Toodo)";
-      if (d.opt("edit") !== undefined || d.opt("buttons") !== undefined || d.opt("thread") !== undefined) die(usage);
+      const usage = "usage: dori send [toodo] --to REF --text TEXT [--handles ID,...] [--file PATH ...]";
       const place = parseToodoRef(d.opt("to") ?? "toodo");
       const handles = d.opt("handles");
       const answered = handles === undefined ? [] : ids(handles.split(",").map((v) => v.trim()), die, "--handles takes Toodo message ids separated by commas");

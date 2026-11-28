@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { type FSWatcher, statSync, watch } from "node:fs";
 import { basename, dirname } from "node:path";
 
-import { assignConfig, CONFIG_FILE_KEYS, discordOn, type DoriConfig, leadLanguageInstruction, loadConfig } from "./config.ts";
+import { assignConfig, CONFIG_FILE_KEYS, type DoriConfig, leadLanguageInstruction, loadConfig } from "./config.ts";
 
 /*
  * Config hot reload. `watchConfigFiles` notices edits to a set of files (a directory watch per file, debounced, plus a
@@ -94,12 +94,10 @@ export const replaceInPlace = <T extends object>(target: T, next: T): void => {
 };
 
 /**
- * config.json keys the running supervisor cannot take without a restart: the Discord application (the gateway and the
- * slash commands are registered with it at startup), where its state lives, and the button hooks its slash command
- * handler was built with. `DORI_DISCORD_TOKEN` is not a config key: it is read once at
- * startup, so a new token also needs a restart. Every other config.json key is read where it is used, so it applies live.
+ * config.json keys the running supervisor cannot take without a restart: where its state lives. Every other config.json
+ * key is read where it is used, so it applies live.
  */
-export const RESTART_CONFIG_KEYS: readonly string[] = ["discord", "stateDir", "buttonHooks"];
+export const RESTART_CONFIG_KEYS: readonly string[] = ["stateDir"];
 
 const strings = (v: unknown): boolean => Array.isArray(v) && v.every((s) => typeof s === "string");
 
@@ -108,15 +106,12 @@ const strings = (v: unknown): boolean => Array.isArray(v) && v.every((s) => type
  * defaults these by spreading the file, so a reload checks them itself. Undefined when the config is usable.
  */
 export const configReloadError = (c: DoriConfig): string | undefined => {
-  for (const key of ["discordChannels", "githubIssueAuthors", "ignorePanes", "leadArgs", "reportQuietLanes"] as const) {
+  for (const key of ["githubIssueAuthors", "ignorePanes", "leadArgs", "reportQuietLanes"] as const) {
     if (!strings(c[key])) return `${key} must be an array of strings`;
   }
   if (!strings(c.agentCommand) || c.agentCommand.length === 0) return "agentCommand must be a non-empty array of strings";
   for (const key of ["defaultModel", "leadCwd", "worktreeRoot", "ciMergeBase"] as const) {
     if (typeof c[key] !== "string") return `${key} must be a string`;
-  }
-  for (const key of ["alertsChannel", "decisionsChannel"] as const) {
-    if (c[key] !== undefined && typeof c[key] !== "string") return `${key} must be a string`;
   }
   if (!c.defaultModel.trim()) return "defaultModel must not be empty";
   if (!c.ciMergeBase.trim()) return "ciMergeBase must not be empty";
@@ -157,7 +152,7 @@ export const configReloader = (deps: ConfigReloaderDeps) => async (): Promise<Co
     deps.enqueue(`config-reload-invalid:${tag}`, line);
     return { state: "invalid", detail };
   };
-  // A missing file would load as the defaults (no channels, no Discord app): treat it as a broken edit, not a reset.
+  // A missing file would load as the defaults: treat it as a broken edit, not a reset.
   if (!text.trim()) return invalid("the file is missing or empty");
   let next: DoriConfig;
   try { next = await (deps.load ?? loadConfig)(deps.path); }
@@ -165,21 +160,14 @@ export const configReloader = (deps: ConfigReloaderDeps) => async (): Promise<Co
   const problem = configReloadError(next);
   if (problem) return invalid(problem);
   const current = deps.current();
-  // Discord itself is switched at startup (supervise-loop.ts): a reload takes the Toodo chat's switch in `platforms` live
-  // and keeps Discord on or off as it runs until a restart (and never leaves the owner without a chat in between).
-  const discordSwitched = discordOn(current) !== discordOn(next);
-  const kept = [...next.platforms.filter((p) => p !== "discord"), ...(discordOn(current) ? ["discord" as const] : [])];
-  const keepsCurrent = !kept.length || (kept.length === current.platforms.length && kept.every((p) => current.platforms.includes(p)));
-  const platforms = !discordSwitched ? next.platforms : keepsCurrent ? current.platforms : kept;
-  const applied: DoriConfig = { ...next, platforms };
-  const changed = CONFIG_FILE_KEYS.filter((key) => !Bun.deepEquals(current[key], applied[key]));
+  const changed = CONFIG_FILE_KEYS.filter((key) => !Bun.deepEquals(current[key], next[key]));
   const live = changed.filter((key) => !RESTART_CONFIG_KEYS.includes(key));
-  const restart = [...changed.filter((key) => RESTART_CONFIG_KEYS.includes(key)), ...(discordSwitched ? ["platforms (discord)"] : [])];
+  const restart = changed.filter((key) => RESTART_CONFIG_KEYS.includes(key));
   if (live.length) {
-    deps.apply(Object.fromEntries(live.map((key) => [key, applied[key]])) as Partial<DoriConfig>);
+    deps.apply(Object.fromEntries(live.map((key) => [key, next[key]])) as Partial<DoriConfig>);
     // The lead keeps the language its startup prompt named until this line names the new one.
     const language = !live.includes("ownerLanguage") ? ""
-      : `; ${leadLanguageInstruction(applied.ownerLanguage) || "ownerLanguage is unset now: reply in the language the owner wrote in"}`;
+      : `; ${leadLanguageInstruction(next.ownerLanguage) || "ownerLanguage is unset now: reply in the language the owner wrote in"}`;
     const line = `CONFIG_RELOADED ${live.join(", ")} from ${deps.path}${language}`;
     deps.log(line);
     deps.enqueue(`config-reloaded:${tag}`, line);

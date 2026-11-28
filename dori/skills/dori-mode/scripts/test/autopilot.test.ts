@@ -297,15 +297,13 @@ test("parseAutopilotConfig defaults every key", () => {
   expect(DEFAULT_AUTOPILOT.tickSec).toBe(300);
   expect(parseAutopilotConfig({ tickSec: 30 }).tickSec).toBe(30);
   expect(parseAutopilotConfig({ tickSec: 3600 }).tickSec).toBe(3600);
-  expect(parseAutopilotConfig({ threadChannel: " 900 " }).threadChannel).toBe("900");
-  expect(() => parseAutopilotConfig({ threadChannel: 900 })).toThrow("autopilot.threadChannel must be a Discord channel id string");
 });
 
-test("parseAutopilotConfig ignores the removed bundle keys, quotaMaxUsedPct and mode (any value) with one warning", () => {
+test("parseAutopilotConfig ignores the removed bundle keys, quotaMaxUsedPct, threadChannel and mode (any value) with one warning", () => {
   const warnings: string[] = [];
-  expect(parseAutopilotConfig({ workspaces: [7], wip: 5, attemptCap: 3, quotaMaxUsedPct: 90 }, (line) => warnings.push(line)))
+  expect(parseAutopilotConfig({ workspaces: [7], wip: 5, attemptCap: 3, quotaMaxUsedPct: 90, threadChannel: "900" }, (line) => warnings.push(line)))
     .toEqual(DEFAULT_AUTOPILOT);
-  expect(warnings).toEqual(["autopilot.workspaces, autopilot.wip, autopilot.attemptCap, autopilot.quotaMaxUsedPct no longer apply and are ignored"]);
+  expect(warnings).toEqual(["autopilot.workspaces, autopilot.wip, autopilot.attemptCap, autopilot.quotaMaxUsedPct, autopilot.threadChannel no longer apply and are ignored"]);
   for (const mode of ["off", "shadow", "on", "live", 7]) {
     const seen: string[] = [];
     expect(parseAutopilotConfig({ mode }, (line) => seen.push(line))).toEqual(DEFAULT_AUTOPILOT);

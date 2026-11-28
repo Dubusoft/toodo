@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 
-import { AckError } from "./ack.ts";
 import { COMMANDS, KNOWN_OPTIONS } from "./commands/index.ts";
 import { die, leadContext } from "./commands/context.ts";
 import { statusMain } from "./commands/status.ts";
@@ -10,8 +9,7 @@ import { loadConfig } from "./config.ts";
 import { LaneMessageError } from "./lane-messages.ts";
 import { LaneOpsError } from "./lane-ops.ts";
 import { LaunchError } from "./launch.ts";
-import { DiscordGatewayOwnedError } from "./messenger/discord-lock.ts";
-import { MessengerError, UnsafeMessageError } from "./messenger/http.ts";
+import { UnsafeMessageError } from "./messenger/http.ts";
 import { TranscriptionError } from "./messenger/voice.ts";
 import { SourceError } from "./event-sources.ts";
 import { Registry } from "./registry.ts";
@@ -92,6 +90,6 @@ try {
 } catch (e) {
   // The supervisor (and with it every runner) is unreachable, or a runner answered RUNNER_UNAVAILABLE: fail closed (D7).
   if (e instanceof RunnerUnavailable || (e instanceof LaneOpsError && e.code === "RUNNER_UNAVAILABLE")) die(e.message, 2);
-  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof MessengerError || e instanceof TranscriptionError || e instanceof ReposError || e instanceof DiscordGatewayOwnedError || e instanceof AckError || e instanceof StoreError || e instanceof LaneMessageError || e instanceof SourceError) die(e.message);
+  if (e instanceof LaunchError || e instanceof UnsafeMessageError || e instanceof TranscriptionError || e instanceof ReposError || e instanceof StoreError || e instanceof LaneMessageError || e instanceof SourceError) die(e.message);
   throw e;
 }

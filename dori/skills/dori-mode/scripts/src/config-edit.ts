@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 import type { DoriConfigAccess, DoriConfigEntry, DoriConfigStore, DoriConfigView } from "../../../../../src/lib/dori-config.ts";
 import { configPath, loadConfig } from "./config.ts";
-import { ConfigKeyError, DORI_CONFIG_KEYS, formatValue, isRequired, type Json, type KeySpec, parseValue } from "./config-keys.ts";
+import { ConfigKeyError, DORI_CONFIG_KEYS, formatValue, type Json, type KeySpec, parseValue } from "./config-keys.ts";
 import { configReloadError, RESTART_CONFIG_KEYS } from "./config-watch.ts";
 import { redactSecrets } from "./redact.ts";
 import { readConfigObject, saveConfig } from "./setup.ts";
@@ -19,7 +19,7 @@ import { readConfigObject, saveConfig } from "./setup.ts";
  * keeps its state, and the machines it reaches over ssh.
  */
 export const HOST_ONLY_KEYS: ReadonlySet<string> = new Set([
-  "stateDir", "agentCommand", "leadArgs", "laneSandbox", "guardMachines", "runners", "hooks", "buttonHooks", "secretCommands",
+  "stateDir", "agentCommand", "leadArgs", "laneSandbox", "guardMachines", "runners", "hooks", "secretCommands",
 ]);
 
 /** Keys shown by their entry names alone: each secret operation names the secrets it gets. */
@@ -40,7 +40,7 @@ const entry = (spec: KeySpec, raw: Json): DoriConfigEntry => {
     access = "masked";
   }
   return {
-    key: spec.key, kind: spec.kind, describe: spec.describe, values: spec.values ?? null, required: isRequired(spec, raw),
+    key: spec.key, kind: spec.kind, describe: spec.describe, values: spec.values ?? null, required: spec.required,
     value, access, restart: RESTART_CONFIG_KEYS.includes(spec.key),
   };
 };
@@ -77,7 +77,7 @@ export const doriConfigStore = (path = configPath()): DoriConfigStore => {
       try { raw = readConfigObject(path); } catch (e) { return { status: 409, message: errorText(e) }; }
       const next: Json = { ...raw };
       if (edit.value.trim() === "") {
-        if (isRequired(spec, raw)) return { status: 400, message: `${spec.key} is required` };
+        if (spec.required) return { status: 400, message: `${spec.key} is required` };
         delete next[spec.key];
       } else {
         try { next[spec.key] = parseValue(spec, edit.value); } catch (e) {

@@ -113,11 +113,11 @@ test("managed done rows without receipts are refused once with the leaf line, ne
 
 test("a done row for an older lane run is routed late under lane-report-late and consumed", async () => {
   const dir = stateDir(), world = newWorld(), deps = depsFor(world, fakeClock(T0), dir);
-  const managed = lane(dir, { fileRun: { id: "00000000-0000-4000-8000-000000000002", requiredReport: false } });
+  const managed = lane(dir, { lastRecoveryAt: T0, fileRun: { id: "00000000-0000-4000-8000-000000000002", requiredReport: false } });
   await deps.registry.write(managed);
   const store = new SqliteLaneReports(storePath(dir)); cleanups.push(() => store.close());
   const fileReceipt = { run: { id: "00000000-0000-4000-8000-000000000001", requiredReport: false }, revision: 1, sha256: "a".repeat(64) };
-  const row = store.append({ lane: managed.key, generation: 0, kind: "done", text: "old run", at: T0, fileReceipt });
+  const row = store.append({ lane: managed.key, generation: T0 - 1, kind: "done", text: "old run", at: T0, fileReceipt });
   const journal: [string, string][] = [];
   const enqueue = (id: string, line: string) => { journal.push([id, line]); };
   expect(await routeReports(deps, store, enqueue)).toEqual([`LANE_REPORT_ROUTED ${row.id} done late`]);
@@ -367,10 +367,10 @@ test("routing: a question with choices opens an owner decision through the opene
   const decision: OwnerDecision = { ...choices, id: "d1", state: "open", lane: "local-lane", source: "lane", sourceRef: row.id, channel: "9", thread: "10", openedAt: T0 };
   const opener = async (_lane: Lane, report: { readonly id: string; readonly text: string }): Promise<OpenResult | undefined> => {
     asked.push(report.id);
-    return parseDecisionText(report.text) ? { decision, channel: { channel: "9" }, link: { kind: "none" } } : undefined;
+    return parseDecisionText(report.text) ? { decision } : undefined;
   };
   const journal: [string, string][] = [];
-  expect(await routeReports(deps, store, (id, line) => { journal.push([id, line]); }, "/home/test", null, opener)).toEqual([`LANE_REPORT_ROUTED ${row.id} question decision`]);
+  expect(await routeReports(deps, store, (id, line) => { journal.push([id, line]); }, "/home/test", opener)).toEqual([`LANE_REPORT_ROUTED ${row.id} question decision`]);
   expect(asked).toEqual([row.id]);
   expect(journal).toEqual([["owner-decision-opened:d1", openedLine(decision)]]);
   expect(journal[0]?.[1]).toStartWith("OWNER_DECISION_OPENED d1 lane local-lane blocking");
@@ -387,7 +387,7 @@ test("routing: a nonblocking input request opens no owner decision and reaches t
   const asked: string[] = [];
   const journal: [string, string][] = [];
   const opener = async (_lane: Lane, report: { readonly id: string }): Promise<OpenResult | undefined> => { asked.push(report.id); return undefined; };
-  expect(await routeReports(deps, store, (id, line) => { journal.push([id, line]); }, "/home/test", null, opener)).toEqual([`LANE_REPORT_ROUTED ${row.id} question journal`]);
+  expect(await routeReports(deps, store, (id, line) => { journal.push([id, line]); }, "/home/test", opener)).toEqual([`LANE_REPORT_ROUTED ${row.id} question journal`]);
   expect(asked).toEqual([]);
   expect(journal).toHaveLength(1);
   expect(journal[0]?.[0]).toBe(`lane-request:${row.id}`);
@@ -402,7 +402,7 @@ test("routing: a free-text question the opener declines is journaled as a LANE_R
   const store = new SqliteLaneReports(storePath(dir));
   const row = store.append({ lane: "local-lane", generation: 0, kind: "question", text: "which base?", at: T0 });
   const journal: [string, string][] = [];
-  expect(await routeReports(deps, store, (id, line) => { journal.push([id, line]); }, "/home/test", null, async () => undefined)).toEqual([`LANE_REPORT_ROUTED ${row.id} question journal`]);
+  expect(await routeReports(deps, store, (id, line) => { journal.push([id, line]); }, "/home/test", async () => undefined)).toEqual([`LANE_REPORT_ROUTED ${row.id} question journal`]);
   expect(journal).toEqual([[`lane-report:${row.id}`, "LANE_REPORT local-lane question which base?"]]);
   expect(store.list()[0]?.route).toBe("journal");
 });

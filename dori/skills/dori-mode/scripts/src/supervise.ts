@@ -2,28 +2,22 @@ import { launchQueue, launchQueueText, queueFor } from "./routing.ts";
 
 import type { FlowDeps } from "./done-flow.ts";
 import { redactMeta, redactSecrets } from "./redact.ts";
-import { type Event, type EventMeta, JournalCore, type OwnerNoticeKind } from "./supervise-journal.ts";
-import { OWNER_INBOUND, OWNER_REVISION, type OwnerMessage, OwnerTracking, quarantineDigest, type SupervisorHooks } from "./supervise-owner-tracking.ts";
+import { type Event, type EventMeta, JournalCore } from "./supervise-journal.ts";
+import { AnnouncementOutbox, type SupervisorHooks } from "./supervise-owner-tracking.ts";
 import { LeadLifecycle } from "./supervise-lead-lifecycle.ts";
 import { Delivery } from "./supervise-delivery.ts";
-import { OutcomeTracking, type ThreadCloseTransport } from "./lane-outcomes.ts";
+import { OutcomeTracking } from "./lane-outcomes.ts";
 import { DecisionTracking } from "./decision-obligations.ts";
 
-/*
- * The supervisor in four parts: the journal (supervise-journal.ts), owner tracking (supervise-owner-tracking.ts), the
- * lead lifecycle (supervise-lead-lifecycle.ts) and delivery (supervise-delivery.ts). This file composes them behind the
- * Supervisor API and re-exports their public names, so callers import from here as before.
- */
 export {
-  type AwaitingAck, type EventMeta, type Journal, type JournalEvent, type Notice, type OutboxItem, type OwnerNoticeKind, type Restart, RETAIN_EVERY_MS,
+  type EventMeta, type Journal, type JournalEvent, type OutboxItem, type Restart, RETAIN_EVERY_MS,
   SuperviseError, TransientSuperviseError,
 } from "./supervise-journal.ts";
 export {
-  ACK_KEEP_MS, COLD_START_EMOJI, HUNG_EMOJI, OUTBOX_ATTEMPTS, OUTBOX_RETRY_MS, OWNER_BODY_MAX, OWNER_NOTICE_AFTER_MS,
-  OWNER_NOTIFY_ATTEMPTS, type SupervisorHooks,
+  OUTBOX_ATTEMPTS, OUTBOX_RETRY_MS, type SupervisorHooks,
 } from "./supervise-owner-tracking.ts";
 export {
-  LEAD_SKILL, screenStill,
+  LEAD_SKILL,
 } from "./supervise-lead-lifecycle.ts";
 export {
   BACKOFF_MAX_MS, BACKOFF_MIN_MS, eventPriority, RetryingDelivery, STUCK_AFTER_MS,
@@ -37,7 +31,7 @@ export {
 export class Supervisor {
   readonly eventLog: string;
   private readonly core: JournalCore;
-  private readonly owners: OwnerTracking;
+  private readonly outbox: AnnouncementOutbox;
   private readonly lead: LeadLifecycle;
   private readonly delivery: Delivery;
   private readonly outcomes: OutcomeTracking;
@@ -47,22 +41,17 @@ export class Supervisor {
     this.core = new JournalCore(deps);
     this.eventLog = this.core.eventLog;
     const enqueue = (id: string, line: string): void => { this.enqueue(id, line); };
-    this.owners = new OwnerTracking(this.core, hooks, enqueue);
+    this.outbox = new AnnouncementOutbox(this.core, hooks);
     this.outcomes = new OutcomeTracking(this.core, enqueue);
     this.decisions = new DecisionTracking(this.core, enqueue);
-    this.lead = new LeadLifecycle(this.core, this.owners, hooks, enqueue, () => { this.outcomes.publish(); this.decisions.publish(); });
-    this.delivery = new Delivery(this.core, this.owners, this.lead, this.outcomes);
+    this.lead = new LeadLifecycle(this.core, this.outbox, hooks, enqueue, () => { this.outcomes.publish(); this.decisions.publish(); });
+    this.delivery = new Delivery(this.core, this.outbox, this.lead, this.outcomes);
     const { tail, cursor } = this.core.recoverLog();
     this.core.initInbox();
-    // Owner state comes from its tracking rows, not from the history: an owner message in the history with neither a
-    // row nor a tombstone is quarantined and listed to the lead once, never reminded one by one.
-    const quarantined = this.owners.trackOwners(this.core.journal.events, true);
-    if (quarantined.length) this.enqueue(`owner-quarantine:${deps.clock.now()}`, quarantineDigest(quarantined));
-    // Migration/reconciliation is durable before any timers or new delivery can run.
     this.core.persist();
     if (cursor !== this.core.store.logCursor()) this.core.store.recordDeliveries(tail, cursor, deps.clock.now());
     // Announcements a previous run could not post (or crashed before posting) go out now.
-    this.owners.drainOutbox();
+    this.outbox.drainOutbox();
     this.outcomes.publish();
     this.decisions.publish();
   }
@@ -97,71 +86,39 @@ export class Supervisor {
       // Append in place, but roll back the whole staged tail (including nested notices) on failure.
       (before.events as Event[]).push(event);
       this.core.eventIds.add(id);
-      this.owners.trackOwners([event]);
       this.outcomes.track(event);
       this.decisions.track(event);
       // Nested notices commit with their triggering event, never ahead of it.
-      if (!nested) {
-        this.core.persist(OWNER_INBOUND.test(id) || OWNER_REVISION.test(id) ? "full" : "normal");
-      }
+      if (!nested) this.core.persist("normal");
     } catch (e) {
       for (const added of before.events.slice(length)) this.core.eventIds.delete(added.id);
       (before.events as Event[]).length = length;
       this.core.journal = before;
       throw e;
     } finally { this.enqueuing = nested; }
-    if (!nested) this.owners.drainOutbox();
+    if (!nested) this.outbox.drainOutbox();
     return true;
   }
 
   /** Event `id` is journaled, or was and left a dedupe tombstone: a scheduled run's read-back. */
   journaled(id: string): boolean { return this.core.known(id); }
 
-  /**
-   * Owner messages (INBOUND, id discord:<channel>:<message>) waiting longer than `ms` without reaching a running lead:
-   * never appended to the lead's log, or appended only into a cold start that has not confirmed yet. Each is returned
-   * until noticeSent confirms delivery, with a bounded number of attempts.
-   */
-  overdueOwnerMessages(ms: number): OwnerMessage[] { return this.owners.overdueOwnerMessages(ms); }
-
-  /** Read receipts stop re-pushing, but never erase unhandled owner work. */
-  ackTick(timeoutMs: number): OwnerMessage[] {
-    const due = this.owners.ackTick(timeoutMs);
-    // What the last cold start carried over leaves `dori inbox take` once handled (or the launch queue emptied).
-    this.lead.refreshCarried();
-    return due;
-  }
-
-  /** An explicit ack starts the handling clock. A reminder gets a full second window before owner escalation. */
-  handledTick(timeoutMs?: number): OwnerMessage[] { return this.owners.handledTick(timeoutMs); }
-
   /** Consumes `dori reported` receipts and enqueues UNREPORTED for finished lanes the owner was not told about in time. */
   reportTick(): Promise<void> {
     // Due outbox lines (a retried announcement) go out on this pass too, even while lead delivery is backing off.
-    this.owners.drainOutbox();
+    this.core.consumeTakes();
+    this.core.retain(this.core.deps.clock.now());
+    this.core.persist("normal");
+    this.core.store.sync();
+    this.lead.refreshCarried();
+    this.outbox.drainOutbox();
     return this.outcomes.tick(this.core.deps.registry);
-  }
-
-  /**
-   * Puts the owner's close button on the last report of threads whose work is finished and reported, and archives them
-   * once their wait passes; see OutcomeTracking.autoCloseTick.
-   */
-  autoCloseTick(transport: ThreadCloseTransport): Promise<void> {
-    return this.outcomes.autoCloseTick(this.core.deps.registry, transport);
   }
 
   /** Consumes `dori resolved` receipts and enqueues UNRESOLVED for decision events the lead left open past resolveTimeoutMin. */
   resolveTick(): void { this.decisions.tick(); }
 
-  /** Called only after the messenger confirms a successful post. Failures remain eligible on the next tick. */
-  noticeSent(kind: OwnerNoticeKind, channel: string, message: string): void { this.owners.noticeSent(kind, channel, message); }
-
-  /** Called right before an owner notice is posted: the attempt counts even if the process dies during the post. */
-  noticeAttempt(kind: OwnerNoticeKind, channel: string, message: string): void { this.owners.noticeAttempt(kind, channel, message); }
-
-  /** Resolves when queued reactions and announcements have finished (tests and shutdown). */
-  reactionsSettled(): Promise<void> { return this.owners.reactionsSettled(); }
-
+  announcementsSettled(): Promise<void> { return this.outbox.settled(); }
 
   flush(): Promise<void> { return this.delivery.flush(); }
 

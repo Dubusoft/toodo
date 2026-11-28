@@ -6,30 +6,9 @@ import { type DecisionChoices } from "./runner/decision-text.ts";
 import { withStateLockSync } from "./state-lock.ts";
 import { saveJsonFile } from "./store.ts";
 
-/**
- * Owner decisions (decision channel): one question that needs the owner's choice opens one thread, in `decisionsChannel`
- * (else the channel it was asked from, else `discordChannels[0]`), with numbered options, a recommendation and its reason.
- * The thread starts without a message, so the channel body keeps nothing: the question is the thread's first message.
- * The lead opens one with `dori decision open`; a lane question carrying choices (runner/decision-text.ts) is opened by
- * the supervisor. The owner's first reply in the thread raises `OWNER_DECISION_ANSWERED`, a decision obligation
- * (decision-obligations.ts) the lead closes with `dori decision close`, which also writes its `dori resolved` receipt.
- * Not to be confused with those obligations: an owner decision is a question to the owner, an obligation is an event the
- * lead must act on.
- * A request (`kind: "request"`) is the same record for input only the owner can give (a one-time code, a file or value):
- * no options, its `question` is what is needed, and it says where to send it (a reply in the thread, or `file`). It opens,
- * is answered and closes exactly like a decision; thread names carry the request tag instead of the decision tag. The channel is wired
- * by id only, so the owner may rename it.
- *
- * Every decision lives in `<stateDir>/decisions.json`, rewritten whole under DECISIONS_LOCK by the CLI and the supervisor.
- * Discord calls run outside the lock.
- */
-
+/** Owner decision cards and their answer deliveries are stored under DECISIONS_LOCK. */
 export const DECISIONS_FILE = "decisions.json";
 export const DECISIONS_LOCK = "decisions.lock.sqlite";
-/** Discord keeps a decision thread open this long without activity (the longest it allows). */
-export const DECISION_AUTO_ARCHIVE_MIN = 10080;
-/** A decision still `posting` this long (its writer died mid-post) raises OWNER_DECISION_STUCK once. */
-export const DECISION_POSTING_STUCK_MS = 10 * 60_000;
 /** Closed decisions are dropped this long after they closed; `dori decision list --all` shows the last DECISION_LIST_CLOSED_MS. */
 export const DECISION_KEEP_CLOSED_MS = 30 * 24 * 60 * 60_000;
 export const DECISION_LIST_CLOSED_MS = 7 * 24 * 60 * 60_000;
@@ -41,7 +20,7 @@ export type OwnerDecisionState = "posting" | "open" | "answered" | "closed";
 
 /**
  * An owner answer the lead holds: a message in the decision's thread or channel, or an answer-button click the lane could
- * not take directly (`message` `click:<interaction id>`, `choice` the button's option), which is no Discord message.
+ * not take directly (`message` `click:<interaction id>`, `choice` the button's option).
  */
 export type OwnerAnswer = { readonly channel: string; readonly message: string; readonly at: number; readonly choice?: number };
 
@@ -55,26 +34,15 @@ export type OwnerDecision = DecisionChoices & {
   readonly state: OwnerDecisionState;
   readonly task?: number;
   readonly lane?: string;
-  /** The thread ref the question came from (a lane's `thread`, or `--thread`), where the link line goes. */
+  /** The thread ref the question came from (a lane's `thread`, or `--thread`). */
   readonly origin?: string;
   readonly source: "lead" | "lane";
   /** The lane report row a lane decision came from; one decision per row. */
   readonly sourceRef?: string;
   readonly channel: string;
   readonly thread?: string;
-  /**
-   * Set when a lane decision was posted into the lane's own thread because that thread already sits in decisionsChannel
-   * (laneThreadInDecisions): `thread` is the lane thread, no thread of its own is started, no link line is posted, and
-   * closing it leaves the lane thread open.
-   */
-  readonly inLaneThread?: boolean;
-  /** The question's message, the first one in the thread. */
+  /** The card's message id. */
   readonly message?: string;
-  /** Why Discord's "started a thread" notice was left in the channel body; unset when it was deleted or never posted. */
-  readonly noticeKept?: string;
-  readonly linkMessage?: string;
-  /** Why no link line was posted in the origin thread; set once, never retried. */
-  readonly linkSkipped?: string;
   readonly openedAt: number;
   readonly answers?: readonly OwnerAnswer[];
   readonly answeredAt?: number;
@@ -90,27 +58,12 @@ export type OwnerDecision = DecisionChoices & {
   readonly closeTasks?: number;
   /** The covered answers whose handled receipt is recorded; a close of a closed decision records the rest. */
   readonly handledAnswers?: readonly string[];
-  readonly archivePending?: boolean;
-  readonly stuckAt?: number;
-  readonly goneAt?: number;
   /** A lane decision's target when it opened: a direct answer goes to this lane session only (references/messaging.md). */
   readonly target?: DecisionTarget;
   /** Direct answer revisions, oldest first (`rev` 1, 2, ...), each with its delivery intent. */
   readonly revisions?: readonly AnswerRevision[];
-  /**
-   * The open blocking decision of the same lane or task whose thread this one was posted into instead of a thread of its
-   * own (openOwnerDecision). A thread shared that way is archived only when its last decision closes.
-   */
-  readonly attachedTo?: string;
   /** The capped review job whose outcome is recorded when this decision closes. */
   readonly reviewCap?: ReviewCapDecision;
-  /** The `[System]` status message of the direct answer in the decision's thread, edited in place (decisionDeliveryTick). */
-  readonly notice?: { readonly message: string; readonly text: string };
-  /**
-   * What the starter message's answer buttons last showed (messenger/decision-buttons.ts decisionButtonsKey); unset while
-   * they still show what was posted. syncDecisionButtons edits them when the decision moves on.
-   */
-  readonly buttons?: string;
   /**
    * Set on a lead decision opened with `--relay-to` (always its `lane`): its close text goes to that lane like a lane's
    * own question's (relaysToLane), instead of being left for the lead to hand over.
@@ -127,18 +80,12 @@ export type OwnerDecision = DecisionChoices & {
   readonly toodo?: ToodoCard;
 };
 
-/**
- * An owner decision's card in the Toodo chat, beside its Discord thread: `place` is the ref it was posted at (its task's
- * thread, else the default room) and `message` the card's message id. `awaiting` is whether the place was last marked as
- * waiting on the owner for this decision; `closed` is set once the close line was posted under the card.
- */
-export type ToodoCard = { readonly place: string; readonly message: number; readonly awaiting?: boolean; readonly closed?: boolean };
+/** A decision card and the last waiting mark recorded for its chat place. */
+export type ToodoCard = { readonly place: string; readonly message: number; readonly awaiting?: boolean };
 
-/**
- * Whether owner messages in `channel` may answer `d`: its Discord thread, or the Toodo chat place its card was posted at.
- */
+/** Whether owner messages in this chat place may answer the decision. */
 export const answersIn = (d: Pick<OwnerDecision, "thread" | "toodo">, channel: string): boolean =>
-  d.thread === channel || d.toodo?.place === channel;
+  (d.toodo?.place ?? d.thread) === channel;
 
 /**
  * The close text's way to a lane decision's lane: `relayed` (typed into its pane, lane message `message`), `failed`
@@ -198,7 +145,7 @@ export type DecisionsFile = {
 };
 
 export class OwnerDecisionError extends Error {
-  /** Lines printed on stdout before the error (DECISION_STALE's UNREAD lines, a re-close's DECISION_HANDLED lines). */
+  /** Receipt lines printed before reporting that a decision was already closed. */
   constructor(readonly code: string, message: string, readonly lines: readonly string[] = []) { super(message); }
 }
 

@@ -54,33 +54,31 @@ test("enqueue meta is journaled, survives a restart, and rides in the log as an 
 test("a consumed take receipt records when and in which session the lead took each event, before the receipt goes", async () => {
   const f = fixture();
   const supervisor = f.open();
-  supervisor.enqueue("discord:11:1", "INBOUND 11 1 owner hello", META);
+  supervisor.enqueue("toodo:chat:1", "INBOUND 11 1 owner hello", META);
   await supervisor.flush();
-  expect(buildTrace("discord:11:1", loadTrace(f.dir, "discord:11:1") ?? { delivered: false })?.open).toEqual(["taken", "acked", "handled"]);
+  expect(buildTrace("toodo:chat:1", loadTrace(f.dir, "toodo:chat:1") ?? { delivered: false })?.open).toEqual(["taken"]);
   f.clock.at = T0 + 5_000;
   take(f.dir, { maxBytes: 16_384, now: f.clock.now(), session: "sess-1" });
-  supervisor.ackTick(60_000);
-  const trace = buildTrace("discord:11:1", loadTrace(f.dir, "discord:11:1") ?? { delivered: false });
+  await supervisor.reportTick();
+  const trace = buildTrace("toodo:chat:1", loadTrace(f.dir, "toodo:chat:1") ?? { delivered: false });
   expect(trace).toEqual({
-    id: "discord:11:1", line: "INBOUND 11 1 owner hello", meta: META,
+    id: "toodo:chat:1", line: "INBOUND 11 1 owner hello", meta: META,
     steps: [
       { step: "enqueued", at: T0 },
       { step: "delivered", at: T0 },
       { step: "taken", at: T0 + 5_000, detail: "session sess-1" },
     ],
-    open: ["acked", "handled"],
+    open: [],
   });
   // A replayed receipt (a crash before it was dropped) keeps the first take.
   mkdirSync(takesDir(f.dir), { recursive: true });
-  writeFileSync(join(takesDir(f.dir), `${T0 + 9_000}-replay.json`), JSON.stringify({ offset: 0, ids: ["discord:11:1"], at: T0 + 9_000, session: "sess-2" }));
-  supervisor.ackTick(60_000);
-  expect(loadTrace(f.dir, "discord:11:1")).toMatchObject({ takenAt: T0 + 5_000, takenSession: "sess-1" });
+  writeFileSync(join(takesDir(f.dir), `${T0 + 9_000}-replay.json`), JSON.stringify({ offset: 0, ids: ["toodo:chat:1"], at: T0 + 9_000, session: "sess-2" }));
+  await supervisor.reportTick();
+  expect(loadTrace(f.dir, "toodo:chat:1")).toMatchObject({ takenAt: T0 + 5_000, takenSession: "sess-1" });
 });
 
-test("buildTrace: owner ack/handled, a reported lane outcome, a pruned event, and an unknown id", () => {
+test("buildTrace: a reported lane outcome, a pruned event, and an unknown id", () => {
   const event = { id: "e", line: "LANE_CLOSED alpha", at: T0 };
-  expect(buildTrace("e", { event, delivered: true, deliveredAt: T0 + 1, takenAt: T0 + 2, owner: { ackedAt: T0 + 3, handledAt: T0 + 4 } })?.steps.map((s) => s.step))
-    .toEqual(["enqueued", "delivered", "taken", "acked", "handled"]);
   const reported = buildTrace("e", { event, delivered: true, takenAt: T0 + 2, outcome: { lane: "alpha", since: T0, events: ["e"], reportedAt: T0 + 9, note: "told" } });
   expect(reported?.steps.at(-1)).toEqual({ step: "reported", at: T0 + 9, detail: "lane alpha: told" });
   expect(reported?.open).toEqual([]);

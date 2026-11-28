@@ -8,7 +8,7 @@ StartLimitIntervalSec=600
 StartLimitBurst=5
 
 [Service]
-# No EnvironmentFile: a runner host holds no supervisor or Discord credentials, only its own runner key.
+# No EnvironmentFile: a runner host holds no supervisor credentials, only its own runner key.
 Type=simple
 Environment=LANG=C.UTF-8
 Environment=PATH=@PATH@

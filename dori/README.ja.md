@@ -6,7 +6,7 @@
 
 # omo-dori-mode-experimental
 
-Dori モードは、コーディングエージェントのセッションひとつを常駐型のメッセンジャーエージェントに変えます。あなたが話す相手は Discord のボットひとつだけ。Dori は仕事ごとに hc のターミナルでエージェントセッションを立ち上げて任せ、自分が立ち上げたセッションをすべて覚えておき、仕事が本当に終わったときだけ閉じます。PR がマージされ、issue が閉じ、バージョンが公開されたあとです。
+Dori モードは、コーディングエージェントのセッションひとつを常駐型のメッセンジャーエージェントに変えます。あなたは Toodo ウェブアプリの Toodo チャットで Dori と話します。Dori は仕事ごとに hc のターミナルでエージェントセッションを立ち上げて任せ、自分が立ち上げたセッションをすべて覚えておき、仕事が本当に終わったときだけ閉じます。PR がマージされ、issue が閉じ、バージョンが公開されたあとです。
 
 中身はスキル(`skills/dori-mode/SKILL.md` と references)と、bun + TypeScript の小さな CLI `dori` です。実験段階なので、粗いところがあります。
 
@@ -18,7 +18,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/Dubusoft/toodo/main/dori
 
 公開リポジトリ Dubusoft/toodo(Dori はその `dori/` ディレクトリにあります)をログインなしで `~/.dori/src` に取得し、スキルを `~/.agents/skills/dori-mode` にリンクし、`bun link` で `dori` を PATH に通してから `dori setup` を起動します。エージェントが別の場所からスキルを読む場合は `SKILLS_DIR` を指定してください。
 
-`dori setup` は Discord ボットのトークン(`~/.dori/env` に権限 600 で保存し、表示しません)、メインチャンネルの ID(トークンで読めるか確認します)、デフォルトのモデル、作業ディレクトリ、状態ディレクトリを尋ねます。希望すれば、起動時に hc コア、スーパーバイザー、プレゼンスが立ち上がるよう systemd ユーザーユニットも入れます。システムに関わる手順はそれぞれ事前に確認します。何度でも実行し直せます。現在の値がデフォルトとして表示され、Enter でそのまま残ります。パイプで bash に渡すと尋ねる端末がないので案内だけを表示します。その場合は `dori setup` を自分で実行してください。スクリプト向け: `dori setup --yes --token-file FILE --channel ID [--autostart]`。
+`dori setup` は新しい GitHub issue で仕事を始めるかどうかを尋ね、希望すれば起動時に hc コアとスーパーバイザーが立ち上がるよう systemd ユーザーユニットも入れます(`--advanced` ではモデル、フォルダー、そのほかのキーも尋ねます)。システムに関わる手順はそれぞれ事前に確認します。何度でも実行し直せます。現在の値がデフォルトとして表示され、Enter でそのまま残ります。パイプで bash に渡すと尋ねる端末がないので案内だけを表示します。その場合は `dori setup` を自分で実行してください。スクリプト向け: `dori setup --yes [--autostart]`。
 
 あとはエージェントを開いて「Dori mode」と言うだけです。
 
@@ -28,7 +28,6 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/Dubusoft/toodo/main/dori
 - hc(herdr-core):リードとレーンが動くヘッドレスのターミナルランタイム(`curl -fsSL https://releases.herdr.dev/core/install.sh | sh`)
 - スキルを読み込むコーディングエージェント([OmO](https://github.com/code-yeongyu/oh-my-openagent) 向けに作っていますが、起動コマンドは設定で変えられます)
 - PR のマージと issue のクローズを確認する `gh`(GitHub CLI)、公開バージョンを確認する `npm`
-- ボット本体のための [agent-messenger](https://github.com/agent-messenger/agent-messenger)
 
 ホスト監視は macOS ですべて動きます。Linux では負荷とディスクだけを見て、メモリとスワップは不明として扱います。
 
@@ -36,17 +35,17 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/Dubusoft/toodo/main/dori
 
 ゼロから最初の仕事が終わるまで:
 
-1. **Discord ボットを作る。** [Discord Developer Portal](https://discord.com/developers/applications) でアプリケーションを作り、**Bot** ページで **Message Content Intent** をオンにしてトークンをコピーします。ボットをサーバーに招待し(OAuth2 URL generator、`bot` スコープ)、ボットと話すチャンネルの ID をコピーします(開発者モードをオンにして、チャンネルを右クリック、チャンネル ID をコピー)。
-2. **hc をインストール**し、上のワンライナーでインストールします。`dori setup` がそのトークンとチャンネル ID、モデルとフォルダーを尋ねます。
+1. **toodo-server を動かす。** ホストで toodo-server を起動し、ウェブアプリを開きます。その中の Toodo チャットが Dori と話す場所です。
+2. **hc をインストール**し、上のワンライナーでインストールします。
 3. **インストールを確認**: `dori doctor` が項目ごとに OK、WARN、FAIL を表示し、失敗した項目には正確な直し方を出します。
-4. **オンにする**: `dori-lead` ペインでコーディングエージェントを開き、「Dori mode」と言います。Dori は自分の名前を尋ね、ボットからあいさつし、オンボーディングを提案します。
-5. **仕事を頼む**: チャンネルでボットに、たとえば「acme/app の README のタイポを直して PR を出して」と書きます。hc にレーンを開き、スレッドに進捗を投稿し、PR がマージされたらレーンを閉じます。
+4. **オンにする**: `dori-lead` ペインでコーディングエージェントを開き、「Dori mode」と言います。Dori は自分の名前を尋ね、Toodo チャットであいさつし、オンボーディングを提案します。
+5. **仕事を頼む**: Toodo チャットに、たとえば「acme/app の README のタイポを直して PR を出して」と書きます。hc にレーンを開き、タスクのスレッドに進捗を投稿し、PR がマージされたらレーンを閉じます。
 
-スラッシュコマンド、モニター、自動起動を含む設定の全体は [`references/setup.md`](skills/dori-mode/references/setup.md) にあります。
+モニターと自動起動を含む設定の全体は [`references/setup.md`](skills/dori-mode/references/setup.md) にあります。
 
 ## Dori の名前
 
-Dori は最初に、自分を何と呼べばいいかを聞いてきます。「Dori」のままでもいいし、ShipDori や WorkDori のように Dori で終わる名前でも構いません。複数動かすときに見分けやすくなります。決めた名前はボット名、メッセージの署名、モード名にそのまま使われ、次からは「ShipDori mode」の一言で戻せます。
+Dori は最初に、自分を何と呼べばいいかを聞いてきます。「Dori」のままでもいいし、ShipDori や WorkDori のように Dori で終わる名前でも構いません。複数動かすときに見分けやすくなります。決めた名前はメッセージの署名とモード名にそのまま使われ、次からは「ShipDori mode」の一言で戻せます。
 
 ## Dori の話し方
 
@@ -140,16 +139,13 @@ CLI には、Dori に必要なメッセンジャーまわりの機能も入っ�
 
 | コマンド | やること |
 |---|---|
-| `dori send discord --to T --text X [--thread ID] [--edit ID]` | メッセージの送信と編集。レート制限は待ってから送り直し、`$(` を含む文字列は拒否します |
-| `dori presence discord` | Discord のゲートウェイでボットをオンライン表示のまま保ちます |
+| `dori send --to REF\|alerts --text X [--file PATH ...]` | Toodo チャットに投稿します(`--to alerts` は既定のルーム)。`$(` を含む文字列は拒否します |
+| `dori typing REF [--off]` | Toodo チャットのチャンネルやスレッドで入力中の表示を出す、または消します |
 | `dori transcribe <file>` | `hooks.transcribe` のコマンドで音声メッセージを文字にする |
 | `dori can-launch` | もうひとつレーンを開く余裕があるかを確かめる |
 
 コマンドはなくても、モジュールで使える機能もあります。
-- Discord:スレッドの作成、名前の変更、アーカイブ
 - `typingWhile`:作業が動いているあいだ入力中の表示を出しておきます
-
-トークンは `DORI_DISCORD_TOKEN` から読みます。
 
 ## テスト
 
@@ -178,8 +174,7 @@ MIT ライセンスです。
 以前の gist で OmOMeow モードを使っていたなら、ボットはそのまま動きます。次の 4 つを変えれば Dori になります。
 
 1. **Dori の名前を決める。**「Dori」だけでも、ShipDori や WorkDori のように Dori で終わる名前でも構いません。エージェントに「これからきみの名前は ShipDori で、これは ShipDori mode だよ」と伝えてください。それ以降は「OmOMeow mode」ではなく「ShipDori mode」がモードを呼び出す言葉になります。
-2. **ボットの名前とプロフィール画像を変える。**
-   - Discord:Developer Portal でアプリケーションを開きます。**Bot** ページでユーザー名とアイコンを、**General Information** でアプリ名とアイコンを変えて(同じ既定の絵が使えます)保存します。
+2. **会話を Toodo チャットに移す。** Dori は Toodo チャットでだけ話します。以前のボットとサーバーはそのまま残り、Dori はもう読みません。
 3. **このリポジトリを入れる。** 上の 1 行インストールを実行し、エージェントに「ShipDori mode」と言えば、以前貼り付けていたプロンプトの代わりにスキルと `dori` CLI を使います。
 4. **オンボーディングをする。** OmOMeow のときにやっていなければ「オンボーディングして」と言うだけです。
 

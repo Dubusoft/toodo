@@ -10,7 +10,7 @@ import { paneRow, type Pane } from "./panes.ts";
 import { pendingLeadRestart } from "./lead-restart.ts";
 import { type Event, type Journal, type JournalCore, TransientSuperviseError } from "./supervise-journal.ts";
 import type { LeadLifecycle } from "./supervise-lead-lifecycle.ts";
-import { latest, type OwnerTracking } from "./supervise-owner-tracking.ts";
+import type { AnnouncementOutbox } from "./supervise-owner-tracking.ts";
 import { PushDelivery } from "./supervise-push.ts";
 
 /**
@@ -27,7 +27,7 @@ export class Delivery {
   private flushing?: Promise<void>;
   private readonly push: PushDelivery;
 
-  constructor(private readonly core: JournalCore, private readonly owners: OwnerTracking, private readonly lead: LeadLifecycle, private readonly outcomes: OutcomeTracking) {
+  constructor(private readonly core: JournalCore, private readonly outbox: AnnouncementOutbox, private readonly lead: LeadLifecycle, private readonly outcomes: OutcomeTracking) {
     this.push = new PushDelivery(core, lead, outcomes);
   }
 
@@ -42,7 +42,7 @@ export class Delivery {
   }
 
   private async deliver(): Promise<void> {
-    this.owners.drainOutbox();
+    this.outbox.drainOutbox();
     // Reuse this pass's pane observation for reporting, delivery, and push. A restart invalidates it.
     let paneSample: Promise<Pane | undefined> | undefined;
     const readPane = () => paneSample ??= paneRow(this.deps.run, this.deps.config.leadPane);
@@ -85,19 +85,7 @@ export class Delivery {
       // A finish event that joined its lane's record with nothing new (a merge after the claim) waits like digest.
       const urgent = pending.filter((event) => eventPriority(event.line, policy) === "urgent" && !this.outcomes.quiet(event.id));
       const due = urgent.length > 0 || pending.some(overdue);
-      await this.lead.resumePaused(readPane);
-      if (await this.lead.stuckRestart(pending, readPane)) continue;
       if (!due) {
-        if (this.journal.awaitingAck?.some((entry) => !entry.quarantined && entry.since === undefined && this.delivered.has(latest(entry)))) {
-          const pane = await readPane();
-          if (!pane) throw new TransientSuperviseError(`lead pane ${this.deps.config.leadPane} does not exist`);
-          if (!pane.agent) {
-            await this.lead.noteRestart("no-agent", `no agent runs in lead pane ${pane.pane_id} while owner messages wait for their read window`);
-            this.lead.setRestart({ session: randomUUID(), events: [], offset: statSync(this.core.eventLog).size, phase: "stopping" });
-            continue;
-          }
-          if (pane?.agent && (pane.agent_status === "idle" || pane.agent_status === "done")) this.owners.markReadable();
-        }
         // Everything due is in the log now: the push step makes sure the lead takes it.
         if (await this.push.tick(pending, readPane, woke)) continue;
         return;
@@ -106,7 +94,7 @@ export class Delivery {
       if (!pane) throw new TransientSuperviseError(`lead pane ${this.deps.config.leadPane} does not exist`);
       // Blocked/unknown is not idle. Do not terminate an approval dialog or an unclassified agent.
       if (pane.agent_status === "working" || (pane.agent && pane.agent_status !== "idle" && pane.agent_status !== "done")) {
-        this.owners.record(pending);
+        this.core.appendDelivered(pending);
         this.outcomes.markDelivered();
         continue;
       }
@@ -116,7 +104,7 @@ export class Delivery {
       const cold = pane.agent ? (capped ? undefined : await this.lead.coldReason(cwd)) : { kind: "no-agent", detail: `no agent runs in lead pane ${pane.pane_id}`, tokens: 0 };
       // A lead waiting on its own children takes the events in place: a cold start would kill them (bounded deferral).
       if (!cold || (pane.agent && await this.lead.deferForChildren(cwd, cold.kind, cold.detail))) {
-        this.owners.record(pending, true);
+        this.core.appendDelivered(pending);
         this.outcomes.markDelivered();
         if (!woke) this.core.wakes.record(this.lead.warmSession, pending, urgent.length ? urgent : pending.filter(overdue));
         woke = true;

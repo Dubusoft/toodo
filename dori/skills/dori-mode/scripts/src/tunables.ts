@@ -17,9 +17,6 @@ export type Tunables = {
   readonly leadDiet: boolean;
   readonly cacheTtlMin: number;
   readonly leadContextCapTokens: number;
-  readonly discordSafetyPollSeconds: number;
-  /** Messages fetched (one REST page, 1-100) the first time a Discord channel is caught up with no saved cursor. */
-  readonly discordFirstSeenLimit: number;
   readonly githubPollSeconds: number;
   readonly githubTimeoutMs: number;
   /** The toodo-server event stream the supervisor follows for task status changes and readiness (toodo-events.ts). */
@@ -52,15 +49,6 @@ export type Tunables = {
   readonly mergeStallMin: number;
   /** Digest events wait for an urgent one, but never longer than this. */
   readonly digestMaxDelayMin: number;
-  /** Posted once in the owner's channel or thread when the lead has not received their message within a minute. */
-  readonly ownerDelayNotice: string;
-  /** Seconds the lead has to ack (`dori ack`) an owner message it was handed before it is reminded (push delivery re-pushes it); twice this posts `ackMissingNotice`. */
-  readonly ackTimeoutSec: number;
-  /** Posted once in the owner's channel or thread when the lead got their message but has not acked it after two windows. */
-  readonly ackMissingNotice: string;
-  /** Minutes after reading an owner message to link all tasks with dori handled; a second window notifies the owner. */
-  readonly handledTimeoutMin: number;
-  readonly unhandledNotice: string;
   /** Minutes after a lane claimed done or finished (LANE_DONE_CLAIMED, LANE_CLOSED, CI_MERGED) for the lead to tell the owner and run dori reported before UNREPORTED. */
   readonly reportTimeoutMin: number;
   /** Event kinds (eventPolicy syntax) that open a decision obligation, closed by dori resolved <eventId> (decision-obligations.ts). */
@@ -84,8 +72,6 @@ export const builtInTunables = (home = homedir()): Tunables => ({
   leadDiet: true,
   cacheTtlMin: 5,
   leadContextCapTokens: 250_000,
-  discordSafetyPollSeconds: 300,
-  discordFirstSeenLimit: 100,
   githubPollSeconds: 90,
   githubTimeoutMs: 30_000,
   toodoEvents: { enabled: true, url: "http://127.0.0.1:47616", tokenFile: join(home, ".local", "share", "toodo-server", "web-token") },
@@ -100,11 +86,6 @@ export const builtInTunables = (home = homedir()): Tunables => ({
   mergeWaitMaxMin: 60,
   mergeStallMin: 15,
   digestMaxDelayMin: 60,
-  ownerDelayNotice: "메시지를 받았습니다. 리드 세션이 아직 메시지를 받지 못하고 있어 대기열에 보관해 두었고, 리드가 돌아오는 대로 답변드립니다.",
-  ackTimeoutSec: 60,
-  ackMissingNotice: "메시지가 리드 세션에 전달됐지만 아직 읽었다는 확인이 없습니다. 리드에게 다시 알렸고, 이곳으로 답변드립니다.",
-  handledTimeoutMin: 30,
-  unhandledNotice: "메시지는 읽혔지만 요청하신 일 가운데 아직 작업이나 답변으로 이어지지 않은 것이 있습니다. 리드에게 처리하라고 다시 알렸습니다.",
   reportTimeoutMin: 5,
   resolveKinds: DEFAULT_RESOLVE_KINDS,
   resolveTimeoutMin: 15,

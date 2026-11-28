@@ -15,7 +15,7 @@ const fixture = (file: Record<string, unknown> | string | null = {}) => {
   dirs.push(dir);
   const path = join(dir, "config.json");
   const base = {
-    schemaVersion: 9, platforms: ["toodo"], stateDir: join(dir, "state"), leadCwd: dir, defaultModel: "a/b", ownerLanguage: "Korean",
+    schemaVersion: 10, stateDir: join(dir, "state"), leadCwd: dir, defaultModel: "a/b", ownerLanguage: "Korean",
     secretCommands: { deploy: { argv: SECRET_ARGV, secrets: ["DEPLOY_TOKEN_7F3E"] } }, agentCommand: ["omo", "{prompt}"],
   };
   if (file !== null) writeFileSync(path, typeof file === "string" ? file : `${JSON.stringify({ ...base, ...file }, null, 2)}\n`, { mode: 0o600 });
@@ -25,13 +25,13 @@ const fixture = (file: Record<string, unknown> | string | null = {}) => {
 const entry = (f: ReturnType<typeof fixture>, key: string) => f.store.view().entries.find((e) => e.key === key);
 
 test("the view lists every key with its value as text, host command keys read-only and secret operations by name alone", () => {
-  const f = fixture({ discordChannels: ["1", "2"], autopilot: { tickSec: 60 } });
+  const f = fixture({ ignorePanes: ["1", "2"], autopilot: { tickSec: 60 } });
   const view = f.store.view();
   expect(view).toMatchObject({ path: f.path, present: true, error: null });
   expect(entry(f, "ownerLanguage")).toMatchObject({ value: "Korean", access: "edit", kind: "string", restart: false });
-  expect(entry(f, "discordChannels")?.value).toBe("1,2");
+  expect(entry(f, "ignorePanes")?.value).toBe("1,2");
   expect(entry(f, "autopilot")?.value).toBe('{"tickSec":60}');
-  expect(entry(f, "discord")).toMatchObject({ access: "edit", restart: true });
+  expect(entry(f, "stateDir")).toMatchObject({ access: "readOnly", restart: true });
   expect(entry(f, "agentCommand")).toMatchObject({ access: "readOnly", value: "omo,{prompt}" });
   expect(entry(f, "secretCommands")).toMatchObject({ access: "masked", value: "deploy" });
   const body = JSON.stringify(view);
@@ -50,14 +50,13 @@ test("a valid save writes the file with a 0600 backup of the one it replaced, an
   const before = f.text();
   const saved = await f.store.save({ key: "ownerLanguage", value: "Japanese" });
   expect(saved).toMatchObject({ restart: false });
-  expect(JSON.parse(f.text())).toMatchObject({ ownerLanguage: "Japanese", schemaVersion: 9, secretCommands: { deploy: { argv: SECRET_ARGV } } });
+  expect(JSON.parse(f.text())).toMatchObject({ ownerLanguage: "Japanese", schemaVersion: 10, secretCommands: { deploy: { argv: SECRET_ARGV } } });
   expect(statSync(f.path).mode & 0o777).toBe(0o600);
   const [backup] = f.backups();
   expect(readFileSync(join(f.dir, backup!), "utf8")).toBe(before);
   expect(statSync(join(f.dir, backup!)).mode & 0o777).toBe(0o600);
-  await f.store.save({ key: "discordChannels", value: "10, 20" });
-  expect(JSON.parse(f.text()).discordChannels).toEqual(["10", "20"]);
-  expect(await f.store.save({ key: "discord", value: '{"applicationId":"1","guildId":"2","ownerId":"3"}' })).toMatchObject({ restart: true });
+  await f.store.save({ key: "ignorePanes", value: "10, 20" });
+  expect(JSON.parse(f.text()).ignorePanes).toEqual(["10", "20"]);
   await f.store.save({ key: "ownerLanguage", value: " " });
   expect("ownerLanguage" in JSON.parse(f.text())).toBe(false);
 });

@@ -33,7 +33,7 @@ self.addEventListener("message", (event: MessageEvent<HostToWorker>) => {
 
 const heartbeat = setInterval(() => { post({ type: "heartbeat" }); }, HEARTBEAT_INTERVAL_MS);
 
-// toodo.service puts no secret in its environment: the Worker reads ~/.dori/env (the Discord token, GH_TOKEN, ...) into
+// toodo.service puts no secret in its environment: the Worker reads ~/.dori/env (GH_TOKEN, ...) into
 // its own process.env, which the main thread never sees. The commands it starts get them through `env: process.env`.
 const envFile = envFilePath(process.env.HOME || homedir());
 console.log(`SUPERVISOR_ENV ${loadEnvFile(process.env, envFile).length} entries from ${envFile}`);

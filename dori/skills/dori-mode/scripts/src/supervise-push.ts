@@ -6,17 +6,15 @@ import type { OutcomeTracking } from "./lane-outcomes.ts";
 import { dueDecisions, markDecisionsPushed } from "./decision-obligations.ts";
 import { type InputState, inputState as boxState, paneRow, type Pane, PASTE_PLACEHOLDER, readScreen, sendVerified, squash } from "./panes.ts";
 import { sessionRuntime } from "./runtime/index.ts";
-import { type AwaitingAck, type Event, type InboxPush, type Journal, type JournalCore, type LaneOutcome, leadOwes, type Obligation, TransientSuperviseError } from "./supervise-journal.ts";
+import { type Event, type InboxPush, type Journal, type JournalCore, type LaneOutcome, type Obligation, TransientSuperviseError } from "./supervise-journal.ts";
 import { type LeadLifecycle, PAUSED } from "./supervise-lead-lifecycle.ts";
-import { dueOwners, latest } from "./supervise-owner-tracking.ts";
 
 /**
  * Push delivery. Every delivery pass ends here: events appended to lead-events.log but
- * not yet taken by the lead (`dori inbox take` receipts, or an ack/handled receipt for an owner message) get one short
+ * not yet taken by the lead (`dori inbox take` receipts) get one short
  * `[dori]` pointer typed into the lead pane. Untaken past push.ackSec it is pushed again, later with backoff; an idle lead
  * that keeps ignoring it is cold-restarted after push.escalateMin, within the restart cap. A finished lane not reported
- * to the owner (`dori reported`) past reportTimeoutMin, an unacked owner message (or one still unhandled past its
- * handling window), and a decision event not resolved (`dori resolved`) past
+ * to the owner (`dori reported`) past reportTimeoutMin and a decision event not resolved (`dori resolved`) past
  * resolveTimeoutMin, count like an untaken urgent event, taken or not. Event bodies are never typed: the lead reads them with `dori inbox take`.
  */
 
@@ -90,25 +88,6 @@ export class PushDelivery {
     return scan.events;
   }
 
-  /**
-   * Ids the lead already has by a stronger receipt (F3a, N2, N3): owner tracking compacted or tombstoned, and an owner
-   * message or edit enqueued at or before its ack or handled time. A delete is covered only while its message was never
-   * acked: a delete of a message the lead is working on must reach it.
-   */
-  private covered(): (id: string, at: number | undefined) => boolean {
-    const closed = this.core.closedSet();
-    const owners = new Map<string, AwaitingAck>();
-    for (const entry of this.journal.awaitingAck ?? []) for (const id of [entry.id, ...(entry.revisions ?? [])]) owners.set(id, entry);
-    return (id, at) => {
-      if (closed.has(id) || this.core.store.tombstoned(id)) return true;
-      const entry = owners.get(id);
-      if (!entry) return false;
-      if (id.endsWith(":delete")) return entry.ackedAt === undefined;
-      const by = Math.max(entry.ackedAt ?? -Infinity, entry.handledAt ?? -Infinity);
-      return at === undefined ? by > -Infinity : at <= by;
-    };
-  }
-
   /** Re-push interval after `attempts` pushes: ackSec for the first retries + 1, then doubling up to REPUSH_MAX_MS (N7). */
   private interval(attempts: number): number {
     const { ackSec, retries } = this.core.deps.tunables.delivery.push;
@@ -137,7 +116,6 @@ export class PushDelivery {
     const inbox = this.journal.inbox;
     if (!inbox) return false;
     const now = clock.now();
-    const covered = this.covered();
     const past = this.logPastCursor(inbox.takenOffset);
     const want = new Set(past.map((event) => event.id));
     const at = new Map<string, number>();
@@ -146,7 +124,7 @@ export class PushDelivery {
     const ageOf = (id: string): number => at.get(id) ?? push?.first ?? now;
     // A report receipt also covers its already-journaled reminders: they must not keep pushing a settled report.
     const reported = new Set(this.journal.outcomes?.filter((outcome) => outcome.reportedAt !== undefined).map((outcome) => outcome.lane));
-    const untaken = past.filter((event) => !covered(event.id, at.get(event.id)) && !reported.has(/^UNREPORTED (\S+)/.exec(event.line)?.[1] ?? ""));
+    const untaken = past.filter((event) => !this.core.store.tombstoned(event.id) && !reported.has(/^UNREPORTED (\S+)/.exec(event.line)?.[1] ?? ""));
     const policy = tunables.eventPolicy;
     const urgent = untaken.filter((event) => eventClass(event.line, policy) === "lead-urgent");
     const overdue = untaken.filter((event) => eventClass(event.line, policy) !== "lead-urgent" &&
@@ -161,11 +139,7 @@ export class PushDelivery {
     const decisions = dueDecisions(this.core, now);
     const named = new Set(untaken.flatMap((event) => [event.id, /^UNRESOLVED (\S+)/.exec(event.line)?.[1] ?? event.id]));
     const open = decisions.filter((item) => !named.has(item.id));
-    const owners = dueOwners(this.core, now);
-    const ownerIds = new Set(untaken.map((event) => event.id));
-    const unlistedOwners = owners.filter((entry) => !ownerIds.has(latest(entry)) && !untaken.some((event) =>
-      event.line.startsWith(`UNHANDLED ${entry.id.slice("discord:".length).replace(":", " ")} `)));
-    if (!urgent.length && !overdue.length && !due.length && !decisions.length && !owners.length) return false;
+    if (!urgent.length && !overdue.length && !due.length && !decisions.length) return false;
     const pane = await readPane();
     if (!pane) throw new TransientSuperviseError(`lead pane ${config.leadPane} does not exist`);
     if (!pane.agent) return false;
@@ -173,11 +147,10 @@ export class PushDelivery {
     const idle = status === "idle" || status === "done";
     const batch = push?.batch ?? randomUUID().slice(0, 8);
     if (idle && push) {
-      const reason = this.escalation(urgent, push.first, now, ageOf, due, decisions, owners);
+      const reason = this.escalation(urgent, push.first, now, ageOf, due, decisions);
       if (reason) {
         if (!this.lead.capRefuses("push ladder")) {
           console.log(`LEAD_PUSH_ESCALATE ${config.leadPane} ${reason}`);
-          // A safety restart: owner messages outrank the lead's running children, which it names in the log.
           await this.lead.noteRestart("push-escalate", reason, pane.cwd ?? config.leadCwd);
           this.lead.setRestart({
             session: randomUUID(), events: pending.map(({ id, line }) => ({ id, line })), offset: this.core.logSize(),
@@ -199,14 +172,13 @@ export class PushDelivery {
     }
     // A noise-only batch (overdue digest events, nothing urgent or owed) keeps the one pointer it got at this take cursor
     // and lead session (a take or a new session clears the push): it is never typed again, idle or working.
-    if (push && push.attempts > 0 && !urgent.length && !due.length && !decisions.length && !owners.length) {
+    if (push && push.attempts > 0 && !urgent.length && !due.length && !decisions.length) {
       this.once("noise", `LEAD_PUSH_NOISE_HELD ${batch} ${untaken.length} digest event(s): one pointer already sent, not re-pushing`);
       return false;
     }
-    // A take permits the next urgent batch immediately, without erasing an unfinished owner's escalation clock.
     if (push && now - push.at < this.interval(push.attempts) && !(inbox.takenOffset >= push.upto && urgent.length)) return false;
     if (push && push.attempts > delivery.push.retries && !push.untakenLogged) {
-      console.log(`LEAD_PUSH_UNTAKEN ${batch} ${untaken.length + owed.length + open.length + unlistedOwners.length} event(s) after ${push.attempts} pushes`);
+      console.log(`LEAD_PUSH_UNTAKEN ${batch} ${untaken.length + owed.length + open.length} event(s) after ${push.attempts} pushes`);
       this.savePush({ ...push, untakenLogged: true });
     }
     const first = push?.first ?? now;
@@ -216,11 +188,10 @@ export class PushDelivery {
     markDecisionsPushed(this.core, decisions.map((item) => item.id), now);
     const screen = await readScreen(run, config.leadPane);
     const input = inputState(screen);
-    const total = untaken.length + owed.length + open.length + unlistedOwners.length;
-    const pressing = urgent.length || owed.length || open.length || unlistedOwners.length;
+    const total = untaken.length + owed.length + open.length;
+    const pressing = urgent.length || owed.length || open.length;
     const kinds = pressing
-      ? [...urgent.map((event) => eventKind(event.line, policy)), ...owed.map(() => "UNREPORTED"), ...open.map(() => "UNRESOLVED"),
-        ...unlistedOwners.map((entry) => entry.ackedAt === undefined ? "INBOUND" : "UNHANDLED")]
+      ? [...urgent.map((event) => eventKind(event.line, policy)), ...owed.map(() => "UNREPORTED"), ...open.map(() => "UNRESOLVED")]
       : overdue.map((event) => eventKind(event.line, policy));
     // The lanes the pointed-at events concern, so the lead knows whose results to read before it takes them.
     const lanes = [...(pressing ? urgent : overdue).flatMap((event) => event.meta?.lane ?? /^UNREPORTED (\S+)/.exec(event.line)?.[1] ?? []),
@@ -231,7 +202,7 @@ export class PushDelivery {
       this.savePush({ at: now, upto, attempts, batch, first, ...(this.journal.inbox?.push?.untakenLogged ? { untakenLogged: true as const } : {}) });
       return false;
     }
-    const pointer = pointerText(total, urgent.length > 0 || owed.length > 0 || open.length > 0 || owners.length > 0, kinds, delivery.push.maxChars, lanes);
+    const pointer = pointerText(total, urgent.length > 0 || owed.length > 0 || open.length > 0, kinds, delivery.push.maxChars, lanes);
     const next: InboxPush = { at: now, upto, attempts: attempts + 1, batch, first, ...(this.journal.inbox?.push?.untakenLogged ? { untakenLogged: true as const } : {}) };
     if (input === "ours") {
       // Our own pointer still sits unsubmitted: one Enter submits it, nothing is typed again.
@@ -262,32 +233,18 @@ export class PushDelivery {
   }
 
   /**
-   * Why an idle lead is escalated, or undefined. With the tail monitor on, only an owner message readable and unacked
-   * for escalateMin counts (a lead reading the tail never needs to take). Without it, any untaken urgent event counts,
+   * With the tail monitor on, reading the log needs no take. Without it, any untaken urgent event counts,
    * clocked from the latest of its enqueue time, the lead's start and the first push attempt (N1): a new lead is never
    * escalated before it got a pointer and escalateMin passed. So does a due unreported lane outcome, clocked from the
    * latest of its due time, the lead's start and the first pointer that carried it; and a due open decision, alike.
    */
   private escalation(
     urgent: readonly Untaken[], first: number, now: number, ageOf: (id: string) => number, owed: readonly LaneOutcome[], decisions: readonly Obligation[],
-    owners: readonly AwaitingAck[],
   ): string | undefined {
     const { delivery } = this.core.deps.tunables;
     const limit = delivery.push.escalateMin * 60_000;
     const minutes = (since: number): number => Math.round((now - since) / 60_000);
-    const ownerSince = (entry: AwaitingAck): number => Math.max(
-      entry.ackedAt === undefined ? entry.since ?? now :
-        Math.min(entry.unhandledRemindedAt ?? Infinity, (entry.handlingSince ?? entry.ackedAt) + this.core.deps.tunables.handledTimeoutMin * 60_000),
-      this.journal.inbox?.sessionSince ?? 0, first);
-    const overdueOwners = owners.filter((entry) => now - ownerSince(entry) >= limit);
-    const ownerReason = overdueOwners.length
-      ? `${overdueOwners.length} owner message(s) not handled for ${minutes(Math.min(...overdueOwners.map(ownerSince)))} min` : undefined;
-    if (delivery.tailMonitor) {
-      const unacked = (this.journal.awaitingAck ?? []).filter((entry) => !entry.quarantined && entry.ackedAt === undefined &&
-        leadOwes(entry) && entry.since !== undefined && this.core.delivered.has(latest(entry)));
-      const since = Math.min(...unacked.map((entry) => entry.since ?? now));
-      return unacked.length && now - since >= limit && now - first >= limit ? `${unacked.length} owner message(s) unacked for ${minutes(since)} min` : ownerReason;
-    }
+    if (delivery.tailMonitor) return undefined;
     const start = (id: string): number => Math.max(ageOf(id), this.journal.inbox?.sessionSince ?? 0, first);
     const stale = urgent.filter((event) => now - start(event.id) >= limit);
     const window = this.core.deps.tunables.reportTimeoutMin * 60_000;
@@ -299,7 +256,6 @@ export class PushDelivery {
       Math.max(item.since + resolveWindow, this.journal.inbox?.sessionSince ?? 0, item.pushedAt ?? Infinity);
     const undecided = decisions.filter((item) => now - openSince(item) >= limit);
     const reasons = [
-      ...(ownerReason ? [ownerReason] : []),
       ...(stale.length ? [`${stale.length} urgent event(s) untaken for ${minutes(Math.min(...stale.map((event) => start(event.id))))} min`] : []),
       ...(late.length ? [`${late.length} finished lane(s) not reported to the owner for ${minutes(Math.min(...late.map(owedSince)))} min`] : []),
       ...(undecided.length ? [`${undecided.length} decision(s) not resolved for ${minutes(Math.min(...undecided.map(openSince)))} min`] : []),

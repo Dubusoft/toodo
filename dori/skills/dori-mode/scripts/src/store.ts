@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 
 import { replaceFileDurable } from "./durable-write.ts";
 import type { Wake } from "./lead-wakes.ts";
-import type { AwaitingAck, Journal, JournalEvent, Notice, OutboxItem, Restart } from "./supervise.ts";
+import type { Journal, JournalEvent, OutboxItem, Restart } from "./supervise.ts";
 import { DAY_MS } from "./time-ms.ts";
 
 /**
@@ -36,8 +36,8 @@ export class StoreError extends Error {}
 
 /**
  * Retention per class (sqlite store, Appendix D). Unresolved work is never pruned: undelivered events, the events of
- * tracked owner messages, a pending restart and open PRs. Delivered event bodies leave after `eventBodyMs` for a dedupe
- * tombstone; event and owner tombstones leave after `tombstoneMs`; GitHub status history (closed PR activity, cached
+ * a pending restart and open PRs. Delivered event bodies leave after `eventBodyMs` for a dedupe
+ * tombstone; event tombstones leave after `tombstoneMs`; GitHub status history (closed PR activity, cached
  * responses no poll used) after `statusHistoryMs`.
  */
 export const RETENTION = { eventBodyMs: 7 * DAY_MS, tombstoneMs: 90 * DAY_MS, statusHistoryMs: 30 * DAY_MS } as const;
@@ -62,8 +62,8 @@ export interface JournalStore {
   readonly retains: boolean;
   /** An event id whose body was pruned: still a duplicate until its tombstone expires. */
   tombstoned(id: string): boolean;
-  /** Drops event tombstones older than `cutoff` and returns the owner tombstones older than it (the next save drops those). */
-  expireTombstones(cutoff: number): string[];
+  /** Drop expired event deduplication tombstones. */
+  expireTombstones(cutoff: number): void;
   /** Make every earlier normal write durable against power loss too (the supervisor calls it once per loop pass). */
   sync(): void;
   /** Appends an open lead wake. */
@@ -88,25 +88,13 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS deliveries (
   event_id TEXT PRIMARY KEY, lead TEXT NOT NULL, generation INTEGER NOT NULL, delivered_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS deliveries_at ON deliveries (delivered_at);
-CREATE TABLE IF NOT EXISTS owner_messages (
-  id TEXT PRIMARY KEY, pos INTEGER NOT NULL, lead TEXT NOT NULL, generation INTEGER NOT NULL, state TEXT NOT NULL,
-  since INTEGER, reminded INTEGER, noticed INTEGER, acked_at INTEGER, tasks INTEGER, lanes TEXT, reply INTEGER,
-  handled_at INTEGER, handling_since INTEGER, unhandled_reminded_at INTEGER, revision TEXT, deleted INTEGER);
-CREATE INDEX IF NOT EXISTS owner_messages_state ON owner_messages (state, handled_at);
-CREATE TABLE IF NOT EXISTS owner_revisions (
-  message_id TEXT NOT NULL, revision_id TEXT NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY (message_id, revision_id));
-CREATE TABLE IF NOT EXISTS owner_tombstones (id TEXT PRIMARY KEY, pos INTEGER NOT NULL, closed_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS owner_tombstones_closed ON owner_tombstones (closed_at);
-CREATE TABLE IF NOT EXISTS owner_notices (
-  kind TEXT NOT NULL, message_id TEXT NOT NULL, pos INTEGER NOT NULL, attempts INTEGER NOT NULL, sent INTEGER,
-  PRIMARY KEY (kind, message_id));
 CREATE TABLE IF NOT EXISTS outbox (
   id TEXT PRIMARY KEY, pos INTEGER NOT NULL, text TEXT NOT NULL, attempts INTEGER, next_at INTEGER);
 CREATE TABLE IF NOT EXISTS lead_restarts (
   lead TEXT PRIMARY KEY, session TEXT NOT NULL, events TEXT NOT NULL, "offset" INTEGER NOT NULL, phase TEXT NOT NULL,
   strikes INTEGER, unconfirmed INTEGER, reason TEXT, request TEXT, force INTEGER);
 CREATE TABLE IF NOT EXISTS lead_state (
-  lead TEXT PRIMARY KEY, models TEXT, lead_busy_since INTEGER, lead_screen TEXT);
+  lead TEXT PRIMARY KEY, models TEXT);
 `;
 
 /**
@@ -141,7 +129,7 @@ CREATE INDEX IF NOT EXISTS lead_wakes_at ON lead_wakes (at);
   [6, (db) => { addColumns(db, "events", ["meta TEXT"]); addColumns(db, "deliveries", ["taken_at INTEGER", "taken_session TEXT"]); }],
   [7, (db) => addColumns(db, "lead_state", ["pending TEXT"])],
   [8, (db) => addColumns(db, "gh_prs", ["head_repo TEXT"])],
-  [9, (db) => addColumns(db, "owner_messages", ["awaiting_owner_at INTEGER", "awaiting_note TEXT"])]];
+  [9, () => {}]]; // Version 9 only extended a retired table.
 
 /** Whether `table` has `column`: a read-only reader of a store the supervisor has not migrated yet must not name it. */
 export const hasColumn = (db: Database, table: string, column: string): boolean =>
@@ -153,31 +141,27 @@ const addColumns = (db: Database, table: string, columns: readonly string[]): vo
   for (const column of columns) if (!have.has(column.split(" ")[0] ?? "")) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
 };
 
-/** `noticed[]` (ids that already got the legacy "not taken yet" notice) shares owner_notices under this kind. */
-const NOTICED_KIND = "noticed";
+/** Recognized only during legacy JSON import; none of these fields has a destination. */
+export const RETIRED_TRACKING_FIELDS = ["awaitingAck", "notifications", "noticed", "closedOwners", "leadBusySince", "leadScreen"];
 
 /** Journal scalars kept in lead_state, with their column. */
 const LEAD_STATE = [
-  ["models", "models", true], ["leadBusySince", "lead_busy_since", false], ["leadScreen", "lead_screen", true],
-  ["inbox", "inbox", true], ["forcedRestarts", "forced_restarts", true], ["outcomes", "outcomes", true],
-  ["pending", "pending", true],
-] as const satisfies readonly (readonly [keyof Journal, string, boolean])[];
+  ["models", "models"],
+  ["inbox", "inbox"], ["forcedRestarts", "forced_restarts"], ["outcomes", "outcomes"],
+  ["pending", "pending"],
+] as const satisfies readonly (readonly [keyof Journal, string])[];
 
 /** Every Journal field this store maps (Appendix D). An import refuses a journal with any other field. */
-export const JOURNAL_FIELDS: readonly string[] = ["events", "awaitingAck", "notifications", "restart", "noticed", "closedOwners", "outbox", ...LEAD_STATE.map(([field]) => field)];
+export const JOURNAL_FIELDS: readonly string[] = ["events", "restart", "outbox", ...LEAD_STATE.map(([field]) => field)];
 
 type Row = Record<string, string | number | null>;
 const num = (value: unknown): number | undefined => (typeof value === "number" ? value : undefined);
 const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
 const json = (value: unknown): unknown => (typeof value === "string" ? JSON.parse(value) : undefined);
 const kindOf = (line: string): string => line.split(" ", 1)[0] ?? "";
-/** `quarantined` comes first: it is the one state no other column records, so it must survive a round trip. */
-const ownerState = (entry: AwaitingAck): string =>
-  entry.quarantined ? "quarantined" : entry.deleted ? "deleted" : entry.handledAt !== undefined ? "handled" : entry.ackedAt !== undefined ? "acked" : "open";
-
 /**
  * The SQLite journal. It keeps the last journal it loaded or saved and writes the difference in one transaction:
- * events by array position (they only ever append), owner rows, notices and the outbox by id, scalars by value. The
+ * events by array position (they only ever append), the outbox by id, scalars by value. The
  * supervisor lock makes it the only writer, so that snapshot is the database's content.
  */
 export class SqliteStore implements JournalStore {
@@ -227,22 +211,6 @@ export class SqliteStore implements JournalStore {
       deliveryDelete: db.prepare("DELETE FROM deliveries WHERE event_id = ?"),
       eventTombstone: db.prepare("INSERT OR IGNORE INTO event_tombstones (id, at) VALUES (?, ?)"),
       tombstoned: db.prepare("SELECT 1 AS hit FROM event_tombstones WHERE id = ?"),
-      owner: db.prepare(`INSERT INTO owner_messages (id, pos, lead, generation, state, since, reminded, noticed, acked_at, tasks, lanes, reply,
-          handled_at, handling_since, unhandled_reminded_at, revision, deleted, awaiting_owner_at, awaiting_note)
-        VALUES ($id, $pos, $lead, 0, $state, $since, $reminded, $noticed, $acked_at, $tasks, $lanes, $reply, $handled_at, $handling_since,
-          $unhandled_reminded_at, $revision, $deleted, $awaiting_owner_at, $awaiting_note)
-        ON CONFLICT (id) DO UPDATE SET state = excluded.state, since = excluded.since, reminded = excluded.reminded, noticed = excluded.noticed,
-          acked_at = excluded.acked_at, tasks = excluded.tasks, lanes = excluded.lanes, reply = excluded.reply, handled_at = excluded.handled_at,
-          handling_since = excluded.handling_since, unhandled_reminded_at = excluded.unhandled_reminded_at, revision = excluded.revision,
-          deleted = excluded.deleted, awaiting_owner_at = excluded.awaiting_owner_at, awaiting_note = excluded.awaiting_note`),
-      ownerDelete: db.prepare("DELETE FROM owner_messages WHERE id = ?"),
-      revisionsDelete: db.prepare("DELETE FROM owner_revisions WHERE message_id = ?"),
-      revision: db.prepare("INSERT OR IGNORE INTO owner_revisions (message_id, revision_id, pos) VALUES (?, ?, ?)"),
-      tombstone: db.prepare("INSERT OR IGNORE INTO owner_tombstones (id, pos, closed_at) VALUES (?, ?, ?)"),
-      tombstoneDelete: db.prepare("DELETE FROM owner_tombstones WHERE id = ?"),
-      notice: db.prepare(`INSERT INTO owner_notices (kind, message_id, pos, attempts, sent) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT (kind, message_id) DO UPDATE SET attempts = excluded.attempts, sent = excluded.sent`),
-      noticeDelete: db.prepare("DELETE FROM owner_notices WHERE kind = ? AND message_id = ?"),
       outbox: db.prepare(`INSERT INTO outbox (id, pos, text, attempts, next_at) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT (id) DO UPDATE SET text = excluded.text, attempts = excluded.attempts, next_at = excluded.next_at`),
       outboxDelete: db.prepare("DELETE FROM outbox WHERE id = ?"),
@@ -305,33 +273,6 @@ export class SqliteStore implements JournalStore {
       const meta = json(row.meta) as JournalEvent["meta"];
       return { id, line: String(row.line), ...(at !== undefined && !(raw && row.at_synthetic) ? { at } : {}), ...(meta ? { meta } : {}) };
     });
-    const revisions = new Map<string, string[]>();
-    for (const row of db.query("SELECT message_id, revision_id FROM owner_revisions ORDER BY message_id, pos").all() as Row[]) {
-      const list = revisions.get(String(row.message_id)) ?? [];
-      list.push(String(row.revision_id));
-      revisions.set(String(row.message_id), list);
-    }
-    const owners = db.query("SELECT * FROM owner_messages ORDER BY pos").all() as Row[];
-    const awaitingAck = owners.map((row): AwaitingAck => {
-      const lanes = json(row.lanes) as string[] | undefined;
-      const revs = revisions.get(String(row.id));
-      const entry: Record<string, unknown> = {
-        id: String(row.id), since: num(row.since), reminded: row.reminded ? true : undefined, noticed: row.noticed ? true : undefined,
-        ackedAt: num(row.acked_at), tasks: num(row.tasks), lanes, reply: row.reply === null ? undefined : row.reply === 1,
-        handledAt: num(row.handled_at), handlingSince: num(row.handling_since), unhandledRemindedAt: num(row.unhandled_reminded_at),
-        revision: str(row.revision), revisions: revs, deleted: row.deleted ? true : undefined,
-        awaitingOwnerAt: num(row.awaiting_owner_at), awaitingNote: str(row.awaiting_note),
-        quarantined: row.state === "quarantined" ? true : undefined,
-      };
-      return Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== undefined)) as AwaitingAck;
-    });
-    const notifications: Record<string, Notice> = {};
-    const noticed: string[] = [];
-    for (const row of db.query("SELECT * FROM owner_notices ORDER BY pos").all() as Row[]) {
-      if (row.kind === NOTICED_KIND) { noticed.push(String(row.message_id)); continue; }
-      notifications[`${row.kind}:${row.message_id}`] = { attempts: Number(row.attempts), ...(row.sent ? { sent: true as const } : {}) };
-    }
-    const closedOwners = (db.query("SELECT id FROM owner_tombstones ORDER BY pos").all() as Row[]).map((row) => String(row.id));
     const outbox = (db.query("SELECT * FROM outbox ORDER BY pos").all() as Row[]).map((row): OutboxItem => ({
       id: String(row.id), text: String(row.text),
       ...(num(row.attempts) !== undefined ? { attempts: Number(row.attempts) } : {}), ...(num(row.next_at) !== undefined ? { retryAt: Number(row.next_at) } : {}),
@@ -339,15 +280,14 @@ export class SqliteStore implements JournalStore {
     const restartRow = db.query("SELECT * FROM lead_restarts WHERE lead = ?").get(DEFAULT_LEAD) as Row | null;
     const state = db.query("SELECT * FROM lead_state WHERE lead = ?").get(DEFAULT_LEAD) as Row | null;
     const scalars: Record<string, unknown> = {};
-    for (const [field, column, isJson] of LEAD_STATE) {
+    for (const [field, column] of LEAD_STATE) {
       const value = state?.[column];
-      if (value !== null && value !== undefined) scalars[field] = isJson ? json(value) : value;
+      if (value !== null && value !== undefined) scalars[field] = json(value);
     }
-    const maxPos = db.query(`SELECT max(p) AS p FROM (SELECT max(pos) AS p FROM owner_messages UNION ALL SELECT max(pos) FROM owner_notices
-      UNION ALL SELECT max(pos) FROM owner_tombstones UNION ALL SELECT max(pos) FROM outbox UNION ALL SELECT max(pos) FROM owner_revisions)`).get() as { p: number | null };
+    const maxPos = db.query("SELECT max(pos) AS p FROM outbox").get() as { p: number | null };
     this.nextPos = (maxPos.p ?? -1) + 1;
     return {
-      events, awaitingAck, notifications, noticed, closedOwners, outbox,
+      events, outbox,
       ...(restartRow ? { restart: restartOf(restartRow) } : {}),
       ...scalars,
     } as Journal;
@@ -358,10 +298,6 @@ export class SqliteStore implements JournalStore {
     if (prev === journal && journal.events.length === this.storedEvents) return;
     const ops: (() => void)[] = [];
     this.diffEvents(prev.events, journal.events, ops);
-    this.diffOwners(prev.awaitingAck ?? [], journal.awaitingAck ?? [], ops);
-    this.diffNotices(prev, journal, ops);
-    this.diffList(prev.closedOwners ?? [], journal.closedOwners ?? [], ops,
-      (id) => this.stmt.tombstone.run(id, this.nextPos++, this.now()), (id) => this.stmt.tombstoneDelete.run(id));
     this.diffOutbox(prev.outbox ?? [], journal.outbox ?? [], ops);
     if (prev.restart !== journal.restart) {
       const restart = journal.restart;
@@ -369,9 +305,9 @@ export class SqliteStore implements JournalStore {
     }
     if (LEAD_STATE.some(([field]) => prev[field] !== journal[field])) {
       const row: Row = { lead: DEFAULT_LEAD };
-      for (const [field, column, isJson] of LEAD_STATE) {
+      for (const [field, column] of LEAD_STATE) {
         const value = journal[field];
-        row[column] = value === undefined ? null : isJson ? JSON.stringify(value) : value as number;
+        row[column] = value === undefined ? null : JSON.stringify(value);
       }
       ops.push(() => this.stmt.leadState.run(row));
     }
@@ -432,73 +368,6 @@ export class SqliteStore implements JournalStore {
     ops.push(() => { this.stmt.eventDelete.run(event.id); this.stmt.deliveryDelete.run(event.id); this.stmt.eventTombstone.run(event.id, event.at ?? this.now()); });
   }
 
-  private diffOwners(prev: readonly AwaitingAck[], next: readonly AwaitingAck[], ops: (() => void)[]): void {
-    if (prev === next) return;
-    // Fast path: the same entries in place, some changed or appended (the usual trackOwners/tick shape).
-    let aligned = next.length >= prev.length;
-    for (let i = 0; aligned && i < prev.length; i++) if ((prev[i] as AwaitingAck).id !== (next[i] as AwaitingAck).id) aligned = false;
-    const before = aligned ? undefined : new Map(prev.map((entry) => [entry.id, entry]));
-    for (let i = 0; i < next.length; i++) {
-      const entry = next[i] as AwaitingAck;
-      const old = aligned ? prev[i] : before?.get(entry.id);
-      if (old !== entry) this.writeOwner(old, entry, ops);
-    }
-    if (!aligned) {
-      const keep = new Set(next.map((entry) => entry.id));
-      for (const entry of prev) if (!keep.has(entry.id)) ops.push(() => { this.stmt.ownerDelete.run(entry.id); this.stmt.revisionsDelete.run(entry.id); });
-    }
-  }
-
-  private writeOwner(old: AwaitingAck | undefined, entry: AwaitingAck, ops: (() => void)[]): void {
-    ops.push(() => {
-      this.stmt.owner.run({
-        id: entry.id, pos: this.nextPos++, lead: DEFAULT_LEAD, state: ownerState(entry), since: entry.since ?? null,
-        reminded: entry.reminded ? 1 : null, noticed: entry.noticed ? 1 : null, acked_at: entry.ackedAt ?? null, tasks: entry.tasks ?? null,
-        lanes: entry.lanes === undefined ? null : JSON.stringify(entry.lanes), reply: entry.reply === undefined ? null : entry.reply ? 1 : 0,
-        handled_at: entry.handledAt ?? null, handling_since: entry.handlingSince ?? null, unhandled_reminded_at: entry.unhandledRemindedAt ?? null,
-        revision: entry.revision ?? null, deleted: entry.deleted ? 1 : null,
-        awaiting_owner_at: entry.awaitingOwnerAt ?? null, awaiting_note: entry.awaitingNote ?? null,
-      });
-      if (old?.revisions === entry.revisions) return;
-      const had = new Set(old?.revisions ?? []);
-      // Revisions only append; a reopened message starts a new list, which replaces the old one.
-      if (!(entry.revisions ?? []).every((id, i) => i >= had.size || old?.revisions?.[i] === id)) { this.stmt.revisionsDelete.run(entry.id); had.clear(); }
-      for (const id of entry.revisions ?? []) if (!had.has(id)) this.stmt.revision.run(entry.id, id, this.nextPos++);
-    });
-  }
-
-  private diffNotices(prev: Journal, next: Journal, ops: (() => void)[]): void {
-    if (prev.notifications !== next.notifications) {
-      const before = prev.notifications ?? {};
-      const after = next.notifications ?? {};
-      for (const [key, notice] of Object.entries(after)) {
-        if (before[key] === notice) continue;
-        const at = key.indexOf(":");
-        ops.push(() => this.stmt.notice.run(key.slice(0, at), key.slice(at + 1), this.nextPos++, notice.attempts, notice.sent ? 1 : null));
-      }
-      for (const key of Object.keys(before)) {
-        if (key in after) continue;
-        const at = key.indexOf(":");
-        ops.push(() => this.stmt.noticeDelete.run(key.slice(0, at), key.slice(at + 1)));
-      }
-    }
-    this.diffList(prev.noticed ?? [], next.noticed ?? [], ops,
-      (id) => this.stmt.notice.run(NOTICED_KIND, id, this.nextPos++, 0, 1), (id) => this.stmt.noticeDelete.run(NOTICED_KIND, id));
-  }
-
-  private diffList(prev: readonly string[], next: readonly string[], ops: (() => void)[], add: (id: string) => void, remove: (id: string) => void): void {
-    if (prev === next) return;
-    // Appended to (owner compaction): only the new tail is written, without hashing the whole list.
-    if (next.length >= prev.length && prev.every((id, i) => next[i] === id)) {
-      for (const id of next.slice(prev.length)) ops.push(() => add(id));
-      return;
-    }
-    const before = new Set(prev);
-    const after = new Set(next);
-    for (const id of after) if (!before.has(id)) ops.push(() => add(id));
-    for (const id of before) if (!after.has(id)) ops.push(() => remove(id));
-  }
-
   private diffOutbox(prev: readonly OutboxItem[], next: readonly OutboxItem[], ops: (() => void)[]): void {
     if (prev === next) return;
     const before = new Map(prev.map((item) => [item.id, item]));
@@ -518,9 +387,8 @@ export class SqliteStore implements JournalStore {
 
   tombstoned(id: string): boolean { return this.stmt.tombstoned.get(id) !== null; }
 
-  expireTombstones(cutoff: number): string[] {
+  expireTombstones(cutoff: number): void {
     this.transaction("normal", () => { this.db.query("DELETE FROM event_tombstones WHERE at < ?").run(cutoff); });
-    return (this.db.query("SELECT id FROM owner_tombstones WHERE closed_at < ?").all(cutoff) as Row[]).map((row) => String(row.id));
   }
 
   /** The database, for the GitHub poll state that shares it (github-events.ts). */
@@ -561,7 +429,7 @@ export class SqliteStore implements JournalStore {
   }
 
   counts(): Record<string, number> {
-    const tables = ["events", "deliveries", "owner_messages", "owner_revisions", "owner_tombstones", "owner_notices", "outbox", "lead_restarts", "lead_state",
+    const tables = ["events", "deliveries", "outbox", "lead_restarts", "lead_state",
       "event_tombstones", "gh_repos", "gh_prs", "gh_issues", "gh_cache", "lead_wakes"];
     return Object.fromEntries(tables.map((table) => [table, (this.db.query(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n]));
   }

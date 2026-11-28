@@ -36,8 +36,7 @@ import { inboxCommand } from "./inbox.ts";
 import { reportCommand } from "./report.ts";
 import { resolvedCommand } from "./resolved.ts";
 import { decisionCommand } from "./decision.ts";
-import { discordCommand } from "./discord.ts";
-import { presenceCommand } from "./presence.ts";
+import { messageCommand } from "./message.ts";
 import { transcribeCommand } from "./transcribe.ts";
 import type { ParseArgsOptionsConfig } from "node:util";
 
@@ -84,13 +83,11 @@ export const COMMANDS: Readonly<Record<string, CliCommand>> = {
   report: reportCommand,
   resolved: resolvedCommand,
   decision: decisionCommand,
-  ack: discordCommand,
-  reported: discordCommand,
-  handled: discordCommand,
-  send: discordCommand,
-  thread: discordCommand,
-  typing: discordCommand,
-  presence: presenceCommand,
+  ack: messageCommand,
+  reported: messageCommand,
+  handled: messageCommand,
+  send: messageCommand,
+  typing: messageCommand,
   transcribe: transcribeCommand,
 };
 

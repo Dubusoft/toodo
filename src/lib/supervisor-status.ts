@@ -20,8 +20,7 @@ export type SupervisorLane = {
   readonly ageMin: number;
   /** The lane's last progress line. */
   readonly progress: string | null;
-  /** The lane's chat thread and pull request as `https` links, when it has them; absent from an older supervisor. */
-  readonly threadUrl?: string;
+  /** The lane's pull request as an `https` link, when it has one; absent from an older supervisor. */
   readonly prUrl?: string;
   /**
    * The last lines of the lane's terminal, read when the snapshot was taken; `null` when
@@ -51,7 +50,7 @@ export type SupervisorMachine = {
 export type SupervisorStatusSnapshot = {
   /** Epoch milliseconds the supervisor collected the snapshot at. */
   readonly at: number;
-  /** The pages of `/status`, exactly as the Discord slash command shows them. */
+  /** The pages of `dori status`. */
   readonly status: readonly string[];
   /**
    * The `/quota` text read through the shared quota cache, `fetchedAt` being when the usage

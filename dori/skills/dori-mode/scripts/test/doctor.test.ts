@@ -9,12 +9,10 @@ import { LANE_SANDBOX_MACOS_TEMPLATE, LANE_SANDBOX_TEMPLATE } from "../src/lane-
 import { defaultRunnerDir, RUNNER_PATHS } from "../src/runner/fs-safety.ts";
 import { gatewayView, writeGatewayStatus } from "../src/gateway-status.ts";
 import { pendingLeadRestart } from "../src/lead-restart.ts";
-import type { Http, HttpRequest } from "../src/messenger/http.ts";
 import { Registry } from "../src/registry.ts";
 import type { Ran } from "../src/run.ts";
 import { fakeClock, withSqliteStore, withState, writeWakes } from "./fakes.ts";
 
-const TOKEN = "secret-token-xyz";
 const PATH = process.env.PATH;
 const NOW = 1_800_000_000_000;
 const cleanups: (() => void)[] = [];
@@ -41,16 +39,7 @@ const happyRun: Record<string, Ran> = {
   "hc --json get t1": ok(JSON.stringify({ address: "t1", state: "live" })),
   "gh --version": ok("gh 2"), "gh auth status": ok(), "jq --version": ok("jq-1.7"), "bun --version": ok("1.4"),
 };
-const resp = (status: number, body: unknown) => ({ status, headers: {}, body: JSON.stringify(body) });
-const happyHttp: Record<string, ReturnType<typeof resp>> = {
-  "/users/@me": resp(200, { username: "Dori" }),
-  "/users/@me/guilds": resp(200, [{ id: "200" }]),
-  "/applications/@me": resp(200, { flags: 1 << 18 }),
-  "/channels/500/messages?limit=1": resp(200, []),
-  "/applications/100/guilds/200/commands": resp(200, [{ name: "quota" }, { name: "status" }]),
-};
-
-type Patch = { run?: Record<string, Ran>; http?: Record<string, ReturnType<typeof resp>>; gateway?: "live" | "none" | "stale" | "nocontent" | "down"; free?: number; deps?: Partial<DoctorDeps> };
+type Patch = { run?: Record<string, Ran>; gateway?: "live" | "none" | "stale"; free?: number; deps?: Partial<DoctorDeps> };
 const fixture = (patch: Patch = {}) => {
   const state = withState();
   // A healthy machine's supervisor has created its store.
@@ -64,9 +53,7 @@ const fixture = (patch: Patch = {}) => {
   mkdirSync(join(state.dir, ".local", "bin"), { recursive: true });
   copyFileSync(LANE_SANDBOX_TEMPLATE, wrapper);
   const table = { ...happyRun, [`${wrapper} --check`]: checked(), [`env DORI_LANE_KEY=doctor-probe ${wrapper} --explain`]: ok("rw /tmp\n"), ...patch.run };
-  const routes = { ...happyHttp, ...patch.http };
   const calls: string[] = [];
-  const requests: HttpRequest[] = [];
   const clock = fakeClock(NOW);
   const run = async (argv: readonly string[]): Promise<Ran> => {
     const line = argv.join(" ");
@@ -74,32 +61,24 @@ const fixture = (patch: Patch = {}) => {
     if (argv[0] === "df") return ok(`Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/x 1 1 ${Math.round((patch.free ?? 100) * 1024 * 1024)} 1% /`);
     return table[line] ?? { code: 127, out: "", err: `unexpected ${line}` };
   };
-  const http: Http = async (req) => {
-    requests.push(req);
-    return routes[req.url.replace("https://discord.com/api/v10", "")] ?? resp(404, {});
-  };
   const g = patch.gateway ?? "live";
   if (g !== "none") {
-    writeGatewayStatus(state.dir, {
-      pid: 1, at: g === "stale" ? NOW - 120_000 : NOW - 3_000,
-      connected: g !== "down", messageContent: g !== "nocontent",
-    });
+    writeGatewayStatus(state.dir, { pid: 1, at: g === "stale" ? NOW - 120_000 : NOW - 3_000 });
   }
   mkdirSync(join(state.dir, "memory", "system"), { recursive: true });
   writeFileSync(join(state.dir, "memory", "system", "human.md"), "## Open\n- one item\n");
   const deps: DoctorDeps = {
-    run, http, clock, configPath: "/home/test/config.json", envPath: "/home/test/.dori/env", token: TOKEN, tokenSource: "file", exists: () => true, home: state.dir, platform: "linux", which: () => "/usr/bin/bwrap",
+    run, clock, configPath: "/home/test/config.json", envPath: "/home/test/.dori/env", toodoChat: async () => 0, exists: () => true, home: state.dir, platform: "linux", which: () => "/usr/bin/bwrap",
     // A runtime dir of its own: the host's may hold a live herdr-core socket.
     env: { XDG_RUNTIME_DIR: join(state.dir, "run") },
     config: {
       ...defaultConfig("/home/test"), stateDir: state.dir, leadCwd: state.dir, leadPane: "hc:t1",
       memoryCheck: { ...defaultConfig("/home/test").memoryCheck, repo: join(state.dir, "memory") },
-      discordChannels: ["500"], decisionsChannel: "500", discord: { applicationId: "100", guildId: "200", ownerId: "300" },
     },
     ...patch.deps,
   };
   writeFileSync(join(state.dir, "runner-endpoints.json"), JSON.stringify({ worker: "100.101.1.2:7411" }));
-  return { deps, calls, requests };
+  return { deps, calls };
 };
 const find = (checks: readonly Check[], id: string): Check => {
   const hit = checks.find((c) => c.id === id);
@@ -115,12 +94,10 @@ test("a healthy machine is all OK, exits 0 and prints the summary line", async (
   expect(renderDoctor(checks)).toContain(`DOCTOR ok=${checks.length} warn=0 fail=0`);
 });
 
-test("doctor only reads: no unit changes and Discord is GET only", async () => {
+test("doctor only reads: no unit changes", async () => {
   const f = fixture();
   await runDoctor(f.deps);
   expect(f.calls.filter((c) => /^systemctl --user (enable|disable|start|stop|restart|daemon-reload)/.test(c) || /^kill /.test(c))).toEqual([]);
-  expect(f.requests.length).toBeGreaterThan(0);
-  expect(f.requests.every((r) => r.method === "GET")).toBe(true);
 });
 
 test("doctor warns when the installed lane sandbox differs from the template", async () => {
@@ -454,12 +431,10 @@ test("missing WorkingDirectory, missing dirs, missing config keys and a missing 
   const c = await runDoctor(dirs.deps);
   expect(find(c, "stateDir")).toMatchObject({ level: "FAIL" });
   expect(find(c, "leadCwd").fix).toStartWith("mkdir -p ");
-  const keys = fixture({ deps: { config: { ...fixture().deps.config, discordChannels: [], discord: { applicationId: "x", guildId: "200", ownerId: "300" } } } });
-  const kc = await runDoctor(keys.deps);
-  const k = find(kc, "config");
+  const keys = fixture({ deps: { config: { ...fixture().deps.config, defaultModel: "" } } });
+  const k = find(await runDoctor(keys.deps), "config");
   expect(k.level).toBe("FAIL");
-  expect(k.detail).toContain("discordChannels");
-  expect(k.detail).toContain("discord.applicationId");
+  expect(k.detail).toContain("defaultModel");
   const lead = fixture({ run: { "hc --json ls": ok(JSON.stringify({ terminals: [] })) } });
   expect(find(await runDoctor(lead.deps), "leadPane")).toMatchObject({ level: "FAIL", fix: "dori lead-restart" });
   const bad = fixture({ deps: { configError: "Unexpected token" } });
@@ -475,71 +450,15 @@ test("a set but blank leadModel or leadThinking is WARN; set or absent says noth
   expect(set.find((c) => c.id === "lead command")).toBeUndefined();
 });
 
-test("token: rejected is FAIL, absent is FAIL with no Discord call, env-only is WARN; it is never printed", async () => {
-  const rejected = fixture({ http: { "/users/@me": resp(401, { message: "401: Unauthorized" }) } });
-  const a = await runDoctor(rejected.deps);
-  expect(find(a, "discord token")).toMatchObject({ level: "FAIL", detail: "token rejected (401)" });
-  expect(a.find((c) => c.id === "bot in guild")).toBeUndefined();
-  const none = fixture({ deps: { token: undefined, tokenSource: undefined } });
-  const b = await runDoctor(none.deps);
-  expect(find(b, "discord token").level).toBe("FAIL");
-  expect(none.requests).toHaveLength(0);
-  const env = fixture({ deps: { tokenSource: "env" } });
-  const c = await runDoctor(env.deps);
-  expect(find(c, "discord token").level).toBe("WARN");
-  for (const checks of [a, b, c]) expect(renderDoctor(checks)).not.toContain(TOKEN);
-  const ok1 = fixture();
-  expect(renderDoctor(await runDoctor(ok1.deps))).not.toContain(TOKEN);
-  expect(ok1.requests.every((r) => r.headers?.Authorization === `Bot ${TOKEN}`)).toBe(true);
+test("heartbeat: a fresh one is OK; no file or a stale one is FAIL with the restart fix", async () => {
+  expect(find(await runDoctor(fixture({ gateway: "live" }).deps), "heartbeat").level).toBe("OK");
+  for (const g of ["none", "stale"] as const) expect(find(await runDoctor(fixture({ gateway: g }).deps), "heartbeat")).toMatchObject({ level: "FAIL", fix: "systemctl --user restart dori-supervisor.service" });
 });
 
-test("bot outside the guild and unreadable channels are FAIL", async () => {
-  const f = fixture({ http: { "/users/@me/guilds": resp(200, [{ id: "999" }]), "/channels/500/messages?limit=1": resp(403, {}) } });
-  const checks = await runDoctor(f.deps);
-  expect(find(checks, "bot in guild").level).toBe("FAIL");
-  expect(find(checks, "channels")).toMatchObject({ level: "FAIL", detail: "500: no access" });
-});
-
-test("Message Content intent: either flag is OK, none is WARN with the Developer Portal step", async () => {
-  expect(find(await runDoctor(fixture({ http: { "/applications/@me": resp(200, { flags: 1 << 19 }) } }).deps), "message content intent").level).toBe("OK");
-  const f = fixture({ http: { "/applications/@me": resp(200, { flags: 0 }) } });
-  const checks = await runDoctor(f.deps);
-  expect(find(checks, "message content intent")).toMatchObject({ level: "WARN" });
-  expect(find(checks, "message content intent").fix).toContain("Developer Portal");
-  expect(doctorExit(checks)).toBe(0);
-});
-
-test("slash commands: a missing /status or /quota is WARN with the restart fix", async () => {
-  const f = fixture({ http: { "/applications/100/guilds/200/commands": resp(200, [{ name: "quota" }]) } });
-  expect(find(await runDoctor(f.deps), "slash commands")).toMatchObject({ level: "WARN", detail: "not registered: /status", fix: "systemctl --user restart dori-supervisor.service" });
-  const none = fixture({ http: { "/applications/100/guilds/200/commands": resp(200, []) } });
-  expect(find(await runDoctor(none.deps), "slash commands").detail).toBe("not registered: /quota, /status");
-});
-
-test("gateway: live OK; no file, stale and disconnected FAIL; without Message Content WARN", async () => {
-  expect(find(await runDoctor(fixture({ gateway: "live" }).deps), "gateway").level).toBe("OK");
-  for (const g of ["none", "stale", "down"] as const) expect(find(await runDoctor(fixture({ gateway: g }).deps), "gateway")).toMatchObject({ level: "FAIL", fix: "systemctl --user restart dori-supervisor.service" });
-  expect(find(await runDoctor(fixture({ gateway: "nocontent" }).deps), "gateway").level).toBe("WARN");
-});
-
-test("Discord off (platforms toodo): no Discord call or gateway is needed, nothing about Discord fails, and the Toodo chat is checked instead", async () => {
-  const f = fixture({ gateway: "none" });
-  const { token: _token, ...deps } = f.deps;
-  const { discord: _discord, decisionsChannel: _decisions, ...config } = f.deps.config;
-  const off: DoctorDeps = { ...deps, config: { ...config, platforms: ["toodo"], discordChannels: [] }, toodoChat: async () => 2 };
-  const checks = await runDoctor(off);
-  expect(f.requests).toEqual([]);
-  expect(find(checks, "discord")).toMatchObject({ level: "OK", detail: "off (platforms: toodo); not checked" });
-  expect(find(checks, "gateway").level).toBe("OK");
-  expect(find(checks, "config").level).toBe("OK");
-  expect(find(checks, "toodo chat")).toMatchObject({ level: "OK", detail: "reachable; 2 owner messages waiting" });
-  expect(checks.filter((c) => c.level !== "OK")).toEqual([]);
-  expect(find(await runDoctor({ ...off, toodoChat: async () => { throw new Error("connection refused"); } }), "toodo chat").level).toBe("FAIL");
-  // One switch line back on: Discord is checked again, and a Toodo chat that cannot be read only warns beside it.
-  const on = await runDoctor({ ...f.deps, config: { ...f.deps.config, platforms: ["discord", "toodo"] }, toodoChat: async () => { throw new Error("connection refused"); } });
-  expect(find(on, "discord token").level).toBe("OK");
-  expect(find(on, "gateway").level).toBe("FAIL");
-  expect(find(on, "toodo chat").level).toBe("WARN");
+test("the Toodo chat is checked: reachable is OK with the owner messages waiting, unreachable is FAIL", async () => {
+  const f = fixture({ deps: { toodoChat: async () => 2 } });
+  expect(find(await runDoctor(f.deps), "toodo chat")).toMatchObject({ level: "OK", detail: "reachable; 2 owner messages waiting" });
+  expect(find(await runDoctor({ ...f.deps, toodoChat: async () => { throw new Error("connection refused"); } }), "toodo chat").level).toBe("FAIL");
 });
 
 test("tools and disk: missing gh auth, jq or bun are FAIL; free space under the guard is WARN", async () => {
@@ -554,14 +473,8 @@ test("tools and disk: missing gh auth, jq or bun are FAIL; free space under the 
   expect(d.detail).toContain("diskFreeMinGb is 50");
 });
 
-test("an unreachable Discord API is a bounded FAIL, not a crash", async () => {
-  const f = fixture();
-  const deps: DoctorDeps = { ...f.deps, http: async () => { throw new Error("offline"); } };
-  expect(find(await runDoctor(deps), "discord token")).toMatchObject({ level: "FAIL", detail: "Discord API unreachable" });
-});
-
 test("gatewayView ages with the injected clock", () => {
-  const s = { pid: 1, at: 1000, connected: true, messageContent: true };
+  const s = { pid: 1, at: 1000 };
   expect(gatewayView(s, 1000 + 59_000).state).toBe("live");
   expect(gatewayView(s, 1000 + 61_000).state).toBe("stale");
 });
@@ -602,14 +515,12 @@ test("item 6: doctor fails on lanes whose recovery is exhausted and warns on lan
 test("doctor names each config value's source: file, default, env or derived, and warns on keys it does not read", async () => {
   const f = fixture();
   const path = join(f.deps.home, "config.json");
-  writeFileSync(path, JSON.stringify({ defaultModel: "p/m", discordChannels: ["500"], laneThinking: "high" }));
+  writeFileSync(path, JSON.stringify({ schemaVersion: 10, defaultModel: "p/m", discordChannels: ["500"], laneThinking: "high" }));
   const config = await loadConfig(path, f.deps.home);
   const checks = configSources({ ...f.deps, config, configPath: path, env: { DORI_STATE_DIR: config.stateDir } });
   expect(find(checks, "config.defaultModel").detail).toStartWith("file: ");
   expect(find(checks, "config.worktreeRoot").detail).toBe('default: ""');
   expect(find(checks, "config.stateDir").detail).toStartWith("env DORI_STATE_DIR: ");
-  expect(find(checks, "config.alertsChannel").detail).toBe('derived from discordChannels[0]: "500"');
-  expect(find(checks, "config.decisionsChannel")).toMatchObject({ level: "WARN", detail: "decisionsChannel: unset (decisions go to the requesting channel)" });
   expect(find(checks, "config.leadThinking").detail).toBe("unset: (none)");
-  expect(find(checks, "config ignored keys")).toMatchObject({ level: "WARN", detail: expect.stringContaining("laneThinking") });
+  expect(find(checks, "config ignored keys")).toMatchObject({ level: "WARN", detail: expect.stringMatching(/^discordChannels, laneThinking in /) });
 });
