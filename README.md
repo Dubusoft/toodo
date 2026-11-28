@@ -26,7 +26,7 @@ or another agent records their work over MCP the same way.
   checks with an HTTP GET; completing a task releases the dependents waiting on it.
 - **Agent access (MCP)**: coding agents read and plan tasks, record starts, notes, and
   decisions, and complete tasks through the server's MCP endpoint; copy the client config
-  from Agent access in Settings (the gear at the bottom of the sidebar). See
+  from AI app connections in Settings (the gear at the bottom of the sidebar). See
   [docs/agents.md](docs/agents.md).
 - **Timeline**: every status change is timestamped; the dependency graph is drawn on a
   time axis showing when each task was planned, started, reviewed, and completed.

@@ -109,7 +109,7 @@ export function deleteTask(storage: Storage, request: ReturnType<typeof R.delete
   const dependents = describeLinks(details.dependents);
   const wait = waitWord(details.dependents);
   if (!request.confirm) {
-    let message = `Nothing changed yet. Deleting task ${id} "${current.title}" archives it: it leaves the task lists and no longer holds back its dependents, while its history, notes, criteria, ${details.commits.length} recorded commit(s), and ${details.dependsOn.length + details.dependents.length + details.related.length} dependency and related link(s) stay for the reports; the user can restore it, or delete it for good, under Settings > Archive in the Toodo app.`;
+    let message = `Nothing changed yet. Deleting task ${id} "${current.title}" archives it: it leaves the task lists and no longer holds back its dependents, while its history, notes, criteria, ${details.commits.length} recorded commit(s), and ${details.dependsOn.length + details.dependents.length + details.related.length} dependency and related link(s) stay for the reports; the user can restore it, or delete it for good, under Settings > Trash in the Toodo app.`;
     if (dependents !== "") message += ` ${dependents} no longer ${wait} on it.`;
     message += ` To delete it, call delete_task {"id": ${id}, "confirm": true}.`;
     return { confirmed: false, task: current, message };
@@ -152,7 +152,7 @@ export function deleteDoneTasks(storage: Storage, request: ReturnType<typeof R.d
       confirmed: false,
       workspaceId: id,
       taskIds: done.map((item) => item.id),
-      message: `Nothing changed yet. Deleting the done tasks of workspace ${id} "${stored.name}" archives ${done.length} task(s): ${done.map((item) => `#${item.id} ${item.title}`).join(", ")}. They leave the task lists, while their history, notes, criteria, and commit records stay in review_report; the user can restore them, or delete them for good, under Settings > Archive in the Toodo app. To delete them, call delete_done_tasks {"workspace_id": ${id}, "confirm": true}.`,
+      message: `Nothing changed yet. Deleting the done tasks of workspace ${id} "${stored.name}" archives ${done.length} task(s): ${done.map((item) => `#${item.id} ${item.title}`).join(", ")}. They leave the task lists, while their history, notes, criteria, and commit records stay in review_report; the user can restore them, or delete them for good, under Settings > Trash in the Toodo app. To delete them, call delete_done_tasks {"workspace_id": ${id}, "confirm": true}.`,
     };
   }
   const archived = storage.archiveDoneTasks(stored.id);

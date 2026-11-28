@@ -204,7 +204,7 @@ The task details list these under Timeline.
 - Events are never edited or deleted on their own. Deleting a task or its workspace
   archives it (`archived_at` on `tasks` or `workspaces`): it leaves the task lists and the
   DAG, but its history and links stay, and reviews still report its work, marked
-  archived. Settings > Archive restores it (`restore_task`, `restore_workspace`) or
+  archived. Settings > Trash restores it (`restore_task`, `restore_workspace`) or
   deletes it for good (`purge_task`, `purge_workspace`); only that purge removes its
   events, and it accepts archived items only.
 - The milestones used by the timeline view and reports are derived from the history:
@@ -464,9 +464,10 @@ or guessed by an agent.
     `{{name}}`; see [agents.md](agents.md). They tell agents to search before planning,
     record decisions and blockers as they work, and use `add_dependency` only for real
     prerequisites. Toodo never prompts agents itself.
-  - Agent access in Settings copies an MCP client config with the URL and token
-    (`mcp_server_info`), tests that the server accepts that token, and shows the last
-    request `/mcp` turned away with its reason.
+  - The coding agents card under Settings > AI app connections copies an MCP client
+    config with the URL and token (`mcp_server_info`), tests that the server accepts that
+    token, and shows the last request `/mcp` turned away with its reason; Settings >
+    Advanced names the server instance agents reach.
 - **OAuth server** (`server/src/oauth/`): the single-owner authorization server that
   lets chat apps reach `/mcp` when `TOODO_PUBLIC_URL` is set. It serves discovery
   metadata, dynamic client registration and client ID metadata documents, the consent

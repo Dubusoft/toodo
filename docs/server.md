@@ -197,8 +197,8 @@ restarts the server on it the same way, and checks that it answers. It then exit
 the cause and `toodo logs` to find out why; when going back fails too, it prints the
 commands to restart the server or go back by hand.
 
-The web app shows a newer version too: Settings > General names it under the version of
-the server. The server asks the npm registry for the dist-tags of `@dubusoft/toodo` (the
+The web app shows a newer version too: Settings > General shows a card for it, and
+Settings > About names it under the version of the server with how to update. The server asks the npm registry for the dist-tags of `@dubusoft/toodo` (the
 `check_update` command), from `https://registry.npmjs.org` unless `TOODO_NPM_REGISTRY`
 names another registry, and compares the version on its own channel.
 
@@ -249,7 +249,8 @@ platform (`gh release download --repo Dubusoft/toodo --pattern
 'toodo-server-*-darwin-aarch64.tar.gz'` for the newest release), unpack it, and run
 `./toodo update --source github` from it, then `toodo init` or `toodo service install`.
 
-The web app still looks for a newer version on the npm registry (Settings > General).
+The web app still looks for a newer version on the npm registry (Settings > General and
+Settings > About).
 
 ## Install and Update
 
@@ -352,7 +353,7 @@ token locks out the others for that minute; stop it, or replace its token.
 ### Backups
 
 The server writes backups of the database into its backup directory, `<data>/backups/`
-unless *Settings > Backups* names another absolute path, such as a directory on another
+unless *Settings > Backup & restore* names another absolute path, such as a directory on another
 disk (saved as `directory` in `<data>/backup-settings.json`). Backups already in the old
 directory stay there and are no longer listed. There are three kinds:
 
@@ -369,7 +370,7 @@ directory stay there and are no longer listed. There are three kinds:
 Each backup is a `VACUUM INTO` snapshot that must pass `PRAGMA integrity_check` before it
 takes its name; a damaged one is deleted. Automatic backups and exports read the
 database through a connection of their own, so requests keep being served while they
-run. When an automatic backup fails, the Settings button and *Settings > Backups* say so,
+run. When an automatic backup fails, the Settings button and *Settings > Backup & restore* say so,
 with the reason, until one succeeds again.
 
 ### Import
@@ -511,7 +512,7 @@ An agent on another machine reaches the server the way a browser does: over an S
 tunnel to the loopback port (`ssh -L 47616:127.0.0.1:47616 <server>`). Don't point local
 agents at a public hostname; see [Off the Machine](#off-the-machine-cloudflare-tunnel-and-access).
 
-Settings > Agent access in the web app copies this config or the MCP token alone
+Settings > AI app connections in the web app copies this config or the MCP token alone
 ("Copy MCP token for agents"; it is not the web sign-in token), checks with **Test
 connection** that the server accepts the token it shows, and shows the server instance
 and the last request `/mcp` turned away, with its
@@ -748,8 +749,8 @@ right token; wait, then go back and approve again.
 **Tokens and revoking.** An access token lasts an hour and a refresh token 30 days. Each
 refresh replaces both, and a refresh token presented twice revokes the whole grant, so a
 copied token stops working once either side uses it. Only SHA-256 hashes of tokens and
-client secrets are stored. To disconnect an app, revoke it under **Connected apps** in
-Settings, which also shows the public MCP URL, or disconnect it in the app itself; either
+client secrets are stored. To disconnect an app, revoke it in the chat apps card under
+**AI app connections** in Settings, which also shows the public MCP URL, or disconnect it in the app itself; either
 ends its access and refresh tokens at once, and the app connects again through the consent
 page.
 
@@ -1089,7 +1090,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   the events after it (the server keeps the last 256); when some are gone, the id is of
   another server start, or a reader falls behind, the stream sends a `resync` event
   instead, after which the client refetches everything.
-- `GET /api/supervisor/status`: the Dori status panel (Settings > Dori status), as
+- `GET /api/supervisor/status`: the Dori status panel (Settings > Dori, in full under Settings > Advanced), as
   server-sent `status` events carrying the supervisor's latest snapshot (the `/status`
   pages, the `/quota` text, and the working lanes with their recent screens, typed in
   `src/lib/supervisor-status.ts`), then each new one; before the supervisor's first
@@ -1100,7 +1101,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   when it is not a snapshot or `413` above 2 MB. Lane screens and the quota are read only
   while a panel is open.
 - `GET /api/supervisor/schedules` and `POST /api/supervisor/schedules`: the scheduled jobs
-  panel (Settings > Scheduled jobs), the supervisor's `dori schedule` jobs. `GET` answers
+  panel (Settings > Dori), the supervisor's `dori schedule` jobs. `GET` answers
   `{ "ok": true, "jobs": [...], "timeZone": { "name", "label" } }`, each job with its
   description (`null` when it has none), schedule, next and last run, and last result, and Dori's `displayTimeZone`, in which the
   panel says schedules ("Every day at 4:00 AM (KST)", in Korean on a Korean browser) and picks them by repeat

@@ -297,7 +297,7 @@ export function runDueBackup(storage: Storage, backups: Backups): BackupFile | n
     backups.status = {
       lastFailure: {
         at: now,
-        message: `could not back up into ${dir}: ${storageMessage(error)}; make that directory writable for the toodo-server user, or choose another one under Settings > Backups`,
+        message: `could not back up into ${dir}: ${storageMessage(error)}; make that directory writable for the toodo-server user, or choose another one under Settings > Backup & restore`,
       },
     };
     throw error;

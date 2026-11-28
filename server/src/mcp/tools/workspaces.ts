@@ -52,7 +52,7 @@ export function archiveWorkspace(storage: Storage, request: ReturnType<typeof R.
     return {
       confirmed: false,
       workspace: shown,
-      message: `Nothing changed yet. Archiving workspace ${id} "${shown.name}" removes it and its ${tasks.length} task(s) from list_workspaces and the task lists, while their history, notes, criteria, and commit records stay in review_report; the user can restore it, or delete it for good, under Settings > Archive in the Toodo app. To archive it, call archive_workspace {"id": ${id}, "confirm": true}.`,
+      message: `Nothing changed yet. Archiving workspace ${id} "${shown.name}" removes it and its ${tasks.length} task(s) from list_workspaces and the task lists, while their history, notes, criteria, and commit records stay in review_report; the user can restore it, or delete it for good, under Settings > Trash in the Toodo app. To archive it, call archive_workspace {"id": ${id}, "confirm": true}.`,
     };
   }
   storage.archiveWorkspace(stored.id);

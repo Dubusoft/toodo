@@ -52,7 +52,7 @@ toodo doctor                  # ends with "No problems found." and exits 0
 Move the `-wal` and `-shm` files together with `toodo.sqlite3`: they hold changes of the
 damaged file, which SQLite would otherwise apply to the backup. Pick the newest backup
 from before the trouble; the time in its name is UTC, and anything changed after it is
-lost. When *Settings > Backups* names another directory, the backups are there (the
+lost. When *Settings > Backup & restore* names another directory, the backups are there (the
 `directory` in `backup-settings.json`). A backup of an older version is migrated on
 start, after a pre-migration backup of it. The damaged files stay in `damaged-<time>/`;
 delete them once the restored data looks right.
@@ -100,7 +100,7 @@ The token `toodo init` gave the agent was replaced, or the agent reaches another
 server. The `401` body names the server's instance. Run `toodo stop` and `toodo start`:
 they register the endpoint and the current token again with Claude Code and Codex where
 `toodo init` registered them. For other clients, copy the configuration from Settings >
-Agent access again.
+AI app connections again.
 
 ### The agent cannot reach Toodo from another machine
 
