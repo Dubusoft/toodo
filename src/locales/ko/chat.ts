@@ -95,4 +95,6 @@ export const chat: Partial<Messages["chat"]> = {
     "@astryx.thumbnail.remove": "{accessibleName} 제거",
     "@astryx.token.remove": "{label} 제거",
   },
+  taskMenu: "태스크",
+  noMatchingTasks: "일치하는 태스크가 없습니다",
 };

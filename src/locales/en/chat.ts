@@ -94,4 +94,6 @@ export const chat = {
     "@astryx.thumbnail.remove": "Remove {accessibleName}",
     "@astryx.token.remove": "Remove {label}",
   },
+  taskMenu: "Tasks",
+  noMatchingTasks: "No matching tasks",
 };

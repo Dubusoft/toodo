@@ -405,7 +405,7 @@ export function suggestedTasks(tasks: readonly Task[], query: string): Task[] {
  * The composer's `#` menu, which completes a task's number from the tasks `loaded` returns, or
  * from the server for a whole number that is not loaded, such as a task finished long ago.
  */
-function taskTrigger(loaded: () => readonly Task[]): ChatComposerTrigger {
+function taskTrigger(loaded: () => readonly Task[], words: Messages["chat"]): ChatComposerTrigger {
   // The tasks the menu lists, by item ID, with the tasks their status is judged against.
   const listed = new Map<string, { task: Task; byId: ReadonlyMap<TaskId, Task> }>();
   const items = (query: string, tasks: readonly Task[]) => {
@@ -418,8 +418,8 @@ function taskTrigger(loaded: () => readonly Task[]): ChatComposerTrigger {
   };
   return {
     character: "#",
-    menuLabel: "Tasks",
-    emptySearchText: "No matching tasks",
+    menuLabel: words.taskMenu,
+    emptySearchText: words.noMatchingTasks,
     searchSource: {
       bootstrap: () => items("", loaded()),
       search: async (query) => {
@@ -486,7 +486,7 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
   const tasks = useTasks();
   const loadedTasks = useRef<readonly Task[]>([]);
   loadedTasks.current = tasks.data ?? [];
-  const triggers = useMemo(() => [taskTrigger(() => loadedTasks.current)], []);
+  const triggers = useMemo(() => [taskTrigger(() => loadedTasks.current, m.chat)], [m]);
   const [uploads, setUploads] = useState<readonly Upload[]>([]);
   const picker = useRef<HTMLInputElement>(null);
   const messages = chat.data === undefined ? [] : chatMessages(chat.data);
