@@ -361,7 +361,7 @@ function Messages({ agent, messages }: { agent: ChatAgent; messages: readonly Ch
         return (
           <Message key={message.id} sender="assistant" avatar={<AgentAvatar agent={agent} />}>
             <ChatMessageBubble metadata={<ChatMessageMetadata timestamp={<Time at={message.at} />} />}>
-              <Suspense fallback={<span className="whitespace-pre-wrap break-words">{message.body}</span>}>
+              <Suspense fallback={<span className="whitespace-pre-wrap break-words-keep">{message.body}</span>}>
                 <Markdown source={message.body} className="text-inherit" />
               </Suspense>
               <Attachments attachments={message.attachments} />
@@ -383,11 +383,11 @@ function Messages({ agent, messages }: { agent: ChatAgent; messages: readonly Ch
               }
             >
               {message.choiceOf !== null ? (
-                <span className="whitespace-pre-wrap break-words">
+                <span className="whitespace-pre-wrap break-words-keep">
                   {fill(m.chat.chose, { choice: <strong>{message.body}</strong> })}
                 </span>
               ) : (
-                <span className="whitespace-pre-wrap break-words">{message.body}</span>
+                <span className="whitespace-pre-wrap break-words-keep">{message.body}</span>
               )}
               <Attachments attachments={message.attachments} />
             </ChatMessageBubble>
@@ -659,7 +659,7 @@ export function Conversation({ place, open = true, label }: { place: ChatPlace; 
                       />
                     }
                   >
-                    <span className="whitespace-pre-wrap break-words">{item.body}</span>
+                    <span className="whitespace-pre-wrap break-words-keep">{item.body}</span>
                     {item.attachments.length > 0 && (
                       <p className="text-xs opacity-80">
                         {item.attachments.map((attachment) => attachment.name).join(", ")}
@@ -1385,7 +1385,7 @@ function DeleteChannelDialog({
           {m.chat.deleteChannelExplanation(defaultRoom, channel.name)}
         </p>
         {remove.isError && (
-          <p role="alert" className="text-xs break-words text-destructive">
+          <p role="alert" className="text-xs break-words-keep text-destructive">
             {remove.error.message}
           </p>
         )}
@@ -1585,7 +1585,7 @@ export function ChatSearch({
                     <span aria-hidden>·</span>
                     <span className="shrink-0">{fullMessageTime(new Date(hit.message.at * 1000), locale)}</span>
                   </span>
-                  <span className="line-clamp-2 whitespace-pre-wrap break-words text-sm">{hit.message.body}</span>
+                  <span className="line-clamp-2 whitespace-pre-wrap break-words-keep text-sm">{hit.message.body}</span>
                 </button>
               </li>
             ))}

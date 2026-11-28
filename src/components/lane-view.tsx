@@ -56,7 +56,7 @@ function Fact({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex min-w-0 gap-2">
       <dt className="w-20 shrink-0 text-muted-foreground">{label}</dt>
-      <dd className="min-w-0 flex-1 break-words">{children}</dd>
+      <dd className="min-w-0 flex-1 break-words-keep">{children}</dd>
     </div>
   );
 }
@@ -86,7 +86,7 @@ export function LaneView({
       <section role="region" aria-label={t.label(laneKey)} className="flex flex-col gap-2 text-sm">
         <p className="text-muted-foreground">{m.settings.supervisorPanel.waiting}</p>
         {error !== null && (
-          <p role="alert" className="break-words text-destructive">
+          <p role="alert" className="break-words-keep text-destructive">
             {error}
           </p>
         )}
@@ -142,7 +142,7 @@ export function LaneView({
         ) : lane.screen === null ? (
           <p className="text-muted-foreground">{panel.readingScreen}</p>
         ) : "error" in lane.screen ? (
-          <p role="alert" className="break-words text-destructive">
+          <p role="alert" className="break-words-keep text-destructive">
             {panel.screenFailure(lane.screen.error)}
           </p>
         ) : (
