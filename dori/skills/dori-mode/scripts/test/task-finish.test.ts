@@ -8,6 +8,7 @@ import { eventClass } from "../src/event-policy.ts";
 import type { Lane } from "../src/registry.ts";
 import { laneNotAdoptedFile, laneReportFile } from "../src/lane-files.ts";
 import { openOperations, plan, settleOperation } from "../src/operations.ts";
+import { appendLaneToodo } from "../src/lane-toodo.ts";
 import { mergeFactLine, taskBlocker, taskFinisher } from "../src/task-finish.ts";
 import { appendFollowUp, type FollowUpDiscord, recordLastReport, recordOwnerClosed } from "../src/thread-followup.ts";
 import { ToodoWriter } from "../src/toodo-client.ts";
@@ -55,6 +56,9 @@ const fakeToodo = (task: Task) => {
         task.notes.push({ kind: "blocker", body: String(a.note) });
         return ok(rpc.id, task);
       }
+      // The task's chat thread, for a fact line posted there with Discord off.
+      if (name === "list_threads") return ok(rpc.id, [{ id: 7, taskId: task.id, status: "open" }]);
+      if (name === "reply_in_chat") return ok(rpc.id, { id: 88, channelId: 1, threadId: a.thread_id, author: "agent", body: a.body, attachments: [] });
       return refuse(rpc.id, "unknownTool");
     },
   });
@@ -105,7 +109,9 @@ afterEach(() => { for (const stop of stops) stop(); state.done(); });
  * Claims `subject` done with its PR bound at the claim, hands the claim to the lead, and settles it five minutes later
  * with the supervisor's finisher (toodo `task`, Discord `discord`). Returns the settle pass's lines.
  */
-const closeMerged = async (subject: Lane, task: Task, discord: FollowUpDiscord, run?: (base: FlowDeps["run"]) => FlowDeps["run"]): Promise<{ lines: string[]; calls: ReturnType<typeof fakeToodo>["calls"] }> => {
+const closeMerged = async (
+  subject: Lane, task: Task, discord: FollowUpDiscord, run?: (base: FlowDeps["run"]) => FlowDeps["run"], discordOff = false,
+): Promise<{ lines: string[]; calls: ReturnType<typeof fakeToodo>["calls"] }> => {
   const toodo = fakeToodo(task);
   stops.push(toodo.stop);
   await at(T0).registry.write(subject);
@@ -114,7 +120,10 @@ const closeMerged = async (subject: Lane, task: Task, discord: FollowUpDiscord, 
   await at(T0).registry.patch(subject.key, (current) => current.claim ? { claim: { ...current.claim, pulls: [{ repo: "acme/app", number: 1, sha: "a".repeat(40) }] } } : undefined);
   await watchTick(at(T0));
   const writer = new ToodoWriter({ url: toodo.url, tokenFile: join(state.dir, "mcp-token") });
-  const finishTask = taskFinisher({ writer, append: (l, text) => appendFollowUp(state.dir, discord, l, text), language: () => "Korean" });
+  // With Discord off the supervisor appends through the lane's Toodo task thread (supervise-loop.ts sweepTask).
+  const toodoDeps = { config: { ...at(T0).config, platforms: ["toodo" as const] }, tunables: { ...at(T0).tunables, toodoWriter: { url: toodo.url, tokenFile: join(state.dir, "mcp-token") } } };
+  const append = discordOff ? (l: Lane, text: string) => appendLaneToodo(toodoDeps, l, text) : (l: Lane, text: string) => appendFollowUp(state.dir, discord, l, text);
+  const finishTask = taskFinisher({ writer, append, language: () => "Korean" });
   const base = at(T0 + 5 * MIN + 1);
   return { lines: await watchTick({ ...base, ...(run ? { run: run(base.run) } : {}), finishTask, blockTask: taskBlocker(writer) }), calls: toodo.calls };
 };
@@ -486,4 +495,19 @@ test("a cancelled autopilot lane gets its blocker recorded once and its failure 
   const calls = toodo.calls.length;
   expect((await closeLane({ ...at(T0 + MIN), blockTask }, apLane, "again")).lines).toEqual(["CLOSED ap-951-1 already closed"]);
   expect(toodo.calls.length).toBe(calls);
+});
+
+test("with Discord off, a merged lane bound to a Discord thread gets its fact line in its Toodo task thread and no Discord call", async () => {
+  const task = inProgress([manual(1)]);
+  const fake = fakeDiscord();
+  // Bound to a Discord thread, with its last report there, from before Discord was turned off.
+  const { lines, calls } = await closeMerged({ ...lane, thread: "discord:100/900" }, task, fake.discord, undefined, true);
+
+  expect(lines[0]).toBe(`LANE_CLOSED demo-lane closed seen-claim toodo=done ${PR}`);
+  expect(lines[1]).toBe(`TOODO_TASK_COMPLETED demo-lane #951 ${PR} merge=${SHA}; report appended (toodo:88)`);
+  expect(task.status).toBe("done");
+  const reply = calls.find((c) => c.name === "reply_in_chat");
+  expect(reply?.args).toMatchObject({ thread_id: 7, body: `[follow-up]\n${mergeFactLine([{ repo: "acme/app", number: 1, url: PR, base: "main", sha: SHA }], 951, "Korean")}` });
+  expect(fake.edits).toEqual([]);
+  expect(fake.sends).toEqual([]);
 });

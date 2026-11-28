@@ -392,13 +392,18 @@ test("dori status names unreported lanes as a problem", () => {
 
 // A preload replacing fetch: each request is appended to $FAKE_LOG as JSON; $FAKE_STATUS (default 200) is the reply status.
 // A reply also carries $FAKE_CONTENT as a message's content, $FAKE_ARCHIVED ("true") as a thread's archived flag and
-// $FAKE_PARENT as a thread's parent channel.
+// $FAKE_PARENT as a thread's parent channel. toodo-server's /mcp answers the task-thread chat tools: task thread 7, message 88.
 const fakeFetch = (dir: string): string => {
   const preload = join(dir, "fake-fetch.js");
   writeFileSync(preload, [
     'const { appendFileSync } = require("node:fs");',
     'globalThis.fetch = async (url, init) => {',
     '  appendFileSync(process.env.FAKE_LOG, JSON.stringify({ url: String(url), method: init.method, body: init.body ? JSON.parse(init.body) : undefined }) + "\\n");',
+    '  if (String(url).endsWith("/mcp")) {',
+    '    const rpc = JSON.parse(init.body), name = rpc.params.name, a = rpc.params.arguments;',
+    '    const value = name === "list_threads" ? [{ id: 7, taskId: a.task_id, status: "open" }] : name === "reply_in_chat" ? { id: 88, channelId: 1, threadId: a.thread_id, author: "agent", body: a.body, attachments: [] } : {};',
+    '    return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { content: [{ type: "text", text: JSON.stringify(value) }] } });',
+    '  }',
     '  const status = Number(process.env.FAKE_STATUS ?? 200);',
     '  const ok = { id: "m-42", content: process.env.FAKE_CONTENT ?? "", thread_metadata: { archived: process.env.FAKE_ARCHIVED === "true" }, parent_id: process.env.FAKE_PARENT };',
     '  return new Response(status < 300 ? JSON.stringify(ok) : "{\\"message\\":\\"Missing Access\\"}", { status });',
@@ -910,6 +915,25 @@ test("dori reported --append edits the lane's last report and posts nothing new;
   expect(calls(append.requests)).toEqual(["GET /channels/200", "GET /channels/200/messages/m-42", "PATCH /channels/200/messages/m-42"]);
   expect(append.requests[2]?.body?.content).toBe("alpha done: PR green\nmerged into dev at abc123");
   expect(pendingReported(f.state.dir).filter((r) => r.followUp).map((r) => r.message)).toEqual(["m-42"]);
+}, CLI_TIMEOUT);
+
+test("with Discord off, dori reported --append for a lane bound to a Discord thread posts into its Toodo task thread and calls no Discord", async () => {
+  const f = fixture();
+  await f.deps.registry.write(lane("alpha", { thread: "discord:100/200", task: 951 }));
+  // Its last report went into the Discord thread before Discord was turned off.
+  recordLastReport(f.state.dir, "alpha", { channel: "200", message: "m-1", at: T0 });
+  const config = join(f.state.dir, "toodo-only.json");
+  writeFileSync(config, JSON.stringify({ platforms: ["toodo"] }));
+  mkdirSync(join(f.state.dir, ".local", "share", "toodo-server"), { recursive: true });
+  writeFileSync(join(f.state.dir, ".local", "share", "toodo-server", "mcp-token"), "mcp-1\n");
+  const append = await cli(f.state.dir, ["reported", "alpha", "--append", "merged acme/app#1 (abc1234)", "--no-redirect"], { DORI_CONFIG: config, DORI_DISCORD_TOKEN: "" });
+  expect(append.err).toBe("");
+  expect(append.code).toBe(0);
+  expect(append.out.trim()).toBe("REPORT_APPENDED alpha toodo:88");
+  expect(append.requests.filter((r) => r.url.startsWith(API))).toEqual([]);
+  const reply = append.requests.map((r) => r.body as unknown as { params?: { name: string; arguments: Record<string, unknown> } }).find((b) => b.params?.name === "reply_in_chat");
+  expect(reply?.params?.arguments).toMatchObject({ thread_id: 7, body: "[follow-up]\nmerged acme/app#1 (abc1234)" });
+  expect(pendingReported(f.state.dir).filter((r) => r.followUp).map((r) => [r.message, r.target])).toEqual([["toodo:88", "toodo:thread/7"]]);
 }, CLI_TIMEOUT);
 
 test("a report, an append or a send into a thread the owner closed goes to its parent channel as one line, else the owner channel; a reopened thread is posted into again", async () => {

@@ -7,6 +7,7 @@ import { TOODO_FILES_MAX, toodoChat, toodoErrorText, toodoRef } from "./messenge
 import type { Lane } from "./registry.ts";
 import { doneRepos } from "./signals.ts";
 import { type ToodoFile, ToodoMcp, ToodoWriter } from "./toodo-client.ts";
+import type { AppendOutcome } from "./task-finish.ts";
 
 /*
  * A lane on the Toodo chat (config platforms has toodo): every lane works on one task, and its output goes to that task's
@@ -112,6 +113,22 @@ export const laneOutputFiles = (stateDir: string, key: string): ToodoFile[] => {
   return readdirSync(dir, { recursive: true, encoding: "utf8" }).sort()
     .filter((path) => !path.split(/[\\/]/).some((part) => part.startsWith(".")) && statSync(join(dir, path)).isFile())
     .map((path) => ({ name: basename(path), data: new Uint8Array(readFileSync(join(dir, path))), contentType: Bun.file(join(dir, path)).type }));
+};
+
+/**
+ * A follow-up to a lane's report with Discord off (a merge or finished-task fact line, `dori reported --append`): there
+ * is no Discord message to edit, so the text goes into the lane's task thread as its own post, whatever thread the lane
+ * was bound to before Discord was turned off. Skipped (`appended: false`) with the Toodo chat off or a lane without a
+ * task; throws when the post fails (postLaneToodo logs TOODO_CHAT_POST_FAILED).
+ */
+export const appendLaneToodo = async (
+  deps: Pick<FlowDeps, "config" | "tunables">, lane: Lane, text: string,
+): Promise<AppendOutcome & { readonly target?: string }> => {
+  if (!toodoOn(deps)) return { appended: false, why: "Discord and the Toodo chat are both off" };
+  if (lane.task === undefined) return { appended: false, why: "the lane has no Toodo task" };
+  const posted = await postLaneToodo(deps, lane, "follow-up", text);
+  if (!posted) throw new Error(`the follow-up did not reach Toodo task #${lane.task}'s thread`);
+  return { appended: true, message: posted.message, target: posted.target };
 };
 
 /** A lane's outcome report (report-post.ts) into its task thread, with the files of its output attached. */

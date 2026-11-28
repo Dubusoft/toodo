@@ -43,10 +43,10 @@ import { isToodoRef, parseToodoRef, supervisorToodoChat, TOODO_CHAT_POLL_MS, TOO
 import { postOwnerLine } from "./lane-finish.ts";
 import { appendFollowUp, pruneThreadFollowups, redirectIfClosed } from "./thread-followup.ts";
 import { autoReportPoster } from "./auto-report.ts";
-import { postLaneReportToodo } from "./lane-toodo.ts";
+import { appendLaneToodo, postLaneReportToodo } from "./lane-toodo.ts";
 import { routeToodoOwnerMessage, toodoDecisionTick } from "./decision-toodo-cards.ts";
 import type { DirectRouting } from "./decision-inbound.ts";
-import { taskBlocker, taskFinisher } from "./task-finish.ts";
+import { type AppendOutcome, taskBlocker, taskFinisher } from "./task-finish.ts";
 import { ToodoWriter } from "./toodo-client.ts";
 import { writeGatewayStatus } from "./gateway-status.ts";
 import { collectStatus, lookupStatus, type StatusDeps } from "./status.ts";
@@ -627,7 +627,11 @@ const sweepTask = (p: SweepTaskParts): (() => Promise<void>) => {
   // The supervisor finishes a merged lane's Toodo task and appends the merge to its report (task-finish.ts).
   // An autopilot task it cannot finish, or whose lane closed cancelled, gets a blocker note instead.
   const toodoWriter = new ToodoWriter(deps.tunables.toodoWriter);
-  const finishTask = taskFinisher({ writer: toodoWriter, append: (lane, text) => appendFollowUp(deps.config.stateDir, p.discord, lane, text), language: () => deps.config.ownerLanguage });
+  // With Discord off there is no report message to edit: the fact line goes into the lane's Toodo task thread instead,
+  // also for a lane bound to a Discord thread before Discord was turned off.
+  const append = (lane: Lane, text: string): Promise<AppendOutcome> =>
+    discordOn(deps.config) ? appendFollowUp(deps.config.stateDir, p.discord, lane, text) : appendLaneToodo(deps, lane, text);
+  const finishTask = taskFinisher({ writer: toodoWriter, append, language: () => deps.config.ownerLanguage });
   // A clean done claim of a lane config autoReport covers is posted as its report by the supervisor (auto-report.ts).
   const autoReport = autoReportPoster({
     config: deps.config, discord: p.discord, now: deps.clock.now, home: home || homedir(), language: () => deps.config.ownerLanguage,
@@ -688,7 +692,8 @@ type LaneReportParts = {
   readonly ops: OperationStore;
   readonly reports: LaneReportStore;
   readonly review: ReviewGate;
-  readonly transport: LaneStatusTransport;
+  /** Null with Discord off: no lane status message is written, whatever thread a lane is bound to. */
+  readonly transport: LaneStatusTransport | null;
   readonly decisions: DecisionContext;
   readonly home: string;
   readonly enqueue: SourceEnqueue;
@@ -718,7 +723,7 @@ const laneReportsPass = (p: LaneReportParts): (() => Promise<void>) => {
       flow: deps, stores: p.review, reports, transport, decisions, home,
       emit: (id, line) => { enqueue(id, line); },
     }));
-    return [...lines, ...await firstStatusTick(deps, transport, reports, home)];
+    return [...lines, ...transport ? await firstStatusTick(deps, transport, reports, home) : []];
   })())
     .then((lines) => { for (const line of lines) console.log(line); })
     .catch((e: unknown) => { console.error(`LANE_REPORTS_ERROR ${e instanceof Error ? e.message : String(e)}`); });
@@ -791,8 +796,9 @@ const ownerNotices = (p: NoticeParts): (() => Promise<void>) => {
     // Owner-closed records and closed lanes' last reports past THREAD_FOLLOWUP_KEEP_MS are dropped.
     await isolate("THREAD_FOLLOWUP_PRUNE_ERROR", async () => { pruneThreadFollowups(deps.config.stateDir, deps.clock.now(), await deps.registry.open()); });
     // A thread whose work is all finished and reported gets the owner's close button on its last report, and is closed
-    // (archived) once threadCloseAfterHours pass with no click.
-    await isolate("THREAD_AUTO_CLOSE_CHECK_ERROR", () => supervisor.autoCloseTick({
+    // (archived) once threadCloseAfterHours pass with no click. With Discord off there is no button to show or thread to
+    // archive: the pass is skipped, and a thread's pending wait resumes once Discord is back on.
+    if (discordOn(deps.config)) await isolate("THREAD_AUTO_CLOSE_CHECK_ERROR", () => supervisor.autoCloseTick({
       button: (thread, message, state) => p.discord.editComponents(thread, message, state === "none" ? [] : closeThreadButton(thread, state === "closed")),
       archive: (thread) => p.discord.setThread(thread, { archived: true }),
     }));
@@ -1035,7 +1041,8 @@ export const supervise = async (
     }));
     const reportStore = reports = probe.step("lane-reports", () => openLaneReports(deps.config));
     // The status message rides the supervisor's own Discord client, so a token from ~/.dori/env works as well as the environment.
-    const statusTransport = statusTransportOf(discord);
+    // With Discord off it is null, so a lane bound to a Discord thread before the switch gets no status message calls.
+    const statusTransport = onDiscord ? statusTransportOf(discord) : null;
     // Owner decision threads ride the same client: a lane question with choices opens one (owner-approved exception to
     // the supervisor never talking to the owner), and the decision tick runs with the report checks.
     // With Discord off a decision goes to the Toodo chat (decision-toodo.ts): the transport sends its refs there.
