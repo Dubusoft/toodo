@@ -74,7 +74,7 @@ function TokenForm() {
 
   return (
     <main className="flex min-h-svh flex-col items-center justify-center gap-4 p-6">
-      <form onSubmit={submit} aria-label={t.region} className="flex w-full max-w-sm flex-col gap-3 rounded-lg border p-5">
+      <form onSubmit={submit} aria-label={t.region} className="break-words-keep flex w-full max-w-sm flex-col gap-3 rounded-lg border p-5">
         <h1 className="text-lg font-semibold">{t.title}</h1>
         <p className="text-sm text-muted-foreground">
           {t.intro}

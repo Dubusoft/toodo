@@ -23,7 +23,7 @@ export function AdvancedSettings({ active, updateError }: { active: boolean; upd
   const t = m.settings.advanced;
   const dori = useDoriConfig().data;
   return (
-    <section aria-label={m.settings.sections.advanced} className="flex flex-col gap-6 text-sm">
+    <section aria-label={m.settings.sections.advanced} className="break-words-keep flex flex-col gap-6 text-sm">
       <p className="text-muted-foreground">{t.intro}</p>
       <Block title={t.agentConnection}>
         <AgentConnectionDetails />
