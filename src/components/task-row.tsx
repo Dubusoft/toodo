@@ -344,7 +344,11 @@ export function TaskRow({
             <StatusBadge task={task} byId={context.byId} />
             <span className="shrink-0 text-xs tabular-nums text-muted-foreground">#{task.id}</span>
             {showWorkspace && !detailed && (
-              <span className="shrink-0 rounded-md bg-muted px-1.5 text-xs text-muted-foreground">
+              // A long workspace name is cut short, so it cannot push the row wider than the list.
+              <span
+                className="max-w-48 shrink-0 truncate rounded-md bg-muted px-1.5 text-xs text-muted-foreground"
+                title={context.workspaceName(task.workspaceId)}
+              >
                 {context.workspaceName(task.workspaceId)}
               </span>
             )}

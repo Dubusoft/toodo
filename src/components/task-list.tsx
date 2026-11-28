@@ -319,7 +319,8 @@ export function TaskList({
                 <PlanView tasks={timelineTasks} onShowTask={setDetailId} />
               </>
             ) : (
-            <div role="region" aria-label={m.tasks.region} className="flex flex-col gap-4">
+            // The bottom padding lets the last row scroll clear of the floating chat button.
+            <div role="region" aria-label={m.tasks.region} className="flex flex-col gap-4 pb-14">
               {numbered && (
                 <section aria-label={m.tasks.numberMatch} className="flex flex-col gap-2">
                   <h3 className="text-sm font-medium text-muted-foreground">
