@@ -7,6 +7,7 @@ import {
   type ChatAttachment,
   type ChatAttachmentId,
   type ChatChannel,
+  type ChatChannelId,
   type ChatMessage,
   type ChatPlace,
   type ChatThread,
@@ -167,6 +168,14 @@ export function channelEdit(edit: B.ChatChannelEdit): ChannelEdit {
   if (edit.name !== undefined && edit.name !== null) parsed.name = channelName(edit.name);
   if (edit.push !== undefined && edit.push !== null) parsed.push = edit.push;
   return parsed;
+}
+
+/** The channels in the order people set, each named once. */
+export function channelOrder(ids: readonly number[]): ChatChannelId[] {
+  if (new Set(ids).size !== ids.length) {
+    throw invalidInput("the channel order must name each channel once");
+  }
+  return ids.map(chatChannelId);
 }
 
 /** What changes on a thread; `unlinkTask` drops its task and cannot go with `taskId`. */

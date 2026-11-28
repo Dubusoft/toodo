@@ -14,6 +14,7 @@ vi.mock("@/lib/bindings", () => ({
     searchChat: vi.fn(),
     markChatRead: vi.fn(),
     listChatChannels: vi.fn(),
+    reorderChatChannels: vi.fn(),
     listChatThreads: vi.fn(),
     createChatChannel: vi.fn(),
     updateChatChannel: vi.fn(),
@@ -653,6 +654,72 @@ describe("Chat", () => {
     expect(mocked.deleteChatChannel).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Delete channel" }));
     await waitFor(() => expect(mocked.deleteChatChannel).toHaveBeenCalledWith(2));
+  });
+
+  it("moves a channel with Alt and an arrow key and saves the new order", async () => {
+    serve([], [channel(1, "general"), channel(2, "work"), channel(3, "ops")]);
+    mocked.reorderChatChannels.mockResolvedValue({
+      status: "ok",
+      data: [channel(2, "work"), channel(1, "general"), channel(3, "ops")],
+    });
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+    const channels = await screen.findByRole("list", { name: "Channels" });
+
+    fireEvent.keyDown(within(channels).getByRole("button", { name: /general/ }), { key: "ArrowDown", altKey: true });
+
+    await waitFor(() => expect(mocked.reorderChatChannels).toHaveBeenCalledWith([2, 1, 3]));
+    expect(within(channels).getAllByRole("button").map((row) => row.textContent)).toEqual(["#work", "#general", "#ops"]);
+    expect(screen.getByText("Moved #general to place 2 of 3")).toBeInTheDocument();
+  });
+
+  it("drops a dragged channel where its line shows, without opening it", async () => {
+    serve([], [channel(1, "general"), channel(2, "work"), channel(3, "ops")]);
+    mocked.reorderChatChannels.mockResolvedValue({
+      status: "ok",
+      data: [channel(1, "general"), channel(3, "ops"), channel(2, "work")],
+    });
+    // Rows 36px high, 40px apart, in the order listed.
+    const rects = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      const key = Number(this.closest("[data-reorder-key]")?.getAttribute("data-reorder-key") ?? 0);
+      const top = [1, 2, 3].indexOf(key) * 40;
+      return { top, bottom: top + 36, height: 36, left: 0, right: 200, width: 200, x: 0, y: top, toJSON: () => ({}) };
+    });
+    onTestFinished(() => rects.mockRestore());
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+    const channels = await screen.findByRole("list", { name: "Channels" });
+    const work = within(channels).getByRole("button", { name: /work/ });
+
+    fireEvent.pointerDown(work, { pointerId: 1, pointerType: "mouse", isPrimary: true, button: 0, clientX: 10, clientY: 58 });
+    fireEvent.pointerMove(window, { pointerId: 1, pointerType: "mouse", clientX: 10, clientY: 70 });
+    fireEvent.pointerMove(window, { pointerId: 1, pointerType: "mouse", clientX: 10, clientY: 105 });
+    await waitFor(() => expect(within(channels).getByRole("button", { name: /ops/ }).closest("li")).toHaveAttribute("data-drop", "after"));
+    fireEvent.pointerUp(window, { pointerId: 1, pointerType: "mouse", clientX: 10, clientY: 105 });
+    fireEvent.click(work);
+
+    await waitFor(() => expect(mocked.reorderChatChannels).toHaveBeenCalledWith([1, 3, 2]));
+    expect(within(channels).getAllByRole("button").map((row) => row.textContent)).toEqual(["#general", "#ops", "#work"]);
+    expect(work).not.toHaveAttribute("aria-current");
+  });
+
+  it("opens a tapped channel and lets a flick scroll, without reordering", async () => {
+    serve([], [channel(1, "general"), channel(2, "work")]);
+    renderChat();
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat" }));
+    const channels = await screen.findByRole("list", { name: "Channels" });
+    const work = within(channels).getByRole("button", { name: /work/ });
+
+    fireEvent.pointerDown(work, { pointerId: 2, pointerType: "touch", isPrimary: true, clientX: 10, clientY: 50 });
+    fireEvent.pointerMove(window, { pointerId: 2, pointerType: "touch", clientX: 10, clientY: 90 });
+    fireEvent.pointerUp(window, { pointerId: 2, pointerType: "touch", clientX: 10, clientY: 90 });
+    fireEvent.pointerDown(work, { pointerId: 3, pointerType: "touch", isPrimary: true, clientX: 10, clientY: 50 });
+    fireEvent.pointerUp(window, { pointerId: 3, pointerType: "touch", clientX: 10, clientY: 50 });
+    fireEvent.click(work);
+
+    await waitFor(() => expect(work).toHaveAttribute("aria-current", "page"));
+    expect(channels.querySelector("[data-dragging]")).toBeNull();
+    expect(mocked.reorderChatChannels).not.toHaveBeenCalled();
   });
 
   it("lists the channels first and names a task's thread by its task, not its lane", async () => {

@@ -209,6 +209,7 @@ const ENTRIES: readonly Entry[] = [
   def("createChatChannel", ["name:string"], (s, name) => chatChanged(s, chat.createChatChannel(s.storage, name))),
   def("updateChatChannel", ["id:int", "edit:object:ChatChannelEdit"], (s, id, edit) =>
     chatChanged(s, chat.updateChatChannel(s.storage, id, edit))),
+  def("reorderChatChannels", ["ids:ints"], (s, ids) => chatChanged(s, chat.reorderChatChannels(s.storage, ids))),
   def("deleteChatChannel", ["id:int"], (s, id) => chatChanged(s, chat.deleteChatChannel(s.storage, id))),
   def("listChatThreads", ["filter:object:ChatThreadFilter"], (s, filter) => chat.listChatThreads(s.reader, filter)),
   def("createChatThread", ["thread:object:NewChatThread"], (s, thread) =>

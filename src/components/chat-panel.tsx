@@ -2,6 +2,7 @@ import {
   Suspense,
   useDeferredValue,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -52,6 +53,7 @@ import { TextInput } from "@astryxdesign/core/TextInput";
 import { Button, IconButton } from "@/components/button";
 import { detailsSheet } from "@/components/details-sheet";
 import { ResizeHandle } from "@/components/resize-handle";
+import { useReorderDrag } from "@/components/use-reorder-drag";
 import { Markdown, StatusBadge } from "@/components/task-common";
 import doriAvatar from "@/web/dori-avatar.png";
 import {
@@ -93,6 +95,7 @@ import {
   useCreateChatThread,
   useDeleteChatChannel,
   useMarkChatRead,
+  useReorderChatChannels,
   useSearchChat,
   useTasks,
   useUpdateChatChannel,
@@ -917,12 +920,14 @@ function PlaceButton({
   title,
   className,
   current,
+  describedBy,
   onClick,
   children,
 }: {
   title: string;
   className: string;
   current: boolean;
+  describedBy?: string;
   onClick: () => void;
   children: ReactNode;
 }) {
@@ -945,6 +950,8 @@ function PlaceButton({
         type="button"
         className={className}
         aria-current={current ? "page" : undefined}
+        aria-describedby={describedBy}
+        aria-keyshortcuts={describedBy === undefined ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
         onClick={onClick}
         onPointerEnter={(event) => event.pointerType !== "touch" && want(200)}
         onPointerLeave={forget}
@@ -1034,7 +1041,8 @@ function TaskGroup({
 }
 
 /**
- * The chat's places: the channels, the default room first, then the tasks that need an
+ * The chat's places: the channels, in the order people set by dragging them (or holding one on a
+ * touch screen, or Alt with an arrow key), then the tasks that need an
  * answer and the in-progress tasks a lane works on, each opening its thread. A channel shows
  * the threads under it that follow no task when it is shown; a task's thread opens from the
  * task. Threads are opened by the agent, or by opening a listed task, never by hand.
@@ -1066,29 +1074,53 @@ function PlaceList({
   const loose = threads.filter((thread) => thread.taskId === null);
   const archived = loose.filter((thread) => thread.status === "archived").length;
   const shown = loose.filter((thread) => showArchived || thread.status !== "archived");
-  // The default room first, then the others in the order they were made.
-  const ordered = [
-    ...channels.filter((channel) => channel.id === firstChannel),
-    ...channels.filter((channel) => channel.id !== firstChannel),
-  ];
+  const reorder = useReorderChatChannels();
+  const reorderHint = useId();
+  const [moved, setMoved] = useState("");
+  const drag = useReorderDrag({
+    keys: channels.map((channel) => channel.id),
+    onMove: (id, to) => {
+      const next = channels.filter((channel) => channel.id !== id);
+      const channel = channels.find((candidate) => candidate.id === id);
+      if (channel === undefined) return;
+      next.splice(to, 0, channel);
+      reorder.mutate(next);
+      setMoved(m.chat.channelMoved(channel.name, to + 1, next.length));
+    },
+  });
 
   const place = (channel: ChatChannel) => {
     const current = channel.id === selection.channel;
+    const dragged = drag.dragging === channel.id;
     return (
-      <li key={channel.id}>
-        <PlaceButton
-          title={`#${channel.name}`}
-          className={placeItem(current && selection.thread === null, { unread: channel.unread > 0 })}
-          current={current && selection.thread === null}
-          onClick={() => onSelect({ channel: channel.id, thread: null })}
-        >
-          <span className="text-muted-foreground">#</span>
-          <span data-place-title className="min-w-0 truncate">
-            {channel.name}
-          </span>
-          {!channel.push && <BellOff aria-label={m.chat.notificationsOff} className="size-3 shrink-0 text-muted-foreground" />}
-          <UnreadBadge count={channel.unread} />
-        </PlaceButton>
+      <li
+        key={channel.id}
+        {...drag.rowProps(channel.id)}
+        className={cn(
+          "relative rounded-md",
+          dragged && "z-10 cursor-grabbing bg-background shadow-lg ring-1 ring-border",
+          // The line alone shows over the dragged row where it passes the place it would land.
+          "data-[drop=before]:before:absolute data-[drop=before]:before:z-20 data-[drop=before]:before:inset-x-1 data-[drop=before]:before:-top-0.5 data-[drop=before]:before:h-0.5 data-[drop=before]:before:rounded-full data-[drop=before]:before:bg-primary",
+          "data-[drop=after]:after:absolute data-[drop=after]:after:z-20 data-[drop=after]:after:inset-x-1 data-[drop=after]:after:-bottom-0.5 data-[drop=after]:after:h-0.5 data-[drop=after]:after:rounded-full data-[drop=after]:after:bg-primary",
+        )}
+        style={dragged ? { transform: `translateY(${drag.offset}px)` } : undefined}
+      >
+        <div {...drag.handleProps(channel.id)} className="select-none [-webkit-touch-callout:none]">
+          <PlaceButton
+            title={`#${channel.name}`}
+            className={placeItem(current && selection.thread === null, { unread: channel.unread > 0 })}
+            current={current && selection.thread === null}
+            describedBy={channels.length > 1 ? reorderHint : undefined}
+            onClick={() => onSelect({ channel: channel.id, thread: null })}
+          >
+            <span className="text-muted-foreground">#</span>
+            <span data-place-title className="min-w-0 truncate">
+              {channel.name}
+            </span>
+            {!channel.push && <BellOff aria-label={m.chat.notificationsOff} className="size-3 shrink-0 text-muted-foreground" />}
+            <UnreadBadge count={channel.unread} />
+          </PlaceButton>
+        </div>
         {current && (
           <div className="ml-3 flex flex-col gap-0.5 border-l pl-1">
             <ul aria-label={m.chat.threadsIn(channel.name)} className="flex flex-col gap-0.5">
@@ -1160,9 +1192,15 @@ function PlaceList({
           }
         />
       )}
-      <ul aria-label={m.chat.channels} className="flex flex-col gap-0.5">
-        {ordered.map(place)}
+      <ul ref={drag.listRef} aria-label={m.chat.channels} className="flex flex-col gap-0.5">
+        {channels.map(place)}
       </ul>
+      <span id={reorderHint} className="sr-only">
+        {m.chat.reorderChannelsHint}
+      </span>
+      <span className="sr-only" aria-live="polite">
+        {moved}
+      </span>
       <TaskGroup
         label={m.chat.needsAnswer}
         icon={<Flag aria-hidden className="size-3 text-warning" />}

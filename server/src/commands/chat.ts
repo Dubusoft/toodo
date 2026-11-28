@@ -20,6 +20,7 @@ import {
   channel,
   channelEdit,
   channelName,
+  channelOrder,
   chatBody,
   clientId,
   message,
@@ -167,7 +168,7 @@ export const markChatRead: Command<"markChatRead"> = command((storage, at, upTo)
   return null;
 });
 
-/** Every channel, in the order they were made, with its unread count. */
+/** Every channel, in the order people set, with its unread count. */
 export const listChatChannels: Command<"listChatChannels"> = command((storage) =>
   channels.listChatChannels(storage.db).map(channel));
 
@@ -178,6 +179,11 @@ export const createChatChannel: Command<"createChatChannel"> = command((storage,
 /** Renames a channel or turns its notifications on or off. */
 export const updateChatChannel: Command<"updateChatChannel"> = command((storage, id, edit) =>
   channel(channels.updateChatChannel(storage.db, chatChannelId(id), channelEdit(edit))));
+
+/** Puts the channels in the order `ids` names; a channel it leaves out keeps its place after
+ * them. Returns every channel in the new order. */
+export const reorderChatChannels: Command<"reorderChatChannels"> = command((storage, ids) =>
+  channels.reorderChatChannels(storage.db, channelOrder(ids)).map(channel));
 
 /** Deletes a channel other than the default room; its threads and messages move to the
  * default room. */

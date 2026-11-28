@@ -70,6 +70,7 @@ vi.mock("@/lib/bindings", () => ({
     sendChatMessage: vi.fn(),
     markChatRead: vi.fn(),
     listChatChannels: vi.fn(),
+    reorderChatChannels: vi.fn(),
     listChatThreads: vi.fn(),
   },
   events: {
