@@ -277,6 +277,8 @@ export type MachineObservation = {
   readonly guard?: Readonly<Partial<GuardThresholds>>;
   /** The agent profiles the runner's policy can start (runner-config `agents` keys); absent from a runner older than this field. */
   readonly profiles?: readonly string[];
+  /** hc's and omo's versions on the host (`null`: not installed), when the query asked for `tools`; absent from an older runner. */
+  readonly tools?: { readonly hc: string | null; readonly omo: string | null };
 };
 
 /** The `result` of an `ok` `q.result`, per query type. */
@@ -578,8 +580,8 @@ const QUERY_SCHEMAS = {
     key: req("string"), cwd: opt("string"), process: opt("bool"), git: opt("bool"), roots: opt("string[]"), branches: opt("string[]"),
     done: opt("string"), doneCwd: opt("string"), session: opt("bool"), sessionsDir: opt("string"),
   }),
-  /** The host's guard sample and pane list. */
-  "q.machine.observe": query({}),
+  /** The host's guard sample and pane list; with `tools`, hc's and omo's versions too. */
+  "q.machine.observe": query({ tools: opt("bool") }),
   /** Since proto 5: the runner's current DORI_LANE_OUT snapshot of lane `key`. */
   "q.lane.files": query({ key: req("string") }),
 } satisfies Readonly<Record<string, Shape>>;

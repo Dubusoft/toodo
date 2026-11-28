@@ -144,6 +144,22 @@ test("observeMachine fills the pane count from the pane list, -1 when it is unre
   expect("guard" in got).toBe(false);
 });
 
+test("observeMachine reports hc's and omo's versions only when the query asks for tools, null for a missing tool", async () => {
+  const world = newHcWorld();
+  const versions = (omo: Ran): Runner => async (argv) => {
+    if (argv[0] === "df") return { code: 0, out: "Filesystem 1K-blocks Used Available\n/dev/x 100 50 10485760", err: "" };
+    if (argv[0] === "hc" && argv[1] === "--version") return { code: 0, out: "hc 0.1.22\n", err: "" };
+    if (argv[0] === "omo") return omo;
+    return hcAnswer(world, argv) ?? { code: 1, out: "", err: "unexpected" };
+  };
+  const mem = async () => "MemTotal: 1000 kB\nMemAvailable: 250 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n";
+  const installed = versions({ code: 0, out: "omo 5.1.84 (engine: senpi 2026.11.23; scheme nodef)\n", err: "" });
+  expect((await observeMachine(depsOf(installed, { os: "linux", readMemInfo: mem }), { tools: true })).tools).toEqual({ hc: "0.1.22", omo: "5.1.84" });
+  expect("tools" in (await observeMachine(depsOf(installed, { os: "linux", readMemInfo: mem })))).toBe(false);
+  const missing = versions({ code: 127, out: "", err: "omo: not found" });
+  expect((await observeMachine(depsOf(missing, { os: "linux", readMemInfo: mem }), { tools: true })).tools).toEqual({ hc: "0.1.22", omo: null });
+});
+
 test("q.machine.observe reports the guard thresholds runner-config.json sets (policy.guard), none when it sets none, and the agent profiles", async () => {
   const w = newWorld();
   const run: Runner = async (argv, opts) => (argv[0] === "df" ? { code: 0, out: "Filesystem 1K-blocks Used Available\n/dev/x 100 50 10485760", err: "" } : fakeRunner(w)(argv, opts));
