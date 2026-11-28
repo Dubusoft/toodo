@@ -852,11 +852,17 @@ export function ThreadStatusBadge({ status }: { status: ChatThreadStatus }) {
   return <Badge className="shrink-0" variant={status === "closed" ? "neutral" : "warning"} label={m.chat.threadStatus[status]} />;
 }
 
-function placeItem(selected: boolean, waiting = false) {
+/**
+ * A listed place's look. The shown place carries an accent bar on its start edge and an accent
+ * tint, and bold text means unread messages only, so a place that is both shows both.
+ */
+function placeItem(selected: boolean, { waiting = false, unread = false }: { waiting?: boolean; unread?: boolean } = {}) {
   return cn(
-    "flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted",
+    "relative flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted",
     waiting && "bg-amber-50 ring-1 ring-amber-300 ring-inset dark:bg-amber-950/60 dark:ring-amber-700",
-    selected && "bg-muted font-semibold",
+    selected &&
+      "bg-primary/10 hover:bg-primary/15 dark:bg-primary/15 dark:hover:bg-primary/20 before:absolute before:inset-y-1 before:left-0 before:w-[3px] before:rounded-full before:bg-primary",
+    unread && "font-semibold",
   );
 }
 
@@ -924,7 +930,10 @@ function TaskPlace({ chat, selected, onOpen }: { chat: TaskChat; selected: boole
     <li>
       <PlaceButton
         title={`#${task.id} ${task.title}`}
-        className={placeItem(selected, thread !== null && awaitsAnswer(thread))}
+        className={placeItem(selected, {
+          waiting: thread !== null && awaitsAnswer(thread),
+          unread: threadUnread(thread) > 0,
+        })}
         current={selected}
         onClick={onOpen}
       >
@@ -1028,7 +1037,7 @@ function PlaceList({
       <li key={channel.id}>
         <PlaceButton
           title={`#${channel.name}`}
-          className={placeItem(current && selection.thread === null)}
+          className={placeItem(current && selection.thread === null, { unread: channel.unread > 0 })}
           current={current && selection.thread === null}
           onClick={() => onSelect({ channel: channel.id, thread: null })}
         >
@@ -1046,7 +1055,10 @@ function PlaceList({
                 <li key={thread.id}>
                   <PlaceButton
                     title={thread.title}
-                    className={placeItem(selection.thread === thread.id, awaitsAnswer(thread))}
+                    className={placeItem(selection.thread === thread.id, {
+                      waiting: awaitsAnswer(thread),
+                      unread: threadUnread(thread) > 0,
+                    })}
                     current={selection.thread === thread.id}
                     onClick={() => onSelect({ channel: channel.id, thread: thread.id })}
                   >
@@ -1162,7 +1174,7 @@ function PastChats({
             <li key={thread.id}>
               <PlaceButton
                 title={nameOf(thread)}
-                className={placeItem(selection.thread === thread.id)}
+                className={placeItem(selection.thread === thread.id, { unread: threadUnread(thread) > 0 })}
                 current={selection.thread === thread.id}
                 onClick={() => onSelect({ channel: thread.channelId, thread: thread.id })}
               >
