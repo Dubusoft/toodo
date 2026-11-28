@@ -23,6 +23,7 @@ import type {
 } from "@/lib/supervisor-schedules";
 import { formatFull, formatWhen } from "@/lib/timeline";
 import type { Messages } from "@/locales/en";
+import { useSupervisorNotice } from "@/web/host-status";
 import { useChangeSchedule, useScheduledJobs } from "@/web/supervisor-schedules";
 
 const seconds = (ms: number): number => Math.floor(ms / 1000);
@@ -427,6 +428,7 @@ export function SchedulesPanel({ active }: { active: boolean }) {
   const t = m.settings.schedules;
   const jobs = useScheduledJobs(active);
   const mutation = useChangeSchedule();
+  const down = useSupervisorNotice(active);
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -440,7 +442,8 @@ export function SchedulesPanel({ active }: { active: boolean }) {
     });
   }
 
-  const error = mutation.error ?? jobs.error;
+  // `down` says why the supervisor cannot list the jobs, so its refusal is not repeated.
+  const error = mutation.error ?? (down === null ? jobs.error : null);
   const data = jobs.data;
   return (
     <section aria-label={m.settings.sections.schedules} className="flex flex-col gap-3 text-sm">
@@ -450,13 +453,18 @@ export function SchedulesPanel({ active }: { active: boolean }) {
           {notice}
         </p>
       )}
+      {down !== null && (
+        <p role="alert" className="break-words text-destructive">
+          {down}
+        </p>
+      )}
       {error && (
         <p role="alert" className="text-xs break-words text-destructive">
           {error.message}
         </p>
       )}
       {data === undefined ? (
-        !jobs.error && <p className="text-muted-foreground">{t.loading}</p>
+        down === null && !jobs.error && <p className="text-muted-foreground">{t.loading}</p>
       ) : data.jobs.length === 0 ? (
         <p className="text-muted-foreground">{t.empty}</p>
       ) : (

@@ -323,6 +323,10 @@ export const settings: Partial<Messages["settings"]> = {
     screen: "최근 화면",
     readingScreen: "화면을 불러오는 중...",
     waiting: "슈퍼바이저의 첫 보고를 기다리는 중...",
+    notConnected: "Dori가 연결되어 있지 않습니다. 이 서버는 Dori 슈퍼바이저 없이 실행 중입니다. Dori는 호스트 서비스 toodo.service에서 실행됩니다(docs/host.md 참고).",
+    off: "Dori가 꺼져 있습니다. 서버가 안전 모드(TOODO_SUPERVISOR=off)로 실행 중입니다. toodo.service에서 이 설정을 지우고 다시 시작하면 Dori가 켜집니다.",
+    notResponding: (state: string, retryMinutes: number | null) =>
+      `Dori 슈퍼바이저가 응답하지 않습니다(${state}${retryMinutes === null ? "" : `, ${retryMinutes}분 뒤 다시 시도`}). journalctl --user -u toodo.service를 확인하거나 toodo doctor를 실행하세요.`,
     quota: "사용량 한도",
     empty: "작업 중인 레인이 없습니다.",
     status: "상태",
