@@ -127,7 +127,9 @@ function WorkspaceItem({ workspace, selected, onSelect, children }: WorkspaceIte
           onClick={() => onSelect(workspace.id)}
           className="flex min-w-0 flex-1 flex-col px-2.5 py-1.5 text-left"
         >
-          <span className="truncate text-sm font-medium">{workspace.name}</span>
+          <span className="truncate text-sm font-medium" title={workspace.name}>
+            {workspace.name}
+          </span>
           {workspace.repository && (
             <span className="truncate text-xs text-muted-foreground" title={workspace.repository}>
               {workspace.repository}
