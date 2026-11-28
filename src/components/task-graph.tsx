@@ -335,11 +335,12 @@ export function TaskGraph({
           </div>
         )}
         <Collapsible
-          trigger={m.details.graph.legend}
+          // The trigger and the marks keep the controls' small type instead of the Collapsible's body size.
+          trigger={<span className="text-xs font-medium">{m.details.graph.legend}</span>}
           chevronPosition="start"
           isOpen={legendOpen}
           onOpenChange={setLegendOpen}
-          className={cn("min-w-0 text-muted-foreground", legendOpen && "basis-full")}
+          className={cn("min-w-0 text-muted-foreground [&_svg]:size-3.5", legendOpen && "basis-full")}
         >
           <TimelineLegend />
         </Collapsible>
@@ -493,7 +494,7 @@ export function TaskGraph({
 function TimelineLegend() {
   const m = useMessages();
   return (
-    <ul aria-label={m.details.graph.phases} className="flex flex-wrap gap-x-2 gap-y-1 pb-1 [&>li]:whitespace-nowrap">
+    <ul aria-label={m.details.graph.phases} className="flex flex-wrap gap-x-2 gap-y-1 pb-1 text-xs [&>li]:whitespace-nowrap">
       <li className="flex items-center gap-1">
         <span className="size-2 rotate-45 border border-muted-foreground" />
         {m.details.graph.plannedOn}
@@ -723,7 +724,8 @@ function TimelineTooltip({
         ...(below ? { top: anchor.bottom + 6 } : { bottom: window.innerHeight - anchor.top + 6 }),
       }}
     >
-      <div className="flex items-center gap-1.5">
+      {/* Wraps rather than cutting off the workspace name, which the bar's label may have cut off. */}
+      <div className="flex flex-wrap items-center gap-1.5">
         {workspace !== null && <Badge label={workspace} />}
         <TaskTypeBadge type={task.taskType} className="px-1 leading-4" />
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
@@ -944,7 +946,10 @@ function TimelineBarView({
             className="-ml-1 size-3.5 shrink-0 text-muted-foreground"
           />
         )}
-        {workspace !== null && <span className="rounded-sm bg-muted px-1 text-muted-foreground">{workspace}</span>}
+        {/* A long workspace name gives way first, so the title stays readable on a narrow panel. */}
+        {workspace !== null && (
+          <span className="min-w-12 shrink-[100] truncate rounded-sm bg-muted px-1 text-muted-foreground">{workspace}</span>
+        )}
         <TaskTypeBadge type={task.taskType} className="bg-card px-1 leading-4" />
         <span className="tabular-nums text-muted-foreground">#{task.id}</span>
         <span className="min-w-0 truncate font-semibold">{task.title}</span>
