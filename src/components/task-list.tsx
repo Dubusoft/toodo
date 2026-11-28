@@ -219,7 +219,17 @@ export function TaskList({
         );
 
   return (
-    <section aria-labelledby="tasks-heading" className="flex flex-1 flex-col gap-4 max-md:gap-3">
+    <section
+      aria-labelledby="tasks-heading"
+      className={cn(
+        "flex flex-1 flex-col gap-4 max-md:gap-3",
+        // From `lg` up the list and its edit forms keep clear of an open details sheet (and the chat
+        // beside it), rather than going under it: the padding is what the panels cover past the main
+        // area's own 2rem padding, plus a 1rem gap. The timeline keeps its full width under the sheet.
+        !showTimeline &&
+          "lg:details-open:pr-(--details-alone-width,var(--details-width)) lg:details-open:chat-open:pr-[calc(var(--chat-beside-details)+var(--details-beside-chat)+1rem)]",
+      )}
+    >
       <header className="flex flex-col max-md:gap-2">
         <h2 id="tasks-heading" className="text-xl font-semibold tracking-tight">
           {workspace?.name ?? m.tasks.allWorkspaces}

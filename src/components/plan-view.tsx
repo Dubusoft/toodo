@@ -42,7 +42,8 @@ export function PlanView({ tasks, onShowTask }: { tasks: Task[]; onShowTask: (id
   const overloaded = periods.filter((period) => period.overloaded).length;
 
   return (
-    <div role="region" aria-label={m.tasks.plan} className="flex flex-col gap-4">
+    // The bottom padding lets the last row scroll clear of the floating chat button.
+    <div role="region" aria-label={m.tasks.plan} className="flex flex-col gap-4 pb-14">
       <div className="flex flex-wrap items-end gap-x-4 gap-y-2">
         <ToggleButtonGroup
           label={m.tasks.planPeriod}
