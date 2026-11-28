@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { expect, test } from "vitest";
 // First, so the queries below load the mocked bindings.
 import { mockedEvents } from "@/test/app";
+import { appLanguageKey } from "@/lib/i18n";
 import { queryKeys, useServerEvents } from "@/lib/queries";
 
 test("a tasks-changed event refetches the tasks, their links, the archive, and reviews", () => {
@@ -22,6 +23,7 @@ test("a tasks-changed event refetches the tasks, their links, the archive, and r
     mockedEvents.workspacesChanged,
     mockedEvents.guidelinesChanged,
     mockedEvents.chatChanged,
+    mockedEvents.appLanguageChanged,
   ]) {
     event.listen.mockResolvedValue(() => {});
   }
@@ -48,6 +50,7 @@ test("a chat-changed event refetches the chat and nothing else", () => {
     mockedEvents.workspacesChanged,
     mockedEvents.guidelinesChanged,
     mockedEvents.chatChanged,
+    mockedEvents.appLanguageChanged,
   ]) {
     event.listen.mockResolvedValue(() => {});
   }
@@ -61,4 +64,29 @@ test("a chat-changed event refetches the chat and nothing else", () => {
 
   expect(client.getQueryState(queryKeys.chat)?.isInvalidated).toBe(true);
   expect(client.getQueryState(queryKeys.workspaces)?.isInvalidated).toBe(false);
+});
+
+test("an app-language-changed event takes each language set elsewhere", () => {
+  const client = new QueryClient();
+  client.setQueryData(appLanguageKey, null);
+  for (const event of [
+    mockedEvents.tasksChanged,
+    mockedEvents.workspacesChanged,
+    mockedEvents.guidelinesChanged,
+    mockedEvents.chatChanged,
+    mockedEvents.appLanguageChanged,
+  ]) {
+    event.listen.mockResolvedValue(() => {});
+  }
+  renderHook(() => useServerEvents(), {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+
+  const onAppLanguageChanged = mockedEvents.appLanguageChanged.listen.mock.lastCall?.[0];
+  for (const [id, language] of ["ko", "en", "ko", null].entries()) {
+    onAppLanguageChanged?.({ event: "app-language-changed", id, payload: language as "ko" | "en" | null });
+    expect(client.getQueryData(appLanguageKey)).toBe(language);
+  }
 });

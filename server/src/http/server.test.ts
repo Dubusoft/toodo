@@ -337,6 +337,17 @@ describe("chat", () => {
     expect(events.map((event) => event.name)).toEqual([READY, "chat-action-chosen", "chat-changed"]);
     expect(JSON.parse(events[1]!.data)).toMatchObject({ messageId: asked.id, key: "go", label: "Go", choiceId: chosen.body.id });
   });
+
+  test("setting the App language announces each language set", async () => {
+    const server = await start();
+    const stream = server.services.events.stream(null);
+    for (const language of ["ko", "en", null]) {
+      expect((await server.send("POST", "/api/rpc/set_app_language", WEB, { language })).status).toBe(200);
+    }
+    const events = stream.ready();
+    expect(events.map((event) => event.name)).toEqual([READY, "app-language-changed", "app-language-changed", "app-language-changed"]);
+    expect(events.slice(1).map((event) => JSON.parse(event.data))).toEqual(["ko", "en", null]);
+  });
 });
 
 describe("devices", () => {

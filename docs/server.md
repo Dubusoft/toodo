@@ -1086,7 +1086,7 @@ curl -s -o /dev/null -w '%{http_code}\n' https://toodo.example.com/api/rpc/list_
   server log.
 - `GET /api/events`: server-sent events `tasks-changed`, `workspaces-changed`,
   `guidelines-changed`, `task-status-changed`, `task-ready`, `chat-changed`,
-  `chat-typing`, and `chat-action-chosen` with the payloads of the events in
+  `chat-typing`, `chat-action-chosen`, and `app-language-changed` with the payloads of the events in
   `src/lib/bindings.ts` (see [Task Events for Other
   Clients](#task-events-for-other-clients)). Every event has an id `<epoch>-<sequence>`; `epoch`
   changes with each server start. A request without `Last-Event-ID` starts with a
