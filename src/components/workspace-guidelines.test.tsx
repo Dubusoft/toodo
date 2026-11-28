@@ -126,7 +126,7 @@ describe("WorkspaceGuidelines", () => {
     fireEvent.change(within(form).getByRole("textbox", { name: "Guideline" }), { target: { value: "Keep it short." } });
     fireEvent.click(within(form).getByRole("button", { name: "Add" }));
 
-    expect(await within(form).findByRole("alert")).toHaveTextContent("workspace 1 does not exist");
+    expect(await within(form).findByRole("alert")).toHaveTextContent("What this refers to no longer exists");
     expect(within(form).getByRole("textbox", { name: "Guideline" })).toHaveValue("Keep it short.");
   });
 

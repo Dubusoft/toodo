@@ -35,14 +35,14 @@ export const tasks = {
     both: "No estimate or due date"
   },
   types: {
-    feat: "feat",
-    fix: "fix",
-    modify: "modify",
-    refactor: "refactor",
-    docs: "docs",
-    test: "test",
-    chore: "chore",
-    rnd: "rnd"
+    feat: "Feature",
+    fix: "Fix",
+    modify: "Change",
+    refactor: "Refactor",
+    docs: "Docs",
+    test: "Test",
+    chore: "Chore",
+    rnd: "R&D"
   },
   workspaceFallback: (id: number) => `Workspace ${id}`,
   allWorkspaces: "All workspaces",

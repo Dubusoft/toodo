@@ -110,7 +110,7 @@ describe("ChatAppsCard", () => {
     fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Revoke" }));
 
     const app = screen.getByRole("listitem", { name: "App ChatGPT" });
-    expect(await within(app).findByRole("alert")).toHaveTextContent("connected app 1 is gone");
+    expect(await within(app).findByRole("alert")).toHaveTextContent("What this refers to no longer exists");
     fireEvent.click(within(app).getByRole("button", { name: "Keep" }));
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });

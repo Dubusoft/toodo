@@ -31,7 +31,7 @@ describe("App: creating and editing tasks", () => {
     mocked.listTasks.mockResolvedValue({ status: "ok", data: [task(5, 1, "Write docs")] });
     expect(screen.queryByRole("combobox", { name: "Task type" })).not.toBeInTheDocument();
     fireEvent.focusIn(screen.getByLabelText("Task title"));
-    chooseOption(screen.getByRole("combobox", { name: "Task type" }), "docs");
+    chooseOption(screen.getByRole("combobox", { name: "Task type" }), "Docs");
     fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Write docs" } });
     fireEvent.change(screen.getByLabelText("Estimate"), { target: { value: "x" } });
     expect(isDisabled(screen.getByRole("button", { name: "Add task" }))).toBe(true);
@@ -201,7 +201,7 @@ describe("App: creating and editing tasks", () => {
 
     await chooseAction(1, "Edit #1");
     const form = screen.getByRole("form", { name: "Edit task #1" });
-    chooseOption(within(form).getByRole("combobox", { name: "Type of #1" }), "fix");
+    chooseOption(within(form).getByRole("combobox", { name: "Type of #1" }), "Fix");
     fireEvent.change(within(form).getByLabelText("Title of #1"), { target: { value: "  Add sign-in " } });
     fireEvent.change(within(form).getByLabelText("Description of #1"), { target: { value: " new " } });
     expect(within(form).getByLabelText("Estimate of #1")).toHaveValue("3");

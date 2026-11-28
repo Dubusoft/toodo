@@ -52,7 +52,7 @@ describe("App: search, command palette, and navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     const timeline = await screen.findByRole("region", { name: "Task timeline" });
     expect(await within(timeline).findByText("Add storage")).toBeInTheDocument();
-    chooseOption(screen.getByRole("combobox", { name: "Type filter" }), "fix");
+    chooseOption(screen.getByRole("combobox", { name: "Type filter" }), "Fix");
     expect(await within(timeline).findByText("Fix ssh")).toBeInTheDocument();
     expect(within(timeline).getByText("Fix login")).toBeInTheDocument();
     expect(within(timeline).queryByText("Add storage")).not.toBeInTheDocument();
@@ -242,14 +242,14 @@ describe("App: search, command palette, and navigation", () => {
     fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
     fireEvent.focusIn(await screen.findByLabelText("Task title"));
     fireEvent.change(screen.getByLabelText("Task title"), { target: { value: "Half-written task" } });
-    chooseOption(screen.getByRole("combobox", { name: "Task type" }), "fix");
+    chooseOption(screen.getByRole("combobox", { name: "Task type" }), "Fix");
     fireEvent.click(screen.getByRole("button", { name: /^herdr/ }));
     expect(await screen.findByRole("heading", { name: "herdr" })).toBeInTheDocument();
     expect(screen.getByLabelText("Task title")).toHaveValue("");
     fireEvent.click(screen.getByRole("button", { name: /^toodo/ }));
     expect(await screen.findByLabelText("Task title")).toHaveValue("Half-written task");
     fireEvent.focusIn(screen.getByLabelText("Task title"));
-    expect(screen.getByRole("combobox", { name: "Task type" })).toHaveTextContent("fix");
+    expect(screen.getByRole("combobox", { name: "Task type" })).toHaveTextContent("Fix");
 
     fireEvent.click(screen.getByRole("button", { name: "All workspaces" }));
     expect(

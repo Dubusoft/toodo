@@ -120,6 +120,34 @@ export const app = {
     panicked: 'Something went wrong on the Toodo server. Try again; if it keeps failing, look for "a command panicked" in the toodo-server log.',
     guidelineMissing: "This guideline no longer exists; it was deleted elsewhere. Reload the page to see the current guidelines, and add your text as a new guideline if it is still needed.",
     storageFailed: (error: string) => `The Toodo server could not use its database (${error}). Try again; if it keeps failing, check the toodo-server log.`,
+    notFound: "What this refers to no longer exists; it was deleted or moved elsewhere. Reload the page to see the current data.",
+    dependencyCycle: "This dependency would make the tasks wait on each other in a loop. Check which task waits on which, and remove one dependency along the loop.",
+    dependenciesNotDone: "This task cannot start yet: a task it depends on is not done. Finish or conclude its prerequisites first.",
+    invalidTransition: "The task cannot move to that status from the one it is in now. Reload the page to see its current status.",
+    notPermitted: "This connection may not make that change.",
+  },
+  /** Shown instead of the text of an error the app itself ran into, such as a reply it could not read. */
+  unexpectedError: "Something went wrong in the app. Reload the page; if it keeps happening, check the browser console.",
+  /** Sentences the server writes in English, shown in the app's language (see `src/lib/server-text.ts`). */
+  serverText: {
+    paused: (reason: string) => `Paused: ${reason}`,
+    pausedWaitingOn: (tasks: string) => `Paused: waiting on ${tasks}`,
+    resumed: (note: string) => `Resumed: ${note}`,
+    reopened: (reason: string) => `Reopened: ${reason}`,
+    wasDoneAs: (resolution: string, note: string | null) =>
+      note === null ? `It was done as ${resolution}.` : `It was done as ${resolution}: ${note}`,
+    waitingUntil: (time: string, reason: string | null) => `Waiting until ${time}${reason === null ? "" : `: ${reason}`}`,
+    waitChanged: (time: string, reason: string | null) => `Wait changed: waiting until ${time}${reason === null ? "" : `: ${reason}`}`,
+    waitEndedEarly: (note: string | null) => (note === null ? "Wait ended early" : `Wait ended early: ${note}`),
+    waitEnded: (time: string) => `Wait until ${time} ended`,
+    waitEndedStillPaused: (tasks: string) => `The wait ended, but the task stays paused: waiting on ${tasks}`,
+    waitingOn: (tasks: string) => `Waiting on ${tasks}`,
+    backupFailed: (directory: string, cause: string) =>
+      `Could not back up into ${directory}: ${cause}. Make that directory writable for the toodo-server user, or choose another one under Settings > Backup & restore.`,
+    pushGone: "The push service no longer knows this subscription.",
+    pushRefused: (status: string, body: string) =>
+      body === "" ? `The push service refused the notification (${status}).` : `The push service refused the notification (${status}): ${body}`,
+    pushUnreachable: (cause: string) => `Cannot reach the push service: ${cause}`,
   },
   workspace: {
     title: "Workspaces",

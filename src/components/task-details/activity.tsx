@@ -4,6 +4,7 @@ import type { NoteKind, Task } from "@/lib/bindings";
 import { formatFull } from "@/lib/timeline";
 import { When } from "@/components/when";
 import { markdownPreview } from "@/lib/markdown";
+import { serverText } from "@/lib/server-text";
 import { Badge, type BadgeProps } from "@astryxdesign/core/Badge";
 import { DetailField, Markdown } from "@/components/task-common";
 
@@ -39,7 +40,7 @@ export function TaskNotes({ task, detailed }: { task: Task; detailed: boolean })
         title={formatFull(latest.at, locale)}
       >
         <NoteKindBadge kind={latest.kind} />
-        <span className="min-w-0 truncate text-muted-foreground">{markdownPreview(latest.body)}</span>
+        <span className="min-w-0 truncate text-muted-foreground">{markdownPreview(serverText(latest.body, m, locale))}</span>
         {notes.length > 1 && (
           <span className="shrink-0 text-muted-foreground">{m.details.notes.more(notes.length - 1)}</span>
         )}
@@ -55,8 +56,8 @@ export function TaskNotes({ task, detailed }: { task: Task; detailed: boolean })
               <NoteKindBadge kind={note.kind} />
               <When className="text-muted-foreground" at={note.at} />
             </div>
-            <Suspense fallback={<p className="whitespace-pre-line break-words-keep">{note.body}</p>}>
-              <Markdown source={note.body} />
+            <Suspense fallback={<p className="whitespace-pre-line break-words-keep">{serverText(note.body, m, locale)}</p>}>
+              <Markdown source={serverText(note.body, m, locale)} />
             </Suspense>
           </li>
         ))}

@@ -1,5 +1,6 @@
 import type { Messages } from "@/locales/en";
-import { useMessages } from "@/lib/i18n";
+import { useI18n, useMessages } from "@/lib/i18n";
+import { serverText } from "@/lib/server-text";
 import { Bot, X } from "lucide-react";
 import { Selector } from "@astryxdesign/core/Selector";
 import { Button, IconButton } from "@/components/button";
@@ -35,7 +36,7 @@ function eventLabel(event: TaskEvent, m: Messages): string {
 
 /** The status changes of `task` that were recorded with a reason, oldest first. */
 function TaskReasons({ task }: { task: Task }) {
-  const m = useMessages();
+  const { locale, m } = useI18n();
   const reasons = task.timeline.filter((event) => event.reason !== null);
   if (reasons.length === 0) {
     return null;
@@ -46,7 +47,7 @@ function TaskReasons({ task }: { task: Task }) {
         <li key={index} className="flex min-w-0 items-baseline gap-2 max-md:flex-wrap max-md:gap-y-0">
           <When className="shrink-0 text-muted-foreground" at={event.at} />
           <span className="shrink-0 font-medium">{eventLabel(event, m)}</span>
-          <span className="min-w-0 whitespace-pre-line break-words-keep max-md:basis-full">{event.reason}</span>
+          <span className="min-w-0 whitespace-pre-line break-words-keep max-md:basis-full">{serverText(event.reason ?? "", m, locale)}</span>
         </li>
       ))}
     </ol>

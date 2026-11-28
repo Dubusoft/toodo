@@ -163,6 +163,16 @@ describe("TaskList of a workspace", () => {
     mocked.listGuidelines.mockResolvedValue(ok([]));
   });
 
+  it("shows a message of the app instead of the error of a reply it could not read", async () => {
+    // Both requests of the first page get a reply that holds no list.
+    mocked.listTasks.mockResolvedValueOnce(ok(null as unknown as Task[])).mockResolvedValueOnce(ok(null as unknown as Task[]));
+    renderTasks(app, []);
+
+    const alert = await screen.findByText(/^Failed to load tasks:/);
+    expect(alert).toHaveTextContent("Failed to load tasks: Something went wrong in the app.");
+    expect(alert).not.toHaveTextContent("iterable");
+  });
+
   it("starts a ready task with no reason or references", async () => {
     mocked.startTask.mockResolvedValue(ok(task(3, app, "Write outline", { status: "in_progress" })));
     renderTasks(app, [task(3, app, "Write outline")]);

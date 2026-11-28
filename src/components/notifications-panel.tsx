@@ -3,6 +3,7 @@ import { useI18n, useMessages } from "@/lib/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CheckboxInput } from "@astryxdesign/core/CheckboxInput";
 import { Button } from "@/components/button";
+import { serverText } from "@/lib/server-text";
 import { formatFull, formatWhen } from "@/lib/timeline";
 import {
   disablePush,
@@ -36,7 +37,7 @@ function LastFailure({ failure }: { failure: PushFailure }) {
         <time dateTime={new Date(failure.at * 1000).toISOString()} title={formatFull(failure.at, locale)}>
           {formatWhen(failure.at, undefined, locale, m)}
         </time>
-        : {failure.message}
+        : {serverText(failure.message, m, locale)}
       </p>
       <p className="text-muted-foreground">
         {t.retryHelp}

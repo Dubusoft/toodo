@@ -8,6 +8,7 @@ import { ToggleButton, ToggleButtonGroup } from "@astryxdesign/core/ToggleButton
 import { Button } from "@/components/button";
 import { escapeCloses } from "@/components/workspace-list";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { errorMessage } from "@/lib/error-messages";
 import type { Task, TaskId, TaskType, Workspace, WorkspaceId } from "@/lib/bindings";
 import { useDeleteDoneTasks, useDoneTaskCount, useOlderTasksWhileShown, useTasks, useWorkspaces } from "@/lib/queries";
 import { timelineOrder, type TimelineScale } from "@/lib/task-graph";
@@ -255,7 +256,7 @@ export function TaskList({
       </p>
       {allTasks.isError && (
         <p role="alert" className="text-sm text-destructive">
-          {m.tasks.loadTasksError(allTasks.error.message)}
+          {m.tasks.loadTasksError(errorMessage(allTasks.error, m))}
         </p>
       )}
       {tasks?.length === 0 && (
@@ -665,13 +666,13 @@ function DeleteDoneTasks({ workspace }: { workspace: Workspace }) {
       </div>
       {deleteDone.isError ? (
         <p role="alert" className="basis-full text-xs text-destructive">
-          {deleteDone.error.message}
+          {errorMessage(deleteDone.error, m)}
         </p>
       ) : (
         confirming &&
         count.isError && (
           <p role="alert" className="basis-full text-xs text-destructive">
-            {m.tasks.countDoneError(count.error.message)}
+            {m.tasks.countDoneError(errorMessage(count.error, m))}
           </p>
         )
       )}
