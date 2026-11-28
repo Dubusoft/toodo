@@ -9,6 +9,7 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { UpdateBanner } from "@/components/update-banner";
 import { toodoTheme } from "@/lib/astryx-theme";
 import { flushChatOutbox } from "@/lib/chat-outbox";
+import { useFieldHitAreas } from "@/lib/field-hit-areas";
 import { I18nProvider } from "@/lib/i18n";
 import { queryKeys } from "@/lib/queries";
 import { initPanelSizes } from "@/lib/panel-sizes";
@@ -29,6 +30,7 @@ const root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement)
 
 /** Astryx components follow the same light or dark mode as the `.dark` class. */
 function ThemedApp({ children }: { children: ReactNode }) {
+  useFieldHitAreas();
   return (
     <Theme theme={toodoTheme} mode={useColorMode()}>
       {children}

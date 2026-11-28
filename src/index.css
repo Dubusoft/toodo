@@ -296,6 +296,55 @@
 }
 
 /*
+ * Under a finger, selectors, date fields and text fields take taps out toward 44px as Astryx's
+ * buttons do, without changing their 20-32px box, its look, or anything under a mouse.
+ * `useFieldHitAreas` (`src/lib/field-hit-areas.ts`) writes on each field how far its target may
+ * grow on each side before it would take a tap nearer a neighbour (`--astryx-hit-inset-*`, from
+ * the field's border box), and these invisible layers span that far past its border.
+ *
+ * A selector's layer belongs to its trigger and covers the whole field, so a tap anywhere on it
+ * opens the list. A text or date field keeps its input's taps, so a tap there still places the
+ * caret, and gets strips above and below its box instead: a text field's are its own, and a tap
+ * on one focuses the input, as a tap on the field's padding does; a date field's belong to its
+ * calendar button, laid out on the field's box, so a tap on one opens the calendar.
+ */
+@media (pointer: coarse) {
+  /* A field the watch leaves at zero gets no write, so it must not grow by a watched ancestor's insets. */
+  .astryx-selector,
+  .astryx-date-input,
+  .astryx-text-input {
+    --astryx-hit-inset-top: 0px;
+    --astryx-hit-inset-right: 0px;
+    --astryx-hit-inset-bottom: 0px;
+    --astryx-hit-inset-left: 0px;
+  }
+  .astryx-selector > button[role="combobox"]:not(:disabled)::after,
+  .astryx-date-input > button:first-of-type:not([aria-disabled="true"])::before,
+  .astryx-date-input > button:first-of-type:not([aria-disabled="true"])::after,
+  .astryx-text-input:not(:has(:disabled))::before,
+  .astryx-text-input:not(:has(:disabled))::after {
+    content: "";
+    position: absolute;
+    left: calc(-1 * (var(--astryx-hit-inset-left, 0px) + var(--border-width, 1px)));
+    right: calc(-1 * (var(--astryx-hit-inset-right, 0px) + var(--border-width, 1px)));
+  }
+  .astryx-selector > button[role="combobox"]::after {
+    top: calc(-1 * (var(--astryx-hit-inset-top, 0px) + var(--border-width, 1px)));
+    bottom: calc(-1 * (var(--astryx-hit-inset-bottom, 0px) + var(--border-width, 1px)));
+  }
+  .astryx-date-input > button:first-of-type::before,
+  .astryx-text-input::before {
+    bottom: 100%;
+    height: calc(var(--astryx-hit-inset-top, 0px) + var(--border-width, 1px));
+  }
+  .astryx-date-input > button:first-of-type::after,
+  .astryx-text-input::after {
+    top: 100%;
+    height: calc(var(--astryx-hit-inset-bottom, 0px) + var(--border-width, 1px));
+  }
+}
+
+/*
  * Printing (or saving as PDF) shows the page content alone: elements marked `print:hidden`,
  * such as the sidebar and the controls, are left out, and sections are not split across pages.
  */
