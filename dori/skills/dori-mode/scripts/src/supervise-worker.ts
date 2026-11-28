@@ -21,7 +21,7 @@ const post = (message: WorkerToHost): void => { self.postMessage(message); };
 const controller = new AbortController();
 const configured = loadConfig();
 // Settings > Machines & accounts, relayed by the host: every install, sign-in and ssh read runs here, never on the core's
-// thread. Built once the supervisor's lane operations exist, which answer the workers' tool versions.
+// thread. Built once the supervisor's lane operations exist, which reach the workers' runners for their tools.
 const machinesReady = Promise.withResolvers<MachineAdmin>();
 self.addEventListener("message", (event: MessageEvent<HostToWorker>) => {
   const message = event.data;
@@ -45,7 +45,7 @@ const { deps } = leadContext(config, new Registry(config.stateDir), "supervise",
 machinesReady.resolve(new MachineAdmin({
   stateDir: config.stateDir, guardMachines: config.guardMachines, runnerDir: defaultRunnerDir(), home: process.env.HOME || homedir(),
   env: process.env, run, now: realClock.now, agentCommand: config.agentCommand,
-  observeTools: async (label) => (await deps.ops.observeMachine(label, { tools: true })).tools,
+  runners: deps.ops,
   publish: (job) => { post({ type: "machine-job", job }); },
 }));
 post({ type: "ready" });
