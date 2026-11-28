@@ -209,7 +209,7 @@ describe("App: review", () => {
     expect(within(workedOn).getByText("herdr ·")).toHaveTextContent(`herdr · ${formatWhen(at)}`);
     expect(mocked.reviewPeriod).toHaveBeenCalledWith("2026-10-12", "2026-10-18");
     const summary = screen.getByRole("region", { name: "Summary" });
-    expect(within(summary).getByText("Completed by type").nextSibling).toHaveTextContent("feat 1");
+    expect(within(summary).getByText("Completed by type").nextSibling).toHaveTextContent("Feature 1");
     expect(within(summary).queryByRole("list", { name: "Completed per month" })).not.toBeInTheDocument();
     expect(within(workedOn).getByRole("list", { name: "Labels of #3" })).toHaveTextContent("infra");
 
@@ -338,8 +338,8 @@ describe("App: review", () => {
     expect(within(year).getByText("Reviews").nextSibling).toHaveTextContent("2on 1 of 2");
     const largest = within(within(year).getByRole("list", { name: "Largest pull requests" })).getAllByRole("listitem");
     expect(largest.map((item) => item.textContent)).toEqual([
-      "featRewrite storage#12, +400/-10 in 3 files, 0 reviews",
-      "featAdd login#11, +40/-10 in 3 files, 2 reviews",
+      "FeatureRewrite storage#12, +400/-10 in 3 files, 0 reviews",
+      "FeatureAdd login#11, +40/-10 in 3 files, 2 reviews",
     ]);
     const research = within(year).getByRole("list", { name: "Research conclusions" });
     expect(within(research).getByText("Not adopted")).toBeInTheDocument();
