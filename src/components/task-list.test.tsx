@@ -278,7 +278,7 @@ describe("TaskList of a workspace", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Delete done" }));
     const confirmation = await screen.findByRole("group", { name: "Delete 2 done tasks?" });
     expect(confirmation).toHaveTextContent(
-      "Delete 2 done tasks? They move to Settings > Archive with their history, where they can be restored.",
+      "Delete 2 done tasks? They move to Settings > Trash with their history, where they can be restored.",
     );
     const back = within(confirmation).getByRole("button", { name: "Back" });
     expect(back).toHaveFocus();
