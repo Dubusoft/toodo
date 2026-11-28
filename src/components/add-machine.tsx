@@ -139,7 +139,7 @@ function PasteForm({ t }: { t: Texts }) {
           <SegmentedControl label={t.add.shell} size="sm" value={shell} onChange={(value) => setShell(value as EnrollShell)}>
             {ENROLL_SHELLS.map((value) => <SegmentedControlItem key={value} value={value} label={t.add.shells[value]} />)}
           </SegmentedControl>
-          <pre aria-label={t.add.command} className="overflow-x-auto rounded-md bg-muted px-2 py-1.5 font-mono text-xs whitespace-pre-wrap break-all dark:bg-card">{command}</pre>
+          <pre aria-label={t.add.command} className="overflow-x-auto rounded-md bg-muted px-2 py-1.5 font-mono text-xs whitespace-pre-wrap break-all">{command}</pre>
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="primary" label={copied ? t.add.copied : t.add.copy} isDisabled={remaining <= 0} onClick={() => void copy()} />
             <span role="status" className={remaining > 0 || connected ? "text-muted-foreground" : "text-destructive"}>
@@ -159,7 +159,7 @@ export function AddMachine() {
   const [method, setMethod] = useState<Method>("ssh");
   return (
     <div className="flex flex-col gap-3 pt-2">
-      <p className="rounded-md bg-muted px-3 py-2 dark:bg-card">{t.add.privateNetwork}</p>
+      <p className="rounded-md bg-muted px-3 py-2">{t.add.privateNetwork}</p>
       <SegmentedControl label={t.add.method} size="sm" value={method} onChange={(value) => setMethod(value as Method)}>
         <SegmentedControlItem value="ssh" label={t.add.methods.ssh} />
         <SegmentedControlItem value="paste" label={t.add.methods.paste} />
